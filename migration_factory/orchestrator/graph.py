@@ -1,11 +1,11 @@
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from migration_factory.analysis_agent.node import analysis_node
+from migration_factory.agents.analysis_agent.node import analysis_node
 from migration_factory.orchestrator.approval import approval_node
 from migration_factory.orchestrator.state import MigrationState
-from migration_factory.planning_agent.node import planning_node
-from migration_factory.transformation_agent.node import transformation_node
+from migration_factory.agents.planning_agent.node import planning_node
+from migration_factory.agents.transformation_agent.node import transformation_node
 
 
 def build_graph():
