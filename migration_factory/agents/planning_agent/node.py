@@ -45,6 +45,9 @@ from migration_factory.agents.planning_agent.assist_artifact_writer import (
     CopilotAssistArtifactPayload,
     write_copilot_assist_artifact,
 )
+from migration_factory.agents.planning_agent.paths import (
+    get_planning_output_artifact_paths,
+)
 from migration_factory.contracts.planning_assist import (
     PlanningAssistRequest,
     PlanningAssistResult,
@@ -53,11 +56,47 @@ from migration_factory.orchestrator.state import MigrationState
 
 
 def planning_node(state: MigrationState) -> MigrationState:
+    output_paths = {
+        name: str(path)
+        for name, path in get_planning_output_artifact_paths(
+            modernized_app_path=state.get("modernized_app_path", ""),
+            run_id=state.get("run_id", ""),
+        ).items()
+    }
+
     def _safe_write_assist_artifact(payload: CopilotAssistArtifactPayload) -> None:
         try:
             write_copilot_assist_artifact(
                 modernized_app_path=state.get("modernized_app_path", ""),
                 payload=payload,
+            )
+        except Exception:
+            pass
+        try:
+            run_scoped_assist_path = Path(output_paths["copilot_assist.json"])
+            run_scoped_assist_path.parent.mkdir(parents=True, exist_ok=True)
+            run_scoped_assist_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "run_id": payload.run_id,
+                        "agent": "planning_agent",
+                        "phase": "planning",
+                        "status": payload.status,
+                        "provider": payload.provider,
+                        "auth": payload.auth,
+                        "model": payload.model,
+                        "inputs_summary": payload.inputs_summary,
+                        "advisory_summary": payload.advisory_summary,
+                        "warnings": payload.warnings,
+                        "error": payload.error,
+                        "failure_reason": payload.failure_reason,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
             )
         except Exception:
             # Artifact write is audit-only. Never block deterministic planning.
@@ -76,6 +115,10 @@ def planning_node(state: MigrationState) -> MigrationState:
             "planning_status": "FAIL",
             "current_unit": "planning",
             "errors": errors,
+            "blockers": errors,
+            "warnings": validation.warnings,
+            "planning_output_artifacts": output_paths,
+            "planning_validation_status": "SKIPPED",
             "planning_assist_status": "SKIPPED",
             "planning_assist_error": "Planning skipped due to analysis artifact load failure.",
             "planning_assist_warnings": validation.warnings,
@@ -90,6 +133,10 @@ def planning_node(state: MigrationState) -> MigrationState:
             "planning_status": "FAIL",
             "current_unit": "planning",
             "errors": loaded_profile.errors,
+            "blockers": list(loaded_profile.errors),
+            "warnings": [],
+            "planning_output_artifacts": output_paths,
+            "planning_validation_status": "SKIPPED",
             "planning_assist_status": "SKIPPED",
             "planning_assist_error": "Planning skipped due to migration profile load failure.",
             "planning_assist_warnings": [],
@@ -101,7 +148,10 @@ def planning_node(state: MigrationState) -> MigrationState:
             "planning_status": "FAIL",
             "current_unit": "planning",
             "errors": compatibility.errors,
+            "blockers": list(compatibility.errors),
             "warnings": compatibility.warnings,
+            "planning_output_artifacts": output_paths,
+            "planning_validation_status": "SKIPPED",
             "planning_assist_status": "SKIPPED",
             "planning_assist_error": "Planning skipped due to profile compatibility validation failure.",
             "planning_assist_warnings": compatibility.warnings,
@@ -119,8 +169,11 @@ def planning_node(state: MigrationState) -> MigrationState:
             "planning_status": "FAIL",
             "current_unit": "planning",
             "errors": blocker_messages,
+            "blockers": blocker_messages,
             "warnings": compatibility.warnings,
             "risks": risk_messages,
+            "planning_output_artifacts": output_paths,
+            "planning_validation_status": "SKIPPED",
             "planning_assist_status": "SKIPPED",
             "planning_assist_error": "Planning skipped due to deterministic risk blockers.",
             "planning_assist_warnings": compatibility.warnings,
@@ -176,17 +229,6 @@ def planning_node(state: MigrationState) -> MigrationState:
         modernized_app_path=state.get("modernized_app_path", ""),
         run_id=state.get("run_id", ""),
     )
-    if validation_result.status != "PASS":
-        return {
-            "planning_status": "FAIL",
-            "current_unit": "planning",
-            "errors": list(validation_result.reasons),
-            "warnings": compatibility.warnings,
-            "risks": risk_messages,
-            "planning_assist_status": "SKIPPED",
-            "planning_assist_error": "Planning output validation failed.",
-            "planning_assist_warnings": compatibility.warnings,
-        }
     unit_payload = [
         {
             "id": unit.id,
@@ -275,12 +317,21 @@ def planning_node(state: MigrationState) -> MigrationState:
         )
     )
 
+    planning_errors = list(validation_result.reasons) if validation_result.status != "PASS" else []
     return {
-        "planning_status": "PASS",
+        "planning_status": "PASS" if validation_result.status == "PASS" else "FAIL",
         "current_unit": "planning",
+        "errors": planning_errors,
+        "blockers": planning_errors,
         "warnings": merged_output.warnings,
         "planning_assist_status": assist_result_status,
-        "planning_assist_error": assist_result_error,
+        "planning_assist_error": (
+            "Planning output validation failed."
+            if validation_result.status != "PASS"
+            else assist_result_error
+        ),
+        "planning_output_artifacts": output_paths,
+        "planning_validation_status": validation_result.status,
         "risks": risk_messages,
         "migration_units": unit_payload,
         "planning_approval_summary": merged_output.approval_summary,
@@ -288,3 +339,5 @@ def planning_node(state: MigrationState) -> MigrationState:
         "planning_risk_explanations": merged_output.risk_explanations,
         "planning_assist_warnings": assist_result_warnings,
     }
+import json
+from pathlib import Path
