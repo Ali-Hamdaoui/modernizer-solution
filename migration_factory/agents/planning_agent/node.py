@@ -16,6 +16,7 @@ from migration_factory.agents.planning_agent.profile_compatibility import (
 from migration_factory.agents.planning_agent.plan_writer import (
     MigrationPlanPayload,
     write_migration_plan,
+    write_migration_units,
 )
 from migration_factory.agents.planning_agent.risk_classifier import (
     classify_planning_risks,
@@ -107,6 +108,11 @@ def planning_node(state: MigrationState) -> MigrationState:
             warnings=tuple(compatibility.warnings),
             units=units,
         ),
+    )
+    write_migration_units(
+        modernized_app_path=state.get("modernized_app_path", ""),
+        run_id=state.get("run_id", ""),
+        units=units,
     )
     unit_payload = [
         {

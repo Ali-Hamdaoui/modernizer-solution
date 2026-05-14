@@ -35,6 +35,19 @@ def write_migration_plan(
     return artifact_path
 
 
+def write_migration_units(
+    modernized_app_path: str,
+    run_id: str,
+    units: tuple[MigrationUnit, ...],
+) -> Path:
+    planning_dir = get_run_planning_dir(modernized_app_path, run_id)
+    planning_dir.mkdir(parents=True, exist_ok=True)
+
+    artifact_path = planning_dir / "migration_units.yaml"
+    artifact_path.write_text(_render_units_yaml(units), encoding="utf-8")
+    return artifact_path
+
+
 def _render_plan_yaml(payload: MigrationPlanPayload) -> str:
     executable = not bool(payload.blockers)
     unit_refs = [unit.id for unit in payload.units]
@@ -62,6 +75,44 @@ def _render_plan_yaml(payload: MigrationPlanPayload) -> str:
     lines.extend(_yaml_list(payload.warnings, indent=2))
     lines.append("unit_references:")
     lines.extend(_yaml_list(tuple(unit_refs), indent=2))
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _render_units_yaml(units: tuple[MigrationUnit, ...]) -> str:
+    lines: list[str] = [
+        f"schema_version: {_yaml_quote(SCHEMA_VERSION)}",
+        "units:",
+    ]
+
+    if not units:
+        lines.append("  []")
+        lines.append("")
+        return "\n".join(lines)
+
+    for unit in units:
+        lines.append(f"  - id: {_yaml_quote(unit.id)}")
+        lines.append(f"    goal: {_yaml_quote(unit.goal)}")
+        lines.append("    tools:")
+        lines.extend(_yaml_list(unit.tools, indent=6))
+        lines.append("    validation:")
+        lines.extend(_yaml_list(unit.validation, indent=6))
+        lines.append(f"    writes_source: {'true' if unit.writes_source else 'false'}")
+        lines.append(f"    required: {'true' if unit.required else 'false'}")
+        lines.append("    expected_artifacts:")
+        lines.extend(_yaml_list(unit.expected_artifacts, indent=6))
+        lines.append(f"    rollback_strategy: {_yaml_quote(unit.rollback_strategy)}")
+        lines.append(f"    blocking_gate: {_yaml_quote(unit.blocking_gate)}")
+        lines.append("    assist_policy:")
+        lines.append(
+            "      copilot_sdk_allowed: "
+            f"{'true' if unit.assist_policy.copilot_sdk_allowed else 'false'}"
+        )
+        lines.append(
+            "      copilot_sdk_mode: "
+            f"{_yaml_quote(unit.assist_policy.copilot_sdk_mode)}"
+        )
+
     lines.append("")
     return "\n".join(lines)
 
