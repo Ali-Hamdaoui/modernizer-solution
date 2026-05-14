@@ -4,6 +4,9 @@ from migration_factory.agents.planning_agent.assist_config import (
 from migration_factory.agents.planning_agent.artifact_reader import (
     load_analysis_artifacts,
 )
+from migration_factory.agents.planning_agent.analysis_validator import (
+    validate_analysis_completeness,
+)
 from migration_factory.agents.planning_agent.copilot_assist_client import (
     CopilotPlanningAssistClient,
 )
@@ -19,24 +22,18 @@ def planning_node(state: MigrationState) -> MigrationState:
         modernized_app_path=state.get("modernized_app_path", ""),
         run_id=state.get("run_id", ""),
     )
-    if not loaded_artifacts.ok:
+    validation = validate_analysis_completeness(loaded_artifacts)
+    if not validation.ok:
+        errors = [*validation.errors]
+        if validation.non_executable_reason:
+            errors.append(f"Analysis not executable: {validation.non_executable_reason}")
         return {
             "planning_status": "FAIL",
             "current_unit": "planning",
-            "errors": [
-                *(
-                    [
-                        "Missing required analysis artifacts: "
-                        + ", ".join(sorted(loaded_artifacts.missing_required))
-                    ]
-                    if loaded_artifacts.missing_required
-                    else []
-                ),
-                *loaded_artifacts.errors,
-            ],
+            "errors": errors,
             "planning_assist_status": "SKIPPED",
             "planning_assist_error": "Planning skipped due to analysis artifact load failure.",
-            "planning_assist_warnings": [],
+            "planning_assist_warnings": validation.warnings,
         }
 
     loaded_profile = load_migration_profile(

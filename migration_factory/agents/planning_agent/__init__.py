@@ -9,6 +9,10 @@ from migration_factory.agents.planning_agent.artifact_reader import (
     LoadedAnalysisArtifacts,
     load_analysis_artifacts,
 )
+from migration_factory.agents.planning_agent.analysis_validator import (
+    AnalysisValidationResult,
+    validate_analysis_completeness,
+)
 from migration_factory.agents.planning_agent.paths import (
     get_ai_hub_profile_path,
     get_optional_analysis_artifact_path,
@@ -31,6 +35,8 @@ __all__ = [
     "CopilotPlanningAssistClient",
     "LoadedAnalysisArtifacts",
     "load_analysis_artifacts",
+    "AnalysisValidationResult",
+    "validate_analysis_completeness",
     "get_run_analysis_dir",
     "get_run_planning_dir",
     "get_required_analysis_artifact_path",
