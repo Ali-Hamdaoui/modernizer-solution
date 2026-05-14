@@ -49,3 +49,20 @@ def test_review_plan_normalizes_provider_exception_to_failed(monkeypatch) -> Non
     assert result.status == "FAILED"
     assert result.error == "Planning assist timeout."
     assert result.warnings
+
+
+def test_review_plan_rejects_non_object_payload_as_controlled_failed(monkeypatch) -> None:
+    monkeypatch.delenv("MF_PLANNING_ASSIST_AUTH_MODE", raising=False)
+
+    class InvalidPayloadClient(CopilotPlanningAssistClient):
+        def _perform_provider_review(self, request, config):
+            return "not-json-object"
+
+    client = InvalidPayloadClient()
+    result = client.review_plan(
+        request=_request(),
+        config=PlanningAssistConfig(enabled=True),
+    )
+
+    assert result.status == "FAILED"
+    assert result.error == "Planning assist invalid JSON/non-object payload."

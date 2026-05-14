@@ -53,7 +53,9 @@ class CopilotPlanningAssistClient:
             self._ADAPTER_UNAVAILABLE_REASON,
         )
 
-    def _validate_output(self, result: PlanningAssistResult) -> PlanningAssistResult:
+    def _validate_output(self, result) -> PlanningAssistResult:
+        if not isinstance(result, PlanningAssistResult):
+            return self._build_failed_result("Planning assist invalid JSON/non-object payload.")
         if result.status in {"SKIPPED", "FAILED"}:
             return result
         if result.status != "USED":

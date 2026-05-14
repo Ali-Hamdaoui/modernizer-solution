@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from migration_factory.agents.planning_agent.assist_config import (
     load_planning_assist_config,
 )
@@ -44,6 +47,9 @@ from migration_factory.agents.planning_agent.assist_merge import (
 from migration_factory.agents.planning_agent.assist_artifact_writer import (
     CopilotAssistArtifactPayload,
     write_copilot_assist_artifact,
+)
+from migration_factory.agents.planning_agent.assist_output_validator import (
+    validate_assist_output_for_merge,
 )
 from migration_factory.agents.planning_agent.paths import (
     get_planning_output_artifact_paths,
@@ -275,9 +281,14 @@ def planning_node(state: MigrationState) -> MigrationState:
         assist_result = CopilotPlanningAssistClient().review_plan(
             request=request, config=config
         )
+        validation = validate_assist_output_for_merge(
+            request=request,
+            assist_result=assist_result,
+        )
+        assist_result = validation.sanitized_result
         assist_result_status = assist_result.status
         assist_result_error = assist_result.error
-        assist_result_warnings = assist_result.warnings
+        assist_result_warnings = [*assist_result.warnings, *validation.warnings]
     merged_output = merge_advisory_assist_suggestions(
         deterministic_approval_summary=deterministic_approval_summary,
         deterministic_warnings=list(compatibility.warnings),
@@ -339,5 +350,3 @@ def planning_node(state: MigrationState) -> MigrationState:
         "planning_risk_explanations": merged_output.risk_explanations,
         "planning_assist_warnings": assist_result_warnings,
     }
-import json
-from pathlib import Path
