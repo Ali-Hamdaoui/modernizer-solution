@@ -1,5 +1,6 @@
 from migration_factory.agents.planning_agent.assist_config import PlanningAssistConfig
 from migration_factory.agents.planning_agent.copilot_auth import resolve_copilot_auth
+from migration_factory.agents.planning_agent.copilot_model import resolve_copilot_model
 from migration_factory.contracts.planning_assist import (
     PlanningAssistRequest,
     PlanningAssistResult,
@@ -71,9 +72,37 @@ class CopilotPlanningAssistClient:
                 error=reason,
             )
 
+        model_resolution = resolve_copilot_model(request=request, config=config)
+        if not model_resolution.ok:
+            reason = "; ".join(model_resolution.errors) or (
+                "Planning assist model resolution failed."
+            )
+            return PlanningAssistResult(
+                status="FAILED",
+                warnings=[
+                    f"{self._FAILURE_REASON_WARNING_PREFIX} {reason}",
+                    *model_resolution.warnings,
+                ],
+                error=reason,
+            )
+
+        resolved_request = PlanningAssistRequest(
+            run_id=request.run_id,
+            agent=request.agent,
+            phase=request.phase,
+            model=model_resolution.model,
+            prompt=request.prompt,
+            context=request.context,
+            allowed_fields=request.allowed_fields,
+            forbidden_fields=request.forbidden_fields,
+        )
+
         try:
             # Provider invocation remains unbound; auth metadata is resolved up front.
-            raw_result = self._perform_provider_review(request=request, config=config)
+            raw_result = self._perform_provider_review(
+                request=resolved_request,
+                config=config,
+            )
             return self._validate_output(raw_result)
         except Exception as error:
             return self._build_failed_result(self._normalize_failure_reason(error))

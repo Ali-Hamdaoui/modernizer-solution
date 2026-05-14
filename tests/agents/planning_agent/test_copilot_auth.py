@@ -69,3 +69,26 @@ def test_review_plan_returns_failed_on_missing_auth_without_exception(monkeypatc
     assert result.status == "FAILED"
     assert result.error == "Missing GitHub app OAuth token for planning assist."
     assert result.warnings
+
+
+def test_review_plan_returns_failed_on_missing_model_without_exception(monkeypatch) -> None:
+    monkeypatch.delenv("MF_PLANNING_ASSIST_AUTH_MODE", raising=False)
+
+    client = CopilotPlanningAssistClient()
+    request = PlanningAssistRequest(
+        run_id="run-1",
+        agent="planning-agent",
+        phase="planning",
+        model=None,
+        prompt="review",
+        context={"migration_units": []},
+    )
+
+    result = client.review_plan(
+        request=request,
+        config=PlanningAssistConfig(enabled=True, model_override=None),
+    )
+
+    assert result.status == "FAILED"
+    assert result.error == "Planning assist model resolution failed: model is empty or missing."
+    assert result.warnings

@@ -9,6 +9,10 @@ from migration_factory.agents.planning_agent.copilot_auth import (
     CopilotAuthResult,
     resolve_copilot_auth,
 )
+from migration_factory.agents.planning_agent.copilot_model import (
+    CopilotModelResolutionResult,
+    resolve_copilot_model,
+)
 from migration_factory.agents.planning_agent.assist_artifact_writer import (
     CopilotAssistArtifactPayload,
     write_copilot_assist_artifact,
@@ -75,6 +79,8 @@ __all__ = [
     "CopilotPlanningAssistClient",
     "CopilotAuthResult",
     "resolve_copilot_auth",
+    "CopilotModelResolutionResult",
+    "resolve_copilot_model",
     "CopilotAssistArtifactPayload",
     "write_copilot_assist_artifact",
     "LoadedAnalysisArtifacts",
