@@ -271,6 +271,7 @@ def planning_node(state: MigrationState) -> MigrationState:
             },
             warnings=assist_result_warnings,
             error=assist_result.error,
+            failure_reason=assist_result.error if assist_result.status == "FAILED" else None,
         )
     )
 

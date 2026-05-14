@@ -18,6 +18,7 @@ class CopilotAssistArtifactPayload:
     advisory_summary: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
+    failure_reason: str | None = None
 
 
 def write_copilot_assist_artifact(
@@ -40,6 +41,7 @@ def write_copilot_assist_artifact(
         "advisory_summary": payload.advisory_summary,
         "warnings": payload.warnings,
         "error": payload.error,
+        "failure_reason": payload.failure_reason,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     artifact_path.write_text(
