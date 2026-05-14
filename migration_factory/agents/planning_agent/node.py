@@ -7,6 +7,9 @@ from migration_factory.agents.planning_agent.artifact_reader import (
 from migration_factory.agents.planning_agent.copilot_assist_client import (
     CopilotPlanningAssistClient,
 )
+from migration_factory.agents.planning_agent.profile_reader import (
+    load_migration_profile,
+)
 from migration_factory.contracts.planning_assist import PlanningAssistRequest
 from migration_factory.orchestrator.state import MigrationState
 
@@ -33,6 +36,20 @@ def planning_node(state: MigrationState) -> MigrationState:
             ],
             "planning_assist_status": "SKIPPED",
             "planning_assist_error": "Planning skipped due to analysis artifact load failure.",
+            "planning_assist_warnings": [],
+        }
+
+    loaded_profile = load_migration_profile(
+        ai_hub_path=state.get("ai_hub_path", ""),
+        profile_id=state.get("profile", ""),
+    )
+    if not loaded_profile.ok:
+        return {
+            "planning_status": "FAIL",
+            "current_unit": "planning",
+            "errors": loaded_profile.errors,
+            "planning_assist_status": "SKIPPED",
+            "planning_assist_error": "Planning skipped due to migration profile load failure.",
             "planning_assist_warnings": [],
         }
 

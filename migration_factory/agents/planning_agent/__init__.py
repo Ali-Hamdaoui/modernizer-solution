@@ -20,6 +20,10 @@ from migration_factory.agents.planning_agent.paths import (
     get_run_analysis_dir,
     get_run_planning_dir,
 )
+from migration_factory.agents.planning_agent.profile_reader import (
+    LoadedMigrationProfile,
+    load_migration_profile,
+)
 
 __all__ = [
     "PlanningAssistConfig",
@@ -36,4 +40,6 @@ __all__ = [
     "get_optional_analysis_artifact_paths",
     "get_planning_output_artifact_paths",
     "get_ai_hub_profile_path",
+    "LoadedMigrationProfile",
+    "load_migration_profile",
 ]
