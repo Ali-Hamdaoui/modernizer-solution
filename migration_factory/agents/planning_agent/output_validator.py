@@ -28,12 +28,12 @@ REQUIRED_UNIT_FIELDS: tuple[str, ...] = (
     "assist_policy",
 )
 REQUIRED_UNIT_ORDER: tuple[str, ...] = (
-    "scan_pom",
-    "scan_source",
-    "build_fixes",
-    "java_refactor",
-    "spring_boot_upgrade",
-    "validation_and_hardening",
+    "baseline",
+    "java-17",
+    "spring-boot-3-5-14",
+    "jakarta",
+    "dependency-cleanup",
+    "existing-test-migration",
 )
 APPROVAL_OPTIONS: tuple[str, ...] = (
     "approve",
