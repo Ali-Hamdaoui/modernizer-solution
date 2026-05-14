@@ -41,6 +41,10 @@ from migration_factory.agents.planning_agent.profile_reader import (
 from migration_factory.agents.planning_agent.assist_merge import (
     merge_advisory_assist_suggestions,
 )
+from migration_factory.agents.planning_agent.assist_artifact_writer import (
+    CopilotAssistArtifactPayload,
+    write_copilot_assist_artifact,
+)
 from migration_factory.contracts.planning_assist import (
     PlanningAssistRequest,
     PlanningAssistResult,
@@ -49,6 +53,16 @@ from migration_factory.orchestrator.state import MigrationState
 
 
 def planning_node(state: MigrationState) -> MigrationState:
+    def _safe_write_assist_artifact(payload: CopilotAssistArtifactPayload) -> None:
+        try:
+            write_copilot_assist_artifact(
+                modernized_app_path=state.get("modernized_app_path", ""),
+                payload=payload,
+            )
+        except Exception:
+            # Artifact write is audit-only. Never block deterministic planning.
+            return
+
     loaded_artifacts = load_analysis_artifacts(
         modernized_app_path=state.get("modernized_app_path", ""),
         run_id=state.get("run_id", ""),
@@ -235,6 +249,30 @@ def planning_node(state: MigrationState) -> MigrationState:
                 "tools, blockers, approval_required, executable."
             ),
         ]
+    _safe_write_assist_artifact(
+        CopilotAssistArtifactPayload(
+            run_id=state.get("run_id", ""),
+            status=assist_result.status,
+            provider="copilot",
+            auth="configured" if config.enabled else "disabled",
+            model=config.model_override,
+            inputs_summary={
+                "profile": state.get("profile", ""),
+                "units_count": len(units),
+                "risk_count": len(risk_messages),
+                "warning_count": len(compatibility.warnings),
+            },
+            advisory_summary={
+                "approval_summary_applied": merged_output.approval_summary
+                != deterministic_approval_summary,
+                "warning_count": len(merged_output.warnings),
+                "operator_notes_count": len(merged_output.operator_notes),
+                "risk_explanations_count": len(merged_output.risk_explanations),
+            },
+            warnings=assist_result_warnings,
+            error=assist_result.error,
+        )
+    )
 
     return {
         "planning_status": "PASS",

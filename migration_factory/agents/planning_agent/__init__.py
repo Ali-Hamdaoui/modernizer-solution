@@ -5,6 +5,10 @@ from migration_factory.agents.planning_agent.assist_config import (
 from migration_factory.agents.planning_agent.copilot_assist_client import (
     CopilotPlanningAssistClient,
 )
+from migration_factory.agents.planning_agent.assist_artifact_writer import (
+    CopilotAssistArtifactPayload,
+    write_copilot_assist_artifact,
+)
 from migration_factory.agents.planning_agent.artifact_reader import (
     LoadedAnalysisArtifacts,
     load_analysis_artifacts,
@@ -65,6 +69,8 @@ __all__ = [
     "PlanningAssistConfig",
     "load_planning_assist_config",
     "CopilotPlanningAssistClient",
+    "CopilotAssistArtifactPayload",
+    "write_copilot_assist_artifact",
     "LoadedAnalysisArtifacts",
     "load_analysis_artifacts",
     "AnalysisValidationResult",
