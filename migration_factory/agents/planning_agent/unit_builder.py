@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Literal
+from .assist_config import AssistPolicy, build_assist_policy
 
 
 RequiredMode = Literal["yes", "auto"]
@@ -46,6 +47,7 @@ class MigrationUnit:
     rollback_strategy: str
     blocking_gate: str
     required: RequiredMode
+    assist_policy: AssistPolicy
 
 
 def _tools_for(unit_id: UnitId) -> ToolList:
@@ -59,6 +61,7 @@ def _tools_for(unit_id: UnitId) -> ToolList:
 
 def build_migration_units() -> tuple[MigrationUnit, ...]:
     """Return deterministic MVP migration units in stable execution order."""
+    assist_policy = build_assist_policy()
 
     return (
         MigrationUnit(
@@ -71,6 +74,7 @@ def build_migration_units() -> tuple[MigrationUnit, ...]:
             rollback_strategy="Revert baseline verification changes and restore prior working tree state.",
             blocking_gate="Proceed only if baseline mvn clean test passes.",
             required="yes",
+            assist_policy=assist_policy,
         ),
         MigrationUnit(
             id="java-17",
@@ -82,6 +86,7 @@ def build_migration_units() -> tuple[MigrationUnit, ...]:
             rollback_strategy="Revert Java 17 configuration and dependency changes.",
             blocking_gate="Proceed only if Java 17 build and tests pass.",
             required="yes",
+            assist_policy=assist_policy,
         ),
         MigrationUnit(
             id="spring-boot-3-5-14",
@@ -93,6 +98,7 @@ def build_migration_units() -> tuple[MigrationUnit, ...]:
             rollback_strategy="Revert Spring Boot version and related plugin updates.",
             blocking_gate="Proceed only if Spring Boot 3.5.14 build and tests pass.",
             required="yes",
+            assist_policy=assist_policy,
         ),
         MigrationUnit(
             id="jakarta",
@@ -104,6 +110,7 @@ def build_migration_units() -> tuple[MigrationUnit, ...]:
             rollback_strategy="Revert Jakarta namespace refactors and dependency adjustments.",
             blocking_gate="Proceed only if Jakarta migration compiles and tests pass.",
             required="yes",
+            assist_policy=assist_policy,
         ),
         MigrationUnit(
             id="dependency-cleanup",
@@ -115,6 +122,7 @@ def build_migration_units() -> tuple[MigrationUnit, ...]:
             rollback_strategy="Revert dependency cleanup updates to previous locked set.",
             blocking_gate="Proceed only if dependency graph resolves and tests pass.",
             required="yes",
+            assist_policy=assist_policy,
         ),
         MigrationUnit(
             id="existing-test-migration",
@@ -126,5 +134,6 @@ def build_migration_units() -> tuple[MigrationUnit, ...]:
             rollback_strategy="Revert test framework and test source migration changes.",
             blocking_gate="Proceed only if migrated tests pass on upgraded stack.",
             required="auto",
+            assist_policy=assist_policy,
         ),
     )
