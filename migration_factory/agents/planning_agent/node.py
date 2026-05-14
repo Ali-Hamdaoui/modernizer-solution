@@ -38,7 +38,13 @@ from migration_factory.agents.planning_agent.unit_builder import (
 from migration_factory.agents.planning_agent.profile_reader import (
     load_migration_profile,
 )
-from migration_factory.contracts.planning_assist import PlanningAssistRequest
+from migration_factory.agents.planning_agent.assist_merge import (
+    merge_advisory_assist_suggestions,
+)
+from migration_factory.contracts.planning_assist import (
+    PlanningAssistRequest,
+    PlanningAssistResult,
+)
 from migration_factory.orchestrator.state import MigrationState
 
 
@@ -125,14 +131,16 @@ def planning_node(state: MigrationState) -> MigrationState:
         run_id=state.get("run_id", ""),
         units=units,
     )
+    deterministic_approval_summary = (
+        f"Planning generated {len(units)} migration units for profile "
+        f"{state.get('profile', '')}."
+    )
+
     write_approval_request(
         modernized_app_path=state.get("modernized_app_path", ""),
         payload=ApprovalRequestPayload(
             run_id=state.get("run_id", ""),
-            summary=(
-                f"Planning generated {len(units)} migration units for profile "
-                f"{state.get('profile', '')}."
-            ),
+            summary=deterministic_approval_summary,
             units=units,
             blockers=(),
             warnings=tuple(compatibility.warnings),
@@ -178,6 +186,7 @@ def planning_node(state: MigrationState) -> MigrationState:
     ]
 
     config = load_planning_assist_config()
+    assist_result = PlanningAssistResult(status="SKIPPED")
     if not config.enabled:
         assist_result_status = "SKIPPED"
         assist_result_error = None
@@ -196,10 +205,7 @@ def planning_node(state: MigrationState) -> MigrationState:
                 "risks": risk_messages,
                 "warnings": list(compatibility.warnings),
                 "migration_units": unit_payload,
-                "approval_summary": (
-                    f"Planning generated {len(units)} migration units for profile "
-                    f"{state.get('profile', '')}."
-                ),
+                "approval_summary": deterministic_approval_summary,
             },
             allowed_fields=["warnings", "approval_summary", "operator_notes", "risks"],
             forbidden_fields=[
@@ -216,14 +222,30 @@ def planning_node(state: MigrationState) -> MigrationState:
         assist_result_status = assist_result.status
         assist_result_error = assist_result.error
         assist_result_warnings = assist_result.warnings
+    merged_output = merge_advisory_assist_suggestions(
+        deterministic_approval_summary=deterministic_approval_summary,
+        deterministic_warnings=list(compatibility.warnings),
+        assist_result=assist_result,
+    )
+    if assist_result.status == "USED":
+        assist_result_warnings = [
+            *assist_result_warnings,
+            (
+                "[WARNING] Ignored attempted structural changes if present: unit_order, "
+                "tools, blockers, approval_required, executable."
+            ),
+        ]
 
     return {
         "planning_status": "PASS",
         "current_unit": "planning",
-        "warnings": compatibility.warnings,
+        "warnings": merged_output.warnings,
         "planning_assist_status": assist_result_status,
         "planning_assist_error": assist_result_error,
         "risks": risk_messages,
         "migration_units": unit_payload,
+        "planning_approval_summary": merged_output.approval_summary,
+        "planning_operator_notes": merged_output.operator_notes,
+        "planning_risk_explanations": merged_output.risk_explanations,
         "planning_assist_warnings": assist_result_warnings,
     }
