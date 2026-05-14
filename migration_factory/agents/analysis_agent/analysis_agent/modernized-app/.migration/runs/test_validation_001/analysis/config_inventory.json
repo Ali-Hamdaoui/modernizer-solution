@@ -1,8 +1,0 @@
-{
-    "profiles": [],
-    "port": "8080",
-    "has_datasource": false,
-    "has_security": false,
-    "has_actuator": false,
-    "config_files_found": []
-}
