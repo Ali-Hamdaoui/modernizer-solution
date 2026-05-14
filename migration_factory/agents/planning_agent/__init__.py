@@ -52,6 +52,10 @@ from migration_factory.agents.planning_agent.approval_writer import (
     ApprovalRequestPayload,
     write_approval_request,
 )
+from migration_factory.agents.planning_agent.summary_writer import (
+    PlanSummaryPayload,
+    write_plan_summary,
+)
 
 __all__ = [
     "PlanningAssistConfig",
@@ -83,6 +87,8 @@ __all__ = [
     "write_migration_plan",
     "ApprovalRequestPayload",
     "write_approval_request",
+    "PlanSummaryPayload",
+    "write_plan_summary",
     "RequiredMode",
     "MigrationUnit",
     "build_migration_units",
