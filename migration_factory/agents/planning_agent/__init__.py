@@ -33,6 +33,11 @@ from migration_factory.agents.planning_agent.profile_compatibility import (
     StackFingerprint,
     validate_profile_compatibility,
 )
+from migration_factory.agents.planning_agent.unit_builder import (
+    MigrationUnit,
+    RequiredMode,
+    build_migration_units,
+)
 from migration_factory.agents.planning_agent.risk_classifier import (
     PlanningRiskItem,
     PlanningRiskResult,
@@ -66,4 +71,7 @@ __all__ = [
     "PlanningRiskItem",
     "PlanningRiskResult",
     "classify_planning_risks",
+    "RequiredMode",
+    "MigrationUnit",
+    "build_migration_units",
 ]

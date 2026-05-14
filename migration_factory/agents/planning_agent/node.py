@@ -16,6 +16,9 @@ from migration_factory.agents.planning_agent.profile_compatibility import (
 from migration_factory.agents.planning_agent.risk_classifier import (
     classify_planning_risks,
 )
+from migration_factory.agents.planning_agent.unit_builder import (
+    build_migration_units,
+)
 from migration_factory.agents.planning_agent.profile_reader import (
     load_migration_profile,
 )
@@ -87,6 +90,19 @@ def planning_node(state: MigrationState) -> MigrationState:
             "planning_assist_warnings": compatibility.warnings,
         }
 
+    units = build_migration_units()
+    unit_payload = [
+        {
+            "id": unit.id,
+            "goal": unit.goal,
+            "writes_source": unit.writes_source,
+            "tools": list(unit.tools),
+            "validation": list(unit.validation),
+            "required": unit.required,
+        }
+        for unit in units
+    ]
+
     config = load_planning_assist_config()
     request = PlanningAssistRequest(
         run_id=state.get("run_id", ""),
@@ -115,5 +131,6 @@ def planning_node(state: MigrationState) -> MigrationState:
         "planning_assist_status": assist_result.status,
         "planning_assist_error": assist_result.error,
         "risks": risk_messages,
+        "migration_units": unit_payload,
         "planning_assist_warnings": assist_result.warnings,
     }
