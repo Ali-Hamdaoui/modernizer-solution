@@ -44,3 +44,5 @@ Analysis Agent guarantees:
 1. It never writes to a real project `pom.xml`.
 2. It never executes OpenRewrite apply goals (`rewrite:run`, `run`, `rewrite:runNoFork`, `runNoFork`).
 3. OpenRewrite execution is limited to dry-run/discovery behavior and catalog-driven command inputs.
+
+Catalog profile example: docs/examples/analysis-openrewrite-catalog.example.yaml
