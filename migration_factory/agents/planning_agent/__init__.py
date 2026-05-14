@@ -28,6 +28,11 @@ from migration_factory.agents.planning_agent.profile_reader import (
     LoadedMigrationProfile,
     load_migration_profile,
 )
+from migration_factory.agents.planning_agent.profile_compatibility import (
+    ProfileCompatibilityResult,
+    StackFingerprint,
+    validate_profile_compatibility,
+)
 
 __all__ = [
     "PlanningAssistConfig",
@@ -48,4 +53,7 @@ __all__ = [
     "get_ai_hub_profile_path",
     "LoadedMigrationProfile",
     "load_migration_profile",
+    "StackFingerprint",
+    "ProfileCompatibilityResult",
+    "validate_profile_compatibility",
 ]

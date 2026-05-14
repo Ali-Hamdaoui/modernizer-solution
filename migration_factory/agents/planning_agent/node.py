@@ -10,6 +10,9 @@ from migration_factory.agents.planning_agent.analysis_validator import (
 from migration_factory.agents.planning_agent.copilot_assist_client import (
     CopilotPlanningAssistClient,
 )
+from migration_factory.agents.planning_agent.profile_compatibility import (
+    validate_profile_compatibility,
+)
 from migration_factory.agents.planning_agent.profile_reader import (
     load_migration_profile,
 )
@@ -50,6 +53,18 @@ def planning_node(state: MigrationState) -> MigrationState:
             "planning_assist_warnings": [],
         }
 
+    compatibility = validate_profile_compatibility(loaded_artifacts, loaded_profile)
+    if not compatibility.ok:
+        return {
+            "planning_status": "FAIL",
+            "current_unit": "planning",
+            "errors": compatibility.errors,
+            "warnings": compatibility.warnings,
+            "planning_assist_status": "SKIPPED",
+            "planning_assist_error": "Planning skipped due to profile compatibility validation failure.",
+            "planning_assist_warnings": compatibility.warnings,
+        }
+
     config = load_planning_assist_config()
     request = PlanningAssistRequest(
         run_id=state.get("run_id", ""),
@@ -74,6 +89,7 @@ def planning_node(state: MigrationState) -> MigrationState:
     return {
         "planning_status": "PASS",
         "current_unit": "planning",
+        "warnings": compatibility.warnings,
         "planning_assist_status": assist_result.status,
         "planning_assist_error": assist_result.error,
         "planning_assist_warnings": assist_result.warnings,
