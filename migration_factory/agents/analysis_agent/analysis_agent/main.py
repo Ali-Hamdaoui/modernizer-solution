@@ -25,23 +25,25 @@ def main():
         print(f"🚀 [AIMF] Démarrage de l'analyse - Run ID: {args.run_id}")
 
         ctx = MigrationContext(args.run_id, args.legacy, args.modernized)
+        legacy_root = ctx.validate_read_path(ctx.legacy_app_path)
+        legacy_pom = ctx.validate_read_path(f"{legacy_root}/pom.xml")
 
         print("🔍 Scan du projet Maven (pom.xml)...")
-        maven_results = scan_root_pom(f"{args.legacy}/pom.xml")
+        maven_results = scan_root_pom(legacy_pom)
         
         print("🌳 Extraction de l'arbre des dépendances...")
         run_dependency_tree(ctx)
         
         print("📄 Analyse des imports Java (recherche de javax.*)...")
-        import_results = scan_java_imports(args.legacy)
+        import_results = scan_java_imports(legacy_root)
         
         print("⚙️ Scan des fichiers de configuration...")
-        config_inv = scan_config_files(args.legacy)
+        config_inv = scan_config_files(legacy_root)
         save_config_inventory(ctx, config_inv)
         
         print("🧪 Inventaire des tests et analyse Surefire...")
-        test_inventory = scan_tests(args.legacy)
-        test_inventory["surefire_summary"] = parse_surefire_reports(args.legacy)
+        test_inventory = scan_tests(legacy_root)
+        test_inventory["surefire_summary"] = parse_surefire_reports(legacy_root)
         save_test_inventory(ctx, test_inventory)
 
         run_openrewrite_dryrun(ctx)
