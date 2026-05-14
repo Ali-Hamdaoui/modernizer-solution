@@ -14,6 +14,9 @@ class CopilotPlanningAssistClient:
     """Provider-neutral planning assist interface. No external SDK calls yet."""
 
     _FAILURE_REASON_WARNING_PREFIX = "[WARNING] Planning assist failed-open:"
+    _ADAPTER_UNAVAILABLE_REASON = (
+        "adapter_unavailable: Planning assist provider adapter is not configured."
+    )
 
     def get_custom_agent_config(self):
         """Expose static custom-agent config for wrapper registration/invocation layers."""
@@ -46,13 +49,12 @@ class CopilotPlanningAssistClient:
     def _perform_provider_review(
         self, request: PlanningAssistRequest, config: PlanningAssistConfig
     ) -> PlanningAssistResult:
-        raise RuntimeError(
-            "Planning assist provider not bound. "
-            "No SDK/MCP adapter configured yet."
+        return self._build_failed_result(
+            self._ADAPTER_UNAVAILABLE_REASON,
         )
 
     def _validate_output(self, result: PlanningAssistResult) -> PlanningAssistResult:
-        if result.status == "SKIPPED":
+        if result.status in {"SKIPPED", "FAILED"}:
             return result
         if result.status != "USED":
             return self._build_failed_result("Planning assist invalid output.")
