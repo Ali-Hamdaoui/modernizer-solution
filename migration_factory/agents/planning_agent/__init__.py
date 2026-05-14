@@ -33,6 +33,12 @@ from migration_factory.agents.planning_agent.profile_compatibility import (
     StackFingerprint,
     validate_profile_compatibility,
 )
+from migration_factory.agents.planning_agent.risk_classifier import (
+    PlanningRiskItem,
+    PlanningRiskResult,
+    RiskSeverity,
+    classify_planning_risks,
+)
 
 __all__ = [
     "PlanningAssistConfig",
@@ -56,4 +62,8 @@ __all__ = [
     "StackFingerprint",
     "ProfileCompatibilityResult",
     "validate_profile_compatibility",
+    "RiskSeverity",
+    "PlanningRiskItem",
+    "PlanningRiskResult",
+    "classify_planning_risks",
 ]

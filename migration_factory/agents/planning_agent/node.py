@@ -13,6 +13,9 @@ from migration_factory.agents.planning_agent.copilot_assist_client import (
 from migration_factory.agents.planning_agent.profile_compatibility import (
     validate_profile_compatibility,
 )
+from migration_factory.agents.planning_agent.risk_classifier import (
+    classify_planning_risks,
+)
 from migration_factory.agents.planning_agent.profile_reader import (
     load_migration_profile,
 )
@@ -65,6 +68,25 @@ def planning_node(state: MigrationState) -> MigrationState:
             "planning_assist_warnings": compatibility.warnings,
         }
 
+    risk_result = classify_planning_risks(loaded_artifacts, compatibility.source_stack)
+    risk_messages = [f"[{risk.severity}] {risk.code}: {risk.message}" for risk in risk_result.risks]
+    blocker_messages = [
+        f"{risk.code}: {risk.message}"
+        for risk in risk_result.risks
+        if risk.severity == "BLOCKER"
+    ]
+    if blocker_messages:
+        return {
+            "planning_status": "FAIL",
+            "current_unit": "planning",
+            "errors": blocker_messages,
+            "warnings": compatibility.warnings,
+            "risks": risk_messages,
+            "planning_assist_status": "SKIPPED",
+            "planning_assist_error": "Planning skipped due to deterministic risk blockers.",
+            "planning_assist_warnings": compatibility.warnings,
+        }
+
     config = load_planning_assist_config()
     request = PlanningAssistRequest(
         run_id=state.get("run_id", ""),
@@ -92,5 +114,6 @@ def planning_node(state: MigrationState) -> MigrationState:
         "warnings": compatibility.warnings,
         "planning_assist_status": assist_result.status,
         "planning_assist_error": assist_result.error,
+        "risks": risk_messages,
         "planning_assist_warnings": assist_result.warnings,
     }
