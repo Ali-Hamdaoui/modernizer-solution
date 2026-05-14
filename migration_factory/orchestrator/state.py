@@ -2,6 +2,7 @@ from typing import Literal, TypedDict
 
 PhaseStatus = Literal["PENDING", "PASS", "FAIL"]
 ApprovalStatus = Literal["pending", "approved", "rejected", "replan"]
+AssistStatus = Literal["SKIPPED", "USED", "FAILED"]
 
 
 class MigrationState(TypedDict, total=False):
@@ -16,4 +17,7 @@ class MigrationState(TypedDict, total=False):
     planning_status: PhaseStatus
     approval_status: ApprovalStatus
     transformation_status: PhaseStatus
+    planning_assist_status: AssistStatus
+    planning_assist_error: str
+    planning_assist_warnings: list[str]
     errors: list[str]
