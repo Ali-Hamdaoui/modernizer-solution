@@ -1,4 +1,7 @@
 from migration_factory.agents.planning_agent.assist_config import PlanningAssistConfig
+from migration_factory.agents.planning_agent.copilot_custom_agent import (
+    get_copilot_custom_agent_config,
+)
 from migration_factory.agents.planning_agent.copilot_auth import resolve_copilot_auth
 from migration_factory.agents.planning_agent.copilot_model import resolve_copilot_model
 from migration_factory.contracts.planning_assist import (
@@ -11,6 +14,10 @@ class CopilotPlanningAssistClient:
     """Provider-neutral planning assist interface. No external SDK calls yet."""
 
     _FAILURE_REASON_WARNING_PREFIX = "[WARNING] Planning assist failed-open:"
+
+    def get_custom_agent_config(self):
+        """Expose static custom-agent config for wrapper registration/invocation layers."""
+        return get_copilot_custom_agent_config()
 
     def _build_failed_result(self, reason: str) -> PlanningAssistResult:
         return PlanningAssistResult(

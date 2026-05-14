@@ -5,6 +5,14 @@ from migration_factory.agents.planning_agent.assist_config import (
 from migration_factory.agents.planning_agent.copilot_assist_client import (
     CopilotPlanningAssistClient,
 )
+from migration_factory.agents.planning_agent.copilot_custom_agent import (
+    CopilotCustomAgentConfig,
+    CUSTOM_AGENT_NAME,
+    CUSTOM_AGENT_PROMPT,
+    CUSTOM_AGENT_TOOLS,
+    FORBIDDEN_ACTIONS_TEXT,
+    get_copilot_custom_agent_config,
+)
 from migration_factory.agents.planning_agent.copilot_auth import (
     CopilotAuthResult,
     resolve_copilot_auth,
@@ -77,6 +85,12 @@ __all__ = [
     "PlanningAssistConfig",
     "load_planning_assist_config",
     "CopilotPlanningAssistClient",
+    "CopilotCustomAgentConfig",
+    "CUSTOM_AGENT_NAME",
+    "CUSTOM_AGENT_TOOLS",
+    "FORBIDDEN_ACTIONS_TEXT",
+    "CUSTOM_AGENT_PROMPT",
+    "get_copilot_custom_agent_config",
     "CopilotAuthResult",
     "resolve_copilot_auth",
     "CopilotModelResolutionResult",
