@@ -1,6 +1,9 @@
 from migration_factory.agents.planning_agent.assist_config import (
     load_planning_assist_config,
 )
+from migration_factory.agents.planning_agent.artifact_reader import (
+    load_analysis_artifacts,
+)
 from migration_factory.agents.planning_agent.copilot_assist_client import (
     CopilotPlanningAssistClient,
 )
@@ -9,6 +12,30 @@ from migration_factory.orchestrator.state import MigrationState
 
 
 def planning_node(state: MigrationState) -> MigrationState:
+    loaded_artifacts = load_analysis_artifacts(
+        modernized_app_path=state.get("modernized_app_path", ""),
+        run_id=state.get("run_id", ""),
+    )
+    if not loaded_artifacts.ok:
+        return {
+            "planning_status": "FAIL",
+            "current_unit": "planning",
+            "errors": [
+                *(
+                    [
+                        "Missing required analysis artifacts: "
+                        + ", ".join(sorted(loaded_artifacts.missing_required))
+                    ]
+                    if loaded_artifacts.missing_required
+                    else []
+                ),
+                *loaded_artifacts.errors,
+            ],
+            "planning_assist_status": "SKIPPED",
+            "planning_assist_error": "Planning skipped due to analysis artifact load failure.",
+            "planning_assist_warnings": [],
+        }
+
     config = load_planning_assist_config()
     request = PlanningAssistRequest(
         run_id=state.get("run_id", ""),
