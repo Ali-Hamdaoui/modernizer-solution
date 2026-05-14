@@ -103,3 +103,26 @@ def test_source_modification_detection_fails(monkeypatch, tmp_path):
     result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized))
     assert result["status"] == "FAILED"
     assert any("Source safety violation" in w for w in result["warnings"])
+
+
+def test_adapter_uses_catalog_values_not_hardcoded(monkeypatch, tmp_path):
+    legacy = tmp_path / "legacy"
+    output = tmp_path / "out"
+    modernized = tmp_path / "modernized"
+    legacy.mkdir()
+    output.mkdir()
+    modernized.mkdir()
+    _write_catalog(modernized)
+
+    captured = {}
+
+    def _capture(cmd, *args, **kwargs):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("subprocess.run", _capture)
+
+    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized))
+    assert result["status"] == "USED"
+    assert "-Drewrite.activeRecipes=org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_0" in captured["cmd"]
+    assert "-Drewrite.recipeArtifactCoordinates=org.openrewrite.recipe:rewrite-spring:6.0.0" in captured["cmd"]
