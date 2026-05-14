@@ -42,6 +42,9 @@ class MigrationUnit:
     writes_source: bool
     tools: tuple[str, ...]
     validation: tuple[str, ...]
+    expected_artifacts: tuple[str, ...]
+    rollback_strategy: str
+    blocking_gate: str
     required: RequiredMode
 
 
@@ -64,6 +67,9 @@ def build_migration_units() -> tuple[MigrationUnit, ...]:
             writes_source=False,
             tools=_tools_for("baseline"),
             validation=("mvn", "clean", "test"),
+            expected_artifacts=("target/surefire-reports",),
+            rollback_strategy="Revert baseline verification changes and restore prior working tree state.",
+            blocking_gate="Proceed only if baseline mvn clean test passes.",
             required="yes",
         ),
         MigrationUnit(
@@ -72,6 +78,9 @@ def build_migration_units() -> tuple[MigrationUnit, ...]:
             writes_source=True,
             tools=_tools_for("java-17"),
             validation=("mvn", "clean", "test"),
+            expected_artifacts=("target/classes", "target/surefire-reports"),
+            rollback_strategy="Revert Java 17 configuration and dependency changes.",
+            blocking_gate="Proceed only if Java 17 build and tests pass.",
             required="yes",
         ),
         MigrationUnit(
@@ -80,6 +89,9 @@ def build_migration_units() -> tuple[MigrationUnit, ...]:
             writes_source=True,
             tools=_tools_for("spring-boot-3-5-14"),
             validation=("mvn", "clean", "test"),
+            expected_artifacts=("target/classes", "target/surefire-reports"),
+            rollback_strategy="Revert Spring Boot version and related plugin updates.",
+            blocking_gate="Proceed only if Spring Boot 3.5.14 build and tests pass.",
             required="yes",
         ),
         MigrationUnit(
@@ -88,6 +100,9 @@ def build_migration_units() -> tuple[MigrationUnit, ...]:
             writes_source=True,
             tools=_tools_for("jakarta"),
             validation=("mvn", "clean", "test"),
+            expected_artifacts=("target/classes", "target/surefire-reports"),
+            rollback_strategy="Revert Jakarta namespace refactors and dependency adjustments.",
+            blocking_gate="Proceed only if Jakarta migration compiles and tests pass.",
             required="yes",
         ),
         MigrationUnit(
@@ -96,6 +111,9 @@ def build_migration_units() -> tuple[MigrationUnit, ...]:
             writes_source=True,
             tools=_tools_for("dependency-cleanup"),
             validation=("mvn", "clean", "test"),
+            expected_artifacts=("target/dependency", "target/surefire-reports"),
+            rollback_strategy="Revert dependency cleanup updates to previous locked set.",
+            blocking_gate="Proceed only if dependency graph resolves and tests pass.",
             required="yes",
         ),
         MigrationUnit(
@@ -104,6 +122,9 @@ def build_migration_units() -> tuple[MigrationUnit, ...]:
             writes_source=True,
             tools=_tools_for("existing-test-migration"),
             validation=("mvn", "clean", "test"),
+            expected_artifacts=("target/test-classes", "target/surefire-reports"),
+            rollback_strategy="Revert test framework and test source migration changes.",
+            blocking_gate="Proceed only if migrated tests pass on upgraded stack.",
             required="auto",
         ),
     )
