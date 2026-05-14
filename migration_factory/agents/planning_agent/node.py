@@ -18,6 +18,10 @@ from migration_factory.agents.planning_agent.plan_writer import (
     write_migration_plan,
     write_migration_units,
 )
+from migration_factory.agents.planning_agent.approval_writer import (
+    ApprovalRequestPayload,
+    write_approval_request,
+)
 from migration_factory.agents.planning_agent.risk_classifier import (
     classify_planning_risks,
 )
@@ -113,6 +117,19 @@ def planning_node(state: MigrationState) -> MigrationState:
         modernized_app_path=state.get("modernized_app_path", ""),
         run_id=state.get("run_id", ""),
         units=units,
+    )
+    write_approval_request(
+        modernized_app_path=state.get("modernized_app_path", ""),
+        payload=ApprovalRequestPayload(
+            run_id=state.get("run_id", ""),
+            summary=(
+                f"Planning generated {len(units)} migration units for profile "
+                f"{state.get('profile', '')}."
+            ),
+            units=units,
+            blockers=(),
+            warnings=tuple(compatibility.warnings),
+        ),
     )
     unit_payload = [
         {
