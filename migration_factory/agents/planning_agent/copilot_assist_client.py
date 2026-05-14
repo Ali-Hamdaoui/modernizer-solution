@@ -1,4 +1,5 @@
 from migration_factory.agents.planning_agent.assist_config import PlanningAssistConfig
+from migration_factory.agents.planning_agent.copilot_auth import resolve_copilot_auth
 from migration_factory.contracts.planning_assist import (
     PlanningAssistRequest,
     PlanningAssistResult,
@@ -57,7 +58,21 @@ class CopilotPlanningAssistClient:
                 status="SKIPPED",
                 warnings=["Planning assist disabled by config."],
             )
+
+        auth = resolve_copilot_auth()
+        if not auth.ok:
+            reason = "; ".join(auth.errors) or "Planning assist missing authentication."
+            return PlanningAssistResult(
+                status="FAILED",
+                warnings=[
+                    f"{self._FAILURE_REASON_WARNING_PREFIX} {reason}",
+                    *auth.warnings,
+                ],
+                error=reason,
+            )
+
         try:
+            # Provider invocation remains unbound; auth metadata is resolved up front.
             raw_result = self._perform_provider_review(request=request, config=config)
             return self._validate_output(raw_result)
         except Exception as error:
