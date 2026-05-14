@@ -178,33 +178,52 @@ def planning_node(state: MigrationState) -> MigrationState:
     ]
 
     config = load_planning_assist_config()
-    request = PlanningAssistRequest(
-        run_id=state.get("run_id", ""),
-        agent="planning_agent",
-        phase="planning",
-        model=config.model_override,
-        prompt="Review planning output for advisory feedback only.",
-        context={"state_keys": sorted(state.keys())},
-        allowed_fields=["warnings", "approval_summary", "operator_notes", "risks"],
-        forbidden_fields=[
-            "unit_order",
-            "tools",
-            "blockers",
-            "approval_required",
-            "executable",
-        ],
-    )
-    assist_result = CopilotPlanningAssistClient().review_plan(
-        request=request, config=config
-    )
+    if not config.enabled:
+        assist_result_status = "SKIPPED"
+        assist_result_error = None
+        assist_result_warnings = ["Planning assist disabled by config."]
+    else:
+        request = PlanningAssistRequest(
+            run_id=state.get("run_id", ""),
+            agent="planning_agent",
+            phase="planning",
+            model=config.model_override,
+            prompt="Review planning output for advisory feedback only.",
+            context={
+                "profile": state.get("profile", ""),
+                "source_stack": compatibility.source_stack,
+                "target_stack": compatibility.target_stack,
+                "risks": risk_messages,
+                "warnings": list(compatibility.warnings),
+                "migration_units": unit_payload,
+                "approval_summary": (
+                    f"Planning generated {len(units)} migration units for profile "
+                    f"{state.get('profile', '')}."
+                ),
+            },
+            allowed_fields=["warnings", "approval_summary", "operator_notes", "risks"],
+            forbidden_fields=[
+                "unit_order",
+                "tools",
+                "blockers",
+                "approval_required",
+                "executable",
+            ],
+        )
+        assist_result = CopilotPlanningAssistClient().review_plan(
+            request=request, config=config
+        )
+        assist_result_status = assist_result.status
+        assist_result_error = assist_result.error
+        assist_result_warnings = assist_result.warnings
 
     return {
         "planning_status": "PASS",
         "current_unit": "planning",
         "warnings": compatibility.warnings,
-        "planning_assist_status": assist_result.status,
-        "planning_assist_error": assist_result.error,
+        "planning_assist_status": assist_result_status,
+        "planning_assist_error": assist_result_error,
         "risks": risk_messages,
         "migration_units": unit_payload,
-        "planning_assist_warnings": assist_result.warnings,
+        "planning_assist_warnings": assist_result_warnings,
     }
