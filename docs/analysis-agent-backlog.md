@@ -48,3 +48,7 @@ Status legend: `Done` / `Partial` / `Missing` / `Blocked`.
 ## Notes
 - Typo fixed in mapping context: `#231` in `report_assembler.py` appears to refer to backlog item `#23`.
 - This document is authoritative repository-local traceability for backlog items `#1` to `#36` as currently implemented.
+
+## Planner Handoff Contract
+
+Analysis Agent to Planner artifact contract is documented in `docs/analysis-planner-handoff.md`.
