@@ -24,6 +24,13 @@ def assemble_report(context, maven_data, import_data):
             "critical_files_to_migrate": import_data["files_with_javax"]
         },
         
+        "rewrite": {
+            "preview_artifact": "rewrite_preview.json",
+            "plugin_plan_artifact": "rewrite_plugin_plan.json",
+            "patch_artifact": "rewrite_dry_run.patch",
+            "impact_artifact": "rewrite_impact_summary.json"
+        },
+
         "ai_enrichment": {
             "status": "SKIPPED",
             "additional_risks": [],

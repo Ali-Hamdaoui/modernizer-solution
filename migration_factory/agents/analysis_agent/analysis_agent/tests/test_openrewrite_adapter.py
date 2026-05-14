@@ -6,75 +6,100 @@ from openrewrite_adapter import run_openrewrite_dryrun
 
 
 class DummyContext:
-    def __init__(self, legacy_app_path: Path, output_dir: Path):
+    def __init__(self, legacy_app_path: Path, output_dir: Path, modernized: Path):
         self.legacy_app_path = str(legacy_app_path)
         self.output_dir = output_dir
+        self.modernized_app_path = str(modernized)
 
     def get_output_path(self, name: str):
         return str(self.output_dir / name)
 
 
-def test_skipped_when_maven_missing(monkeypatch, tmp_path):
+def _write_catalog(modernized: Path, goal="dryRun"):
+    (modernized / ".migration").mkdir(parents=True, exist_ok=True)
+    payload = {
+        "openrewrite.plugin": "org.openrewrite.maven:rewrite-maven-plugin:5.40.0",
+        "openrewrite.recipe_artifacts": "org.openrewrite.recipe:rewrite-spring:6.0.0",
+        "openrewrite.active_recipes": "org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_0",
+        "openrewrite.dry_run": goal,
+    }
+    (modernized / ".migration" / "ai_hub_profile.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_missing_catalog_skips_cleanly(tmp_path):
     legacy = tmp_path / "legacy"
     output = tmp_path / "out"
+    modernized = tmp_path / "modernized"
     legacy.mkdir()
     output.mkdir()
+    modernized.mkdir()
 
-    def _missing(*args, **kwargs):
-        raise FileNotFoundError("mvn not found")
-
-    monkeypatch.setattr("subprocess.run", _missing)
-
-    result = run_openrewrite_dryrun(DummyContext(legacy, output))
-
-    assert result["status"] == "skipped"
-    assert "warnings" in result and result["warnings"]
-
-    preview = json.loads((output / "rewrite_preview.json").read_text())
-    assert preview["status"] == "skipped"
+    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized))
+    assert result["status"] == "SKIPPED"
+    assert (output / "rewrite_plugin_plan.json").exists()
+    assert (output / "rewrite_preview.json").exists()
 
 
-def test_success_captures_patch(monkeypatch, tmp_path):
+def test_success_captures_patch_and_no_pom_write(monkeypatch, tmp_path):
     legacy = tmp_path / "legacy"
     output = tmp_path / "out"
+    modernized = tmp_path / "modernized"
     legacy.mkdir()
     output.mkdir()
+    modernized.mkdir()
+    _write_catalog(modernized)
+
+    pom = legacy / "pom.xml"
+    pom.write_text("<project/>", encoding="utf-8")
+    before = pom.read_text(encoding="utf-8")
 
     patch = legacy / "rewrite.patch"
-    patch.write_text("diff --git a/A b/A\n")
+    patch.write_text("diff --git a/src/main/java/A.java b/src/main/java/A.java\n+import jakarta.x.Y;\n", encoding="utf-8")
 
     def _ok(*args, **kwargs):
         return subprocess.CompletedProcess(args[0], 0, stdout="ok", stderr="")
 
     monkeypatch.setattr("subprocess.run", _ok)
 
-    result = run_openrewrite_dryrun(DummyContext(legacy, output))
-
-    assert result["status"] == "used"
-    assert result.get("patch_file") == "rewrite_dry_run.patch"
+    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized))
+    assert result["status"] == "USED"
     assert (output / "rewrite_dry_run.patch").exists()
-
-    preview = json.loads((output / "rewrite_preview.json").read_text())
-    assert preview["status"] == "used"
-    assert preview["patch_file"] == "rewrite_dry_run.patch"
+    assert (output / "rewrite_impact_summary.json").exists()
+    assert pom.read_text(encoding="utf-8") == before
 
 
-def test_failure_is_non_blocking_and_writes_warning(monkeypatch, tmp_path):
+def test_rejects_forbidden_goal(tmp_path):
     legacy = tmp_path / "legacy"
     output = tmp_path / "out"
+    modernized = tmp_path / "modernized"
     legacy.mkdir()
     output.mkdir()
+    modernized.mkdir()
+    _write_catalog(modernized, goal="run")
 
-    def _fail(*args, **kwargs):
-        raise subprocess.CalledProcessError(1, args[0], "", "boom")
+    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized))
+    assert result["status"] == "FAILED"
+    assert any("Forbidden OpenRewrite goal" in w for w in result["warnings"])
 
-    monkeypatch.setattr("subprocess.run", _fail)
 
-    result = run_openrewrite_dryrun(DummyContext(legacy, output))
+def test_source_modification_detection_fails(monkeypatch, tmp_path):
+    legacy = tmp_path / "legacy"
+    output = tmp_path / "out"
+    modernized = tmp_path / "modernized"
+    (legacy / "src" / "main" / "java").mkdir(parents=True)
+    output.mkdir()
+    modernized.mkdir()
+    _write_catalog(modernized)
 
-    assert result["status"] == "failed"
-    assert result["warnings"]
+    source = legacy / "src" / "main" / "java" / "A.java"
+    source.write_text("class A {}\n", encoding="utf-8")
 
-    preview = json.loads((output / "rewrite_preview.json").read_text())
-    assert preview["status"] == "failed"
-    assert preview["warnings"]
+    def _mutate(*args, **kwargs):
+        source.write_text("class A { int x; }\n", encoding="utf-8")
+        return subprocess.CompletedProcess(args[0], 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("subprocess.run", _mutate)
+
+    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized))
+    assert result["status"] == "FAILED"
+    assert any("Source safety violation" in w for w in result["warnings"])
