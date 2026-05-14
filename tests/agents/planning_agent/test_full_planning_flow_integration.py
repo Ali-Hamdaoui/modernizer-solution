@@ -1,0 +1,116 @@
+import hashlib
+import json
+from pathlib import Path
+
+from migration_factory.agents.planning_agent.node import planning_node
+from migration_factory.contracts.planning_artifacts import PLANNING_OUTPUT_ARTIFACTS
+
+
+def _write_analysis_fixture(analysis_dir: Path) -> None:
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    (analysis_dir / "analysis_report.json").write_text(
+        json.dumps(
+            {
+                "status": "PASS",
+                "inventory": {
+                    "build_tool": "maven",
+                    "java_version": "11",
+                    "spring_boot_version": "2.7",
+                    "javax_count": 0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (analysis_dir / "dependency_graph.json").write_text(
+        json.dumps({"nodes": [], "edges": []}), encoding="utf-8"
+    )
+    (analysis_dir / "test_inventory.json").write_text(
+        json.dumps({"tests": []}), encoding="utf-8"
+    )
+    (analysis_dir / "analysis_summary.md").write_text("analysis ok\n", encoding="utf-8")
+
+
+def _write_profile(ai_hub_dir: Path, profile_id: str = "java17") -> None:
+    profiles_dir = ai_hub_dir / "profiles"
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    (profiles_dir / f"{profile_id}.yaml").write_text(
+        """
+source:
+  java: 11
+  spring_boot: 2.7
+  build: maven
+target:
+  java: 17
+  spring_boot: 3.5.14
+  build: maven
+rules: {}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _state(app_dir: Path, hub_dir: Path, run_id: str = "run-1", profile: str = "java17") -> dict:
+    return {
+        "run_id": run_id,
+        "profile": profile,
+        "modernized_app_path": str(app_dir),
+        "ai_hub_path": str(hub_dir),
+    }
+
+
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _snapshot_files(root: Path) -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+    for path in root.rglob("*"):
+        if path.is_file():
+            snapshot[str(path.relative_to(root))] = _digest(path)
+    return snapshot
+
+
+def test_planning_node_full_flow_writes_required_artifacts_without_mutating_sources(tmp_path: Path) -> None:
+    app_dir = tmp_path / "app"
+    hub_dir = tmp_path / "ai-hub"
+    run_id = "full-flow"
+
+    analysis_dir = app_dir / ".migration" / "runs" / run_id / "analysis"
+    _write_analysis_fixture(analysis_dir)
+    _write_profile(hub_dir)
+
+    # Sentinels ensure no incidental writes outside planning output directory.
+    app_sentinel = app_dir / "README.md"
+    app_sentinel.parent.mkdir(parents=True, exist_ok=True)
+    app_sentinel.write_text("sentinel\n", encoding="utf-8")
+    hub_sentinel = hub_dir / "sentinel.txt"
+    hub_sentinel.write_text("sentinel\n", encoding="utf-8")
+
+    app_before = _snapshot_files(app_dir)
+    hub_before = _snapshot_files(hub_dir)
+
+    result = planning_node(_state(app_dir, hub_dir, run_id=run_id))
+
+    assert result["planning_status"] == "PASS"
+
+    planning_dir = app_dir / ".migration" / "runs" / run_id / "planning"
+    for artifact in PLANNING_OUTPUT_ARTIFACTS:
+        assert (planning_dir / artifact).exists()
+
+    validation_payload = json.loads((planning_dir / "plan_validation_report.json").read_text(encoding="utf-8"))
+    assert validation_payload["status"] == "PASS"
+
+    assist_payload = json.loads((planning_dir / "copilot_assist.json").read_text(encoding="utf-8"))
+    assert assist_payload["status"] == "SKIPPED"
+
+    app_after = _snapshot_files(app_dir)
+    hub_after = _snapshot_files(hub_dir)
+
+    for rel_path, digest in app_before.items():
+        if not rel_path.startswith(f".migration/runs/{run_id}/planning/"):
+            assert app_after.get(rel_path) == digest
+
+    for rel_path, digest in hub_before.items():
+        assert hub_after.get(rel_path) == digest
