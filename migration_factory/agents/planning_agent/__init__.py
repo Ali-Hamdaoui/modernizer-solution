@@ -44,6 +44,10 @@ from migration_factory.agents.planning_agent.risk_classifier import (
     RiskSeverity,
     classify_planning_risks,
 )
+from migration_factory.agents.planning_agent.plan_writer import (
+    MigrationPlanPayload,
+    write_migration_plan,
+)
 
 __all__ = [
     "PlanningAssistConfig",
@@ -71,6 +75,8 @@ __all__ = [
     "PlanningRiskItem",
     "PlanningRiskResult",
     "classify_planning_risks",
+    "MigrationPlanPayload",
+    "write_migration_plan",
     "RequiredMode",
     "MigrationUnit",
     "build_migration_units",

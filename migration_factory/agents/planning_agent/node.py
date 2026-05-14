@@ -13,6 +13,10 @@ from migration_factory.agents.planning_agent.copilot_assist_client import (
 from migration_factory.agents.planning_agent.profile_compatibility import (
     validate_profile_compatibility,
 )
+from migration_factory.agents.planning_agent.plan_writer import (
+    MigrationPlanPayload,
+    write_migration_plan,
+)
 from migration_factory.agents.planning_agent.risk_classifier import (
     classify_planning_risks,
 )
@@ -91,6 +95,19 @@ def planning_node(state: MigrationState) -> MigrationState:
         }
 
     units = build_migration_units()
+    write_migration_plan(
+        modernized_app_path=state.get("modernized_app_path", ""),
+        payload=MigrationPlanPayload(
+            run_id=state.get("run_id", ""),
+            profile=state.get("profile", ""),
+            source_stack=compatibility.source_stack,
+            target_stack=compatibility.target_stack,
+            risks=tuple(risk_messages),
+            blockers=(),
+            warnings=tuple(compatibility.warnings),
+            units=units,
+        ),
+    )
     unit_payload = [
         {
             "id": unit.id,
