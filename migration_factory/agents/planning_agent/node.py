@@ -26,6 +26,9 @@ from migration_factory.agents.planning_agent.summary_writer import (
     PlanSummaryPayload,
     write_plan_summary,
 )
+from migration_factory.agents.planning_agent.output_validator import (
+    validate_planning_outputs,
+)
 from migration_factory.agents.planning_agent.risk_classifier import (
     classify_planning_risks,
 )
@@ -147,6 +150,21 @@ def planning_node(state: MigrationState) -> MigrationState:
             units=units,
         ),
     )
+    validation_result = validate_planning_outputs(
+        modernized_app_path=state.get("modernized_app_path", ""),
+        run_id=state.get("run_id", ""),
+    )
+    if validation_result.status != "PASS":
+        return {
+            "planning_status": "FAIL",
+            "current_unit": "planning",
+            "errors": list(validation_result.reasons),
+            "warnings": compatibility.warnings,
+            "risks": risk_messages,
+            "planning_assist_status": "SKIPPED",
+            "planning_assist_error": "Planning output validation failed.",
+            "planning_assist_warnings": compatibility.warnings,
+        }
     unit_payload = [
         {
             "id": unit.id,

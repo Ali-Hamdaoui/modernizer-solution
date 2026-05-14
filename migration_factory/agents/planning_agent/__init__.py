@@ -56,6 +56,10 @@ from migration_factory.agents.planning_agent.summary_writer import (
     PlanSummaryPayload,
     write_plan_summary,
 )
+from migration_factory.agents.planning_agent.output_validator import (
+    PlanValidationResult,
+    validate_planning_outputs,
+)
 
 __all__ = [
     "PlanningAssistConfig",
@@ -89,6 +93,8 @@ __all__ = [
     "write_approval_request",
     "PlanSummaryPayload",
     "write_plan_summary",
+    "PlanValidationResult",
+    "validate_planning_outputs",
     "RequiredMode",
     "MigrationUnit",
     "build_migration_units",
