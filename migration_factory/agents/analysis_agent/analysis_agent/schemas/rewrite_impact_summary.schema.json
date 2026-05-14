@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "rewrite_impact_summary",
+  "type": "object",
+  "required": ["impact"],
+  "properties": {
+    "status": {"type": "string", "enum": ["USED", "SKIPPED", "FAILED"]},
+    "impact": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "BLOCKED", "UNKNOWN"]}
+  },
+  "additionalProperties": true
+}

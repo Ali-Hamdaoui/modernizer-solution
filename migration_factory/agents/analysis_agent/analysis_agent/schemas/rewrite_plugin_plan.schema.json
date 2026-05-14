@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "rewrite_plugin_plan",
+  "type": "object",
+  "required": ["status", "transformer_guidance", "openrewrite"],
+  "properties": {
+    "status": {"type": "string", "enum": ["USED", "SKIPPED", "FAILED"]},
+    "catalog_path": {"type": ["string", "null"]},
+    "transformer_guidance": {"type": "string"},
+    "openrewrite": {"type": "object"}
+  },
+  "additionalProperties": true
+}
