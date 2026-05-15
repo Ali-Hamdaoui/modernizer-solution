@@ -24,7 +24,11 @@ def test_review_plan_returns_failed_when_adapter_is_unavailable(monkeypatch) -> 
 
     result = client.review_plan(
         request=_request(),
-        config=PlanningAssistConfig(enabled=True, allowed_models=("gpt-test",)),
+        config=PlanningAssistConfig(
+            enabled=True,
+            allowed_models=("gpt-test",),
+            phase_model_overrides={"planning": "gpt-test"},
+        ),
     )
 
     assert result.status == "FAILED"
@@ -33,6 +37,46 @@ def test_review_plan_returns_failed_when_adapter_is_unavailable(monkeypatch) -> 
         == "adapter_unavailable: Planning assist provider adapter is not configured."
     )
     assert result.warnings
+    assert result.requested_model == "gpt-test"
+    assert result.resolved_model == "gpt-test"
+    assert result.model_source == "phase_override"
+    assert result.model_verified is False
+
+
+def test_review_plan_skips_when_disabled() -> None:
+    client = CopilotPlanningAssistClient()
+
+    result = client.review_plan(
+        request=_request(),
+        config=PlanningAssistConfig(
+            enabled=False,
+            allowed_models=("gpt-test",),
+            phase_model_overrides={"planning": "gpt-test"},
+        ),
+    )
+
+    assert result.status == "SKIPPED"
+    assert result.error is None
+
+
+def test_review_plan_rejects_invalid_env_override_fail_open(monkeypatch) -> None:
+    monkeypatch.setattr(copilot_auth, "_gh_auth_ready", lambda: True)
+    client = CopilotPlanningAssistClient()
+
+    result = client.review_plan(
+        request=_request(),
+        config=PlanningAssistConfig(
+            enabled=True,
+            model_override="unknown-model",
+            allowed_models=("gpt-test",),
+        ),
+    )
+
+    assert result.status == "FAILED"
+    assert result.error == "model_unavailable: Planning assist model is not allowed: unknown-model."
+    assert result.requested_model == "unknown-model"
+    assert result.resolved_model is None
+    assert result.model_verified is False
 
 
 def test_review_plan_normalizes_provider_exception_to_failed(monkeypatch) -> None:
@@ -46,7 +90,11 @@ def test_review_plan_normalizes_provider_exception_to_failed(monkeypatch) -> Non
     client = RaisingClient()
     result = client.review_plan(
         request=_request(),
-        config=PlanningAssistConfig(enabled=True, allowed_models=("gpt-test",)),
+        config=PlanningAssistConfig(
+            enabled=True,
+            allowed_models=("gpt-test",),
+            phase_model_overrides={"planning": "gpt-test"},
+        ),
     )
 
     assert result.status == "FAILED"
@@ -65,7 +113,11 @@ def test_review_plan_rejects_non_object_payload_as_controlled_failed(monkeypatch
     client = InvalidPayloadClient()
     result = client.review_plan(
         request=_request(),
-        config=PlanningAssistConfig(enabled=True, allowed_models=("gpt-test",)),
+        config=PlanningAssistConfig(
+            enabled=True,
+            allowed_models=("gpt-test",),
+            phase_model_overrides={"planning": "gpt-test"},
+        ),
     )
 
     assert result.status == "FAILED"

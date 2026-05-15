@@ -14,6 +14,8 @@ def test_load_planning_assist_config_defaults_when_env_missing(monkeypatch) -> N
     assert config.mode == "assist_only"
     assert config.direct_write is False
     assert config.model_override is None
+    assert config.default_model == "gpt-5-mini"
+    assert "gpt-5-mini" in config.allowed_models
 
 
 def test_load_planning_assist_config_from_ai_hub(tmp_path, monkeypatch) -> None:
@@ -31,11 +33,11 @@ auth:
   default_mode: token
   modes: [github_signed_in_user, oauth_github_app, token]
 model:
-  default: gpt-4.1
-  allowed: [gpt-4.1, gpt-4o]
+  default: gpt-5-mini
+  allowed: [gpt-5-mini, gpt-4o]
   phase_overrides:
-    analysis: gpt-4o
-    planning: gpt-4.1
+    analysis: gpt-5-mini
+    planning: gpt-5-mini
 allowed_phases: [analysis_review, planning_review]
 forbidden_actions: [source_writes, blocker_changes, executable_changes, approval_changes, tool_changes, unit_changes]
 """.strip(),
@@ -46,8 +48,8 @@ forbidden_actions: [source_writes, blocker_changes, executable_changes, approval
 
     assert config.enabled is False
     assert config.auth_mode == "token"
-    assert config.default_model == "gpt-4.1"
-    assert config.phase_model_overrides == {"analysis": "gpt-4o", "planning": "gpt-4.1"}
+    assert config.default_model == "gpt-5-mini"
+    assert config.phase_model_overrides == {"analysis": "gpt-5-mini", "planning": "gpt-5-mini"}
 
 
 def test_load_planning_assist_config_env_overrides_enabled_auth_and_model(tmp_path, monkeypatch) -> None:

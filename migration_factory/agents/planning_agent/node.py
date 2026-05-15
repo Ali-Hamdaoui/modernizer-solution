@@ -273,7 +273,11 @@ def planning_node(state: MigrationState) -> MigrationState:
             status=assist_result.status,
             provider=config.provider,
             auth=config.auth_mode if config.enabled else "disabled",
-            model=config.model_override or config.default_model,
+            model=assist_result.resolved_model or config.model_override or config.default_model,
+            requested_model=assist_result.requested_model or config.model_override or config.default_model,
+            resolved_model=assist_result.resolved_model,
+            model_source=assist_result.model_source,
+            model_verified=assist_result.model_verified,
             inputs_summary={
                 "profile": state.get("profile", ""),
                 "units_count": len(units),

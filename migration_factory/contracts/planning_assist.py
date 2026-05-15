@@ -26,3 +26,7 @@ class PlanningAssistResult:
     confidence: float | None = None
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
+    requested_model: str | None = None
+    resolved_model: str | None = None
+    model_source: str | None = None
+    model_verified: bool = False

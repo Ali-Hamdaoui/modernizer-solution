@@ -14,7 +14,7 @@ def _request(model: str | None) -> PlanningAssistRequest:
     )
 
 
-def test_resolve_copilot_model_prefers_planning_override() -> None:
+def test_resolve_copilot_model_prefers_env_override() -> None:
     result = resolve_copilot_model(
         request=_request("default-model"),
         config=PlanningAssistConfig(
@@ -26,24 +26,64 @@ def test_resolve_copilot_model_prefers_planning_override() -> None:
 
     assert result.ok is True
     assert result.model == "override-model"
-    assert result.source == "planning_model_override"
+    assert result.source == "env_override"
+    assert result.requested_model == "override-model"
+    assert result.model_verified is False
     assert result.errors == []
 
 
-def test_resolve_copilot_model_falls_back_to_default_model() -> None:
+def test_resolve_copilot_model_prefers_phase_override() -> None:
     result = resolve_copilot_model(
-        request=_request("default-model"),
+        request=_request(None),
         config=PlanningAssistConfig(
             enabled=True,
             model_override=None,
-            allowed_models=("default-model",),
+            default_model="default-model",
+            allowed_models=("default-model", "gpt-5-mini"),
+            phase_model_overrides={"planning": "gpt-5-mini"},
         ),
     )
 
     assert result.ok is True
-    assert result.model == "default-model"
-    assert result.source == "default_model"
+    assert result.model == "gpt-5-mini"
+    assert result.source == "phase_override"
     assert result.errors == []
+
+
+def test_resolve_copilot_model_falls_back_to_hub_default_gpt_5_mini() -> None:
+    result = resolve_copilot_model(
+        request=_request("ignored-request-model"),
+        config=PlanningAssistConfig(
+            enabled=True,
+            model_override=None,
+            default_model="gpt-5-mini",
+            allowed_models=("gpt-5-mini",),
+        ),
+    )
+
+    assert result.ok is True
+    assert result.model == "gpt-5-mini"
+    assert result.source == "hub_default"
+    assert result.errors == []
+
+
+def test_resolve_copilot_model_rejects_invalid_env_override() -> None:
+    result = resolve_copilot_model(
+        request=_request(None),
+        config=PlanningAssistConfig(
+            enabled=True,
+            model_override="unknown-model",
+            allowed_models=("gpt-5-mini",),
+        ),
+    )
+
+    assert result.ok is False
+    assert result.model is None
+    assert result.requested_model == "unknown-model"
+    assert result.model_verified is False
+    assert result.errors == [
+        "model_unavailable: Planning assist model is not allowed: unknown-model."
+    ]
 
 
 def test_resolve_copilot_model_empty_missing_returns_controlled_failure() -> None:
@@ -56,5 +96,5 @@ def test_resolve_copilot_model_empty_missing_returns_controlled_failure() -> Non
     assert result.model is None
     assert result.source is None
     assert result.errors == [
-        "Planning assist model resolution failed: model is empty or missing."
+        "model_unavailable: Planning assist model resolution failed: model is empty or missing."
     ]

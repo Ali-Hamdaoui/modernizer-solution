@@ -39,6 +39,10 @@ def test_planning_assist_result_advisory_fields() -> None:
         "confidence",
         "warnings",
         "error",
+        "requested_model",
+        "resolved_model",
+        "model_source",
+        "model_verified",
     ]
 
 

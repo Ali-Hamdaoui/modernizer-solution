@@ -71,18 +71,6 @@ class CopilotPlanningAssistClient:
                 warnings=["Planning assist disabled by config."],
             )
 
-        auth = resolve_copilot_auth(config)
-        if not auth.ok:
-            reason = "; ".join(auth.errors) or "Planning assist missing authentication."
-            return PlanningAssistResult(
-                status="FAILED",
-                warnings=[
-                    f"{self._FAILURE_REASON_WARNING_PREFIX} {reason}",
-                    *auth.warnings,
-                ],
-                error=reason,
-            )
-
         model_resolution = resolve_copilot_model(request=request, config=config)
         if not model_resolution.ok:
             reason = "; ".join(model_resolution.errors) or (
@@ -95,6 +83,26 @@ class CopilotPlanningAssistClient:
                     *model_resolution.warnings,
                 ],
                 error=reason,
+                requested_model=model_resolution.requested_model,
+                resolved_model=model_resolution.model,
+                model_source=model_resolution.source,
+                model_verified=model_resolution.model_verified,
+            )
+
+        auth = resolve_copilot_auth(config)
+        if not auth.ok:
+            reason = "; ".join(auth.errors) or "Planning assist missing authentication."
+            return PlanningAssistResult(
+                status="FAILED",
+                warnings=[
+                    f"{self._FAILURE_REASON_WARNING_PREFIX} {reason}",
+                    *auth.warnings,
+                ],
+                error=reason,
+                requested_model=model_resolution.requested_model,
+                resolved_model=model_resolution.model,
+                model_source=model_resolution.source,
+                model_verified=model_resolution.model_verified,
             )
 
         resolved_request = PlanningAssistRequest(
@@ -114,6 +122,20 @@ class CopilotPlanningAssistClient:
                 request=resolved_request,
                 config=config,
             )
-            return self._validate_output(raw_result)
+            result = self._validate_output(raw_result)
+            return PlanningAssistResult(
+                status=result.status,
+                missing_warnings=result.missing_warnings,
+                approval_summary_improvements=result.approval_summary_improvements,
+                operator_notes=result.operator_notes,
+                risk_explanations=result.risk_explanations,
+                confidence=result.confidence,
+                warnings=result.warnings,
+                error=result.error,
+                requested_model=model_resolution.requested_model,
+                resolved_model=model_resolution.model,
+                model_source=model_resolution.source,
+                model_verified=model_resolution.model_verified,
+            )
         except Exception as error:
             return self._build_failed_result(self._normalize_failure_reason(error))

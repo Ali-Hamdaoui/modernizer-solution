@@ -93,5 +93,5 @@ def test_review_plan_returns_failed_on_missing_model_without_exception(monkeypat
     )
 
     assert result.status == "FAILED"
-    assert result.error == "Planning assist model resolution failed: model is empty or missing."
+    assert result.error == "model_unavailable: Planning assist model resolution failed: model is empty or missing."
     assert result.warnings

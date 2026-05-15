@@ -14,6 +14,10 @@ class CopilotAssistArtifactPayload:
     provider: str | None = None
     auth: str | None = None
     model: str | None = None
+    requested_model: str | None = None
+    resolved_model: str | None = None
+    model_source: str | None = None
+    model_verified: bool = False
     inputs_summary: dict[str, Any] = field(default_factory=dict)
     advisory_summary: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
@@ -39,6 +43,10 @@ def write_copilot_assist_artifact(
         "provider": payload.provider,
         "auth": payload.auth,
         "model": payload.model,
+        "requested_model": payload.requested_model,
+        "resolved_model": payload.resolved_model,
+        "model_source": payload.model_source,
+        "model_verified": payload.model_verified,
         "inputs_summary": payload.inputs_summary,
         "advisory_summary": payload.advisory_summary,
         "warnings": payload.warnings,

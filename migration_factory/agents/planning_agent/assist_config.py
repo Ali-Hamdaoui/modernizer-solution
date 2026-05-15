@@ -10,8 +10,8 @@ CopilotSdkMode = Literal["suggestion_only"]
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _SUPPORTED_AUTH_MODES = ("github_signed_in_user", "oauth_github_app", "token")
-_DEFAULT_MODEL = "gpt-4.1"
-_DEFAULT_ALLOWED_MODELS = ("gpt-4.1", "gpt-4o", "gpt-4o-mini")
+_DEFAULT_MODEL = "gpt-5-mini"
+_DEFAULT_ALLOWED_MODELS = ("gpt-5-mini", "gpt-4.1", "gpt-4o", "gpt-4o-mini")
 
 
 @dataclass(frozen=True)
@@ -109,7 +109,7 @@ def _config_path(ai_hub_path: str | Path | None) -> Path | None:
 
 def _tuple(value: Any, fallback: tuple[str, ...]) -> tuple[str, ...]:
     if isinstance(value, list):
-        return tuple(str(item).strip() for item in value if str(item).strip())
+        return tuple(str(item).strip().lower() for item in value if str(item).strip())
     return fallback
 
 
@@ -118,7 +118,7 @@ def _phase_overrides(model_config: dict[str, Any]) -> dict[str, str]:
     if not isinstance(overrides, dict):
         return {}
     return {
-        str(phase): str(model)
+        str(phase).strip(): str(model).strip().lower()
         for phase, model in overrides.items()
         if str(phase).strip() and str(model).strip()
     }
@@ -151,11 +151,11 @@ def load_planning_assist_config(
     provider = str(config_data.get("provider", "github_copilot")).strip() or "github_copilot"
     mode = str(config_data.get("mode", "assist_only")).strip() or "assist_only"
     phase_overrides = _phase_overrides(model_config)
-    model_override = os.getenv("MF_PLANNING_ASSIST_MODEL", "").strip() or None
+    model_override = os.getenv("MF_PLANNING_ASSIST_MODEL", "").strip().lower() or None
     if phase == "analysis":
         model_override = (
-            os.getenv("AIMF_ANALYSIS_COPILOT_MODEL", "").strip()
-            or os.getenv("COPILOT_ANALYSIS_MODEL", "").strip()
+            os.getenv("AIMF_ANALYSIS_COPILOT_MODEL", "").strip().lower()
+            or os.getenv("COPILOT_ANALYSIS_MODEL", "").strip().lower()
             or model_override
         )
     auth_mode = (
@@ -176,7 +176,7 @@ def load_planning_assist_config(
         mode=mode,  # type: ignore[arg-type]
         direct_write=False,
         model_override=model_override,
-        default_model=str(model_config.get("default", _DEFAULT_MODEL)).strip() or _DEFAULT_MODEL,
+        default_model=str(model_config.get("default", _DEFAULT_MODEL)).strip().lower() or _DEFAULT_MODEL,
         allowed_models=_tuple(model_config.get("allowed"), _DEFAULT_ALLOWED_MODELS),
         phase_model_overrides=phase_overrides,
         auth_mode=auth_mode,

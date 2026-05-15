@@ -3,6 +3,7 @@ import json
 import datetime
 import copy
 import subprocess
+from dataclasses import dataclass
 
 try:
     from migration_factory.agents.planning_agent.assist_config import load_planning_assist_config
@@ -70,23 +71,57 @@ class CopilotAuthResolver:
         raise CopilotConfigError(f"Unsupported auth mode: {auth_mode}")
 
 
+@dataclass(frozen=True)
+class ModelResolutionResult:
+    model: str
+    source: str
+    requested_model: str
+    model_verified: bool = False
+
+
 class ModelResolver:
     @staticmethod
-    def resolve(config=None):
-        analysis_override = os.environ.get("AIMF_ANALYSIS_COPILOT_MODEL", "").strip()
-        if analysis_override:
-            return analysis_override
+    def _normalize(model):
+        return (model or "").strip().lower()
 
-        fallback = os.environ.get("COPILOT_ANALYSIS_MODEL", "").strip()
+    @staticmethod
+    def _ensure_allowed(model, config=None):
+        allowed = {
+            ModelResolver._normalize(item)
+            for item in getattr(config, "allowed_models", ())
+            if ModelResolver._normalize(item)
+        }
+        if not allowed:
+            allowed = {"gpt-5-mini", "gpt-4.1", "gpt-4o", "gpt-4o-mini"}
+        if not model or model not in allowed:
+            raise CopilotConfigError(
+                f"model_unavailable: Analysis assist model is not allowed: {model or None}."
+            )
+
+    @staticmethod
+    def resolve(config=None):
+        analysis_override = ModelResolver._normalize(os.environ.get("AIMF_ANALYSIS_COPILOT_MODEL", ""))
+        if analysis_override:
+            ModelResolver._ensure_allowed(analysis_override, config)
+            return ModelResolutionResult(analysis_override, "env_override", analysis_override)
+
+        fallback = ModelResolver._normalize(os.environ.get("COPILOT_ANALYSIS_MODEL", ""))
         if fallback:
-            return fallback
+            ModelResolver._ensure_allowed(fallback, config)
+            return ModelResolutionResult(fallback, "env_override", fallback)
 
         phase_overrides = getattr(config, "phase_model_overrides", None) or {}
-        configured = phase_overrides.get("analysis") or getattr(config, "default_model", "")
+        configured = ModelResolver._normalize(phase_overrides.get("analysis"))
         if configured:
-            return configured
+            ModelResolver._ensure_allowed(configured, config)
+            return ModelResolutionResult(configured, "phase_override", configured)
 
-        raise CopilotConfigError("Model Resolver : Aucun modèle Copilot configuré.")
+        configured = ModelResolver._normalize(getattr(config, "default_model", ""))
+        if configured:
+            ModelResolver._ensure_allowed(configured, config)
+            return ModelResolutionResult(configured, "hub_default", configured)
+
+        raise CopilotConfigError("model_unavailable: Analysis assist model is empty or missing.")
 
 
 class CopilotSDKWrapper:
@@ -177,13 +212,13 @@ class GuardrailValidator:
     @staticmethod
     def validate_no_tampering(original_report, enriched_report):
         if original_report.get("source_stack") != enriched_report.get("source_stack"):
-            raise ValueError("Guardrail Violation : L'IA a tenté de modifier la stack source !")
+            raise ValueError("Guardrail Violation : attempted to modify source_stack.")
 
         if original_report.get("target_stack") != enriched_report.get("target_stack"):
-            raise ValueError("Guardrail Violation : L'IA a tenté de modifier la stack cible !")
+            raise ValueError("Guardrail Violation : attempted to modify target_stack.")
 
         if original_report.get("project_metadata", {}).get("import_stats") != enriched_report.get("project_metadata", {}).get("import_stats"):
-            raise ValueError("Guardrail Violation : L'IA a falsifié les statistiques du code !")
+            raise ValueError("Guardrail Violation : attempted to modify import_stats.")
 
         return True
 
@@ -205,6 +240,10 @@ def enrich_with_ai(context, report_data):
         "status": "SKIPPED",
         "auth_mode": None,
         "model": None,
+        "requested_model": None,
+        "resolved_model": None,
+        "model_source": None,
+        "model_verified": False,
         "input_artifacts": ["analysis_report.json"],
         "suggestions_count": 0,
         "agent": "aimf-analysis-assist",
@@ -219,13 +258,18 @@ def enrich_with_ai(context, report_data):
         try:
             auth_mode = CopilotAuthResolver.resolve_auth_mode(assist_config)
             token = CopilotAuthResolver.get_token(auth_mode, assist_config)
-            model = ModelResolver.resolve(assist_config)
+            model_resolution = ModelResolver.resolve(assist_config)
+            model = model_resolution.model
 
             if not model:
                 raise CopilotConfigError("Model Resolver : Empty model not allowed.")
 
             assist_artifact["auth_mode"] = auth_mode
             assist_artifact["model"] = model
+            assist_artifact["requested_model"] = model_resolution.requested_model
+            assist_artifact["resolved_model"] = model_resolution.model
+            assist_artifact["model_source"] = model_resolution.source
+            assist_artifact["model_verified"] = model_resolution.model_verified
 
             raise ModuleNotFoundError(
                 "adapter_unavailable: Analysis assist provider adapter is not configured."

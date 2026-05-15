@@ -31,7 +31,7 @@ def _enable_ai(monkeypatch):
     monkeypatch.setenv("AIMF_AI_ASSIST_ENABLED", "true")
     monkeypatch.setenv("AIMF_COPILOT_AUTH_MODE", "oauth_github_app")
     monkeypatch.setenv("AIMF_GITHUB_APP_OAUTH_TOKEN", "oauth-token")
-    monkeypatch.setenv("COPILOT_ANALYSIS_MODEL", "gpt-4o")
+    monkeypatch.setenv("COPILOT_ANALYSIS_MODEL", "gpt-5-mini")
     monkeypatch.setattr(CopilotSDKWrapper, "is_available", staticmethod(lambda: True))
 
 
@@ -45,7 +45,7 @@ def test_guardrail_blocks_stack_tampering():
         "project_metadata": {"import_stats": {"javax_count": 50}},
     }
 
-    with pytest.raises(ValueError, match="L'IA a tenté de modifier la stack source"):
+    with pytest.raises(ValueError, match="attempted to modify source_stack"):
         GuardrailValidator.validate_no_tampering(original_report, tampered_report)
 
 
@@ -59,7 +59,7 @@ def test_guardrail_blocks_stats_tampering():
         "project_metadata": {"import_stats": {"javax_count": 0}},
     }
 
-    with pytest.raises(ValueError, match="L'IA a falsifié les statistiques du code"):
+    with pytest.raises(ValueError, match="attempted to modify import_stats"):
         GuardrailValidator.validate_no_tampering(original_report, tampered_report)
 
 
@@ -84,8 +84,27 @@ def test_enabled_assist_fails_open_when_adapter_unavailable(monkeypatch, tmp_pat
     artifact = json.loads((tmp_path / "copilot_assist.json").read_text(encoding="utf-8"))
     assert artifact["status"] == "FAILED"
     assert artifact["auth_mode"] == "oauth_github_app"
-    assert artifact["model"] == "gpt-4o"
+    assert artifact["model"] == "gpt-5-mini"
+    assert artifact["requested_model"] == "gpt-5-mini"
+    assert artifact["resolved_model"] == "gpt-5-mini"
+    assert artifact["model_source"] == "env_override"
+    assert artifact["model_verified"] is False
     assert any("adapter_unavailable" in warning for warning in artifact["warnings"])
+
+
+def test_invalid_analysis_model_override_fails_open(monkeypatch, tmp_path):
+    _enable_ai(monkeypatch)
+    monkeypatch.setenv("COPILOT_ANALYSIS_MODEL", "unknown-model")
+
+    ctx = DummyContext("run_3", tmp_path)
+    result = enrich_with_ai(ctx, _base_report())
+
+    assert result["ai_enrichment"]["status"] == "FAILED"
+    artifact = json.loads((tmp_path / "copilot_assist.json").read_text(encoding="utf-8"))
+    assert artifact["status"] == "FAILED"
+    assert artifact["resolved_model"] is None
+    assert artifact["model_verified"] is False
+    assert any("model_unavailable" in warning for warning in artifact["warnings"])
 
 
 def test_forbidden_deterministic_mutation_ignored_with_warning(monkeypatch, tmp_path):
