@@ -1,0 +1,34 @@
+import pytest
+from maven_scanner import scan_root_pom
+
+def test_scan_root_pom_extracts_correct_versions(tmp_path):
+    """Prouve que le scanner lit parfaitement les versions Java et Spring Boot."""
+    
+    # 1. ARRANGE : On crée un faux fichier POM temporaire pour le test
+    fake_pom = tmp_path / "pom.xml"
+    fake_pom.write_text("""<?xml version="1.0" encoding="UTF-8"?>
+    <project xmlns="http://maven.apache.org/POM/4.0.0">
+        <parent>
+            <version>2.7.18</version>
+        </parent>
+        <properties>
+            <java.version>11</java.version>
+        </properties>
+        <modules>
+            <module>shoppoc-core</module>
+            <module>shoppoc-api</module>
+        </modules>
+    </project>
+    """, encoding="utf-8")
+
+    # 2. ACT : On lance notre scanner sur ce faux fichier
+    result = scan_root_pom(str(fake_pom))
+
+    # 3. ASSERT : On vérifie mathématiquement le résultat
+    assert result["source_stack"]["java"] == "11"
+    assert result["source_stack"]["spring_boot"] == "2.7.18"
+    assert result["project_structure"]["module_count"] == 2
+    
+    # On vérifie aussi le contrat attendu pour l'agent de transformation
+    assert result["target_stack"]["java"] == "17"
+    assert result["target_stack"]["spring_boot"] == "3.5.14"

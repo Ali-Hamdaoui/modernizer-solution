@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "dependency_graph",
+  "type": "object",
+  "required": ["available", "raw_file", "format", "warning", "root"],
+  "properties": {
+    "available": {"type": "boolean"},
+    "raw_file": {"type": ["string", "null"]},
+    "format": {"type": ["string", "null"]},
+    "warning": {"type": ["string", "null"]},
+    "root": {"type": ["object", "null"]}
+  },
+  "additionalProperties": true
+}
