@@ -2,6 +2,12 @@ import os
 import json
 import datetime
 import copy
+import subprocess
+
+try:
+    from migration_factory.agents.planning_agent.assist_config import load_planning_assist_config
+except Exception:
+    load_planning_assist_config = None
 
 
 class CopilotConfigError(Exception):
@@ -9,35 +15,64 @@ class CopilotConfigError(Exception):
 
 
 class CopilotAuthResolver:
-    SUPPORTED_AUTH_MODES = {"github_signed_in_user", "oauth_github_app"}
+    SUPPORTED_AUTH_MODES = {"github_signed_in_user", "oauth_github_app", "token"}
 
     @staticmethod
-    def resolve_auth_mode():
-        mode = os.environ.get("AIMF_COPILOT_AUTH_MODE", "github_signed_in_user").strip()
+    def resolve_auth_mode(config=None):
+        mode = (
+            os.environ.get("AIMF_COPILOT_AUTH_MODE", "").strip()
+            or os.environ.get("MF_PLANNING_ASSIST_AUTH_MODE", "").strip()
+            or getattr(config, "auth_mode", "github_signed_in_user")
+        )
         if mode not in CopilotAuthResolver.SUPPORTED_AUTH_MODES:
             raise CopilotConfigError(f"Unsupported auth mode: {mode}")
         return mode
 
     @staticmethod
-    def get_token(auth_mode):
+    def _gh_auth_ready():
+        try:
+            completed = subprocess.run(
+                ["gh", "auth", "status"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            return False
+        return completed.returncode == 0
+
+    @staticmethod
+    def get_token(auth_mode, config=None):
         if auth_mode == "github_signed_in_user":
-            token = os.environ.get("GITHUB_COPILOT_TOKEN") or os.environ.get("GITHUB_TOKEN")
-            if not token:
-                raise PermissionError("Auth Resolver : github_signed_in_user token missing.")
-            return token
+            if not CopilotAuthResolver._gh_auth_ready():
+                raise PermissionError("Auth Resolver : GitHub CLI signed-in user auth is not ready.")
+            return None
 
         if auth_mode == "oauth_github_app":
-            token = os.environ.get("AIMF_GITHUB_APP_OAUTH_TOKEN", "").strip()
+            token = (
+                os.environ.get("AIMF_GITHUB_APP_OAUTH_TOKEN", "").strip()
+                or os.environ.get("MF_PLANNING_ASSIST_TOKEN", "").strip()
+                or os.environ.get("GITHUB_TOKEN", "").strip()
+                or os.environ.get("GH_TOKEN", "").strip()
+            )
             if not token:
                 raise PermissionError("Auth Resolver : oauth_github_app token missing.")
             return token
+
+        if auth_mode == "token":
+            for name in getattr(config, "token_env_vars", ()):
+                token = os.environ.get(name, "").strip()
+                if token:
+                    return token
+            raise PermissionError("Auth Resolver : token missing.")
 
         raise CopilotConfigError(f"Unsupported auth mode: {auth_mode}")
 
 
 class ModelResolver:
     @staticmethod
-    def resolve():
+    def resolve(config=None):
         analysis_override = os.environ.get("AIMF_ANALYSIS_COPILOT_MODEL", "").strip()
         if analysis_override:
             return analysis_override
@@ -45,6 +80,11 @@ class ModelResolver:
         fallback = os.environ.get("COPILOT_ANALYSIS_MODEL", "").strip()
         if fallback:
             return fallback
+
+        phase_overrides = getattr(config, "phase_model_overrides", None) or {}
+        configured = phase_overrides.get("analysis") or getattr(config, "default_model", "")
+        if configured:
+            return configured
 
         raise CopilotConfigError("Model Resolver : Aucun modèle Copilot configuré.")
 
@@ -150,7 +190,15 @@ class GuardrailValidator:
 
 def enrich_with_ai(context, report_data):
     original_data_backup = copy.deepcopy(report_data)
-    ai_assist_enabled = os.environ.get("AIMF_AI_ASSIST_ENABLED", "true").lower() == "true"
+    ai_hub_path = getattr(context, "ai_hub_path", "")
+    assist_config = (
+        load_planning_assist_config(ai_hub_path=ai_hub_path, phase="analysis")
+        if load_planning_assist_config
+        else None
+    )
+    ai_assist_enabled = bool(getattr(assist_config, "enabled", False))
+    if assist_config is None and os.environ.get("AIMF_AI_ASSIST_ENABLED", "").strip():
+        ai_assist_enabled = os.environ.get("AIMF_AI_ASSIST_ENABLED", "").lower() == "true"
 
     assist_artifact = {
         "run_id": context.run_id,
@@ -166,12 +214,12 @@ def enrich_with_ai(context, report_data):
 
     if not ai_assist_enabled:
         report_data["ai_enrichment"]["status"] = "SKIPPED"
-        assist_artifact["warnings"].append("AI assist disabled by AIMF_AI_ASSIST_ENABLED=false")
+        assist_artifact["warnings"].append("AI assist disabled by config.")
     else:
         try:
-            auth_mode = CopilotAuthResolver.resolve_auth_mode()
-            token = CopilotAuthResolver.get_token(auth_mode)
-            model = ModelResolver.resolve()
+            auth_mode = CopilotAuthResolver.resolve_auth_mode(assist_config)
+            token = CopilotAuthResolver.get_token(auth_mode, assist_config)
+            model = ModelResolver.resolve(assist_config)
 
             if not model:
                 raise CopilotConfigError("Model Resolver : Empty model not allowed.")
@@ -179,10 +227,9 @@ def enrich_with_ai(context, report_data):
             assist_artifact["auth_mode"] = auth_mode
             assist_artifact["model"] = model
 
-            if not CopilotSDKWrapper.is_available():
-                raise ModuleNotFoundError(
-                    "Copilot SDK package 'github_copilot_sdk' unavailable in project dependencies."
-                )
+            raise ModuleNotFoundError(
+                "adapter_unavailable: Analysis assist provider adapter is not configured."
+            )
 
             sdk = CopilotSDKWrapper(model=model, token=token)
             ai_response = sdk.enrich(report_data)

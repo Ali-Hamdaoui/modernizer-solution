@@ -74,82 +74,38 @@ def test_enrich_skipped_when_disabled(monkeypatch, tmp_path):
     assert artifact["status"] == "SKIPPED"
 
 
-def test_allowed_advisory_fields_appended(monkeypatch, tmp_path):
+def test_enabled_assist_fails_open_when_adapter_unavailable(monkeypatch, tmp_path):
     _enable_ai(monkeypatch)
-    monkeypatch.setattr(
-        CopilotSDKWrapper,
-        "enrich",
-        lambda self, report: json.dumps(
-            {
-                "risks": ["risk-1"],
-                "unknowns": ["unknown-1"],
-                "planning_hints": ["hint-1"],
-                "summary_notes": "note",
-                "confidence": 0.8,
-                "warnings": ["warn-1"],
-                "recommendations": ["rec-1", "rec-2"],
-            }
-        ),
-    )
 
     ctx = DummyContext("run_2", tmp_path)
     result = enrich_with_ai(ctx, _base_report())
 
-    assert result["ai_enrichment"]["status"] == "USED"
-    assert result["ai_enrichment"]["risks"] == ["risk-1"]
-    assert result["ai_enrichment"]["unknowns"] == ["unknown-1"]
-    assert result["ai_enrichment"]["planning_hints"] == ["hint-1"]
-    assert result["ai_enrichment"]["summary_notes"] == "note"
-    assert result["ai_enrichment"]["confidence"] == 0.8
-    assert result["ai_enrichment"]["warnings"] == ["warn-1"]
-    assert result["ai_enrichment"]["recommendations"] == ["rec-1", "rec-2"]
+    assert result["ai_enrichment"]["status"] == "FAILED"
+    artifact = json.loads((tmp_path / "copilot_assist.json").read_text(encoding="utf-8"))
+    assert artifact["status"] == "FAILED"
+    assert artifact["auth_mode"] == "oauth_github_app"
+    assert artifact["model"] == "gpt-4o"
+    assert any("adapter_unavailable" in warning for warning in artifact["warnings"])
 
 
 def test_forbidden_deterministic_mutation_ignored_with_warning(monkeypatch, tmp_path):
-    _enable_ai(monkeypatch)
-    monkeypatch.setattr(
-        CopilotSDKWrapper,
-        "enrich",
-        lambda self, report: {
+    advisory, warnings = GuardrailValidator.extract_advisory_fields(
+        {
             "source_stack": {"java": "21"},
             "dependency_graph": {"changed": True},
             "recommendations": ["safe-rec"],
-        },
+        }
     )
 
-    ctx = DummyContext("run_3", tmp_path)
-    result = enrich_with_ai(ctx, _base_report())
-
-    assert result["ai_enrichment"]["status"] == "USED"
-    assert result["source_stack"]["java"] == "11"
-    assert result["ai_enrichment"]["recommendations"] == ["safe-rec"]
-
-    artifact = json.loads((tmp_path / "copilot_assist.json").read_text(encoding="utf-8"))
-    assert artifact["status"] == "USED"
-    assert any("deterministic mutation attempt" in w for w in artifact["warnings"])
+    assert advisory == {"recommendations": ["safe-rec"]}
+    assert any("deterministic mutation attempt" in warning for warning in warnings)
 
 
 def test_invalid_json_rejected(monkeypatch, tmp_path):
-    _enable_ai(monkeypatch)
-    monkeypatch.setattr(CopilotSDKWrapper, "enrich", lambda self, report: "{bad-json")
-
-    ctx = DummyContext("run_4", tmp_path)
-    result = enrich_with_ai(ctx, _base_report())
-
-    assert result["ai_enrichment"]["status"] == "FAILED"
-    artifact = json.loads((tmp_path / "copilot_assist.json").read_text(encoding="utf-8"))
-    assert artifact["status"] == "FAILED"
-    assert any("Invalid Copilot JSON output" in warning for warning in artifact["warnings"])
+    with pytest.raises(ValueError, match="Invalid Copilot JSON output"):
+        GuardrailValidator.extract_advisory_fields("{bad-json")
 
 
 def test_invalid_confidence_rejected(monkeypatch, tmp_path):
-    _enable_ai(monkeypatch)
-    monkeypatch.setattr(CopilotSDKWrapper, "enrich", lambda self, report: {"confidence": 1.5})
-
-    ctx = DummyContext("run_5", tmp_path)
-    result = enrich_with_ai(ctx, _base_report())
-
-    assert result["ai_enrichment"]["status"] == "FAILED"
-    artifact = json.loads((tmp_path / "copilot_assist.json").read_text(encoding="utf-8"))
-    assert artifact["status"] == "FAILED"
-    assert any("Invalid confidence value" in warning for warning in artifact["warnings"])
+    with pytest.raises(ValueError, match="Invalid confidence value"):
+        GuardrailValidator.extract_advisory_fields({"confidence": 1.5})

@@ -17,7 +17,11 @@ def _request(model: str | None) -> PlanningAssistRequest:
 def test_resolve_copilot_model_prefers_planning_override() -> None:
     result = resolve_copilot_model(
         request=_request("default-model"),
-        config=PlanningAssistConfig(enabled=True, model_override="override-model"),
+        config=PlanningAssistConfig(
+            enabled=True,
+            model_override="override-model",
+            allowed_models=("default-model", "override-model"),
+        ),
     )
 
     assert result.ok is True
@@ -29,7 +33,11 @@ def test_resolve_copilot_model_prefers_planning_override() -> None:
 def test_resolve_copilot_model_falls_back_to_default_model() -> None:
     result = resolve_copilot_model(
         request=_request("default-model"),
-        config=PlanningAssistConfig(enabled=True, model_override=None),
+        config=PlanningAssistConfig(
+            enabled=True,
+            model_override=None,
+            allowed_models=("default-model",),
+        ),
     )
 
     assert result.ok is True
@@ -41,7 +49,7 @@ def test_resolve_copilot_model_falls_back_to_default_model() -> None:
 def test_resolve_copilot_model_empty_missing_returns_controlled_failure() -> None:
     result = resolve_copilot_model(
         request=_request(None),
-        config=PlanningAssistConfig(enabled=True, model_override="   "),
+        config=PlanningAssistConfig(enabled=True, model_override="   ", default_model=""),
     )
 
     assert result.ok is False

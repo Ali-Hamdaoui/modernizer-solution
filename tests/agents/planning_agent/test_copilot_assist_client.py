@@ -2,6 +2,7 @@ from migration_factory.agents.planning_agent.assist_config import PlanningAssist
 from migration_factory.agents.planning_agent.copilot_assist_client import (
     CopilotPlanningAssistClient,
 )
+from migration_factory.agents.planning_agent import copilot_auth
 from migration_factory.contracts.planning_assist import PlanningAssistRequest
 
 
@@ -18,11 +19,12 @@ def _request() -> PlanningAssistRequest:
 
 def test_review_plan_returns_failed_when_adapter_is_unavailable(monkeypatch) -> None:
     monkeypatch.delenv("MF_PLANNING_ASSIST_AUTH_MODE", raising=False)
+    monkeypatch.setattr(copilot_auth, "_gh_auth_ready", lambda: True)
     client = CopilotPlanningAssistClient()
 
     result = client.review_plan(
         request=_request(),
-        config=PlanningAssistConfig(enabled=True),
+        config=PlanningAssistConfig(enabled=True, allowed_models=("gpt-test",)),
     )
 
     assert result.status == "FAILED"
@@ -35,6 +37,7 @@ def test_review_plan_returns_failed_when_adapter_is_unavailable(monkeypatch) -> 
 
 def test_review_plan_normalizes_provider_exception_to_failed(monkeypatch) -> None:
     monkeypatch.delenv("MF_PLANNING_ASSIST_AUTH_MODE", raising=False)
+    monkeypatch.setattr(copilot_auth, "_gh_auth_ready", lambda: True)
 
     class RaisingClient(CopilotPlanningAssistClient):
         def _perform_provider_review(self, request, config):
@@ -43,7 +46,7 @@ def test_review_plan_normalizes_provider_exception_to_failed(monkeypatch) -> Non
     client = RaisingClient()
     result = client.review_plan(
         request=_request(),
-        config=PlanningAssistConfig(enabled=True),
+        config=PlanningAssistConfig(enabled=True, allowed_models=("gpt-test",)),
     )
 
     assert result.status == "FAILED"
@@ -53,6 +56,7 @@ def test_review_plan_normalizes_provider_exception_to_failed(monkeypatch) -> Non
 
 def test_review_plan_rejects_non_object_payload_as_controlled_failed(monkeypatch) -> None:
     monkeypatch.delenv("MF_PLANNING_ASSIST_AUTH_MODE", raising=False)
+    monkeypatch.setattr(copilot_auth, "_gh_auth_ready", lambda: True)
 
     class InvalidPayloadClient(CopilotPlanningAssistClient):
         def _perform_provider_review(self, request, config):
@@ -61,7 +65,7 @@ def test_review_plan_rejects_non_object_payload_as_controlled_failed(monkeypatch
     client = InvalidPayloadClient()
     result = client.review_plan(
         request=_request(),
-        config=PlanningAssistConfig(enabled=True),
+        config=PlanningAssistConfig(enabled=True, allowed_models=("gpt-test",)),
     )
 
     assert result.status == "FAILED"

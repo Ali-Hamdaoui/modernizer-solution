@@ -2,6 +2,7 @@ from migration_factory.agents.planning_agent.assist_config import PlanningAssist
 from migration_factory.agents.planning_agent.copilot_assist_client import (
     CopilotPlanningAssistClient,
 )
+from migration_factory.agents.planning_agent import copilot_auth
 from migration_factory.agents.planning_agent.copilot_auth import resolve_copilot_auth
 from migration_factory.contracts.planning_assist import PlanningAssistRequest
 
@@ -12,6 +13,7 @@ def test_resolve_auth_github_signed_in_user_without_api_key(monkeypatch) -> None
     monkeypatch.delenv("MF_PLANNING_ASSIST_TOKEN", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setattr(copilot_auth, "_gh_auth_ready", lambda: True)
 
     auth = resolve_copilot_auth()
 
@@ -73,6 +75,7 @@ def test_review_plan_returns_failed_on_missing_auth_without_exception(monkeypatc
 
 def test_review_plan_returns_failed_on_missing_model_without_exception(monkeypatch) -> None:
     monkeypatch.delenv("MF_PLANNING_ASSIST_AUTH_MODE", raising=False)
+    monkeypatch.setattr(copilot_auth, "_gh_auth_ready", lambda: True)
 
     client = CopilotPlanningAssistClient()
     request = PlanningAssistRequest(
@@ -86,7 +89,7 @@ def test_review_plan_returns_failed_on_missing_model_without_exception(monkeypat
 
     result = client.review_plan(
         request=request,
-        config=PlanningAssistConfig(enabled=True, model_override=None),
+        config=PlanningAssistConfig(enabled=True, model_override=None, default_model=""),
     )
 
     assert result.status == "FAILED"

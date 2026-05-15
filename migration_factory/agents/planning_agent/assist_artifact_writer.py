@@ -24,8 +24,10 @@ class CopilotAssistArtifactPayload:
 def write_copilot_assist_artifact(
     modernized_app_path: str,
     payload: CopilotAssistArtifactPayload,
+    run_id: str | None = None,
 ) -> None:
-    planning_dir = Path(modernized_app_path) / "planning"
+    resolved_run_id = run_id or payload.run_id
+    planning_dir = Path(modernized_app_path) / ".migration" / "runs" / resolved_run_id / "planning"
     planning_dir.mkdir(parents=True, exist_ok=True)
     artifact_path = planning_dir / "copilot_assist.json"
     artifact_body = {

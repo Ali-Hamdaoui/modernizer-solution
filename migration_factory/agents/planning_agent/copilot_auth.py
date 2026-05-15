@@ -1,8 +1,11 @@
 import os
+import subprocess
 from dataclasses import dataclass, field
 from typing import Literal
 
-CopilotAuthMode = Literal["github_signed_in_user", "oauth_github_app", "unknown"]
+from migration_factory.agents.planning_agent.assist_config import PlanningAssistConfig
+
+CopilotAuthMode = Literal["github_signed_in_user", "oauth_github_app", "token", "unknown"]
 
 
 @dataclass(frozen=True)
@@ -22,35 +25,53 @@ def _first_present_env(names: tuple[str, ...]) -> str | None:
     return None
 
 
-def resolve_copilot_auth() -> CopilotAuthResult:
-    auth_mode_raw = os.getenv("MF_PLANNING_ASSIST_AUTH_MODE", "").strip().lower()
+def _gh_auth_ready() -> bool:
+    try:
+        completed = subprocess.run(
+            ["gh", "auth", "status"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return False
+    return completed.returncode == 0
+
+
+def resolve_copilot_auth(config: PlanningAssistConfig | None = None) -> CopilotAuthResult:
+    assist_config = config or PlanningAssistConfig()
+    auth_mode_raw = (
+        os.getenv("MF_PLANNING_ASSIST_AUTH_MODE", "").strip().lower()
+        or assist_config.auth_mode.strip().lower()
+    )
     auth_mode = auth_mode_raw or "github_signed_in_user"
 
     if auth_mode == "github_signed_in_user":
+        if not _gh_auth_ready():
+            return CopilotAuthResult(
+                ok=False,
+                auth_mode="github_signed_in_user",
+                errors=["GitHub CLI signed-in user auth is not ready for planning assist."],
+            )
         return CopilotAuthResult(
             ok=True,
             auth_mode="github_signed_in_user",
             warnings=["Using signed-in GitHub user auth context."],
         )
 
-    if auth_mode == "oauth_github_app":
-        token = _first_present_env(
-            (
-                "MF_PLANNING_ASSIST_GITHUB_APP_TOKEN",
-                "MF_PLANNING_ASSIST_TOKEN",
-                "GITHUB_TOKEN",
-                "GH_TOKEN",
-            )
-        )
+    if auth_mode in {"oauth_github_app", "token"}:
+        token = _first_present_env(assist_config.token_env_vars)
         if not token:
+            label = "GitHub app OAuth" if auth_mode == "oauth_github_app" else "token"
             return CopilotAuthResult(
                 ok=False,
-                auth_mode="oauth_github_app",
-                errors=["Missing GitHub app OAuth token for planning assist."],
+                auth_mode=auth_mode,  # type: ignore[arg-type]
+                errors=[f"Missing {label} token for planning assist."],
             )
         return CopilotAuthResult(
             ok=True,
-            auth_mode="oauth_github_app",
+            auth_mode=auth_mode,  # type: ignore[arg-type]
             token=token,
         )
 

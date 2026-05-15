@@ -71,7 +71,7 @@ class CopilotPlanningAssistClient:
                 warnings=["Planning assist disabled by config."],
             )
 
-        auth = resolve_copilot_auth()
+        auth = resolve_copilot_auth(config)
         if not auth.ok:
             reason = "; ".join(auth.errors) or "Planning assist missing authentication."
             return PlanningAssistResult(

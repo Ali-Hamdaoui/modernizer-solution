@@ -1,6 +1,3 @@
-import json
-from pathlib import Path
-
 from migration_factory.agents.planning_agent.assist_config import (
     load_planning_assist_config,
 )
@@ -75,34 +72,7 @@ def planning_node(state: MigrationState) -> MigrationState:
             write_copilot_assist_artifact(
                 modernized_app_path=state.get("modernized_app_path", ""),
                 payload=payload,
-            )
-        except Exception:
-            pass
-        try:
-            run_scoped_assist_path = Path(output_paths["copilot_assist.json"])
-            run_scoped_assist_path.parent.mkdir(parents=True, exist_ok=True)
-            run_scoped_assist_path.write_text(
-                json.dumps(
-                    {
-                        "schema_version": "1.0",
-                        "run_id": payload.run_id,
-                        "agent": "planning_agent",
-                        "phase": "planning",
-                        "status": payload.status,
-                        "provider": payload.provider,
-                        "auth": payload.auth,
-                        "model": payload.model,
-                        "inputs_summary": payload.inputs_summary,
-                        "advisory_summary": payload.advisory_summary,
-                        "warnings": payload.warnings,
-                        "error": payload.error,
-                        "failure_reason": payload.failure_reason,
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
-                encoding="utf-8",
+                run_id=state.get("run_id", ""),
             )
         except Exception:
             # Artifact write is audit-only. Never block deterministic planning.
@@ -239,7 +209,10 @@ def planning_node(state: MigrationState) -> MigrationState:
         for unit in units
     ]
 
-    config = load_planning_assist_config()
+    try:
+        config = load_planning_assist_config(ai_hub_path=state.get("ai_hub_path", ""), phase="planning")
+    except TypeError:
+        config = load_planning_assist_config()
     assist_result = PlanningAssistResult(status="SKIPPED")
     if not config.enabled:
         assist_result_status = "SKIPPED"
@@ -250,7 +223,7 @@ def planning_node(state: MigrationState) -> MigrationState:
             run_id=state.get("run_id", ""),
             agent="planning_agent",
             phase="planning",
-            model=config.model_override,
+            model=config.model_override or config.default_model,
             prompt="Review planning output for advisory feedback only.",
             context={
                 "profile": state.get("profile", ""),
@@ -298,9 +271,9 @@ def planning_node(state: MigrationState) -> MigrationState:
         CopilotAssistArtifactPayload(
             run_id=state.get("run_id", ""),
             status=assist_result.status,
-            provider="copilot",
-            auth="configured" if config.enabled else "disabled",
-            model=config.model_override,
+            provider=config.provider,
+            auth=config.auth_mode if config.enabled else "disabled",
+            model=config.model_override or config.default_model,
             inputs_summary={
                 "profile": state.get("profile", ""),
                 "units_count": len(units),
