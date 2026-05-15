@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 from typing import Any, Dict, List, Optional
 
@@ -109,8 +110,9 @@ def _write_graph(context, graph: Dict[str, Any]) -> None:
 
 
 def run_dependency_tree(context):
-    json_cmd = ["mvn", "dependency:tree", "-DoutputType=json"]
-    text_cmd = ["mvn", "dependency:tree", "-DoutputType=text"]
+    maven_executable = shutil.which("mvn") or shutil.which("mvn.cmd") or "mvn"
+    json_cmd = [maven_executable, "dependency:tree", "-DoutputType=json"]
+    text_cmd = [maven_executable, "dependency:tree", "-DoutputType=text"]
 
     try:
         result = subprocess.run(

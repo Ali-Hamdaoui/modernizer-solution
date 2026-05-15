@@ -1,3 +1,5 @@
+import shutil
+
 _ALLOWED_GOALS = {"dryRun", "dryRunNoFork", "discover"}
 _FORBIDDEN_GOALS = {"run", "runNoFork"}
 
@@ -29,8 +31,9 @@ def build_rewrite_maven_command(catalog):
 
     group_id, artifact_id, version = _parse_plugin(plugin)
 
+    maven_executable = shutil.which("mvn") or shutil.which("mvn.cmd") or "mvn"
     cmd = [
-        "mvn",
+        maven_executable,
         f"{group_id}:{artifact_id}:{version}:{goal}",
         f"-Drewrite.activeRecipes={recipes}",
         f"-Drewrite.recipeArtifactCoordinates={artifacts}",
