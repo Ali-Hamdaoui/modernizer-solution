@@ -170,20 +170,12 @@ def planning_node(state: MigrationState) -> MigrationState:
         for risk in risk_result.risks
         if risk.severity == "BLOCKER"
     ]
-    if blocker_messages:
-        return {
-            "planning_status": "FAIL",
-            "current_unit": "planning",
-            "errors": blocker_messages,
-            "blockers": blocker_messages,
-            "warnings": compatibility.warnings,
-            "risks": risk_messages,
-            "planning_output_artifacts": output_paths,
-            "planning_validation_status": "SKIPPED",
-            "planning_assist_status": "SKIPPED",
-            "planning_assist_error": "Planning skipped due to deterministic risk blockers.",
-            "planning_assist_warnings": compatibility.warnings,
-        }
+    risk_warning_messages = [
+        f"{risk.code}: {risk.message}"
+        for risk in risk_result.risks
+        if risk.severity == "WARNING"
+    ]
+    deterministic_warnings = [*compatibility.warnings, *risk_warning_messages]
 
     units = build_migration_units()
     write_migration_plan(
@@ -194,8 +186,8 @@ def planning_node(state: MigrationState) -> MigrationState:
             source_stack=compatibility.source_stack,
             target_stack=compatibility.target_stack,
             risks=tuple(risk_messages),
-            blockers=(),
-            warnings=tuple(compatibility.warnings),
+            blockers=tuple(blocker_messages),
+            warnings=tuple(deterministic_warnings),
             units=units,
         ),
     )
@@ -215,8 +207,8 @@ def planning_node(state: MigrationState) -> MigrationState:
             run_id=state.get("run_id", ""),
             summary=deterministic_approval_summary,
             units=units,
-            blockers=(),
-            warnings=tuple(compatibility.warnings),
+            blockers=tuple(blocker_messages),
+            warnings=tuple(deterministic_warnings),
         ),
     )
     write_plan_summary(
@@ -227,7 +219,7 @@ def planning_node(state: MigrationState) -> MigrationState:
             source_stack=compatibility.source_stack,
             target_stack=compatibility.target_stack,
             risks=tuple(risk_messages),
-            warnings=tuple(compatibility.warnings),
+            warnings=tuple(deterministic_warnings),
             units=units,
         ),
     )
@@ -265,7 +257,7 @@ def planning_node(state: MigrationState) -> MigrationState:
                 "source_stack": compatibility.source_stack,
                 "target_stack": compatibility.target_stack,
                 "risks": risk_messages,
-                "warnings": list(compatibility.warnings),
+                "warnings": list(deterministic_warnings),
                 "migration_units": unit_payload,
                 "approval_summary": deterministic_approval_summary,
             },
@@ -291,7 +283,7 @@ def planning_node(state: MigrationState) -> MigrationState:
         assist_result_warnings = [*assist_result.warnings, *validation.warnings]
     merged_output = merge_advisory_assist_suggestions(
         deterministic_approval_summary=deterministic_approval_summary,
-        deterministic_warnings=list(compatibility.warnings),
+        deterministic_warnings=list(deterministic_warnings),
         assist_result=assist_result,
     )
     if assist_result.status == "USED":
@@ -313,7 +305,7 @@ def planning_node(state: MigrationState) -> MigrationState:
                 "profile": state.get("profile", ""),
                 "units_count": len(units),
                 "risk_count": len(risk_messages),
-                "warning_count": len(compatibility.warnings),
+                "warning_count": len(deterministic_warnings),
             },
             advisory_summary={
                 "approval_summary_applied": merged_output.approval_summary
@@ -329,11 +321,13 @@ def planning_node(state: MigrationState) -> MigrationState:
     )
 
     planning_errors = list(validation_result.reasons) if validation_result.status != "PASS" else []
+    planning_blockers = [*blocker_messages, *planning_errors]
+    planning_status = "FAIL" if planning_blockers else "PASS"
     return {
-        "planning_status": "PASS" if validation_result.status == "PASS" else "FAIL",
+        "planning_status": planning_status,
         "current_unit": "planning",
-        "errors": planning_errors,
-        "blockers": planning_errors,
+        "errors": planning_blockers,
+        "blockers": planning_blockers,
         "warnings": merged_output.warnings,
         "planning_assist_status": assist_result_status,
         "planning_assist_error": (

@@ -68,8 +68,82 @@ def classify_planning_risks(
             )
         )
 
+    risks.extend(_classify_openrewrite_impact(loaded_artifacts))
+
     has_blocker = any(r.severity == "BLOCKER" for r in risks)
     return PlanningRiskResult(ok=not has_blocker, risks=risks)
+
+
+def _classify_openrewrite_impact(
+    loaded_artifacts: LoadedAnalysisArtifacts,
+) -> list[PlanningRiskItem]:
+    impact_summary = loaded_artifacts.optional.get("rewrite_impact_summary.json")
+    if not isinstance(impact_summary, dict):
+        return []
+
+    risks: list[PlanningRiskItem] = []
+    raw_impact = impact_summary.get("overall_impact")
+    impact = raw_impact.strip().upper() if isinstance(raw_impact, str) else "UNKNOWN"
+
+    if impact not in {"LOW", "MEDIUM", "HIGH", "BLOCKED", "UNKNOWN"}:
+        impact = "UNKNOWN"
+
+    severity_by_impact: dict[str, RiskSeverity] = {
+        "LOW": "INFO",
+        "MEDIUM": "WARNING",
+        "HIGH": "WARNING",
+        "BLOCKED": "BLOCKER",
+        "UNKNOWN": "WARNING",
+    }
+    message_by_impact = {
+        "LOW": "OpenRewrite impact is low.",
+        "MEDIUM": "OpenRewrite impact is medium.",
+        "HIGH": "OpenRewrite impact is high; manual review is required before execution.",
+        "BLOCKED": "OpenRewrite impact is blocked; planning output is not executable.",
+        "UNKNOWN": "OpenRewrite impact is unknown or missing.",
+    }
+    risks.append(
+        PlanningRiskItem(
+            code=f"OPENREWRITE_IMPACT_{impact}",
+            severity=severity_by_impact[impact],
+            message=message_by_impact[impact],
+            source="openrewrite",
+        )
+    )
+
+    high_risk_files = impact_summary.get("high_risk_files")
+    if isinstance(high_risk_files, list) and high_risk_files:
+        risks.append(
+            PlanningRiskItem(
+                code="OPENREWRITE_HIGH_RISK_FILES",
+                severity="WARNING",
+                message=f"OpenRewrite reported high-risk files: {len(high_risk_files)}.",
+                source="openrewrite",
+            )
+        )
+
+    migration_signals = impact_summary.get("migration_signals")
+    if isinstance(migration_signals, dict):
+        if migration_signals.get("security_config_touched") is True:
+            risks.append(
+                PlanningRiskItem(
+                    code="OPENREWRITE_SECURITY_CONFIG_TOUCHED",
+                    severity="WARNING",
+                    message="OpenRewrite migration signals indicate security configuration was touched.",
+                    source="openrewrite",
+                )
+            )
+        if migration_signals.get("datasource_config_touched") is True:
+            risks.append(
+                PlanningRiskItem(
+                    code="OPENREWRITE_DATASOURCE_CONFIG_TOUCHED",
+                    severity="WARNING",
+                    message="OpenRewrite migration signals indicate datasource configuration was touched.",
+                    source="openrewrite",
+                )
+            )
+
+    return risks
 
 
 def _has_unreadable_or_invalid_build_metadata(

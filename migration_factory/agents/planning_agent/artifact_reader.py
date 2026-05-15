@@ -17,7 +17,14 @@ _REQUIRED_JSON_ARTIFACTS = {
 _OPTIONAL_JSON_ARTIFACTS = {
     "config_inventory.json",
     "rewrite_preview.json",
+    "rewrite_plugin_plan.json",
+    "rewrite_impact_summary.json",
     "copilot_assist.json",
+}
+
+_JSON_OBJECT_ARTIFACTS = {
+    "rewrite_plugin_plan.json",
+    "rewrite_impact_summary.json",
 }
 
 
@@ -81,7 +88,11 @@ def _load_artifact(
     try:
         if artifact_name in _REQUIRED_JSON_ARTIFACTS or artifact_name in _OPTIONAL_JSON_ARTIFACTS:
             with artifact_path.open("r", encoding="utf-8") as file_obj:
-                return json.load(file_obj), None
+                loaded = json.load(file_obj)
+            if artifact_name in _JSON_OBJECT_ARTIFACTS and not isinstance(loaded, dict):
+                prefix = "Required" if is_required else "Optional"
+                return None, f"{prefix} artifact {artifact_name} must be JSON object."
+            return loaded, None
 
         with artifact_path.open("r", encoding="utf-8") as file_obj:
             return file_obj.read(), None

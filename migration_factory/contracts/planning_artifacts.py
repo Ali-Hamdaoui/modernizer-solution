@@ -8,6 +8,8 @@ REQUIRED_ANALYSIS_INPUT_ARTIFACTS: tuple[str, ...] = (
 OPTIONAL_ANALYSIS_INPUT_ARTIFACTS: tuple[str, ...] = (
     "config_inventory.json",
     "rewrite_preview.json",
+    "rewrite_plugin_plan.json",
+    "rewrite_impact_summary.json",
     "rewrite_dry_run.patch",
     "copilot_assist.json",
 )
