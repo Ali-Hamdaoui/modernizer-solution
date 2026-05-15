@@ -1,0 +1,39 @@
+import json
+import datetime
+
+def assemble_report(context, maven_data, import_data):
+    # Construction du rapport final selon le schéma AMF (Task #22, #231)
+    report = {
+        "schema_version": "1.0.0",
+        "run_id": context.run_id,
+        "agent": "analysis_agent",
+        "status": "COMPLETED",
+        "timestamp": datetime.datetime.now().isoformat(),
+        
+        # Ces clés doivent correspondre exactement aux sorties du maven_scanner
+        "source_stack": maven_data["source_stack"],
+        "target_stack": maven_data["target_stack"],
+        
+        "project_metadata": {
+            "modules": maven_data["project_structure"]["modules"],
+            "import_stats": {
+                "javax_count": import_data["javax_imports"],
+                "jakarta_count": import_data["jakarta_imports"],
+                "spring_count": import_data["spring_imports"]
+            },
+            "critical_files_to_migrate": import_data["files_with_javax"]
+        },
+        
+        "ai_enrichment": {
+            "status": "SKIPPED",
+            "additional_risks": [],
+            "recommendations": []
+        }
+    }
+    
+    # Écriture de l'artéfact dans le dossier d'analyse (Task #16, #17)
+    output_file = context.get_output_path("analysis_report.json")
+    with open(output_file, 'w', encoding='utf-8') as f:
+        json.dump(report, f, indent=4)
+    
+    return report

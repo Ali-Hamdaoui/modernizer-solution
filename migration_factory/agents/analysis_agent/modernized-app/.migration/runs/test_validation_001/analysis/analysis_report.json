@@ -1,0 +1,62 @@
+{
+    "schema_version": "1.0.0",
+    "run_id": "test_validation_001",
+    "agent": "analysis_agent",
+    "status": "COMPLETED",
+    "timestamp": "2026-05-13T17:11:29.850864",
+    "source_stack": {
+        "java": "11",
+        "spring_boot": "2.7.18"
+    },
+    "target_stack": {
+        "java": "17",
+        "spring_boot": "3.5.14"
+    },
+    "project_metadata": {
+        "modules": [
+            "shoppoc-shared",
+            "shoppoc-user",
+            "shoppoc-catalog",
+            "shoppoc-payment",
+            "shoppoc-order",
+            "shoppoc-app"
+        ],
+        "import_stats": {
+            "javax_count": 68,
+            "jakarta_count": 0,
+            "spring_count": 299
+        },
+        "critical_files_to_migrate": [
+            "../legacy-app\\shoppoc-app\\src\\main\\java\\com\\shoppoc\\app\\web\\GlobalExceptionHandler.java",
+            "../legacy-app\\shoppoc-app\\src\\test\\java\\com\\shoppoc\\app\\web\\GlobalExceptionHandlerTest.java",
+            "../legacy-app\\shoppoc-catalog\\src\\main\\java\\com\\shoppoc\\catalog\\infrastructure\\persistence\\JpaProductEntity.java",
+            "../legacy-app\\shoppoc-catalog\\src\\main\\java\\com\\shoppoc\\catalog\\infrastructure\\web\\AdminProductController.java",
+            "../legacy-app\\shoppoc-catalog\\src\\main\\java\\com\\shoppoc\\catalog\\infrastructure\\web\\CreateProductRequest.java",
+            "../legacy-app\\shoppoc-order\\src\\main\\java\\com\\shoppoc\\order\\infrastructure\\persistence\\JpaOrderEntity.java",
+            "../legacy-app\\shoppoc-order\\src\\main\\java\\com\\shoppoc\\order\\infrastructure\\persistence\\JpaOrderLineEntity.java",
+            "../legacy-app\\shoppoc-order\\src\\main\\java\\com\\shoppoc\\order\\infrastructure\\web\\CreateOrderLineRequest.java",
+            "../legacy-app\\shoppoc-order\\src\\main\\java\\com\\shoppoc\\order\\infrastructure\\web\\CreateOrderRequest.java",
+            "../legacy-app\\shoppoc-order\\src\\main\\java\\com\\shoppoc\\order\\infrastructure\\web\\OrderController.java",
+            "../legacy-app\\shoppoc-order\\src\\main\\java\\com\\shoppoc\\order\\notification\\infrastructure\\persistence\\JpaNotificationEntity.java",
+            "../legacy-app\\shoppoc-payment\\src\\main\\java\\com\\shoppoc\\payment\\infrastructure\\persistence\\JpaPaymentEntity.java",
+            "../legacy-app\\shoppoc-payment\\src\\main\\java\\com\\shoppoc\\payment\\infrastructure\\web\\AuthorizePaymentRequest.java",
+            "../legacy-app\\shoppoc-payment\\src\\main\\java\\com\\shoppoc\\payment\\infrastructure\\web\\PaymentController.java",
+            "../legacy-app\\shoppoc-user\\src\\main\\java\\com\\shoppoc\\user\\infrastructure\\persistence\\JpaUserEntity.java",
+            "../legacy-app\\shoppoc-user\\src\\main\\java\\com\\shoppoc\\user\\infrastructure\\web\\AuthController.java",
+            "../legacy-app\\shoppoc-user\\src\\main\\java\\com\\shoppoc\\user\\infrastructure\\web\\LoginRequest.java",
+            "../legacy-app\\shoppoc-user\\src\\main\\java\\com\\shoppoc\\user\\infrastructure\\web\\RegisterUserRequest.java",
+            "../legacy-app\\shoppoc-user\\src\\main\\java\\com\\shoppoc\\user\\infrastructure\\web\\UserRegistrationController.java"
+        ]
+    },
+    "ai_enrichment": {
+        "status": "USED",
+        "additional_risks": [
+            "L'application utilise une vieille version de Spring Security qui n\u00e9cessite une r\u00e9\u00e9criture compl\u00e8te des filtres.",
+            "D\u00e9pendance d\u00e9tect\u00e9e vers une librairie incompatible avec Jakarta EE."
+        ],
+        "recommendations": [
+            "Passer les configurations XML vers des classes Java Config avant de migrer vers Spring Boot 3.",
+            "V\u00e9rifier la compatibilit\u00e9 des pilotes de base de donn\u00e9es avec Hibernate 6."
+        ]
+    }
+}
