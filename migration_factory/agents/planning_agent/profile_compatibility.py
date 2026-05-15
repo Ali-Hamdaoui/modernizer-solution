@@ -90,16 +90,26 @@ def _extract_source_stack(loaded_artifacts: LoadedAnalysisArtifacts) -> StackFin
     build_tool = _first_string(
         candidates,
         [
+            "source_stack.build_tool",
+            "source_stack.build.tool",
             "build_tool",
             "build.tool",
             "source.build_tool",
             "source.build.tool",
             "metadata.build_tool",
+            "project_metadata.build_tool",
+            "project_metadata.build.tool",
+            "inventory.build_tool",
         ],
     )
+    if build_tool is None:
+        build_tool = _infer_build_tool_from_metadata(candidates)
+
     java_raw = _first_string(
         candidates,
         [
+            "source_stack.java",
+            "source_stack.java_version",
             "java",
             "java_version",
             "source.java",
@@ -107,17 +117,24 @@ def _extract_source_stack(loaded_artifacts: LoadedAnalysisArtifacts) -> StackFin
             "runtime.java",
             "metadata.java",
             "metadata.java_version",
+            "inventory.java",
+            "inventory.java_version",
         ],
     )
     spring_raw = _first_string(
         candidates,
         [
+            "source_stack.spring_boot",
+            "source_stack.spring_boot_version",
             "spring_boot",
             "spring_boot_version",
             "spring.boot",
             "source.spring_boot",
             "source.spring_boot_version",
             "metadata.spring_boot",
+            "metadata.spring_boot_version",
+            "inventory.spring_boot",
+            "inventory.spring_boot_version",
         ],
     )
 
@@ -163,6 +180,23 @@ def _get_by_path(obj: dict[str, Any], path: str) -> Any:
             return None
         current = current[part]
     return current
+
+
+def _infer_build_tool_from_metadata(candidates: list[dict[str, Any]]) -> str | None:
+    for candidate in candidates:
+        for path in (
+            "dependency_graph.tool",
+            "dependency_graph.build_tool",
+            "dependency_graph.format",
+            "build_metadata.tool",
+            "build_metadata.build_tool",
+            "format",
+            "warning",
+        ):
+            value = _get_by_path(candidate, path)
+            if isinstance(value, str) and "maven" in value.lower():
+                return "maven"
+    return None
 
 
 def _normalize_build_tool(value: Any) -> str | None:
