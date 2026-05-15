@@ -3,7 +3,7 @@
   "$id": "migration-profile.schema.json",
   "title": "Migration Profile",
   "type": "object",
-  "required": ["id", "source", "target", "requirements", "openrewrite", "policies"],
+  "required": ["id", "source", "target", "rules", "requirements", "openrewrite", "policies"],
   "properties": {
     "id": { "type": "string" },
     "schema": { "type": "string" },
@@ -64,6 +64,23 @@
         "human_approval_required": { "type": "boolean" },
         "baseline_tests_required": { "type": "boolean" },
         "dependency_graph_unavailable_fatal": { "type": "boolean" }
+      }
+    },
+    "rules": {
+      "type": "object",
+      "required": [
+        "human_approval_required",
+        "baseline_tests_required",
+        "dependency_graph_unavailable_fatal",
+        "openrewrite_preview_allowed",
+        "openrewrite_apply_allowed"
+      ],
+      "properties": {
+        "human_approval_required": { "type": "boolean" },
+        "baseline_tests_required": { "type": "boolean" },
+        "dependency_graph_unavailable_fatal": { "type": "boolean" },
+        "openrewrite_preview_allowed": { "type": "boolean" },
+        "openrewrite_apply_allowed": { "type": "boolean" }
       }
     },
     "openrewrite": {

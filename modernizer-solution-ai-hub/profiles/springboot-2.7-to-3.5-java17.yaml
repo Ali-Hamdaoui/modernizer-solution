@@ -21,6 +21,12 @@ requirements:
   human_approval_required: true
   baseline_tests_required: false
   dependency_graph_unavailable_fatal: false
+rules:
+  human_approval_required: true
+  baseline_tests_required: false
+  dependency_graph_unavailable_fatal: false
+  openrewrite_preview_allowed: true
+  openrewrite_apply_allowed: false
 openrewrite:
   preview_allowed: true
   apply_allowed: false
@@ -29,4 +35,3 @@ policies:
   safety: policies/safety.yaml
   planning: policies/planning.yaml
   transformation: policies/transformation.yaml
-
