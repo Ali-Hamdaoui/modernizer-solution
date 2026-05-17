@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-AssistResultStatus = Literal["SKIPPED", "USED", "FAILED"]
+AssistResultStatus = Literal["USED", "SKIPPED", "UNAVAILABLE", "ERROR"]
 
 
 @dataclass(frozen=True)

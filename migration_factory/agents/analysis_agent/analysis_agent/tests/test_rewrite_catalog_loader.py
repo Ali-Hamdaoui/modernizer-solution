@@ -5,9 +5,11 @@ from rewrite_catalog_loader import load_rewrite_catalog
 
 
 class DummyContext:
-    def __init__(self, legacy: Path, modernized: Path):
+    def __init__(self, legacy: Path, modernized: Path, ai_hub: Path | None = None, profile: str | None = None):
         self.legacy_app_path = str(legacy)
         self.modernized_app_path = str(modernized)
+        self.ai_hub_path = str(ai_hub) if ai_hub else None
+        self.profile = profile
 
 
 def test_catalog_loads_valid_openrewrite_config(tmp_path):
@@ -37,3 +39,90 @@ def test_missing_catalog_skipped_cleanly(tmp_path):
 
     result = load_rewrite_catalog(DummyContext(legacy, modernized))
     assert result["status"] == "SKIPPED"
+
+
+def _write_ai_hub(hub: Path, profile_id="java17", catalog_path="catalogs/openrewrite/java17.yaml", preview_goals=None):
+    preview_goals = preview_goals or ["dryRun", "dryRunNoFork"]
+    (hub / "profiles").mkdir(parents=True)
+    (hub / "catalogs" / "openrewrite").mkdir(parents=True)
+    (hub / "profiles" / f"{profile_id}.yaml").write_text(
+        f"""id: {profile_id}
+openrewrite:
+  catalog_path: {catalog_path}
+""",
+        encoding="utf-8",
+    )
+    (hub / catalog_path).write_text(
+        """id: springboot-3.5-java17
+plugin:
+  group_id: org.openrewrite.maven
+  artifact_id: rewrite-maven-plugin
+  version: "6.39.0"
+recipe_artifacts:
+  - group_id: org.openrewrite.recipe
+    artifact_id: rewrite-spring
+    version: "6.30.4"
+active_recipes:
+  - org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5
+preview_goals:
+"""
+        + "".join(f"  - {goal}\n" for goal in preview_goals)
+        + """forbidden_apply_goals:
+  - rewrite:run
+  - rewrite:runNoFork
+""",
+        encoding="utf-8",
+    )
+
+
+def test_ai_hub_yaml_profile_resolves_catalog_and_selects_dryrun(tmp_path):
+    legacy = tmp_path / "legacy"
+    modernized = tmp_path / "modernized"
+    hub = tmp_path / "hub"
+    legacy.mkdir()
+    modernized.mkdir()
+    _write_ai_hub(hub)
+
+    result = load_rewrite_catalog(DummyContext(legacy, modernized, hub, "java17"))
+
+    assert result["status"] == "USED"
+    assert result["profile_id"] == "java17"
+    assert result["catalog_id"] == "springboot-3.5-java17"
+    assert result["path"] == str((hub / "catalogs/openrewrite/java17.yaml").resolve())
+    assert result["openrewrite"]["dry_run"] == "rewrite:dryRun"
+    assert result["openrewrite"]["plugin"] == "org.openrewrite.maven:rewrite-maven-plugin:6.39.0"
+    assert result["openrewrite"]["recipe_artifacts"] == ["org.openrewrite.recipe:rewrite-spring:6.30.4"]
+    assert result["openrewrite"]["active_recipes"] == [
+        "org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5"
+    ]
+
+
+def test_ai_hub_missing_path_and_profile_fail_clearly(tmp_path):
+    legacy = tmp_path / "legacy"
+    modernized = tmp_path / "modernized"
+    legacy.mkdir()
+    modernized.mkdir()
+
+    missing_hub = load_rewrite_catalog(DummyContext(legacy, modernized, tmp_path / "missing", "java17"))
+    assert missing_hub["status"] == "FAILED"
+    assert "AI Hub path not found" in missing_hub["errors"][0]
+
+    hub = tmp_path / "hub"
+    hub.mkdir()
+    missing_profile = load_rewrite_catalog(DummyContext(legacy, modernized, hub, "missing"))
+    assert missing_profile["status"] == "FAILED"
+    assert "AI Hub profile not found" in missing_profile["errors"][0]
+
+
+def test_ai_hub_catalog_without_dryrun_is_blocked(tmp_path):
+    legacy = tmp_path / "legacy"
+    modernized = tmp_path / "modernized"
+    hub = tmp_path / "hub"
+    legacy.mkdir()
+    modernized.mkdir()
+    _write_ai_hub(hub, preview_goals=["discover"])
+
+    result = load_rewrite_catalog(DummyContext(legacy, modernized, hub, "java17"))
+
+    assert result["status"] == "FAILED"
+    assert "rewrite:dryRun" in result["errors"][0]

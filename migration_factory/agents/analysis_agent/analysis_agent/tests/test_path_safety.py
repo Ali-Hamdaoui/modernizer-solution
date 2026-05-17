@@ -87,6 +87,80 @@ def test_context_read_paths_used_by_scanners(monkeypatch, tmp_path):
     assert captured["surefire"] == expected_legacy
 
 
+def test_cli_requires_ai_hub_and_profile_together(monkeypatch, tmp_path):
+    legacy = tmp_path / "legacy-app"
+    modernized = tmp_path / "modernized-app"
+    hub = tmp_path / "hub"
+    legacy.mkdir()
+    modernized.mkdir()
+    hub.mkdir()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "analysis_agent",
+            "--run-id",
+            "run-ctx",
+            "--legacy",
+            str(legacy),
+            "--modernized",
+            str(modernized),
+            "--ai-hub",
+            str(hub),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        analysis_main.main()
+
+    assert exc.value.code == 2
+
+
+def test_cli_passes_ai_hub_and_profile_to_context(monkeypatch, tmp_path):
+    legacy = tmp_path / "legacy-app"
+    modernized = tmp_path / "modernized-app"
+    hub = tmp_path / "hub"
+    legacy.mkdir()
+    modernized.mkdir()
+    hub.mkdir()
+    captured = {}
+
+    def _run(ctx):
+        captured["ai_hub"] = ctx.ai_hub_path
+        captured["profile"] = ctx.profile
+        return analysis_main.AnalysisResult(
+            status="COMPLETED",
+            artifact_paths={"analysis_report": "report.json", "analysis_summary": "summary.md"},
+            warnings=[],
+            errors=[],
+            assist_status="SKIPPED",
+            rewrite_status="SKIPPED",
+        )
+
+    monkeypatch.setattr(analysis_main, "run_analysis_agent", _run)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "analysis_agent",
+            "--run-id",
+            "run-ctx",
+            "--legacy",
+            str(legacy),
+            "--modernized",
+            str(modernized),
+            "--ai-hub",
+            str(hub),
+            "--profile",
+            "java17",
+        ],
+    )
+
+    analysis_main.main()
+
+    assert captured["ai_hub"] == os.path.abspath(str(hub))
+    assert captured["profile"] == "java17"
+
+
 def test_analysis_artifact_write_does_not_modify_source_files(monkeypatch, tmp_path):
     legacy = tmp_path / "legacy-app"
     modernized = tmp_path / "modernized-app"

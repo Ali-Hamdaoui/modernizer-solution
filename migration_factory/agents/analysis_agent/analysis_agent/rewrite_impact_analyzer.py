@@ -8,7 +8,12 @@ def analyze_rewrite_patch(patch_text):
     config_files = 0
     test_files = 0
     high_risk = []
-    migration_signals = set()
+    migration_signals = {
+        "api_or_boot_upgrade": False,
+        "javax_removed": False,
+        "security_config_touched": False,
+        "datasource_config_touched": False,
+    }
     added = 0
     removed = 0
 
@@ -30,17 +35,22 @@ def analyze_rewrite_patch(patch_text):
                     test_files += 1
                 if current_file.endswith("pom.xml") or "src/main/java" in current_file:
                     high_risk.append(current_file)
+                lower_file = current_file.lower()
+                if "security" in lower_file:
+                    migration_signals["security_config_touched"] = True
+                if "datasource" in lower_file or "application." in lower_file:
+                    migration_signals["datasource_config_touched"] = True
 
         if line.startswith("+++") or line.startswith("---"):
             continue
         if line.startswith("+"):
             added += 1
             if "jakarta." in line or "javax." in line or "spring.boot3" in line.lower():
-                migration_signals.add("api_or_boot_upgrade")
+                migration_signals["api_or_boot_upgrade"] = True
         elif line.startswith("-"):
             removed += 1
             if "javax." in line:
-                migration_signals.add("javax_removed")
+                migration_signals["javax_removed"] = True
 
     if not files:
         level = "UNKNOWN"
@@ -52,6 +62,8 @@ def analyze_rewrite_patch(patch_text):
         level = "LOW"
 
     return {
+        "overall_impact": level,
+        "changed_files": sorted(files),
         "changed_file_count": len(files),
         "patch_lines_added": added,
         "patch_lines_removed": removed,
@@ -60,6 +72,5 @@ def analyze_rewrite_patch(patch_text):
         "config_files_changed": config_files,
         "test_files_changed": test_files,
         "high_risk_files": sorted(set(high_risk)),
-        "migration_signals": sorted(migration_signals),
-        "impact": level,
+        "migration_signals": migration_signals,
     }

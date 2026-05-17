@@ -16,7 +16,7 @@ def validate_assist_output_for_merge(
     warnings: list[str] = []
     errors: list[str] = []
 
-    if assist_result.status in {"SKIPPED", "FAILED"}:
+    if assist_result.status in {"SKIPPED", "UNAVAILABLE", "ERROR"}:
         return AssistOutputValidationResult(
             sanitized_result=assist_result,
             warnings=warnings,
@@ -54,7 +54,7 @@ def validate_assist_output_for_merge(
         reason = "; ".join(errors)
         return AssistOutputValidationResult(
             sanitized_result=PlanningAssistResult(
-                status="FAILED",
+                status="ERROR",
                 warnings=[
                     "[WARNING] Planning assist failed-open: "
                     f"{reason}"

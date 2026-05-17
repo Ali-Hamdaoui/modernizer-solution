@@ -7,6 +7,7 @@ from openrewrite_adapter import run_openrewrite_dryrun
 
 class DummyContext:
     def __init__(self, legacy_app_path: Path, output_dir: Path, modernized: Path):
+        self.run_id = "test-run"
         self.legacy_app_path = str(legacy_app_path)
         self.output_dir = output_dir
         self.modernized_app_path = str(modernized)
@@ -63,8 +64,21 @@ def test_success_captures_patch_and_no_pom_write(monkeypatch, tmp_path):
 
     result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized))
     assert result["status"] == "USED"
+    plan = json.loads((output / "rewrite_plugin_plan.json").read_text(encoding="utf-8"))
+    assert plan["schema_version"] == "1.0.0"
+    assert plan["selected_preview_goal"] == "rewrite:dryRun"
+    assert plan["apply_goals_forbidden"] is True
     assert (output / "rewrite_dry_run.patch").exists()
     assert (output / "rewrite_impact_summary.json").exists()
+    impact = json.loads((output / "rewrite_impact_summary.json").read_text(encoding="utf-8"))
+    assert impact["overall_impact"] == "LOW"
+    assert "impact" not in impact
+    assert impact["schema_version"] == "1.0.0"
+    assert impact["run_id"] == "test-run"
+    assert impact["agent"] == "analysis_agent"
+    assert impact["phase"] == "analysis"
+    assert impact["changed_files"] == ["src/main/java/A.java"]
+    assert isinstance(impact["migration_signals"], dict)
     assert pom.read_text(encoding="utf-8") == before
 
 

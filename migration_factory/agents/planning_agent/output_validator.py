@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 from migration_factory.agents.planning_agent.paths import get_run_planning_dir
+from migration_factory.contracts.constants import APPROVAL_DECISION_VALUES
 
 
 REQUIRED_ARTIFACTS: tuple[str, ...] = (
@@ -35,12 +36,7 @@ REQUIRED_UNIT_ORDER: tuple[str, ...] = (
     "dependency-cleanup",
     "existing-test-migration",
 )
-APPROVAL_OPTIONS: tuple[str, ...] = (
-    "approve",
-    "approve_with_changes",
-    "reject",
-    "replan",
-)
+APPROVAL_OPTIONS = APPROVAL_DECISION_VALUES
 
 
 @dataclass(frozen=True)
@@ -156,6 +152,42 @@ def _validate_approval_json(path: Path, run_id: str, reasons: list[str]) -> None
         reasons.append("approval_request.json run_id mismatch")
     if payload.get("requires_human_approval") is not True:
         reasons.append("approval_request.json requires_human_approval must be true")
+
+    required_fields = (
+        "schema_version",
+        "run_id",
+        "agent",
+        "phase",
+        "status",
+        "profile",
+        "requires_human_approval",
+        "decision_options",
+        "recommended_decision",
+        "units_to_execute",
+        "blockers",
+        "warnings",
+        "artifact_refs",
+    )
+    for field in required_fields:
+        if field not in payload:
+            reasons.append(f"approval_request.json missing field: {field}")
+
+    if payload.get("agent") != "planning_agent":
+        reasons.append("approval_request.json agent must be planning_agent")
+    if payload.get("phase") != "approval":
+        reasons.append("approval_request.json phase must be approval")
+    if payload.get("recommended_decision") is not None:
+        reasons.append("approval_request.json recommended_decision must be null")
+    if "decision" in payload and payload.get("decision") not in APPROVAL_OPTIONS:
+        reasons.append("approval_request.json decision must be a supported approval decision")
+    if not isinstance(payload.get("units_to_execute"), list):
+        reasons.append("approval_request.json units_to_execute must be list")
+    if not isinstance(payload.get("blockers"), list):
+        reasons.append("approval_request.json blockers must be list")
+    if not isinstance(payload.get("warnings"), list):
+        reasons.append("approval_request.json warnings must be list")
+    if not isinstance(payload.get("artifact_refs"), dict):
+        reasons.append("approval_request.json artifact_refs must be object")
 
     options = payload.get("decision_options")
     if options != list(APPROVAL_OPTIONS):

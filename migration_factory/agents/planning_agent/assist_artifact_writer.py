@@ -6,6 +6,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from migration_factory.contracts.constants import SCHEMA_VERSION
+from migration_factory.contracts.copilot_artifacts import advisory_can_modify_flags
+
 
 @dataclass(frozen=True)
 class CopilotAssistArtifactPayload:
@@ -22,7 +25,6 @@ class CopilotAssistArtifactPayload:
     advisory_summary: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
-    failure_reason: str | None = None
 
 
 def write_copilot_assist_artifact(
@@ -35,7 +37,7 @@ def write_copilot_assist_artifact(
     planning_dir.mkdir(parents=True, exist_ok=True)
     artifact_path = planning_dir / "copilot_assist.json"
     artifact_body = {
-        "schema_version": "1.0",
+        "schema_version": SCHEMA_VERSION,
         "run_id": payload.run_id,
         "agent": "planning_agent",
         "phase": "planning",
@@ -51,7 +53,8 @@ def write_copilot_assist_artifact(
         "advisory_summary": payload.advisory_summary,
         "warnings": payload.warnings,
         "error": payload.error,
-        "failure_reason": payload.failure_reason,
+        **advisory_can_modify_flags(),
+        "artifact_refs": {"self": "copilot_assist.json"},
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     artifact_path.write_text(

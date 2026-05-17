@@ -1,6 +1,6 @@
 import shutil
 
-_ALLOWED_GOALS = {"dryRun", "dryRunNoFork", "discover"}
+_ALLOWED_GOALS = {"dryRun"}
 _FORBIDDEN_GOALS = {"run", "runNoFork"}
 
 
@@ -30,6 +30,10 @@ def build_rewrite_maven_command(catalog):
         raise ValueError(f"Unsupported OpenRewrite goal: {goal}")
 
     group_id, artifact_id, version = _parse_plugin(plugin)
+    if isinstance(artifacts, list):
+        artifacts = ",".join(artifacts)
+    if isinstance(recipes, list):
+        recipes = ",".join(recipes)
 
     maven_executable = shutil.which("mvn") or shutil.which("mvn.cmd") or "mvn"
     cmd = [

@@ -19,12 +19,21 @@ HIGH_PATCH = """diff --git a/pom.xml b/pom.xml
 
 def test_low_impact_patch_summary():
     out = analyze_rewrite_patch(LOW_PATCH)
-    assert out["impact"] == "LOW"
+    assert out["overall_impact"] == "LOW"
+    assert "impact" not in out
     assert out["changed_file_count"] == 1
+    assert out["changed_files"] == ["src/test/java/A.java"]
     assert out["test_files_changed"] == 1
+    assert out["migration_signals"] == {
+        "api_or_boot_upgrade": True,
+        "javax_removed": True,
+        "security_config_touched": False,
+        "datasource_config_touched": False,
+    }
 
 
 def test_high_impact_patch_summary():
     out = analyze_rewrite_patch(HIGH_PATCH)
-    assert out["impact"] == "HIGH"
+    assert out["overall_impact"] == "HIGH"
+    assert "impact" not in out
     assert out["pom_files_changed"] == 1

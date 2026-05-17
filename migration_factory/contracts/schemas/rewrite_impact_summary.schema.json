@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "http://json-schema.org/draft-07/schema",
   "title": "rewrite_impact_summary",
   "type": "object",
   "required": [
@@ -22,9 +22,18 @@
     "agent": {"type": "string", "minLength": 1},
     "phase": {"type": "string", "minLength": 1},
     "status": {"type": "string", "enum": ["PASS", "FAIL", "WARNING", "SKIPPED"]},
-    "overall_impact": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "BLOCKED", "UNKNOWN"]},
-    "changed_files": {"type": "array", "items": {"type": "string"}},
-    "high_risk_files": {"type": "array", "items": {"type": "string"}},
+    "overall_impact": {
+      "type": "string",
+      "enum": ["LOW", "MEDIUM", "HIGH", "BLOCKED", "UNKNOWN"]
+    },
+    "changed_files": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "high_risk_files": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
     "migration_signals": {
       "type": "object",
       "properties": {
@@ -35,7 +44,10 @@
       },
       "additionalProperties": false
     },
-    "blocked_reasons": {"type": "array", "items": {"type": "string"}},
+    "blocked_reasons": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
     "source_modified": {"type": "boolean"},
     "artifact_refs": {
       "type": "object",

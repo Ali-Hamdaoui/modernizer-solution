@@ -17,7 +17,7 @@ def _request() -> PlanningAssistRequest:
     )
 
 
-def test_review_plan_returns_failed_when_adapter_is_unavailable(monkeypatch) -> None:
+def test_review_plan_returns_unavailable_when_adapter_is_unavailable(monkeypatch) -> None:
     monkeypatch.delenv("MF_PLANNING_ASSIST_AUTH_MODE", raising=False)
     monkeypatch.setattr(copilot_auth, "_gh_auth_ready", lambda: True)
     client = CopilotPlanningAssistClient()
@@ -31,7 +31,7 @@ def test_review_plan_returns_failed_when_adapter_is_unavailable(monkeypatch) -> 
         ),
     )
 
-    assert result.status == "FAILED"
+    assert result.status == "UNAVAILABLE"
     assert (
         result.error
         == "adapter_unavailable: Planning assist provider adapter is not configured."
@@ -72,14 +72,14 @@ def test_review_plan_rejects_invalid_env_override_fail_open(monkeypatch) -> None
         ),
     )
 
-    assert result.status == "FAILED"
+    assert result.status == "UNAVAILABLE"
     assert result.error == "model_unavailable: Planning assist model is not allowed: unknown-model."
     assert result.requested_model == "unknown-model"
     assert result.resolved_model is None
     assert result.model_verified is False
 
 
-def test_review_plan_normalizes_provider_exception_to_failed(monkeypatch) -> None:
+def test_review_plan_normalizes_provider_exception_to_error(monkeypatch) -> None:
     monkeypatch.delenv("MF_PLANNING_ASSIST_AUTH_MODE", raising=False)
     monkeypatch.setattr(copilot_auth, "_gh_auth_ready", lambda: True)
 
@@ -97,12 +97,12 @@ def test_review_plan_normalizes_provider_exception_to_failed(monkeypatch) -> Non
         ),
     )
 
-    assert result.status == "FAILED"
+    assert result.status == "ERROR"
     assert result.error == "Planning assist timeout."
     assert result.warnings
 
 
-def test_review_plan_rejects_non_object_payload_as_controlled_failed(monkeypatch) -> None:
+def test_review_plan_rejects_non_object_payload_as_controlled_error(monkeypatch) -> None:
     monkeypatch.delenv("MF_PLANNING_ASSIST_AUTH_MODE", raising=False)
     monkeypatch.setattr(copilot_auth, "_gh_auth_ready", lambda: True)
 
@@ -120,5 +120,5 @@ def test_review_plan_rejects_non_object_payload_as_controlled_failed(monkeypatch
         ),
     )
 
-    assert result.status == "FAILED"
+    assert result.status == "ERROR"
     assert result.error == "Planning assist invalid JSON/non-object payload."

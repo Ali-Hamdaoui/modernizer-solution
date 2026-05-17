@@ -5,12 +5,14 @@ class SecurityViolationError(Exception):
     pass
 
 class MigrationContext:
-    def __init__(self, run_id, legacy_path, modernized_path):
+    def __init__(self, run_id, legacy_path, modernized_path, ai_hub_path=None, profile=None):
         self.run_id = run_id
         
         # 1. Normalisation absolue des chemins (empêche les ambiguïtés)
         self.legacy_app_path = os.path.abspath(legacy_path)
         self.modernized_app_path = os.path.abspath(modernized_path)
+        self.ai_hub_path = os.path.abspath(ai_hub_path) if ai_hub_path else None
+        self.profile = profile
         
         # 2. Définition stricte de l'ALLOWLIST (La seule zone de droite)
         self.output_dir = os.path.abspath(os.path.join(

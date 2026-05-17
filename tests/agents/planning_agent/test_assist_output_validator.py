@@ -31,7 +31,7 @@ def test_rejects_confidence_outside_zero_to_one() -> None:
         request=_request(),
         assist_result=PlanningAssistResult(status="USED", confidence=1.5),
     )
-    assert result.sanitized_result.status == "FAILED"
+    assert result.sanitized_result.status == "ERROR"
     assert result.sanitized_result.error == "Planning assist confidence must be within [0, 1]."
 
 

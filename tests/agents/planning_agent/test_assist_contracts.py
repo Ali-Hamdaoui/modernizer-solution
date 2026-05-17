@@ -24,7 +24,7 @@ def test_planning_assist_request_contract_fields() -> None:
 
 
 def test_assist_result_status_values() -> None:
-    assert set(get_args(AssistResultStatus)) == {"USED", "SKIPPED", "FAILED"}
+    assert set(get_args(AssistResultStatus)) == {"USED", "SKIPPED", "UNAVAILABLE", "ERROR"}
 
 
 def test_planning_assist_result_advisory_fields() -> None:

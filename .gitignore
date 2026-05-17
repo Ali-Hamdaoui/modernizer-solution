@@ -3,3 +3,14 @@ __pycache__/
 *.pyc
 .env
 .mf_runs/
+.codex/
+.codex-dev*.log
+.codex-dev.err.log
+.codex-dev.out.log
+*.log
+node_modules/
+.next/
+dist/
+build/
+coverage/
+*.tsbuildinfo

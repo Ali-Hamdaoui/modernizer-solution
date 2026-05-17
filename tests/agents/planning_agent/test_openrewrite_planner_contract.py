@@ -244,6 +244,44 @@ def test_openrewrite_unknown_impact_is_warning() -> None:
     assert result.ok is True
 
 
+def test_openrewrite_impact_schema_mismatch_is_unknown_warning() -> None:
+    loaded = LoadedAnalysisArtifacts(
+        required={
+            "analysis_report.json": {"status": "PASS"},
+            "dependency_graph.json": {},
+            "test_inventory.json": {},
+            "analysis_summary.md": "analysis ok\n",
+        },
+        optional={
+            "rewrite_impact_summary.json": {
+                "impact": "HIGH",
+                "blocked_reasons": [],
+            }
+        },
+        errors=[],
+        ok=True,
+    )
+
+    result = classify_planning_risks(
+        loaded,
+        StackFingerprint(build_tool="maven", java="11", spring_boot="2.7"),
+    )
+
+    assert _find_openrewrite_risk(result, "UNKNOWN") is not None
+    mismatch = next(
+        (
+            risk
+            for risk in result.risks
+            if risk.code == "OPENREWRITE_IMPACT_SCHEMA_MISMATCH"
+        ),
+        None,
+    )
+    assert mismatch is not None
+    assert mismatch.severity == "WARNING"
+    assert _find_openrewrite_risk(result, "HIGH") is None
+    assert result.ok is True
+
+
 def test_planning_node_blocked_openrewrite_impact_writes_non_executable_plan(tmp_path: Path) -> None:
     app_dir = tmp_path / "app"
     hub_dir = tmp_path / "ai-hub"

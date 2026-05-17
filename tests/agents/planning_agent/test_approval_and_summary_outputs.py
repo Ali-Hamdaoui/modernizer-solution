@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from migration_factory.agents.planning_agent.node import planning_node
+from migration_factory.agents.planning_agent.output_validator import validate_planning_outputs
 
 
 def _write_analysis_fixture(analysis_dir: Path) -> None:
@@ -73,8 +74,15 @@ def test_approval_request_has_required_human_review_contract(tmp_path: Path) -> 
     approval_path = app_dir / ".migration" / "runs" / run_id / "planning" / "approval_request.json"
     payload = json.loads(approval_path.read_text(encoding="utf-8"))
 
+    assert payload["schema_version"] == "1.0.0"
+    assert payload["run_id"] == run_id
+    assert payload["agent"] == "planning_agent"
+    assert payload["phase"] == "approval"
+    assert payload["status"] == "PASS"
+    assert payload["profile"] == "java17"
     assert payload["requires_human_approval"] is True
-    assert payload["decision_options"] == ["approve", "approve_with_changes", "reject", "replan"]
+    assert payload["decision_options"] == ["approved", "rejected", "replan_required"]
+    assert payload["recommended_decision"] is None
     assert "units_to_execute" in payload
     assert isinstance(payload["units_to_execute"], list)
     assert payload["units_to_execute"]
@@ -82,6 +90,61 @@ def test_approval_request_has_required_human_review_contract(tmp_path: Path) -> 
     assert isinstance(payload["blockers"], list)
     assert "warnings" in payload
     assert isinstance(payload["warnings"], list)
+    assert "artifact_refs" in payload
+    assert payload["artifact_refs"] == {
+        "migration_plan": "migration_plan.yaml",
+        "migration_units": "migration_units.yaml",
+        "plan_summary": "plan_summary.md",
+    }
+
+
+def test_planning_validator_rejects_unsupported_approval_decision_option(tmp_path: Path) -> None:
+    app_dir = tmp_path / "app"
+    hub_dir = tmp_path / "ai-hub"
+    run_id = "approval-validator"
+
+    analysis_dir = app_dir / ".migration" / "runs" / run_id / "analysis"
+    _write_analysis_fixture(analysis_dir)
+    _write_profile(hub_dir)
+
+    result = planning_node(_state(app_dir, hub_dir, run_id=run_id))
+    assert result["planning_status"] == "PASS"
+
+    approval_path = app_dir / ".migration" / "runs" / run_id / "planning" / "approval_request.json"
+    payload = json.loads(approval_path.read_text(encoding="utf-8"))
+    payload["decision_options"] = ["approved", "approve_with_changes", "replan_required"]
+    approval_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    validation = validate_planning_outputs(str(app_dir), run_id)
+
+    assert validation.status == "FAIL"
+    assert "approval_request.json decision_options must match required exact order" in validation.reasons
+
+
+def test_planning_validator_rejects_unsupported_approval_decision(tmp_path: Path) -> None:
+    app_dir = tmp_path / "app"
+    hub_dir = tmp_path / "ai-hub"
+    run_id = "approval-decision-validator"
+
+    analysis_dir = app_dir / ".migration" / "runs" / run_id / "analysis"
+    _write_analysis_fixture(analysis_dir)
+    _write_profile(hub_dir)
+
+    result = planning_node(_state(app_dir, hub_dir, run_id=run_id))
+    assert result["planning_status"] == "PASS"
+
+    approval_path = app_dir / ".migration" / "runs" / run_id / "planning" / "approval_request.json"
+    payload = json.loads(approval_path.read_text(encoding="utf-8"))
+    payload["decision"] = "approve_with_changes"
+    approval_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    validation = validate_planning_outputs(str(app_dir), run_id)
+
+    assert validation.status == "FAIL"
+    assert (
+        "approval_request.json decision must be a supported approval decision"
+        in validation.reasons
+    )
 
 
 def test_plan_summary_contains_required_human_review_sections(tmp_path: Path) -> None:

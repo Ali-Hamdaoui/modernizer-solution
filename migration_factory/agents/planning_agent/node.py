@@ -175,6 +175,7 @@ def planning_node(state: MigrationState) -> MigrationState:
         modernized_app_path=state.get("modernized_app_path", ""),
         payload=ApprovalRequestPayload(
             run_id=state.get("run_id", ""),
+            profile=state.get("profile", ""),
             summary=deterministic_approval_summary,
             units=units,
             blockers=tuple(blocker_messages),
@@ -293,7 +294,6 @@ def planning_node(state: MigrationState) -> MigrationState:
             },
             warnings=assist_result_warnings,
             error=assist_result.error,
-            failure_reason=assist_result.error if assist_result.status == "FAILED" else None,
         )
     )
 

@@ -104,6 +104,16 @@ def test_planning_node_full_flow_writes_required_artifacts_without_mutating_sour
 
     assist_payload = json.loads((planning_dir / "copilot_assist.json").read_text(encoding="utf-8"))
     assert assist_payload["status"] == "SKIPPED"
+    assert assist_payload["agent"] == "planning_agent"
+    assert assist_payload["phase"] == "planning"
+    assert assist_payload["artifact_refs"] == {"self": "copilot_assist.json"}
+    assert assist_payload["can_modify_source"] is False
+    assert assist_payload["can_modify_plan"] is False
+    assert assist_payload["can_modify_blockers"] is False
+    assert assist_payload["can_modify_executable"] is False
+    assert assist_payload["can_modify_unit_order"] is False
+    assert assist_payload["can_modify_approval_decision"] is False
+    assert assist_payload["can_modify_tools"] is False
 
     app_after = _snapshot_files(app_dir)
     hub_after = _snapshot_files(hub_dir)

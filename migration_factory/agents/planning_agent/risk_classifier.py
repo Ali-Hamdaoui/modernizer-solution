@@ -83,6 +83,15 @@ def _classify_openrewrite_impact(
 
     risks: list[PlanningRiskItem] = []
     raw_impact = impact_summary.get("overall_impact")
+    if raw_impact is None:
+        risks.append(
+            PlanningRiskItem(
+                code="OPENREWRITE_IMPACT_SCHEMA_MISMATCH",
+                severity="WARNING",
+                message="OpenRewrite impact artifact is missing overall_impact.",
+                source="openrewrite",
+            )
+        )
     impact = raw_impact.strip().upper() if isinstance(raw_impact, str) else "UNKNOWN"
 
     if impact not in {"LOW", "MEDIUM", "HIGH", "BLOCKED", "UNKNOWN"}:

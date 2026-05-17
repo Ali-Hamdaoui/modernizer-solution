@@ -22,9 +22,9 @@ class CopilotPlanningAssistClient:
         """Expose static custom-agent config for wrapper registration/invocation layers."""
         return get_copilot_custom_agent_config()
 
-    def _build_failed_result(self, reason: str) -> PlanningAssistResult:
+    def _build_result(self, reason: str, status: str = "ERROR") -> PlanningAssistResult:
         return PlanningAssistResult(
-            status="FAILED",
+            status=status,
             warnings=[f"{self._FAILURE_REASON_WARNING_PREFIX} {reason}"],
             error=reason,
         )
@@ -49,17 +49,18 @@ class CopilotPlanningAssistClient:
     def _perform_provider_review(
         self, request: PlanningAssistRequest, config: PlanningAssistConfig
     ) -> PlanningAssistResult:
-        return self._build_failed_result(
+        return self._build_result(
             self._ADAPTER_UNAVAILABLE_REASON,
+            status="UNAVAILABLE",
         )
 
     def _validate_output(self, result) -> PlanningAssistResult:
         if not isinstance(result, PlanningAssistResult):
-            return self._build_failed_result("Planning assist invalid JSON/non-object payload.")
-        if result.status in {"SKIPPED", "FAILED"}:
+            return self._build_result("Planning assist invalid JSON/non-object payload.")
+        if result.status in {"SKIPPED", "UNAVAILABLE", "ERROR"}:
             return result
         if result.status != "USED":
-            return self._build_failed_result("Planning assist invalid output.")
+            return self._build_result("Planning assist invalid output.")
         return result
 
     def review_plan(
@@ -77,7 +78,7 @@ class CopilotPlanningAssistClient:
                 "Planning assist model resolution failed."
             )
             return PlanningAssistResult(
-                status="FAILED",
+                status="UNAVAILABLE",
                 warnings=[
                     f"{self._FAILURE_REASON_WARNING_PREFIX} {reason}",
                     *model_resolution.warnings,
@@ -93,7 +94,7 @@ class CopilotPlanningAssistClient:
         if not auth.ok:
             reason = "; ".join(auth.errors) or "Planning assist missing authentication."
             return PlanningAssistResult(
-                status="FAILED",
+                status="UNAVAILABLE",
                 warnings=[
                     f"{self._FAILURE_REASON_WARNING_PREFIX} {reason}",
                     *auth.warnings,
@@ -138,4 +139,4 @@ class CopilotPlanningAssistClient:
                 model_verified=model_resolution.model_verified,
             )
         except Exception as error:
-            return self._build_failed_result(self._normalize_failure_reason(error))
+            return self._build_result(self._normalize_failure_reason(error))

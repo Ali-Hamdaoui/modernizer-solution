@@ -7,6 +7,7 @@ from pathlib import Path
 from rewrite_catalog_loader import load_rewrite_catalog
 from rewrite_command_builder import build_rewrite_maven_command
 from rewrite_impact_analyzer import analyze_rewrite_patch
+from rewrite_plugin_plan_writer import write_rewrite_plugin_plan
 
 
 def _find_dry_run_patch(project_dir: Path):
@@ -46,6 +47,40 @@ def _write_json(path, payload):
         json.dump(payload, handle, indent=4)
 
 
+def _impact_summary(
+    context,
+    status,
+    overall_impact,
+    *,
+    analysis=None,
+    blocked_reasons=None,
+    source_modified=False,
+):
+    analysis = analysis or {}
+    return {
+        "schema_version": "1.0.0",
+        "run_id": getattr(context, "run_id", "unknown"),
+        "agent": "analysis_agent",
+        "phase": "analysis",
+        "status": status,
+        "overall_impact": overall_impact,
+        "changed_files": analysis.get("changed_files", []),
+        "high_risk_files": analysis.get("high_risk_files", []),
+        "migration_signals": analysis.get(
+            "migration_signals",
+            {
+                "api_or_boot_upgrade": False,
+                "javax_removed": False,
+                "security_config_touched": False,
+                "datasource_config_touched": False,
+            },
+        ),
+        "blocked_reasons": blocked_reasons or [],
+        "source_modified": source_modified,
+        "artifact_refs": {"self": "rewrite_impact_summary.json"},
+    }
+
+
 def run_openrewrite_dryrun(context):
     result_data = {"status": "SKIPPED", "warnings": []}
     project_dir = Path(context.legacy_app_path)
@@ -54,13 +89,7 @@ def run_openrewrite_dryrun(context):
     impact_path = context.get_output_path("rewrite_impact_summary.json")
 
     catalog = load_rewrite_catalog(context)
-    plan = {
-        "status": catalog["status"],
-        "catalog_path": catalog.get("path"),
-        "transformer_guidance": "Transformer Agent may add OpenRewrite plugin/config in migration workspace only.",
-        "openrewrite": catalog.get("openrewrite", {}),
-    }
-    _write_json(plan_path, plan)
+    write_rewrite_plugin_plan(plan_path, context, catalog)
 
     if catalog["status"] != "USED":
         if catalog.get("errors"):
@@ -68,7 +97,7 @@ def run_openrewrite_dryrun(context):
         if catalog["status"] == "FAILED":
             result_data["status"] = "FAILED"
         _write_json(preview_path, result_data)
-        _write_json(impact_path, {"impact": "UNKNOWN"})
+        _write_json(impact_path, _impact_summary(context, "SKIPPED", "UNKNOWN"))
         return result_data
 
     before_hash = _hash_project_sources(project_dir)
@@ -84,18 +113,29 @@ def run_openrewrite_dryrun(context):
             shutil.copyfile(patch_source, patch_target)
             result_data["patch_file"] = "rewrite_dry_run.patch"
             impact = analyze_rewrite_patch(patch_target.read_text(encoding="utf-8"))
-            _write_json(impact_path, impact)
+            _write_json(
+                impact_path,
+                _impact_summary(
+                    context,
+                    "PASS",
+                    impact["overall_impact"],
+                    analysis=impact,
+                ),
+            )
         else:
-            _write_json(impact_path, {"impact": "UNKNOWN"})
+            _write_json(impact_path, _impact_summary(context, "WARNING", "UNKNOWN"))
 
     except FileNotFoundError:
         result_data["status"] = "SKIPPED"
         result_data["warnings"].append("OpenRewrite dry-run skipped: Maven executable not found")
-        _write_json(impact_path, {"impact": "UNKNOWN"})
+        _write_json(impact_path, _impact_summary(context, "SKIPPED", "UNKNOWN"))
     except Exception as exc:
         result_data["status"] = "FAILED"
         result_data["warnings"].append(f"OpenRewrite dry-run failed: {exc}")
-        _write_json(impact_path, {"impact": "BLOCKED", "error": str(exc)})
+        _write_json(
+            impact_path,
+            _impact_summary(context, "FAIL", "BLOCKED", blocked_reasons=[str(exc)]),
+        )
     finally:
         after_hash = _hash_project_sources(project_dir)
         if before_hash != after_hash:
@@ -103,7 +143,18 @@ def run_openrewrite_dryrun(context):
             result_data["warnings"].append(
                 "Source safety violation: project sources changed during dry-run"
             )
-            _write_json(impact_path, {"impact": "BLOCKED", "source_modified": True})
+            _write_json(
+                impact_path,
+                _impact_summary(
+                    context,
+                    "FAIL",
+                    "BLOCKED",
+                    blocked_reasons=[
+                        "Source safety violation: project sources changed during dry-run"
+                    ],
+                    source_modified=True,
+                ),
+            )
 
         _write_json(preview_path, result_data)
 

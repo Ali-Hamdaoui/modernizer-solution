@@ -11,6 +11,7 @@ from dependency_adapter import run_dependency_tree
 from import_scanner import scan_java_imports
 from maven_scanner import scan_root_pom
 from openrewrite_adapter import run_openrewrite_dryrun
+from readonly_verifier import snapshot_tree, write_read_only_verification
 from report_assembler import assemble_report
 from summary_generator import generate_summary
 from surefire_parser import parse_surefire_reports
@@ -33,6 +34,9 @@ def run_analysis_agent(context: MigrationContext) -> AnalysisResult:
 
     legacy_root = context.validate_read_path(context.legacy_app_path)
     legacy_pom = context.validate_read_path(f"{legacy_root}/pom.xml")
+    modernized_root = context.validate_read_path(context.modernized_app_path)
+    before_legacy = snapshot_tree(legacy_root)
+    before_modernized = snapshot_tree(modernized_root)
 
     maven_results = scan_root_pom(legacy_pom)
     run_dependency_tree(context)
@@ -75,7 +79,12 @@ def run_analysis_agent(context: MigrationContext) -> AnalysisResult:
         "rewrite_plugin_plan": context.get_output_path("rewrite_plugin_plan.json"),
         "rewrite_impact_summary": context.get_output_path("rewrite_impact_summary.json"),
         "copilot_assist": context.get_output_path("copilot_assist.json"),
+        "read_only_verification": context.get_output_path("read_only_verification.json"),
     }
+
+    read_only_verification = write_read_only_verification(context, before_legacy, before_modernized)
+    if read_only_verification["source_modified"]:
+        errors.append("Analysis modified source files; see read_only_verification.json")
 
     status = "COMPLETED" if not errors else "FAILED"
     return AnalysisResult(
@@ -93,12 +102,16 @@ def main():
     parser.add_argument("--run-id", required=True, help="ID unique de la migration")
     parser.add_argument("--legacy", required=True, help="Chemin vers l'application source")
     parser.add_argument("--modernized", required=True, help="Chemin vers le dossier de sortie")
+    parser.add_argument("--ai-hub", help="Chemin vers le AI Hub contenant profiles/ et catalogs/")
+    parser.add_argument("--profile", help="ID du profil AI Hub à charger")
 
     args = parser.parse_args()
+    if bool(args.ai_hub) != bool(args.profile):
+        parser.error("--ai-hub and --profile must be provided together")
 
     try:
         print(f"🚀 [AIMF] Démarrage de l'analyse - Run ID: {args.run_id}")
-        ctx = MigrationContext(args.run_id, args.legacy, args.modernized)
+        ctx = MigrationContext(args.run_id, args.legacy, args.modernized, args.ai_hub, args.profile)
         result = run_analysis_agent(ctx)
 
         print("-" * 50)

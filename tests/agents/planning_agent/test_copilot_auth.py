@@ -49,7 +49,7 @@ def test_resolve_auth_oauth_github_app_missing_token_is_controlled_failure(monke
     assert auth.errors == ["Missing GitHub app OAuth token for planning assist."]
 
 
-def test_review_plan_returns_failed_on_missing_auth_without_exception(monkeypatch) -> None:
+def test_review_plan_returns_unavailable_on_missing_auth_without_exception(monkeypatch) -> None:
     monkeypatch.setenv("MF_PLANNING_ASSIST_AUTH_MODE", "oauth_github_app")
     monkeypatch.delenv("MF_PLANNING_ASSIST_GITHUB_APP_TOKEN", raising=False)
     monkeypatch.delenv("MF_PLANNING_ASSIST_TOKEN", raising=False)
@@ -68,12 +68,12 @@ def test_review_plan_returns_failed_on_missing_auth_without_exception(monkeypatc
 
     result = client.review_plan(request=request, config=PlanningAssistConfig(enabled=True))
 
-    assert result.status == "FAILED"
+    assert result.status == "UNAVAILABLE"
     assert result.error == "Missing GitHub app OAuth token for planning assist."
     assert result.warnings
 
 
-def test_review_plan_returns_failed_on_missing_model_without_exception(monkeypatch) -> None:
+def test_review_plan_returns_unavailable_on_missing_model_without_exception(monkeypatch) -> None:
     monkeypatch.delenv("MF_PLANNING_ASSIST_AUTH_MODE", raising=False)
     monkeypatch.setattr(copilot_auth, "_gh_auth_ready", lambda: True)
 
@@ -92,6 +92,6 @@ def test_review_plan_returns_failed_on_missing_model_without_exception(monkeypat
         config=PlanningAssistConfig(enabled=True, model_override=None, default_model=""),
     )
 
-    assert result.status == "FAILED"
+    assert result.status == "UNAVAILABLE"
     assert result.error == "model_unavailable: Planning assist model resolution failed: model is empty or missing."
     assert result.warnings
