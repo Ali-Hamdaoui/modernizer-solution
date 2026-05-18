@@ -1,7 +1,39 @@
 import re
 
 
-def analyze_rewrite_patch(patch_text):
+def _major_version(value):
+    match = re.match(r"^\D*(\d+)", str(value or ""))
+    return int(match.group(1)) if match else None
+
+
+def _facts_indicate_major_migration(analysis_facts, migration_signals):
+    facts = analysis_facts or {}
+    source_stack = facts.get("source_stack") or {}
+    target_stack = facts.get("target_stack") or {}
+    javax_count = int(facts.get("javax_count") or 0)
+
+    source_boot = _major_version(source_stack.get("spring_boot"))
+    target_boot = _major_version(target_stack.get("spring_boot"))
+    source_java = _major_version(source_stack.get("java"))
+    target_java = _major_version(target_stack.get("java"))
+
+    boot_gap = source_boot == 2 and target_boot == 3
+    java_gap = source_java == 11 and target_java == 17
+    javax_gap = javax_count > 0
+
+    if boot_gap:
+        migration_signals["api_or_boot_upgrade"] = True
+        migration_signals["boot_2_to_3_gap"] = True
+    if java_gap:
+        migration_signals["java_11_to_17_gap"] = True
+    if javax_gap:
+        migration_signals["javax_removed"] = True
+        migration_signals["javax_present"] = True
+
+    return boot_gap or java_gap or javax_gap
+
+
+def analyze_rewrite_patch(patch_text, analysis_facts=None):
     files = set()
     java_files = 0
     pom_files = 0
@@ -11,6 +43,9 @@ def analyze_rewrite_patch(patch_text):
     migration_signals = {
         "api_or_boot_upgrade": False,
         "javax_removed": False,
+        "boot_2_to_3_gap": False,
+        "java_11_to_17_gap": False,
+        "javax_present": False,
         "security_config_touched": False,
         "datasource_config_touched": False,
     }
@@ -52,7 +87,13 @@ def analyze_rewrite_patch(patch_text):
             if "javax." in line:
                 migration_signals["javax_removed"] = True
 
-    if not files:
+    has_fact_migration = not files and _facts_indicate_major_migration(
+        analysis_facts, migration_signals
+    )
+
+    if has_fact_migration:
+        level = "HIGH"
+    elif not files:
         level = "UNKNOWN"
     elif pom_files > 0 or len(high_risk) > 3 or (added + removed) > 250:
         level = "HIGH"

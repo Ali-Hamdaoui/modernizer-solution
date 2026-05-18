@@ -71,6 +71,9 @@ def _impact_summary(
             {
                 "api_or_boot_upgrade": False,
                 "javax_removed": False,
+                "boot_2_to_3_gap": False,
+                "java_11_to_17_gap": False,
+                "javax_present": False,
                 "security_config_touched": False,
                 "datasource_config_touched": False,
             },
@@ -81,7 +84,7 @@ def _impact_summary(
     }
 
 
-def run_openrewrite_dryrun(context):
+def run_openrewrite_dryrun(context, analysis_facts=None):
     result_data = {"status": "SKIPPED", "warnings": []}
     project_dir = Path(context.legacy_app_path)
     preview_path = context.get_output_path("rewrite_preview.json")
@@ -112,7 +115,10 @@ def run_openrewrite_dryrun(context):
             patch_target = Path(context.get_output_path("rewrite_dry_run.patch"))
             shutil.copyfile(patch_source, patch_target)
             result_data["patch_file"] = "rewrite_dry_run.patch"
-            impact = analyze_rewrite_patch(patch_target.read_text(encoding="utf-8"))
+            impact = analyze_rewrite_patch(
+                patch_target.read_text(encoding="utf-8"),
+                analysis_facts=analysis_facts,
+            )
             _write_json(
                 impact_path,
                 _impact_summary(
@@ -123,7 +129,16 @@ def run_openrewrite_dryrun(context):
                 ),
             )
         else:
-            _write_json(impact_path, _impact_summary(context, "WARNING", "UNKNOWN"))
+            impact = analyze_rewrite_patch("", analysis_facts=analysis_facts)
+            _write_json(
+                impact_path,
+                _impact_summary(
+                    context,
+                    "WARNING",
+                    impact["overall_impact"],
+                    analysis=impact,
+                ),
+            )
 
     except FileNotFoundError:
         result_data["status"] = "SKIPPED"

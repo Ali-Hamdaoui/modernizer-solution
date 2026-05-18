@@ -27,6 +27,9 @@ def test_low_impact_patch_summary():
     assert out["migration_signals"] == {
         "api_or_boot_upgrade": True,
         "javax_removed": True,
+        "boot_2_to_3_gap": False,
+        "java_11_to_17_gap": False,
+        "javax_present": False,
         "security_config_touched": False,
         "datasource_config_touched": False,
     }

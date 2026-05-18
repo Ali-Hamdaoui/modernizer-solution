@@ -122,11 +122,11 @@ def run_dependency_tree(context):
             text=True,
             check=True,
         )
+        graph = _parse_json_tree(result.stdout)
         raw_json = context.get_output_path("dependency-tree.raw.json")
         with open(raw_json, "w", encoding="utf-8") as handle:
             handle.write(result.stdout)
 
-        graph = _parse_json_tree(result.stdout)
         _write_graph(context, graph)
         return graph
     except Exception as json_error:

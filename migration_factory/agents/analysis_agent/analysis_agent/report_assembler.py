@@ -7,7 +7,7 @@ def assemble_report(context, maven_data, import_data):
         "schema_version": "1.0.0",
         "run_id": context.run_id,
         "agent": "analysis_agent",
-        "status": "COMPLETED",
+        "status": "PASS",
         "timestamp": datetime.datetime.now().isoformat(),
         
         # Ces clés doivent correspondre exactement aux sorties du maven_scanner

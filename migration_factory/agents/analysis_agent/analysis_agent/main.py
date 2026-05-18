@@ -42,6 +42,11 @@ def run_analysis_agent(context: MigrationContext) -> AnalysisResult:
     run_dependency_tree(context)
 
     import_results = scan_java_imports(legacy_root)
+    analysis_facts = {
+        "source_stack": maven_results.get("source_stack", {}),
+        "target_stack": maven_results.get("target_stack", {}),
+        "javax_count": import_results.get("javax_imports", 0),
+    }
 
     config_inv = scan_config_files(legacy_root)
     save_config_inventory(context, config_inv)
@@ -50,7 +55,7 @@ def run_analysis_agent(context: MigrationContext) -> AnalysisResult:
     test_inventory["surefire_summary"] = parse_surefire_reports(legacy_root)
     save_test_inventory(context, test_inventory)
 
-    rewrite_result = run_openrewrite_dryrun(context) or {}
+    rewrite_result = run_openrewrite_dryrun(context, analysis_facts=analysis_facts) or {}
     rewrite_status = rewrite_result.get("status", "SKIPPED")
     warnings.extend(rewrite_result.get("warnings", []))
 

@@ -45,6 +45,9 @@ VALID_PAYLOADS = {
         "migration_signals": {
             "api_or_boot_upgrade": True,
             "javax_removed": True,
+            "boot_2_to_3_gap": True,
+            "java_11_to_17_gap": True,
+            "javax_present": True,
             "security_config_touched": False,
             "datasource_config_touched": False,
         },

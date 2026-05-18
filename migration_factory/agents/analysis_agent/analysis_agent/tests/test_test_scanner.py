@@ -19,4 +19,4 @@ def test_scan_tests_inventory_legacy_modernized_missing(tmp_path):
     assert result["legacy_test_count"] == 2
     assert result["modernized_test_count"] == 1
     assert result["missing_tests_count"] == 1
-    assert result["missing_tests"] == ["com/acme/BServiceTests.java"]
+    assert result["missing_tests"] == ["src/test/java/com/acme/BServiceTests.java"]

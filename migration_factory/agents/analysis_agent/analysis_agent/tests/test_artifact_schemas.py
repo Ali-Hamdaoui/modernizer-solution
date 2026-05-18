@@ -16,7 +16,7 @@ def test_analysis_report_schema_accepts_expected_payload():
         "schema_version": "1.0.0",
         "run_id": "run-1",
         "agent": "analysis_agent",
-        "status": "COMPLETED",
+        "status": "PASS",
         "timestamp": "2026-05-14T00:00:00",
         "source_stack": {},
         "target_stack": {},
@@ -71,6 +71,9 @@ def test_rewrite_impact_summary_schema_enforces_impact_enum():
         "migration_signals": {
             "api_or_boot_upgrade": False,
             "javax_removed": False,
+            "boot_2_to_3_gap": False,
+            "java_11_to_17_gap": False,
+            "javax_present": False,
             "security_config_touched": False,
             "datasource_config_touched": False,
         },
