@@ -1,4 +1,5 @@
 import json
+import importlib.util
 from copy import deepcopy
 from pathlib import Path
 
@@ -14,6 +15,14 @@ from migration_factory.contracts import (
 )
 
 SCHEMA_DIR = Path(__file__).resolve().parents[2] / "migration_factory" / "contracts" / "schemas"
+REPORT_ASSEMBLER_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "migration_factory"
+    / "agents"
+    / "analysis_agent"
+    / "analysis_agent"
+    / "report_assembler.py"
+)
 
 
 def _load_schema(name: str) -> dict:
@@ -31,6 +40,16 @@ def _base(status: str = "PASS") -> dict:
         "status": status,
         "artifact_refs": {"self": "artifact.json"},
     }
+
+
+class _Context:
+    run_id = "run-1"
+
+    def __init__(self, output_dir: Path) -> None:
+        self.output_dir = output_dir
+
+    def get_output_path(self, name: str) -> str:
+        return str(self.output_dir / name)
 
 
 VALID_PAYLOADS = {
@@ -171,6 +190,31 @@ VALID_PAYLOADS = {
 @pytest.mark.parametrize("schema_name,payload", VALID_PAYLOADS.items())
 def test_contract_schemas_accept_valid_payloads(schema_name: str, payload: dict) -> None:
     _validate(schema_name, payload)
+
+
+def test_generated_analysis_report_validates_against_shared_schema(tmp_path: Path) -> None:
+    spec = importlib.util.spec_from_file_location("report_assembler", REPORT_ASSEMBLER_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    report_assembler = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(report_assembler)
+
+    report = report_assembler.assemble_report(
+        _Context(tmp_path),
+        {
+            "source_stack": {"build_tool": "maven", "java": "11", "spring_boot": "2.7"},
+            "target_stack": {"build_tool": "maven", "java": "17", "spring_boot": "3.5.14"},
+            "project_structure": {"modules": ["app"]},
+        },
+        {
+            "javax_imports": 1,
+            "jakarta_imports": 0,
+            "spring_imports": 2,
+            "files_with_javax": ["src/main/java/App.java"],
+        },
+    )
+
+    _validate("analysis_report.schema.json", report)
 
 
 def test_schema_enums_match_contract_constants() -> None:

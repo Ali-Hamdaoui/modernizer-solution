@@ -35,6 +35,17 @@ def assemble_report(context, maven_data, import_data):
             "status": "SKIPPED",
             "additional_risks": [],
             "recommendations": []
+        },
+
+        "artifact_refs": {
+            "self": "analysis_report.json",
+            "dependency_graph": "dependency_graph.json",
+            "test_inventory": "test_inventory.json",
+            "analysis_summary": "analysis_summary.md",
+            "rewrite_preview": "rewrite_preview.json",
+            "rewrite_plugin_plan": "rewrite_plugin_plan.json",
+            "rewrite_dry_run": "rewrite_dry_run.patch",
+            "rewrite_impact_summary": "rewrite_impact_summary.json"
         }
     }
     

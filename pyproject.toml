@@ -9,11 +9,14 @@ description = "Minimal migration factory orchestration scaffold"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+  "jsonschema",
   "langgraph",
+  "PyYAML",
 ]
 
 [project.optional-dependencies]
 test = [
+  "jsonschema",
   "pytest",
 ]
 

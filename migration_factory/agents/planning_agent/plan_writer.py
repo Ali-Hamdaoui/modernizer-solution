@@ -6,9 +6,7 @@ from pathlib import Path
 from migration_factory.agents.planning_agent.paths import get_run_planning_dir
 from migration_factory.agents.planning_agent.profile_compatibility import StackFingerprint
 from migration_factory.agents.planning_agent.unit_builder import MigrationUnit
-
-
-SCHEMA_VERSION = "1.0"
+from migration_factory.contracts.constants import SCHEMA_VERSION
 
 
 @dataclass(frozen=True)
@@ -44,17 +42,21 @@ def write_migration_units(
     planning_dir.mkdir(parents=True, exist_ok=True)
 
     artifact_path = planning_dir / "migration_units.yaml"
-    artifact_path.write_text(_render_units_yaml(units), encoding="utf-8")
+    artifact_path.write_text(_render_units_yaml(run_id, units), encoding="utf-8")
     return artifact_path
 
 
 def _render_plan_yaml(payload: MigrationPlanPayload) -> str:
     executable = not bool(payload.blockers)
     unit_refs = [unit.id for unit in payload.units]
+    status = _status(payload.blockers, payload.warnings, payload.risks)
+    risk = _risk(payload.blockers, payload.risks)
 
     lines: list[str] = [
         f"schema_version: {_yaml_quote(SCHEMA_VERSION)}",
         f"run_id: {_yaml_quote(payload.run_id)}",
+        f"status: {_yaml_quote(status)}",
+        f"risk: {_yaml_quote(risk)}",
         f"profile: {_yaml_quote(payload.profile)}",
         "source_stack:",
         f"  build_tool: {_yaml_scalar(payload.source_stack.build_tool)}",
@@ -75,13 +77,23 @@ def _render_plan_yaml(payload: MigrationPlanPayload) -> str:
     lines.extend(_yaml_list(payload.warnings, indent=2))
     lines.append("unit_references:")
     lines.extend(_yaml_list(tuple(unit_refs), indent=2))
+    lines.append("artifact_refs:")
+    lines.append("  self: \"migration_plan.yaml\"")
+    lines.append("  migration_units: \"migration_units.yaml\"")
+    lines.append("  plan_summary: \"plan_summary.md\"")
+    lines.append("  approval_request: \"approval_request.json\"")
     lines.append("")
     return "\n".join(lines)
 
 
-def _render_units_yaml(units: tuple[MigrationUnit, ...]) -> str:
+def _render_units_yaml(run_id: str, units: tuple[MigrationUnit, ...]) -> str:
     lines: list[str] = [
         f"schema_version: {_yaml_quote(SCHEMA_VERSION)}",
+        f"run_id: {_yaml_quote(run_id)}",
+        "status: \"PASS\"",
+        "artifact_refs:",
+        "  self: \"migration_units.yaml\"",
+        "  migration_plan: \"migration_plan.yaml\"",
         "units:",
     ]
 
@@ -133,3 +145,21 @@ def _yaml_scalar(value: str | None) -> str:
 def _yaml_quote(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _status(blockers: tuple[str, ...], warnings: tuple[str, ...], risks: tuple[str, ...]) -> str:
+    if blockers or any("[BLOCKER]" in risk for risk in risks):
+        return "FAIL"
+    if warnings or risks:
+        return "WARNING"
+    return "PASS"
+
+
+def _risk(blockers: tuple[str, ...], risks: tuple[str, ...]) -> str:
+    if blockers or any("[BLOCKER]" in risk for risk in risks):
+        return "BLOCKED"
+    if any("[HIGH]" in risk or "HIGH" in risk for risk in risks):
+        return "HIGH"
+    if any("[WARNING]" in risk or "MEDIUM" in risk for risk in risks):
+        return "MEDIUM"
+    return "LOW" if risks else "UNKNOWN"

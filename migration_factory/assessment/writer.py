@@ -12,6 +12,7 @@ from migration_factory.contracts.assessment_artifacts import (
     REQUIRED_ASSESSMENT_INPUT_ARTIFACTS,
 )
 from migration_factory.contracts.constants import SCHEMA_VERSION
+from migration_factory.contracts.schema_validation import validate_against_schema
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,12 @@ def write_assessment_artifacts(modernized_app_path: str | Path, run_id: str) -> 
     approval = _load_json(planning_dir / "approval_request.json")
     validation = _load_json(planning_dir / "plan_validation_report.json")
     copilot = _load_optional_json(planning_dir / "copilot_assist.json")
+    schema_blockers = _validate_required_input_schemas(
+        analysis_report=analysis_report,
+        migration_plan=migration_plan,
+        migration_units=migration_units,
+        approval=approval,
+    )
 
     report = _build_report(
         run_id=run_id,
@@ -56,6 +63,7 @@ def write_assessment_artifacts(modernized_app_path: str | Path, run_id: str) -> 
         approval=approval,
         validation=validation,
         copilot=copilot,
+        schema_blockers=schema_blockers,
     )
 
     assessment_dir.mkdir(parents=True, exist_ok=True)
@@ -101,12 +109,24 @@ def _build_report(
     approval: dict[str, Any],
     validation: dict[str, Any],
     copilot: dict[str, Any] | None,
+    schema_blockers: list[str],
 ) -> dict[str, Any]:
-    blockers = _as_string_list(approval.get("blockers")) + _as_string_list(migration_plan.get("blockers"))
-    blockers += _as_string_list(validation.get("reasons"))
-    warnings = _as_string_list(approval.get("warnings")) + _as_string_list(migration_plan.get("warnings"))
+    blockers = _dedupe_strings(
+        [
+            *schema_blockers,
+            *_as_string_list(approval.get("blockers")),
+            *_as_string_list(migration_plan.get("blockers")),
+            *_as_string_list(validation.get("reasons")),
+        ]
+    )
+    warnings = _dedupe_strings(
+        [
+            *_as_string_list(approval.get("warnings")),
+            *_as_string_list(migration_plan.get("warnings")),
+        ]
+    )
     if read_only and read_only.get("source_modified") is True:
-        blockers.append("Analysis read-only verification failed.")
+        blockers = _dedupe_strings([*blockers, "Analysis read-only verification failed."])
 
     approval_ready = (
         not blockers
@@ -268,6 +288,37 @@ def _as_string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value]
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _validate_required_input_schemas(
+    *,
+    analysis_report: dict[str, Any],
+    migration_plan: dict[str, Any],
+    migration_units: dict[str, Any],
+    approval: dict[str, Any],
+) -> list[str]:
+    artifacts = (
+        ("analysis/analysis_report.json", analysis_report, "analysis_report.schema.json"),
+        ("planning/migration_plan.yaml", migration_plan, "migration_plan.schema.json"),
+        ("planning/migration_units.yaml", migration_units, "migration_units.schema.json"),
+        ("planning/approval_request.json", approval, "approval_request.schema.json"),
+    )
+    blockers: list[str] = []
+    for artifact_name, payload, schema_name in artifacts:
+        for error in validate_against_schema(payload, schema_name):
+            blockers.append(f"Schema validation failed for {artifact_name}: {error}")
+    return blockers
 
 
 def _load_json(path: Path) -> dict[str, Any]:

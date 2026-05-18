@@ -2,9 +2,19 @@ import hashlib
 import json
 from pathlib import Path
 
+import jsonschema
+import yaml
+
 from migration_factory.agents.planning_agent.node import planning_node
 from migration_factory.agents.planning_agent.runner import main as planning_runner_main
 from migration_factory.contracts.planning_artifacts import PLANNING_OUTPUT_ARTIFACTS
+
+SCHEMA_DIR = Path(__file__).resolve().parents[3] / "migration_factory" / "contracts" / "schemas"
+
+
+def _validate_schema(schema_name: str, payload: dict) -> None:
+    schema = json.loads((SCHEMA_DIR / schema_name).read_text(encoding="utf-8"))
+    jsonschema.validate(payload, schema)
 
 
 def _write_analysis_fixture(analysis_dir: Path) -> None:
@@ -102,6 +112,13 @@ def test_planning_node_full_flow_writes_required_artifacts_without_mutating_sour
 
     validation_payload = json.loads((planning_dir / "plan_validation_report.json").read_text(encoding="utf-8"))
     assert validation_payload["status"] == "PASS"
+
+    plan_payload = yaml.safe_load((planning_dir / "migration_plan.yaml").read_text(encoding="utf-8"))
+    units_payload = yaml.safe_load((planning_dir / "migration_units.yaml").read_text(encoding="utf-8"))
+    _validate_schema("migration_plan.schema.json", plan_payload)
+    _validate_schema("migration_units.schema.json", units_payload)
+    assert plan_payload["schema_version"] == "1.0.0"
+    assert units_payload["schema_version"] == "1.0.0"
 
     assist_payload = json.loads((planning_dir / "copilot_assist.json").read_text(encoding="utf-8"))
     assert assist_payload["status"] == "SKIPPED"

@@ -13,6 +13,7 @@ def _write_required_artifacts(analysis_dir: Path, planning_dir: Path, run_id: st
                 "schema_version": "1.0.0",
                 "run_id": run_id,
                 "status": "PASS",
+                "artifact_refs": {"self": "analysis_report.json"},
                 "inventory": {
                     "build_tool": "maven",
                     "java_version": "11",
@@ -28,22 +29,36 @@ def _write_required_artifacts(analysis_dir: Path, planning_dir: Path, run_id: st
     (planning_dir / "migration_plan.yaml").write_text(
         yaml.safe_dump(
             {
-                "schema_version": "1.0",
+                "schema_version": "1.0.0",
                 "run_id": run_id,
+                "status": "PASS",
+                "risk": "UNKNOWN",
                 "profile": "java17",
                 "source_stack": {"build_tool": "maven", "java": "11", "spring_boot": "2.7"},
                 "target_stack": {"build_tool": "maven", "java": "17", "spring_boot": "3.5.14"},
                 "executable": True,
                 "requires_human_approval": True,
+                "risks": [],
                 "blockers": [],
                 "warnings": [],
+                "unit_references": [],
+                "artifact_refs": {"self": "migration_plan.yaml"},
             },
             sort_keys=False,
         ),
         encoding="utf-8",
     )
     (planning_dir / "migration_units.yaml").write_text(
-        yaml.safe_dump({"schema_version": "1.0", "units": []}, sort_keys=False),
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0.0",
+                "run_id": run_id,
+                "status": "PASS",
+                "artifact_refs": {"self": "migration_units.yaml"},
+                "units": [],
+            },
+            sort_keys=False,
+        ),
         encoding="utf-8",
     )
     (planning_dir / "plan_summary.md").write_text("plan ok\n", encoding="utf-8")
@@ -52,12 +67,17 @@ def _write_required_artifacts(analysis_dir: Path, planning_dir: Path, run_id: st
             {
                 "schema_version": "1.0.0",
                 "run_id": run_id,
+                "agent": "planning_agent",
+                "phase": "approval",
                 "status": "PASS",
                 "profile": "java17",
                 "requires_human_approval": True,
+                "decision_options": ["approved", "rejected", "replan_required"],
                 "recommended_decision": None,
+                "units_to_execute": [],
                 "blockers": [],
                 "warnings": [],
+                "artifact_refs": {"self": "approval_request.json"},
             }
         ),
         encoding="utf-8",

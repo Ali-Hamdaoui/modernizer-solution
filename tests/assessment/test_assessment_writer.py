@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import jsonschema
 import pytest
 import yaml
 
@@ -8,6 +9,13 @@ from migration_factory.assessment import (
     AssessmentArtifactError,
     write_assessment_artifacts,
 )
+
+SCHEMA_DIR = Path(__file__).resolve().parents[2] / "migration_factory" / "contracts" / "schemas"
+
+
+def _validate_schema(schema_name: str, payload: dict) -> None:
+    schema = json.loads((SCHEMA_DIR / schema_name).read_text(encoding="utf-8"))
+    jsonschema.validate(payload, schema)
 
 
 def _run_dirs(tmp_path: Path, run_id: str = "run-1") -> tuple[Path, Path, Path]:
@@ -69,8 +77,10 @@ def _write_required_artifacts(analysis_dir: Path, planning_dir: Path, run_id: st
     (planning_dir / "migration_plan.yaml").write_text(
         yaml.safe_dump(
             {
-                "schema_version": "1.0",
+                "schema_version": "1.0.0",
                 "run_id": run_id,
+                "status": "WARNING",
+                "risk": "MEDIUM",
                 "profile": "java17",
                 "source_stack": {"build_tool": "maven", "java": "11", "spring_boot": "2.7"},
                 "target_stack": {"build_tool": "maven", "java": "17", "spring_boot": "3.5.14"},
@@ -80,6 +90,10 @@ def _write_required_artifacts(analysis_dir: Path, planning_dir: Path, run_id: st
                 "blockers": [],
                 "warnings": ["Review OpenRewrite dry-run before approval."],
                 "unit_references": ["baseline"],
+                "artifact_refs": {
+                    "self": "migration_plan.yaml",
+                    "migration_units": "migration_units.yaml",
+                },
             },
             sort_keys=False,
         ),
@@ -88,7 +102,10 @@ def _write_required_artifacts(analysis_dir: Path, planning_dir: Path, run_id: st
     (planning_dir / "migration_units.yaml").write_text(
         yaml.safe_dump(
             {
-                "schema_version": "1.0",
+                "schema_version": "1.0.0",
+                "run_id": run_id,
+                "status": "PASS",
+                "artifact_refs": {"self": "migration_units.yaml"},
                 "units": [
                     {
                         "id": "baseline",
@@ -108,12 +125,21 @@ def _write_required_artifacts(analysis_dir: Path, planning_dir: Path, run_id: st
             {
                 "schema_version": "1.0.0",
                 "run_id": run_id,
+                "agent": "planning_agent",
+                "phase": "approval",
                 "status": "PASS",
                 "profile": "java17",
                 "requires_human_approval": True,
+                "decision_options": ["approved", "rejected", "replan_required"],
                 "recommended_decision": None,
+                "units_to_execute": ["baseline"],
                 "blockers": [],
                 "warnings": ["Review OpenRewrite dry-run before approval."],
+                "artifact_refs": {
+                    "migration_plan": "migration_plan.yaml",
+                    "migration_units": "migration_units.yaml",
+                    "plan_summary": "plan_summary.md",
+                },
             }
         ),
         encoding="utf-8",
@@ -151,6 +177,7 @@ def test_assessment_report_uses_artifact_refs_without_duplication(tmp_path: Path
     assert report["artifact_refs"]["read_only_verification"] == "../analysis/read_only_verification.json"
     assert "inventory" not in report["analysis"]
     assert "unit_references" not in report["planning"]
+    assert report["warnings"] == ["Review OpenRewrite dry-run before approval."]
 
 
 def test_assessment_summary_is_generated_and_never_claims_execution(tmp_path: Path) -> None:
@@ -159,6 +186,7 @@ def test_assessment_summary_is_generated_and_never_claims_execution(tmp_path: Pa
 
     result = write_assessment_artifacts(app_dir, "run-1")
 
+    _validate_schema("assessment_report.schema.json", result.report)
     summary = result.summary_path.read_text(encoding="utf-8")
     assert "OpenRewrite dry-run: PASS (MEDIUM)" in summary
     assert "Transformation was not executed." in summary
@@ -186,3 +214,22 @@ def test_assessment_propagates_failed_read_only_status(tmp_path: Path) -> None:
     assert result.report["read_only_verification"]["status"] == "FAIL"
     assert result.report["read_only_verification"]["source_modified"] is True
     assert result.report["approval_readiness"]["status"] == "BLOCKED"
+
+
+def test_assessment_blocks_schema_invalid_planning_artifact(tmp_path: Path) -> None:
+    app_dir, analysis_dir, planning_dir = _run_dirs(tmp_path)
+    _write_required_artifacts(analysis_dir, planning_dir)
+    plan = yaml.safe_load((planning_dir / "migration_plan.yaml").read_text(encoding="utf-8"))
+    plan["schema_version"] = "1.0"
+    (planning_dir / "migration_plan.yaml").write_text(
+        yaml.safe_dump(plan, sort_keys=False), encoding="utf-8"
+    )
+
+    result = write_assessment_artifacts(app_dir, "run-1")
+
+    assert result.report["status"] == "FAIL"
+    assert result.report["approval_readiness"]["status"] == "BLOCKED"
+    assert any(
+        blocker.startswith("Schema validation failed for planning/migration_plan.yaml")
+        for blocker in result.report["blockers"]
+    )

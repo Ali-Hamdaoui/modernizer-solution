@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 from migration_factory.agents.planning_agent.paths import get_run_planning_dir
+from migration_factory.contracts.schema_validation import validate_against_schema
 from migration_factory.contracts.constants import APPROVAL_DECISION_VALUES
 
 
@@ -59,7 +60,7 @@ def validate_planning_outputs(modernized_app_path: str, run_id: str) -> PlanVali
 
     if not reasons:
         _validate_plan_yaml(artifact_paths["migration_plan.yaml"], run_id, reasons)
-        _validate_units_yaml(artifact_paths["migration_units.yaml"], reasons)
+        _validate_units_yaml(artifact_paths["migration_units.yaml"], run_id, reasons)
         _validate_approval_json(artifact_paths["approval_request.json"], run_id, reasons)
 
     status = "PASS" if not reasons else "FAIL"
@@ -86,14 +87,33 @@ def _validate_plan_yaml(path: Path, run_id: str, reasons: list[str]) -> None:
     if not isinstance(payload, dict):
         reasons.append("migration_plan.yaml must be YAML mapping")
         return
+    _append_schema_reasons("migration_plan.yaml", payload, "migration_plan.schema.json", reasons)
 
-    required_fields = ("run_id", "executable", "requires_human_approval", "risks", "unit_references")
+    required_fields = (
+        "schema_version",
+        "run_id",
+        "status",
+        "risk",
+        "artifact_refs",
+        "executable",
+        "requires_human_approval",
+        "risks",
+        "unit_references",
+    )
     for field in required_fields:
         if field not in payload:
             reasons.append(f"migration_plan.yaml missing field: {field}")
 
+    if payload.get("schema_version") != "1.0.0":
+        reasons.append("migration_plan.yaml schema_version must be 1.0.0")
     if payload.get("run_id") != run_id:
         reasons.append("migration_plan.yaml run_id mismatch")
+    if payload.get("status") not in {"PASS", "FAIL", "WARNING", "SKIPPED"}:
+        reasons.append("migration_plan.yaml status must be a supported status")
+    if payload.get("risk") not in {"LOW", "MEDIUM", "HIGH", "BLOCKED", "UNKNOWN"}:
+        reasons.append("migration_plan.yaml risk must be a supported risk")
+    if not isinstance(payload.get("artifact_refs"), dict):
+        reasons.append("migration_plan.yaml artifact_refs must be object")
     if not isinstance(payload.get("executable"), bool):
         reasons.append("migration_plan.yaml executable must be boolean")
     if payload.get("requires_human_approval") is not True:
@@ -104,11 +124,24 @@ def _validate_plan_yaml(path: Path, run_id: str, reasons: list[str]) -> None:
         reasons.append("migration_plan.yaml unit_references must be list")
 
 
-def _validate_units_yaml(path: Path, reasons: list[str]) -> None:
+def _validate_units_yaml(path: Path, run_id: str, reasons: list[str]) -> None:
     payload = _load_yaml(path, reasons)
     if not isinstance(payload, dict):
         reasons.append("migration_units.yaml must be YAML mapping")
         return
+    _append_schema_reasons("migration_units.yaml", payload, "migration_units.schema.json", reasons)
+
+    for field in ("schema_version", "run_id", "status", "artifact_refs", "units"):
+        if field not in payload:
+            reasons.append(f"migration_units.yaml missing field: {field}")
+    if payload.get("schema_version") != "1.0.0":
+        reasons.append("migration_units.yaml schema_version must be 1.0.0")
+    if payload.get("run_id") != run_id:
+        reasons.append("migration_units.yaml run_id mismatch")
+    if payload.get("status") not in {"PASS", "FAIL", "WARNING", "SKIPPED"}:
+        reasons.append("migration_units.yaml status must be a supported status")
+    if not isinstance(payload.get("artifact_refs"), dict):
+        reasons.append("migration_units.yaml artifact_refs must be object")
 
     units = payload.get("units")
     if not isinstance(units, list):
@@ -148,6 +181,10 @@ def _validate_approval_json(path: Path, run_id: str, reasons: list[str]) -> None
     if not isinstance(payload, dict):
         reasons.append("approval_request.json must be object")
         return
+    _append_schema_reasons(
+        "approval_request.json", payload, "approval_request.schema.json", reasons
+    )
+
     if payload.get("run_id") != run_id:
         reasons.append("approval_request.json run_id mismatch")
     if payload.get("requires_human_approval") is not True:
@@ -200,3 +237,13 @@ def _load_yaml(path: Path, reasons: list[str]) -> object:
     except (OSError, yaml.YAMLError) as exc:
         reasons.append(f"{path.name} invalid: {exc}")
         return None
+
+
+def _append_schema_reasons(
+    artifact_name: str,
+    payload: object,
+    schema_name: str,
+    reasons: list[str],
+) -> None:
+    for error in validate_against_schema(payload, schema_name):
+        reasons.append(f"{artifact_name} schema violation: {error}")
