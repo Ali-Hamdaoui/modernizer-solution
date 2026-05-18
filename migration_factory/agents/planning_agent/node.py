@@ -58,7 +58,12 @@ from migration_factory.contracts.planning_assist import (
 from migration_factory.orchestrator.state import MigrationState
 
 
+def _get_profile_id(state: MigrationState) -> str:
+    return state.get("profile") or state.get("profile_id", "")
+
+
 def planning_node(state: MigrationState) -> MigrationState:
+    profile_id = _get_profile_id(state)
     output_paths = {
         name: str(path)
         for name, path in get_planning_output_artifact_paths(
@@ -102,7 +107,7 @@ def planning_node(state: MigrationState) -> MigrationState:
 
     loaded_profile = load_migration_profile(
         ai_hub_path=state.get("ai_hub_path", ""),
-        profile_id=state.get("profile", ""),
+        profile_id=profile_id,
     )
     if not loaded_profile.ok:
         return {
@@ -152,7 +157,7 @@ def planning_node(state: MigrationState) -> MigrationState:
         modernized_app_path=state.get("modernized_app_path", ""),
         payload=MigrationPlanPayload(
             run_id=state.get("run_id", ""),
-            profile=state.get("profile", ""),
+            profile=profile_id,
             source_stack=compatibility.source_stack,
             target_stack=compatibility.target_stack,
             risks=tuple(risk_messages),
@@ -168,14 +173,14 @@ def planning_node(state: MigrationState) -> MigrationState:
     )
     deterministic_approval_summary = (
         f"Planning generated {len(units)} migration units for profile "
-        f"{state.get('profile', '')}."
+        f"{profile_id}."
     )
 
     write_approval_request(
         modernized_app_path=state.get("modernized_app_path", ""),
         payload=ApprovalRequestPayload(
             run_id=state.get("run_id", ""),
-            profile=state.get("profile", ""),
+            profile=profile_id,
             summary=deterministic_approval_summary,
             units=units,
             blockers=tuple(blocker_messages),
@@ -186,7 +191,7 @@ def planning_node(state: MigrationState) -> MigrationState:
         modernized_app_path=state.get("modernized_app_path", ""),
         payload=PlanSummaryPayload(
             run_id=state.get("run_id", ""),
-            profile=state.get("profile", ""),
+            profile=profile_id,
             source_stack=compatibility.source_stack,
             target_stack=compatibility.target_stack,
             risks=tuple(risk_messages),
@@ -227,7 +232,7 @@ def planning_node(state: MigrationState) -> MigrationState:
             model=config.model_override or config.default_model,
             prompt="Review planning output for advisory feedback only.",
             context={
-                "profile": state.get("profile", ""),
+                "profile": profile_id,
                 "source_stack": compatibility.source_stack,
                 "target_stack": compatibility.target_stack,
                 "risks": risk_messages,
@@ -280,7 +285,7 @@ def planning_node(state: MigrationState) -> MigrationState:
             model_source=assist_result.model_source,
             model_verified=assist_result.model_verified,
             inputs_summary={
-                "profile": state.get("profile", ""),
+                "profile": profile_id,
                 "units_count": len(units),
                 "risk_count": len(risk_messages),
                 "warning_count": len(deterministic_warnings),

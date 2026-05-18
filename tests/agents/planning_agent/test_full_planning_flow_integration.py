@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 from migration_factory.agents.planning_agent.node import planning_node
+from migration_factory.agents.planning_agent.runner import main as planning_runner_main
 from migration_factory.contracts.planning_artifacts import PLANNING_OUTPUT_ARTIFACTS
 
 
@@ -124,3 +125,58 @@ def test_planning_node_full_flow_writes_required_artifacts_without_mutating_sour
 
     for rel_path, digest in hub_before.items():
         assert hub_after.get(rel_path) == digest
+
+
+def test_planning_node_accepts_profile_id_alias(tmp_path: Path) -> None:
+    app_dir = tmp_path / "app"
+    hub_dir = tmp_path / "ai-hub"
+    run_id = "profile-id-alias"
+
+    _write_analysis_fixture(app_dir / ".migration" / "runs" / run_id / "analysis")
+    _write_profile(hub_dir)
+
+    state = {
+        "run_id": run_id,
+        "profile_id": "java17",
+        "modernized_app_path": str(app_dir),
+        "ai_hub_path": str(hub_dir),
+    }
+    result = planning_node(state)
+
+    assert result["planning_status"] == "PASS"
+    planning_dir = app_dir / ".migration" / "runs" / run_id / "planning"
+    plan_text = (planning_dir / "migration_plan.yaml").read_text(encoding="utf-8")
+    assert 'profile: "java17"' in plan_text
+
+
+def test_planning_runner_writes_artifacts_under_modernized_run(tmp_path: Path, monkeypatch) -> None:
+    legacy_dir = tmp_path / "legacy"
+    app_dir = tmp_path / "app"
+    hub_dir = tmp_path / "ai-hub"
+    run_id = "runner-flow"
+
+    legacy_dir.mkdir()
+    _write_analysis_fixture(app_dir / ".migration" / "runs" / run_id / "analysis")
+    _write_profile(hub_dir)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "planning-runner",
+            "--run-id",
+            run_id,
+            "--modernized",
+            str(app_dir),
+            "--legacy",
+            str(legacy_dir),
+            "--ai-hub",
+            str(hub_dir),
+            "--profile",
+            "java17",
+        ],
+    )
+
+    assert planning_runner_main() == 0
+    planning_dir = app_dir / ".migration" / "runs" / run_id / "planning"
+    for artifact in PLANNING_OUTPUT_ARTIFACTS:
+        assert (planning_dir / artifact).exists()

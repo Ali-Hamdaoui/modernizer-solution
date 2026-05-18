@@ -16,8 +16,22 @@ To be defined with the team:
 - No live Copilot SDK/MCP/network calls.
 - Default config disables assist.
 
+Manual run after Analysis Agent:
+
+```bash
+PYTHONPATH=. python -m migration_factory.agents.planning_agent.runner \
+  --run-id <run_id> \
+  --modernized <modernized_app_path> \
+  --legacy <legacy_app_path> \
+  --ai-hub <modernizer-solution-ai-hub_path> \
+  --profile <profile_id>
+```
+
+Planning reads Analysis artifacts from `<modernized>/.migration/runs/<run_id>/analysis`
+and writes Planning artifacts to `<modernized>/.migration/runs/<run_id>/planning`.
+
 Manual validation:
 
 1. `python -m compileall migration_factory`
-2. `python -c "from migration_factory.agents.planning_agent.node import planning_node; print(planning_node({'run_id':'r1'}))"`
+2. `PYTHONPATH=. python -m migration_factory.agents.planning_agent.runner --run-id r1 --modernized /path/to/modernized --legacy /path/to/legacy --ai-hub /path/to/modernizer-solution-ai-hub --profile java17`
 3. Confirm output includes `planning_assist_status='SKIPPED'` by default.
