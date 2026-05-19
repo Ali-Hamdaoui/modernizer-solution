@@ -69,3 +69,6 @@ Each failure JSON includes:
 - exit code
 - module and main class inputs
 - stdout/stderr tails for downstream diagnosis
+
+jakarta error run this command : PS C:\Users\ur_folder\shoppoc-app> C:\Tools\apache-maven-3.9.15\bin\mvn.cmd clean install -DskipTests
+
