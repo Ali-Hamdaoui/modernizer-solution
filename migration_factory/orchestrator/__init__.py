@@ -36,6 +36,15 @@ from migration_factory.orchestrator.state import (
     build_initial_state,
 )
 
+
+def __getattr__(name: str):
+    if name in {"main", "parse_args"}:
+        from migration_factory.orchestrator import runner
+
+        return getattr(runner, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "APPROVAL_DECISION_VALUES",
     "APPROVAL_STATUS_VALUES",
@@ -52,6 +61,8 @@ __all__ = [
     "build_approval_payload",
     "default_checkpointer",
     "default_phase_services",
+    "main",
+    "parse_args",
     "require_thread_id",
     "run_analysis_phase",
     "run_assessment_phase",
