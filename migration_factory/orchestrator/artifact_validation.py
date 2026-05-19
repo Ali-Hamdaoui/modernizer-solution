@@ -38,6 +38,14 @@ ASSESSMENT_REQUIRED_ARTIFACTS = (
     "assessment_report.json",
     "assessment_summary.md",
 )
+SUCCESSFUL_FULL_SANDBOX_REQUIRED_ARTIFACT_REFS = (
+    "approval_decision",
+    "approved_plan_lock",
+    "transformation_execution_plan",
+    "phase2_log",
+    "migration_ledger",
+    "orchestration_summary",
+)
 
 SCHEMA_BACKED_ARTIFACTS = {
     "analysis_report.json": "analysis_report.schema.json",
@@ -98,6 +106,54 @@ def validate_assessment_artifacts(state: MigrationState) -> ArtifactValidationRe
                 if claims.get(claim) is True:
                     result.blockers.append(f"assessment_report.json execution claim {claim} must be false")
     return _finish(result)
+
+
+def validate_successful_full_sandbox_orchestration(state: MigrationState) -> ArtifactValidationResult:
+    artifact_refs = dict(state.get("artifact_refs", {}) or {})
+    blockers: list[str] = []
+    warnings: list[str] = []
+
+    expected_values = {
+        "approval_status": "COMPLETED",
+        "approval_decision": "approved",
+        "orchestration_status": "PASS",
+        "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+        "build_status": "BUILD_PASSED_IN_SANDBOX",
+        "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+    }
+    for key, expected in expected_values.items():
+        if state.get(key) != expected:
+            blockers.append(f"{key} must be {expected} for successful full_sandbox_migration")
+
+    if state.get("errors"):
+        blockers.append("successful full_sandbox_migration must not have errors")
+    if state.get("blockers"):
+        blockers.append("successful full_sandbox_migration must not have blockers")
+
+    sandbox_path = str(state.get("sandbox_path") or "")
+    if not sandbox_path:
+        blockers.append("sandbox_path is required for successful full_sandbox_migration")
+    elif not Path(sandbox_path).is_dir():
+        blockers.append(f"Missing required sandbox_path: {sandbox_path}")
+
+    for ref_name in SUCCESSFUL_FULL_SANDBOX_REQUIRED_ARTIFACT_REFS:
+        ref = artifact_refs.get(ref_name)
+        if not ref:
+            blockers.append(f"Missing required orchestration artifact ref: {ref_name}")
+            continue
+        if not Path(ref).is_file():
+            blockers.append(f"Missing required orchestration artifact: {ref_name}")
+
+    return ArtifactValidationResult(
+        valid=not blockers,
+        artifact_refs={
+            name: artifact_refs[name]
+            for name in SUCCESSFUL_FULL_SANDBOX_REQUIRED_ARTIFACT_REFS
+            if name in artifact_refs
+        },
+        blockers=blockers,
+        warnings=warnings,
+    )
 
 
 def _validate_artifacts(

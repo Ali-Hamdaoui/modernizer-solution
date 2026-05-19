@@ -13,7 +13,7 @@ from migration_factory.orchestrator import graph as graph_module
 from migration_factory.orchestrator.phase_services import record_approval_decision_phase
 from migration_factory.orchestrator.preflight import build_langgraph_config
 from migration_factory.orchestrator.state import APPROVAL_DECISION_VALUES
-from migration_factory.orchestrator.summary import write_orchestration_summary
+from migration_factory.orchestrator.summary import finalize_orchestration_state
 
 
 class ResumeCliError(ValueError):
@@ -50,7 +50,6 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
-    write_orchestration_summary(result)
     print(json.dumps(_to_json_safe(result), indent=2, sort_keys=True))
     return 0
 
@@ -82,13 +81,15 @@ def resume_orchestration(
         config=config,
     )
     if _resume_completed(result, resolved_run_dir):
-        return result
-    return _resume_from_interrupt_snapshot(
-        run_id=run_id,
-        run_dir=resolved_run_dir,
-        decision=decision,
-        approved_by=approved_by,
-        comments=comments,
+        return finalize_orchestration_state(result)
+    return finalize_orchestration_state(
+        _resume_from_interrupt_snapshot(
+            run_id=run_id,
+            run_dir=resolved_run_dir,
+            decision=decision,
+            approved_by=approved_by,
+            comments=comments,
+        )
     )
 
 

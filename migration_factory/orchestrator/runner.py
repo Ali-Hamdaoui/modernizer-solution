@@ -17,7 +17,10 @@ from migration_factory.orchestrator.state import (
     READ_ONLY_ASSESSMENT_MODE,
     build_initial_state,
 )
-from migration_factory.orchestrator.summary import write_orchestration_summary
+from migration_factory.orchestrator.summary import (
+    finalize_orchestration_state,
+    write_orchestration_summary,
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -67,7 +70,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if _extract_interrupt_payload(result) is None:
-        write_orchestration_summary(result)
+        result = finalize_orchestration_state(
+            result,
+            summary_writer=write_orchestration_summary,
+        )
 
     print(json.dumps(_render_result(result), indent=2, sort_keys=True))
     return 0

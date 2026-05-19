@@ -4,6 +4,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+from migration_factory.orchestrator.artifact_validation import (
+    validate_successful_full_sandbox_orchestration,
+)
+from migration_factory.orchestrator.state import FULL_SANDBOX_MIGRATION_MODE
 from migration_factory.orchestrator.state import MigrationState
 
 
@@ -25,6 +29,7 @@ def build_orchestration_summary(state: MigrationState) -> dict:
         "analysis_status": state.get("analysis_status", ""),
         "planning_status": state.get("planning_status", ""),
         "assessment_status": state.get("assessment_status", ""),
+        "orchestration_status": state.get("orchestration_status", ""),
         "approval_status": state.get("approval_status", ""),
         "approval_decision": state.get("approval_decision"),
         "approved_by": state.get("approved_by", ""),
@@ -55,6 +60,43 @@ def write_orchestration_summary(state: MigrationState) -> Path:
     return summary_path
 
 
+def finalize_orchestration_state(
+    state: MigrationState,
+    *,
+    summary_writer=write_orchestration_summary,
+) -> MigrationState:
+    result = dict(state)
+    summary_path = Path(str(result.get("orchestration_dir", ""))) / "orchestration_summary.json"
+    artifact_refs = dict(result.get("artifact_refs", {}) or {})
+    artifact_refs["orchestration_summary"] = str(summary_path)
+    result["artifact_refs"] = artifact_refs
+
+    if not _is_successful_full_sandbox_migration(result):  # type: ignore[arg-type]
+        result["orchestration_artifacts_valid"] = False
+        summary_writer(result)  # type: ignore[arg-type]
+        return result  # type: ignore[return-value]
+
+    summary_writer(result)  # type: ignore[arg-type]
+    validation = validate_successful_full_sandbox_orchestration(result)  # type: ignore[arg-type]
+    result["orchestration_artifacts_valid"] = validation.valid
+    result["artifact_refs"] = {
+        **artifact_refs,
+        **validation.artifact_refs,
+    }
+    if validation.blockers:
+        result["blockers"] = [
+            *list(result.get("blockers", []) or []),
+            *validation.blockers,
+        ]
+    if validation.warnings:
+        result["warnings"] = [
+            *list(result.get("warnings", []) or []),
+            *validation.warnings,
+        ]
+    summary_writer(result)  # type: ignore[arg-type]
+    return result  # type: ignore[return-value]
+
+
 def _final_status(state: MigrationState) -> str:
     if state.get("final_status"):
         return str(state.get("final_status"))
@@ -72,6 +114,18 @@ def _final_status(state: MigrationState) -> str:
     if state.get("approval_status") == "COMPLETED":
         return "COMPLETED"
     return "COMPLETED"
+
+
+def _is_successful_full_sandbox_migration(state: MigrationState) -> bool:
+    return (
+        state.get("mode") == FULL_SANDBOX_MIGRATION_MODE
+        and state.get("approval_status") == "COMPLETED"
+        and state.get("approval_decision") == "approved"
+        and state.get("orchestration_status") == "PASS"
+        and state.get("transform_status") == "TRANSFORM_APPLIED_IN_SANDBOX"
+        and state.get("build_status") == "BUILD_PASSED_IN_SANDBOX"
+        and _final_status(state) == "TRANSFORM_APPLIED_IN_SANDBOX"
+    )
 
 
 def _execution_claims(state: MigrationState) -> dict[str, bool]:

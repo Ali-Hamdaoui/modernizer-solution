@@ -45,6 +45,7 @@ def test_summary_includes_phase_statuses_and_stop_reason(tmp_path: Path) -> None
     assert summary["analysis_status"] == "PASS"
     assert summary["planning_status"] == "PASS"
     assert summary["assessment_status"] == "PASS"
+    assert summary["orchestration_status"] == "PENDING"
     assert summary["approval_status"] == "COMPLETED"
     assert summary["stop_reason"] == "approved"
     assert summary["blockers"] == ["manual follow-up"]
@@ -87,18 +88,37 @@ def test_summary_includes_full_sandbox_migration_outputs(tmp_path: Path) -> None
             "sandbox_path": str(tmp_path / "run" / "workspaces" / "sandbox"),
             "transform_log_path": str(tmp_path / "run" / "logs" / "phase2_transform.log"),
             "stop_reason": "Sandbox migration candidate ready.",
+            "orchestration_status": "PASS",
+            "artifact_refs": {
+                "approval_decision": "approval/approval_decision.json",
+                "approved_plan_lock": "approval/approved_plan_lock.json",
+                "transformation_execution_plan": "transformation/transformation_execution_plan.yaml",
+                "migration_ledger": "workspaces/sandbox/.migration/ledger.json",
+                "phase2_log": "logs/phase2_transform.log",
+            },
         }
     )
 
     summary = build_orchestration_summary(state)
 
     assert summary["final_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
+    assert summary["orchestration_status"] == "PASS"
+    assert summary["approval_status"] == "COMPLETED"
     assert summary["approval_decision"] == "approved"
+    assert summary["approved_by"] == ""
     assert summary["transform_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
     assert summary["build_status"] == "BUILD_PASSED_IN_SANDBOX"
     assert summary["sandbox_path"].endswith("workspaces\\sandbox") or summary["sandbox_path"].endswith("workspaces/sandbox")
     assert summary["log_path"].endswith("phase2_transform.log")
     assert summary["stop_reason"] == "Sandbox migration candidate ready."
+    assert summary["blockers"] == ["manual follow-up"]
+    assert summary["errors"] == ["error"]
+    assert summary["warnings"] == ["warning"]
+    assert summary["artifact_refs"]["approval_decision"] == "approval/approval_decision.json"
+    assert summary["artifact_refs"]["approved_plan_lock"] == "approval/approved_plan_lock.json"
+    assert summary["artifact_refs"]["transformation_execution_plan"].endswith("transformation_execution_plan.yaml")
+    assert summary["artifact_refs"]["migration_ledger"].endswith("ledger.json")
+    assert summary["artifact_refs"]["phase2_log"].endswith("phase2_transform.log")
     assert summary["transformation_executed"] is True
     assert summary["migrated_build_executed"] is True
     assert summary["final_migration_executed"] is False

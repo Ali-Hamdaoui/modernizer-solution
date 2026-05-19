@@ -46,18 +46,31 @@ def test_resume_approved_records_approval_and_runs_sandbox_transform(
 
     def fake_transform(resumed_state):
         transform_calls.append(resumed_state["approval_decision"])
+        sandbox_path = Path(resumed_state["run_dir"]) / "workspaces" / "sandbox"
+        log_path = Path(resumed_state["run_dir"]) / "logs" / "phase2_transform.log"
+        plan_path = Path(resumed_state["run_dir"]) / "transformation" / "transformation_execution_plan.yaml"
+        ledger_path = sandbox_path / ".migration" / "ledger.json"
+        sandbox_path.mkdir(parents=True, exist_ok=True)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        plan_path.parent.mkdir(parents=True, exist_ok=True)
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("ok\n", encoding="utf-8")
+        plan_path.write_text("run_id: run-001\n", encoding="utf-8")
+        ledger_path.write_text("{}\n", encoding="utf-8")
         return {
             "current_phase": "sandbox_transform",
             "orchestration_status": "PASS",
             "transform_status": STATUS_APPLIED,
             "build_status": "BUILD_PASSED_IN_SANDBOX",
-            "sandbox_path": str(Path(resumed_state["run_dir"]) / "workspaces" / "sandbox"),
-            "transform_log_path": str(Path(resumed_state["run_dir"]) / "logs" / "phase2_transform.log"),
+            "sandbox_path": str(sandbox_path),
+            "transform_log_path": str(log_path),
             "final_status": STATUS_APPLIED,
             "stop_reason": "Sandbox migration candidate ready.",
             "artifact_refs": {
                 **dict(resumed_state.get("artifact_refs", {})),
-                "phase2_log": str(Path(resumed_state["run_dir"]) / "logs" / "phase2_transform.log"),
+                "transformation_execution_plan": str(plan_path),
+                "migration_ledger": str(ledger_path),
+                "phase2_log": str(log_path),
             },
         }
 
@@ -79,7 +92,15 @@ def test_resume_approved_records_approval_and_runs_sandbox_transform(
     assert (approval_dir / "approved_plan_lock.json").is_file()
     assert transform_calls == ["approved"]
     assert result["final_status"] == STATUS_APPLIED
+    assert result["orchestration_status"] == "PASS"
+    assert result["orchestration_artifacts_valid"] is True
     assert result["stop_reason"] == "Sandbox migration candidate ready."
+    assert result["artifact_refs"]["approval_decision"].endswith("approval_decision.json")
+    assert result["artifact_refs"]["approved_plan_lock"].endswith("approved_plan_lock.json")
+    assert result["artifact_refs"]["transformation_execution_plan"].endswith("transformation_execution_plan.yaml")
+    assert result["artifact_refs"]["migration_ledger"].endswith("ledger.json")
+    assert result["artifact_refs"]["phase2_log"].endswith("phase2_transform.log")
+    assert result["artifact_refs"]["orchestration_summary"].endswith("orchestration_summary.json")
 
 
 def test_resume_cli_accepts_required_approval_fields(monkeypatch, tmp_path: Path, capsys) -> None:
@@ -94,8 +115,6 @@ def test_resume_cli_accepts_required_approval_fields(monkeypatch, tmp_path: Path
         }
 
     monkeypatch.setattr(resume, "resume_orchestration", fake_resume_orchestration)
-    monkeypatch.setattr(resume, "write_orchestration_summary", lambda state: None)
-
     result = resume.main(
         [
             "--run-id",
