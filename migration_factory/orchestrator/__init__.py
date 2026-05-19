@@ -1,5 +1,11 @@
 """Orchestrator package."""
 
+from migration_factory.orchestrator.artifact_validation import (
+    ArtifactValidationResult,
+    validate_analysis_artifacts,
+    validate_assessment_artifacts,
+    validate_planning_artifacts,
+)
 from migration_factory.orchestrator.preflight import (
     PreflightError,
     build_langgraph_config,
@@ -24,6 +30,7 @@ from migration_factory.orchestrator.state import (
 __all__ = [
     "APPROVAL_DECISION_VALUES",
     "APPROVAL_STATUS_VALUES",
+    "ArtifactValidationResult",
     "PHASE_STATUS_VALUES",
     "PhaseServices",
     "PreflightError",
@@ -35,5 +42,8 @@ __all__ = [
     "run_analysis_phase",
     "run_assessment_phase",
     "run_planning_phase",
+    "validate_analysis_artifacts",
+    "validate_assessment_artifacts",
+    "validate_planning_artifacts",
     "validate_preflight",
 ]
