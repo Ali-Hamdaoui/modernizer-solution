@@ -378,6 +378,7 @@ class TransformationAgentTests(unittest.TestCase):
             ledger_file = run_dir / "workspaces" / "sandbox" / ".migration" / "ledger.json"
 
             def run_agent_side_effect(*args: object, **kwargs: object) -> TransformationRunResult:
+                print("OPENREWRITE_FULL_LOG should be quiet by default")
                 unit_id = str(kwargs.get("start_unit") or "baseline")
                 _write_awaiting_build_ledger(ledger_file, unit_id)
                 return TransformationRunResult(
@@ -393,10 +394,13 @@ class TransformationAgentTests(unittest.TestCase):
             ) as run_agent:
                 with mock.patch(
                     "migration_factory.transform_v1_after_approval.run_build_agent",
-                    return_value=BuildRunResult(
-                        succeeded=True,
-                        result_kind="success",
-                        message="Application started successfully",
+                    side_effect=lambda **kwargs: (
+                        print("MAVEN_FULL_LOG should be quiet by default")
+                        or BuildRunResult(
+                            succeeded=True,
+                            result_kind="success",
+                            message="Application started successfully",
+                        )
                     ),
                 ) as run_build:
                     with redirect_stdout(stdout):
@@ -420,18 +424,21 @@ class TransformationAgentTests(unittest.TestCase):
             sandbox_path = run_dir / "workspaces" / "sandbox"
             plan_path = run_dir / "transformation" / "transformation_execution_plan.yaml"
             plugin_path = run_dir / "transformation" / "openrewrite-plugin.xml"
+            log_file = run_dir / "logs" / "phase2_transform.log"
             plan_payload = yaml.safe_load(plan_path.read_text(encoding="utf-8"))
 
             self.assertEqual(result, 0)
             self.assertIn("APPROVED_FOR_TRANSFORM", stdout.getvalue())
             self.assertIn("SANDBOX_PREPARED", stdout.getvalue())
             self.assertIn("TRANSFORM_RUNNING", stdout.getvalue())
-            self.assertIn("TRANSFORM_AWAITING_BUILD_AGENT", stdout.getvalue())
-            self.assertIn("BUILD_VALIDATION_REQUIRED", stdout.getvalue())
             self.assertIn("BUILD_RUNNING_IN_SANDBOX", stdout.getvalue())
             self.assertIn("BUILD_PASSED_IN_SANDBOX", stdout.getvalue())
             self.assertEqual(stdout.getvalue().count("BUILD_PASSED_IN_SANDBOX"), 2)
             self.assertIn("TRANSFORM_APPLIED_IN_SANDBOX", stdout.getvalue())
+            self.assertNotIn("OPENREWRITE_FULL_LOG", stdout.getvalue())
+            self.assertNotIn("MAVEN_FULL_LOG", stdout.getvalue())
+            self.assertIn("OPENREWRITE_FULL_LOG", log_file.read_text(encoding="utf-8"))
+            self.assertIn("MAVEN_FULL_LOG", log_file.read_text(encoding="utf-8"))
             first_build_passed = stdout.getvalue().index("BUILD_PASSED_IN_SANDBOX")
             second_transform_running = stdout.getvalue().index("TRANSFORM_RUNNING", stdout.getvalue().index("TRANSFORM_RUNNING") + 1)
             self.assertLess(first_build_passed, second_transform_running)
@@ -451,6 +458,7 @@ class TransformationAgentTests(unittest.TestCase):
                         plan_path,
                         start_unit=None,
                         dry_run=False,
+                        stream_output=True,
                         wait_for_continue=False,
                     ),
                     mock.call(
@@ -459,6 +467,7 @@ class TransformationAgentTests(unittest.TestCase):
                         plan_path,
                         start_unit="java-17",
                         dry_run=False,
+                        stream_output=True,
                         wait_for_continue=False,
                     ),
                 ]
@@ -509,20 +518,24 @@ class TransformationAgentTests(unittest.TestCase):
                 )
 
             stdout = io.StringIO()
+            stderr = io.StringIO()
             with mock.patch(
                 "migration_factory.transform_v1_after_approval.run_transformation_agent",
                 side_effect=run_agent_side_effect,
             ):
                 with mock.patch(
                     "migration_factory.transform_v1_after_approval.run_build_agent",
-                    return_value=BuildRunResult(
-                        succeeded=False,
-                        result_kind="compilation_error",
-                        message="Compilation failed",
-                        error_contract_path=error_contract,
+                    side_effect=lambda **kwargs: (
+                        print("[ERROR] COMPILATION ERROR full Maven output")
+                        or BuildRunResult(
+                            succeeded=False,
+                            result_kind="compilation_error",
+                            message="Compilation failed",
+                            error_contract_path=error_contract,
+                        )
                     ),
                 ):
-                    with redirect_stdout(stdout):
+                    with redirect_stdout(stdout), redirect_stderr(stderr):
                         result = transform_v1_after_approval_main(
                             [
                                 "--run-dir",
@@ -541,13 +554,15 @@ class TransformationAgentTests(unittest.TestCase):
                         )
 
             self.assertEqual(result, 1)
-            self.assertIn("TRANSFORM_AWAITING_BUILD_AGENT", stdout.getvalue())
             self.assertNotIn("TRANSFORM_APPLIED_IN_SANDBOX", stdout.getvalue())
             self.assertIn("BUILD_FAILED_IN_SANDBOX", stdout.getvalue())
             self.assertEqual(stdout.getvalue().count("TRANSFORM_RUNNING"), 1)
-            self.assertIn("Build result kind: compilation_error", stdout.getvalue())
-            self.assertIn("Build message: Compilation failed", stdout.getvalue())
-            self.assertIn(f"Build error contract: {error_contract}", stdout.getvalue())
+            self.assertNotIn("[ERROR] COMPILATION ERROR", stdout.getvalue())
+            self.assertIn("Build result kind: compilation_error", stderr.getvalue())
+            self.assertIn("Build message: Compilation failed", stderr.getvalue())
+            self.assertIn(f"Build error contract: {error_contract}", stderr.getvalue())
+            self.assertIn("log_file:", stderr.getvalue())
+            self.assertIn("[ERROR] COMPILATION ERROR full Maven output", stderr.getvalue())
 
     def test_transform_v1_after_approval_reports_transform_failure(self) -> None:
         with workspace_temp_dir() as tmp:
@@ -564,9 +579,13 @@ class TransformationAgentTests(unittest.TestCase):
 
             stdout = io.StringIO()
             stderr = io.StringIO()
+            def run_agent_side_effect(*args: object, **kwargs: object) -> TransformationRunResult:
+                print("OpenRewrite failure output")
+                raise TransformationAgentError("boom")
+
             with mock.patch(
                 "migration_factory.transform_v1_after_approval.run_transformation_agent",
-                side_effect=TransformationAgentError("boom"),
+                side_effect=run_agent_side_effect,
             ):
                 with mock.patch("migration_factory.transform_v1_after_approval.run_build_agent") as run_build:
                     with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -589,8 +608,116 @@ class TransformationAgentTests(unittest.TestCase):
 
             self.assertEqual(result, 1)
             self.assertIn("TRANSFORM_FAILED_IN_SANDBOX", stdout.getvalue())
+            self.assertNotIn("OpenRewrite failure output", stdout.getvalue())
             self.assertIn("ERROR: boom", stderr.getvalue())
+            self.assertIn("log_file:", stderr.getvalue())
+            self.assertIn("OpenRewrite failure output", stderr.getvalue())
             run_build.assert_not_called()
+
+    def test_transform_v1_after_approval_writes_custom_log_file(self) -> None:
+        with workspace_temp_dir() as tmp:
+            legacy = tmp / "legacy-app"
+            modernized = tmp / "modernized-app"
+            ai_hub = tmp / "ai-hub"
+            custom_log = tmp / "custom" / "phase2.log"
+            run_id = "run-1"
+            run_dir = _run_dir(modernized, run_id)
+            legacy.mkdir()
+            modernized.mkdir()
+            (legacy / "pom.xml").write_text("<project />", encoding="utf-8")
+            _write_ai_hub_profile(ai_hub)
+            _write_approved_run_artifacts(modernized, run_id, include_rewrite_plan=True)
+
+            def run_agent_side_effect(*args: object, **kwargs: object) -> TransformationRunResult:
+                print("CUSTOM_LOG_OPENREWRITE_OUTPUT")
+                return TransformationRunResult(
+                    ledger_file=run_dir / "workspaces" / "sandbox" / ".migration" / "ledger.json",
+                    status=LedgerStatus.COMPLETED,
+                    completed_units=["java-17"],
+                )
+
+            stdout = io.StringIO()
+            with mock.patch(
+                "migration_factory.transform_v1_after_approval.run_transformation_agent",
+                side_effect=run_agent_side_effect,
+            ):
+                with mock.patch("migration_factory.transform_v1_after_approval.run_build_agent") as run_build:
+                    with redirect_stdout(stdout):
+                        result = transform_v1_after_approval_main(
+                            [
+                                "--run-dir",
+                                str(run_dir),
+                                "--legacy-app",
+                                str(legacy),
+                                "--modernized-app",
+                                str(modernized),
+                                "--ai-hub",
+                                str(ai_hub),
+                                "--profile",
+                                "java17",
+                                "--approved-by",
+                                "human",
+                                "--log-file",
+                                str(custom_log),
+                            ]
+                        )
+
+            self.assertEqual(result, 0)
+            self.assertNotIn("CUSTOM_LOG_OPENREWRITE_OUTPUT", stdout.getvalue())
+            self.assertIn("CUSTOM_LOG_OPENREWRITE_OUTPUT", custom_log.read_text(encoding="utf-8"))
+            self.assertFalse((run_dir / "logs" / "phase2_transform.log").exists())
+            run_build.assert_not_called()
+
+    def test_transform_v1_after_approval_verbose_streams_subprocess_output(self) -> None:
+        with workspace_temp_dir() as tmp:
+            legacy = tmp / "legacy-app"
+            modernized = tmp / "modernized-app"
+            ai_hub = tmp / "ai-hub"
+            run_id = "run-1"
+            run_dir = _run_dir(modernized, run_id)
+            legacy.mkdir()
+            modernized.mkdir()
+            (legacy / "pom.xml").write_text("<project />", encoding="utf-8")
+            _write_ai_hub_profile(ai_hub)
+            _write_approved_run_artifacts(modernized, run_id, include_rewrite_plan=True)
+
+            def run_agent_side_effect(*args: object, **kwargs: object) -> TransformationRunResult:
+                print("VERBOSE_OPENREWRITE_OUTPUT")
+                return TransformationRunResult(
+                    ledger_file=run_dir / "workspaces" / "sandbox" / ".migration" / "ledger.json",
+                    status=LedgerStatus.COMPLETED,
+                    completed_units=["java-17"],
+                )
+
+            stdout = io.StringIO()
+            with mock.patch(
+                "migration_factory.transform_v1_after_approval.run_transformation_agent",
+                side_effect=run_agent_side_effect,
+            ):
+                with redirect_stdout(stdout):
+                    result = transform_v1_after_approval_main(
+                        [
+                            "--run-dir",
+                            str(run_dir),
+                            "--legacy-app",
+                            str(legacy),
+                            "--modernized-app",
+                            str(modernized),
+                            "--ai-hub",
+                            str(ai_hub),
+                            "--profile",
+                            "java17",
+                            "--approved-by",
+                            "human",
+                            "--verbose",
+                        ]
+                    )
+
+            log_file = run_dir / "logs" / "phase2_transform.log"
+            self.assertEqual(result, 0)
+            self.assertIn("VERBOSE_OPENREWRITE_OUTPUT", stdout.getvalue())
+            self.assertIn("Transformer status: completed", stdout.getvalue())
+            self.assertIn("VERBOSE_OPENREWRITE_OUTPUT", log_file.read_text(encoding="utf-8"))
 
     def test_transform_v1_after_approval_reports_sandbox_cleanup_failure_without_traceback(self) -> None:
         with workspace_temp_dir() as tmp:

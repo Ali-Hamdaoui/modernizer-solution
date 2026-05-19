@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stderr, redirect_stdout
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TextIO, TypeVar
 
 import yaml
 
@@ -41,6 +42,9 @@ STATUS_BUILD_REQUIRED = "BUILD_VALIDATION_REQUIRED"
 STATUS_BUILD_RUNNING = "BUILD_RUNNING_IN_SANDBOX"
 STATUS_BUILD_PASSED = "BUILD_PASSED_IN_SANDBOX"
 STATUS_BUILD_FAILED = "BUILD_FAILED_IN_SANDBOX"
+STATUS_APPROVAL_FAILED = "APPROVAL_FAILED"
+
+_T = TypeVar("_T")
 
 
 class TransformV1AfterApprovalError(ValueError):
@@ -50,12 +54,19 @@ class TransformV1AfterApprovalError(ValueError):
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    run_dir = Path(args.run_dir).expanduser().resolve()
+    log_file = _resolve_log_file(run_dir, args.log_file)
+    verbose = not args.quiet
 
     try:
-        run_dir = Path(args.run_dir).expanduser().resolve()
         modernized_app = Path(args.modernized_app).expanduser().resolve()
         legacy_app = Path(args.legacy_app).expanduser().resolve()
-        run_id = _ensure_approved_for_transform(run_dir, approved_by=args.approved_by)
+        try:
+            run_id = _ensure_approved_for_transform(run_dir, approved_by=args.approved_by)
+        except (ApprovalArtifactError, TransformV1AfterApprovalError) as exc:
+            print(STATUS_APPROVAL_FAILED)
+            _print_failure_details(exc, log_file)
+            return 1
         _ensure_run_dir_matches_modernized_app(run_dir, modernized_app, run_id)
         print(STATUS_APPROVED)
 
@@ -76,9 +87,14 @@ def main(argv: list[str] | None = None) -> int:
             generated_plan=generated_plan,
             plan=plan,
             run_dir=run_dir,
+            log_file=log_file,
+            verbose=verbose,
         )
+    except ApprovalArtifactError as exc:
+        print(STATUS_APPROVAL_FAILED)
+        _print_failure_details(exc, log_file)
+        return 1
     except (
-        ApprovalArtifactError,
         MigrationPlanError,
         RewritePluginError,
         TransformationAgentError,
@@ -87,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         TransformV1AfterApprovalError,
     ) as exc:
         print(STATUS_FAILED)
-        print(f"ERROR: {exc}", file=sys.stderr)
+        _print_failure_details(exc, log_file)
         return 1
 
 
@@ -102,6 +118,21 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ai-hub", required=True)
     parser.add_argument("--profile", required=True)
     parser.add_argument("--approved-by", required=True)
+    output_group = parser.add_mutually_exclusive_group()
+    output_group.add_argument(
+        "--quiet",
+        dest="quiet",
+        action="store_true",
+        default=True,
+        help="Keep subprocess output out of the terminal. This is the default.",
+    )
+    output_group.add_argument(
+        "--verbose",
+        dest="quiet",
+        action="store_false",
+        help="Stream full subprocess output to the terminal while also writing the log file.",
+    )
+    parser.add_argument("--log-file", help="Path for full Phase 2 subprocess output")
     return parser
 
 
@@ -112,6 +143,8 @@ def _run_transformer_with_build_validation(
     generated_plan: Path,
     plan: MigrationPlan,
     run_dir: Path,
+    log_file: Path,
+    verbose: bool,
 ) -> int:
     next_unit: str | None = None
     awaited_units: set[str] = set()
@@ -121,19 +154,26 @@ def _run_transformer_with_build_validation(
 
     for _ in range(max_transformer_runs):
         print(STATUS_RUNNING)
-        result = run_transformation_agent(
-            sandbox_path,
-            plugin_xml,
-            generated_plan,
-            start_unit=next_unit,
-            dry_run=False,
-            wait_for_continue=False,
+        result = _run_with_logged_output(
+            lambda: run_transformation_agent(
+                sandbox_path,
+                plugin_xml,
+                generated_plan,
+                start_unit=next_unit,
+                dry_run=False,
+                stream_output=True,
+                wait_for_continue=False,
+            ),
+            log_file=log_file,
+            verbose=verbose,
         )
-        print(f"Ledger: {result.ledger_file}")
-        print(f"Transformer status: {result.status}")
+        if verbose:
+            print(f"Ledger: {result.ledger_file}")
+            print(f"Transformer status: {result.status}")
 
         if result.status == LedgerStatus.AWAITING_BUILD_AGENT:
-            print(STATUS_AWAITING_BUILD_AGENT)
+            if verbose:
+                print(STATUS_AWAITING_BUILD_AGENT)
             ledger = load_ledger(result.ledger_file)
             unit_id = _awaiting_build_unit_id(ledger)
             if unit_id in awaited_units:
@@ -142,25 +182,32 @@ def _run_transformer_with_build_validation(
                 )
             awaited_units.add(unit_id)
 
-            print(STATUS_BUILD_REQUIRED)
+            if verbose:
+                print(STATUS_BUILD_REQUIRED)
             print(STATUS_BUILD_RUNNING)
-            build_result = run_build_agent(
-                project_path=sandbox_path,
-                ledger_file=result.ledger_file,
-                output_dir=run_dir / "build",
-                stream_output=True,
-                validation_unit_id=unit_id,
-                source_changing_unit=unit_id in source_unit_ids,
+            build_result = _run_with_logged_output(
+                lambda: run_build_agent(
+                    project_path=sandbox_path,
+                    ledger_file=result.ledger_file,
+                    output_dir=run_dir / "build",
+                    stream_output=True,
+                    validation_unit_id=unit_id,
+                    source_changing_unit=unit_id in source_unit_ids,
+                ),
+                log_file=log_file,
+                verbose=verbose,
             )
             if not build_result.succeeded:
                 print(STATUS_BUILD_FAILED)
-                print(f"Build result kind: {build_result.result_kind}")
-                print(f"Build message: {build_result.message}")
-                print(f"Build error contract: {build_result.error_contract_path}")
+                _print_failure_details(
+                    TransformV1AfterApprovalError(_build_failure_message(build_result)),
+                    log_file,
+                )
                 return 1
 
             print(STATUS_BUILD_PASSED)
-            print(f"Build validated unit: {unit_id}")
+            if verbose:
+                print(f"Build validated unit: {unit_id}")
             if unit_id in source_unit_ids:
                 source_units_completed.add(unit_id)
 
@@ -175,7 +222,9 @@ def _run_transformer_with_build_validation(
         if result.blocked_unit or result.status == LedgerStatus.BLOCKED:
             print(STATUS_FAILED)
             if result.blocked_unit:
-                print(f"Blocked unit: {result.blocked_unit}")
+                _print_failure_details(TransformV1AfterApprovalError(f"Blocked unit: {result.blocked_unit}"), log_file)
+            else:
+                _print_failure_details(TransformV1AfterApprovalError("Transformer blocked"), log_file)
             return 1
 
         if result.status == LedgerStatus.COMPLETED:
@@ -190,6 +239,66 @@ def _run_transformer_with_build_validation(
     raise TransformV1AfterApprovalError(
         f"Transformer resume loop exceeded {max_transformer_runs} runs for {len(plan.units)} units"
     )
+
+
+class _OutputTee:
+    def __init__(self, *streams: TextIO) -> None:
+        self._streams = streams
+
+    def write(self, text: str) -> int:
+        for stream in self._streams:
+            stream.write(text)
+        return len(text)
+
+    def flush(self) -> None:
+        for stream in self._streams:
+            stream.flush()
+
+
+def _run_with_logged_output(callback: Callable[[], _T], *, log_file: Path, verbose: bool) -> _T:
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    with log_file.open("a", encoding="utf-8") as log_stream:
+        stdout: TextIO = _OutputTee(sys.stdout, log_stream) if verbose else log_stream
+        stderr: TextIO = _OutputTee(sys.stderr, log_stream) if verbose else log_stream
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            return callback()
+
+
+def _resolve_log_file(run_dir: Path, log_file: str | None) -> Path:
+    if log_file:
+        return Path(log_file).expanduser().resolve()
+    return run_dir / "logs" / "phase2_transform.log"
+
+
+def _print_failure_details(exc: Exception, log_file: Path) -> None:
+    print(f"ERROR: {exc}", file=sys.stderr)
+    print(f"log_file: {log_file}", file=sys.stderr)
+    _print_log_tail(log_file)
+
+
+def _print_log_tail(log_file: Path, *, line_count: int = 30) -> None:
+    if not log_file.is_file():
+        print("No log output captured.", file=sys.stderr)
+        return
+
+    lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    if not lines:
+        print("No log output captured.", file=sys.stderr)
+        return
+
+    print(f"--- Last {min(line_count, len(lines))} log lines ---", file=sys.stderr)
+    for line in lines[-line_count:]:
+        print(line, file=sys.stderr)
+
+
+def _build_failure_message(build_result: Any) -> str:
+    parts = [
+        f"Build result kind: {build_result.result_kind}",
+        f"Build message: {build_result.message}",
+    ]
+    if build_result.error_contract_path:
+        parts.append(f"Build error contract: {build_result.error_contract_path}")
+    return "; ".join(parts)
 
 
 def _awaiting_build_unit_id(ledger: dict[str, Any]) -> str:

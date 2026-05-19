@@ -35,6 +35,8 @@ def write_approval_decision(
     decided_at: str | None = None,
     comments: str = "",
     plan_lock_ref: str | None = None,
+    source: str | None = None,
+    artifact_refs: dict[str, str] | None = None,
 ) -> Path:
     artifact = _build_approval_decision(
         run_id=run_id,
@@ -43,6 +45,8 @@ def write_approval_decision(
         decided_at=decided_at,
         comments=comments,
         plan_lock_ref=plan_lock_ref,
+        source=source,
+        artifact_refs=artifact_refs,
     )
     _raise_for_schema_errors(artifact, "approval_decision.schema.json")
 
@@ -133,15 +137,18 @@ def _build_approval_decision(
     decided_at: str | None,
     comments: str,
     plan_lock_ref: str | None,
+    source: str | None,
+    artifact_refs: dict[str, str] | None,
 ) -> dict[str, Any]:
     if decision not in APPROVAL_DECISION_VALUES:
         raise ApprovalArtifactError(f"Unsupported approval decision: {decision}")
 
-    artifact_refs = {"self": APPROVAL_DECISION_ARTIFACT}
+    refs = {"self": APPROVAL_DECISION_ARTIFACT}
+    refs.update(artifact_refs or {})
     if plan_lock_ref is not None:
-        artifact_refs["approved_plan_lock"] = plan_lock_ref
+        refs["approved_plan_lock"] = plan_lock_ref
 
-    return {
+    artifact = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
         "agent": "human",
@@ -151,8 +158,11 @@ def _build_approval_decision(
         "decided_at": decided_at or _utc_now(),
         "comments": comments,
         "plan_lock_ref": plan_lock_ref,
-        "artifact_refs": artifact_refs,
+        "artifact_refs": refs,
     }
+    if source is not None:
+        artifact["source"] = source
+    return artifact
 
 
 def _artifact_hash(run_dir: Path, rel_path: str) -> dict[str, str]:
