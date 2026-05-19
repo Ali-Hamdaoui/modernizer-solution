@@ -6,6 +6,10 @@ from migration_factory.orchestrator.artifact_validation import (
     validate_assessment_artifacts,
     validate_planning_artifacts,
 )
+from migration_factory.orchestrator.approval import (
+    approval_node,
+    build_approval_payload,
+)
 from migration_factory.orchestrator.preflight import (
     PreflightError,
     build_langgraph_config,
@@ -36,8 +40,10 @@ __all__ = [
     "PreflightError",
     "READ_ONLY_ASSESSMENT_MODE",
     "MigrationState",
+    "approval_node",
     "build_initial_state",
     "build_langgraph_config",
+    "build_approval_payload",
     "default_phase_services",
     "run_analysis_phase",
     "run_assessment_phase",
