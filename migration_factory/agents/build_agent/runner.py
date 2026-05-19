@@ -4,7 +4,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
+import os
 import queue
+import signal
 import subprocess
 import threading
 import time
@@ -20,12 +22,16 @@ from .classifier import (
 )
 
 
+TERMINATION_GRACE_SECONDS = 5
+
+
 @dataclass(frozen=True)
 class ProcessRunResult:
     classification: BuildClassification
     exit_code: int | None
     stdout: list[str] = field(default_factory=list)
     stderr: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def succeeded(self) -> bool:
@@ -41,6 +47,12 @@ def run_until_build_result(
     on_startup_result: Callable[[BuildClassification], None] | None = None,
 ) -> ProcessRunResult:
     try:
+        popen_kwargs: dict[str, object] = {}
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["start_new_session"] = True
+
         process = subprocess.Popen(
             command,
             cwd=str(cwd),
@@ -49,6 +61,7 @@ def run_until_build_result(
             text=True,
             bufsize=1,
             universal_newlines=True,
+            **popen_kwargs,
         )
     except FileNotFoundError as exc:
         command_name = command[0] if command else "<empty command>"
@@ -75,8 +88,14 @@ def run_until_build_result(
     try:
         while True:
             if startup_success is None and time.monotonic() >= deadline:
-                _terminate(process)
-                return ProcessRunResult(timeout_classification(timeout_seconds), process.poll(), stdout, stderr)
+                termination = _terminate_process_tree(process)
+                return ProcessRunResult(
+                    timeout_classification(timeout_seconds),
+                    process.poll(),
+                    stdout,
+                    stderr,
+                    termination.warnings,
+                )
 
             exit_code = process.poll()
             if exit_code is not None:
@@ -106,16 +125,105 @@ def run_until_build_result(
                 if on_startup_result is not None:
                     on_startup_result(classification)
                 if stop_after_start:
-                    _terminate(process)
-                    return ProcessRunResult(classification, process.poll(), stdout, stderr)
+                    termination = _terminate_process_tree(process)
+                    return ProcessRunResult(
+                        classification,
+                        process.poll(),
+                        stdout,
+                        stderr,
+                        termination.warnings,
+                    )
                 continue
 
             last_failure = classification
+            termination = _terminate_process_tree(process)
+            return ProcessRunResult(
+                classification,
+                process.poll(),
+                stdout,
+                stderr,
+                termination.warnings,
+            )
     except KeyboardInterrupt:
-        _terminate(process)
+        termination = _terminate_process_tree(process)
         if startup_success is not None:
-            return ProcessRunResult(startup_success, process.poll(), stdout, stderr)
-        return ProcessRunResult(unknown_failure_classification(process.poll()), process.poll(), stdout, stderr)
+            return ProcessRunResult(startup_success, process.poll(), stdout, stderr, termination.warnings)
+        return ProcessRunResult(
+            unknown_failure_classification(process.poll()),
+            process.poll(),
+            stdout,
+            stderr,
+            termination.warnings,
+        )
+
+
+def run_until_exit(
+    command: list[str],
+    cwd: Path,
+    timeout_seconds: int,
+    stream_output: bool = True,
+) -> ProcessRunResult:
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+        )
+    except FileNotFoundError as exc:
+        command_name = command[0] if command else "<empty command>"
+        return ProcessRunResult(command_error_classification(f"Command not found: {command_name}", str(exc)), None)
+    except PermissionError as exc:
+        command_name = command[0] if command else "<empty command>"
+        return ProcessRunResult(command_error_classification(f"Command is not executable: {command_name}", str(exc)), None)
+
+    output_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
+    stdout: list[str] = []
+    stderr: list[str] = []
+    threads = [
+        threading.Thread(target=_enqueue_lines, args=("stdout", process.stdout, output_queue), daemon=True),
+        threading.Thread(target=_enqueue_lines, args=("stderr", process.stderr, output_queue), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+
+    deadline = time.monotonic() + timeout_seconds
+    last_failure: BuildClassification | None = None
+
+    while True:
+        if time.monotonic() >= deadline:
+            termination = _terminate_process_tree(process)
+            return ProcessRunResult(timeout_classification(timeout_seconds), process.poll(), stdout, stderr, termination.warnings)
+
+        exit_code = process.poll()
+        if exit_code is not None:
+            _drain_queue(output_queue, stdout, stderr, stream_output)
+            _close_process_streams(process)
+            if exit_code == 0:
+                return ProcessRunResult(
+                    BuildClassification(BuildResultKind.SUCCESS, "Build completed successfully"),
+                    exit_code,
+                    stdout,
+                    stderr,
+                )
+            if last_failure is not None:
+                return ProcessRunResult(last_failure, exit_code, stdout, stderr)
+            return ProcessRunResult(unknown_failure_classification(exit_code), exit_code, stdout, stderr)
+
+        try:
+            source, line = output_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        if line is None:
+            continue
+
+        _record_line(source, line, stdout, stderr, stream_output)
+        classification = classify_line(line)
+        if classification is not None and classification.kind != BuildResultKind.SUCCESS:
+            last_failure = classification
 
 
 def _enqueue_lines(source: str, stream: TextIO | None, output_queue: queue.Queue[tuple[str, str | None]]) -> None:
@@ -155,19 +263,74 @@ def _record_line(source: str, line: str, stdout: list[str], stderr: list[str], s
         print(line, flush=True)
 
 
-def _terminate(process: subprocess.Popen[str]) -> None:
+@dataclass(frozen=True)
+class TerminationResult:
+    warnings: list[str] = field(default_factory=list)
+
+
+def _terminate_process_tree(process: subprocess.Popen[str]) -> TerminationResult:
+    warnings: list[str] = []
     if process.poll() is not None:
         _close_process_streams(process)
-        return
+        return TerminationResult(warnings)
 
-    process.terminate()
+    if os.name == "nt":
+        clean_signal_sent = _terminate_windows_tree(process, force=False)
+    else:
+        clean_signal_sent = _terminate_unix_tree(process, force=False)
+    if not clean_signal_sent:
+        warnings.append("Process tree required force termination after startup validation.")
+        if os.name == "nt":
+            _terminate_windows_tree(process, force=True)
+        else:
+            _terminate_unix_tree(process, force=True)
     try:
-        process.wait(timeout=5)
+        process.wait(timeout=TERMINATION_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5)
+        if not warnings:
+            warnings.append("Process tree required force termination after startup validation.")
+        if os.name == "nt":
+            _terminate_windows_tree(process, force=True)
+        else:
+            _terminate_unix_tree(process, force=True)
+        process.wait(timeout=TERMINATION_GRACE_SECONDS)
     finally:
         _close_process_streams(process)
+    return TerminationResult(warnings)
+
+
+def _terminate(process: subprocess.Popen[str]) -> TerminationResult:
+    return _terminate_process_tree(process)
+
+
+def _terminate_windows_tree(process: subprocess.Popen[str], *, force: bool) -> bool:
+    command = ["taskkill", "/T", "/PID", str(process.pid)]
+    if force:
+        command.insert(1, "/F")
+    try:
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+        return result.returncode == 0
+    except OSError:
+        if force:
+            process.kill()
+        else:
+            process.terminate()
+        return True
+
+
+def _terminate_unix_tree(process: subprocess.Popen[str], *, force: bool) -> bool:
+    signum = signal.SIGKILL if force else signal.SIGTERM
+    try:
+        os.killpg(process.pid, signum)
+        return True
+    except ProcessLookupError:
+        return True
+    except OSError:
+        if force:
+            process.kill()
+        else:
+            process.terminate()
+        return True
 
 
 def _close_process_streams(process: subprocess.Popen[str]) -> None:

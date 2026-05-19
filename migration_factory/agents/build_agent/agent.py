@@ -7,8 +7,17 @@ from migration_factory.contracts.build.schemas import build_error_contract
 from migration_factory.contracts.migration import mark_build_failed, mark_build_passed
 
 from .classifier import command_error_classification
-from .detection import BuildTool, JavaProjectDetectionError, build_run_command, detect_java_project, discover_maven_run_target
-from .runner import ProcessRunResult, run_until_build_result
+from .detection import (
+    BuildTool,
+    BuildValidationMode,
+    JavaProjectDetectionError,
+    JavaProjectInfo,
+    build_run_command,
+    detect_java_project,
+    discover_maven_run_target,
+    full_validation_command,
+)
+from .runner import ProcessRunResult, run_until_build_result, run_until_exit
 
 
 def run_build_agent(
@@ -22,6 +31,8 @@ def run_build_agent(
     ledger_file: str | Path | None = None,
     stream_output: bool = True,
     stop_after_start: bool = True,
+    validation_unit_id: str | None = None,
+    source_changing_unit: bool = False,
 ) -> BuildRunResult:
     project_root = Path(project_path).expanduser().resolve()
     resolved_output_dir = _resolve_output_dir(output_dir)
@@ -32,6 +43,7 @@ def run_build_agent(
         classification = command_error_classification(str(exc))
         contract = build_error_contract(
             project_path=project_root,
+            cwd=project_root,
             build_tool=None,
             command=[],
             result_kind=classification.kind.value,
@@ -51,6 +63,8 @@ def run_build_agent(
             error_contract_path=error_path,
             exit_code=None,
             matched_line=classification.line,
+            command=[],
+            cwd=project_root,
         )
         _update_ledger(ledger_file, build_result)
         return build_result
@@ -62,22 +76,39 @@ def run_build_agent(
         resolved_module = target.module
         resolved_main_class = target.main_class
 
-    command = build_run_command(project.base_command, project.build_tool, resolved_module, resolved_main_class)
-    result = run_until_build_result(
-        command=command,
-        cwd=project.path,
-        timeout_seconds=timeout_seconds,
-        stream_output=stream_output,
-        stop_after_start=stop_after_start,
-    )
+    validation_mode = _validation_mode(project, validation_unit_id, source_changing_unit)
+    if validation_mode == BuildValidationMode.REACTOR_TEST:
+        command = full_validation_command(project.base_command, project.build_tool)
+        result = run_until_exit(
+            command=command,
+            cwd=project.path,
+            timeout_seconds=timeout_seconds,
+            stream_output=stream_output,
+        )
+    else:
+        command = build_run_command(
+            project.base_command,
+            project.build_tool,
+            resolved_module,
+            resolved_main_class,
+            use_reactor=False,
+        )
+        result = run_until_build_result(
+            command=command,
+            cwd=project.path,
+            timeout_seconds=timeout_seconds,
+            stream_output=stream_output,
+            stop_after_start=stop_after_start,
+        )
 
     if result.succeeded:
-        build_result = _success_result(result)
+        build_result = _success_result(result, command=command, cwd=project.path)
         _update_ledger(ledger_file, build_result)
         return build_result
 
     contract = build_error_contract(
         project_path=project.path,
+        cwd=project.path,
         build_tool=project.build_tool.value,
         command=command,
         result_kind=result.classification.kind.value,
@@ -98,12 +129,30 @@ def run_build_agent(
         error_contract_path=error_path,
         exit_code=result.exit_code,
         matched_line=result.classification.line,
+        warnings=result.warnings,
+        command=command,
+        cwd=project.path,
     )
     _update_ledger(ledger_file, build_result)
     return build_result
 
 
-def _success_result(result: ProcessRunResult) -> BuildRunResult:
+def _validation_mode(
+    project: JavaProjectInfo,
+    validation_unit_id: str | None,
+    source_changing_unit: bool,
+) -> BuildValidationMode:
+    if (
+        project.build_tool == BuildTool.MAVEN
+        and project.maven_modules
+        and source_changing_unit
+        and validation_unit_id != "baseline"
+    ):
+        return BuildValidationMode.REACTOR_TEST
+    return BuildValidationMode.STARTUP
+
+
+def _success_result(result: ProcessRunResult, *, command: list[str], cwd: Path) -> BuildRunResult:
     return BuildRunResult(
         succeeded=True,
         result_kind=result.classification.kind.value,
@@ -111,6 +160,9 @@ def _success_result(result: ProcessRunResult) -> BuildRunResult:
         error_contract_path=None,
         exit_code=result.exit_code,
         matched_line=result.classification.line,
+        warnings=result.warnings,
+        command=command,
+        cwd=cwd,
     )
 
 
@@ -131,6 +183,7 @@ def _update_ledger(ledger_file: str | Path | None, result: BuildRunResult) -> No
             message=result.message,
             matched_line=result.matched_line,
             exit_code=result.exit_code,
+            warnings=result.warnings,
         )
         return
 
@@ -141,4 +194,5 @@ def _update_ledger(ledger_file: str | Path | None, result: BuildRunResult) -> No
         error_contract_path=result.error_contract_path,
         matched_line=result.matched_line,
         exit_code=result.exit_code,
+        warnings=result.warnings,
     )

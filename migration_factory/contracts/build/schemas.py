@@ -17,6 +17,7 @@ class BuildErrorContract:
     agent: str
     created_at: str
     project_path: str
+    cwd: str | None
     build_tool: str | None
     command: list[str]
     status: str
@@ -38,6 +39,9 @@ class BuildRunResult:
     error_contract_path: Path | None = None
     exit_code: int | None = None
     matched_line: str | None = None
+    warnings: list[str] = field(default_factory=list)
+    command: list[str] = field(default_factory=list)
+    cwd: Path | None = None
 
 
 def write_build_error(contract: BuildErrorContract, output_dir: Path) -> Path:
@@ -55,6 +59,7 @@ def write_build_error(contract: BuildErrorContract, output_dir: Path) -> Path:
 def build_error_contract(
     *,
     project_path: Path,
+    cwd: Path | None = None,
     build_tool: str | None,
     command: list[str],
     result_kind: str,
@@ -72,6 +77,7 @@ def build_error_contract(
         agent=DEFAULT_AGENT_NAME,
         created_at=datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
         project_path=str(project_path),
+        cwd=str(cwd) if cwd is not None else None,
         build_tool=build_tool,
         command=command,
         status="failed",

@@ -16,7 +16,7 @@ from migration_factory.agents.transformation_agent.execution_plan import (
     TransformationExecutionPlanError,
     write_transformation_execution_plan,
 )
-from migration_factory.agents.transformation_agent.plan import MigrationPlanError
+from migration_factory.agents.transformation_agent.plan import MigrationPlan, MigrationPlanError, load_migration_plan
 from migration_factory.agents.transformation_agent.rewrite import RewritePluginError
 from migration_factory.agents.transformation_agent.workspace import (
     TransformationWorkspaceError,
@@ -28,11 +28,13 @@ from migration_factory.approval import (
     check_approved_plan_lock,
     read_approval_decision,
 )
+from migration_factory.contracts.migration import LedgerStatus, load_ledger
 
 
 STATUS_APPROVED = "APPROVED_FOR_TRANSFORM"
 STATUS_SANDBOX = "SANDBOX_PREPARED"
 STATUS_RUNNING = "TRANSFORM_RUNNING"
+STATUS_AWAITING_BUILD_AGENT = "TRANSFORM_AWAITING_BUILD_AGENT"
 STATUS_APPLIED = "TRANSFORM_APPLIED_IN_SANDBOX"
 STATUS_FAILED = "TRANSFORM_FAILED_IN_SANDBOX"
 STATUS_BUILD_REQUIRED = "BUILD_VALIDATION_REQUIRED"
@@ -67,38 +69,14 @@ def main(argv: list[str] | None = None) -> int:
         _force_plan_target(generated_plan, sandbox.path)
         print(STATUS_SANDBOX)
 
-        print(STATUS_RUNNING)
-        result = run_transformation_agent(
-            sandbox.path,
-            plugin_xml,
-            generated_plan,
-            dry_run=False,
-            wait_for_continue=False,
+        plan = load_migration_plan(generated_plan, sandbox.path)
+        return _run_transformer_with_build_validation(
+            sandbox_path=sandbox.path,
+            plugin_xml=plugin_xml,
+            generated_plan=generated_plan,
+            plan=plan,
+            run_dir=run_dir,
         )
-        print(f"Ledger: {result.ledger_file}")
-        print(f"Transformer status: {result.status}")
-        if result.blocked_unit:
-            print(STATUS_FAILED)
-            print(f"Blocked unit: {result.blocked_unit}")
-            return 1
-        print(STATUS_APPLIED)
-        print(STATUS_BUILD_REQUIRED)
-        print(STATUS_BUILD_RUNNING)
-        build_result = run_build_agent(
-            project_path=sandbox.path,
-            ledger_file=result.ledger_file,
-            output_dir=run_dir / "build",
-            stream_output=True,
-        )
-        if build_result.succeeded:
-            print(STATUS_BUILD_PASSED)
-            return 0
-
-        print(STATUS_BUILD_FAILED)
-        print(f"Build result kind: {build_result.result_kind}")
-        print(f"Build message: {build_result.message}")
-        print(f"Build error contract: {build_result.error_contract_path}")
-        return 1
     except (
         ApprovalArtifactError,
         MigrationPlanError,
@@ -125,6 +103,122 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile", required=True)
     parser.add_argument("--approved-by", required=True)
     return parser
+
+
+def _run_transformer_with_build_validation(
+    *,
+    sandbox_path: Path,
+    plugin_xml: Path,
+    generated_plan: Path,
+    plan: MigrationPlan,
+    run_dir: Path,
+) -> int:
+    next_unit: str | None = None
+    awaited_units: set[str] = set()
+    source_units_completed: set[str] = set()
+    source_unit_ids = _source_changing_unit_ids(plan)
+    max_transformer_runs = len(plan.units) + 1
+
+    for _ in range(max_transformer_runs):
+        print(STATUS_RUNNING)
+        result = run_transformation_agent(
+            sandbox_path,
+            plugin_xml,
+            generated_plan,
+            start_unit=next_unit,
+            dry_run=False,
+            wait_for_continue=False,
+        )
+        print(f"Ledger: {result.ledger_file}")
+        print(f"Transformer status: {result.status}")
+
+        if result.status == LedgerStatus.AWAITING_BUILD_AGENT:
+            print(STATUS_AWAITING_BUILD_AGENT)
+            ledger = load_ledger(result.ledger_file)
+            unit_id = _awaiting_build_unit_id(ledger)
+            if unit_id in awaited_units:
+                raise TransformV1AfterApprovalError(
+                    f"Transformer resumed to the same build-pending unit twice: {unit_id}"
+                )
+            awaited_units.add(unit_id)
+
+            print(STATUS_BUILD_REQUIRED)
+            print(STATUS_BUILD_RUNNING)
+            build_result = run_build_agent(
+                project_path=sandbox_path,
+                ledger_file=result.ledger_file,
+                output_dir=run_dir / "build",
+                stream_output=True,
+                validation_unit_id=unit_id,
+                source_changing_unit=unit_id in source_unit_ids,
+            )
+            if not build_result.succeeded:
+                print(STATUS_BUILD_FAILED)
+                print(f"Build result kind: {build_result.result_kind}")
+                print(f"Build message: {build_result.message}")
+                print(f"Build error contract: {build_result.error_contract_path}")
+                return 1
+
+            print(STATUS_BUILD_PASSED)
+            print(f"Build validated unit: {unit_id}")
+            if unit_id in source_unit_ids:
+                source_units_completed.add(unit_id)
+
+            next_unit = _next_unit_after(plan, unit_id)
+            if next_unit is None:
+                if source_units_completed:
+                    print(STATUS_APPLIED)
+                print("Sandbox migration candidate ready.")
+                return 0
+            continue
+
+        if result.blocked_unit or result.status == LedgerStatus.BLOCKED:
+            print(STATUS_FAILED)
+            if result.blocked_unit:
+                print(f"Blocked unit: {result.blocked_unit}")
+            return 1
+
+        if result.status == LedgerStatus.COMPLETED:
+            completed_source_units = source_unit_ids.intersection(result.completed_units)
+            if completed_source_units:
+                print(STATUS_APPLIED)
+            print("Sandbox migration candidate ready.")
+            return 0
+
+        raise TransformV1AfterApprovalError(f"Unexpected Transformer status: {result.status}")
+
+    raise TransformV1AfterApprovalError(
+        f"Transformer resume loop exceeded {max_transformer_runs} runs for {len(plan.units)} units"
+    )
+
+
+def _awaiting_build_unit_id(ledger: dict[str, Any]) -> str:
+    validation = ledger.get("build_validation", {})
+    unit_id = validation.get("unit_id") or ledger.get("current_unit")
+    if not unit_id:
+        raise TransformV1AfterApprovalError("Transformer is awaiting build validation but ledger has no unit_id")
+    return str(unit_id)
+
+
+def _next_unit_after(plan: MigrationPlan, unit_id: str) -> str | None:
+    unit_ids = [unit.id for unit in plan.units]
+    try:
+        index = unit_ids.index(unit_id)
+    except ValueError as exc:
+        raise TransformV1AfterApprovalError(f"Build-pending unit is not in plan: {unit_id}") from exc
+    next_index = index + 1
+    if next_index >= len(unit_ids):
+        return None
+    return unit_ids[next_index]
+
+
+def _source_changing_unit_ids(plan: MigrationPlan) -> set[str]:
+    source_changing_types = {"openrewrite"}
+    return {
+        unit.id
+        for unit in plan.units
+        if any(str(transformation.get("type")) in source_changing_types for transformation in unit.transformations)
+    }
 
 
 def _ensure_approved_for_transform(run_dir: Path, *, approved_by: str) -> str:

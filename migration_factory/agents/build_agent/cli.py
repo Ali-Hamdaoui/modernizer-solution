@@ -32,10 +32,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"SUCCESS: {result.message}")
         if result.matched_line:
             print(f"Matched log: {result.matched_line}")
+        for warning in result.warnings:
+            print(f"WARNING: {warning}", file=sys.stderr)
         return 0
 
     print(f"FAILURE: {result.message}", file=sys.stderr)
     print(f"Reason: {result.result_kind}", file=sys.stderr)
+    for warning in result.warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
     if result.matched_line:
         print(f"Matched log: {result.matched_line}", file=sys.stderr)
     if result.error_contract_path:

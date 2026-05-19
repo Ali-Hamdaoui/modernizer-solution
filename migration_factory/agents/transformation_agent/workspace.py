@@ -6,7 +6,9 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
+import sys
 from typing import Iterable
 
 
@@ -63,7 +65,7 @@ def prepare_sandbox_workspace(
     _validate_source_symlinks(legacy_path, sandbox_resolved)
 
     if sandbox_path.exists():
-        shutil.rmtree(sandbox_path)
+        _remove_existing_sandbox(sandbox_path, run_path)
     sandbox_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(
         legacy_path,
@@ -92,6 +94,50 @@ def _resolve_existing_dir(path: str | Path, label: str) -> Path:
 
 def _ignore_excluded_names(_directory: str, names: list[str]) -> set[str]:
     return {name for name in names if name in EXCLUDED_NAMES}
+
+
+def _remove_existing_sandbox(sandbox_path: Path, run_path: Path) -> None:
+    sandbox_resolved = sandbox_path.resolve(strict=False)
+    _ensure_inside(sandbox_resolved, run_path, "sandbox must stay inside run_dir")
+    expected_sandbox = (run_path / "workspaces" / "sandbox").resolve(strict=False)
+    if sandbox_resolved != expected_sandbox:
+        raise TransformationWorkspaceError(f"sandbox cleanup target is not the expected sandbox path: {sandbox_path}")
+    if sandbox_path.is_symlink():
+        raise TransformationWorkspaceError(f"sandbox path must not be a symlink: {sandbox_path}")
+
+    if sys.platform == "win32":
+        _clear_readonly_attributes(sandbox_path)
+
+    try:
+        shutil.rmtree(sandbox_path)
+    except OSError as exc:
+        raise TransformationWorkspaceError(_sandbox_clean_failed_message(sandbox_path, exc)) from exc
+
+
+def _clear_readonly_attributes(path: Path) -> None:
+    for root, dirnames, filenames in os.walk(path, followlinks=False):
+        for name in [*dirnames, *filenames]:
+            item = Path(root) / name
+            try:
+                item.chmod(stat.S_IWRITE | stat.S_IREAD)
+            except OSError:
+                pass
+    try:
+        path.chmod(stat.S_IWRITE | stat.S_IREAD)
+    except OSError:
+        pass
+
+
+def _sandbox_clean_failed_message(sandbox_path: Path, exc: OSError) -> str:
+    return (
+        "SANDBOX_CLEAN_FAILED\n"
+        f"Sandbox path: {sandbox_path}\n"
+        f"Cleanup error: {exc}\n"
+        "Advice:\n"
+        "- stop Java process / close terminals/editors\n"
+        "- delete sandbox manually\n"
+        "- use a new run id"
+    )
 
 
 def _validate_source_symlinks(source_path: Path, sandbox_path: Path) -> None:

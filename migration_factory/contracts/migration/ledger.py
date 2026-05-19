@@ -143,6 +143,7 @@ def mark_build_passed(
     message: str,
     matched_line: str | None = None,
     exit_code: int | None = None,
+    warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     ledger = load_ledger(ledger_file)
     unit_id = ledger.get("current_unit")
@@ -165,6 +166,7 @@ def mark_build_passed(
         "message": message,
         "matched_line": matched_line,
         "exit_code": exit_code,
+        "warnings": warnings or [],
     }
     save_ledger(ledger_file, ledger)
     return ledger
@@ -178,6 +180,7 @@ def mark_build_failed(
     error_contract_path: str | Path | None,
     matched_line: str | None = None,
     exit_code: int | None = None,
+    warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     ledger = load_ledger(ledger_file)
     unit_id = ledger.get("current_unit")
@@ -199,6 +202,7 @@ def mark_build_failed(
         "matched_line": matched_line,
         "exit_code": exit_code,
         "error_contract_path": str(error_contract_path) if error_contract_path else None,
+        "warnings": warnings or [],
     }
     save_ledger(ledger_file, ledger)
     return ledger

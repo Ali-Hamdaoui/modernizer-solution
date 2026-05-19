@@ -13,12 +13,19 @@ class BuildTool(str, Enum):
     GRADLE = "gradle"
 
 
+class BuildValidationMode(str, Enum):
+    STARTUP = "startup"
+    REACTOR_TEST = "reactor_test"
+
+
 @dataclass(frozen=True)
 class JavaProjectInfo:
     path: Path
     build_tool: BuildTool
     base_command: list[str]
     uses_wrapper: bool
+    maven_modules: tuple[str, ...] = ()
+    requested_path: Path | None = None
 
 
 class JavaProjectDetectionError(Exception):
@@ -56,6 +63,7 @@ def build_run_command(
     build_tool: BuildTool,
     module: str | None = None,
     main_class: str | None = None,
+    use_reactor: bool = False,
 ) -> list[str]:
     command = list(base_command)
     if build_tool != BuildTool.MAVEN:
@@ -66,11 +74,23 @@ def build_run_command(
     maven_args: list[str] = []
 
     if module:
-        maven_args.extend(["-f", str(Path(module) / "pom.xml")])
+        if use_reactor:
+            maven_args.extend(["-pl", module, "-am"])
+        else:
+            maven_args.extend(["-f", (Path(module) / "pom.xml").as_posix()])
     if main_class:
-        maven_args.append(f"-Dspring-boot.run.mainClass={main_class}")
+        maven_args.append(f"-Dspring-boot.run.main-class={main_class}")
 
     return [executable, *maven_args, goal]
+
+
+def full_validation_command(base_command: list[str], build_tool: BuildTool) -> list[str]:
+    executable = base_command[0]
+    if build_tool == BuildTool.MAVEN:
+        return [executable, "clean", "test"]
+    if build_tool == BuildTool.GRADLE:
+        return [executable, "clean", "test"]
+    return list(base_command)
 
 
 def discover_maven_run_target(
@@ -99,17 +119,39 @@ def discover_maven_run_target(
 
 
 def _maven_project(path: Path) -> JavaProjectInfo:
-    wrapper = _wrapper_command(path, "mvnw")
+    reactor_root, modules = _find_maven_reactor_root(path)
+    command_root = reactor_root or path
+    wrapper = _wrapper_command(command_root, "mvnw")
     if wrapper:
-        return JavaProjectInfo(path, BuildTool.MAVEN, [wrapper, "spring-boot:run"], True)
-    return JavaProjectInfo(path, BuildTool.MAVEN, [_resolve_system_command("mvn"), "spring-boot:run"], False)
+        return JavaProjectInfo(
+            command_root,
+            BuildTool.MAVEN,
+            [wrapper, "spring-boot:run"],
+            True,
+            tuple(modules),
+            path,
+        )
+    return JavaProjectInfo(
+        command_root,
+        BuildTool.MAVEN,
+        [_resolve_system_command("mvn"), "spring-boot:run"],
+        False,
+        tuple(modules),
+        path,
+    )
 
 
 def _gradle_project(path: Path) -> JavaProjectInfo:
     wrapper = _wrapper_command(path, "gradlew")
     if wrapper:
-        return JavaProjectInfo(path, BuildTool.GRADLE, [wrapper, "bootRun"], True)
-    return JavaProjectInfo(path, BuildTool.GRADLE, [_resolve_system_command("gradle"), "bootRun"], False)
+        return JavaProjectInfo(path, BuildTool.GRADLE, [wrapper, "bootRun"], True, requested_path=path)
+    return JavaProjectInfo(
+        path,
+        BuildTool.GRADLE,
+        [_resolve_system_command("gradle"), "bootRun"],
+        False,
+        requested_path=path,
+    )
 
 
 def _wrapper_command(path: Path, base_name: str) -> str | None:
@@ -151,6 +193,27 @@ def _candidate_source_roots(project_path: Path, module: str | None) -> list[tupl
         return [(module_name, project_path / module_name / "src" / "main" / "java") for module_name in modules]
 
     return [(None, project_path / "src" / "main" / "java")]
+
+
+def _find_maven_reactor_root(path: Path) -> tuple[Path | None, list[str]]:
+    for candidate in [path, *path.parents]:
+        pom_path = candidate / "pom.xml"
+        modules = _read_maven_modules(pom_path)
+        if not modules:
+            continue
+        if _path_is_reactor_member(candidate, path, modules):
+            return candidate, modules
+    return None, []
+
+
+def _path_is_reactor_member(root: Path, path: Path, modules: list[str]) -> bool:
+    if root == path:
+        return True
+    try:
+        relative = path.relative_to(root).as_posix()
+    except ValueError:
+        return False
+    return any(relative == module or relative.startswith(f"{module}/") for module in modules)
 
 
 def _read_maven_modules(pom_path: Path) -> list[str]:

@@ -26,6 +26,7 @@ from migration_factory.agents.transformation_agent.workspace import (
     TransformationWorkspaceError,
     prepare_sandbox_workspace,
 )
+from migration_factory.agents.transformation_agent import workspace as workspace_module
 from migration_factory.contracts.migration import (
     BuildValidationStatus,
     LedgerStatus,
@@ -269,7 +270,7 @@ class TransformationAgentTests(unittest.TestCase):
             modernized.mkdir()
             run_dir.mkdir(parents=True)
             outside.mkdir()
-            (run_dir / "workspaces").symlink_to(outside, target_is_directory=True)
+            _symlink_or_skip(self, run_dir / "workspaces", outside, target_is_directory=True)
 
             with self.assertRaisesRegex(TransformationWorkspaceError, "sandbox must stay inside run_dir"):
                 prepare_sandbox_workspace(
@@ -311,7 +312,7 @@ class TransformationAgentTests(unittest.TestCase):
             legacy.mkdir()
             modernized.mkdir()
             outside.write_text("outside", encoding="utf-8")
-            (legacy / "escape.txt").symlink_to(outside)
+            _symlink_or_skip(self, legacy / "escape.txt", outside)
 
             with self.assertRaisesRegex(TransformationWorkspaceError, "Symlink escapes"):
                 prepare_sandbox_workspace(
@@ -319,6 +320,48 @@ class TransformationAgentTests(unittest.TestCase):
                     modernized_app_path=modernized,
                     run_dir=modernized / ".migration" / "runs" / "run-1",
                 )
+
+    def test_prepare_sandbox_workspace_wraps_cleanup_permission_error(self) -> None:
+        with workspace_temp_dir() as tmp:
+            legacy = tmp / "legacy-app"
+            modernized = tmp / "modernized-app"
+            run_dir = modernized / ".migration" / "runs" / "run-1"
+            sandbox = run_dir / "workspaces" / "sandbox"
+            legacy.mkdir()
+            modernized.mkdir()
+            sandbox.mkdir(parents=True)
+            (legacy / "pom.xml").write_text("<project />", encoding="utf-8")
+            (sandbox / "locked.txt").write_text("locked", encoding="utf-8")
+
+            with mock.patch(
+                "migration_factory.agents.transformation_agent.workspace.shutil.rmtree",
+                side_effect=PermissionError("[WinError 5] Access is denied"),
+            ):
+                with self.assertRaisesRegex(TransformationWorkspaceError, "SANDBOX_CLEAN_FAILED") as raised:
+                    prepare_sandbox_workspace(
+                        legacy_app_path=legacy,
+                        modernized_app_path=modernized,
+                        run_dir=run_dir,
+                    )
+
+            message = str(raised.exception)
+            self.assertIn(str(sandbox), message)
+            self.assertIn("stop Java process / close terminals/editors", message)
+            self.assertIn("delete sandbox manually", message)
+            self.assertIn("use a new run id", message)
+
+    def test_sandbox_cleanup_refuses_target_outside_run_dir(self) -> None:
+        with workspace_temp_dir() as tmp:
+            run_dir = tmp / "run"
+            outside = tmp / "outside-sandbox"
+            run_dir.mkdir()
+            outside.mkdir()
+
+            with mock.patch("migration_factory.agents.transformation_agent.workspace.shutil.rmtree") as rmtree:
+                with self.assertRaisesRegex(TransformationWorkspaceError, "sandbox must stay inside run_dir"):
+                    workspace_module._remove_existing_sandbox(outside, run_dir)
+
+            rmtree.assert_not_called()
 
     def test_transform_v1_after_approval_runs_transformer_against_sandbox(self) -> None:
         with workspace_temp_dir() as tmp:
@@ -332,15 +375,21 @@ class TransformationAgentTests(unittest.TestCase):
             (legacy / "pom.xml").write_text("<project />", encoding="utf-8")
             _write_ai_hub_profile(ai_hub)
             _write_approved_run_artifacts(modernized, run_id, include_rewrite_plan=True)
+            ledger_file = run_dir / "workspaces" / "sandbox" / ".migration" / "ledger.json"
+
+            def run_agent_side_effect(*args: object, **kwargs: object) -> TransformationRunResult:
+                unit_id = str(kwargs.get("start_unit") or "baseline")
+                _write_awaiting_build_ledger(ledger_file, unit_id)
+                return TransformationRunResult(
+                    ledger_file=ledger_file,
+                    status=LedgerStatus.AWAITING_BUILD_AGENT,
+                    completed_units=[],
+                )
 
             stdout = io.StringIO()
             with mock.patch(
                 "migration_factory.transform_v1_after_approval.run_transformation_agent",
-                return_value=TransformationRunResult(
-                    ledger_file=run_dir / "workspaces" / "sandbox" / ".migration" / "ledger.json",
-                    status=LedgerStatus.AWAITING_BUILD_AGENT,
-                    completed_units=[],
-                ),
+                side_effect=run_agent_side_effect,
             ) as run_agent:
                 with mock.patch(
                     "migration_factory.transform_v1_after_approval.run_build_agent",
@@ -377,25 +426,63 @@ class TransformationAgentTests(unittest.TestCase):
             self.assertIn("APPROVED_FOR_TRANSFORM", stdout.getvalue())
             self.assertIn("SANDBOX_PREPARED", stdout.getvalue())
             self.assertIn("TRANSFORM_RUNNING", stdout.getvalue())
-            self.assertIn("TRANSFORM_APPLIED_IN_SANDBOX", stdout.getvalue())
+            self.assertIn("TRANSFORM_AWAITING_BUILD_AGENT", stdout.getvalue())
             self.assertIn("BUILD_VALIDATION_REQUIRED", stdout.getvalue())
             self.assertIn("BUILD_RUNNING_IN_SANDBOX", stdout.getvalue())
             self.assertIn("BUILD_PASSED_IN_SANDBOX", stdout.getvalue())
+            self.assertEqual(stdout.getvalue().count("BUILD_PASSED_IN_SANDBOX"), 2)
+            self.assertIn("TRANSFORM_APPLIED_IN_SANDBOX", stdout.getvalue())
+            first_build_passed = stdout.getvalue().index("BUILD_PASSED_IN_SANDBOX")
+            second_transform_running = stdout.getvalue().index("TRANSFORM_RUNNING", stdout.getvalue().index("TRANSFORM_RUNNING") + 1)
+            self.assertLess(first_build_passed, second_transform_running)
+            self.assertEqual(stdout.getvalue().count("TRANSFORM_RUNNING"), 2)
+            self.assertGreater(
+                stdout.getvalue().index("TRANSFORM_APPLIED_IN_SANDBOX"),
+                stdout.getvalue().rindex("BUILD_PASSED_IN_SANDBOX"),
+            )
             self.assertEqual(plan_payload["workspaces"]["target"]["path"], str(sandbox_path.resolve()))
             self.assertTrue((sandbox_path / "pom.xml").is_file())
             self.assertIn("<artifactId>rewrite-maven-plugin</artifactId>", plugin_path.read_text(encoding="utf-8"))
-            run_agent.assert_called_once_with(
-                sandbox_path,
-                plugin_path,
-                plan_path,
-                dry_run=False,
-                wait_for_continue=False,
+            run_agent.assert_has_calls(
+                [
+                    mock.call(
+                        sandbox_path,
+                        plugin_path,
+                        plan_path,
+                        start_unit=None,
+                        dry_run=False,
+                        wait_for_continue=False,
+                    ),
+                    mock.call(
+                        sandbox_path,
+                        plugin_path,
+                        plan_path,
+                        start_unit="java-17",
+                        dry_run=False,
+                        wait_for_continue=False,
+                    ),
+                ]
             )
-            run_build.assert_called_once_with(
-                project_path=sandbox_path,
-                ledger_file=run_dir / "workspaces" / "sandbox" / ".migration" / "ledger.json",
-                output_dir=run_dir / "build",
-                stream_output=True,
+            self.assertEqual(run_build.call_count, 2)
+            run_build.assert_has_calls(
+                [
+                    mock.call(
+                        project_path=sandbox_path,
+                        ledger_file=ledger_file,
+                        output_dir=run_dir / "build",
+                        stream_output=True,
+                        validation_unit_id="baseline",
+                        source_changing_unit=False,
+                    ),
+                    mock.call(
+                        project_path=sandbox_path,
+                        ledger_file=ledger_file,
+                        output_dir=run_dir / "build",
+                        stream_output=True,
+                        validation_unit_id="java-17",
+                        source_changing_unit=True,
+                    ),
+                ]
             )
 
     def test_transform_v1_after_approval_reports_build_failure(self) -> None:
@@ -411,15 +498,20 @@ class TransformationAgentTests(unittest.TestCase):
             _write_ai_hub_profile(ai_hub)
             _write_approved_run_artifacts(modernized, run_id, include_rewrite_plan=True)
             error_contract = run_dir / "build" / "build-error.json"
+            ledger_file = run_dir / "workspaces" / "sandbox" / ".migration" / "ledger.json"
+
+            def run_agent_side_effect(*args: object, **kwargs: object) -> TransformationRunResult:
+                _write_awaiting_build_ledger(ledger_file, "baseline")
+                return TransformationRunResult(
+                    ledger_file=ledger_file,
+                    status=LedgerStatus.AWAITING_BUILD_AGENT,
+                    completed_units=[],
+                )
 
             stdout = io.StringIO()
             with mock.patch(
                 "migration_factory.transform_v1_after_approval.run_transformation_agent",
-                return_value=TransformationRunResult(
-                    ledger_file=run_dir / "workspaces" / "sandbox" / ".migration" / "ledger.json",
-                    status=LedgerStatus.AWAITING_BUILD_AGENT,
-                    completed_units=[],
-                ),
+                side_effect=run_agent_side_effect,
             ):
                 with mock.patch(
                     "migration_factory.transform_v1_after_approval.run_build_agent",
@@ -449,8 +541,10 @@ class TransformationAgentTests(unittest.TestCase):
                         )
 
             self.assertEqual(result, 1)
-            self.assertIn("TRANSFORM_APPLIED_IN_SANDBOX", stdout.getvalue())
+            self.assertIn("TRANSFORM_AWAITING_BUILD_AGENT", stdout.getvalue())
+            self.assertNotIn("TRANSFORM_APPLIED_IN_SANDBOX", stdout.getvalue())
             self.assertIn("BUILD_FAILED_IN_SANDBOX", stdout.getvalue())
+            self.assertEqual(stdout.getvalue().count("TRANSFORM_RUNNING"), 1)
             self.assertIn("Build result kind: compilation_error", stdout.getvalue())
             self.assertIn("Build message: Compilation failed", stdout.getvalue())
             self.assertIn(f"Build error contract: {error_contract}", stdout.getvalue())
@@ -498,9 +592,96 @@ class TransformationAgentTests(unittest.TestCase):
             self.assertIn("ERROR: boom", stderr.getvalue())
             run_build.assert_not_called()
 
+    def test_transform_v1_after_approval_reports_sandbox_cleanup_failure_without_traceback(self) -> None:
+        with workspace_temp_dir() as tmp:
+            legacy = tmp / "legacy-app"
+            modernized = tmp / "modernized-app"
+            ai_hub = tmp / "ai-hub"
+            run_id = "run-1"
+            run_dir = _run_dir(modernized, run_id)
+            sandbox = run_dir / "workspaces" / "sandbox"
+            legacy.mkdir()
+            modernized.mkdir()
+            sandbox.mkdir(parents=True)
+            (legacy / "pom.xml").write_text("<project />", encoding="utf-8")
+            (sandbox / "locked.txt").write_text("locked", encoding="utf-8")
+            _write_ai_hub_profile(ai_hub)
+            _write_approved_run_artifacts(modernized, run_id, include_rewrite_plan=True)
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with mock.patch(
+                "migration_factory.agents.transformation_agent.workspace.shutil.rmtree",
+                side_effect=PermissionError("[WinError 5] Access is denied"),
+            ):
+                with mock.patch("migration_factory.transform_v1_after_approval.run_transformation_agent") as run_agent:
+                    with redirect_stdout(stdout), redirect_stderr(stderr):
+                        result = transform_v1_after_approval_main(
+                            [
+                                "--run-dir",
+                                str(run_dir),
+                                "--legacy-app",
+                                str(legacy),
+                                "--modernized-app",
+                                str(modernized),
+                                "--ai-hub",
+                                str(ai_hub),
+                                "--profile",
+                                "java17",
+                                "--approved-by",
+                                "human",
+                            ]
+                        )
+
+            self.assertEqual(result, 1)
+            self.assertIn("TRANSFORM_FAILED_IN_SANDBOX", stdout.getvalue())
+            self.assertNotIn("Traceback", stdout.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertIn("SANDBOX_CLEAN_FAILED", stderr.getvalue())
+            self.assertIn(str(sandbox), stderr.getvalue())
+            self.assertIn("stop Java process / close terminals/editors", stderr.getvalue())
+            self.assertIn("delete sandbox manually", stderr.getvalue())
+            self.assertIn("use a new run id", stderr.getvalue())
+            run_agent.assert_not_called()
+
 
 def _run_dir(app: Path, run_id: str) -> Path:
     return app / ".migration" / "runs" / run_id
+
+
+def _symlink_or_skip(
+    test_case: unittest.TestCase,
+    link_path: Path,
+    target: Path,
+    *,
+    target_is_directory: bool = False,
+) -> None:
+    try:
+        link_path.symlink_to(target, target_is_directory=target_is_directory)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            test_case.skipTest("Windows symlink privilege is not available")
+        raise
+
+
+def _write_awaiting_build_ledger(ledger_file: Path, unit_id: str) -> None:
+    ledger_file.parent.mkdir(parents=True, exist_ok=True)
+    ledger_file.write_text(
+        json.dumps(
+            {
+                "status": LedgerStatus.AWAITING_BUILD_AGENT,
+                "current_unit": unit_id,
+                "blocked_unit": None,
+                "completed_units": [],
+                "build_validation": {
+                    "required": True,
+                    "status": BuildValidationStatus.PENDING,
+                    "unit_id": unit_id,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _write_approved_run_artifacts(
