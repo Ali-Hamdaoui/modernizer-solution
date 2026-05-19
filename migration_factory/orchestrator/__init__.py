@@ -35,6 +35,10 @@ from migration_factory.orchestrator.state import (
     MigrationState,
     build_initial_state,
 )
+from migration_factory.orchestrator.summary import (
+    build_orchestration_summary,
+    write_orchestration_summary,
+)
 
 
 def __getattr__(name: str):
@@ -58,6 +62,7 @@ __all__ = [
     "build_graph",
     "build_initial_state",
     "build_langgraph_config",
+    "build_orchestration_summary",
     "build_approval_payload",
     "default_checkpointer",
     "default_phase_services",
@@ -71,4 +76,5 @@ __all__ = [
     "validate_assessment_artifacts",
     "validate_planning_artifacts",
     "validate_preflight",
+    "write_orchestration_summary",
 ]

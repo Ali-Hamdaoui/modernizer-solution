@@ -59,11 +59,12 @@ def test_main_builds_thread_id_from_run_id(monkeypatch, tmp_path: Path) -> None:
         def invoke(self, state, *, config):
             captured["state"] = state
             captured["config"] = config
-            return {"run_id": state["run_id"], "done": True}
+            return {**state, "done": True}
 
     monkeypatch.setattr(runner, "validate_preflight", lambda state, config: None)
     monkeypatch.setattr(runner, "default_checkpointer", lambda: object())
     monkeypatch.setattr(runner, "build_graph", lambda checkpointer: FakeGraph())
+    monkeypatch.setattr(runner, "write_orchestration_summary", lambda state: None)
 
     assert runner.main(_argv(tmp_path)) == 0
 
@@ -77,16 +78,38 @@ def test_main_invokes_graph(monkeypatch, tmp_path: Path, capsys) -> None:
     class FakeGraph:
         def invoke(self, state, *, config):
             calls.append("invoke")
-            return {"run_id": state["run_id"], "finished": True}
+            return {**state, "finished": True}
 
     monkeypatch.setattr(runner, "validate_preflight", lambda state, config: None)
     monkeypatch.setattr(runner, "default_checkpointer", lambda: "checkpointer")
     monkeypatch.setattr(runner, "build_graph", lambda checkpointer: FakeGraph())
+    monkeypatch.setattr(runner, "write_orchestration_summary", lambda state: None)
 
     assert runner.main(_argv(tmp_path)) == 0
 
     assert calls == ["invoke"]
     assert json.loads(capsys.readouterr().out)["finished"] is True
+
+
+def test_main_writes_summary_after_completed_graph(monkeypatch, tmp_path: Path) -> None:
+    written: list[str] = []
+
+    class FakeGraph:
+        def invoke(self, state, *, config):
+            return {**state, "approval_status": "COMPLETED"}
+
+    monkeypatch.setattr(runner, "validate_preflight", lambda state, config: None)
+    monkeypatch.setattr(runner, "default_checkpointer", lambda: "checkpointer")
+    monkeypatch.setattr(runner, "build_graph", lambda checkpointer: FakeGraph())
+    monkeypatch.setattr(
+        runner,
+        "write_orchestration_summary",
+        lambda state: written.append(state["run_id"]),
+    )
+
+    assert runner.main(_argv(tmp_path)) == 0
+
+    assert written == ["run-001"]
 
 
 def test_pass_flow_reaches_approval_interrupt(monkeypatch, tmp_path: Path, capsys) -> None:
@@ -116,6 +139,11 @@ def test_pass_flow_reaches_approval_interrupt(monkeypatch, tmp_path: Path, capsy
             checkpointer=checkpointer,
             phase_services=services,
         ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "write_orchestration_summary",
+        lambda state: (_ for _ in ()).throw(AssertionError("summary wrote before interrupt")),
     )
 
     assert runner.main(_argv(tmp_path)) == 0
