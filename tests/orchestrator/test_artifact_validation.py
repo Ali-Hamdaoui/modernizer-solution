@@ -47,7 +47,7 @@ def test_invalid_schema_backed_artifact_blocks(tmp_path: Path) -> None:
     assert any("Invalid artifact schema for analysis_report.json" in blocker for blocker in result.blockers)
 
 
-def test_source_modified_true_blocks_analysis(tmp_path: Path) -> None:
+def test_source_modified_true_blocks(tmp_path: Path) -> None:
     state = _state(tmp_path)
     _write_analysis_artifacts(state, source_modified=True)
 

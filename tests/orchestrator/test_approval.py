@@ -107,6 +107,24 @@ def test_approval_node_rejects_invalid_decision(
     assert result["errors"][-1] == result["stop_reason"]
 
 
+def test_invalid_approval_decision_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        approval_module,
+        "interrupt",
+        lambda payload: {"decision": "transform_now"},
+    )
+
+    result = approval_node(_state(tmp_path))
+
+    assert result["approval_status"] == "FAILED"
+    assert result["approval_decision"] is None
+    assert result["stop_reason"] == "Invalid approval decision: 'transform_now'"
+    assert result["blockers"][-1] == result["stop_reason"]
+
+
 def test_approval_payload_has_no_transformation_keys(tmp_path: Path) -> None:
     payload = build_approval_payload(_state(tmp_path))
     payload_text = json.dumps(payload).lower()

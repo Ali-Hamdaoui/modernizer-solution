@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from argparse import Namespace
 import json
 from pathlib import Path
 
@@ -50,6 +51,28 @@ def test_parse_args_maps_cli_fields(tmp_path: Path) -> None:
 
 def test_main_returns_nonzero_for_invalid_mode(tmp_path: Path) -> None:
     assert runner.main(_argv(tmp_path, mode="transform")) != 0
+
+
+def test_invalid_mode_fails_preflight(monkeypatch, tmp_path: Path, capsys) -> None:
+    _valid_inputs(tmp_path)
+    args = Namespace(
+        run_id="run-001",
+        legacy=str(tmp_path / "legacy"),
+        modernized=str(tmp_path / "modernized"),
+        ai_hub=str(tmp_path / "ai-hub"),
+        profile="java17",
+        mode="transform",
+    )
+
+    monkeypatch.setattr(runner, "parse_args", lambda argv=None: args)
+    monkeypatch.setattr(
+        runner,
+        "build_graph",
+        lambda checkpointer: (_ for _ in ()).throw(AssertionError("graph should not run")),
+    )
+
+    assert runner.main([]) == 2
+    assert "mode must be read_only_assessment: transform" in capsys.readouterr().err
 
 
 def test_main_builds_thread_id_from_run_id(monkeypatch, tmp_path: Path) -> None:

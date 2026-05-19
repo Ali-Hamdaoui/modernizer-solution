@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from langgraph.types import Command
+
 from migration_factory.orchestrator import graph as graph_module
 from migration_factory.orchestrator.artifact_validation import ArtifactValidationResult
 from migration_factory.orchestrator.phase_services import PhaseServices
@@ -61,7 +63,7 @@ def _patch_approval(monkeypatch, calls: list[str]) -> None:
     monkeypatch.setattr(graph_module, "approval_node", fake_approval)
 
 
-def test_graph_compiles_without_transformation_node(monkeypatch, tmp_path: Path) -> None:
+def test_no_transformation_node_or_path_exists(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
     _patch_validators(monkeypatch)
     _patch_approval(monkeypatch, calls)
@@ -89,7 +91,7 @@ def test_graph_runs_read_only_phases_then_approval(monkeypatch, tmp_path: Path) 
     assert result["approval_status"] == "COMPLETED"
 
 
-def test_analysis_failure_stops_before_planning(monkeypatch, tmp_path: Path) -> None:
+def test_analysis_failure_stops(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
     _patch_validators(monkeypatch)
     _patch_approval(monkeypatch, calls)
@@ -116,7 +118,7 @@ def test_analysis_artifact_failure_stops_before_planning(monkeypatch, tmp_path: 
     assert result["blockers"] == ["invalid artifacts"]
 
 
-def test_planning_failure_stops_before_assessment(monkeypatch, tmp_path: Path) -> None:
+def test_planning_failure_stops(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
     _patch_validators(monkeypatch)
     _patch_approval(monkeypatch, calls)
@@ -143,7 +145,7 @@ def test_planning_artifact_failure_stops_before_assessment(monkeypatch, tmp_path
     assert result["blockers"] == ["invalid artifacts"]
 
 
-def test_assessment_failure_stops_before_approval(monkeypatch, tmp_path: Path) -> None:
+def test_assessment_failure_stops(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
     _patch_validators(monkeypatch)
     _patch_approval(monkeypatch, calls)
@@ -168,3 +170,97 @@ def test_assessment_artifact_failure_stops_before_approval(monkeypatch, tmp_path
     assert result["assessment_status"] == "PASS"
     assert result["assessment_artifacts_valid"] is False
     assert result["blockers"] == ["invalid artifacts"]
+
+
+def test_approval_interrupt_emitted(
+    monkeypatch,
+    initial_state,
+    fake_successful_phase_services,
+    fresh_checkpointer,
+    phase_calls,
+) -> None:
+    _patch_validators(monkeypatch)
+    app = graph_module.build_graph(
+        checkpointer=fresh_checkpointer,
+        phase_services=fake_successful_phase_services,
+    )
+
+    result = app.invoke(
+        initial_state,
+        config={"configurable": {"thread_id": initial_state["thread_id"]}},
+    )
+
+    assert phase_calls == ["analysis", "planning", "assessment"]
+    interrupt_payload = result["__interrupt__"][0].value
+    assert interrupt_payload["type"] == "human_approval_required"
+    assert interrupt_payload["run_id"] == initial_state["run_id"]
+    assert interrupt_payload["decision_options"] == [
+        "approved",
+        "rejected",
+        "replan_required",
+    ]
+
+
+def test_same_process_resume_approved_stops(
+    monkeypatch,
+    initial_state,
+    fake_successful_phase_services,
+    fresh_checkpointer,
+    phase_calls,
+) -> None:
+    _patch_validators(monkeypatch)
+    config = {"configurable": {"thread_id": initial_state["thread_id"]}}
+    app = graph_module.build_graph(
+        checkpointer=fresh_checkpointer,
+        phase_services=fake_successful_phase_services,
+    )
+    app.invoke(initial_state, config=config)
+
+    result = app.invoke(Command(resume={"decision": "approved"}), config=config)
+
+    assert phase_calls == ["analysis", "planning", "assessment"]
+    assert result["approval_status"] == "COMPLETED"
+    assert result["approval_decision"] == "approved"
+    assert result["stop_reason"] == "Approval decision 'approved' received; stopping."
+
+
+def test_rejected_stops(
+    monkeypatch,
+    initial_state,
+    fake_successful_phase_services,
+    fresh_checkpointer,
+) -> None:
+    _patch_validators(monkeypatch)
+    config = {"configurable": {"thread_id": initial_state["thread_id"]}}
+    app = graph_module.build_graph(
+        checkpointer=fresh_checkpointer,
+        phase_services=fake_successful_phase_services,
+    )
+    app.invoke(initial_state, config=config)
+
+    result = app.invoke(Command(resume={"decision": "rejected"}), config=config)
+
+    assert result["approval_status"] == "COMPLETED"
+    assert result["approval_decision"] == "rejected"
+    assert result["stop_reason"] == "Approval decision 'rejected' received; stopping."
+
+
+def test_replan_required_stops(
+    monkeypatch,
+    initial_state,
+    fake_successful_phase_services,
+    fresh_checkpointer,
+) -> None:
+    _patch_validators(monkeypatch)
+    config = {"configurable": {"thread_id": initial_state["thread_id"]}}
+    app = graph_module.build_graph(
+        checkpointer=fresh_checkpointer,
+        phase_services=fake_successful_phase_services,
+    )
+    app.invoke(initial_state, config=config)
+
+    result = app.invoke(Command(resume={"decision": "replan_required"}), config=config)
+
+    assert result["approval_status"] == "COMPLETED"
+    assert result["approval_decision"] == "replan_required"
+    assert result["stop_reason"] == "Approval decision 'replan_required' received; stopping."
