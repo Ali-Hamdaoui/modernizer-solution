@@ -9,6 +9,7 @@ from contextlib import redirect_stderr, redirect_stdout
 
 import yaml
 
+from migration_factory.contracts.build import BuildRunResult
 from migration_factory.agents.transformation_agent.agent import (
     TransformationAgentError,
     TransformationRunResult,
@@ -341,23 +342,31 @@ class TransformationAgentTests(unittest.TestCase):
                     completed_units=[],
                 ),
             ) as run_agent:
-                with redirect_stdout(stdout):
-                    result = transform_v1_after_approval_main(
-                        [
-                            "--run-dir",
-                            str(run_dir),
-                            "--legacy-app",
-                            str(legacy),
-                            "--modernized-app",
-                            str(modernized),
-                            "--ai-hub",
-                            str(ai_hub),
-                            "--profile",
-                            "java17",
-                            "--approved-by",
-                            "human",
-                        ]
-                    )
+                with mock.patch(
+                    "migration_factory.transform_v1_after_approval.run_build_agent",
+                    return_value=BuildRunResult(
+                        succeeded=True,
+                        result_kind="success",
+                        message="Application started successfully",
+                    ),
+                ) as run_build:
+                    with redirect_stdout(stdout):
+                        result = transform_v1_after_approval_main(
+                            [
+                                "--run-dir",
+                                str(run_dir),
+                                "--legacy-app",
+                                str(legacy),
+                                "--modernized-app",
+                                str(modernized),
+                                "--ai-hub",
+                                str(ai_hub),
+                                "--profile",
+                                "java17",
+                                "--approved-by",
+                                "human",
+                            ]
+                        )
 
             sandbox_path = run_dir / "workspaces" / "sandbox"
             plan_path = run_dir / "transformation" / "transformation_execution_plan.yaml"
@@ -369,6 +378,9 @@ class TransformationAgentTests(unittest.TestCase):
             self.assertIn("SANDBOX_PREPARED", stdout.getvalue())
             self.assertIn("TRANSFORM_RUNNING", stdout.getvalue())
             self.assertIn("TRANSFORM_APPLIED_IN_SANDBOX", stdout.getvalue())
+            self.assertIn("BUILD_VALIDATION_REQUIRED", stdout.getvalue())
+            self.assertIn("BUILD_RUNNING_IN_SANDBOX", stdout.getvalue())
+            self.assertIn("BUILD_PASSED_IN_SANDBOX", stdout.getvalue())
             self.assertEqual(plan_payload["workspaces"]["target"]["path"], str(sandbox_path.resolve()))
             self.assertTrue((sandbox_path / "pom.xml").is_file())
             self.assertIn("<artifactId>rewrite-maven-plugin</artifactId>", plugin_path.read_text(encoding="utf-8"))
@@ -379,6 +391,69 @@ class TransformationAgentTests(unittest.TestCase):
                 dry_run=False,
                 wait_for_continue=False,
             )
+            run_build.assert_called_once_with(
+                project_path=sandbox_path,
+                ledger_file=run_dir / "workspaces" / "sandbox" / ".migration" / "ledger.json",
+                output_dir=run_dir / "build",
+                stream_output=True,
+            )
+
+    def test_transform_v1_after_approval_reports_build_failure(self) -> None:
+        with workspace_temp_dir() as tmp:
+            legacy = tmp / "legacy-app"
+            modernized = tmp / "modernized-app"
+            ai_hub = tmp / "ai-hub"
+            run_id = "run-1"
+            run_dir = _run_dir(modernized, run_id)
+            legacy.mkdir()
+            modernized.mkdir()
+            (legacy / "pom.xml").write_text("<project />", encoding="utf-8")
+            _write_ai_hub_profile(ai_hub)
+            _write_approved_run_artifacts(modernized, run_id, include_rewrite_plan=True)
+            error_contract = run_dir / "build" / "build-error.json"
+
+            stdout = io.StringIO()
+            with mock.patch(
+                "migration_factory.transform_v1_after_approval.run_transformation_agent",
+                return_value=TransformationRunResult(
+                    ledger_file=run_dir / "workspaces" / "sandbox" / ".migration" / "ledger.json",
+                    status=LedgerStatus.AWAITING_BUILD_AGENT,
+                    completed_units=[],
+                ),
+            ):
+                with mock.patch(
+                    "migration_factory.transform_v1_after_approval.run_build_agent",
+                    return_value=BuildRunResult(
+                        succeeded=False,
+                        result_kind="compilation_error",
+                        message="Compilation failed",
+                        error_contract_path=error_contract,
+                    ),
+                ):
+                    with redirect_stdout(stdout):
+                        result = transform_v1_after_approval_main(
+                            [
+                                "--run-dir",
+                                str(run_dir),
+                                "--legacy-app",
+                                str(legacy),
+                                "--modernized-app",
+                                str(modernized),
+                                "--ai-hub",
+                                str(ai_hub),
+                                "--profile",
+                                "java17",
+                                "--approved-by",
+                                "human",
+                            ]
+                        )
+
+            self.assertEqual(result, 1)
+            self.assertIn("TRANSFORM_APPLIED_IN_SANDBOX", stdout.getvalue())
+            self.assertIn("BUILD_FAILED_IN_SANDBOX", stdout.getvalue())
+            self.assertIn("Build result kind: compilation_error", stdout.getvalue())
+            self.assertIn("Build message: Compilation failed", stdout.getvalue())
+            self.assertIn(f"Build error contract: {error_contract}", stdout.getvalue())
 
     def test_transform_v1_after_approval_reports_transform_failure(self) -> None:
         with workspace_temp_dir() as tmp:
@@ -399,27 +474,29 @@ class TransformationAgentTests(unittest.TestCase):
                 "migration_factory.transform_v1_after_approval.run_transformation_agent",
                 side_effect=TransformationAgentError("boom"),
             ):
-                with redirect_stdout(stdout), redirect_stderr(stderr):
-                    result = transform_v1_after_approval_main(
-                        [
-                            "--run-dir",
-                            str(run_dir),
-                            "--legacy-app",
-                            str(legacy),
-                            "--modernized-app",
-                            str(modernized),
-                            "--ai-hub",
-                            str(ai_hub),
-                            "--profile",
-                            "java17",
-                            "--approved-by",
-                            "human",
-                        ]
-                    )
+                with mock.patch("migration_factory.transform_v1_after_approval.run_build_agent") as run_build:
+                    with redirect_stdout(stdout), redirect_stderr(stderr):
+                        result = transform_v1_after_approval_main(
+                            [
+                                "--run-dir",
+                                str(run_dir),
+                                "--legacy-app",
+                                str(legacy),
+                                "--modernized-app",
+                                str(modernized),
+                                "--ai-hub",
+                                str(ai_hub),
+                                "--profile",
+                                "java17",
+                                "--approved-by",
+                                "human",
+                            ]
+                        )
 
             self.assertEqual(result, 1)
             self.assertIn("TRANSFORM_FAILED_IN_SANDBOX", stdout.getvalue())
             self.assertIn("ERROR: boom", stderr.getvalue())
+            run_build.assert_not_called()
 
 
 def _run_dir(app: Path, run_id: str) -> Path:

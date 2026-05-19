@@ -8,6 +8,7 @@ from typing import Any
 
 import yaml
 
+from migration_factory.agents.build_agent import run_build_agent
 from migration_factory.agents.transformation_agent import run_transformation_agent
 from migration_factory.agents.transformation_agent.agent import TransformationAgentError
 from migration_factory.agents.transformation_agent.execution_plan import (
@@ -34,6 +35,10 @@ STATUS_SANDBOX = "SANDBOX_PREPARED"
 STATUS_RUNNING = "TRANSFORM_RUNNING"
 STATUS_APPLIED = "TRANSFORM_APPLIED_IN_SANDBOX"
 STATUS_FAILED = "TRANSFORM_FAILED_IN_SANDBOX"
+STATUS_BUILD_REQUIRED = "BUILD_VALIDATION_REQUIRED"
+STATUS_BUILD_RUNNING = "BUILD_RUNNING_IN_SANDBOX"
+STATUS_BUILD_PASSED = "BUILD_PASSED_IN_SANDBOX"
+STATUS_BUILD_FAILED = "BUILD_FAILED_IN_SANDBOX"
 
 
 class TransformV1AfterApprovalError(ValueError):
@@ -77,7 +82,23 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Blocked unit: {result.blocked_unit}")
             return 1
         print(STATUS_APPLIED)
-        return 0
+        print(STATUS_BUILD_REQUIRED)
+        print(STATUS_BUILD_RUNNING)
+        build_result = run_build_agent(
+            project_path=sandbox.path,
+            ledger_file=result.ledger_file,
+            output_dir=run_dir / "build",
+            stream_output=True,
+        )
+        if build_result.succeeded:
+            print(STATUS_BUILD_PASSED)
+            return 0
+
+        print(STATUS_BUILD_FAILED)
+        print(f"Build result kind: {build_result.result_kind}")
+        print(f"Build message: {build_result.message}")
+        print(f"Build error contract: {build_result.error_contract_path}")
+        return 1
     except (
         ApprovalArtifactError,
         MigrationPlanError,
