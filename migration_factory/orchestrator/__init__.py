@@ -10,6 +10,10 @@ from migration_factory.orchestrator.approval import (
     approval_node,
     build_approval_payload,
 )
+from migration_factory.orchestrator.checkpointing import (
+    default_checkpointer,
+    require_thread_id,
+)
 from migration_factory.orchestrator.preflight import (
     PreflightError,
     build_langgraph_config,
@@ -44,7 +48,9 @@ __all__ = [
     "build_initial_state",
     "build_langgraph_config",
     "build_approval_payload",
+    "default_checkpointer",
     "default_phase_services",
+    "require_thread_id",
     "run_analysis_phase",
     "run_assessment_phase",
     "run_planning_phase",
