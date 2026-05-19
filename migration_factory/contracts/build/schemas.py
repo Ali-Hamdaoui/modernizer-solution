@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+import json
+import re
+
+
+SCHEMA_VERSION = "1.0"
+DEFAULT_AGENT_NAME = "build-agent"
+
+
+@dataclass(frozen=True)
+class BuildErrorContract:
+    schema_version: str
+    agent: str
+    created_at: str
+    project_path: str
+    build_tool: str | None
+    command: list[str]
+    status: str
+    result_kind: str
+    message: str
+    matched_line: str | None
+    exit_code: int | None
+    module: str | None = None
+    main_class: str | None = None
+    stdout_tail: list[str] = field(default_factory=list)
+    stderr_tail: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class BuildRunResult:
+    succeeded: bool
+    result_kind: str
+    message: str
+    error_contract_path: Path | None = None
+    exit_code: int | None = None
+    matched_line: str | None = None
+
+
+def write_build_error(contract: BuildErrorContract, output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
+    kind = _safe_filename_part(contract.result_kind)
+    output_path = output_dir / f"build-error-{timestamp}-{kind}.json"
+    output_path.write_text(
+        json.dumps(asdict(contract), indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return output_path
+
+
+def build_error_contract(
+    *,
+    project_path: Path,
+    build_tool: str | None,
+    command: list[str],
+    result_kind: str,
+    message: str,
+    matched_line: str | None,
+    exit_code: int | None,
+    module: str | None,
+    main_class: str | None,
+    stdout: list[str],
+    stderr: list[str],
+    tail_size: int = 40,
+) -> BuildErrorContract:
+    return BuildErrorContract(
+        schema_version=SCHEMA_VERSION,
+        agent=DEFAULT_AGENT_NAME,
+        created_at=datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        project_path=str(project_path),
+        build_tool=build_tool,
+        command=command,
+        status="failed",
+        result_kind=result_kind,
+        message=message,
+        matched_line=matched_line,
+        exit_code=exit_code,
+        module=module,
+        main_class=main_class,
+        stdout_tail=stdout[-tail_size:],
+        stderr_tail=stderr[-tail_size:],
+    )
+
+
+def _safe_filename_part(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-")
+    return cleaned or "unknown"
