@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from migration_factory.orchestrator.state import (
+    ORCHESTRATION_MODES,
     READ_ONLY_ASSESSMENT_MODE,
     MigrationState,
 )
@@ -19,9 +20,10 @@ def validate_preflight(state: MigrationState, config: dict) -> None:
     if not run_id:
         raise PreflightError("run_id is required")
 
-    if state.get("mode") != READ_ONLY_ASSESSMENT_MODE:
+    if state.get("mode") not in ORCHESTRATION_MODES:
         raise PreflightError(
-            f"mode must be {READ_ONLY_ASSESSMENT_MODE}: {state.get('mode')}"
+            f"mode must be {READ_ONLY_ASSESSMENT_MODE}: {state.get('mode')} "
+            "(or full_sandbox_migration)"
         )
 
     legacy_app_path_value = state.get("legacy_app_path", "")

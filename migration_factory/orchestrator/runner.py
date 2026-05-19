@@ -13,6 +13,7 @@ from migration_factory.orchestrator.preflight import (
     validate_preflight,
 )
 from migration_factory.orchestrator.state import (
+    FULL_SANDBOX_MIGRATION_MODE,
     READ_ONLY_ASSESSMENT_MODE,
     build_initial_state,
 )
@@ -32,7 +33,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         default=READ_ONLY_ASSESSMENT_MODE,
-        choices=[READ_ONLY_ASSESSMENT_MODE],
+        choices=[READ_ONLY_ASSESSMENT_MODE, FULL_SANDBOX_MIGRATION_MODE],
     )
     return parser.parse_args(argv)
 
@@ -56,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         validate_preflight(state, config)
-        graph = build_graph(checkpointer=default_checkpointer())
+        graph = build_graph(checkpointer=_default_checkpointer_for_run(state["run_dir"]))
         result = graph.invoke(state, config=config)
     except PreflightError as exc:
         print(str(exc), file=sys.stderr)
@@ -113,6 +114,13 @@ def _to_json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
+
+
+def _default_checkpointer_for_run(run_dir: str):
+    try:
+        return default_checkpointer(run_dir)
+    except TypeError:
+        return default_checkpointer()
 
 
 if __name__ == "__main__":

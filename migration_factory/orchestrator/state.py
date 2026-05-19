@@ -2,6 +2,11 @@ from pathlib import Path
 from typing import Literal, TypedDict
 
 READ_ONLY_ASSESSMENT_MODE = "read_only_assessment"
+FULL_SANDBOX_MIGRATION_MODE = "full_sandbox_migration"
+ORCHESTRATION_MODES = {
+    READ_ONLY_ASSESSMENT_MODE,
+    FULL_SANDBOX_MIGRATION_MODE,
+}
 
 PHASE_STATUS_VALUES = {"PENDING", "RUNNING", "PASS", "FAIL", "SKIPPED"}
 APPROVAL_STATUS_VALUES = {"PENDING", "INTERRUPTED", "COMPLETED", "FAILED"}
@@ -29,7 +34,14 @@ class MigrationState(TypedDict, total=False):
 
     approval_status: ApprovalStatus
     approval_decision: ApprovalDecision | None
+    approved_by: str
+    approval_comments: str
 
+    final_status: str
+    transform_status: str
+    build_status: str
+    sandbox_path: str
+    transform_log_path: str
     stop_reason: str | None
     blockers: list[str]
     warnings: list[str]
@@ -75,6 +87,13 @@ def build_initial_state(
         "orchestration_status": "PENDING",
         "approval_status": "PENDING",
         "approval_decision": None,
+        "approved_by": "",
+        "approval_comments": "",
+        "final_status": "",
+        "transform_status": "",
+        "build_status": "",
+        "sandbox_path": "",
+        "transform_log_path": "",
         "stop_reason": None,
         "blockers": [],
         "warnings": [],

@@ -55,6 +55,130 @@ def run_assessment_phase(state: MigrationState) -> MigrationState:
     )
 
 
+def record_approval_decision_phase(state: MigrationState) -> MigrationState:
+    from migration_factory.approval.approve_run import record_approval_decision_for_run
+
+    decision = state.get("approval_decision")
+    approved_by = state.get("approved_by") or "human"
+    run_id = state.get("run_id", "")
+    run_dir = Path(state.get("run_dir", ""))
+    if decision not in {"approved", "rejected", "replan_required"}:
+        message = f"Cannot record approval decision: {decision!r}"
+        return _with_phase_failure(
+            state,
+            phase="approval",
+            status_key="orchestration_status",
+            message=message,
+        )
+
+    try:
+        result = record_approval_decision_for_run(
+            run_dir=run_dir,
+            run_id=run_id,
+            decided_by=approved_by,
+            decision=decision,
+            comments=state.get("approval_comments", ""),
+            source="orchestrator_resume",
+        )
+    except Exception as exc:
+        return _with_phase_failure(
+            state,
+            phase="approval",
+            status_key="orchestration_status",
+            message=f"approval recording failed: {exc}",
+        )
+
+    artifact_refs = dict(state.get("artifact_refs", {}) or {})
+    artifact_refs["approval_decision"] = str(result.approval_decision)
+    if result.approved_plan_lock is not None:
+        artifact_refs["approved_plan_lock"] = str(result.approved_plan_lock)
+
+    stop_reason = state.get("stop_reason")
+    final_status = state.get("final_status", "")
+    if decision != "approved":
+        stop_reason = f"Approval decision '{decision}' recorded; stopping."
+        final_status = decision.upper()
+
+    return {
+        "approval_status": "COMPLETED",
+        "approval_decision": decision,
+        "current_phase": "approval",
+        "orchestration_status": "PASS",
+        "artifact_refs": artifact_refs,
+        "stop_reason": stop_reason,
+        "final_status": final_status,
+    }
+
+
+def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
+    from migration_factory.transform_v1_after_approval import (
+        STATUS_APPLIED,
+        apply_approved_sandbox_transform,
+    )
+
+    try:
+        result = apply_approved_sandbox_transform(
+            run_dir=Path(state.get("run_dir", "")),
+            legacy_app=Path(state.get("legacy_app_path", "")),
+            modernized_app=Path(state.get("modernized_app_path", "")),
+            ai_hub=state.get("ai_hub_path", ""),
+            profile=state.get("profile_id", ""),
+            approved_by=state.get("approved_by") or "human",
+            quiet=True,
+            status_writer=None,
+            error_writer=None,
+        )
+    except Exception as exc:
+        return _with_phase_failure(
+            state,
+            phase="sandbox_transform",
+            status_key="orchestration_status",
+            message=f"sandbox transform failed: {exc}",
+        )
+
+    artifact_refs = dict(state.get("artifact_refs", {}) or {})
+    if result.generated_plan is not None:
+        artifact_refs["transformation_execution_plan"] = str(result.generated_plan)
+    if result.plugin_xml is not None:
+        artifact_refs["openrewrite_plugin_xml"] = str(result.plugin_xml)
+    if result.ledger_file is not None:
+        artifact_refs["migration_ledger"] = str(result.ledger_file)
+    artifact_refs["phase2_log"] = str(result.log_file)
+
+    if result.exit_code != 0 or result.status != STATUS_APPLIED or result.sandbox_path is None:
+        message = result.message or f"sandbox transform failed with status {result.status}"
+        failed = _with_phase_failure(
+            state,
+            phase="sandbox_transform",
+            status_key="orchestration_status",
+            message=message,
+        )
+        failed.update(
+            {
+                "transform_status": result.status,
+                "build_status": result.build_status or "",
+                "sandbox_path": str(result.sandbox_path or ""),
+                "transform_log_path": str(result.log_file),
+                "artifact_refs": artifact_refs,
+                "final_status": result.status,
+                "stop_reason": message,
+            }
+        )
+        return failed
+
+    return {
+        "current_phase": "sandbox_transform",
+        "orchestration_status": "PASS",
+        "transform_status": result.status,
+        "build_status": result.build_status or "",
+        "sandbox_path": str(result.sandbox_path),
+        "transform_log_path": str(result.log_file),
+        "artifact_refs": artifact_refs,
+        "final_status": STATUS_APPLIED,
+        "stop_reason": result.message,
+    }
+
+
 def _run_phase(
     state: MigrationState,
     *,

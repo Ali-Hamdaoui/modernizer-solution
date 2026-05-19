@@ -77,6 +77,33 @@ def test_summary_excludes_transformation_status(tmp_path: Path) -> None:
     assert "transformation_status" not in build_orchestration_summary(state)
 
 
+def test_summary_includes_full_sandbox_migration_outputs(tmp_path: Path) -> None:
+    state = _state(tmp_path)
+    state.update(
+        {
+            "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+            "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+            "build_status": "BUILD_PASSED_IN_SANDBOX",
+            "sandbox_path": str(tmp_path / "run" / "workspaces" / "sandbox"),
+            "transform_log_path": str(tmp_path / "run" / "logs" / "phase2_transform.log"),
+            "stop_reason": "Sandbox migration candidate ready.",
+        }
+    )
+
+    summary = build_orchestration_summary(state)
+
+    assert summary["final_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
+    assert summary["approval_decision"] == "approved"
+    assert summary["transform_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
+    assert summary["build_status"] == "BUILD_PASSED_IN_SANDBOX"
+    assert summary["sandbox_path"].endswith("workspaces\\sandbox") or summary["sandbox_path"].endswith("workspaces/sandbox")
+    assert summary["log_path"].endswith("phase2_transform.log")
+    assert summary["stop_reason"] == "Sandbox migration candidate ready."
+    assert summary["transformation_executed"] is True
+    assert summary["migrated_build_executed"] is True
+    assert summary["final_migration_executed"] is False
+
+
 def test_write_orchestration_summary_uses_orchestration_dir_under_run_dir(
     tmp_path: Path,
 ) -> None:

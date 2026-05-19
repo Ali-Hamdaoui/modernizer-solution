@@ -17,6 +17,7 @@ EXECUTION_CLAIMS = {
 
 
 def build_orchestration_summary(state: MigrationState) -> dict:
+    execution_claims = _execution_claims(state)
     return {
         "run_id": state.get("run_id", ""),
         "final_status": _final_status(state),
@@ -26,12 +27,17 @@ def build_orchestration_summary(state: MigrationState) -> dict:
         "assessment_status": state.get("assessment_status", ""),
         "approval_status": state.get("approval_status", ""),
         "approval_decision": state.get("approval_decision"),
+        "approved_by": state.get("approved_by", ""),
+        "transform_status": state.get("transform_status", ""),
+        "build_status": state.get("build_status", ""),
+        "sandbox_path": state.get("sandbox_path", ""),
+        "log_path": state.get("transform_log_path", ""),
         "stop_reason": state.get("stop_reason"),
         "blockers": list(state.get("blockers", []) or []),
         "warnings": list(state.get("warnings", []) or []),
         "errors": list(state.get("errors", []) or []),
         "artifact_refs": dict(state.get("artifact_refs", {}) or {}),
-        **EXECUTION_CLAIMS,
+        **execution_claims,
     }
 
 
@@ -50,6 +56,8 @@ def write_orchestration_summary(state: MigrationState) -> Path:
 
 
 def _final_status(state: MigrationState) -> str:
+    if state.get("final_status"):
+        return str(state.get("final_status"))
     if state.get("approval_status") == "FAILED":
         return "FAILED"
     if state.get("errors") or state.get("blockers"):
@@ -64,6 +72,17 @@ def _final_status(state: MigrationState) -> str:
     if state.get("approval_status") == "COMPLETED":
         return "COMPLETED"
     return "COMPLETED"
+
+
+def _execution_claims(state: MigrationState) -> dict[str, bool]:
+    claims = dict(EXECUTION_CLAIMS)
+    if state.get("transform_status") == "TRANSFORM_APPLIED_IN_SANDBOX":
+        claims["transformation_executed"] = True
+        claims["openrewrite_apply_executed"] = True
+    if state.get("build_status") == "BUILD_PASSED_IN_SANDBOX":
+        claims["migrated_build_executed"] = True
+        claims["migrated_tests_executed"] = True
+    return claims
 
 
 def _to_json_safe(value: Any) -> Any:

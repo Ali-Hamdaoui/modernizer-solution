@@ -14,8 +14,11 @@ from migration_factory.orchestrator.artifact_validation import (
 from migration_factory.orchestrator.phase_services import (
     PhaseServices,
     default_phase_services,
+    record_approval_decision_phase,
+    run_sandbox_transform_phase,
 )
 from migration_factory.orchestrator.state import MigrationState
+from migration_factory.orchestrator.state import FULL_SANDBOX_MIGRATION_MODE
 
 
 ValidationCallable = Callable[[MigrationState], ArtifactValidationResult]
@@ -24,6 +27,8 @@ ValidationCallable = Callable[[MigrationState], ArtifactValidationResult]
 def build_graph(
     checkpointer=None,
     phase_services: PhaseServices | None = None,
+    approval_record_service=None,
+    sandbox_transform_service=None,
 ):
     services = phase_services or default_phase_services()
 
@@ -53,6 +58,14 @@ def build_graph(
         ),
     )
     graph.add_node("approval", approval_node)
+    graph.add_node(
+        "approval_record",
+        approval_record_service or record_approval_decision_phase,
+    )
+    graph.add_node(
+        "sandbox_transform",
+        sandbox_transform_service or run_sandbox_transform_phase,
+    )
 
     graph.add_edge(START, "analysis")
     graph.add_conditional_edges(
@@ -70,7 +83,17 @@ def build_graph(
         _route_assessment,
         {"approval": "approval", END: END},
     )
-    graph.add_edge("approval", END)
+    graph.add_conditional_edges(
+        "approval",
+        _route_after_approval,
+        {"approval_record": "approval_record", END: END},
+    )
+    graph.add_conditional_edges(
+        "approval_record",
+        _route_after_approval_record,
+        {"sandbox_transform": "sandbox_transform", END: END},
+    )
+    graph.add_edge("sandbox_transform", END)
 
     if checkpointer is not None:
         return graph.compile(checkpointer=checkpointer)
@@ -121,4 +144,22 @@ def _route_planning(state: MigrationState) -> str:
 def _route_assessment(state: MigrationState) -> str:
     if state.get("assessment_status") == "PASS" and state.get("assessment_artifacts_valid") is True:
         return "approval"
+    return END
+
+
+def _route_after_approval(state: MigrationState) -> str:
+    if state.get("mode") == FULL_SANDBOX_MIGRATION_MODE and state.get("approval_status") == "COMPLETED":
+        return "approval_record"
+    return END
+
+
+def _route_after_approval_record(state: MigrationState) -> str:
+    if (
+        state.get("mode") == FULL_SANDBOX_MIGRATION_MODE
+        and state.get("approval_status") == "COMPLETED"
+        and state.get("approval_decision") == "approved"
+        and not state.get("errors")
+        and state.get("orchestration_status") != "FAIL"
+    ):
+        return "sandbox_transform"
     return END

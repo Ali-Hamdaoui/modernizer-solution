@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Any, Sequence
 
 import yaml
@@ -12,6 +13,7 @@ from migration_factory.approval import (
     ApprovalArtifactError,
     build_approved_plan_lock,
     check_approval_decision,
+    check_approved_plan_lock,
     write_approval_decision,
     write_approved_plan_lock,
 )
@@ -51,6 +53,12 @@ class ApprovalCliError(ValueError):
     """Raised when a run cannot be safely approved."""
 
 
+@dataclass(frozen=True)
+class ApprovalRunResult:
+    approval_decision: Path
+    approved_plan_lock: Path | None
+
+
 class _ApprovalArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         raise ApprovalCliError(message)
@@ -60,12 +68,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         parser = _build_parser()
         args = parser.parse_args(argv)
-        approval_decision, plan_lock = approve_run(
+        result = record_approval_decision_for_run(
             run_dir=Path(args.run_dir),
             run_id=args.run_id,
-            approved_by=args.approved_by,
+            decided_by=args.approved_by,
             decision=args.decision,
             comments=args.comments,
+            source="approve_run_cli",
+            require_approved=True,
         )
     except (ApprovalCliError, ApprovalArtifactError) as exc:
         print("APPROVAL_FAILED")
@@ -73,8 +83,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     print("APPROVAL_RECORDED")
-    print(f"approval_decision: {approval_decision}")
-    print(f"approved_plan_lock: {plan_lock}")
+    print(f"approval_decision: {result.approval_decision}")
+    print(f"approved_plan_lock: {result.approved_plan_lock}")
     print("APPROVED_FOR_PHASE_2")
     return 0
 
@@ -87,18 +97,54 @@ def approve_run(
     decision: str,
     comments: str,
 ) -> tuple[Path, Path]:
+    result = record_approval_decision_for_run(
+        run_dir=run_dir,
+        run_id=run_id,
+        decided_by=approved_by,
+        decision=decision,
+        comments=comments,
+        source="approve_run_cli",
+        require_approved=True,
+    )
+    if result.approved_plan_lock is None:
+        raise ApprovalCliError("approved decision did not create approved_plan_lock.json")
+    return result.approval_decision, result.approved_plan_lock
+
+
+def record_approval_decision_for_run(
+    *,
+    run_dir: Path,
+    run_id: str,
+    decided_by: str,
+    decision: str,
+    comments: str = "",
+    source: str = "orchestrator_resume",
+    require_approved: bool = False,
+) -> ApprovalRunResult:
     run_dir = run_dir.resolve()
-    _validate_request(run_id=run_id, approved_by=approved_by, decision=decision)
+    _validate_request(
+        run_id=run_id,
+        approved_by=decided_by,
+        decision=decision,
+        require_approved=require_approved,
+    )
     _validate_phase_1_artifacts(run_dir=run_dir, run_id=run_id)
-    build_approved_plan_lock(run_dir, run_id)
+
+    plan_lock: Path | None = None
+    plan_lock_ref: str | None = None
+    if decision == "approved":
+        build_approved_plan_lock(run_dir, run_id)
+        plan_lock = write_approved_plan_lock(run_dir=run_dir, run_id=run_id)
+        plan_lock_ref = "approved_plan_lock.json"
 
     approval_decision = write_approval_decision(
         run_dir,
         run_id,
         decision,
-        decided_by=approved_by,
+        decided_by=decided_by,
         comments=comments,
-        source="approve_run_cli",
+        plan_lock_ref=plan_lock_ref,
+        source=source,
         artifact_refs={
             "approval_request": "../planning/approval_request.json",
             "assessment_report": "../assessment/assessment_report.json",
@@ -108,8 +154,15 @@ def approve_run(
     if decision_errors:
         raise ApprovalCliError("; ".join(decision_errors))
 
-    plan_lock = write_approved_plan_lock(run_dir=run_dir, run_id=run_id)
-    return approval_decision, plan_lock
+    if decision == "approved":
+        lock_errors = check_approved_plan_lock(run_dir, expected_run_id=run_id)
+        if lock_errors:
+            raise ApprovalCliError("; ".join(lock_errors))
+
+    return ApprovalRunResult(
+        approval_decision=approval_decision,
+        approved_plan_lock=plan_lock,
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -122,14 +175,20 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _validate_request(*, run_id: str, approved_by: str, decision: str) -> None:
+def _validate_request(
+    *,
+    run_id: str,
+    approved_by: str,
+    decision: str,
+    require_approved: bool = False,
+) -> None:
     if not run_id:
         raise ApprovalCliError("--run-id is required")
     if not approved_by:
         raise ApprovalCliError("--approved-by is required")
     if decision not in APPROVAL_DECISION_VALUES:
         raise ApprovalCliError(f"Unsupported approval decision: {decision}")
-    if decision != "approved":
+    if require_approved and decision != "approved":
         raise ApprovalCliError(f"approval CLI only records approved decisions, got {decision!r}")
 
 

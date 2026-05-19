@@ -3,6 +3,7 @@ from langgraph.checkpoint.base import empty_checkpoint
 from langgraph.checkpoint.memory import InMemorySaver
 
 from migration_factory.orchestrator.checkpointing import (
+    SQLiteBackedInMemorySaver,
     default_checkpointer,
     require_thread_id,
 )
@@ -13,6 +14,12 @@ def test_default_checkpointer_returns_in_memory_saver() -> None:
     checkpointer = default_checkpointer()
 
     assert isinstance(checkpointer, InMemorySaver)
+
+
+def test_default_checkpointer_with_run_dir_returns_persistent_saver(tmp_path) -> None:
+    checkpointer = default_checkpointer(tmp_path / "run")
+
+    assert isinstance(checkpointer, SQLiteBackedInMemorySaver)
 
 
 def test_default_checkpointer_keeps_checkpoint_in_same_process() -> None:
@@ -32,6 +39,25 @@ def test_default_checkpointer_keeps_checkpoint_in_same_process() -> None:
     saved_checkpoint = checkpointer.get(saved_config)
     assert saved_checkpoint is not None
     assert saved_checkpoint["channel_values"]["phase"] == "analysis"
+
+
+def test_persistent_checkpointer_loads_checkpoint_in_new_instance(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    config = {"configurable": {"thread_id": "run-001", "checkpoint_ns": ""}}
+    checkpoint = empty_checkpoint()
+    checkpoint["channel_values"]["phase"] = "approval"
+    checkpoint["channel_versions"]["phase"] = "1"
+
+    saved_config = default_checkpointer(run_dir).put(
+        checkpoint=checkpoint,
+        config=config,
+        metadata={},
+        new_versions={"phase": "1"},
+    )
+
+    restored = default_checkpointer(run_dir).get(saved_config)
+    assert restored is not None
+    assert restored["channel_values"]["phase"] == "approval"
 
 
 @pytest.mark.parametrize(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import dataclass
 import json
 import sys
 from pathlib import Path
@@ -51,34 +52,82 @@ class TransformV1AfterApprovalError(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class TransformSandboxResult:
+    exit_code: int
+    status: str
+    message: str
+    sandbox_path: Path | None
+    log_file: Path
+    generated_plan: Path | None = None
+    plugin_xml: Path | None = None
+    ledger_file: Path | None = None
+    build_status: str | None = None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    run_dir = Path(args.run_dir).expanduser().resolve()
-    log_file = _resolve_log_file(run_dir, args.log_file)
-    verbose = not args.quiet
+    result = apply_approved_sandbox_transform(
+        run_dir=Path(args.run_dir),
+        legacy_app=Path(args.legacy_app),
+        modernized_app=Path(args.modernized_app),
+        ai_hub=args.ai_hub,
+        profile=args.profile,
+        approved_by=args.approved_by,
+        quiet=args.quiet,
+        log_file=Path(args.log_file) if args.log_file else None,
+        status_writer=print,
+        error_writer=lambda line: print(line, file=sys.stderr),
+    )
+    return result.exit_code
+
+
+def apply_approved_sandbox_transform(
+    *,
+    run_dir: Path,
+    legacy_app: Path,
+    modernized_app: Path,
+    ai_hub: str,
+    profile: str,
+    approved_by: str,
+    quiet: bool = True,
+    log_file: Path | None = None,
+    status_writer: Callable[[str], None] | None = print,
+    error_writer: Callable[[str], None] | None = None,
+) -> TransformSandboxResult:
+    run_dir = Path(run_dir).expanduser().resolve()
+    resolved_log_file = _resolve_log_file(run_dir, str(log_file) if log_file else None)
+    verbose = not quiet
+    emit = status_writer or (lambda line: None)
 
     try:
-        modernized_app = Path(args.modernized_app).expanduser().resolve()
-        legacy_app = Path(args.legacy_app).expanduser().resolve()
+        modernized_app = Path(modernized_app).expanduser().resolve()
+        legacy_app = Path(legacy_app).expanduser().resolve()
         try:
-            run_id = _ensure_approved_for_transform(run_dir, approved_by=args.approved_by)
+            run_id = _ensure_approved_for_transform(run_dir, approved_by=approved_by)
         except (ApprovalArtifactError, TransformV1AfterApprovalError) as exc:
-            print(STATUS_APPROVAL_FAILED)
-            _print_failure_details(exc, log_file)
-            return 1
+            emit(STATUS_APPROVAL_FAILED)
+            _print_failure_details(exc, resolved_log_file, error_writer=error_writer)
+            return TransformSandboxResult(
+                exit_code=1,
+                status=STATUS_APPROVAL_FAILED,
+                message=str(exc),
+                sandbox_path=None,
+                log_file=resolved_log_file,
+            )
         _ensure_run_dir_matches_modernized_app(run_dir, modernized_app, run_id)
-        print(STATUS_APPROVED)
+        emit(STATUS_APPROVED)
 
         generated_plan = write_transformation_execution_plan(modernized_app, run_id)
-        plugin_xml = _write_openrewrite_plugin_xml(run_dir, args.ai_hub, args.profile)
+        plugin_xml = _write_openrewrite_plugin_xml(run_dir, ai_hub, profile)
         sandbox = prepare_sandbox_workspace(
             legacy_app_path=legacy_app,
             modernized_app_path=modernized_app,
             run_dir=run_dir,
         )
         _force_plan_target(generated_plan, sandbox.path)
-        print(STATUS_SANDBOX)
+        emit(STATUS_SANDBOX)
 
         plan = load_migration_plan(generated_plan, sandbox.path)
         return _run_transformer_with_build_validation(
@@ -87,13 +136,15 @@ def main(argv: list[str] | None = None) -> int:
             generated_plan=generated_plan,
             plan=plan,
             run_dir=run_dir,
-            log_file=log_file,
+            log_file=resolved_log_file,
             verbose=verbose,
+            status_writer=emit,
+            error_writer=error_writer,
         )
     except ApprovalArtifactError as exc:
-        print(STATUS_APPROVAL_FAILED)
-        _print_failure_details(exc, log_file)
-        return 1
+        emit(STATUS_APPROVAL_FAILED)
+        _print_failure_details(exc, resolved_log_file, error_writer=error_writer)
+        return TransformSandboxResult(1, STATUS_APPROVAL_FAILED, str(exc), None, resolved_log_file)
     except (
         MigrationPlanError,
         RewritePluginError,
@@ -102,9 +153,9 @@ def main(argv: list[str] | None = None) -> int:
         TransformationWorkspaceError,
         TransformV1AfterApprovalError,
     ) as exc:
-        print(STATUS_FAILED)
-        _print_failure_details(exc, log_file)
-        return 1
+        emit(STATUS_FAILED)
+        _print_failure_details(exc, resolved_log_file, error_writer=error_writer)
+        return TransformSandboxResult(1, STATUS_FAILED, str(exc), None, resolved_log_file)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -145,15 +196,18 @@ def _run_transformer_with_build_validation(
     run_dir: Path,
     log_file: Path,
     verbose: bool,
-) -> int:
+    status_writer: Callable[[str], None],
+    error_writer: Callable[[str], None] | None,
+) -> TransformSandboxResult:
     next_unit: str | None = None
     awaited_units: set[str] = set()
     source_units_completed: set[str] = set()
     source_unit_ids = _source_changing_unit_ids(plan)
     max_transformer_runs = len(plan.units) + 1
+    build_status: str | None = None
 
     for _ in range(max_transformer_runs):
-        print(STATUS_RUNNING)
+        status_writer(STATUS_RUNNING)
         result = _run_with_logged_output(
             lambda: run_transformation_agent(
                 sandbox_path,
@@ -168,12 +222,12 @@ def _run_transformer_with_build_validation(
             verbose=verbose,
         )
         if verbose:
-            print(f"Ledger: {result.ledger_file}")
-            print(f"Transformer status: {result.status}")
+            status_writer(f"Ledger: {result.ledger_file}")
+            status_writer(f"Transformer status: {result.status}")
 
         if result.status == LedgerStatus.AWAITING_BUILD_AGENT:
             if verbose:
-                print(STATUS_AWAITING_BUILD_AGENT)
+                status_writer(STATUS_AWAITING_BUILD_AGENT)
             ledger = load_ledger(result.ledger_file)
             unit_id = _awaiting_build_unit_id(ledger)
             if unit_id in awaited_units:
@@ -183,8 +237,8 @@ def _run_transformer_with_build_validation(
             awaited_units.add(unit_id)
 
             if verbose:
-                print(STATUS_BUILD_REQUIRED)
-            print(STATUS_BUILD_RUNNING)
+                status_writer(STATUS_BUILD_REQUIRED)
+            status_writer(STATUS_BUILD_RUNNING)
             build_result = _run_with_logged_output(
                 lambda: run_build_agent(
                     project_path=sandbox_path,
@@ -199,41 +253,92 @@ def _run_transformer_with_build_validation(
                 verbose=verbose,
             )
             if not build_result.succeeded:
-                print(STATUS_BUILD_FAILED)
+                build_status = STATUS_BUILD_FAILED
+                status_writer(STATUS_BUILD_FAILED)
+                message = _build_failure_message(build_result)
                 _print_failure_details(
-                    TransformV1AfterApprovalError(_build_failure_message(build_result)),
+                    TransformV1AfterApprovalError(message),
                     log_file,
+                    error_writer=error_writer,
                 )
-                return 1
+                return TransformSandboxResult(
+                    exit_code=1,
+                    status=STATUS_BUILD_FAILED,
+                    message=message,
+                    sandbox_path=sandbox_path,
+                    log_file=log_file,
+                    generated_plan=generated_plan,
+                    plugin_xml=plugin_xml,
+                    ledger_file=result.ledger_file,
+                    build_status=build_status,
+                )
 
-            print(STATUS_BUILD_PASSED)
+            build_status = STATUS_BUILD_PASSED
+            status_writer(STATUS_BUILD_PASSED)
             if verbose:
-                print(f"Build validated unit: {unit_id}")
+                status_writer(f"Build validated unit: {unit_id}")
             if unit_id in source_unit_ids:
                 source_units_completed.add(unit_id)
 
             next_unit = _next_unit_after(plan, unit_id)
             if next_unit is None:
-                if source_units_completed:
-                    print(STATUS_APPLIED)
-                print("Sandbox migration candidate ready.")
-                return 0
+                status_writer(STATUS_APPLIED)
+                status_writer("Sandbox migration candidate ready.")
+                return TransformSandboxResult(
+                    exit_code=0,
+                    status=STATUS_APPLIED,
+                    message="Sandbox migration candidate ready.",
+                    sandbox_path=sandbox_path,
+                    log_file=log_file,
+                    generated_plan=generated_plan,
+                    plugin_xml=plugin_xml,
+                    ledger_file=result.ledger_file,
+                    build_status=build_status,
+                )
             continue
 
         if result.blocked_unit or result.status == LedgerStatus.BLOCKED:
-            print(STATUS_FAILED)
+            status_writer(STATUS_FAILED)
             if result.blocked_unit:
-                _print_failure_details(TransformV1AfterApprovalError(f"Blocked unit: {result.blocked_unit}"), log_file)
+                message = f"Blocked unit: {result.blocked_unit}"
+                _print_failure_details(
+                    TransformV1AfterApprovalError(message),
+                    log_file,
+                    error_writer=error_writer,
+                )
             else:
-                _print_failure_details(TransformV1AfterApprovalError("Transformer blocked"), log_file)
-            return 1
+                message = "Transformer blocked"
+                _print_failure_details(
+                    TransformV1AfterApprovalError(message),
+                    log_file,
+                    error_writer=error_writer,
+                )
+            return TransformSandboxResult(
+                exit_code=1,
+                status=STATUS_FAILED,
+                message=message,
+                sandbox_path=sandbox_path,
+                log_file=log_file,
+                generated_plan=generated_plan,
+                plugin_xml=plugin_xml,
+                ledger_file=result.ledger_file,
+                build_status=build_status,
+            )
 
         if result.status == LedgerStatus.COMPLETED:
-            completed_source_units = source_unit_ids.intersection(result.completed_units)
-            if completed_source_units:
-                print(STATUS_APPLIED)
-            print("Sandbox migration candidate ready.")
-            return 0
+            status_writer(STATUS_APPLIED)
+            status_writer("Sandbox migration candidate ready.")
+            return TransformSandboxResult(
+                exit_code=0,
+                status=STATUS_APPLIED,
+                message="Sandbox migration candidate ready.",
+                sandbox_path=sandbox_path,
+                log_file=log_file,
+                generated_plan=generated_plan,
+                plugin_xml=plugin_xml,
+                ledger_file=result.ledger_file,
+                build_status=build_status,
+            )
 
         raise TransformV1AfterApprovalError(f"Unexpected Transformer status: {result.status}")
 
@@ -271,25 +376,37 @@ def _resolve_log_file(run_dir: Path, log_file: str | None) -> Path:
     return run_dir / "logs" / "phase2_transform.log"
 
 
-def _print_failure_details(exc: Exception, log_file: Path) -> None:
-    print(f"ERROR: {exc}", file=sys.stderr)
-    print(f"log_file: {log_file}", file=sys.stderr)
-    _print_log_tail(log_file)
+def _print_failure_details(
+    exc: Exception,
+    log_file: Path,
+    *,
+    error_writer: Callable[[str], None] | None = None,
+) -> None:
+    emit = error_writer or (lambda line: print(line, file=sys.stderr))
+    emit(f"ERROR: {exc}")
+    emit(f"log_file: {log_file}")
+    _print_log_tail(log_file, error_writer=emit)
 
 
-def _print_log_tail(log_file: Path, *, line_count: int = 30) -> None:
+def _print_log_tail(
+    log_file: Path,
+    *,
+    line_count: int = 30,
+    error_writer: Callable[[str], None] | None = None,
+) -> None:
+    emit = error_writer or (lambda line: print(line, file=sys.stderr))
     if not log_file.is_file():
-        print("No log output captured.", file=sys.stderr)
+        emit("No log output captured.")
         return
 
     lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
     if not lines:
-        print("No log output captured.", file=sys.stderr)
+        emit("No log output captured.")
         return
 
-    print(f"--- Last {min(line_count, len(lines))} log lines ---", file=sys.stderr)
+    emit(f"--- Last {min(line_count, len(lines))} log lines ---")
     for line in lines[-line_count:]:
-        print(line, file=sys.stderr)
+        emit(line)
 
 
 def _build_failure_message(build_result: Any) -> str:

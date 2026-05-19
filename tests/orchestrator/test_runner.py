@@ -10,7 +10,7 @@ from migration_factory.orchestrator import graph as graph_module
 from migration_factory.orchestrator import runner
 from migration_factory.orchestrator.artifact_validation import ArtifactValidationResult
 from migration_factory.orchestrator.phase_services import PhaseServices
-from migration_factory.orchestrator.state import READ_ONLY_ASSESSMENT_MODE
+from migration_factory.orchestrator.state import FULL_SANDBOX_MIGRATION_MODE, READ_ONLY_ASSESSMENT_MODE
 
 
 def _argv(tmp_path: Path, *, mode: str | None = None) -> list[str]:
@@ -47,6 +47,12 @@ def test_parse_args_maps_cli_fields(tmp_path: Path) -> None:
     assert args.ai_hub == str(tmp_path / "ai-hub")
     assert args.profile == "java17"
     assert args.mode == READ_ONLY_ASSESSMENT_MODE
+
+
+def test_parse_args_accepts_full_sandbox_migration_mode(tmp_path: Path) -> None:
+    args = runner.parse_args(_argv(tmp_path, mode=FULL_SANDBOX_MIGRATION_MODE))
+
+    assert args.mode == FULL_SANDBOX_MIGRATION_MODE
 
 
 def test_main_returns_nonzero_for_invalid_mode(tmp_path: Path) -> None:
