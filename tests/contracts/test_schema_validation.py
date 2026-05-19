@@ -6,6 +6,13 @@ from pathlib import Path
 import jsonschema
 import pytest
 
+from migration_factory.approval import (
+    check_approval_decision,
+    check_approved_plan_lock,
+    read_approval_decision,
+    write_approval_decision,
+    write_approved_plan_lock,
+)
 from migration_factory.contracts import (
     APPROVAL_DECISION_VALUES,
     COPILOT_STATUS_VALUES,
@@ -116,6 +123,35 @@ VALID_PAYLOADS = {
         "units_to_execute": ["baseline"],
         "blockers": [],
         "warnings": [],
+    },
+    "approval_decision.schema.json": {
+        "schema_version": "1.0.0",
+        "run_id": "run-1",
+        "agent": "human",
+        "phase": "approval",
+        "decision": "approved",
+        "decided_by": "reviewer",
+        "decided_at": "2026-05-19T00:00:00Z",
+        "comments": "",
+        "plan_lock_ref": "approved_plan_lock.json",
+        "artifact_refs": {
+            "self": "approval_decision.json",
+            "approved_plan_lock": "approved_plan_lock.json",
+        },
+    },
+    "approved_plan_lock.schema.json": {
+        "schema_version": "1.0.0",
+        "run_id": "run-1",
+        "agent": "approval",
+        "phase": "approval",
+        "hash_algorithm": "sha256",
+        "locked_artifacts": [
+            {
+                "path": "planning/migration_plan.yaml",
+                "sha256": "0" * 64,
+            }
+        ],
+        "artifact_refs": {"self": "approved_plan_lock.json"},
     },
     "copilot_assist.schema.json": {
         **_base("USED"),
@@ -234,6 +270,9 @@ def test_schema_enums_match_contract_constants() -> None:
     assert _load_schema("approval_request.schema.json")["properties"]["decision_options"][
         "enum"
     ] == [list(APPROVAL_DECISION_VALUES)]
+    assert _load_schema("approval_decision.schema.json")["properties"]["decision"][
+        "enum"
+    ] == list(APPROVAL_DECISION_VALUES)
     assert _load_schema("copilot_assist.schema.json")["properties"]["status"]["enum"] == list(
         COPILOT_STATUS_VALUES
     )
@@ -303,3 +342,49 @@ def test_copilot_assist_rejects_advisory_flag_true() -> None:
 
     with pytest.raises(jsonschema.ValidationError):
         _validate("copilot_assist.schema.json", payload)
+
+
+def test_approval_artifacts_write_and_check(tmp_path: Path) -> None:
+    run_dir = tmp_path / ".migration" / "runs" / "run-1"
+    _write_lock_inputs(run_dir)
+
+    lock_path = write_approved_plan_lock(run_dir, "run-1")
+    decision_path = write_approval_decision(
+        run_dir,
+        "run-1",
+        "approved",
+        decided_by="reviewer",
+        decided_at="2026-05-19T00:00:00Z",
+        plan_lock_ref="approved_plan_lock.json",
+    )
+
+    assert lock_path == run_dir / "approval" / "approved_plan_lock.json"
+    assert decision_path == run_dir / "approval" / "approval_decision.json"
+    assert read_approval_decision(run_dir)["decision"] == "approved"
+    assert check_approval_decision(run_dir, expected_run_id="run-1") == ()
+    assert check_approved_plan_lock(run_dir, expected_run_id="run-1") == ()
+
+
+def test_approved_plan_lock_detects_changed_artifact(tmp_path: Path) -> None:
+    run_dir = tmp_path / ".migration" / "runs" / "run-1"
+    _write_lock_inputs(run_dir)
+    write_approved_plan_lock(run_dir, "run-1")
+
+    (run_dir / "planning" / "migration_plan.yaml").write_text("changed: true\n", encoding="utf-8")
+
+    assert check_approved_plan_lock(run_dir) == (
+        "approved_plan_lock.json artifact hashes do not match current run artifacts",
+    )
+
+
+def _write_lock_inputs(run_dir: Path) -> None:
+    artifacts = {
+        "planning/migration_plan.yaml": "schema_version: 1.0.0\n",
+        "planning/migration_units.yaml": "units: []\n",
+        "assessment/assessment_report.json": "{}\n",
+        "analysis/rewrite_plugin_plan.json": "{}\n",
+    }
+    for rel_path, contents in artifacts.items():
+        path = run_dir / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding="utf-8")

@@ -2,9 +2,29 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest import mock
+import io
+from pathlib import Path
+from contextlib import redirect_stderr, redirect_stdout
 
+import yaml
+
+from migration_factory.agents.transformation_agent.agent import (
+    TransformationAgentError,
+    TransformationRunResult,
+)
 from helpers import workspace_temp_dir
+from migration_factory.agents.transformation_agent.execution_plan import (
+    TransformationExecutionPlanError,
+    write_transformation_execution_plan,
+)
+from migration_factory.agents.transformation_agent.plan import load_migration_plan
+from migration_factory.approval import write_approval_decision, write_approved_plan_lock
 from migration_factory.agents.transformation_agent import run_transformation_agent
+from migration_factory.agents.transformation_agent.workspace import (
+    TransformationWorkspaceError,
+    prepare_sandbox_workspace,
+)
 from migration_factory.contracts.migration import (
     BuildValidationStatus,
     LedgerStatus,
@@ -15,6 +35,7 @@ from migration_factory.contracts.migration import (
     mark_unit_awaiting_build,
     mark_unit_in_progress,
 )
+from migration_factory.transform_v1_after_approval import main as transform_v1_after_approval_main
 
 
 PLUGIN_XML = """<plugin>
@@ -50,6 +71,65 @@ migration_units:
 
 
 class TransformationAgentTests(unittest.TestCase):
+    def test_execution_plan_adapter_writes_current_transformer_yaml(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            _write_approved_run_artifacts(app, run_id, include_rewrite_plan=True)
+
+            output_path = write_transformation_execution_plan(app, run_id)
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+            loaded_plan = load_migration_plan(output_path)
+
+            self.assertEqual(
+                output_path,
+                app
+                / ".migration"
+                / "runs"
+                / run_id
+                / "transformation"
+                / "transformation_execution_plan.yaml",
+            )
+            self.assertEqual(payload["schema_version"], "1.3")
+            self.assertEqual(payload["migration"]["id"], run_id)
+            self.assertEqual(payload["workspaces"]["target"]["path"], str(app.resolve()))
+            self.assertEqual([unit["id"] for unit in payload["migration_units"]], ["baseline", "java-17"])
+            self.assertEqual(payload["migration_units"][0]["checks"][0]["command"], "mvn clean test")
+            self.assertEqual(payload["migration_units"][1]["transformations"][0]["type"], "openrewrite")
+            self.assertEqual(
+                payload["migration_units"][1]["transformations"][0]["active_recipes"],
+                ["org.openrewrite.java.migrate.UpgradeToJava17"],
+            )
+            self.assertEqual(loaded_plan.migration_id, run_id)
+            self.assertEqual([unit.id for unit in loaded_plan.units], ["baseline", "java-17"])
+
+    def test_execution_plan_adapter_rejects_missing_approval_decision(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            _write_run_artifacts(app, run_id)
+            write_approved_plan_lock(_run_dir(app, run_id), run_id)
+
+            with self.assertRaisesRegex(
+                TransformationExecutionPlanError,
+                "approval_decision.json missing",
+            ):
+                write_transformation_execution_plan(app, run_id)
+
+    def test_execution_plan_adapter_rejects_invalid_plan_lock(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            _write_approved_run_artifacts(app, run_id)
+            units_path = _run_dir(app, run_id) / "planning" / "migration_units.yaml"
+            units_path.write_text(units_path.read_text(encoding="utf-8") + "# changed\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                TransformationExecutionPlanError,
+                "approved_plan_lock.json artifact hashes do not match current run artifacts",
+            ):
+                write_transformation_execution_plan(app, run_id)
+
     def test_transformation_agent_initializes_ledger_and_waits_for_build(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"
@@ -111,6 +191,364 @@ class TransformationAgentTests(unittest.TestCase):
             self.assertEqual(ledger["status"], LedgerStatus.BLOCKED)
             self.assertEqual(ledger["blocked_unit"], "unit-001")
             self.assertEqual(ledger["build_validation"]["status"], BuildValidationStatus.FAILED)
+
+    def test_prepare_sandbox_workspace_copies_legacy_with_exclusions_and_checkpoint(self) -> None:
+        with workspace_temp_dir() as tmp:
+            legacy = tmp / "legacy-app"
+            modernized = tmp / "modernized-app"
+            run_dir = modernized / ".migration" / "runs" / "run-1"
+            legacy.mkdir()
+            modernized.mkdir()
+            (legacy / "pom.xml").write_text("<project />", encoding="utf-8")
+            (legacy / ".git").mkdir()
+            (legacy / ".git" / "config").write_text("source git", encoding="utf-8")
+            (legacy / ".migration").mkdir()
+            (legacy / ".migration" / "ledger.json").write_text("{}", encoding="utf-8")
+            (legacy / "target").mkdir()
+            (legacy / "target" / "classes.txt").write_text("compiled", encoding="utf-8")
+            (legacy / "build").mkdir()
+            (legacy / "build" / "output.txt").write_text("built", encoding="utf-8")
+            (legacy / "node_modules").mkdir()
+            (legacy / "node_modules" / "package.txt").write_text("dependency", encoding="utf-8")
+            (legacy / "__pycache__").mkdir()
+            (legacy / "__pycache__" / "module.pyc").write_text("cache", encoding="utf-8")
+            (modernized / "marker.txt").write_text("do not change", encoding="utf-8")
+
+            sandbox = prepare_sandbox_workspace(
+                legacy_app_path=legacy,
+                modernized_app_path=modernized,
+                run_dir=run_dir,
+            )
+
+            self.assertEqual(sandbox.path, run_dir / "workspaces" / "sandbox")
+            self.assertEqual((sandbox.path / "pom.xml").read_text(encoding="utf-8"), "<project />")
+            self.assertFalse((sandbox.path / ".migration").exists())
+            self.assertFalse((sandbox.path / "target").exists())
+            self.assertFalse((sandbox.path / "build").exists())
+            self.assertFalse((sandbox.path / "node_modules").exists())
+            self.assertFalse((sandbox.path / "__pycache__").exists())
+            self.assertEqual((legacy / "pom.xml").read_text(encoding="utf-8"), "<project />")
+            self.assertEqual((modernized / "marker.txt").read_text(encoding="utf-8"), "do not change")
+            self.assertIn(sandbox.checkpoint_type, {"git", "manifest"})
+            if sandbox.checkpoint_type == "git":
+                self.assertTrue((sandbox.path / ".git").is_dir())
+                self.assertRegex(sandbox.checkpoint_ref, r"^[0-9a-f]{40}$")
+            else:
+                self.assertTrue(Path(sandbox.checkpoint_ref).is_file())
+
+    def test_prepare_sandbox_workspace_writes_manifest_without_git(self) -> None:
+        with workspace_temp_dir() as tmp:
+            legacy = tmp / "legacy-app"
+            modernized = tmp / "modernized-app"
+            run_dir = modernized / ".migration" / "runs" / "run-1"
+            legacy.mkdir()
+            modernized.mkdir()
+            (legacy / "pom.xml").write_text("<project />", encoding="utf-8")
+
+            with mock.patch("migration_factory.agents.transformation_agent.workspace.shutil.which", return_value=None):
+                sandbox = prepare_sandbox_workspace(
+                    legacy_app_path=legacy,
+                    modernized_app_path=modernized,
+                    run_dir=run_dir,
+                )
+
+            manifest_path = sandbox.path / "baseline_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(sandbox.checkpoint_type, "manifest")
+            self.assertEqual(Path(sandbox.checkpoint_ref), manifest_path)
+            self.assertEqual([entry["path"] for entry in manifest["files"]], ["pom.xml"])
+
+    def test_prepare_sandbox_workspace_rejects_sandbox_outside_run_dir(self) -> None:
+        with workspace_temp_dir() as tmp:
+            legacy = tmp / "legacy-app"
+            modernized = tmp / "modernized-app"
+            run_dir = modernized / ".migration" / "runs" / "run-1"
+            outside = tmp / "outside"
+            legacy.mkdir()
+            modernized.mkdir()
+            run_dir.mkdir(parents=True)
+            outside.mkdir()
+            (run_dir / "workspaces").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(TransformationWorkspaceError, "sandbox must stay inside run_dir"):
+                prepare_sandbox_workspace(
+                    legacy_app_path=legacy,
+                    modernized_app_path=modernized,
+                    run_dir=run_dir,
+                )
+
+    def test_prepare_sandbox_workspace_rejects_sandbox_equal_to_source_or_target(self) -> None:
+        with workspace_temp_dir() as tmp:
+            run_dir = tmp / "run"
+            legacy = run_dir / "workspaces" / "sandbox"
+            modernized = tmp / "modernized-app"
+            legacy.mkdir(parents=True)
+            modernized.mkdir()
+
+            with self.assertRaisesRegex(TransformationWorkspaceError, "sandbox must not be the legacy_app_path"):
+                prepare_sandbox_workspace(
+                    legacy_app_path=legacy,
+                    modernized_app_path=modernized,
+                    run_dir=run_dir,
+                )
+
+            modernized = legacy
+            legacy = tmp / "legacy-app"
+            legacy.mkdir()
+            with self.assertRaisesRegex(TransformationWorkspaceError, "sandbox must not be the modernized_app_path"):
+                prepare_sandbox_workspace(
+                    legacy_app_path=legacy,
+                    modernized_app_path=modernized,
+                    run_dir=run_dir,
+                )
+
+    def test_prepare_sandbox_workspace_rejects_symlink_escape(self) -> None:
+        with workspace_temp_dir() as tmp:
+            legacy = tmp / "legacy-app"
+            modernized = tmp / "modernized-app"
+            outside = tmp / "outside.txt"
+            legacy.mkdir()
+            modernized.mkdir()
+            outside.write_text("outside", encoding="utf-8")
+            (legacy / "escape.txt").symlink_to(outside)
+
+            with self.assertRaisesRegex(TransformationWorkspaceError, "Symlink escapes"):
+                prepare_sandbox_workspace(
+                    legacy_app_path=legacy,
+                    modernized_app_path=modernized,
+                    run_dir=modernized / ".migration" / "runs" / "run-1",
+                )
+
+    def test_transform_v1_after_approval_runs_transformer_against_sandbox(self) -> None:
+        with workspace_temp_dir() as tmp:
+            legacy = tmp / "legacy-app"
+            modernized = tmp / "modernized-app"
+            ai_hub = tmp / "ai-hub"
+            run_id = "run-1"
+            run_dir = _run_dir(modernized, run_id)
+            legacy.mkdir()
+            modernized.mkdir()
+            (legacy / "pom.xml").write_text("<project />", encoding="utf-8")
+            _write_ai_hub_profile(ai_hub)
+            _write_approved_run_artifacts(modernized, run_id, include_rewrite_plan=True)
+
+            stdout = io.StringIO()
+            with mock.patch(
+                "migration_factory.transform_v1_after_approval.run_transformation_agent",
+                return_value=TransformationRunResult(
+                    ledger_file=run_dir / "workspaces" / "sandbox" / ".migration" / "ledger.json",
+                    status=LedgerStatus.AWAITING_BUILD_AGENT,
+                    completed_units=[],
+                ),
+            ) as run_agent:
+                with redirect_stdout(stdout):
+                    result = transform_v1_after_approval_main(
+                        [
+                            "--run-dir",
+                            str(run_dir),
+                            "--legacy-app",
+                            str(legacy),
+                            "--modernized-app",
+                            str(modernized),
+                            "--ai-hub",
+                            str(ai_hub),
+                            "--profile",
+                            "java17",
+                            "--approved-by",
+                            "human",
+                        ]
+                    )
+
+            sandbox_path = run_dir / "workspaces" / "sandbox"
+            plan_path = run_dir / "transformation" / "transformation_execution_plan.yaml"
+            plugin_path = run_dir / "transformation" / "openrewrite-plugin.xml"
+            plan_payload = yaml.safe_load(plan_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(result, 0)
+            self.assertIn("APPROVED_FOR_TRANSFORM", stdout.getvalue())
+            self.assertIn("SANDBOX_PREPARED", stdout.getvalue())
+            self.assertIn("TRANSFORM_RUNNING", stdout.getvalue())
+            self.assertIn("TRANSFORM_APPLIED_IN_SANDBOX", stdout.getvalue())
+            self.assertEqual(plan_payload["workspaces"]["target"]["path"], str(sandbox_path.resolve()))
+            self.assertTrue((sandbox_path / "pom.xml").is_file())
+            self.assertIn("<artifactId>rewrite-maven-plugin</artifactId>", plugin_path.read_text(encoding="utf-8"))
+            run_agent.assert_called_once_with(
+                sandbox_path,
+                plugin_path,
+                plan_path,
+                dry_run=False,
+                wait_for_continue=False,
+            )
+
+    def test_transform_v1_after_approval_reports_transform_failure(self) -> None:
+        with workspace_temp_dir() as tmp:
+            legacy = tmp / "legacy-app"
+            modernized = tmp / "modernized-app"
+            ai_hub = tmp / "ai-hub"
+            run_id = "run-1"
+            run_dir = _run_dir(modernized, run_id)
+            legacy.mkdir()
+            modernized.mkdir()
+            (legacy / "pom.xml").write_text("<project />", encoding="utf-8")
+            _write_ai_hub_profile(ai_hub)
+            _write_approved_run_artifacts(modernized, run_id, include_rewrite_plan=True)
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with mock.patch(
+                "migration_factory.transform_v1_after_approval.run_transformation_agent",
+                side_effect=TransformationAgentError("boom"),
+            ):
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    result = transform_v1_after_approval_main(
+                        [
+                            "--run-dir",
+                            str(run_dir),
+                            "--legacy-app",
+                            str(legacy),
+                            "--modernized-app",
+                            str(modernized),
+                            "--ai-hub",
+                            str(ai_hub),
+                            "--profile",
+                            "java17",
+                            "--approved-by",
+                            "human",
+                        ]
+                    )
+
+            self.assertEqual(result, 1)
+            self.assertIn("TRANSFORM_FAILED_IN_SANDBOX", stdout.getvalue())
+            self.assertIn("ERROR: boom", stderr.getvalue())
+
+
+def _run_dir(app: Path, run_id: str) -> Path:
+    return app / ".migration" / "runs" / run_id
+
+
+def _write_approved_run_artifacts(
+    app: Path,
+    run_id: str,
+    *,
+    include_rewrite_plan: bool = False,
+) -> None:
+    _write_run_artifacts(app, run_id, include_rewrite_plan=include_rewrite_plan)
+    run_dir = _run_dir(app, run_id)
+    write_approved_plan_lock(run_dir, run_id)
+    write_approval_decision(
+        run_dir,
+        run_id,
+        "approved",
+        plan_lock_ref="approved_plan_lock.json",
+    )
+
+
+def _write_run_artifacts(
+    app: Path,
+    run_id: str,
+    *,
+    include_rewrite_plan: bool = False,
+) -> None:
+    run_dir = _run_dir(app, run_id)
+    planning_dir = run_dir / "planning"
+    assessment_dir = run_dir / "assessment"
+    analysis_dir = run_dir / "analysis"
+    planning_dir.mkdir(parents=True, exist_ok=True)
+    assessment_dir.mkdir(parents=True, exist_ok=True)
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+
+    (planning_dir / "migration_plan.yaml").write_text(
+        f"""
+schema_version: "1.0.0"
+run_id: "{run_id}"
+status: "PASS"
+risk: "LOW"
+profile: "java17"
+artifact_refs:
+  self: "migration_plan.yaml"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (planning_dir / "migration_units.yaml").write_text(
+        f"""
+schema_version: "1.0.0"
+run_id: "{run_id}"
+status: "PASS"
+artifact_refs:
+  self: "migration_units.yaml"
+units:
+  - id: "baseline"
+    goal: "Establish baseline build."
+    tools:
+      - "maven"
+      - "junit"
+    validation:
+      - "mvn"
+      - "clean"
+      - "test"
+    writes_source: false
+    required: "yes"
+    expected_artifacts:
+      - "target/surefire-reports"
+  - id: "java-17"
+    goal: "Upgrade project runtime to Java 17."
+    tools:
+      - "maven"
+    validation:
+      - "mvn"
+      - "clean"
+      - "test"
+    writes_source: true
+    required: "yes"
+    expected_artifacts:
+      - "target/classes"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (assessment_dir / "assessment_report.json").write_text(
+        json.dumps({"profile": "java17"}),
+        encoding="utf-8",
+    )
+    if include_rewrite_plan:
+        (analysis_dir / "rewrite_plugin_plan.json").write_text(
+            json.dumps(
+                {
+                    "plugin": "org.openrewrite.maven:rewrite-maven-plugin:6.39.0",
+                    "recipe_artifacts": ["org.openrewrite.recipe:rewrite-migrate-java:3.20.0"],
+                    "active_recipes": ["org.openrewrite.java.migrate.UpgradeToJava17"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+
+def _write_ai_hub_profile(ai_hub: Path) -> None:
+    profiles = ai_hub / "profiles"
+    catalogs = ai_hub / "catalogs"
+    profiles.mkdir(parents=True)
+    catalogs.mkdir(parents=True)
+    (profiles / "java17.yaml").write_text(
+        """
+id: java17
+openrewrite:
+  catalog_path: catalogs/openrewrite.yaml
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (catalogs / "openrewrite.yaml").write_text(
+        """
+id: openrewrite-java17
+plugin:
+  group_id: org.openrewrite.maven
+  artifact_id: rewrite-maven-plugin
+  version: 6.39.0
+recipe_artifacts:
+  - group_id: org.openrewrite.recipe
+    artifact_id: rewrite-migrate-java
+    version: 3.20.0
+""".lstrip(),
+        encoding="utf-8",
+    )
 
 
 if __name__ == "__main__":
