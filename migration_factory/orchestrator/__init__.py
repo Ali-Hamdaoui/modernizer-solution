@@ -14,6 +14,7 @@ from migration_factory.orchestrator.checkpointing import (
     default_checkpointer,
     require_thread_id,
 )
+from migration_factory.orchestrator.graph import build_graph
 from migration_factory.orchestrator.preflight import (
     PreflightError,
     build_langgraph_config,
@@ -45,6 +46,7 @@ __all__ = [
     "READ_ONLY_ASSESSMENT_MODE",
     "MigrationState",
     "approval_node",
+    "build_graph",
     "build_initial_state",
     "build_langgraph_config",
     "build_approval_payload",
