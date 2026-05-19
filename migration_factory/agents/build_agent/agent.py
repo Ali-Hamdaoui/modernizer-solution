@@ -16,6 +16,9 @@ from .detection import (
     detect_java_project,
     discover_maven_run_target,
     full_validation_command,
+    is_maven_clean_test_command,
+    is_startup_validation_command,
+    plan_validation_command,
 )
 from .runner import ProcessRunResult, run_until_build_result, run_until_exit
 
@@ -33,6 +36,7 @@ def run_build_agent(
     stop_after_start: bool = True,
     validation_unit_id: str | None = None,
     source_changing_unit: bool = False,
+    validation_command: str | list[str] | tuple[str, ...] | None = None,
 ) -> BuildRunResult:
     project_root = Path(project_path).expanduser().resolve()
     resolved_output_dir = _resolve_output_dir(output_dir)
@@ -69,23 +73,44 @@ def run_build_agent(
         _update_ledger(ledger_file, build_result)
         return build_result
 
+    explicit_command = (
+        plan_validation_command(validation_command, project.base_command)
+        if validation_command is not None
+        else []
+    )
+    validation_mode = _validation_mode(project, validation_unit_id, source_changing_unit, explicit_command)
     resolved_module = module
     resolved_main_class = main_class
-    if project.build_tool == BuildTool.MAVEN and auto_discover_maven_target:
-        target = discover_maven_run_target(project.path, module=module, main_class=main_class)
-        resolved_module = target.module
-        resolved_main_class = target.main_class
-
-    validation_mode = _validation_mode(project, validation_unit_id, source_changing_unit)
     if validation_mode == BuildValidationMode.REACTOR_TEST:
-        command = full_validation_command(project.base_command, project.build_tool)
+        command = _reactor_validation_command(project, explicit_command)
         result = run_until_exit(
             command=command,
             cwd=project.path,
             timeout_seconds=timeout_seconds,
             stream_output=stream_output,
         )
+    elif validation_mode == BuildValidationMode.PLAN_COMMAND:
+        command = explicit_command
+        if is_startup_validation_command(command):
+            result = run_until_build_result(
+                command=command,
+                cwd=project.path,
+                timeout_seconds=timeout_seconds,
+                stream_output=stream_output,
+                stop_after_start=stop_after_start,
+            )
+        else:
+            result = run_until_exit(
+                command=command,
+                cwd=project.path,
+                timeout_seconds=timeout_seconds,
+                stream_output=stream_output,
+            )
     else:
+        if project.build_tool == BuildTool.MAVEN and auto_discover_maven_target:
+            target = discover_maven_run_target(project.path, module=module, main_class=main_class)
+            resolved_module = target.module
+            resolved_main_class = target.main_class
         command = build_run_command(
             project.base_command,
             project.build_tool,
@@ -141,6 +166,7 @@ def _validation_mode(
     project: JavaProjectInfo,
     validation_unit_id: str | None,
     source_changing_unit: bool,
+    explicit_command: list[str],
 ) -> BuildValidationMode:
     if (
         project.build_tool == BuildTool.MAVEN
@@ -149,7 +175,20 @@ def _validation_mode(
         and validation_unit_id != "baseline"
     ):
         return BuildValidationMode.REACTOR_TEST
+    if explicit_command:
+        return BuildValidationMode.PLAN_COMMAND
     return BuildValidationMode.STARTUP
+
+
+def _reactor_validation_command(project: JavaProjectInfo, explicit_command: list[str]) -> list[str]:
+    if (
+        explicit_command
+        and not is_startup_validation_command(explicit_command)
+        and "-f" not in explicit_command
+        and is_maven_clean_test_command(explicit_command)
+    ):
+        return explicit_command
+    return full_validation_command(project.base_command, project.build_tool)
 
 
 def _success_result(result: ProcessRunResult, *, command: list[str], cwd: Path) -> BuildRunResult:
@@ -184,6 +223,8 @@ def _update_ledger(ledger_file: str | Path | None, result: BuildRunResult) -> No
             matched_line=result.matched_line,
             exit_code=result.exit_code,
             warnings=result.warnings,
+            command=result.command,
+            cwd=result.cwd,
         )
         return
 
@@ -195,4 +236,6 @@ def _update_ledger(ledger_file: str | Path | None, result: BuildRunResult) -> No
         matched_line=result.matched_line,
         exit_code=result.exit_code,
         warnings=result.warnings,
+        command=result.command,
+        cwd=result.cwd,
     )

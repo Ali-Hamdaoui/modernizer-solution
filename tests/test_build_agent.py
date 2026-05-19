@@ -273,6 +273,63 @@ public class Application {
             self.assertNotIn("-am", kwargs["command"])
             self.assertNotIn("spring-boot:run", kwargs["command"])
 
+    def test_source_changing_spring_boot_unit_records_root_reactor_validation_metadata(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_multi_module_project(project)
+            (project / ".m2" / "repository").mkdir(parents=True)
+            ledger_file = project / ".migration" / "ledger.json"
+            initialize_ledger(
+                ledger_file,
+                migration_id="test",
+                migration_name="Test",
+                total_units=1,
+                target_path=project,
+            )
+            mark_unit_in_progress(
+                ledger_file,
+                unit_id="spring-boot-3-5-14",
+                unit_index=0,
+                title="Spring Boot 3.5.14",
+            )
+            mark_unit_awaiting_build(ledger_file, unit_id="spring-boot-3-5-14")
+            process_result = ProcessRunResult(
+                classification=BuildClassification(
+                    BuildResultKind.SUCCESS,
+                    "Build completed successfully",
+                ),
+                exit_code=0,
+                warnings=["reactor validation warning"],
+            )
+
+            with patch(
+                "migration_factory.agents.build_agent.agent.run_until_exit",
+                return_value=process_result,
+            ) as run_process:
+                with patch("migration_factory.agents.build_agent.agent.run_until_build_result") as run_startup:
+                    result = run_build_agent(
+                        project / "shoppoc-app",
+                        ledger_file=ledger_file,
+                        stream_output=False,
+                        validation_unit_id="spring-boot-3-5-14",
+                        source_changing_unit=True,
+                    )
+
+            self.assertTrue(result.succeeded)
+            run_startup.assert_not_called()
+            run_process.assert_called_once()
+            command = run_process.call_args.kwargs["command"]
+            self.assertEqual(run_process.call_args.kwargs["cwd"], project)
+            self.assertEqual(command[1:], ["clean", "test"])
+            self.assertNotIn("spring-boot:run", command)
+            self.assertNotIn("-f", command)
+            self.assertNotIn("shoppoc-app/pom.xml", command)
+            ledger = load_ledger(ledger_file)
+            validation = ledger["build_validation"]
+            self.assertEqual(validation["unit_id"], "spring-boot-3-5-14")
+            self.assertEqual(validation["cwd"], str(project))
+            self.assertEqual(validation["command"], command)
+            self.assertEqual(validation["warnings"], ["reactor validation warning"])
+
     def test_multi_module_full_validation_command_is_clean_test_from_reactor_root(self) -> None:
         with workspace_temp_dir() as project:
             _write_multi_module_project(project)
@@ -333,6 +390,8 @@ public class Application {
             self.assertTrue(result.succeeded)
             self.assertEqual(ledger["build_validation"]["status"], BuildValidationStatus.PASSED)
             self.assertEqual(ledger["completed_units"], ["unit-001"])
+            self.assertEqual(ledger["build_validation"]["command"], ["mvn", "spring-boot:run"])
+            self.assertEqual(ledger["build_validation"]["cwd"], str(tmp))
 
 
 def _write_multi_module_project(project: Path) -> None:

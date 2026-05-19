@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 import os
+import shlex
 import shutil
 import xml.etree.ElementTree as ET
 
@@ -15,6 +16,7 @@ class BuildTool(str, Enum):
 
 class BuildValidationMode(str, Enum):
     STARTUP = "startup"
+    PLAN_COMMAND = "plan_command"
     REACTOR_TEST = "reactor_test"
 
 
@@ -91,6 +93,46 @@ def full_validation_command(base_command: list[str], build_tool: BuildTool) -> l
     if build_tool == BuildTool.GRADLE:
         return [executable, "clean", "test"]
     return list(base_command)
+
+
+def plan_validation_command(command: str | list[str] | tuple[str, ...], base_command: list[str]) -> list[str]:
+    tokens = _command_tokens(command)
+    if not tokens:
+        return []
+
+    normalized = list(tokens)
+    if _same_build_executable(normalized[0], base_command[0]):
+        normalized[0] = base_command[0]
+    return normalized
+
+
+def is_startup_validation_command(command: list[str]) -> bool:
+    return any(token in {"spring-boot:run", "bootRun"} for token in command)
+
+
+def is_maven_clean_test_command(command: list[str]) -> bool:
+    if len(command) < 3:
+        return False
+    return "clean" in command[1:] and "test" in command[1:]
+
+
+def _command_tokens(command: str | list[str] | tuple[str, ...]) -> list[str]:
+    if isinstance(command, str):
+        return shlex.split(command, posix=os.name != "nt")
+    return [str(token) for token in command]
+
+
+def _same_build_executable(left: str, right: str) -> bool:
+    left_name = Path(left).name.lower()
+    right_name = Path(right).name.lower()
+    return _strip_command_extension(left_name) == _strip_command_extension(right_name)
+
+
+def _strip_command_extension(name: str) -> str:
+    for suffix in (".cmd", ".bat", ".exe"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
 
 
 def discover_maven_run_target(

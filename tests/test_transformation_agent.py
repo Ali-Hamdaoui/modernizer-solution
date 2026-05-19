@@ -10,6 +10,8 @@ from contextlib import redirect_stderr, redirect_stdout
 import yaml
 
 from migration_factory.contracts.build import BuildRunResult
+from migration_factory.agents.build_agent.classifier import BuildClassification, BuildResultKind
+from migration_factory.agents.build_agent.runner import ProcessRunResult
 from migration_factory.agents.transformation_agent.agent import (
     TransformationAgentError,
     TransformationRunResult,
@@ -482,6 +484,7 @@ class TransformationAgentTests(unittest.TestCase):
                         stream_output=True,
                         validation_unit_id="baseline",
                         source_changing_unit=False,
+                        validation_command="mvn clean test",
                     ),
                     mock.call(
                         project_path=sandbox_path,
@@ -490,9 +493,89 @@ class TransformationAgentTests(unittest.TestCase):
                         stream_output=True,
                         validation_unit_id="java-17",
                         source_changing_unit=True,
+                        validation_command="mvn clean test",
                     ),
                 ]
             )
+
+    def test_transform_v1_after_approval_validates_spring_boot_source_unit_from_reactor_root(self) -> None:
+        with workspace_temp_dir() as tmp:
+            legacy = tmp / "legacy-app"
+            modernized = tmp / "modernized-app"
+            ai_hub = tmp / "ai-hub"
+            run_id = "run-1"
+            run_dir = _run_dir(modernized, run_id)
+            legacy.mkdir()
+            modernized.mkdir()
+            _write_multi_module_project(legacy)
+            _write_ai_hub_profile(ai_hub)
+            _write_approved_run_artifacts(
+                modernized,
+                run_id,
+                include_rewrite_plan=True,
+                source_unit_id="spring-boot-3-5-14",
+                source_unit_goal="Upgrade Spring Boot runtime.",
+            )
+            ledger_file = run_dir / "workspaces" / "sandbox" / ".migration" / "ledger.json"
+
+            def run_agent_side_effect(*args: object, **kwargs: object) -> TransformationRunResult:
+                _write_awaiting_build_ledger(ledger_file, "spring-boot-3-5-14")
+                return TransformationRunResult(
+                    ledger_file=ledger_file,
+                    status=LedgerStatus.AWAITING_BUILD_AGENT,
+                    completed_units=[],
+                )
+
+            process_result = ProcessRunResult(
+                classification=BuildClassification(
+                    BuildResultKind.SUCCESS,
+                    "Build completed successfully",
+                ),
+                exit_code=0,
+            )
+
+            with mock.patch(
+                "migration_factory.transform_v1_after_approval.run_transformation_agent",
+                side_effect=run_agent_side_effect,
+            ):
+                with mock.patch(
+                    "migration_factory.agents.build_agent.agent.run_until_exit",
+                    return_value=process_result,
+                ) as run_process:
+                    with mock.patch(
+                        "migration_factory.agents.build_agent.agent.run_until_build_result"
+                    ) as run_startup:
+                        result = transform_v1_after_approval_main(
+                            [
+                                "--run-dir",
+                                str(run_dir),
+                                "--legacy-app",
+                                str(legacy),
+                                "--modernized-app",
+                                str(modernized),
+                                "--ai-hub",
+                                str(ai_hub),
+                                "--profile",
+                                "java17",
+                                "--approved-by",
+                                "human",
+                            ]
+                        )
+
+            sandbox_path = run_dir / "workspaces" / "sandbox"
+            self.assertEqual(result, 0)
+            run_startup.assert_not_called()
+            run_process.assert_called_once()
+            command = run_process.call_args.kwargs["command"]
+            self.assertEqual(run_process.call_args.kwargs["cwd"], sandbox_path)
+            self.assertEqual(command[1:], ["clean", "test"])
+            self.assertNotIn("spring-boot:run", command)
+            self.assertNotIn("-f", command)
+            self.assertNotIn("shoppoc-app/pom.xml", command)
+            ledger = load_ledger(ledger_file)
+            self.assertEqual(ledger["build_validation"]["unit_id"], "spring-boot-3-5-14")
+            self.assertEqual(ledger["build_validation"]["command"], command)
+            self.assertEqual(ledger["build_validation"]["cwd"], str(sandbox_path))
 
     def test_transform_v1_after_approval_reports_build_failure(self) -> None:
         with workspace_temp_dir() as tmp:
@@ -811,13 +894,57 @@ def _write_awaiting_build_ledger(ledger_file: Path, unit_id: str) -> None:
     )
 
 
+def _write_multi_module_project(project: Path) -> None:
+    (project / "pom.xml").write_text(
+        """<project>
+  <modelVersion>4.0.0</modelVersion>
+  <packaging>pom</packaging>
+  <modules>
+    <module>shoppoc-user</module>
+    <module>shoppoc-app</module>
+  </modules>
+</project>""",
+        encoding="utf-8",
+    )
+    (project / "shoppoc-user").mkdir()
+    (project / "shoppoc-user" / "pom.xml").write_text("<project />", encoding="utf-8")
+    app = project / "shoppoc-app"
+    app.mkdir()
+    (app / "pom.xml").write_text("<project />", encoding="utf-8")
+    source = app / "src" / "main" / "java" / "com" / "shoppoc" / "app"
+    source.mkdir(parents=True)
+    (source / "ShoppocApplication.java").write_text(
+        """package com.shoppoc.app;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class ShoppocApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(ShoppocApplication.class, args);
+    }
+}
+""",
+        encoding="utf-8",
+    )
+
+
 def _write_approved_run_artifacts(
     app: Path,
     run_id: str,
     *,
     include_rewrite_plan: bool = False,
+    source_unit_id: str = "java-17",
+    source_unit_goal: str = "Upgrade project runtime to Java 17.",
 ) -> None:
-    _write_run_artifacts(app, run_id, include_rewrite_plan=include_rewrite_plan)
+    _write_run_artifacts(
+        app,
+        run_id,
+        include_rewrite_plan=include_rewrite_plan,
+        source_unit_id=source_unit_id,
+        source_unit_goal=source_unit_goal,
+    )
     run_dir = _run_dir(app, run_id)
     write_approved_plan_lock(run_dir, run_id)
     write_approval_decision(
@@ -833,6 +960,8 @@ def _write_run_artifacts(
     run_id: str,
     *,
     include_rewrite_plan: bool = False,
+    source_unit_id: str = "java-17",
+    source_unit_goal: str = "Upgrade project runtime to Java 17.",
 ) -> None:
     run_dir = _run_dir(app, run_id)
     planning_dir = run_dir / "planning"
@@ -875,8 +1004,8 @@ units:
     required: "yes"
     expected_artifacts:
       - "target/surefire-reports"
-  - id: "java-17"
-    goal: "Upgrade project runtime to Java 17."
+  - id: "{source_unit_id}"
+    goal: "{source_unit_goal}"
     tools:
       - "maven"
     validation:

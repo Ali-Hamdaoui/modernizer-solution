@@ -193,6 +193,7 @@ def _run_transformer_with_build_validation(
                     stream_output=True,
                     validation_unit_id=unit_id,
                     source_changing_unit=unit_id in source_unit_ids,
+                    validation_command=_validation_command_for_unit(plan, unit_id),
                 ),
                 log_file=log_file,
                 verbose=verbose,
@@ -328,6 +329,26 @@ def _source_changing_unit_ids(plan: MigrationPlan) -> set[str]:
         for unit in plan.units
         if any(str(transformation.get("type")) in source_changing_types for transformation in unit.transformations)
     }
+
+
+def _validation_command_for_unit(plan: MigrationPlan, unit_id: str) -> Any | None:
+    for unit in plan.units:
+        if unit.id != unit_id:
+            continue
+
+        build_validation = unit.raw.get("build_validation")
+        if isinstance(build_validation, dict) and build_validation.get("command"):
+            return build_validation["command"]
+
+        for check in unit.checks:
+            if isinstance(check, dict) and check.get("command"):
+                return check["command"]
+        break
+
+    build_validation = plan.raw.get("build_validation")
+    if isinstance(build_validation, dict) and build_validation.get("command"):
+        return build_validation["command"]
+    return None
 
 
 def _ensure_approved_for_transform(run_dir: Path, *, approved_by: str) -> str:
