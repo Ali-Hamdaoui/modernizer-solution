@@ -1,3 +1,5 @@
+"""Shared contracts used by Migration Factory agents."""
+
 from migration_factory.contracts.constants import (
     ALL_REQUIRED_ARTIFACTS,
     ANALYSIS_OPTIONAL_ARTIFACTS,

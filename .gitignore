@@ -14,3 +14,5 @@ dist/
 build/
 coverage/
 *.tsbuildinfo
+.tmp-tests/
+migration_factory/contracts/build/build-error-*.json
