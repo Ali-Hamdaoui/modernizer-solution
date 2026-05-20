@@ -234,7 +234,11 @@ def test_finalize_writes_summary_with_final_report_refs(tmp_path: Path) -> None:
     result = finalize_orchestration_state(state)
     summary = json.loads((Path(state["orchestration_dir"]) / "orchestration_summary.json").read_text(encoding="utf-8"))
 
-    assert result["artifact_refs"]["final_migration_report"].endswith("final/migration_report.json")
-    assert result["artifact_refs"]["final_migration_summary"].endswith("final/migration_summary.md")
-    assert summary["artifact_refs"]["final_migration_report"].endswith("final/migration_report.json")
-    assert summary["artifact_refs"]["final_migration_summary"].endswith("final/migration_summary.md")
+    assert _as_posix(result["artifact_refs"]["final_migration_report"]).endswith("final/migration_report.json")
+    assert _as_posix(result["artifact_refs"]["final_migration_summary"]).endswith("final/migration_summary.md")
+    assert _as_posix(summary["artifact_refs"]["final_migration_report"]).endswith("final/migration_report.json")
+    assert _as_posix(summary["artifact_refs"]["final_migration_summary"]).endswith("final/migration_summary.md")
+
+
+def _as_posix(path: str) -> str:
+    return path.replace("\\", "/")

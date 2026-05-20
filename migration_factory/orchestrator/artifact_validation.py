@@ -53,6 +53,10 @@ SUCCESSFUL_FULL_SANDBOX_REQUIRED_ARTIFACT_REFS = (
     "timing_report",
     "timing_summary",
 )
+SUCCESSFUL_FULL_SANDBOX_OPTIONAL_ARTIFACT_REFS = (
+    "copilot_migration_statement_json",
+    "copilot_migration_statement_md",
+)
 
 SCHEMA_BACKED_ARTIFACTS = {
     "analysis_report.json": "analysis_report.schema.json",
@@ -152,11 +156,19 @@ def validate_successful_full_sandbox_orchestration(state: MigrationState) -> Art
         if not Path(ref).is_file():
             blockers.append(f"Missing required orchestration artifact: {ref_name}")
 
+    for ref_name in SUCCESSFUL_FULL_SANDBOX_OPTIONAL_ARTIFACT_REFS:
+        ref = artifact_refs.get(ref_name)
+        if ref and not Path(ref).is_file():
+            blockers.append(f"Missing optional generated orchestration artifact: {ref_name}")
+
     return ArtifactValidationResult(
         valid=not blockers,
         artifact_refs={
             name: artifact_refs[name]
-            for name in SUCCESSFUL_FULL_SANDBOX_REQUIRED_ARTIFACT_REFS
+            for name in (
+                *SUCCESSFUL_FULL_SANDBOX_REQUIRED_ARTIFACT_REFS,
+                *SUCCESSFUL_FULL_SANDBOX_OPTIONAL_ARTIFACT_REFS,
+            )
             if name in artifact_refs
         },
         blockers=blockers,
