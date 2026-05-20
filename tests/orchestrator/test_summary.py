@@ -78,6 +78,20 @@ def test_summary_excludes_transformation_status(tmp_path: Path) -> None:
     assert "transformation_status" not in build_orchestration_summary(state)
 
 
+def test_summary_migrated_tests_executed_requires_test_passed(tmp_path: Path) -> None:
+    state = _state(tmp_path)
+    state.update(
+        {
+            "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+            "build_status": "BUILD_PASSED_IN_SANDBOX",
+            "test_status": "TEST_FAILED",
+        }
+    )
+    summary = build_orchestration_summary(state)
+    assert summary["migrated_build_executed"] is True
+    assert summary["migrated_tests_executed"] is False
+
+
 def test_summary_includes_full_sandbox_migration_outputs(tmp_path: Path) -> None:
     state = _state(tmp_path)
     state.update(
@@ -85,6 +99,12 @@ def test_summary_includes_full_sandbox_migration_outputs(tmp_path: Path) -> None
             "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
             "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
             "build_status": "BUILD_PASSED_IN_SANDBOX",
+            "test_status": "TEST_PASSED",
+            "test_totals": {"tests": 5, "passed": 5, "failures": 0, "errors": 0, "skipped": 0},
+            "test_report_path": "test/post_transform/test_report.json",
+            "test_summary_path": "test/post_transform/test_summary.md",
+            "test_log_path": "test/post_transform/test_agent.log",
+            "test_phase": "post_transform",
             "sandbox_path": str(tmp_path / "run" / "workspaces" / "sandbox"),
             "transform_log_path": str(tmp_path / "run" / "logs" / "phase2_transform.log"),
             "stop_reason": "Sandbox migration candidate ready.",
@@ -95,6 +115,9 @@ def test_summary_includes_full_sandbox_migration_outputs(tmp_path: Path) -> None
                 "transformation_execution_plan": "transformation/transformation_execution_plan.yaml",
                 "migration_ledger": "workspaces/sandbox/.migration/ledger.json",
                 "phase2_log": "logs/phase2_transform.log",
+                "post_transform_test_report": "test/post_transform/test_report.json",
+                "post_transform_test_summary": "test/post_transform/test_summary.md",
+                "post_transform_test_log": "test/post_transform/test_agent.log",
             },
         }
     )
@@ -108,6 +131,12 @@ def test_summary_includes_full_sandbox_migration_outputs(tmp_path: Path) -> None
     assert summary["approved_by"] == ""
     assert summary["transform_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
     assert summary["build_status"] == "BUILD_PASSED_IN_SANDBOX"
+    assert summary["test_status"] == "TEST_PASSED"
+    assert summary["test_totals"]["tests"] == 5
+    assert summary["test_report_path"].endswith("test_report.json")
+    assert summary["test_summary_path"].endswith("test_summary.md")
+    assert summary["test_log_path"].endswith("test_agent.log")
+    assert summary["test_phase"] == "post_transform"
     assert summary["sandbox_path"].endswith("workspaces\\sandbox") or summary["sandbox_path"].endswith("workspaces/sandbox")
     assert summary["log_path"].endswith("phase2_transform.log")
     assert summary["stop_reason"] == "Sandbox migration candidate ready."
@@ -119,8 +148,12 @@ def test_summary_includes_full_sandbox_migration_outputs(tmp_path: Path) -> None
     assert summary["artifact_refs"]["transformation_execution_plan"].endswith("transformation_execution_plan.yaml")
     assert summary["artifact_refs"]["migration_ledger"].endswith("ledger.json")
     assert summary["artifact_refs"]["phase2_log"].endswith("phase2_transform.log")
+    assert summary["artifact_refs"]["post_transform_test_report"].endswith("test_report.json")
+    assert summary["artifact_refs"]["post_transform_test_summary"].endswith("test_summary.md")
+    assert summary["artifact_refs"]["post_transform_test_log"].endswith("test_agent.log")
     assert summary["transformation_executed"] is True
     assert summary["migrated_build_executed"] is True
+    assert summary["migrated_tests_executed"] is True
     assert summary["final_migration_executed"] is False
 
 

@@ -40,6 +40,12 @@ class MigrationState(TypedDict, total=False):
     final_status: str
     transform_status: str
     build_status: str
+    test_status: str
+    test_totals: dict[str, int]
+    test_report_path: str
+    test_summary_path: str
+    test_log_path: str
+    test_phase: str
     sandbox_path: str
     transform_log_path: str
     stop_reason: str | None
@@ -92,6 +98,12 @@ def build_initial_state(
         "final_status": "",
         "transform_status": "",
         "build_status": "",
+        "test_status": "",
+        "test_totals": {},
+        "test_report_path": "",
+        "test_summary_path": "",
+        "test_log_path": "",
+        "test_phase": "",
         "sandbox_path": "",
         "transform_log_path": "",
         "stop_reason": None,

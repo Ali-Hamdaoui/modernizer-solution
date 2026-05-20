@@ -53,6 +53,10 @@ def initialize_ledger(
             "required": False,
             "status": BuildValidationStatus.NOT_REQUIRED,
         },
+        "test_validation": {
+            "required": False,
+            "status": None,
+        },
         "units": {},
         "created_at": now,
         "updated_at": now,

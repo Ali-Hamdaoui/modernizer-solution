@@ -50,18 +50,32 @@ def test_resume_approved_records_approval_and_runs_sandbox_transform(
         log_path = Path(resumed_state["run_dir"]) / "logs" / "phase2_transform.log"
         plan_path = Path(resumed_state["run_dir"]) / "transformation" / "transformation_execution_plan.yaml"
         ledger_path = sandbox_path / ".migration" / "ledger.json"
+        test_dir = Path(resumed_state["run_dir"]) / "test" / "post_transform"
+        test_report = test_dir / "test_report.json"
+        test_summary = test_dir / "test_summary.md"
+        test_log = test_dir / "test_agent.log"
         sandbox_path.mkdir(parents=True, exist_ok=True)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         plan_path.parent.mkdir(parents=True, exist_ok=True)
         ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        test_dir.mkdir(parents=True, exist_ok=True)
         log_path.write_text("ok\n", encoding="utf-8")
         plan_path.write_text("run_id: run-001\n", encoding="utf-8")
         ledger_path.write_text("{}\n", encoding="utf-8")
+        test_report.write_text("{}\n", encoding="utf-8")
+        test_summary.write_text("# test\n", encoding="utf-8")
+        test_log.write_text("ok\n", encoding="utf-8")
         return {
             "current_phase": "sandbox_transform",
             "orchestration_status": "PASS",
             "transform_status": STATUS_APPLIED,
             "build_status": "BUILD_PASSED_IN_SANDBOX",
+            "test_status": "TEST_PASSED",
+            "test_totals": {"tests": 1, "passed": 1, "failures": 0, "errors": 0, "skipped": 0},
+            "test_report_path": str(test_report),
+            "test_summary_path": str(test_summary),
+            "test_log_path": str(test_log),
+            "test_phase": "post_transform",
             "sandbox_path": str(sandbox_path),
             "transform_log_path": str(log_path),
             "final_status": STATUS_APPLIED,
@@ -71,6 +85,9 @@ def test_resume_approved_records_approval_and_runs_sandbox_transform(
                 "transformation_execution_plan": str(plan_path),
                 "migration_ledger": str(ledger_path),
                 "phase2_log": str(log_path),
+                "post_transform_test_report": str(test_report),
+                "post_transform_test_summary": str(test_summary),
+                "post_transform_test_log": str(test_log),
             },
         }
 
@@ -100,6 +117,9 @@ def test_resume_approved_records_approval_and_runs_sandbox_transform(
     assert result["artifact_refs"]["transformation_execution_plan"].endswith("transformation_execution_plan.yaml")
     assert result["artifact_refs"]["migration_ledger"].endswith("ledger.json")
     assert result["artifact_refs"]["phase2_log"].endswith("phase2_transform.log")
+    assert result["artifact_refs"]["post_transform_test_report"].endswith("test_report.json")
+    assert result["artifact_refs"]["post_transform_test_summary"].endswith("test_summary.md")
+    assert result["artifact_refs"]["post_transform_test_log"].endswith("test_agent.log")
     assert result["artifact_refs"]["orchestration_summary"].endswith("orchestration_summary.json")
 
 

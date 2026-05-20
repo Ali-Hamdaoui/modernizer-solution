@@ -28,6 +28,7 @@ from migration_factory.agents.transformation_agent.workspace import (
     TransformationWorkspaceError,
     prepare_sandbox_workspace,
 )
+from migration_factory.agents.test_agent.agent import TestAgentResult as _TestAgentResult
 from migration_factory.agents.transformation_agent import workspace as workspace_module
 from migration_factory.contracts.migration import (
     BuildValidationStatus,
@@ -405,23 +406,27 @@ class TransformationAgentTests(unittest.TestCase):
                         )
                     ),
                 ) as run_build:
-                    with redirect_stdout(stdout):
-                        result = transform_v1_after_approval_main(
-                            [
-                                "--run-dir",
-                                str(run_dir),
-                                "--legacy-app",
-                                str(legacy),
-                                "--modernized-app",
-                                str(modernized),
-                                "--ai-hub",
-                                str(ai_hub),
-                                "--profile",
-                                "java17",
-                                "--approved-by",
-                                "human",
-                            ]
-                        )
+                    with mock.patch(
+                        "migration_factory.transform_v1_after_approval.run_test_agent",
+                        return_value=_passed_test_result(run_dir),
+                    ) as run_test:
+                        with redirect_stdout(stdout):
+                            result = transform_v1_after_approval_main(
+                                [
+                                    "--run-dir",
+                                    str(run_dir),
+                                    "--legacy-app",
+                                    str(legacy),
+                                    "--modernized-app",
+                                    str(modernized),
+                                    "--ai-hub",
+                                    str(ai_hub),
+                                    "--profile",
+                                    "java17",
+                                    "--approved-by",
+                                    "human",
+                                ]
+                            )
 
             sandbox_path = run_dir / "workspaces" / "sandbox"
             plan_path = run_dir / "transformation" / "transformation_execution_plan.yaml"
@@ -475,6 +480,7 @@ class TransformationAgentTests(unittest.TestCase):
                 ]
             )
             self.assertEqual(run_build.call_count, 2)
+            run_test.assert_called_once()
             run_build.assert_has_calls(
                 [
                     mock.call(
@@ -545,22 +551,26 @@ class TransformationAgentTests(unittest.TestCase):
                     with mock.patch(
                         "migration_factory.agents.build_agent.agent.run_until_build_result"
                     ) as run_startup:
-                        result = transform_v1_after_approval_main(
-                            [
-                                "--run-dir",
-                                str(run_dir),
-                                "--legacy-app",
-                                str(legacy),
-                                "--modernized-app",
-                                str(modernized),
-                                "--ai-hub",
-                                str(ai_hub),
-                                "--profile",
-                                "java17",
-                                "--approved-by",
-                                "human",
-                            ]
-                        )
+                        with mock.patch(
+                            "migration_factory.transform_v1_after_approval.run_test_agent",
+                            return_value=_passed_test_result(run_dir),
+                        ):
+                            result = transform_v1_after_approval_main(
+                                [
+                                    "--run-dir",
+                                    str(run_dir),
+                                    "--legacy-app",
+                                    str(legacy),
+                                    "--modernized-app",
+                                    str(modernized),
+                                    "--ai-hub",
+                                    str(ai_hub),
+                                    "--profile",
+                                    "java17",
+                                    "--approved-by",
+                                    "human",
+                                ]
+                            )
 
             sandbox_path = run_dir / "workspaces" / "sandbox"
             self.assertEqual(result, 0)
@@ -593,11 +603,17 @@ class TransformationAgentTests(unittest.TestCase):
             ledger_file = run_dir / "workspaces" / "sandbox" / ".migration" / "ledger.json"
 
             def run_agent_side_effect(*args: object, **kwargs: object) -> TransformationRunResult:
-                _write_awaiting_build_ledger(ledger_file, "baseline")
+                if kwargs.get("start_unit") is None:
+                    _write_awaiting_build_ledger(ledger_file, "baseline")
+                    return TransformationRunResult(
+                        ledger_file=ledger_file,
+                        status=LedgerStatus.AWAITING_BUILD_AGENT,
+                        completed_units=[],
+                    )
                 return TransformationRunResult(
                     ledger_file=ledger_file,
-                    status=LedgerStatus.AWAITING_BUILD_AGENT,
-                    completed_units=[],
+                    status=LedgerStatus.COMPLETED,
+                    completed_units=["baseline"],
                 )
 
             stdout = io.StringIO()
@@ -646,6 +662,69 @@ class TransformationAgentTests(unittest.TestCase):
             self.assertIn(f"Build error contract: {error_contract}", stderr.getvalue())
             self.assertIn("log_file:", stderr.getvalue())
             self.assertIn("[ERROR] COMPILATION ERROR full Maven output", stderr.getvalue())
+
+    def test_transform_v1_after_approval_blocks_candidate_when_test_reports_missing(self) -> None:
+        with workspace_temp_dir() as tmp:
+            legacy = tmp / "legacy-app"
+            modernized = tmp / "modernized-app"
+            ai_hub = tmp / "ai-hub"
+            run_id = "run-1"
+            run_dir = _run_dir(modernized, run_id)
+            legacy.mkdir()
+            modernized.mkdir()
+            (legacy / "pom.xml").write_text("<project />", encoding="utf-8")
+            _write_ai_hub_profile(ai_hub)
+            _write_approved_run_artifacts(modernized, run_id, include_rewrite_plan=True)
+            ledger_file = run_dir / "workspaces" / "sandbox" / ".migration" / "ledger.json"
+
+            def run_agent_side_effect(*args: object, **kwargs: object) -> TransformationRunResult:
+                if kwargs.get("start_unit") is None:
+                    _write_awaiting_build_ledger(ledger_file, "baseline")
+                    return TransformationRunResult(
+                        ledger_file=ledger_file,
+                        status=LedgerStatus.AWAITING_BUILD_AGENT,
+                        completed_units=[],
+                    )
+                return TransformationRunResult(
+                    ledger_file=ledger_file,
+                    status=LedgerStatus.COMPLETED,
+                    completed_units=["baseline"],
+                )
+
+            stdout = io.StringIO()
+            with mock.patch(
+                "migration_factory.transform_v1_after_approval.run_transformation_agent",
+                side_effect=run_agent_side_effect,
+            ):
+                with mock.patch(
+                    "migration_factory.transform_v1_after_approval.run_build_agent",
+                    return_value=BuildRunResult(
+                        succeeded=True,
+                        result_kind="success",
+                        message="ok",
+                    ),
+                ):
+                    with redirect_stdout(stdout):
+                        result = transform_v1_after_approval_main(
+                            [
+                                "--run-dir",
+                                str(run_dir),
+                                "--legacy-app",
+                                str(legacy),
+                                "--modernized-app",
+                                str(modernized),
+                                "--ai-hub",
+                                str(ai_hub),
+                                "--profile",
+                                "java17",
+                                "--approved-by",
+                                "human",
+                            ]
+                        )
+
+            self.assertEqual(result, 1)
+            self.assertIn("TEST_ERROR", stdout.getvalue())
+            self.assertNotIn("Sandbox migration candidate ready.", stdout.getvalue())
 
     def test_transform_v1_after_approval_reports_transform_failure(self) -> None:
         with workspace_temp_dir() as tmp:
@@ -725,25 +804,29 @@ class TransformationAgentTests(unittest.TestCase):
                 side_effect=run_agent_side_effect,
             ):
                 with mock.patch("migration_factory.transform_v1_after_approval.run_build_agent") as run_build:
-                    with redirect_stdout(stdout):
-                        result = transform_v1_after_approval_main(
-                            [
-                                "--run-dir",
-                                str(run_dir),
-                                "--legacy-app",
-                                str(legacy),
-                                "--modernized-app",
-                                str(modernized),
-                                "--ai-hub",
-                                str(ai_hub),
-                                "--profile",
-                                "java17",
-                                "--approved-by",
-                                "human",
-                                "--log-file",
-                                str(custom_log),
-                            ]
-                        )
+                    with mock.patch(
+                        "migration_factory.transform_v1_after_approval.run_test_agent",
+                        return_value=_passed_test_result(run_dir),
+                    ):
+                        with redirect_stdout(stdout):
+                            result = transform_v1_after_approval_main(
+                                [
+                                    "--run-dir",
+                                    str(run_dir),
+                                    "--legacy-app",
+                                    str(legacy),
+                                    "--modernized-app",
+                                    str(modernized),
+                                    "--ai-hub",
+                                    str(ai_hub),
+                                    "--profile",
+                                    "java17",
+                                    "--approved-by",
+                                    "human",
+                                    "--log-file",
+                                    str(custom_log),
+                                ]
+                            )
 
             self.assertEqual(result, 0)
             self.assertNotIn("CUSTOM_LOG_OPENREWRITE_OUTPUT", stdout.getvalue())
@@ -777,24 +860,28 @@ class TransformationAgentTests(unittest.TestCase):
                 "migration_factory.transform_v1_after_approval.run_transformation_agent",
                 side_effect=run_agent_side_effect,
             ):
-                with redirect_stdout(stdout):
-                    result = transform_v1_after_approval_main(
-                        [
-                            "--run-dir",
-                            str(run_dir),
-                            "--legacy-app",
-                            str(legacy),
-                            "--modernized-app",
-                            str(modernized),
-                            "--ai-hub",
-                            str(ai_hub),
-                            "--profile",
-                            "java17",
-                            "--approved-by",
-                            "human",
-                            "--verbose",
-                        ]
-                    )
+                with mock.patch(
+                    "migration_factory.transform_v1_after_approval.run_test_agent",
+                    return_value=_passed_test_result(run_dir),
+                ):
+                    with redirect_stdout(stdout):
+                        result = transform_v1_after_approval_main(
+                            [
+                                "--run-dir",
+                                str(run_dir),
+                                "--legacy-app",
+                                str(legacy),
+                                "--modernized-app",
+                                str(modernized),
+                                "--ai-hub",
+                                str(ai_hub),
+                                "--profile",
+                                "java17",
+                                "--approved-by",
+                                "human",
+                                "--verbose",
+                            ]
+                        )
 
             log_file = run_dir / "logs" / "phase2_transform.log"
             self.assertEqual(result, 0)
@@ -891,6 +978,25 @@ def _write_awaiting_build_ledger(ledger_file: Path, unit_id: str) -> None:
             }
         ),
         encoding="utf-8",
+    )
+
+
+def _passed_test_result(run_dir: Path) -> _TestAgentResult:
+    test_dir = run_dir / "test" / "post_transform"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    report = test_dir / "test_report.json"
+    summary = test_dir / "test_summary.md"
+    log = test_dir / "test_agent.log"
+    report.write_text("{}\n", encoding="utf-8")
+    summary.write_text("# summary\n", encoding="utf-8")
+    log.write_text("ok\n", encoding="utf-8")
+    return _TestAgentResult(
+        test_status="TEST_PASSED",
+        totals={"tests": 1, "passed": 1, "failures": 0, "errors": 0, "skipped": 0},
+        report_path=report,
+        summary_path=summary,
+        log_path=log,
+        report_paths=[str(report)],
     )
 
 

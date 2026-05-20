@@ -11,6 +11,12 @@ from typing import Any, Callable, TextIO, TypeVar
 import yaml
 
 from migration_factory.agents.build_agent import run_build_agent
+from migration_factory.agents.test_agent import (
+    TEST_STATUS_ERROR,
+    TEST_STATUS_FAILED,
+    TEST_STATUS_PASSED,
+    run_test_agent,
+)
 from migration_factory.agents.transformation_agent import run_transformation_agent
 from migration_factory.agents.transformation_agent.agent import TransformationAgentError
 from migration_factory.agents.transformation_agent.execution_plan import (
@@ -30,7 +36,7 @@ from migration_factory.approval import (
     check_approved_plan_lock,
     read_approval_decision,
 )
-from migration_factory.contracts.migration import LedgerStatus, load_ledger
+from migration_factory.contracts.migration import LedgerError, LedgerStatus, load_ledger, save_ledger
 
 
 STATUS_APPROVED = "APPROVED_FOR_TRANSFORM"
@@ -43,6 +49,9 @@ STATUS_BUILD_REQUIRED = "BUILD_VALIDATION_REQUIRED"
 STATUS_BUILD_RUNNING = "BUILD_RUNNING_IN_SANDBOX"
 STATUS_BUILD_PASSED = "BUILD_PASSED_IN_SANDBOX"
 STATUS_BUILD_FAILED = "BUILD_FAILED_IN_SANDBOX"
+STATUS_TEST_PASSED = TEST_STATUS_PASSED
+STATUS_TEST_FAILED = TEST_STATUS_FAILED
+STATUS_TEST_ERROR = TEST_STATUS_ERROR
 STATUS_APPROVAL_FAILED = "APPROVAL_FAILED"
 
 _T = TypeVar("_T")
@@ -63,6 +72,12 @@ class TransformSandboxResult:
     plugin_xml: Path | None = None
     ledger_file: Path | None = None
     build_status: str | None = None
+    test_status: str | None = None
+    test_totals: dict[str, int] | None = None
+    test_report_path: Path | None = None
+    test_summary_path: Path | None = None
+    test_log_path: Path | None = None
+    test_phase: str | None = None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -135,6 +150,7 @@ def apply_approved_sandbox_transform(
             plugin_xml=plugin_xml,
             generated_plan=generated_plan,
             plan=plan,
+            run_id=run_id,
             run_dir=run_dir,
             log_file=resolved_log_file,
             verbose=verbose,
@@ -193,6 +209,7 @@ def _run_transformer_with_build_validation(
     plugin_xml: Path,
     generated_plan: Path,
     plan: MigrationPlan,
+    run_id: str,
     run_dir: Path,
     log_file: Path,
     verbose: bool,
@@ -282,18 +299,16 @@ def _run_transformer_with_build_validation(
 
             next_unit = _next_unit_after(plan, unit_id)
             if next_unit is None:
-                status_writer(STATUS_APPLIED)
-                status_writer("Sandbox migration candidate ready.")
-                return TransformSandboxResult(
-                    exit_code=0,
-                    status=STATUS_APPLIED,
-                    message="Sandbox migration candidate ready.",
+                return _finalize_with_test_validation(
                     sandbox_path=sandbox_path,
+                    run_dir=run_dir,
+                    run_id=run_id,
                     log_file=log_file,
                     generated_plan=generated_plan,
                     plugin_xml=plugin_xml,
                     ledger_file=result.ledger_file,
                     build_status=build_status,
+                    status_writer=status_writer,
                 )
             continue
 
@@ -326,18 +341,16 @@ def _run_transformer_with_build_validation(
             )
 
         if result.status == LedgerStatus.COMPLETED:
-            status_writer(STATUS_APPLIED)
-            status_writer("Sandbox migration candidate ready.")
-            return TransformSandboxResult(
-                exit_code=0,
-                status=STATUS_APPLIED,
-                message="Sandbox migration candidate ready.",
+            return _finalize_with_test_validation(
                 sandbox_path=sandbox_path,
+                run_dir=run_dir,
+                run_id=run_id,
                 log_file=log_file,
                 generated_plan=generated_plan,
                 plugin_xml=plugin_xml,
                 ledger_file=result.ledger_file,
                 build_status=build_status,
+                status_writer=status_writer,
             )
 
         raise TransformV1AfterApprovalError(f"Unexpected Transformer status: {result.status}")
@@ -417,6 +430,114 @@ def _build_failure_message(build_result: Any) -> str:
     if build_result.error_contract_path:
         parts.append(f"Build error contract: {build_result.error_contract_path}")
     return "; ".join(parts)
+
+
+def _finalize_with_test_validation(
+    *,
+    sandbox_path: Path,
+    run_dir: Path,
+    run_id: str,
+    log_file: Path,
+    generated_plan: Path,
+    plugin_xml: Path,
+    ledger_file: Path,
+    build_status: str | None,
+    status_writer: Callable[[str], None],
+) -> TransformSandboxResult:
+    command, cwd = _build_command_and_cwd(ledger_file)
+    test_result = run_test_agent(
+        sandbox_path=sandbox_path,
+        run_dir=run_dir,
+        run_id=run_id,
+        source_log_path=log_file,
+        command=command,
+        cwd=cwd,
+    )
+    _record_ledger_test_validation(
+        ledger_file=ledger_file,
+        test_status=test_result.test_status,
+        totals=test_result.totals,
+        report_path=test_result.report_path,
+        summary_path=test_result.summary_path,
+        log_path=test_result.log_path,
+    )
+
+    if test_result.test_status == STATUS_TEST_PASSED:
+        status_writer(STATUS_APPLIED)
+        status_writer("Sandbox migration candidate ready.")
+        return TransformSandboxResult(
+            exit_code=0,
+            status=STATUS_APPLIED,
+            message="Sandbox migration candidate ready.",
+            sandbox_path=sandbox_path,
+            log_file=log_file,
+            generated_plan=generated_plan,
+            plugin_xml=plugin_xml,
+            ledger_file=ledger_file,
+            build_status=build_status,
+            test_status=test_result.test_status,
+            test_totals=test_result.totals,
+            test_report_path=test_result.report_path,
+            test_summary_path=test_result.summary_path,
+            test_log_path=test_result.log_path,
+            test_phase="post_transform",
+        )
+
+    status_writer(test_result.test_status)
+    return TransformSandboxResult(
+        exit_code=1,
+        status=test_result.test_status,
+        message=f"Sandbox candidate blocked by test_status={test_result.test_status}.",
+        sandbox_path=sandbox_path,
+        log_file=log_file,
+        generated_plan=generated_plan,
+        plugin_xml=plugin_xml,
+        ledger_file=ledger_file,
+        build_status=build_status,
+        test_status=test_result.test_status,
+        test_totals=test_result.totals,
+        test_report_path=test_result.report_path,
+        test_summary_path=test_result.summary_path,
+        test_log_path=test_result.log_path,
+        test_phase="post_transform",
+    )
+
+
+def _build_command_and_cwd(ledger_file: Path) -> tuple[list[str], str | None]:
+    try:
+        ledger = load_ledger(ledger_file)
+    except LedgerError:
+        return [], None
+    validation = ledger.get("build_validation", {})
+    command = validation.get("command")
+    cwd = validation.get("cwd")
+    return (list(command) if isinstance(command, list) else []), str(cwd) if cwd else None
+
+
+def _record_ledger_test_validation(
+    *,
+    ledger_file: Path,
+    test_status: str,
+    totals: dict[str, int],
+    report_path: Path,
+    summary_path: Path,
+    log_path: Path,
+) -> None:
+    try:
+        ledger = load_ledger(ledger_file)
+    except LedgerError:
+        return
+    ledger["test_validation"] = {
+        "status": test_status,
+        "phase": "post_transform",
+        "execution_owner": "build-agent",
+        "execution_mode": "parse_existing_surefire",
+        "totals": totals,
+        "report_path": str(report_path),
+        "summary_path": str(summary_path),
+        "log_path": str(log_path),
+    }
+    save_ledger(ledger_file, ledger)
 
 
 def _awaiting_build_unit_id(ledger: dict[str, Any]) -> str:

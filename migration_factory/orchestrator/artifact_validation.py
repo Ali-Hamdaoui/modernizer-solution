@@ -44,6 +44,9 @@ SUCCESSFUL_FULL_SANDBOX_REQUIRED_ARTIFACT_REFS = (
     "transformation_execution_plan",
     "phase2_log",
     "migration_ledger",
+    "post_transform_test_report",
+    "post_transform_test_summary",
+    "post_transform_test_log",
     "orchestration_summary",
 )
 
@@ -119,6 +122,7 @@ def validate_successful_full_sandbox_orchestration(state: MigrationState) -> Art
         "orchestration_status": "PASS",
         "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
         "build_status": "BUILD_PASSED_IN_SANDBOX",
+        "test_status": "TEST_PASSED",
         "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
     }
     for key, expected in expected_values.items():

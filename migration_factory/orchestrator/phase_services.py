@@ -144,6 +144,12 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
     if result.ledger_file is not None:
         artifact_refs["migration_ledger"] = str(result.ledger_file)
     artifact_refs["phase2_log"] = str(result.log_file)
+    if result.test_report_path is not None:
+        artifact_refs["post_transform_test_report"] = str(result.test_report_path)
+    if result.test_summary_path is not None:
+        artifact_refs["post_transform_test_summary"] = str(result.test_summary_path)
+    if result.test_log_path is not None:
+        artifact_refs["post_transform_test_log"] = str(result.test_log_path)
 
     if result.exit_code != 0 or result.status != STATUS_APPLIED or result.sandbox_path is None:
         message = result.message or f"sandbox transform failed with status {result.status}"
@@ -157,6 +163,12 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
             {
                 "transform_status": result.status,
                 "build_status": result.build_status or "",
+                "test_status": result.test_status or "",
+                "test_totals": dict(result.test_totals or {}),
+                "test_report_path": str(result.test_report_path or ""),
+                "test_summary_path": str(result.test_summary_path or ""),
+                "test_log_path": str(result.test_log_path or ""),
+                "test_phase": result.test_phase or "",
                 "sandbox_path": str(result.sandbox_path or ""),
                 "transform_log_path": str(result.log_file),
                 "artifact_refs": artifact_refs,
@@ -171,6 +183,12 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         "orchestration_status": "PASS",
         "transform_status": result.status,
         "build_status": result.build_status or "",
+        "test_status": result.test_status or "",
+        "test_totals": dict(result.test_totals or {}),
+        "test_report_path": str(result.test_report_path or ""),
+        "test_summary_path": str(result.test_summary_path or ""),
+        "test_log_path": str(result.test_log_path or ""),
+        "test_phase": result.test_phase or "",
         "sandbox_path": str(result.sandbox_path),
         "transform_log_path": str(result.log_file),
         "artifact_refs": artifact_refs,

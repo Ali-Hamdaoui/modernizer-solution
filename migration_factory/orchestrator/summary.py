@@ -35,6 +35,12 @@ def build_orchestration_summary(state: MigrationState) -> dict:
         "approved_by": state.get("approved_by", ""),
         "transform_status": state.get("transform_status", ""),
         "build_status": state.get("build_status", ""),
+        "test_status": state.get("test_status", ""),
+        "test_totals": dict(state.get("test_totals", {}) or {}),
+        "test_report_path": state.get("test_report_path", ""),
+        "test_summary_path": state.get("test_summary_path", ""),
+        "test_log_path": state.get("test_log_path", ""),
+        "test_phase": state.get("test_phase", ""),
         "sandbox_path": state.get("sandbox_path", ""),
         "log_path": state.get("transform_log_path", ""),
         "stop_reason": state.get("stop_reason"),
@@ -124,6 +130,7 @@ def _is_successful_full_sandbox_migration(state: MigrationState) -> bool:
         and state.get("orchestration_status") == "PASS"
         and state.get("transform_status") == "TRANSFORM_APPLIED_IN_SANDBOX"
         and state.get("build_status") == "BUILD_PASSED_IN_SANDBOX"
+        and state.get("test_status") == "TEST_PASSED"
         and _final_status(state) == "TRANSFORM_APPLIED_IN_SANDBOX"
     )
 
@@ -135,6 +142,7 @@ def _execution_claims(state: MigrationState) -> dict[str, bool]:
         claims["openrewrite_apply_executed"] = True
     if state.get("build_status") == "BUILD_PASSED_IN_SANDBOX":
         claims["migrated_build_executed"] = True
+    if state.get("test_status") == "TEST_PASSED":
         claims["migrated_tests_executed"] = True
     return claims
 
