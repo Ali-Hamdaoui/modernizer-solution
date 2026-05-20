@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import migration_factory.final_report.writer as final_report_writer
 from migration_factory.orchestrator.state import FULL_SANDBOX_MIGRATION_MODE, build_initial_state
 from migration_factory.orchestrator.summary import finalize_orchestration_state
 
 
-def test_successful_full_sandbox_writes_final_report_and_summary(tmp_path: Path) -> None:
+def test_successful_full_sandbox_writes_final_report_and_summary(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("AI_MIGRATION_ENABLE_COPILOT_STATEMENT", raising=False)
     state = _successful_state(tmp_path)
 
     result = finalize_orchestration_state(state)
@@ -26,8 +28,70 @@ def test_successful_full_sandbox_writes_final_report_and_summary(tmp_path: Path)
         "No production promotion performed.",
         "No pull request creation performed.",
     ]
-    assert payload["timing"]["timing_report"].endswith("performance/timing_report.json")
-    assert payload["timing"]["timing_summary"].endswith("performance/timing_summary.md")
+    assert _as_posix(payload["timing"]["timing_report"]).endswith("performance/timing_report.json")
+    assert _as_posix(payload["timing"]["timing_summary"]).endswith("performance/timing_summary.md")
+    assert "copilot_migration_statement_json" not in result["artifact_refs"]
+    assert "copilot_migration_statement_md" not in result["artifact_refs"]
+    assert not (Path(state["run_dir"]) / "final" / "copilot_migration_statement.json").exists()
+    assert "Copilot Advisory Statement" not in final_summary.read_text(encoding="utf-8")
+
+
+def test_enabled_copilot_advisory_writes_artifacts_and_summary_reference(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AI_MIGRATION_ENABLE_COPILOT_STATEMENT", "true")
+    state = _successful_state(tmp_path)
+
+    result = finalize_orchestration_state(state)
+
+    json_ref = Path(result["artifact_refs"]["copilot_migration_statement_json"])
+    md_ref = Path(result["artifact_refs"]["copilot_migration_statement_md"])
+    assert json_ref.is_file()
+    assert md_ref.is_file()
+
+    statement = json.loads(json_ref.read_text(encoding="utf-8"))
+    assert statement["advisory_only"] is True
+    assert statement["can_approve"] is False
+    assert statement["can_transform"] is False
+    assert statement["can_change_gates"] is False
+    assert statement["can_mutate_source"] is False
+    assert statement["can_override_status"] is False
+    assert "sandbox migration candidate only" in statement["disclaimer"]
+    assert "no production promotion, no PR, no deployment" in statement["disclaimer"]
+    assert statement["facts"]["approval_decision"] == "approved"
+    assert statement["facts"]["test_totals"]["tests"] == 3
+    assert statement["facts"]["target_versions"] == {"java": "17"}
+
+    advisory_md = md_ref.read_text(encoding="utf-8")
+    assert "Copilot Advisory Statement" in advisory_md
+    assert "sandbox migration candidate only" in advisory_md
+
+    final_summary = Path(result["artifact_refs"]["final_migration_summary"]).read_text(encoding="utf-8")
+    assert "## Copilot Advisory Statement" in final_summary
+    assert "copilot_migration_statement.json" in final_summary
+    assert "copilot_migration_statement.md" in final_summary
+
+    final_report = json.loads(Path(result["artifact_refs"]["final_migration_report"]).read_text(encoding="utf-8"))
+    assert final_report["artifact_refs"]["copilot_migration_statement_json"] == str(json_ref)
+    assert final_report["artifact_refs"]["copilot_migration_statement_md"] == str(md_ref)
+
+
+def test_copilot_advisory_failure_records_warning_without_failing_report(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AI_MIGRATION_ENABLE_COPILOT_STATEMENT", "true")
+
+    def fail_generation(payload, final_dir):
+        raise RuntimeError("template unavailable")
+
+    monkeypatch.setattr(final_report_writer, "_generate_copilot_advisory_statement", fail_generation)
+    state = _successful_state(tmp_path)
+
+    result = finalize_orchestration_state(state)
+
+    assert result["orchestration_status"] == "PASS"
+    assert result["final_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
+    assert result["orchestration_artifacts_valid"] is True
+    assert Path(result["artifact_refs"]["final_migration_report"]).is_file()
+    assert "copilot_migration_statement_json" not in result["artifact_refs"]
+    assert "copilot_migration_statement_md" not in result["artifact_refs"]
+    assert any("copilot advisory statement generation failed" in warning for warning in result["warnings"])
 
 
 def test_missing_test_report_blocks_final_report_generation(tmp_path: Path) -> None:
@@ -144,3 +208,7 @@ def _successful_state(tmp_path: Path) -> dict:
         }
     )
     return state
+
+
+def _as_posix(path: str) -> str:
+    return path.replace("\\", "/")

@@ -151,10 +151,10 @@ def test_resume_approved_records_approval_and_runs_sandbox_transform(
     assert result["artifact_refs"]["post_transform_test_summary"].endswith("test_summary.md")
     assert result["artifact_refs"]["post_transform_test_log"].endswith("test_agent.log")
     assert result["artifact_refs"]["orchestration_summary"].endswith("orchestration_summary.json")
-    assert result["artifact_refs"]["final_migration_report"].endswith("final/migration_report.json")
-    assert result["artifact_refs"]["final_migration_summary"].endswith("final/migration_summary.md")
-    assert result["artifact_refs"]["timing_report"].endswith("performance/timing_report.json")
-    assert result["artifact_refs"]["timing_summary"].endswith("performance/timing_summary.md")
+    assert _as_posix(result["artifact_refs"]["final_migration_report"]).endswith("final/migration_report.json")
+    assert _as_posix(result["artifact_refs"]["final_migration_summary"]).endswith("final/migration_summary.md")
+    assert _as_posix(result["artifact_refs"]["timing_report"]).endswith("performance/timing_report.json")
+    assert _as_posix(result["artifact_refs"]["timing_summary"]).endswith("performance/timing_summary.md")
     assert Path(result["artifact_refs"]["timing_report"]).is_file()
     assert Path(result["artifact_refs"]["timing_summary"]).is_file()
     timing_summary = Path(result["artifact_refs"]["timing_summary"]).read_text(encoding="utf-8")
@@ -442,3 +442,7 @@ def _write_json(path: Path, payload: object) -> None:
 
 def _write_yaml(path: Path, payload: object) -> None:
     path.write_text(yaml.safe_dump(payload, sort_keys=True), encoding="utf-8")
+
+
+def _as_posix(path: str) -> str:
+    return path.replace("\\", "/")
