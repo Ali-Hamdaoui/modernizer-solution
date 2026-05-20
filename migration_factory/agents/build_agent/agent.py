@@ -23,10 +23,14 @@ from .detection import (
 from .runner import ProcessRunResult, run_until_build_result, run_until_exit
 
 
+STARTUP_TIMEOUT_SECONDS = 120
+COMMAND_TIMEOUT_SECONDS = 300
+
+
 def run_build_agent(
     project_path: str | Path,
     *,
-    timeout_seconds: int = 120,
+    timeout_seconds: int | None = None,
     module: str | None = None,
     main_class: str | None = None,
     auto_discover_maven_target: bool = True,
@@ -86,7 +90,7 @@ def run_build_agent(
         result = run_until_exit(
             command=command,
             cwd=project.path,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=_command_timeout(timeout_seconds),
             stream_output=stream_output,
         )
     elif validation_mode == BuildValidationMode.PLAN_COMMAND:
@@ -95,7 +99,7 @@ def run_build_agent(
             result = run_until_build_result(
                 command=command,
                 cwd=project.path,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=_startup_timeout(timeout_seconds),
                 stream_output=stream_output,
                 stop_after_start=stop_after_start,
             )
@@ -103,7 +107,7 @@ def run_build_agent(
             result = run_until_exit(
                 command=command,
                 cwd=project.path,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=_command_timeout(timeout_seconds),
                 stream_output=stream_output,
             )
     else:
@@ -121,7 +125,7 @@ def run_build_agent(
         result = run_until_build_result(
             command=command,
             cwd=project.path,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=_startup_timeout(timeout_seconds),
             stream_output=stream_output,
             stop_after_start=stop_after_start,
         )
@@ -189,6 +193,14 @@ def _reactor_validation_command(project: JavaProjectInfo, explicit_command: list
     ):
         return explicit_command
     return full_validation_command(project.base_command, project.build_tool)
+
+
+def _startup_timeout(timeout_seconds: int | None) -> int:
+    return timeout_seconds if timeout_seconds is not None else STARTUP_TIMEOUT_SECONDS
+
+
+def _command_timeout(timeout_seconds: int | None) -> int:
+    return timeout_seconds if timeout_seconds is not None else COMMAND_TIMEOUT_SECONDS
 
 
 def _success_result(result: ProcessRunResult, *, command: list[str], cwd: Path) -> BuildRunResult:

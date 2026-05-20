@@ -92,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         approved_by=args.approved_by,
         quiet=args.quiet,
         log_file=Path(args.log_file) if args.log_file else None,
+        build_timeout_seconds=args.build_timeout,
         status_writer=print,
         error_writer=lambda line: print(line, file=sys.stderr),
     )
@@ -108,6 +109,7 @@ def apply_approved_sandbox_transform(
     approved_by: str,
     quiet: bool = True,
     log_file: Path | None = None,
+    build_timeout_seconds: int | None = None,
     status_writer: Callable[[str], None] | None = print,
     error_writer: Callable[[str], None] | None = None,
 ) -> TransformSandboxResult:
@@ -153,6 +155,7 @@ def apply_approved_sandbox_transform(
             run_id=run_id,
             run_dir=run_dir,
             log_file=resolved_log_file,
+            build_timeout_seconds=build_timeout_seconds,
             verbose=verbose,
             status_writer=emit,
             error_writer=error_writer,
@@ -200,6 +203,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Stream full subprocess output to the terminal while also writing the log file.",
     )
     parser.add_argument("--log-file", help="Path for full Phase 2 subprocess output")
+    parser.add_argument(
+        "--build-timeout",
+        type=_positive_int,
+        help="Override Build Agent timeout in seconds for sandbox build validation",
+    )
     return parser
 
 
@@ -212,6 +220,7 @@ def _run_transformer_with_build_validation(
     run_id: str,
     run_dir: Path,
     log_file: Path,
+    build_timeout_seconds: int | None,
     verbose: bool,
     status_writer: Callable[[str], None],
     error_writer: Callable[[str], None] | None,
@@ -256,16 +265,19 @@ def _run_transformer_with_build_validation(
             if verbose:
                 status_writer(STATUS_BUILD_REQUIRED)
             status_writer(STATUS_BUILD_RUNNING)
+            build_kwargs: dict[str, Any] = {
+                "project_path": sandbox_path,
+                "ledger_file": result.ledger_file,
+                "output_dir": run_dir / "build",
+                "stream_output": True,
+                "validation_unit_id": unit_id,
+                "source_changing_unit": unit_id in source_unit_ids,
+                "validation_command": _validation_command_for_unit(plan, unit_id),
+            }
+            if build_timeout_seconds is not None:
+                build_kwargs["timeout_seconds"] = build_timeout_seconds
             build_result = _run_with_logged_output(
-                lambda: run_build_agent(
-                    project_path=sandbox_path,
-                    ledger_file=result.ledger_file,
-                    output_dir=run_dir / "build",
-                    stream_output=True,
-                    validation_unit_id=unit_id,
-                    source_changing_unit=unit_id in source_unit_ids,
-                    validation_command=_validation_command_for_unit(plan, unit_id),
-                ),
+                lambda: run_build_agent(**build_kwargs),
                 log_file=log_file,
                 verbose=verbose,
             )
@@ -430,6 +442,13 @@ def _build_failure_message(build_result: Any) -> str:
     if build_result.error_contract_path:
         parts.append(f"Build error contract: {build_result.error_contract_path}")
     return "; ".join(parts)
+
+
+def _positive_int(raw: str) -> int:
+    value = int(raw)
+    if value <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return value
 
 
 def _finalize_with_test_validation(

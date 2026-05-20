@@ -15,6 +15,7 @@ from .classifier import (
     BuildClassification,
     BuildResultKind,
     classify_line,
+    command_timeout_classification,
     command_error_classification,
     process_exit_classification,
     timeout_classification,
@@ -196,7 +197,13 @@ def run_until_exit(
     while True:
         if time.monotonic() >= deadline:
             termination = _terminate_process_tree(process)
-            return ProcessRunResult(timeout_classification(timeout_seconds), process.poll(), stdout, stderr, termination.warnings)
+            return ProcessRunResult(
+                command_timeout_classification(timeout_seconds),
+                process.poll(),
+                stdout,
+                stderr,
+                termination.warnings,
+            )
 
         exit_code = process.poll()
         if exit_code is not None:

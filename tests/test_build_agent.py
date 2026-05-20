@@ -19,7 +19,7 @@ from migration_factory.agents.build_agent.detection import (
     full_validation_command,
 )
 from migration_factory.agents.build_agent import runner as runner_module
-from migration_factory.agents.build_agent.runner import ProcessRunResult, run_until_build_result
+from migration_factory.agents.build_agent.runner import ProcessRunResult, run_until_build_result, run_until_exit
 from migration_factory.contracts.migration import (
     BuildValidationStatus,
     initialize_ledger,
@@ -135,6 +135,17 @@ class BuildAgentTests(unittest.TestCase):
             self.assertEqual(result.classification.kind, BuildResultKind.TIMEOUT)
             terminate.assert_called_once()
 
+    def test_run_until_exit_timeout_reports_command_completion_timeout(self) -> None:
+        with workspace_temp_dir() as tmp:
+            command = [sys.executable, "-u", "-c", "import time; time.sleep(60)"]
+
+            result = run_until_exit(command, tmp, timeout_seconds=1, stream_output=False)
+
+            self.assertFalse(result.succeeded)
+            self.assertEqual(result.classification.kind, BuildResultKind.TIMEOUT)
+            self.assertEqual(result.classification.message, "Command timed out after 1 seconds before completion")
+            self.assertNotIn("startup", result.classification.message)
+
     def test_runner_failure_pattern_kills_process_tree_and_returns_failure(self) -> None:
         with workspace_temp_dir() as tmp:
             command = [
@@ -226,6 +237,7 @@ public class Application {
             run_process.assert_called_once()
             kwargs = run_process.call_args.kwargs
             self.assertEqual(kwargs["cwd"], project)
+            self.assertEqual(kwargs["timeout_seconds"], 120)
             self.assertEqual(
                 kwargs["command"],
                     [
@@ -269,9 +281,36 @@ public class Application {
             kwargs = run_process.call_args.kwargs
             self.assertEqual(kwargs["cwd"], project)
             self.assertEqual(kwargs["command"][1:], ["clean", "test"])
+            self.assertEqual(kwargs["timeout_seconds"], 300)
             self.assertNotIn("-pl", kwargs["command"])
             self.assertNotIn("-am", kwargs["command"])
             self.assertNotIn("spring-boot:run", kwargs["command"])
+
+    def test_post_transform_multi_module_validation_honors_timeout_override(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_multi_module_project(project)
+            process_result = ProcessRunResult(
+                classification=BuildClassification(
+                    BuildResultKind.SUCCESS,
+                    "Build completed successfully",
+                ),
+                exit_code=0,
+            )
+
+            with patch(
+                "migration_factory.agents.build_agent.agent.run_until_exit",
+                return_value=process_result,
+            ) as run_process:
+                result = run_build_agent(
+                    project / "shoppoc-app",
+                    timeout_seconds=450,
+                    stream_output=False,
+                    validation_unit_id="java-17",
+                    source_changing_unit=True,
+                )
+
+            self.assertTrue(result.succeeded)
+            self.assertEqual(run_process.call_args.kwargs["timeout_seconds"], 450)
 
     def test_source_changing_spring_boot_unit_records_root_reactor_validation_metadata(self) -> None:
         with workspace_temp_dir() as project:
@@ -319,6 +358,7 @@ public class Application {
             run_process.assert_called_once()
             command = run_process.call_args.kwargs["command"]
             self.assertEqual(run_process.call_args.kwargs["cwd"], project)
+            self.assertEqual(run_process.call_args.kwargs["timeout_seconds"], 300)
             self.assertEqual(command[1:], ["clean", "test"])
             self.assertNotIn("spring-boot:run", command)
             self.assertNotIn("-f", command)

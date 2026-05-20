@@ -578,6 +578,7 @@ class TransformationAgentTests(unittest.TestCase):
             run_process.assert_called_once()
             command = run_process.call_args.kwargs["command"]
             self.assertEqual(run_process.call_args.kwargs["cwd"], sandbox_path)
+            self.assertEqual(run_process.call_args.kwargs["timeout_seconds"], 300)
             self.assertEqual(command[1:], ["clean", "test"])
             self.assertNotIn("spring-boot:run", command)
             self.assertNotIn("-f", command)

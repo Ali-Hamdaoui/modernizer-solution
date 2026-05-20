@@ -141,6 +141,13 @@ def timeout_classification(seconds: int) -> BuildClassification:
     )
 
 
+def command_timeout_classification(seconds: int) -> BuildClassification:
+    return BuildClassification(
+        BuildResultKind.TIMEOUT,
+        f"Command timed out after {seconds} seconds before completion",
+    )
+
+
 def unknown_failure_classification(exit_code: int | None) -> BuildClassification:
     if exit_code is None:
         return BuildClassification(BuildResultKind.UNKNOWN_FAILURE, "Application failed before startup was detected")
