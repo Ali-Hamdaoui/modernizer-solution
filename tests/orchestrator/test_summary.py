@@ -6,6 +6,7 @@ from pathlib import Path
 from migration_factory.orchestrator.state import build_initial_state
 from migration_factory.orchestrator.summary import (
     build_orchestration_summary,
+    finalize_orchestration_state,
     write_orchestration_summary,
 )
 
@@ -168,3 +169,72 @@ def test_write_orchestration_summary_uses_orchestration_dir_under_run_dir(
     )
     assert summary_path.is_file()
     assert json.loads(summary_path.read_text(encoding="utf-8"))["run_id"] == "run-001"
+
+
+def test_finalize_writes_summary_with_final_report_refs(tmp_path: Path) -> None:
+    state = _state(tmp_path)
+    run_dir = Path(state["run_dir"])
+    sandbox = run_dir / "workspaces" / "sandbox"
+    approval = run_dir / "approval"
+    transform = run_dir / "transformation"
+    logs = run_dir / "logs"
+    test_dir = run_dir / "test" / "post_transform"
+    for directory in (Path(state["analysis_dir"]), Path(state["assessment_dir"]), sandbox, approval, transform, logs, test_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+    (Path(state["assessment_dir"]) / "assessment_report.json").write_text(
+        json.dumps({"source_stack": {}, "target_stack": {}}) + "\n",
+        encoding="utf-8",
+    )
+    (Path(state["analysis_dir"]) / "analysis_report.json").write_text("{}\n", encoding="utf-8")
+    (approval / "approval_decision.json").write_text(json.dumps({"decision": "approved"}) + "\n", encoding="utf-8")
+    (approval / "approved_plan_lock.json").write_text("{}\n", encoding="utf-8")
+    (transform / "transformation_execution_plan.yaml").write_text("recipes: []\n", encoding="utf-8")
+    (sandbox / ".migration").mkdir(parents=True, exist_ok=True)
+    (sandbox / ".migration" / "ledger.json").write_text("{}\n", encoding="utf-8")
+    (logs / "phase2_transform.log").write_text("ok\n", encoding="utf-8")
+    (test_dir / "test_summary.md").write_text("# test\n", encoding="utf-8")
+    (test_dir / "test_agent.log").write_text("ok\n", encoding="utf-8")
+    (test_dir / "test_report.json").write_text(
+        json.dumps(
+            {
+                "test_status": "TEST_PASSED",
+                "totals": {"tests": 1, "passed": 1, "failures": 0, "errors": 0, "skipped": 0},
+                "test_log_path": str(test_dir / "test_agent.log"),
+                "source_log_path": str(logs / "phase2_transform.log"),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    state.update(
+        {
+            "mode": "full_sandbox_migration",
+            "approval_status": "COMPLETED",
+            "approval_decision": "approved",
+            "orchestration_status": "PASS",
+            "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+            "build_status": "BUILD_PASSED_IN_SANDBOX",
+            "test_status": "TEST_PASSED",
+            "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+            "sandbox_path": str(sandbox),
+            "artifact_refs": {
+                "approval_decision": str(approval / "approval_decision.json"),
+                "approved_plan_lock": str(approval / "approved_plan_lock.json"),
+                "transformation_execution_plan": str(transform / "transformation_execution_plan.yaml"),
+                "migration_ledger": str(sandbox / ".migration" / "ledger.json"),
+                "phase2_log": str(logs / "phase2_transform.log"),
+                "post_transform_test_report": str(test_dir / "test_report.json"),
+                "post_transform_test_summary": str(test_dir / "test_summary.md"),
+                "post_transform_test_log": str(test_dir / "test_agent.log"),
+            },
+        }
+    )
+
+    result = finalize_orchestration_state(state)
+    summary = json.loads((Path(state["orchestration_dir"]) / "orchestration_summary.json").read_text(encoding="utf-8"))
+
+    assert result["artifact_refs"]["final_migration_report"].endswith("final/migration_report.json")
+    assert result["artifact_refs"]["final_migration_summary"].endswith("final/migration_summary.md")
+    assert summary["artifact_refs"]["final_migration_report"].endswith("final/migration_report.json")
+    assert summary["artifact_refs"]["final_migration_summary"].endswith("final/migration_summary.md")

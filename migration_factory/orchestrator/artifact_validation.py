@@ -48,6 +48,8 @@ SUCCESSFUL_FULL_SANDBOX_REQUIRED_ARTIFACT_REFS = (
     "post_transform_test_summary",
     "post_transform_test_log",
     "orchestration_summary",
+    "final_migration_report",
+    "final_migration_summary",
 )
 
 SCHEMA_BACKED_ARTIFACTS = {

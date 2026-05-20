@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from migration_factory.final_report import generate_final_migration_report
 from migration_factory.orchestrator.artifact_validation import (
     validate_successful_full_sandbox_orchestration,
 )
@@ -82,6 +83,28 @@ def finalize_orchestration_state(
         summary_writer(result)  # type: ignore[arg-type]
         return result  # type: ignore[return-value]
 
+    summary_writer(result)  # type: ignore[arg-type]
+    final_report = generate_final_migration_report(result)
+    if final_report.blockers:
+        result["blockers"] = [
+            *list(result.get("blockers", []) or []),
+            *final_report.blockers,
+        ]
+        result["orchestration_status"] = "FAIL"
+        result["final_status"] = "FAILED"
+        result["orchestration_artifacts_valid"] = False
+        summary_writer(result)  # type: ignore[arg-type]
+        return result  # type: ignore[return-value]
+    if final_report.warnings:
+        result["warnings"] = [
+            *list(result.get("warnings", []) or []),
+            *final_report.warnings,
+        ]
+    artifact_refs = {
+        **dict(result.get("artifact_refs", {}) or {}),
+        **final_report.artifact_refs,
+    }
+    result["artifact_refs"] = artifact_refs
     summary_writer(result)  # type: ignore[arg-type]
     validation = validate_successful_full_sandbox_orchestration(result)  # type: ignore[arg-type]
     result["orchestration_artifacts_valid"] = validation.valid

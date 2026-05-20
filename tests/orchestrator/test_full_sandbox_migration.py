@@ -60,9 +60,39 @@ def test_resume_approved_records_approval_and_runs_sandbox_transform(
         ledger_path.parent.mkdir(parents=True, exist_ok=True)
         test_dir.mkdir(parents=True, exist_ok=True)
         log_path.write_text("ok\n", encoding="utf-8")
-        plan_path.write_text("run_id: run-001\n", encoding="utf-8")
+        plan_path.write_text(
+            "run_id: run-001\nrecipes:\n  - org.openrewrite.java.migrate.UpgradeToJava17\n",
+            encoding="utf-8",
+        )
         ledger_path.write_text("{}\n", encoding="utf-8")
-        test_report.write_text("{}\n", encoding="utf-8")
+        test_report.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0.0",
+                    "agent": "test-agent",
+                    "run_id": resumed_state["run_id"],
+                    "phase": "post_transform",
+                    "test_status": "TEST_PASSED",
+                    "totals": {"tests": 1, "passed": 1, "failures": 0, "errors": 0, "skipped": 0},
+                    "command": ["mvn", "test"],
+                    "cwd": str(sandbox_path),
+                    "sandbox_path": str(sandbox_path),
+                    "execution_owner": "build-agent",
+                    "execution_mode": "parse_existing_surefire",
+                    "report_paths": [],
+                    "test_log_path": str(test_log),
+                    "source_log_path": str(log_path),
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "artifact_refs": {
+                        "self": str(test_report),
+                        "summary": str(test_summary),
+                        "log": str(test_log),
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         test_summary.write_text("# test\n", encoding="utf-8")
         test_log.write_text("ok\n", encoding="utf-8")
         return {
@@ -121,6 +151,8 @@ def test_resume_approved_records_approval_and_runs_sandbox_transform(
     assert result["artifact_refs"]["post_transform_test_summary"].endswith("test_summary.md")
     assert result["artifact_refs"]["post_transform_test_log"].endswith("test_agent.log")
     assert result["artifact_refs"]["orchestration_summary"].endswith("orchestration_summary.json")
+    assert result["artifact_refs"]["final_migration_report"].endswith("final/migration_report.json")
+    assert result["artifact_refs"]["final_migration_summary"].endswith("final/migration_summary.md")
 
 
 def test_resume_cli_accepts_required_approval_fields(monkeypatch, tmp_path: Path, capsys) -> None:
