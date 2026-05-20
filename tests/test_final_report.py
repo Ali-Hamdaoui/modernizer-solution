@@ -26,6 +26,8 @@ def test_successful_full_sandbox_writes_final_report_and_summary(tmp_path: Path)
         "No production promotion performed.",
         "No pull request creation performed.",
     ]
+    assert payload["timing"]["timing_report"].endswith("performance/timing_report.json")
+    assert payload["timing"]["timing_summary"].endswith("performance/timing_summary.md")
 
 
 def test_missing_test_report_blocks_final_report_generation(tmp_path: Path) -> None:
@@ -86,6 +88,8 @@ def _successful_state(tmp_path: Path) -> dict:
     test_report_path = test_dir / "test_report.json"
     test_summary_path = test_dir / "test_summary.md"
     test_log_path = test_dir / "test_agent.log"
+    timing_report_path = run_dir / "performance" / "timing_report.json"
+    timing_summary_path = run_dir / "performance" / "timing_summary.md"
     (sandbox_dir / ".migration").mkdir(parents=True, exist_ok=True)
 
     decision_path.write_text(json.dumps({"decision": "approved"}) + "\n", encoding="utf-8")
@@ -107,6 +111,9 @@ def _successful_state(tmp_path: Path) -> dict:
         + "\n",
         encoding="utf-8",
     )
+    timing_report_path.parent.mkdir(parents=True, exist_ok=True)
+    timing_report_path.write_text("{}\n", encoding="utf-8")
+    timing_summary_path.write_text("# timing\n", encoding="utf-8")
 
     state.update(
         {
@@ -130,6 +137,8 @@ def _successful_state(tmp_path: Path) -> dict:
                 "post_transform_test_report": str(test_report_path),
                 "post_transform_test_summary": str(test_summary_path),
                 "post_transform_test_log": str(test_log_path),
+                "timing_report": str(timing_report_path),
+                "timing_summary": str(timing_summary_path),
                 "orchestration_summary": str(Path(state["orchestration_dir"]) / "orchestration_summary.json"),
             },
         }

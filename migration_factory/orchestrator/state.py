@@ -54,6 +54,7 @@ class MigrationState(TypedDict, total=False):
     errors: list[str]
 
     artifact_refs: dict[str, str]
+    timing: dict[str, object]
     analysis_artifacts_valid: bool
     planning_artifacts_valid: bool
     assessment_artifacts_valid: bool
@@ -111,6 +112,7 @@ def build_initial_state(
         "warnings": [],
         "errors": [],
         "artifact_refs": {},
+        "timing": {},
         "analysis_artifacts_valid": False,
         "planning_artifacts_valid": False,
         "assessment_artifacts_valid": False,

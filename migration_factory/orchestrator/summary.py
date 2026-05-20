@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import time
 from typing import Any
 
 from migration_factory.final_report import generate_final_migration_report
@@ -10,6 +11,7 @@ from migration_factory.orchestrator.artifact_validation import (
 )
 from migration_factory.orchestrator.state import FULL_SANDBOX_MIGRATION_MODE
 from migration_factory.orchestrator.state import MigrationState
+from migration_factory.orchestrator.timing import record_phase_duration, write_timing_artifacts
 
 
 EXECUTION_CLAIMS = {
@@ -49,6 +51,7 @@ def build_orchestration_summary(state: MigrationState) -> dict:
         "warnings": list(state.get("warnings", []) or []),
         "errors": list(state.get("errors", []) or []),
         "artifact_refs": dict(state.get("artifact_refs", {}) or {}),
+        "timing": dict(state.get("timing", {}) or {}),
         **execution_claims,
     }
 
@@ -78,13 +81,20 @@ def finalize_orchestration_state(
     artifact_refs["orchestration_summary"] = str(summary_path)
     result["artifact_refs"] = artifact_refs
 
+    timing_refs = write_timing_artifacts(result)
+    result["artifact_refs"] = {**result["artifact_refs"], **timing_refs}
+
     if not _is_successful_full_sandbox_migration(result):  # type: ignore[arg-type]
         result["orchestration_artifacts_valid"] = False
         summary_writer(result)  # type: ignore[arg-type]
         return result  # type: ignore[return-value]
 
     summary_writer(result)  # type: ignore[arg-type]
+    final_report_started = time.monotonic()
     final_report = generate_final_migration_report(result)
+    record_phase_duration(result, phase="final_report", duration_seconds=time.monotonic() - final_report_started)
+    timing_refs = write_timing_artifacts(result)
+    result["artifact_refs"] = {**dict(result.get("artifact_refs", {}) or {}), **timing_refs}
     if final_report.blockers:
         result["blockers"] = [
             *list(result.get("blockers", []) or []),

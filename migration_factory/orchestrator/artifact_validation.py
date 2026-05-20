@@ -50,6 +50,8 @@ SUCCESSFUL_FULL_SANDBOX_REQUIRED_ARTIFACT_REFS = (
     "orchestration_summary",
     "final_migration_report",
     "final_migration_summary",
+    "timing_report",
+    "timing_summary",
 )
 
 SCHEMA_BACKED_ARTIFACTS = {

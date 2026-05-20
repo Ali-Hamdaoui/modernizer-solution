@@ -300,7 +300,10 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> TerminationResult
             _terminate_windows_tree(process, force=True)
         else:
             _terminate_unix_tree(process, force=True)
-        process.wait(timeout=TERMINATION_GRACE_SECONDS)
+        try:
+            process.wait(timeout=TERMINATION_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            warnings.append("Process tree did not terminate cleanly within force-termination grace period.")
     finally:
         _close_process_streams(process)
     return TerminationResult(warnings)

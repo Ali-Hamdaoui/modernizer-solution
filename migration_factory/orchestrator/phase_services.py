@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+import time
 from typing import Any
 
 from migration_factory.orchestrator.state import MigrationState
+from migration_factory.orchestrator.timing import record_phase_duration
 
 
 PhaseCallable = Callable[[MigrationState], MigrationState]
@@ -71,6 +74,7 @@ def record_approval_decision_phase(state: MigrationState) -> MigrationState:
             message=message,
         )
 
+    started = time.monotonic()
     try:
         result = record_approval_decision_for_run(
             run_dir=run_dir,
@@ -87,6 +91,7 @@ def record_approval_decision_phase(state: MigrationState) -> MigrationState:
             status_key="orchestration_status",
             message=f"approval recording failed: {exc}",
         )
+    record_phase_duration(state, phase="approval_resume", duration_seconds=time.monotonic() - started)
 
     artifact_refs = dict(state.get("artifact_refs", {}) or {})
     artifact_refs["approval_decision"] = str(result.approval_decision)
@@ -116,6 +121,7 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         apply_approved_sandbox_transform,
     )
 
+    started = time.monotonic()
     try:
         result = apply_approved_sandbox_transform(
             run_dir=Path(state.get("run_dir", "")),
@@ -135,6 +141,7 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
             status_key="orchestration_status",
             message=f"sandbox transform failed: {exc}",
         )
+    record_phase_duration(state, phase="sandbox_transform", duration_seconds=time.monotonic() - started)
 
     artifact_refs = dict(state.get("artifact_refs", {}) or {})
     if result.generated_plan is not None:
@@ -174,6 +181,7 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
                 "artifact_refs": artifact_refs,
                 "final_status": result.status,
                 "stop_reason": message,
+                "timing": _merged_timing_state(Path(state.get("run_dir", "")), state),
             }
         )
         return failed
@@ -194,6 +202,29 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         "artifact_refs": artifact_refs,
         "final_status": STATUS_APPLIED,
         "stop_reason": result.message,
+        "timing": _merged_timing_state(Path(state.get("run_dir", "")), state),
+    }
+
+
+def _merged_timing_state(run_dir: Path, state: MigrationState) -> dict[str, Any]:
+    timing = dict(state.get("timing", {}) or {})
+    path = run_dir / "performance" / "timing_state.json"
+    if not path.is_file():
+        return timing
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return timing
+    incoming = payload.get("timing") if isinstance(payload, dict) else None
+    if not isinstance(incoming, dict):
+        return timing
+    merged_phase = dict(timing.get("phase_durations_seconds", {}) or {})
+    merged_phase.update(dict(incoming.get("phase_durations_seconds", {}) or {}))
+    merged_commands = list(timing.get("commands", []) or []) + list(incoming.get("commands", []) or [])
+    return {
+        **timing,
+        "phase_durations_seconds": merged_phase,
+        "commands": merged_commands,
     }
 
 
@@ -205,6 +236,7 @@ def _run_phase(
     service: PhaseCallable,
 ) -> MigrationState:
     running_state = _with_phase_status(state, phase=phase, status_key=status_key, status="RUNNING")
+    started = time.monotonic()
     try:
         service_result = service(running_state)
     except Exception as exc:
@@ -217,6 +249,7 @@ def _run_phase(
         )
 
     result = _merge_state(running_state, service_result)
+    record_phase_duration(result, phase=phase, duration_seconds=time.monotonic() - started)
     if result.get(status_key) == "FAIL":
         message = f"{phase} phase failed"
         return _ensure_failure_details(

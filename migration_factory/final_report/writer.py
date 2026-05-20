@@ -92,6 +92,10 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
             "final_migration_report": str(json_path),
             "final_migration_summary": str(md_path),
         },
+        "timing": {
+            "timing_report": artifact_refs.get("timing_report", ""),
+            "timing_summary": artifact_refs.get("timing_summary", ""),
+        },
         "warnings": list(state.get("warnings", []) or []),
         "limitations": [
             "No production promotion performed.",

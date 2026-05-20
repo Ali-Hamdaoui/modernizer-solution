@@ -21,6 +21,7 @@ from migration_factory.orchestrator.summary import (
     finalize_orchestration_state,
     write_orchestration_summary,
 )
+from migration_factory.orchestrator.timing import start_total_run_timing
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -56,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
         thread_id=args.run_id,
         mode=args.mode,
     )
+    start_total_run_timing(state)
     config = build_langgraph_config(args.run_id)
 
     try:

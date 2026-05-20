@@ -6,6 +6,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import time
 
 
 @dataclass(frozen=True)
@@ -14,6 +15,7 @@ class CommandResult:
     exit_code: int
     stdout: list[str] = field(default_factory=list)
     stderr: list[str] = field(default_factory=list)
+    duration_seconds: float = 0.0
 
     @property
     def succeeded(self) -> bool:
@@ -21,6 +23,7 @@ class CommandResult:
 
 
 def run_command(command: str, cwd: Path, stream_output: bool = True) -> CommandResult:
+    started = time.monotonic()
     args = _split_command(command)
     args = _resolve_executable(args)
 
@@ -43,6 +46,7 @@ def run_command(command: str, cwd: Path, stream_output: bool = True) -> CommandR
                 "Hint: set MAVEN_CMD to the full path of mvn.cmd, for example:",
                 r"set MAVEN_CMD=C:\Tools\apache-maven-3.9.15\bin\mvn.cmd",
             ],
+            duration_seconds=time.monotonic() - started,
         )
 
     stdout_text, stderr_text = process.communicate()
@@ -55,7 +59,13 @@ def run_command(command: str, cwd: Path, stream_output: bool = True) -> CommandR
         for line in stderr:
             print(line)
 
-    return CommandResult(command=command, exit_code=process.returncode, stdout=stdout, stderr=stderr)
+    return CommandResult(
+        command=command,
+        exit_code=process.returncode,
+        stdout=stdout,
+        stderr=stderr,
+        duration_seconds=time.monotonic() - started,
+    )
 
 
 def _split_command(command: str) -> list[str]:

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import time
 from typing import Any
 import xml.etree.ElementTree as ET
 
@@ -21,6 +22,7 @@ class TestAgentResult:
     summary_path: Path
     log_path: Path
     report_paths: list[str]
+    parse_duration_seconds: float
 
 
 def run_test_agent(
@@ -45,6 +47,7 @@ def run_test_agent(
     report_paths: list[str] = []
     totals = {"tests": 0, "passed": 0, "failures": 0, "errors": 0, "skipped": 0}
     test_status = TEST_STATUS_ERROR
+    started = time.monotonic()
 
     if not resolved_sandbox.is_dir():
         log_lines.append(f"Invalid sandbox path: {resolved_sandbox}")
@@ -107,6 +110,7 @@ def run_test_agent(
             "summary": str(summary_path),
             "log": str(log_path),
         },
+        "parse_duration_seconds": round(time.monotonic() - started, 6),
     }
 
     report_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -120,6 +124,7 @@ def run_test_agent(
         summary_path=summary_path,
         log_path=log_path,
         report_paths=report_paths,
+        parse_duration_seconds=float(payload["parse_duration_seconds"]),
     )
 
 

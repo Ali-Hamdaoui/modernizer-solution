@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 import sys
 from pathlib import Path
+import time
 from typing import Any, Callable, TextIO, TypeVar
 
 import yaml
@@ -37,6 +38,7 @@ from migration_factory.approval import (
     read_approval_decision,
 )
 from migration_factory.contracts.migration import LedgerError, LedgerStatus, load_ledger, save_ledger
+from migration_factory.orchestrator.timing import record_command_duration, record_phase_duration, write_timing_artifacts
 
 
 STATUS_APPROVED = "APPROVED_FOR_TRANSFORM"
@@ -138,10 +140,16 @@ def apply_approved_sandbox_transform(
 
         generated_plan = write_transformation_execution_plan(modernized_app, run_id)
         plugin_xml = _write_openrewrite_plugin_xml(run_dir, ai_hub, profile)
+        sandbox_copy_started = time.monotonic()
         sandbox = prepare_sandbox_workspace(
             legacy_app_path=legacy_app,
             modernized_app_path=modernized_app,
             run_dir=run_dir,
+        )
+        _record_transform_phase_timing(
+            run_dir,
+            phase="sandbox_copy",
+            duration_seconds=time.monotonic() - sandbox_copy_started,
         )
         _force_plan_target(generated_plan, sandbox.path)
         emit(STATUS_SANDBOX)
@@ -174,6 +182,7 @@ def apply_approved_sandbox_transform(
     ) as exc:
         emit(STATUS_FAILED)
         _print_failure_details(exc, resolved_log_file, error_writer=error_writer)
+        _write_partial_timing_artifacts(run_dir)
         return TransformSandboxResult(1, STATUS_FAILED, str(exc), None, resolved_log_file)
 
 
@@ -256,6 +265,7 @@ def _run_transformer_with_build_validation(
                 status_writer(STATUS_AWAITING_BUILD_AGENT)
             ledger = load_ledger(result.ledger_file)
             unit_id = _awaiting_build_unit_id(ledger)
+            _record_transform_unit_timings(run_dir, ledger, unit_id)
             if unit_id in awaited_units:
                 raise TransformV1AfterApprovalError(
                     f"Transformer resumed to the same build-pending unit twice: {unit_id}"
@@ -281,6 +291,14 @@ def _run_transformer_with_build_validation(
                 log_file=log_file,
                 verbose=verbose,
             )
+            if build_result.command:
+                _record_transform_command_timing(
+                    run_dir,
+                    label=f"build_validation:{unit_id}",
+                    duration_seconds=build_result.command_duration_seconds or 0.0,
+                    command=build_result.command,
+                    cwd=str(build_result.cwd) if build_result.cwd is not None else None,
+                )
             if not build_result.succeeded:
                 build_status = STATUS_BUILD_FAILED
                 status_writer(STATUS_BUILD_FAILED)
@@ -290,6 +308,7 @@ def _run_transformer_with_build_validation(
                     log_file,
                     error_writer=error_writer,
                 )
+                _write_partial_timing_artifacts(run_dir)
                 return TransformSandboxResult(
                     exit_code=1,
                     status=STATUS_BUILD_FAILED,
@@ -340,6 +359,7 @@ def _run_transformer_with_build_validation(
                     log_file,
                     error_writer=error_writer,
                 )
+            _write_partial_timing_artifacts(run_dir)
             return TransformSandboxResult(
                 exit_code=1,
                 status=STATUS_FAILED,
@@ -479,9 +499,16 @@ def _finalize_with_test_validation(
         report_path=test_result.report_path,
         summary_path=test_result.summary_path,
         log_path=test_result.log_path,
+        parse_duration_seconds=test_result.parse_duration_seconds,
+    )
+    _record_transform_phase_timing(
+        run_dir,
+        phase="test_parse",
+        duration_seconds=test_result.parse_duration_seconds,
     )
 
     if test_result.test_status == STATUS_TEST_PASSED:
+        _write_partial_timing_artifacts(run_dir)
         status_writer(STATUS_APPLIED)
         status_writer("Sandbox migration candidate ready.")
         return TransformSandboxResult(
@@ -503,6 +530,7 @@ def _finalize_with_test_validation(
         )
 
     status_writer(test_result.test_status)
+    _write_partial_timing_artifacts(run_dir)
     return TransformSandboxResult(
         exit_code=1,
         status=test_result.test_status,
@@ -541,6 +569,7 @@ def _record_ledger_test_validation(
     report_path: Path,
     summary_path: Path,
     log_path: Path,
+    parse_duration_seconds: float,
 ) -> None:
     try:
         ledger = load_ledger(ledger_file)
@@ -555,8 +584,103 @@ def _record_ledger_test_validation(
         "report_path": str(report_path),
         "summary_path": str(summary_path),
         "log_path": str(log_path),
+        "parse_duration_seconds": round(float(parse_duration_seconds), 6),
     }
     save_ledger(ledger_file, ledger)
+
+
+def _record_transform_phase_timing(run_dir: Path, *, phase: str, duration_seconds: float) -> None:
+    state = {"run_dir": str(run_dir), "run_id": "", "timing": {"phase_durations_seconds": {}}}
+    record_phase_duration(state, phase=phase, duration_seconds=duration_seconds)
+    _merge_timing_into_artifact_state(run_dir, state)
+
+
+def _record_transform_command_timing(
+    run_dir: Path,
+    *,
+    label: str,
+    duration_seconds: float,
+    command: list[str],
+    cwd: str | None,
+) -> None:
+    state = {"run_dir": str(run_dir), "run_id": "", "timing": {"commands": []}}
+    record_command_duration(state, label=label, duration_seconds=duration_seconds, command=command, cwd=cwd)
+    _merge_timing_into_artifact_state(run_dir, state)
+
+
+def _record_transform_unit_timings(run_dir: Path, ledger: dict[str, Any], unit_id: str) -> None:
+    units = ledger.get("units")
+    if not isinstance(units, dict):
+        return
+    unit = units.get(unit_id)
+    if not isinstance(unit, dict):
+        return
+
+    unit_duration = unit.get("unit_duration_seconds")
+    if isinstance(unit_duration, (int, float)):
+        _record_transform_phase_timing(
+            run_dir,
+            phase=f"transform_unit:{unit_id}",
+            duration_seconds=float(unit_duration),
+        )
+
+    for row in list(unit.get("commands", []) or []):
+        if not isinstance(row, dict):
+            continue
+        duration = row.get("duration_seconds")
+        command = str(row.get("command") or "")
+        if not isinstance(duration, (int, float)):
+            continue
+        _record_transform_command_timing(
+            run_dir,
+            label=f"openrewrite:{unit_id}",
+            duration_seconds=float(duration),
+            command=[command] if command else [],
+            cwd=None,
+        )
+
+
+def _write_partial_timing_artifacts(run_dir: Path) -> None:
+    state = _load_existing_timing_state(run_dir)
+    if not state:
+        return
+    write_timing_artifacts(state)
+
+
+def _merge_timing_into_artifact_state(run_dir: Path, partial_state: dict[str, Any]) -> None:
+    state = _load_existing_timing_state(run_dir)
+    if state is None:
+        state = {"run_dir": str(run_dir), "run_id": "", "timing": {}}
+    timing = dict(state.get("timing", {}) or {})
+    incoming = dict(partial_state.get("timing", {}) or {})
+
+    phase_durations = dict(timing.get("phase_durations_seconds", {}) or {})
+    phase_durations.update(dict(incoming.get("phase_durations_seconds", {}) or {}))
+    timing["phase_durations_seconds"] = phase_durations
+
+    existing_commands = list(timing.get("commands", []) or [])
+    existing_commands.extend(list(incoming.get("commands", []) or []))
+    timing["commands"] = existing_commands
+
+    state["timing"] = timing
+    _write_timing_state(run_dir, state)
+
+
+def _load_existing_timing_state(run_dir: Path) -> dict[str, Any] | None:
+    path = run_dir / "performance" / "timing_state.json"
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_timing_state(run_dir: Path, state: dict[str, Any]) -> None:
+    path = run_dir / "performance" / "timing_state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _awaiting_build_unit_id(ledger: dict[str, Any]) -> str:

@@ -663,6 +663,7 @@ class TransformationAgentTests(unittest.TestCase):
             self.assertIn(f"Build error contract: {error_contract}", stderr.getvalue())
             self.assertIn("log_file:", stderr.getvalue())
             self.assertIn("[ERROR] COMPILATION ERROR full Maven output", stderr.getvalue())
+            self.assertTrue((run_dir / "performance" / "timing_report.json").is_file())
 
     def test_transform_v1_after_approval_blocks_candidate_when_test_reports_missing(self) -> None:
         with workspace_temp_dir() as tmp:
@@ -998,6 +999,7 @@ def _passed_test_result(run_dir: Path) -> _TestAgentResult:
         summary_path=summary,
         log_path=log,
         report_paths=[str(report)],
+        parse_duration_seconds=0.01,
     )
 
 

@@ -14,6 +14,7 @@ from migration_factory.orchestrator.phase_services import record_approval_decisi
 from migration_factory.orchestrator.preflight import build_langgraph_config
 from migration_factory.orchestrator.state import APPROVAL_DECISION_VALUES
 from migration_factory.orchestrator.summary import finalize_orchestration_state
+from migration_factory.orchestrator.timing import start_total_run_timing
 
 
 class ResumeCliError(ValueError):
@@ -80,6 +81,8 @@ def resume_orchestration(
         ),
         config=config,
     )
+    if isinstance(result, dict):
+        start_total_run_timing(result)
     if _resume_completed(result, resolved_run_dir):
         return finalize_orchestration_state(result)
     return finalize_orchestration_state(
@@ -111,6 +114,7 @@ def _resume_from_interrupt_snapshot(
     if not snapshot_path.is_file():
         raise ResumeCliError(f"approval interrupt checkpoint not found: {snapshot_path}")
     state = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    start_total_run_timing(state)
     if state.get("run_id") != run_id:
         raise ResumeCliError("approval interrupt checkpoint run_id mismatch")
 

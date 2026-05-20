@@ -150,6 +150,7 @@ def mark_build_passed(
     warnings: list[str] | None = None,
     command: list[str] | None = None,
     cwd: str | Path | None = None,
+    command_duration_seconds: float | None = None,
 ) -> dict[str, Any]:
     ledger = load_ledger(ledger_file)
     unit_id = ledger.get("current_unit")
@@ -175,6 +176,7 @@ def mark_build_passed(
         "warnings": warnings or [],
         "command": command or [],
         "cwd": str(cwd) if cwd is not None else None,
+        "command_duration_seconds": command_duration_seconds,
     }
     save_ledger(ledger_file, ledger)
     return ledger
@@ -191,6 +193,7 @@ def mark_build_failed(
     warnings: list[str] | None = None,
     command: list[str] | None = None,
     cwd: str | Path | None = None,
+    command_duration_seconds: float | None = None,
 ) -> dict[str, Any]:
     ledger = load_ledger(ledger_file)
     unit_id = ledger.get("current_unit")
@@ -215,6 +218,7 @@ def mark_build_failed(
         "warnings": warnings or [],
         "command": command or [],
         "cwd": str(cwd) if cwd is not None else None,
+        "command_duration_seconds": command_duration_seconds,
     }
     save_ledger(ledger_file, ledger)
     return ledger

@@ -42,6 +42,7 @@ class BuildRunResult:
     warnings: list[str] = field(default_factory=list)
     command: list[str] = field(default_factory=list)
     cwd: Path | None = None
+    command_duration_seconds: float | None = None
 
 
 def write_build_error(contract: BuildErrorContract, output_dir: Path) -> Path:

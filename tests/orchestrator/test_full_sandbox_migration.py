@@ -153,6 +153,13 @@ def test_resume_approved_records_approval_and_runs_sandbox_transform(
     assert result["artifact_refs"]["orchestration_summary"].endswith("orchestration_summary.json")
     assert result["artifact_refs"]["final_migration_report"].endswith("final/migration_report.json")
     assert result["artifact_refs"]["final_migration_summary"].endswith("final/migration_summary.md")
+    assert result["artifact_refs"]["timing_report"].endswith("performance/timing_report.json")
+    assert result["artifact_refs"]["timing_summary"].endswith("performance/timing_summary.md")
+    assert Path(result["artifact_refs"]["timing_report"]).is_file()
+    assert Path(result["artifact_refs"]["timing_summary"]).is_file()
+    timing_summary = Path(result["artifact_refs"]["timing_summary"]).read_text(encoding="utf-8")
+    assert "total_duration_seconds" in timing_summary
+    assert "Slowest Phases" in timing_summary
 
 
 def test_resume_cli_accepts_required_approval_fields(monkeypatch, tmp_path: Path, capsys) -> None:

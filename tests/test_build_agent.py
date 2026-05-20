@@ -432,6 +432,8 @@ public class Application {
             self.assertEqual(ledger["completed_units"], ["unit-001"])
             self.assertEqual(ledger["build_validation"]["command"], ["mvn", "spring-boot:run"])
             self.assertEqual(ledger["build_validation"]["cwd"], str(tmp))
+            self.assertIn("command_duration_seconds", ledger["build_validation"])
+            self.assertGreaterEqual(ledger["build_validation"]["command_duration_seconds"], 0)
 
 
 def _write_multi_module_project(project: Path) -> None:

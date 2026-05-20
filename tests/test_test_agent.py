@@ -29,6 +29,7 @@ def test_test_agent_parses_surefire_pass(tmp_path: Path) -> None:
     payload = json.loads(result.report_path.read_text(encoding="utf-8"))
     assert payload["execution_mode"] == "parse_existing_surefire"
     assert payload["execution_owner"] == "build-agent"
+    assert payload["parse_duration_seconds"] >= 0
 
 
 def test_test_agent_parses_surefire_failed(tmp_path: Path) -> None:

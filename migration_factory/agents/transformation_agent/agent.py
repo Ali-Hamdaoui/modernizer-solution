@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import time
 from typing import Any
 
 from migration_factory.contracts.migration import (
@@ -93,6 +94,7 @@ def _run_unit(
     dry_run: bool,
     stream_output: bool,
 ) -> None:
+    unit_started = time.monotonic()
     print(f"\nStarting {unit.id}: {unit.title or ''}".rstrip())
     mark_unit_in_progress(plan.ledger_file, unit_id=unit.id, unit_index=unit_index, title=unit.title)
 
@@ -130,6 +132,7 @@ def _run_unit(
     )
     ledger["units"][unit.id]["transformations"] = recorded_transformations
     ledger["units"][unit.id]["commands"] = command_results
+    ledger["units"][unit.id]["unit_duration_seconds"] = round(time.monotonic() - unit_started, 6)
     save_ledger(plan.ledger_file, ledger)
 
 
@@ -219,6 +222,7 @@ def _command_result_to_dict(result: CommandResult) -> dict[str, Any]:
     return {
         "command": result.command,
         "exit_code": result.exit_code,
+        "duration_seconds": round(float(result.duration_seconds), 6),
         "stdout_tail": result.stdout[-40:],
         "stderr_tail": result.stderr[-40:],
     }
