@@ -69,6 +69,13 @@ def resume_orchestration(
         raise ResumeCliError("--approved-by is required")
 
     resolved_run_dir = Path(run_dir).expanduser().resolve()
+    explicit_recorded = _record_explicit_approval_decision(
+        run_id=run_id,
+        run_dir=resolved_run_dir,
+        decision=decision,
+        approved_by=approved_by,
+        comments=comments,
+    )
     config = build_langgraph_config(run_id)
     graph = graph_module.build_graph(checkpointer=default_checkpointer(resolved_run_dir))
     result = graph.invoke(
@@ -81,17 +88,39 @@ def resume_orchestration(
         ),
         config=config,
     )
-    if isinstance(result, dict):
-        start_total_run_timing(result)
+    result = _normalize_resume_result(
+        _with_explicit_run_paths(dict(result), resolved_run_dir),
+        decision=decision,
+        explicit_recorded=explicit_recorded,
+    )
+    start_total_run_timing(result)
+    if decision != "approved" and not (resolved_run_dir / "approval" / "approval_decision.json").is_file():
+        return finalize_orchestration_state(
+            _normalize_resume_result(
+                _resume_from_interrupt_snapshot(
+                    run_id=run_id,
+                    run_dir=resolved_run_dir,
+                    decision=decision,
+                    approved_by=approved_by,
+                    comments=comments,
+                ),
+                decision=decision,
+                explicit_recorded=explicit_recorded,
+            )
+        )
     if _resume_completed(result, resolved_run_dir):
         return finalize_orchestration_state(result)
     return finalize_orchestration_state(
-        _resume_from_interrupt_snapshot(
-            run_id=run_id,
-            run_dir=resolved_run_dir,
+        _normalize_resume_result(
+            _resume_from_interrupt_snapshot(
+                run_id=run_id,
+                run_dir=resolved_run_dir,
+                decision=decision,
+                approved_by=approved_by,
+                comments=comments,
+            ),
             decision=decision,
-            approved_by=approved_by,
-            comments=comments,
+            explicit_recorded=explicit_recorded,
         )
     )
 
@@ -99,7 +128,11 @@ def resume_orchestration(
 def _resume_completed(result: dict[str, Any], run_dir: Path) -> bool:
     if result.get("approval_decision") not in APPROVAL_DECISION_VALUES:
         return False
-    return (run_dir / "approval" / "approval_decision.json").is_file()
+    if not (run_dir / "approval" / "approval_decision.json").is_file():
+        return False
+    if result.get("approval_decision") == "approved":
+        return bool(result.get("transform_status"))
+    return True
 
 
 def _resume_from_interrupt_snapshot(
@@ -117,6 +150,8 @@ def _resume_from_interrupt_snapshot(
     start_total_run_timing(state)
     if state.get("run_id") != run_id:
         raise ResumeCliError("approval interrupt checkpoint run_id mismatch")
+    state["run_dir"] = str(run_dir)
+    state = _with_explicit_run_paths(state, run_dir)
 
     state.update(
         {
@@ -139,6 +174,57 @@ def _resume_from_interrupt_snapshot(
     transformed = dict(recorded)
     transformed.update(graph_module.run_sandbox_transform_phase(transformed))
     return transformed
+
+
+def _record_explicit_approval_decision(
+    *,
+    run_id: str,
+    run_dir: Path,
+    decision: str,
+    approved_by: str,
+    comments: str,
+) -> dict[str, Any]:
+    state = _with_explicit_run_paths(
+        {
+            "run_id": run_id,
+            "run_dir": str(run_dir),
+            "approval_decision": decision,
+            "approved_by": approved_by,
+            "approval_comments": comments,
+            "artifact_refs": {},
+        },
+        run_dir,
+    )
+    recorded = record_approval_decision_phase(state)
+    if recorded.get("errors"):
+        raise ResumeCliError("; ".join(str(error) for error in recorded.get("errors", [])))
+    return recorded
+
+
+def _with_explicit_run_paths(state: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+    updated = dict(state)
+    updated["run_dir"] = str(run_dir)
+    updated["analysis_dir"] = str(run_dir / "analysis")
+    updated["planning_dir"] = str(run_dir / "planning")
+    updated["assessment_dir"] = str(run_dir / "assessment")
+    updated["orchestration_dir"] = str(run_dir / "orchestration")
+    return updated
+
+
+def _normalize_resume_result(
+    state: dict[str, Any],
+    *,
+    decision: str,
+    explicit_recorded: dict[str, Any],
+) -> dict[str, Any]:
+    result = dict(state)
+    artifact_refs = dict(result.get("artifact_refs", {}) or {})
+    artifact_refs.update(explicit_recorded.get("artifact_refs", {}) or {})
+    result["artifact_refs"] = artifact_refs
+    if decision != "approved":
+        result["stop_reason"] = f"Approval decision '{decision}' recorded; stopping."
+        result["final_status"] = decision.upper()
+    return result
 
 
 def _to_json_safe(value: Any) -> Any:

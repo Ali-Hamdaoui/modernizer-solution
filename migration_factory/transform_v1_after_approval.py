@@ -26,7 +26,11 @@ from migration_factory.agents.transformation_agent.execution_plan import (
     write_transformation_execution_plan,
 )
 from migration_factory.agents.transformation_agent.plan import MigrationPlan, MigrationPlanError, load_migration_plan
-from migration_factory.agents.transformation_agent.rewrite import RewritePluginError
+from migration_factory.agents.transformation_agent.rewrite import (
+    DEFAULT_OPENREWRITE_MAVEN_PLUGIN_VERSION,
+    OPENREWRITE_MAVEN_PLUGIN,
+    RewritePluginError,
+)
 from migration_factory.agents.transformation_agent.workspace import (
     TransformationWorkspaceError,
     prepare_sandbox_workspace,
@@ -140,6 +144,8 @@ def apply_approved_sandbox_transform(
 
         generated_plan = write_transformation_execution_plan(modernized_app, run_id)
         plugin_xml = _write_openrewrite_plugin_xml(run_dir, ai_hub, profile)
+        _apply_openrewrite_apply_settings(generated_plan, ai_hub, profile)
+        jdk_env = _profile_jdk_env(ai_hub, profile)
         sandbox_copy_started = time.monotonic()
         sandbox = prepare_sandbox_workspace(
             legacy_app_path=legacy_app,
@@ -167,6 +173,7 @@ def apply_approved_sandbox_transform(
             verbose=verbose,
             status_writer=emit,
             error_writer=error_writer,
+            jdk_env=jdk_env,
         )
     except ApprovalArtifactError as exc:
         emit(STATUS_APPROVAL_FAILED)
@@ -233,6 +240,7 @@ def _run_transformer_with_build_validation(
     verbose: bool,
     status_writer: Callable[[str], None],
     error_writer: Callable[[str], None] | None,
+    jdk_env: dict[str, str] | None = None,
 ) -> TransformSandboxResult:
     next_unit: str | None = None
     awaited_units: set[str] = set()
@@ -284,6 +292,8 @@ def _run_transformer_with_build_validation(
                 "source_changing_unit": unit_id in source_unit_ids,
                 "validation_command": _validation_command_for_unit(plan, unit_id),
             }
+            if jdk_env:
+                build_kwargs.update(jdk_env)
             if build_timeout_seconds is not None:
                 build_kwargs["timeout_seconds"] = build_timeout_seconds
             build_result = _run_with_logged_output(
@@ -729,7 +739,20 @@ def _validation_command_for_unit(plan: MigrationPlan, unit_id: str) -> Any | Non
     build_validation = plan.raw.get("build_validation")
     if isinstance(build_validation, dict) and build_validation.get("command"):
         return build_validation["command"]
-    return None
+
+
+def _profile_jdk_env(ai_hub: str, profile: str) -> dict[str, str]:
+    profile_path = Path(ai_hub).expanduser().resolve() / "profiles" / f"{profile}.yaml"
+    if not profile_path.is_file():
+        return {}
+    payload = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        key: str(payload[key])
+        for key in ("source_jdk_home_env", "target_jdk_home_env")
+        if payload.get(key)
+    }
 
 
 def _ensure_approved_for_transform(run_dir: Path, *, approved_by: str) -> str:
@@ -779,9 +802,82 @@ def _force_plan_target(plan_path: Path, sandbox_path: Path) -> None:
     plan_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
 
+def _apply_openrewrite_apply_settings(plan_path: Path, ai_hub: str, profile: str) -> None:
+    settings = _load_openrewrite_apply_settings(ai_hub, profile)
+    if not settings:
+        return
+
+    payload = yaml.safe_load(plan_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(payload, dict):
+        raise TransformV1AfterApprovalError(f"Transformer plan must be a YAML mapping: {plan_path}")
+    units = payload.get("migration_units")
+    if not isinstance(units, list):
+        return
+
+    for unit in units:
+        if not isinstance(unit, dict):
+            continue
+        transformations = unit.get("transformations", []) or []
+        if not isinstance(transformations, list):
+            continue
+        updated_transformations: list[Any] = []
+        for transformation in transformations:
+            updated_transformations.append(transformation)
+            if not isinstance(transformation, dict) or transformation.get("type") != "openrewrite":
+                continue
+            if settings.get("apply_goal"):
+                transformation["apply_goal"] = settings["apply_goal"]
+            if settings.get("apply_maven_args"):
+                transformation["apply_maven_args"] = settings["apply_maven_args"]
+            post_apply_patches = settings.get("post_openrewrite_patches") or settings.get("post_apply_patches")
+            if isinstance(post_apply_patches, list):
+                for patch in post_apply_patches:
+                    if isinstance(patch, dict):
+                        updated_transformations.append(dict(patch))
+        unit["transformations"] = updated_transformations
+
+    plan_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+
+def _load_openrewrite_apply_settings(ai_hub: str, profile: str) -> dict[str, Any]:
+    hub_path = Path(ai_hub).expanduser().resolve()
+    profile_path = hub_path / "profiles" / f"{profile}.yaml"
+    if not profile_path.is_file():
+        raise TransformV1AfterApprovalError(f"AI Hub profile not found: {profile_path}")
+
+    profile_payload = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(profile_payload, dict):
+        return {}
+    profile_openrewrite = profile_payload.get("openrewrite") if isinstance(profile_payload.get("openrewrite"), dict) else {}
+    catalog = _load_ai_hub_openrewrite_catalog_payload(hub_path, profile_payload)
+
+    settings: dict[str, Any] = {}
+    apply_goal = profile_openrewrite.get("apply_goal") or catalog.get("apply_goal")
+    if apply_goal:
+        settings["apply_goal"] = str(apply_goal)
+    apply_maven_args = profile_openrewrite.get("apply_maven_args")
+    if apply_maven_args is None:
+        apply_maven_args = catalog.get("apply_maven_args")
+    args = [str(item) for item in _as_list(apply_maven_args)]
+    if args:
+        settings["apply_maven_args"] = args
+    post_apply_patches = profile_openrewrite.get("post_openrewrite_patches")
+    if post_apply_patches is None:
+        post_apply_patches = profile_openrewrite.get("post_apply_patches")
+    if post_apply_patches is None:
+        post_apply_patches = catalog.get("post_openrewrite_patches")
+    if post_apply_patches is None:
+        post_apply_patches = catalog.get("post_apply_patches")
+    patches = [item for item in _as_list(post_apply_patches) if isinstance(item, dict)]
+    if patches:
+        settings["post_openrewrite_patches"] = patches
+    return settings
+
+
 def _write_openrewrite_plugin_xml(run_dir: Path, ai_hub: str, profile: str) -> Path:
     source = _load_rewrite_plugin_source(run_dir, ai_hub, profile)
     plugin = _coordinate(source["plugin"], "plugin")
+    plugin = _concrete_openrewrite_plugin(plugin)
     recipe_artifacts = [_coordinate(item, "recipe_artifacts") for item in _as_list(source.get("recipe_artifacts"))]
 
     plugin_xml = _plugin_xml(plugin, recipe_artifacts)
@@ -816,6 +912,18 @@ def _load_ai_hub_openrewrite_catalog(ai_hub: str, profile: str) -> dict[str, Any
         raise TransformV1AfterApprovalError(f"AI Hub profile not found: {profile_path}")
 
     profile_payload = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+    catalog = _load_ai_hub_openrewrite_catalog_payload(hub_path, profile_payload)
+    try:
+        plugin = _coord_from_mapping(catalog["plugin"])
+    except (KeyError, TypeError) as exc:
+        raise TransformV1AfterApprovalError(f"Invalid OpenRewrite catalog plugin: {exc}") from exc
+    return {
+        "plugin": plugin,
+        "recipe_artifacts": [_coord_from_mapping(item) for item in catalog.get("recipe_artifacts", [])],
+    }
+
+
+def _load_ai_hub_openrewrite_catalog_payload(hub_path: Path, profile_payload: dict[str, Any]) -> dict[str, Any]:
     try:
         catalog_rel = profile_payload["openrewrite"]["catalog_path"]
     except (KeyError, TypeError) as exc:
@@ -828,14 +936,9 @@ def _load_ai_hub_openrewrite_catalog(ai_hub: str, profile: str) -> dict[str, Any
         raise TransformV1AfterApprovalError(f"OpenRewrite catalog not found: {catalog_path}")
 
     catalog = yaml.safe_load(catalog_path.read_text(encoding="utf-8")) or {}
-    try:
-        plugin = _coord_from_mapping(catalog["plugin"])
-    except (KeyError, TypeError) as exc:
-        raise TransformV1AfterApprovalError(f"Invalid OpenRewrite catalog plugin: {exc}") from exc
-    return {
-        "plugin": plugin,
-        "recipe_artifacts": [_coord_from_mapping(item) for item in catalog.get("recipe_artifacts", [])],
-    }
+    if not isinstance(catalog, dict):
+        raise TransformV1AfterApprovalError(f"OpenRewrite catalog must be a mapping: {catalog_path}")
+    return catalog
 
 
 def _coord_from_mapping(value: Any) -> str:
@@ -852,6 +955,13 @@ def _coordinate(value: Any, label: str) -> tuple[str, str, str]:
     if len(parts) != 3 or not all(parts):
         raise TransformV1AfterApprovalError(f"{label} coordinate must be groupId:artifactId:version")
     return parts[0], parts[1], parts[2]
+
+
+def _concrete_openrewrite_plugin(plugin: tuple[str, str, str]) -> tuple[str, str, str]:
+    group_id, artifact_id, version = plugin
+    if (group_id, artifact_id) == OPENREWRITE_MAVEN_PLUGIN and version.upper() == "RELEASE":
+        return group_id, artifact_id, DEFAULT_OPENREWRITE_MAVEN_PLUGIN_VERSION
+    return plugin
 
 
 def _as_list(value: Any) -> list[Any]:

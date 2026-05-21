@@ -62,3 +62,20 @@ def test_scan_root_pom_uses_profile_target_and_boot4_warnings(tmp_path):
     assert result["target_stack"]["spring_framework"] == "7.x"
     assert any("Spring Framework 7" in warning for warning in result["warnings"])
     assert any("Servlet 6.1" in warning for warning in result["warnings"])
+
+
+def test_scan_root_pom_parse_failure_keeps_analysis_contract(tmp_path):
+    fake_pom = tmp_path / "pom.xml"
+    fake_pom.write_text("<project>", encoding="utf-8")
+
+    result = scan_root_pom(str(fake_pom), target_stack={"java": "21", "spring_boot": "4.0.0"})
+
+    assert result["source_stack"] == {
+        "java": "unknown",
+        "spring_boot": "unknown",
+        "build_tool": "maven",
+    }
+    assert result["target_stack"]["java"] == "21"
+    assert result["target_stack"]["spring_boot"] == "4.0.0"
+    assert result["project_structure"]["module_count"] == 0
+    assert any("Unable to parse root pom.xml" in warning for warning in result["warnings"])

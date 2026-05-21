@@ -2,6 +2,9 @@ import json
 import datetime
 
 def assemble_report(context, maven_data, import_data):
+    source_stack = maven_data.get("source_stack") or {}
+    target_stack = maven_data.get("target_stack") or {}
+    project_structure = maven_data.get("project_structure") or {}
     # Construction du rapport final selon le schéma AMF (Task #22, #231)
     report = {
         "schema_version": "1.0.0",
@@ -11,12 +14,12 @@ def assemble_report(context, maven_data, import_data):
         "timestamp": datetime.datetime.now().isoformat(),
         
         # Ces clés doivent correspondre exactement aux sorties du maven_scanner
-        "source_stack": maven_data["source_stack"],
-        "target_stack": maven_data["target_stack"],
+        "source_stack": source_stack,
+        "target_stack": target_stack,
         "warnings": maven_data.get("warnings", []),
         
         "project_metadata": {
-            "modules": maven_data["project_structure"]["modules"],
+            "modules": project_structure.get("modules", []),
             "import_stats": {
                 "javax_count": import_data["javax_imports"],
                 "jakarta_count": import_data["jakarta_imports"],

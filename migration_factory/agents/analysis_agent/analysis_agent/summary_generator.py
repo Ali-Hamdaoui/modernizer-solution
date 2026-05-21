@@ -1,5 +1,7 @@
 def generate_summary(context, maven_data, import_data):
+    source_stack = maven_data.get("source_stack") or {}
     target_stack = maven_data.get("target_stack", {})
+    project_structure = maven_data.get("project_structure") or {}
     warning_lines = "\n".join(
         f"* **Avertissement :** {warning}" for warning in maven_data.get("warnings", [])
     ) or "* Aucun avertissement de cible."
@@ -9,13 +11,14 @@ def generate_summary(context, maven_data, import_data):
 **Date :** {maven_data.get('timestamp', 'N/A')}
 
 ## 1. Etat de la Stack (Stack & Gap)
-* **Java Source :** {maven_data['source_stack']['java']} -> **Cible :** {target_stack.get('java', '17')} [cite: 342, 443]
-* **Spring Boot :** {maven_data['source_stack']['spring_boot']} -> **Cible :** {target_stack.get('spring_boot', '3.5.14')} [cite: 342, 443]
+* **Java Source :** {source_stack.get('java', 'unknown')} -> **Cible :** {target_stack.get('java', '17')} [cite: 342, 443]
+* **Spring Boot :** {source_stack.get('spring_boot', 'unknown')} -> **Cible :** {target_stack.get('spring_boot', '3.5.14')} [cite: 342, 443]
+* **Build Tool :** {source_stack.get('build_tool', 'unknown')}
 * **Spring Framework Cible :** {target_stack.get('spring_framework', 'unknown')}
 
 ## 2. Structure du Projet
-* **Nombre de modules detectes :** {maven_data['project_structure']['module_count']} [cite: 444]
-* **Modules :** {", ".join(maven_data['project_structure']['modules'])}
+* **Nombre de modules detectes :** {project_structure.get('module_count', 0)} [cite: 444]
+* **Modules :** {", ".join(project_structure.get('modules', []))}
 
 ## 3. Inventaire de Migration (Imports)
 * **Imports `javax.*` (a migrer) :** {import_data['javax_imports']} [cite: 444]

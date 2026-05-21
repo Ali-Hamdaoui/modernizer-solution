@@ -92,3 +92,61 @@ def test_full_analysis_flow_generates_artifacts_without_source_writes(monkeypatc
 
     after_hash = _hash_tree(legacy)
     assert after_hash == before_hash
+
+
+def test_analysis_handles_missing_source_stack_contract(monkeypatch, tmp_path):
+    legacy = tmp_path / "legacy"
+    modernized = tmp_path / "modernized"
+    legacy.mkdir()
+    modernized.mkdir()
+    _seed_fixture(legacy, modernized)
+
+    def _fake_scan_root_pom(*args, **kwargs):
+        return {
+            "target_stack": {"java": "21", "spring_boot": "4.0.0"},
+            "project_structure": {"modules": [], "module_count": 0},
+            "warnings": ["source stack missing in scanner result"],
+        }
+
+    monkeypatch.setattr("main.scan_root_pom", _fake_scan_root_pom)
+    monkeypatch.setattr("main.run_dependency_tree", lambda context: None)
+    def _fake_rewrite(context, analysis_facts=None):
+        Path(context.get_output_path("rewrite_impact_summary.json")).write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0.0",
+                    "run_id": context.run_id,
+                    "agent": "analysis_agent",
+                    "phase": "analysis",
+                    "status": "SKIPPED",
+                    "overall_impact": "UNKNOWN",
+                    "changed_files": [],
+                    "high_risk_files": [],
+                    "migration_signals": {},
+                    "blocked_reasons": [],
+                    "source_modified": False,
+                    "artifact_refs": {"self": "rewrite_impact_summary.json"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return {"status": "SKIPPED", "warnings": []}
+
+    monkeypatch.setattr("main.run_openrewrite_dryrun", _fake_rewrite)
+
+    ctx = MigrationContext("run-missing-source-stack", str(legacy), str(modernized))
+    result = run_analysis_agent(ctx)
+
+    assert result.status == "COMPLETED"
+    for key in (
+        "analysis_report",
+        "analysis_summary",
+        "read_only_verification",
+        "rewrite_impact_summary",
+    ):
+        assert Path(result.artifact_paths[key]).exists(), f"missing {key}"
+
+    report = json.loads(Path(result.artifact_paths["analysis_report"]).read_text(encoding="utf-8"))
+    assert report["source_stack"] == {}
+    verification = json.loads(Path(result.artifact_paths["read_only_verification"]).read_text(encoding="utf-8"))
+    assert verification["source_modified"] is False

@@ -31,3 +31,8 @@ forbidden_apply_goals:
 defaults:
   export_datatables: true
   fail_on_dry_run_results: false
+analysis_preview_maven_args:
+  - -Denforcer.skip=true
+apply_goal: runNoFork
+apply_maven_args:
+  - -Denforcer.skip=true

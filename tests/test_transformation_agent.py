@@ -21,7 +21,14 @@ from migration_factory.agents.transformation_agent.execution_plan import (
     TransformationExecutionPlanError,
     write_transformation_execution_plan,
 )
+from migration_factory.agents.transformation_agent.executor import CommandResult
 from migration_factory.agents.transformation_agent.plan import load_migration_plan
+from migration_factory.agents.transformation_agent.pom_patches import (
+    patch_batch_config_flat_file_item_reader_constructor,
+    patch_maven_enforcer_java_version,
+    patch_pom_property,
+    patch_security_config_authorize_http_requests,
+)
 from migration_factory.approval import write_approval_decision, write_approved_plan_lock
 from migration_factory.agents.transformation_agent import run_transformation_agent
 from migration_factory.agents.transformation_agent.workspace import (
@@ -30,6 +37,7 @@ from migration_factory.agents.transformation_agent.workspace import (
 )
 from migration_factory.agents.test_agent.agent import TestAgentResult as _TestAgentResult
 from migration_factory.agents.transformation_agent import workspace as workspace_module
+from migration_factory import transform_v1_after_approval as transform_module
 from migration_factory.contracts.migration import (
     BuildValidationStatus,
     LedgerStatus,
@@ -155,6 +163,490 @@ class TransformationAgentTests(unittest.TestCase):
             self.assertEqual(result.status, LedgerStatus.AWAITING_BUILD_AGENT)
             self.assertEqual(ledger["current_unit"], "unit-001")
             self.assertEqual(ledger["build_validation"]["status"], BuildValidationStatus.PENDING)
+
+    def test_baseline_unit_does_not_inject_openrewrite_plugin_into_pom(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                PLAN_YAML.replace("unit-001", "baseline").replace("First Unit", "Baseline"),
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            result = run_transformation_agent(app, plugin, plan, dry_run=True, wait_for_continue=False)
+
+            self.assertEqual(result.status, LedgerStatus.AWAITING_BUILD_AGENT)
+            self.assertNotIn("rewrite-maven-plugin", (app / "pom.xml").read_text(encoding="utf-8"))
+
+    def test_openrewrite_transform_uses_fully_qualified_concrete_plugin_goal(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: java-17
+    title: Java 17
+    transformations:
+      - type: openrewrite
+        active_recipes:
+          - org.openrewrite.java.migrate.UpgradeToJava17
+        recipe_artifacts:
+          - org.openrewrite.recipe:rewrite-migrate-java:RELEASE
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(
+                PLUGIN_XML.replace("<version>6.23.0</version>", "<version>RELEASE</version>"),
+                encoding="utf-8",
+            )
+
+            result = run_transformation_agent(app, plugin, plan, dry_run=True, wait_for_continue=False)
+            ledger = load_ledger(result.ledger_file)
+            command = ledger["units"]["java-17"]["commands"][0]["command"]
+
+            self.assertIn("org.openrewrite.maven:rewrite-maven-plugin:6.39.0:run", command)
+            self.assertIn("-Drewrite.recipeArtifactCoordinates=org.openrewrite.recipe:rewrite-migrate-java:RELEASE", command)
+            self.assertNotIn("rewrite:run", command)
+            self.assertNotIn("rewrite-maven-plugin:RELEASE", command)
+
+    def test_openrewrite_apply_uses_configured_goal_and_maven_args(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: java-21
+    title: Java 21
+    transformations:
+      - type: openrewrite
+        apply_goal: runNoFork
+        apply_maven_args:
+          - -Denforcer.skip=true
+        active_recipes:
+          - org.openrewrite.java.migrate.UpgradeToJava21
+        recipe_artifacts:
+          - org.openrewrite.recipe:rewrite-migrate-java:RELEASE
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            result = run_transformation_agent(app, plugin, plan, dry_run=True, wait_for_continue=False)
+            ledger = load_ledger(result.ledger_file)
+            command = ledger["units"]["java-21"]["commands"][0]["command"]
+
+            self.assertIn("org.openrewrite.maven:rewrite-maven-plugin:6.23.0:runNoFork", command)
+            self.assertIn("-Denforcer.skip=true", command)
+
+    def test_openrewrite_apply_settings_are_loaded_from_profile_and_catalog(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            run_id = "run-1"
+            _write_approved_run_artifacts(
+                app,
+                run_id,
+                include_rewrite_plan=True,
+                source_unit_id="java-21",
+                source_unit_goal="Upgrade project runtime to Java 21.",
+            )
+            ai_hub = tmp / "ai-hub"
+            _write_ai_hub_profile(
+                ai_hub,
+                extra_profile_yaml="""
+  apply_goal: runNoFork
+  apply_maven_args:
+    - -Denforcer.skip=true
+""",
+            )
+            plan_path = write_transformation_execution_plan(app, run_id)
+            transform_module._apply_openrewrite_apply_settings(plan_path, str(ai_hub), "java17")
+            plan = load_migration_plan(plan_path, app)
+            transformation = plan.units[1].transformations[0]
+
+            self.assertEqual(transformation["apply_goal"], "runNoFork")
+            self.assertEqual(transformation["apply_maven_args"], ["-Denforcer.skip=true"])
+
+    def test_maven_enforcer_java8_range_patch_updates_to_java21_range(self) -> None:
+        for legacy_range in ("[1.8,1.9)", "[8,9)", "1.8", "8"):
+            with self.subTest(legacy_range=legacy_range), workspace_temp_dir() as tmp:
+                app = tmp / "modernized-app"
+                app.mkdir()
+                (app / "pom.xml").write_text(
+                    f"""<project>
+  <build>
+    <plugins>
+      <plugin>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <configuration>
+          <rules>
+            <requireJavaVersion>
+              <version>{legacy_range}</version>
+            </requireJavaVersion>
+          </rules>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+""",
+                    encoding="utf-8",
+                )
+
+                patches = patch_maven_enforcer_java_version(app, unit_id="java-21")
+
+                self.assertEqual(len(patches), 1)
+                self.assertEqual(patches[0].old_range, legacy_range)
+                self.assertEqual(patches[0].new_range, "[21,)")
+                self.assertIn("<version>[21,)</version>", (app / "pom.xml").read_text(encoding="utf-8"))
+
+    def test_pom_property_patch_updates_archunit_java21_version(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project>
+  <properties>
+    <archunit.version>0.23.1</archunit.version>
+  </properties>
+</project>
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_pom_property(
+                app,
+                unit_id="java-21",
+                property_name="archunit.version",
+                old_value="0.23.1",
+                new_value="1.4.1",
+            )
+
+            self.assertEqual(len(patches), 1)
+            self.assertEqual(patches[0].property, "archunit.version")
+            self.assertEqual(patches[0].old_value, "0.23.1")
+            self.assertEqual(patches[0].new_value, "1.4.1")
+            self.assertIn(
+                "<archunit.version>1.4.1</archunit.version>",
+                (app / "pom.xml").read_text(encoding="utf-8"),
+            )
+
+    def test_boot4_source_patches_update_security_and_batch_config(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            security = app / "src/main/java/com/example/flightapp/config/SecurityConfig.java"
+            batch = app / "src/main/java/com/example/flightapp/batch/config/BatchConfig.java"
+            security.parent.mkdir(parents=True)
+            batch.parent.mkdir(parents=True)
+            security.write_text(
+                "return new InMemoryUserDetailsManager(User.builder().username(\"viewer\").build());\n"
+                "http.authorizeRequests(auth -> auth.requestMatchers(\"/actuator/health\").permitAll());\n",
+                encoding="utf-8",
+            )
+            batch.write_text(
+                "FlatFileItemReader<FlightCsvRow> reader = new FlatFileItemReader<FlightCsvRow>();\n"
+                "reader.setResource(resolveInput(fileName));\n"
+                "reader.setLinesToSkip(1);\n"
+                "DefaultLineMapper<FlightCsvRow> lineMapper = new DefaultLineMapper<FlightCsvRow>();\n"
+                "lineMapper.setLineTokenizer(tokenizer);\n"
+                "lineMapper.setFieldSetMapper(fieldSetMapper);\n"
+                "reader.setLineMapper(lineMapper);\n"
+                "return reader;\n",
+                encoding="utf-8",
+            )
+
+            security_patches = patch_security_config_authorize_http_requests(app, unit_id="java-21")
+            batch_patches = patch_batch_config_flat_file_item_reader_constructor(app, unit_id="java-21")
+
+            self.assertEqual(len(security_patches), 1)
+            self.assertIn(".authorizeHttpRequests(", security.read_text(encoding="utf-8"))
+            self.assertIn('.roles("ADMIN")', security.read_text(encoding="utf-8"))
+            self.assertIn('.roles("AGENT")', security.read_text(encoding="utf-8"))
+            self.assertIn('.roles("VIEWER")', security.read_text(encoding="utf-8"))
+            self.assertEqual(len(batch_patches), 1)
+            self.assertIn(
+                "new FlatFileItemReader<FlightCsvRow>(lineMapper)",
+                batch.read_text(encoding="utf-8"),
+            )
+
+    def test_boot4_java21_profile_adds_post_openrewrite_enforcer_patch(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            run_id = "run-1"
+            _write_approved_run_artifacts(
+                app,
+                run_id,
+                include_rewrite_plan=True,
+                source_unit_id="java-21",
+                source_unit_goal="Upgrade project runtime to Java 21.",
+            )
+            ai_hub = tmp / "ai-hub"
+            _write_ai_hub_profile(
+                ai_hub,
+                extra_profile_yaml="""
+  apply_goal: runNoFork
+  apply_maven_args:
+    - -Denforcer.skip=true
+  post_apply_patches:
+    - type: maven_enforcer_java_version
+      target_range: "[21,)"
+    - type: pom_property
+      property: archunit.version
+      old_value: 0.23.1
+      new_value: 1.4.1
+""",
+            )
+            plan_path = write_transformation_execution_plan(app, run_id)
+
+            transform_module._apply_openrewrite_apply_settings(plan_path, str(ai_hub), "java17")
+            plan = load_migration_plan(plan_path, app)
+            transformations = plan.units[1].transformations
+
+            self.assertEqual(transformations[0]["type"], "openrewrite")
+            self.assertEqual(transformations[1]["type"], "maven_enforcer_java_version")
+            self.assertEqual(transformations[1]["target_range"], "[21,)")
+            self.assertEqual(transformations[2]["type"], "pom_property")
+            self.assertEqual(transformations[2]["property"], "archunit.version")
+
+    def test_openrewrite_then_pom_property_patch_runs_before_java21_validation(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                "<project><properties><archunit.version>0.23.1</archunit.version></properties>"
+                "<build><plugins><plugin><artifactId>maven-enforcer-plugin</artifactId>"
+                "<configuration><rules><requireJavaVersion><version>[1.8,1.9)</version>"
+                "</requireJavaVersion></rules></configuration></plugin></plugins></build></project>",
+                encoding="utf-8",
+            )
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: java-21
+    title: Java 21
+    transformations:
+      - type: openrewrite
+        apply_goal: runNoFork
+        apply_maven_args:
+          - -Denforcer.skip=true
+        active_recipes:
+          - org.openrewrite.java.migrate.UpgradeToJava21
+      - type: maven_enforcer_java_version
+        target_range: "[21,)"
+      - type: pom_property
+        property: archunit.version
+        old_value: 0.23.1
+        new_value: 1.4.1
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            with mock.patch(
+                "migration_factory.agents.transformation_agent.agent.run_command",
+                return_value=CommandResult(
+                    command="mvn",
+                    exit_code=0,
+                    stdout=[],
+                    stderr=[],
+                    duration_seconds=0.01,
+                ),
+            ) as run_command:
+                result = run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            command = run_command.call_args.args[0]
+            transformations = ledger["units"]["java-21"]["transformations"]
+            self.assertIn("-Denforcer.skip=true", command)
+            self.assertEqual(transformations[0]["type"], "maven_enforcer_java_version")
+            self.assertEqual(transformations[0]["status"], "applied")
+            self.assertEqual(transformations[0]["patches"][0]["old_range"], "[1.8,1.9)")
+            self.assertEqual(transformations[1]["type"], "pom_property")
+            self.assertEqual(transformations[1]["status"], "applied")
+            self.assertEqual(transformations[1]["patches"][0]["property"], "archunit.version")
+            self.assertEqual(transformations[1]["patches"][0]["old_value"], "0.23.1")
+            self.assertEqual(transformations[1]["patches"][0]["new_value"], "1.4.1")
+            self.assertEqual(ledger["build_validation"]["unit_id"], "java-21")
+            self.assertIn("<version>[21,)</version>", (app / "pom.xml").read_text(encoding="utf-8"))
+            self.assertIn(
+                "<archunit.version>1.4.1</archunit.version>",
+                (app / "pom.xml").read_text(encoding="utf-8"),
+            )
+            run_command.assert_called_once()
+
+    def test_required_enforcer_patch_missing_match_fails_before_validation(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                "<project><build><plugins><plugin><artifactId>maven-enforcer-plugin</artifactId>"
+                "<configuration><rules><requireJavaVersion><version>[17,)</version>"
+                "</requireJavaVersion></rules></configuration></plugin></plugins></build></project>",
+                encoding="utf-8",
+            )
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: java-21
+    title: Java 21
+    transformations:
+      - type: openrewrite
+        apply_goal: runNoFork
+        active_recipes:
+          - org.openrewrite.java.migrate.UpgradeToJava21
+      - type: maven_enforcer_java_version
+        target_range: "[21,)"
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            with mock.patch(
+                "migration_factory.agents.transformation_agent.agent.run_command",
+                return_value=CommandResult(
+                    command="mvn",
+                    exit_code=0,
+                    stdout=[],
+                    stderr=[],
+                    duration_seconds=0.01,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    TransformationAgentError,
+                    "REQUIRED_POM_PATCH_NOT_APPLIED maven_enforcer_java_version",
+                ):
+                    run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(app / ".migration" / "ledger.json")
+            self.assertEqual(ledger["status"], LedgerStatus.BLOCKED)
+            self.assertEqual(ledger["blocked_unit"], "java-21")
+            self.assertEqual(
+                ledger["units"]["java-21"]["blocking_reason"],
+                "REQUIRED_POM_PATCH_NOT_APPLIED maven_enforcer_java_version",
+            )
+            self.assertEqual(ledger["build_validation"]["status"], BuildValidationStatus.NOT_REQUIRED)
+
+    def test_baseline_unit_leaves_pom_untouched_before_baseline_validation(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            original_pom = (
+                "<project><build><plugins><plugin><artifactId>maven-enforcer-plugin</artifactId>"
+                "<configuration><rules><requireJavaVersion><version>[1.8,1.9)</version>"
+                "</requireJavaVersion></rules></configuration></plugin></plugins></build></project>"
+            )
+            (app / "pom.xml").write_text(original_pom, encoding="utf-8")
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: baseline
+    title: Baseline
+    transformations:
+      - type: custom_code_change
+        description: baseline validation only
+    checks: []
+  - id: java-21
+    title: Java 21
+    transformations:
+      - type: maven_enforcer_java_version
+        target_range: "[21,)"
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            result = run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+            ledger = load_ledger(result.ledger_file)
+
+            self.assertEqual(ledger["build_validation"]["unit_id"], "baseline")
+            self.assertEqual((app / "pom.xml").read_text(encoding="utf-8"), original_pom)
+
+    def test_java17_profile_does_not_add_enforcer_patch_without_configuration(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            run_id = "run-1"
+            _write_approved_run_artifacts(app, run_id, include_rewrite_plan=True)
+            ai_hub = tmp / "ai-hub"
+            _write_ai_hub_profile(ai_hub)
+            plan_path = write_transformation_execution_plan(app, run_id)
+
+            transform_module._apply_openrewrite_apply_settings(plan_path, str(ai_hub), "java17")
+            payload = yaml.safe_load(plan_path.read_text(encoding="utf-8"))
+
+            self.assertNotIn(
+                "maven_enforcer_java_version",
+                json.dumps(payload),
+            )
 
     def test_build_ledger_pass_marks_unit_completed(self) -> None:
         with workspace_temp_dir() as tmp:
@@ -461,6 +953,7 @@ class TransformationAgentTests(unittest.TestCase):
             self.assertEqual(plan_payload["workspaces"]["target"]["path"], str(sandbox_path.resolve()))
             self.assertTrue((sandbox_path / "pom.xml").is_file())
             self.assertIn("<artifactId>rewrite-maven-plugin</artifactId>", plugin_path.read_text(encoding="utf-8"))
+            self.assertNotIn("<version>RELEASE</version>", plugin_path.read_text(encoding="utf-8"))
             run_agent.assert_has_calls(
                 [
                     mock.call(
@@ -485,6 +978,9 @@ class TransformationAgentTests(unittest.TestCase):
             )
             self.assertEqual(run_build.call_count, 2)
             run_test.assert_called_once()
+            self.assertNotIn("enforcer.skip", str(run_test.call_args.kwargs.get("command")))
+            self.assertNotIn("apply_goal", plan_payload["migration_units"][1]["transformations"][0])
+            self.assertNotIn("apply_maven_args", plan_payload["migration_units"][1]["transformations"][0])
             run_build.assert_has_calls(
                 [
                     mock.call(
@@ -506,6 +1002,145 @@ class TransformationAgentTests(unittest.TestCase):
                         validation_command="mvn clean test",
                     ),
                 ]
+            )
+            for call_args in run_build.call_args_list:
+                self.assertNotIn("enforcer.skip", str(call_args.kwargs.get("validation_command")))
+
+    def test_transform_v1_java21_validation_sees_patched_sandbox_pom(self) -> None:
+        with workspace_temp_dir() as tmp:
+            legacy = tmp / "legacy-app"
+            modernized = tmp / "modernized-app"
+            ai_hub = tmp / "ai-hub"
+            run_id = "run-1"
+            run_dir = _run_dir(modernized, run_id)
+            legacy.mkdir()
+            modernized.mkdir()
+            (legacy / "pom.xml").write_text(
+                "<project><build><plugins><plugin><artifactId>maven-enforcer-plugin</artifactId>"
+                "<configuration><rules><requireJavaVersion><version>[1.8,1.9)</version>"
+                "</requireJavaVersion></rules></configuration></plugin></plugins></build></project>",
+                encoding="utf-8",
+            )
+            _write_ai_hub_profile(
+                ai_hub,
+                extra_profile_yaml="""
+  apply_goal: runNoFork
+  apply_maven_args:
+    - -Denforcer.skip=true
+  post_openrewrite_patches:
+    - type: maven_enforcer_java_version
+      target_range: "[21,)"
+""",
+            )
+            _write_approved_run_artifacts(
+                modernized,
+                run_id,
+                include_rewrite_plan=True,
+                source_unit_id="java-21",
+                source_unit_goal="Upgrade project runtime to Java 21.",
+            )
+
+            seen_java21_validation = False
+
+            def build_side_effect(**kwargs: object) -> BuildRunResult:
+                nonlocal seen_java21_validation
+                ledger_file = Path(str(kwargs["ledger_file"]))
+                unit_id = str(kwargs["validation_unit_id"])
+                if unit_id == "java-21":
+                    pom_text = (run_dir / "workspaces" / "sandbox" / "pom.xml").read_text(
+                        encoding="utf-8"
+                    )
+                    self.assertIn("<version>[21,)</version>", pom_text)
+                    seen_java21_validation = True
+                mark_build_passed(ledger_file, result_kind="success", message="ok")
+                return BuildRunResult(succeeded=True, result_kind="success", message="ok")
+
+            with mock.patch(
+                "migration_factory.agents.transformation_agent.agent.run_command",
+                return_value=CommandResult(
+                    command="mvn",
+                    exit_code=0,
+                    stdout=[],
+                    stderr=[],
+                    duration_seconds=0.01,
+                ),
+            ):
+                with mock.patch(
+                    "migration_factory.transform_v1_after_approval.run_build_agent",
+                    side_effect=build_side_effect,
+                ):
+                    with mock.patch(
+                        "migration_factory.transform_v1_after_approval.run_test_agent",
+                        return_value=_passed_test_result(run_dir),
+                    ):
+                        result = transform_v1_after_approval_main(
+                            [
+                                "--run-dir",
+                                str(run_dir),
+                                "--legacy-app",
+                                str(legacy),
+                                "--modernized-app",
+                                str(modernized),
+                                "--ai-hub",
+                                str(ai_hub),
+                                "--profile",
+                                "java17",
+                                "--approved-by",
+                                "human",
+                            ]
+                        )
+
+            ledger = load_ledger(run_dir / "workspaces" / "sandbox" / ".migration" / "ledger.json")
+            self.assertEqual(result, 0)
+            self.assertTrue(seen_java21_validation)
+            self.assertEqual(
+                ledger["units"]["java-21"]["transformations"][0]["patches"][0]["old_range"],
+                "[1.8,1.9)",
+            )
+
+    def test_generated_openrewrite_plugin_xml_replaces_release_plugin_version(self) -> None:
+        with workspace_temp_dir() as tmp:
+            run_dir = tmp / "run"
+            ai_hub = tmp / "ai-hub"
+            analysis_dir = run_dir / "analysis"
+            analysis_dir.mkdir(parents=True)
+            _write_ai_hub_profile(ai_hub)
+            (analysis_dir / "rewrite_plugin_plan.json").write_text(
+                json.dumps(
+                    {
+                        "plugin": "org.openrewrite.maven:rewrite-maven-plugin:RELEASE",
+                        "recipe_artifacts": ["org.openrewrite.recipe:rewrite-migrate-java:RELEASE"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            plugin_path = transform_module._write_openrewrite_plugin_xml(run_dir, str(ai_hub), "java17")
+            plugin_xml = plugin_path.read_text(encoding="utf-8")
+
+            self.assertIn("<artifactId>rewrite-maven-plugin</artifactId>", plugin_xml)
+            self.assertIn("<version>6.39.0</version>", plugin_xml)
+            self.assertNotIn("<artifactId>rewrite-maven-plugin</artifactId>\n  <version>RELEASE</version>", plugin_xml)
+
+    def test_profile_jdk_env_names_are_loaded_from_ai_hub_profile(self) -> None:
+        with workspace_temp_dir() as tmp:
+            ai_hub = tmp / "ai-hub"
+            _write_ai_hub_profile(
+                ai_hub,
+                extra_profile_yaml="""
+source_jdk_home_env: JAVA8_HOME
+target_jdk_home_env: JAVA21_HOME
+""",
+            )
+
+            env = transform_module._profile_jdk_env(str(ai_hub), "java17")
+
+            self.assertEqual(
+                env,
+                {
+                    "source_jdk_home_env": "JAVA8_HOME",
+                    "target_jdk_home_env": "JAVA21_HOME",
+                },
             )
 
     def test_transform_v1_after_approval_validates_spring_boot_source_unit_from_reactor_root(self) -> None:
@@ -1149,16 +1784,17 @@ units:
         )
 
 
-def _write_ai_hub_profile(ai_hub: Path) -> None:
+def _write_ai_hub_profile(ai_hub: Path, extra_profile_yaml: str = "") -> None:
     profiles = ai_hub / "profiles"
     catalogs = ai_hub / "catalogs"
     profiles.mkdir(parents=True)
     catalogs.mkdir(parents=True)
     (profiles / "java17.yaml").write_text(
-        """
+        f"""
 id: java17
 openrewrite:
   catalog_path: catalogs/openrewrite.yaml
+{extra_profile_yaml}
 """.lstrip(),
         encoding="utf-8",
     )

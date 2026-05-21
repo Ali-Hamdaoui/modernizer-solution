@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+import logging
 from pathlib import Path
+import os
 import re
 import subprocess
 import time
@@ -28,6 +31,17 @@ from .runner import ProcessRunResult, run_until_build_result, run_until_exit
 
 STARTUP_TIMEOUT_SECONDS = 120
 COMMAND_TIMEOUT_SECONDS = 300
+BOOT4_MINIMUM_MAVEN_VERSION = (3, 6, 3)
+LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class BuildEnvironmentGateFailure:
+    message: str
+    detected_version: str | None = None
+    required_minimum: str | None = None
+    profile: str | None = None
+    target_unit: str | None = None
 
 
 def run_build_agent(
@@ -44,6 +58,8 @@ def run_build_agent(
     validation_unit_id: str | None = None,
     source_changing_unit: bool = False,
     validation_command: str | list[str] | tuple[str, ...] | None = None,
+    source_jdk_home_env: str | None = None,
+    target_jdk_home_env: str | None = None,
 ) -> BuildRunResult:
     project_root = Path(project_path).expanduser().resolve()
     resolved_output_dir = _resolve_output_dir(output_dir)
@@ -65,6 +81,7 @@ def run_build_agent(
             main_class=main_class,
             stdout=[],
             stderr=[],
+            unit_id=validation_unit_id,
         )
         error_path = write_build_error(contract, resolved_output_dir)
         build_result = BuildRunResult(
@@ -86,9 +103,15 @@ def run_build_agent(
         else []
     )
     validation_mode = _validation_mode(project, validation_unit_id, source_changing_unit, explicit_command)
-    gate_failure = _target_environment_gate(project, validation_unit_id)
+    java_env_name, java_home = _java_runtime_for_unit(
+        validation_unit_id,
+        source_jdk_home_env=source_jdk_home_env,
+        target_jdk_home_env=target_jdk_home_env,
+    )
+    command_env = _build_command_env(java_home)
+    gate_failure = _target_environment_gate(project, validation_unit_id, explicit_command, env=command_env)
     if gate_failure is not None:
-        classification = command_error_classification(gate_failure)
+        classification = command_error_classification(gate_failure.message)
         contract = build_error_contract(
             project_path=project.path,
             cwd=project.path,
@@ -102,6 +125,13 @@ def run_build_agent(
             main_class=main_class,
             stdout=[],
             stderr=[],
+            unit_id=validation_unit_id,
+            java_home=java_home,
+            java_home_env=java_env_name,
+            detected_version=gate_failure.detected_version,
+            required_minimum=gate_failure.required_minimum,
+            profile=gate_failure.profile,
+            target_unit=gate_failure.target_unit,
         )
         error_path = write_build_error(contract, resolved_output_dir)
         build_result = BuildRunResult(
@@ -111,7 +141,7 @@ def run_build_agent(
             error_contract_path=error_path,
             exit_code=None,
             matched_line=classification.line,
-            warnings=[gate_failure],
+            warnings=[gate_failure.message],
             command=[],
             cwd=project.path,
         )
@@ -127,6 +157,7 @@ def run_build_agent(
             cwd=project.path,
             timeout_seconds=_command_timeout(timeout_seconds),
             stream_output=stream_output,
+            env=command_env,
         )
         command_duration_seconds = time.monotonic() - command_started
     elif validation_mode == BuildValidationMode.PLAN_COMMAND:
@@ -139,6 +170,7 @@ def run_build_agent(
                 timeout_seconds=_startup_timeout(timeout_seconds),
                 stream_output=stream_output,
                 stop_after_start=stop_after_start,
+                env=command_env,
             )
             command_duration_seconds = time.monotonic() - command_started
         else:
@@ -148,6 +180,7 @@ def run_build_agent(
                 cwd=project.path,
                 timeout_seconds=_command_timeout(timeout_seconds),
                 stream_output=stream_output,
+                env=command_env,
             )
             command_duration_seconds = time.monotonic() - command_started
     else:
@@ -169,6 +202,7 @@ def run_build_agent(
             timeout_seconds=_startup_timeout(timeout_seconds),
             stream_output=stream_output,
             stop_after_start=stop_after_start,
+            env=command_env,
         )
         command_duration_seconds = time.monotonic() - command_started
 
@@ -195,6 +229,9 @@ def run_build_agent(
         main_class=resolved_main_class,
         stdout=result.stdout,
         stderr=result.stderr,
+        unit_id=validation_unit_id,
+        java_home=java_home,
+        java_home_env=java_env_name,
     )
     error_path = write_build_error(contract, resolved_output_dir)
 
@@ -310,31 +347,108 @@ def _update_ledger(ledger_file: str | Path | None, result: BuildRunResult) -> No
     )
 
 
-def _target_environment_gate(project: JavaProjectInfo, validation_unit_id: str | None) -> str | None:
+def _java_runtime_for_unit(
+    validation_unit_id: str | None,
+    *,
+    source_jdk_home_env: str | None,
+    target_jdk_home_env: str | None,
+) -> tuple[str | None, str | None]:
+    env_name = None
+    if validation_unit_id == "baseline":
+        env_name = source_jdk_home_env
+    elif validation_unit_id:
+        env_name = target_jdk_home_env
+    if not env_name:
+        return None, None
+    java_home = os.environ.get(env_name)
+    return env_name, java_home if java_home else None
+
+
+def _build_command_env(java_home: str | None) -> dict[str, str] | None:
+    if not java_home:
+        return None
+    env = os.environ.copy()
+    env["JAVA_HOME"] = java_home
+    env["PATH"] = str(Path(java_home) / "bin") + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def _target_environment_gate(
+    project: JavaProjectInfo,
+    validation_unit_id: str | None,
+    validation_command: list[str] | None = None,
+    *,
+    env: dict[str, str] | None = None,
+) -> BuildEnvironmentGateFailure | None:
     if not validation_unit_id:
         return None
     target_java = _target_java_for_unit(validation_unit_id)
     boot4 = "spring-boot-4-0" in validation_unit_id
     if target_java is not None and target_java >= 21:
-        java_result = _run_version_command(["java", "-version"])
+        java_result = _run_version_command(["java", "-version"], env=env)
         java_major = _parse_java_major("\n".join([*java_result.stderr, *java_result.stdout]))
         if java_result.exit_code != 0 or java_major is None:
-            return f"Java runtime version check failed for target Java {target_java}."
+            return BuildEnvironmentGateFailure(f"Java runtime version check failed for target Java {target_java}.")
         if java_major < target_java:
-            return f"Java runtime {java_major} is incompatible with target Java {target_java}."
+            return BuildEnvironmentGateFailure(
+                f"Java runtime {java_major} is incompatible with target Java {target_java}."
+            )
     if boot4 and project.build_tool == BuildTool.MAVEN:
-        maven_command = project.base_command[0] if project.base_command else "mvn"
-        mvn_result = _run_version_command([maven_command, "-version"])
-        maven_version = _parse_maven_version("\n".join([*mvn_result.stdout, *mvn_result.stderr]))
+        maven_command = _maven_version_executable(project, validation_command)
+        mvn_result = _run_version_command([maven_command, "-version"], env=env)
+        maven_output = "\n".join([*mvn_result.stdout, *mvn_result.stderr])
+        maven_version = _parse_maven_version(maven_output)
+        required_minimum = _format_version(BOOT4_MINIMUM_MAVEN_VERSION)
+        detected_version = _format_version(maven_version) if maven_version is not None else None
+        LOGGER.info(
+            "Maven version gate for %s: detected=%s required_minimum=%s",
+            validation_unit_id,
+            detected_version or "unparseable",
+            required_minimum,
+        )
         if mvn_result.exit_code != 0 or maven_version is None:
-            return "Maven version check failed for Spring Boot 4 target."
-        if maven_version < (3, 6, 3):
-            return (
-                "Maven version "
-                + ".".join(str(part) for part in maven_version)
-                + " is incompatible with Spring Boot 4 target; Maven >= 3.6.3 is required."
+            return BuildEnvironmentGateFailure(
+                "Maven version check failed for Spring Boot 4 target; mvn -version output was unparseable.",
+                detected_version=detected_version,
+                required_minimum=required_minimum,
+                profile="spring-boot-4",
+                target_unit=validation_unit_id,
+            )
+        if maven_version < BOOT4_MINIMUM_MAVEN_VERSION:
+            return BuildEnvironmentGateFailure(
+                f"Maven version {detected_version} is incompatible with Spring Boot 4 target; "
+                f"Maven >= {required_minimum} is required.",
+                detected_version=detected_version,
+                required_minimum=required_minimum,
+                profile="spring-boot-4",
+                target_unit=validation_unit_id,
             )
     return None
+
+
+def _maven_version_executable(project: JavaProjectInfo, validation_command: list[str] | None = None) -> str:
+    candidates: list[str] = []
+    if validation_command:
+        candidates.append(validation_command[0])
+    if project.base_command:
+        candidates.append(project.base_command[0])
+    candidates.append("mvn")
+
+    for candidate in candidates:
+        if _is_non_executable_local_file(candidate):
+            LOGGER.info("Skipping non-executable Maven wrapper for version gate: %s", candidate)
+            continue
+        return candidate
+    return "mvn"
+
+
+def _is_non_executable_local_file(command: str) -> bool:
+    if os.name == "nt":
+        return False
+    path = Path(command)
+    if not path.is_absolute() and os.sep not in command:
+        return False
+    return path.is_file() and not os.access(path, os.X_OK)
 
 
 def _target_java_for_unit(unit_id: str) -> int | None:
@@ -344,9 +458,9 @@ def _target_java_for_unit(unit_id: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _run_version_command(command: list[str]) -> ProcessRunResult:
+def _run_version_command(command: list[str], env: dict[str, str] | None = None) -> ProcessRunResult:
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=30)
+        completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=30, env=env)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return ProcessRunResult(command_error_classification(str(exc)), None, [], [str(exc)])
     return ProcessRunResult(
@@ -374,7 +488,12 @@ def _parse_java_major(output: str) -> int | None:
 
 
 def _parse_maven_version(output: str) -> tuple[int, int, int] | None:
-    match = re.search(r"Apache Maven\s+(\d+)\.(\d+)\.(\d+)", output)
+    match = re.search(r"Apache Maven\s+(\d+)\.(\d+)(?:\.(\d+))?", output)
     if not match:
         return None
-    return tuple(int(part) for part in match.groups())
+    major, minor, patch = match.groups()
+    return int(major), int(minor), int(patch or 0)
+
+
+def _format_version(version: tuple[int, int, int]) -> str:
+    return ".".join(str(part) for part in version)

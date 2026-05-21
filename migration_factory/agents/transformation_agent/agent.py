@@ -18,7 +18,13 @@ from migration_factory.contracts.migration import (
 
 from .executor import CommandResult, run_command
 from .plan import MigrationPlan, MigrationUnit, load_migration_plan
-from .rewrite import build_rewrite_run_command, inject_rewrite_plugin
+from .pom_patches import (
+    patch_batch_config_flat_file_item_reader_constructor,
+    patch_maven_enforcer_java_version,
+    patch_pom_property,
+    patch_security_config_authorize_http_requests,
+)
+from .rewrite import build_rewrite_run_command, rewrite_plugin_version_from_xml
 
 
 class TransformationAgentError(Exception):
@@ -46,7 +52,7 @@ def run_transformation_agent(
     plan = load_migration_plan(migration_plan_path, modernized_app_path)
     _ensure_target_workspace(plan.target_path)
     _ensure_ledger(plan)
-    _inject_plugin_once(plan, openrewrite_plugin_txt, dry_run=dry_run)
+    plugin_version = rewrite_plugin_version_from_xml(openrewrite_plugin_txt)
 
     start_index = _resolve_start_index(plan, start_unit)
     ledger = load_ledger(plan.ledger_file)
@@ -59,6 +65,7 @@ def run_transformation_agent(
             plan=plan,
             unit=unit,
             unit_index=unit_index,
+            plugin_version=plugin_version,
             dry_run=dry_run,
             stream_output=stream_output,
         )
@@ -91,6 +98,7 @@ def _run_unit(
     plan: MigrationPlan,
     unit: MigrationUnit,
     unit_index: int,
+    plugin_version: str,
     dry_run: bool,
     stream_output: bool,
 ) -> None:
@@ -105,7 +113,20 @@ def _run_unit(
         transformation_type = transformation.get("type")
         if transformation_type == "openrewrite":
             active_recipes = [str(item) for item in transformation.get("active_recipes", [])]
-            command = build_rewrite_run_command(active_recipes)
+            recipe_artifacts = [str(item) for item in transformation.get("recipe_artifacts", [])]
+            command = build_rewrite_run_command(
+                active_recipes,
+                recipe_artifacts=recipe_artifacts,
+                plugin_version=plugin_version,
+                apply_goal=str(transformation.get("apply_goal") or "run"),
+                maven_args=[str(item) for item in transformation.get("apply_maven_args", [])],
+            )
+            apply_goal = str(transformation.get("apply_goal") or "run")
+            apply_maven_args = [str(item) for item in transformation.get("apply_maven_args", [])]
+            print(
+                f"OpenRewrite apply unit={unit.id} openrewrite_goal={apply_goal} "
+                f"apply_maven_args={apply_maven_args}"
+            )
             if dry_run:
                 command_results.append({"command": command, "dry_run": True, "exit_code": 0})
                 continue
@@ -114,6 +135,135 @@ def _run_unit(
             if not result.succeeded:
                 _mark_unit_blocked(plan, unit, f"OpenRewrite command failed: {command}", command_results)
                 raise TransformationAgentError(f"OpenRewrite command failed for {unit.id}: {command}")
+            continue
+
+        if transformation_type == "maven_enforcer_java_version":
+            target_range = str(transformation.get("target_range") or "[21,)")
+            patches = [] if dry_run else patch_maven_enforcer_java_version(
+                plan.target_path,
+                unit_id=unit.id,
+                target_range=target_range,
+            )
+            required = transformation.get("required", True) is not False
+            if required and not dry_run and not patches:
+                _mark_unit_blocked(
+                    plan,
+                    unit,
+                    "REQUIRED_POM_PATCH_NOT_APPLIED maven_enforcer_java_version",
+                    command_results,
+                    recorded_transformations=recorded_transformations,
+                )
+                raise TransformationAgentError(
+                    "REQUIRED_POM_PATCH_NOT_APPLIED maven_enforcer_java_version"
+                )
+            for patch in patches:
+                print(
+                    f"unit={patch.unit} patch=maven_enforcer_java_version "
+                    f"file={patch.file} old_range={patch.old_range} "
+                    f"new_range={patch.new_range}"
+                )
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "applied" if patches else "not_applicable",
+                    "file": "pom.xml",
+                    "patches": [
+                        {
+                            "file": patch.file,
+                            "old_range": patch.old_range,
+                            "new_range": patch.new_range,
+                            "unit": patch.unit,
+                        }
+                        for patch in patches
+                    ],
+                }
+            )
+            continue
+
+        if transformation_type == "pom_property":
+            property_name = str(transformation.get("property") or "")
+            old_value = str(transformation.get("old_value") or "")
+            new_value = str(transformation.get("new_value") or "")
+            patches = [] if dry_run else patch_pom_property(
+                plan.target_path,
+                unit_id=unit.id,
+                property_name=property_name,
+                old_value=old_value,
+                new_value=new_value,
+            )
+            required = transformation.get("required", True) is not False
+            if required and not dry_run and not patches:
+                _mark_unit_blocked(
+                    plan,
+                    unit,
+                    f"REQUIRED_POM_PATCH_NOT_APPLIED pom_property {property_name}",
+                    command_results,
+                    recorded_transformations=recorded_transformations,
+                )
+                raise TransformationAgentError(
+                    f"REQUIRED_POM_PATCH_NOT_APPLIED pom_property {property_name}"
+                )
+            for patch in patches:
+                print(
+                    f"unit={patch.unit} patch=pom_property file={patch.file} "
+                    f"property={patch.property} old_value={patch.old_value} "
+                    f"new_value={patch.new_value}"
+                )
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "applied" if patches else "not_applicable",
+                    "file": "pom.xml",
+                    "patches": [
+                        {
+                            "file": patch.file,
+                            "property": patch.property,
+                            "old_value": patch.old_value,
+                            "new_value": patch.new_value,
+                            "unit": patch.unit,
+                        }
+                        for patch in patches
+                    ],
+                }
+            )
+            continue
+
+        if transformation_type == "security_authorize_http_requests":
+            patches = [] if dry_run else patch_security_config_authorize_http_requests(
+                plan.target_path,
+                unit_id=unit.id,
+            )
+            for patch in patches:
+                print(f"unit={patch.unit} patch={patch.patch} file={patch.file}")
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "applied" if patches else "not_applicable",
+                    "patches": [
+                        {"file": patch.file, "patch": patch.patch, "unit": patch.unit}
+                        for patch in patches
+                    ],
+                }
+            )
+            continue
+
+        if transformation_type == "batch_flat_file_item_reader_constructor":
+            patches = [] if dry_run else patch_batch_config_flat_file_item_reader_constructor(
+                plan.target_path,
+                unit_id=unit.id,
+            )
+            for patch in patches:
+                print(f"unit={patch.unit} patch={patch.patch} file={patch.file}")
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "applied" if patches else "not_applicable",
+                    "patches": [
+                        {"file": patch.file, "patch": patch.patch, "unit": patch.unit}
+                        for patch in patches
+                    ],
+                }
+            )
             continue
 
         recorded_transformations.append(
@@ -154,29 +304,6 @@ def _verify_build_validation(ledger_file: Path, unit_id: str) -> str:
     return BuildValidationStatus.PENDING
 
 
-def _inject_plugin_once(plan: MigrationPlan, plugin_txt_path: str | Path, *, dry_run: bool) -> None:
-    ledger = load_ledger(plan.ledger_file)
-    if ledger.get("openrewrite_plugin", {}).get("injected"):
-        return
-
-    if dry_run:
-        ledger["openrewrite_plugin"] = {
-            "injected": False,
-            "dry_run": True,
-            "plugin_txt_path": str(Path(plugin_txt_path).expanduser().resolve()),
-        }
-        save_ledger(plan.ledger_file, ledger)
-        return
-
-    injection = inject_rewrite_plugin(plan.target_path, plugin_txt_path)
-    ledger["openrewrite_plugin"] = {
-        "injected": True,
-        "pom_path": str(injection.pom_path),
-        "coordinates": list(injection.coordinates),
-    }
-    save_ledger(plan.ledger_file, ledger)
-
-
 def _ensure_ledger(plan: MigrationPlan) -> None:
     if plan.ledger_file.is_file():
         return
@@ -208,6 +335,7 @@ def _mark_unit_blocked(
     unit: MigrationUnit,
     reason: str,
     command_results: list[dict[str, Any]],
+    recorded_transformations: list[dict[str, Any]] | None = None,
 ) -> None:
     ledger = load_ledger(plan.ledger_file)
     ledger["status"] = LedgerStatus.BLOCKED
@@ -215,6 +343,8 @@ def _mark_unit_blocked(
     ledger["units"].setdefault(unit.id, {})["status"] = LedgerStatus.BLOCKED
     ledger["units"][unit.id]["blocking_reason"] = reason
     ledger["units"][unit.id]["commands"] = command_results
+    if recorded_transformations is not None:
+        ledger["units"][unit.id]["transformations"] = recorded_transformations
     save_ledger(plan.ledger_file, ledger)
 
 

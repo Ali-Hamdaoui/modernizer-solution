@@ -101,6 +101,16 @@ class BuildAgentTests(unittest.TestCase):
             self.assertIsNotNone(result)
             self.assertEqual(result.kind, BuildResultKind.SUCCESS)
 
+    def test_classifies_maven_enforcer_java_runtime_mismatch(self) -> None:
+        line = "[ERROR] Detected JDK version 21.0.11 is not in allowed range [1.8,1.9)."
+
+        result = classify_line(line)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.kind, BuildResultKind.JAVA_RUNTIME_MISMATCH)
+        self.assertIn("detected 21.0.11", result.message)
+        self.assertIn("expected [1.8,1.9)", result.message)
+
     def test_runner_returns_success_and_stops_process_after_startup_detection(self) -> None:
         with workspace_temp_dir() as tmp:
             command = [
@@ -252,6 +262,34 @@ public class Application {
             self.assertNotIn("-pl", kwargs["command"])
             self.assertNotIn("-am", kwargs["command"])
 
+    def test_baseline_validation_uses_source_jdk_env(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_multi_module_project(project)
+            java8_home = str(project / "jdk8")
+            process_result = ProcessRunResult(
+                classification=BuildClassification(BuildResultKind.SUCCESS, "Build completed successfully"),
+                exit_code=0,
+            )
+
+            with patch.dict(os.environ, {"JAVA8_HOME": java8_home}, clear=False):
+                with patch(
+                    "migration_factory.agents.build_agent.agent.run_until_exit",
+                    return_value=process_result,
+                ) as run_process:
+                    result = run_build_agent(
+                        project / "shoppoc-app",
+                        stream_output=False,
+                        validation_unit_id="baseline",
+                        validation_command="mvn clean test",
+                        source_jdk_home_env="JAVA8_HOME",
+                    )
+
+            self.assertTrue(result.succeeded)
+            env = run_process.call_args.kwargs["env"]
+            self.assertEqual(env["JAVA_HOME"], java8_home)
+            self.assertTrue(env["PATH"].startswith(str(Path(java8_home) / "bin") + os.pathsep))
+            self.assertNotIn("-Denforcer.skip=true", run_process.call_args.kwargs["command"])
+
     def test_post_transform_multi_module_validation_uses_reactor_clean_test(self) -> None:
         with workspace_temp_dir() as project:
             _write_multi_module_project(project)
@@ -285,6 +323,33 @@ public class Application {
             self.assertNotIn("-pl", kwargs["command"])
             self.assertNotIn("-am", kwargs["command"])
             self.assertNotIn("spring-boot:run", kwargs["command"])
+
+    def test_target_validation_uses_target_jdk_env(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_multi_module_project(project)
+            java21_home = str(project / "jdk21")
+            process_result = ProcessRunResult(
+                classification=BuildClassification(BuildResultKind.SUCCESS, "Build completed successfully"),
+                exit_code=0,
+            )
+
+            with patch.dict(os.environ, {"JAVA21_HOME": java21_home}, clear=False):
+                with patch(
+                    "migration_factory.agents.build_agent.agent.run_until_exit",
+                    return_value=process_result,
+                ) as run_process:
+                    result = run_build_agent(
+                        project / "shoppoc-app",
+                        stream_output=False,
+                        validation_unit_id="java-17",
+                        source_changing_unit=True,
+                        target_jdk_home_env="JAVA21_HOME",
+                    )
+
+            self.assertTrue(result.succeeded)
+            env = run_process.call_args.kwargs["env"]
+            self.assertEqual(env["JAVA_HOME"], java21_home)
+            self.assertTrue(env["PATH"].startswith(str(Path(java21_home) / "bin") + os.pathsep))
 
     def test_post_transform_multi_module_validation_honors_timeout_override(self) -> None:
         with workspace_temp_dir() as project:
@@ -379,6 +444,7 @@ public class Application {
 
             self.assertEqual(info.path, project)
             self.assertEqual(command[1:], ["clean", "test"])
+            self.assertNotIn("-Denforcer.skip=true", command)
 
     def test_java21_validation_blocks_when_runtime_is_too_old(self) -> None:
         with workspace_temp_dir() as project:
@@ -408,8 +474,9 @@ public class Application {
     def test_boot4_validation_requires_maven_363_or_newer(self) -> None:
         with workspace_temp_dir() as project:
             _write_multi_module_project(project)
+            output_dir = project / "contracts"
 
-            def version_side_effect(command):
+            def version_side_effect(command, env=None):
                 if command[0] == "java":
                     return ProcessRunResult(
                         classification=BuildClassification(BuildResultKind.SUCCESS, "version checked"),
@@ -428,6 +495,7 @@ public class Application {
             ):
                 result = run_build_agent(
                     project / "shoppoc-app",
+                    output_dir=output_dir,
                     stream_output=False,
                     validation_unit_id="spring-boot-4-0",
                     source_changing_unit=True,
@@ -435,6 +503,168 @@ public class Application {
 
             self.assertFalse(result.succeeded)
             self.assertIn("Maven version 3.6.2 is incompatible", result.message)
+            self.assertIsNotNone(result.error_contract_path)
+            contract = json.loads(result.error_contract_path.read_text(encoding="utf-8"))
+            self.assertEqual(contract["detected_version"], "3.6.2")
+            self.assertEqual(contract["required_minimum"], "3.6.3")
+            self.assertEqual(contract["profile"], "spring-boot-4")
+            self.assertEqual(contract["target_unit"], "spring-boot-4-0")
+
+    def test_boot4_validation_allows_maven_363(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_multi_module_project(project)
+
+            def version_side_effect(command, env=None):
+                if command[0] == "java":
+                    return ProcessRunResult(
+                        classification=BuildClassification(BuildResultKind.SUCCESS, "version checked"),
+                        exit_code=0,
+                        stderr=['openjdk version "21.0.2"'],
+                    )
+                return ProcessRunResult(
+                    classification=BuildClassification(BuildResultKind.SUCCESS, "version checked"),
+                    exit_code=0,
+                    stdout=["Apache Maven 3.6.3"],
+                )
+
+            with patch(
+                "migration_factory.agents.build_agent.agent._run_version_command",
+                side_effect=version_side_effect,
+            ):
+                with patch("migration_factory.agents.build_agent.agent.run_until_exit") as run_process:
+                    run_process.return_value = ProcessRunResult(
+                        classification=BuildClassification(BuildResultKind.SUCCESS, "build ok"),
+                        exit_code=0,
+                        stdout=["BUILD SUCCESS"],
+                    )
+                    result = run_build_agent(
+                        project / "shoppoc-app",
+                        stream_output=False,
+                        validation_unit_id="spring-boot-4-0",
+                        source_changing_unit=True,
+                    )
+
+            self.assertTrue(result.succeeded)
+            run_process.assert_called_once()
+
+    def test_boot4_validation_uses_system_maven_when_wrapper_is_not_executable(self) -> None:
+        with workspace_temp_dir() as project:
+            (project / "pom.xml").write_text("<project />", encoding="utf-8")
+            (project / "mvnw").write_text("#!/bin/sh\n", encoding="utf-8")
+            version_commands: list[list[str]] = []
+
+            def version_side_effect(command, env=None):
+                version_commands.append(command)
+                if command[0] == "java":
+                    return ProcessRunResult(
+                        classification=BuildClassification(BuildResultKind.SUCCESS, "version checked"),
+                        exit_code=0,
+                        stderr=['openjdk version "21.0.2"'],
+                    )
+                return ProcessRunResult(
+                    classification=BuildClassification(BuildResultKind.SUCCESS, "version checked"),
+                    exit_code=0,
+                    stdout=["Apache Maven 3.6.3"],
+                )
+
+            with patch(
+                "migration_factory.agents.build_agent.agent._run_version_command",
+                side_effect=version_side_effect,
+            ):
+                with patch("migration_factory.agents.build_agent.agent.run_until_exit") as run_process:
+                    run_process.return_value = ProcessRunResult(
+                        classification=BuildClassification(BuildResultKind.SUCCESS, "build ok"),
+                        exit_code=0,
+                        stdout=["BUILD SUCCESS"],
+                    )
+                    result = run_build_agent(
+                        project,
+                        stream_output=False,
+                        validation_unit_id="spring-boot-4-0",
+                        source_changing_unit=True,
+                        validation_command=["mvn", "clean", "test"],
+                    )
+
+            self.assertTrue(result.succeeded)
+            self.assertEqual(version_commands[1], ["mvn", "-version"])
+
+    def test_boot4_validation_allows_maven_39x(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_multi_module_project(project)
+
+            def version_side_effect(command, env=None):
+                if command[0] == "java":
+                    return ProcessRunResult(
+                        classification=BuildClassification(BuildResultKind.SUCCESS, "version checked"),
+                        exit_code=0,
+                        stderr=['openjdk version "21.0.2"'],
+                    )
+                return ProcessRunResult(
+                    classification=BuildClassification(BuildResultKind.SUCCESS, "version checked"),
+                    exit_code=0,
+                    stdout=["Apache Maven 3.9.9"],
+                )
+
+            with patch(
+                "migration_factory.agents.build_agent.agent._run_version_command",
+                side_effect=version_side_effect,
+            ):
+                with patch("migration_factory.agents.build_agent.agent.run_until_exit") as run_process:
+                    run_process.return_value = ProcessRunResult(
+                        classification=BuildClassification(BuildResultKind.SUCCESS, "build ok"),
+                        exit_code=0,
+                        stdout=["BUILD SUCCESS"],
+                    )
+                    result = run_build_agent(
+                        project / "shoppoc-app",
+                        stream_output=False,
+                        validation_unit_id="spring-boot-4-0",
+                        source_changing_unit=True,
+                    )
+
+            self.assertTrue(result.succeeded)
+            run_process.assert_called_once()
+
+    def test_boot4_validation_fails_clearly_for_malformed_maven_output(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_multi_module_project(project)
+            output_dir = project / "contracts"
+
+            def version_side_effect(command, env=None):
+                if command[0] == "java":
+                    return ProcessRunResult(
+                        classification=BuildClassification(BuildResultKind.SUCCESS, "version checked"),
+                        exit_code=0,
+                        stderr=['openjdk version "21.0.2"'],
+                    )
+                return ProcessRunResult(
+                    classification=BuildClassification(BuildResultKind.SUCCESS, "version checked"),
+                    exit_code=0,
+                    stdout=["Maven home: /opt/maven"],
+                )
+
+            with patch(
+                "migration_factory.agents.build_agent.agent._run_version_command",
+                side_effect=version_side_effect,
+            ):
+                with patch("migration_factory.agents.build_agent.agent.run_until_exit") as run_process:
+                    result = run_build_agent(
+                        project / "shoppoc-app",
+                        output_dir=output_dir,
+                        stream_output=False,
+                        validation_unit_id="spring-boot-4-0",
+                        source_changing_unit=True,
+                    )
+
+            self.assertFalse(result.succeeded)
+            self.assertIn("unparseable", result.message)
+            self.assertIsNotNone(result.error_contract_path)
+            contract = json.loads(result.error_contract_path.read_text(encoding="utf-8"))
+            self.assertEqual(contract["detected_version"], None)
+            self.assertEqual(contract["required_minimum"], "3.6.3")
+            self.assertEqual(contract["profile"], "spring-boot-4")
+            self.assertEqual(contract["target_unit"], "spring-boot-4-0")
+            run_process.assert_not_called()
 
     def test_writes_json_contract_when_project_detection_fails(self) -> None:
         with workspace_temp_dir() as tmp:

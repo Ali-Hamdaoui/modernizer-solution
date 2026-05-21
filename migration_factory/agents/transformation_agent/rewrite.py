@@ -5,6 +5,9 @@ from pathlib import Path
 import shutil
 import xml.etree.ElementTree as ET
 
+DEFAULT_OPENREWRITE_MAVEN_PLUGIN_VERSION = "6.39.0"
+OPENREWRITE_MAVEN_PLUGIN = ("org.openrewrite.maven", "rewrite-maven-plugin")
+
 
 class RewritePluginError(Exception):
     pass
@@ -43,10 +46,32 @@ def inject_rewrite_plugin(
     return RewritePluginInjection(pom_path=pom_path, coordinates=coordinates)
 
 
-def build_rewrite_run_command(active_recipes: list[str]) -> str:
+def build_rewrite_run_command(
+    active_recipes: list[str],
+    *,
+    recipe_artifacts: list[str] | None = None,
+    plugin_version: str = DEFAULT_OPENREWRITE_MAVEN_PLUGIN_VERSION,
+    apply_goal: str = "run",
+    maven_args: list[str] | None = None,
+) -> str:
+    goal_name = str(apply_goal or "run").strip() or "run"
+    goal = f"{OPENREWRITE_MAVEN_PLUGIN[0]}:{OPENREWRITE_MAVEN_PLUGIN[1]}:{_concrete_plugin_version(plugin_version)}:{goal_name}"
+    args = [goal]
     if active_recipes:
-        return f"mvn rewrite:run -Drewrite.activeRecipes={','.join(active_recipes)}"
-    return "mvn rewrite:run"
+        args.append(f"-Drewrite.activeRecipes={','.join(active_recipes)}")
+    if recipe_artifacts:
+        args.append(f"-Drewrite.recipeArtifactCoordinates={','.join(recipe_artifacts)}")
+    if maven_args:
+        args.extend(str(item) for item in maven_args)
+    return "mvn " + " ".join(args)
+
+
+def rewrite_plugin_version_from_xml(plugin_txt_path: str | Path) -> str:
+    plugin_element = _parse_plugin_xml(Path(plugin_txt_path).expanduser().resolve())
+    group_id, artifact_id = _plugin_coordinates(plugin_element)
+    if (group_id, artifact_id) != OPENREWRITE_MAVEN_PLUGIN:
+        return DEFAULT_OPENREWRITE_MAVEN_PLUGIN_VERSION
+    return _concrete_plugin_version(_child_text(plugin_element, "version"))
 
 
 def _resolve_pom(project_path: Path, module: str | None) -> Path:
@@ -77,6 +102,13 @@ def _plugin_coordinates(plugin_element: ET.Element) -> tuple[str, str]:
     if not artifact_id:
         raise RewritePluginError("OpenRewrite plugin XML must include <artifactId>")
     return group_id, artifact_id
+
+
+def _concrete_plugin_version(version: str | None) -> str:
+    value = str(version or "").strip()
+    if not value or value.upper() == "RELEASE":
+        return DEFAULT_OPENREWRITE_MAVEN_PLUGIN_VERSION
+    return value
 
 
 def _upsert_plugin(

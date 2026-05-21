@@ -29,6 +29,13 @@ class BuildErrorContract:
     main_class: str | None = None
     stdout_tail: list[str] = field(default_factory=list)
     stderr_tail: list[str] = field(default_factory=list)
+    unit_id: str | None = None
+    java_home: str | None = None
+    java_home_env: str | None = None
+    detected_version: str | None = None
+    required_minimum: str | None = None
+    profile: str | None = None
+    target_unit: str | None = None
 
 
 @dataclass(frozen=True)
@@ -71,6 +78,13 @@ def build_error_contract(
     main_class: str | None,
     stdout: list[str],
     stderr: list[str],
+    unit_id: str | None = None,
+    java_home: str | None = None,
+    java_home_env: str | None = None,
+    detected_version: str | None = None,
+    required_minimum: str | None = None,
+    profile: str | None = None,
+    target_unit: str | None = None,
     tail_size: int = 40,
 ) -> BuildErrorContract:
     return BuildErrorContract(
@@ -90,6 +104,13 @@ def build_error_contract(
         main_class=main_class,
         stdout_tail=stdout[-tail_size:],
         stderr_tail=stderr[-tail_size:],
+        unit_id=unit_id,
+        java_home=java_home,
+        java_home_env=java_home_env,
+        detected_version=detected_version,
+        required_minimum=required_minimum,
+        profile=profile,
+        target_unit=target_unit,
     )
 
 

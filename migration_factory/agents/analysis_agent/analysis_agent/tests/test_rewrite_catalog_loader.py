@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from rewrite_command_builder import build_rewrite_maven_command
 from rewrite_catalog_loader import load_rewrite_catalog
 
 
@@ -149,3 +150,23 @@ def test_real_boot4_java21_catalog_loads_multiple_artifacts_and_recipes(tmp_path
         "org.openrewrite.java.migrate.UpgradeToJava21",
         "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0",
     ]
+    assert result["openrewrite"]["analysis_preview_maven_args"] == ["-Denforcer.skip=true"]
+
+
+def test_real_java17_profile_preview_command_unchanged(tmp_path):
+    legacy = tmp_path / "legacy"
+    modernized = tmp_path / "modernized"
+    legacy.mkdir()
+    modernized.mkdir()
+    repo_root = Path(__file__).resolve().parents[5]
+    hub = repo_root / "modernizer-solution-ai-hub"
+
+    result = load_rewrite_catalog(
+        DummyContext(legacy, modernized, hub, "springboot-2.7-to-3.5-java17")
+    )
+
+    assert result["status"] == "USED"
+    assert result["openrewrite"].get("analysis_preview_maven_args") == []
+    cmd = build_rewrite_maven_command(result["openrewrite"])
+    assert "-Denforcer.skip=true" not in cmd
+    assert cmd[1].endswith(":dryRun")

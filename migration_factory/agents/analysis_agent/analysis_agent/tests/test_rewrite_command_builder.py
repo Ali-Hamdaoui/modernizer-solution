@@ -53,3 +53,13 @@ def test_joins_yaml_catalog_lists_for_maven_properties():
 
     assert "-Drewrite.recipeArtifactCoordinates=org.openrewrite.recipe:rewrite-spring:6.30.4,org.openrewrite.recipe:rewrite-migrate-java:3.34.1" in cmd
     assert "-Drewrite.activeRecipes=org.openrewrite.java.migrate.UpgradeToJava17,org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5" in cmd
+
+
+def test_analysis_preview_maven_args_are_inserted_before_rewrite_goal():
+    catalog = _catalog("rewrite:dryRun")
+    catalog["analysis_preview_maven_args"] = ["-Denforcer.skip=true"]
+
+    cmd = build_rewrite_maven_command(catalog)
+
+    assert cmd[1] == "-Denforcer.skip=true"
+    assert cmd[2].endswith(":dryRun")

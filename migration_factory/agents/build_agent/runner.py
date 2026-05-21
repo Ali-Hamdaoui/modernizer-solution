@@ -46,6 +46,7 @@ def run_until_build_result(
     stream_output: bool = True,
     stop_after_start: bool = True,
     on_startup_result: Callable[[BuildClassification], None] | None = None,
+    env: dict[str, str] | None = None,
 ) -> ProcessRunResult:
     try:
         popen_kwargs: dict[str, object] = {}
@@ -62,6 +63,7 @@ def run_until_build_result(
             text=True,
             bufsize=1,
             universal_newlines=True,
+            env=env,
             **popen_kwargs,
         )
     except FileNotFoundError as exc:
@@ -163,6 +165,7 @@ def run_until_exit(
     cwd: Path,
     timeout_seconds: int,
     stream_output: bool = True,
+    env: dict[str, str] | None = None,
 ) -> ProcessRunResult:
     try:
         process = subprocess.Popen(
@@ -173,6 +176,7 @@ def run_until_exit(
             text=True,
             bufsize=1,
             universal_newlines=True,
+            env=env,
         )
     except FileNotFoundError as exc:
         command_name = command[0] if command else "<empty command>"

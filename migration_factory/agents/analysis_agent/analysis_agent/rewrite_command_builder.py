@@ -34,10 +34,12 @@ def build_rewrite_maven_command(catalog):
         artifacts = ",".join(artifacts)
     if isinstance(recipes, list):
         recipes = ",".join(recipes)
+    preview_maven_args = [str(arg) for arg in catalog.get("analysis_preview_maven_args", [])]
 
     maven_executable = shutil.which("mvn") or shutil.which("mvn.cmd") or "mvn"
     cmd = [
         maven_executable,
+        *preview_maven_args,
         f"{group_id}:{artifact_id}:{version}:{goal}",
         f"-Drewrite.activeRecipes={recipes}",
         f"-Drewrite.recipeArtifactCoordinates={artifacts}",

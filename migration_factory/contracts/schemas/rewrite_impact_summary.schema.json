@@ -40,7 +40,11 @@
         "api_or_boot_upgrade": {"type": "boolean"},
         "javax_removed": {"type": "boolean"},
         "boot_2_to_3_gap": {"type": "boolean"},
+        "boot_2_to_4_gap": {"type": "boolean"},
+        "boot4_target": {"type": "boolean"},
         "java_11_to_17_gap": {"type": "boolean"},
+        "java_8_to_21_gap": {"type": "boolean"},
+        "java_21_target": {"type": "boolean"},
         "javax_present": {"type": "boolean"},
         "security_config_touched": {"type": "boolean"},
         "datasource_config_touched": {"type": "boolean"}

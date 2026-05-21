@@ -6,6 +6,8 @@ risk_level: high
 production_allowed: false
 requires_human_approval: true
 fallback_profile: springboot-2-to-3-5-to-4-java21
+source_jdk_home_env: JAVA8_HOME
+target_jdk_home_env: JAVA21_HOME
 source:
   java:
     allowed_versions:
@@ -35,6 +37,20 @@ openrewrite:
   preview_allowed: true
   apply_allowed: false
   catalog_path: catalogs/openrewrite/springboot-4-java21-sandbox.yaml
+  analysis_preview_maven_args:
+    - -Denforcer.skip=true
+  apply_goal: runNoFork
+  apply_maven_args:
+    - -Denforcer.skip=true
+  post_apply_patches:
+    - type: maven_enforcer_java_version
+      target_range: "[21,)"
+    - type: security_authorize_http_requests
+    - type: batch_flat_file_item_reader_constructor
+    - type: pom_property
+      property: archunit.version
+      old_value: 0.23.1
+      new_value: 1.4.1
 policies:
   safety: policies/safety.yaml
   planning: policies/planning.yaml

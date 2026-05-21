@@ -10,6 +10,30 @@ DEFAULT_TARGET_STACK = {
 }
 
 
+def _default_scan_result(target, warning):
+    target_stack_payload = {
+        "java": str(target.get("java", "17")),
+        "spring_boot": str(target.get("spring_boot", "3.5.14")),
+    }
+    for optional_key in ("spring_framework", "build"):
+        if target.get(optional_key):
+            target_stack_payload[optional_key] = str(target[optional_key])
+
+    return {
+        "source_stack": {
+            "java": "unknown",
+            "spring_boot": "unknown",
+            "build_tool": "unknown",
+        },
+        "project_structure": {
+            "modules": [],
+            "module_count": 0,
+        },
+        "target_stack": target_stack_payload,
+        "warnings": [warning],
+    }
+
+
 def load_profile_target_stack(ai_hub_path, profile_id):
     if not ai_hub_path or not profile_id:
         return DEFAULT_TARGET_STACK.copy()
@@ -33,16 +57,36 @@ def load_profile_target_stack(ai_hub_path, profile_id):
 def scan_root_pom(file_path, target_stack=None):
     ns = {"mvn": "http://maven.apache.org/POM/4.0.0"}
     target = dict(target_stack or DEFAULT_TARGET_STACK)
+    pom_path = Path(file_path)
 
     try:
         tree = ET.parse(file_path)
         root = tree.getroot()
 
+        parent_group = root.find(".//mvn:parent/mvn:groupId", ns)
+        parent_artifact = root.find(".//mvn:parent/mvn:artifactId", ns)
         parent_version = root.find(".//mvn:parent/mvn:version", ns)
-        spring_boot = parent_version.text if parent_version is not None else "unknown"
+        parent_is_boot = (
+            parent_group is not None
+            and parent_artifact is not None
+            and parent_group.text == "org.springframework.boot"
+            and parent_artifact.text == "spring-boot-starter-parent"
+        )
+        spring_boot = (
+            parent_version.text
+            if parent_version is not None
+            and (parent_is_boot or parent_group is None or parent_artifact is None)
+            else "unknown"
+        )
 
         java_ver_elem = root.find(".//mvn:properties/mvn:java.version", ns)
-        java_version = java_ver_elem.text if java_ver_elem is not None else "unknown"
+        compiler_source_elem = root.find(".//mvn:properties/mvn:maven.compiler.source", ns)
+        compiler_release_elem = root.find(".//mvn:properties/mvn:maven.compiler.release", ns)
+        java_version = "unknown"
+        for candidate in (java_ver_elem, compiler_release_elem, compiler_source_elem):
+            if candidate is not None and candidate.text:
+                java_version = candidate.text
+                break
 
         modules = [m.text for m in root.findall(".//mvn:modules/mvn:module", ns)]
         target_stack_payload = {
@@ -57,6 +101,7 @@ def scan_root_pom(file_path, target_stack=None):
             "source_stack": {
                 "java": java_version,
                 "spring_boot": spring_boot,
+                "build_tool": "maven" if pom_path.name == "pom.xml" else "unknown",
             },
             "project_structure": {
                 "modules": modules,
@@ -66,7 +111,10 @@ def scan_root_pom(file_path, target_stack=None):
             "warnings": _target_warnings(target, java_version, spring_boot),
         }
     except Exception as e:
-        return {"error": str(e)}
+        result = _default_scan_result(target, f"Unable to parse root pom.xml: {e}")
+        if pom_path.name == "pom.xml" and pom_path.exists():
+            result["source_stack"]["build_tool"] = "maven"
+        return result
 
 
 def _target_warnings(target, source_java, source_boot):

@@ -40,6 +40,25 @@ def _as_rewrite_goal(goal):
     return value if ":" in value else f"rewrite:{value}"
 
 
+def _as_string_list(values):
+    if not values:
+        return []
+    if not isinstance(values, list):
+        raise ValueError("analysis_preview_maven_args must be a list")
+    return [str(value) for value in values]
+
+
+def _dedupe(values):
+    seen = set()
+    result = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
 def _is_apply_goal(goal):
     return _as_rewrite_goal(goal) in {"rewrite:run", "rewrite:runNoFork"}
 
@@ -134,6 +153,11 @@ def _load_ai_hub_catalog(context):
         apply_goals = {_as_rewrite_goal(goal) for goal in catalog.get("forbidden_apply_goals", [])}
         blocked = sorted(goal for goal in apply_goals if goal != selected_goal)
 
+        preview_maven_args = _dedupe([
+            *_as_string_list(catalog.get("analysis_preview_maven_args")),
+            *_as_string_list(profile.get("openrewrite", {}).get("analysis_preview_maven_args")),
+        ])
+
         return {
             "status": "USED",
             "path": str(catalog_path),
@@ -146,6 +170,7 @@ def _load_ai_hub_catalog(context):
                 "recipe_artifacts": [_coord(item) for item in catalog.get("recipe_artifacts", [])],
                 "active_recipes": [str(item) for item in catalog.get("active_recipes", [])],
                 "dry_run": selected_goal,
+                "analysis_preview_maven_args": preview_maven_args,
             },
         }
     except (KeyError, TypeError, ValueError) as exc:
@@ -208,6 +233,9 @@ def load_rewrite_catalog(context):
                 "recipe_artifacts": str(payload["openrewrite.recipe_artifacts"]),
                 "active_recipes": str(payload["openrewrite.active_recipes"]),
                 "dry_run": _as_rewrite_goal(dry_run_goal),
+                "analysis_preview_maven_args": _as_string_list(
+                    payload.get("openrewrite.analysis_preview_maven_args")
+                ),
             },
         }
 

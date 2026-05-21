@@ -89,7 +89,30 @@
       "properties": {
         "preview_allowed": { "type": "boolean" },
         "apply_allowed": { "type": "boolean" },
-        "catalog_path": { "type": "string" }
+        "catalog_path": { "type": "string" },
+        "analysis_preview_maven_args": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "apply_goal": { "type": "string" },
+        "apply_maven_args": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "post_apply_patches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string" },
+              "target_range": { "type": "string" },
+              "property": { "type": "string" },
+              "old_value": { "type": "string" },
+              "new_value": { "type": "string" }
+            },
+            "required": ["type"]
+          }
+        }
       }
     },
     "policies": {
