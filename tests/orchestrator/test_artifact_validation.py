@@ -57,6 +57,41 @@ def test_source_modified_true_blocks(tmp_path: Path) -> None:
     assert "read_only_verification.json source_modified must be false" in result.blockers
 
 
+def test_java17_analysis_artifacts_allow_boot4_java21_rewrite_signals(tmp_path: Path) -> None:
+    state = _state(tmp_path)
+    state["profile_id"] = "springboot-2.7-to-3.5-java17"
+    _write_analysis_artifacts(state)
+    _write_rewrite_impact_summary(
+        state,
+        {
+            "boot_2_to_4_gap": False,
+            "boot4_target": False,
+            "java_8_to_21_gap": False,
+            "java_21_target": False,
+        },
+    )
+
+    result = validate_analysis_artifacts(state)
+
+    assert result.valid is True
+    assert result.blockers == []
+
+
+def test_analysis_artifacts_reject_unknown_rewrite_migration_signal(tmp_path: Path) -> None:
+    state = _state(tmp_path)
+    _write_analysis_artifacts(state)
+    _write_rewrite_impact_summary(state, {"unrelated_future_signal": True})
+
+    result = validate_analysis_artifacts(state)
+
+    assert result.valid is False
+    assert any(
+        "Invalid artifact schema for rewrite_impact_summary.json" in blocker
+        and "unrelated_future_signal" in blocker
+        for blocker in result.blockers
+    )
+
+
 def test_assessment_not_ready_blocks(tmp_path: Path) -> None:
     state = _state(tmp_path)
     _write_assessment_artifacts(state, approval_readiness="BLOCKED")
@@ -176,6 +211,42 @@ def _write_planning_artifacts(state: MigrationState) -> None:
         },
     )
     _write_json(planning_dir / "plan_validation_report.json", {"valid": True})
+
+
+def _write_rewrite_impact_summary(
+    state: MigrationState, migration_signal_overrides: dict[str, bool]
+) -> None:
+    signals = {
+        "api_or_boot_upgrade": True,
+        "javax_removed": True,
+        "boot_2_to_3_gap": True,
+        "boot_2_to_4_gap": False,
+        "boot4_target": False,
+        "java_11_to_17_gap": True,
+        "java_8_to_21_gap": False,
+        "java_21_target": False,
+        "javax_present": True,
+        "security_config_touched": False,
+        "datasource_config_touched": False,
+    }
+    signals.update(migration_signal_overrides)
+    _write_json(
+        Path(state["analysis_dir"]) / "rewrite_impact_summary.json",
+        {
+            "schema_version": "1.0.0",
+            "run_id": state["run_id"],
+            "agent": "analysis_agent",
+            "phase": "analysis",
+            "status": "PASS",
+            "overall_impact": "MEDIUM",
+            "changed_files": ["src/main/java/A.java"],
+            "high_risk_files": ["src/main/java/A.java"],
+            "migration_signals": signals,
+            "blocked_reasons": [],
+            "source_modified": False,
+            "artifact_refs": {"self": "rewrite_impact_summary.json"},
+        },
+    )
 
 
 def _write_assessment_artifacts(

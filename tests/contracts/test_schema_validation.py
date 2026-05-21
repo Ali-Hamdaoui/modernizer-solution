@@ -72,7 +72,11 @@ VALID_PAYLOADS = {
             "api_or_boot_upgrade": True,
             "javax_removed": True,
             "boot_2_to_3_gap": True,
+            "boot_2_to_4_gap": False,
+            "boot4_target": False,
             "java_11_to_17_gap": True,
+            "java_8_to_21_gap": False,
+            "java_21_target": False,
             "javax_present": True,
             "security_config_touched": False,
             "datasource_config_touched": False,
@@ -323,6 +327,28 @@ def test_rewrite_impact_summary_rejects_impact_without_overall_impact() -> None:
     payload = deepcopy(VALID_PAYLOADS["rewrite_impact_summary.schema.json"])
     payload.pop("overall_impact")
     payload["impact"] = "LOW"
+
+    with pytest.raises(jsonschema.ValidationError):
+        _validate("rewrite_impact_summary.schema.json", payload)
+
+
+def test_rewrite_impact_summary_accepts_boot4_java21_signals() -> None:
+    payload = deepcopy(VALID_PAYLOADS["rewrite_impact_summary.schema.json"])
+    payload["migration_signals"].update(
+        {
+            "boot_2_to_4_gap": True,
+            "boot4_target": True,
+            "java_8_to_21_gap": True,
+            "java_21_target": True,
+        }
+    )
+
+    _validate("rewrite_impact_summary.schema.json", payload)
+
+
+def test_rewrite_impact_summary_rejects_unknown_migration_signal() -> None:
+    payload = deepcopy(VALID_PAYLOADS["rewrite_impact_summary.schema.json"])
+    payload["migration_signals"]["unrelated_future_signal"] = True
 
     with pytest.raises(jsonschema.ValidationError):
         _validate("rewrite_impact_summary.schema.json", payload)
