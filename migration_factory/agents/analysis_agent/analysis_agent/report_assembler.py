@@ -13,6 +13,7 @@ def assemble_report(context, maven_data, import_data):
         # Ces clés doivent correspondre exactement aux sorties du maven_scanner
         "source_stack": maven_data["source_stack"],
         "target_stack": maven_data["target_stack"],
+        "warnings": maven_data.get("warnings", []),
         
         "project_metadata": {
             "modules": maven_data["project_structure"]["modules"],

@@ -152,7 +152,8 @@ def planning_node(state: MigrationState) -> MigrationState:
     ]
     deterministic_warnings = [*compatibility.warnings, *risk_warning_messages]
 
-    units = build_migration_units()
+    units = build_migration_units(loaded_profile.profile)
+    profile_governance = _profile_governance(loaded_profile.profile)
     write_migration_plan(
         modernized_app_path=state.get("modernized_app_path", ""),
         payload=MigrationPlanPayload(
@@ -164,6 +165,10 @@ def planning_node(state: MigrationState) -> MigrationState:
             blockers=tuple(blocker_messages),
             warnings=tuple(deterministic_warnings),
             units=units,
+            strategy=profile_governance.get("strategy"),
+            risk_level=profile_governance.get("risk_level"),
+            production_allowed=profile_governance.get("production_allowed"),
+            fallback_profile=profile_governance.get("fallback_profile"),
         ),
     )
     write_migration_units(
@@ -325,4 +330,20 @@ def planning_node(state: MigrationState) -> MigrationState:
         "planning_operator_notes": merged_output.operator_notes,
         "planning_risk_explanations": merged_output.risk_explanations,
         "planning_assist_warnings": assist_result_warnings,
+    }
+
+
+def _profile_governance(profile: dict) -> dict:
+    governance = profile.get("governance")
+    if not isinstance(governance, dict):
+        governance = {}
+    return {
+        "strategy": profile.get("strategy") or governance.get("strategy"),
+        "risk_level": profile.get("risk_level") or governance.get("risk_level"),
+        "production_allowed": (
+            profile.get("production_allowed")
+            if "production_allowed" in profile
+            else governance.get("production_allowed")
+        ),
+        "fallback_profile": profile.get("fallback_profile") or governance.get("fallback_profile"),
     }

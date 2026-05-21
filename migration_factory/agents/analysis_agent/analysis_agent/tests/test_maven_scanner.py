@@ -32,3 +32,33 @@ def test_scan_root_pom_extracts_correct_versions(tmp_path):
     # On vérifie aussi le contrat attendu pour l'agent de transformation
     assert result["target_stack"]["java"] == "17"
     assert result["target_stack"]["spring_boot"] == "3.5.14"
+
+
+def test_scan_root_pom_uses_profile_target_and_boot4_warnings(tmp_path):
+    fake_pom = tmp_path / "pom.xml"
+    fake_pom.write_text("""<?xml version="1.0" encoding="UTF-8"?>
+    <project xmlns="http://maven.apache.org/POM/4.0.0">
+        <parent>
+            <version>2.7.18</version>
+        </parent>
+        <properties>
+            <java.version>1.8</java.version>
+        </properties>
+    </project>
+    """, encoding="utf-8")
+
+    result = scan_root_pom(
+        str(fake_pom),
+        target_stack={
+            "java": "21",
+            "spring_boot": "4.0.0",
+            "spring_framework": "7.x",
+            "build": "maven",
+        },
+    )
+
+    assert result["target_stack"]["java"] == "21"
+    assert result["target_stack"]["spring_boot"] == "4.0.0"
+    assert result["target_stack"]["spring_framework"] == "7.x"
+    assert any("Spring Framework 7" in warning for warning in result["warnings"])
+    assert any("Servlet 6.1" in warning for warning in result["warnings"])

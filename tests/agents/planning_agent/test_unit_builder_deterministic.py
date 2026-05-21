@@ -13,6 +13,23 @@ def test_build_migration_units_has_deterministic_ids_in_exact_order() -> None:
     ]
 
 
+def test_build_migration_units_for_boot4_java21_profile() -> None:
+    units = build_migration_units(
+        {"target": {"java": "21", "spring_boot": "4.0.0", "build": "maven"}}
+    )
+
+    assert [unit.id for unit in units] == [
+        "baseline",
+        "java-21",
+        "spring-boot-4-0",
+        "jakarta",
+        "dependency-cleanup",
+        "existing-test-migration",
+    ]
+    assert units[1].goal == "Upgrade project runtime and build configuration to Java 21."
+    assert units[2].goal == "Upgrade Spring Boot dependencies and plugins to 4.0."
+
+
 def test_each_unit_has_required_fields_and_assist_policy_separate_from_tools() -> None:
     units = build_migration_units()
 

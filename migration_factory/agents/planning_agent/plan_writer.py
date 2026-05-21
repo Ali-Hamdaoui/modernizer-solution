@@ -19,6 +19,10 @@ class MigrationPlanPayload:
     blockers: tuple[str, ...]
     warnings: tuple[str, ...]
     units: tuple[MigrationUnit, ...]
+    strategy: str | None = None
+    risk_level: str | None = None
+    production_allowed: bool | None = None
+    fallback_profile: str | None = None
 
 
 def write_migration_plan(
@@ -66,6 +70,7 @@ def _render_plan_yaml(payload: MigrationPlanPayload) -> str:
         f"  build_tool: {_yaml_scalar(payload.target_stack.build_tool)}",
         f"  java: {_yaml_scalar(payload.target_stack.java)}",
         f"  spring_boot: {_yaml_scalar(payload.target_stack.spring_boot)}",
+        f"  spring_framework: {_yaml_scalar(payload.target_stack.spring_framework)}",
         f"executable: {'true' if executable else 'false'}",
         "requires_human_approval: true",
         "risks:",
@@ -75,6 +80,25 @@ def _render_plan_yaml(payload: MigrationPlanPayload) -> str:
     lines.extend(_yaml_list(payload.blockers, indent=2))
     lines.append("warnings:")
     lines.extend(_yaml_list(payload.warnings, indent=2))
+    if any(
+        value is not None
+        for value in (
+            payload.strategy,
+            payload.risk_level,
+            payload.production_allowed,
+            payload.fallback_profile,
+        )
+    ):
+        lines.append("profile_governance:")
+        lines.append(f"  strategy: {_yaml_scalar(payload.strategy)}")
+        lines.append(f"  risk_level: {_yaml_scalar(payload.risk_level)}")
+        if payload.production_allowed is None:
+            lines.append("  production_allowed: null")
+        else:
+            lines.append(
+                f"  production_allowed: {'true' if payload.production_allowed else 'false'}"
+            )
+        lines.append(f"  fallback_profile: {_yaml_scalar(payload.fallback_profile)}")
     lines.append("unit_references:")
     lines.extend(_yaml_list(tuple(unit_refs), indent=2))
     lines.append("artifact_refs:")

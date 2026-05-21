@@ -126,3 +126,26 @@ def test_ai_hub_catalog_without_dryrun_is_blocked(tmp_path):
 
     assert result["status"] == "FAILED"
     assert "rewrite:dryRun" in result["errors"][0]
+
+
+def test_real_boot4_java21_catalog_loads_multiple_artifacts_and_recipes(tmp_path):
+    legacy = tmp_path / "legacy"
+    modernized = tmp_path / "modernized"
+    legacy.mkdir()
+    modernized.mkdir()
+    repo_root = Path(__file__).resolve().parents[5]
+    hub = repo_root / "modernizer-solution-ai-hub"
+
+    result = load_rewrite_catalog(
+        DummyContext(legacy, modernized, hub, "springboot-2-java8-to-boot4-java21")
+    )
+
+    assert result["status"] == "USED"
+    assert result["openrewrite"]["recipe_artifacts"] == [
+        "org.openrewrite.recipe:rewrite-migrate-java:RELEASE",
+        "org.openrewrite.recipe:rewrite-spring:RELEASE",
+    ]
+    assert result["openrewrite"]["active_recipes"] == [
+        "org.openrewrite.java.migrate.UpgradeToJava21",
+        "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0",
+    ]

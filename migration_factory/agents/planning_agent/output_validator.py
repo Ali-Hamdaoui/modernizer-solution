@@ -37,6 +37,17 @@ REQUIRED_UNIT_ORDER: tuple[str, ...] = (
     "dependency-cleanup",
     "existing-test-migration",
 )
+ALLOWED_UNIT_ORDERS: tuple[tuple[str, ...], ...] = (
+    REQUIRED_UNIT_ORDER,
+    (
+        "baseline",
+        "java-21",
+        "spring-boot-4-0",
+        "jakarta",
+        "dependency-cleanup",
+        "existing-test-migration",
+    ),
+)
 APPROVAL_OPTIONS = APPROVAL_DECISION_VALUES
 
 
@@ -165,9 +176,9 @@ def _validate_units_yaml(path: Path, run_id: str, reasons: list[str]) -> None:
             if "copilot" in str(tool).lower() or "llm" in str(tool).lower():
                 reasons.append(f"units[{idx}].tools contains forbidden token: {tool}")
 
-    if tuple(ordered_ids) != REQUIRED_UNIT_ORDER:
+    if tuple(ordered_ids) not in ALLOWED_UNIT_ORDERS:
         reasons.append(
-            "migration_units.yaml unit order mismatch; expected " + ", ".join(REQUIRED_UNIT_ORDER)
+            "migration_units.yaml unit order mismatch; expected one supported profile order"
         )
 
 

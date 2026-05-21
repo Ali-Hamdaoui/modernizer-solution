@@ -380,6 +380,62 @@ public class Application {
             self.assertEqual(info.path, project)
             self.assertEqual(command[1:], ["clean", "test"])
 
+    def test_java21_validation_blocks_when_runtime_is_too_old(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_multi_module_project(project)
+            version_result = ProcessRunResult(
+                classification=BuildClassification(BuildResultKind.SUCCESS, "version checked"),
+                exit_code=0,
+                stderr=['openjdk version "17.0.12"'],
+            )
+
+            with patch(
+                "migration_factory.agents.build_agent.agent._run_version_command",
+                return_value=version_result,
+            ):
+                with patch("migration_factory.agents.build_agent.agent.run_until_exit") as run_process:
+                    result = run_build_agent(
+                        project / "shoppoc-app",
+                        stream_output=False,
+                        validation_unit_id="java-21",
+                        source_changing_unit=True,
+                    )
+
+            self.assertFalse(result.succeeded)
+            self.assertIn("incompatible with target Java 21", result.message)
+            run_process.assert_not_called()
+
+    def test_boot4_validation_requires_maven_363_or_newer(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_multi_module_project(project)
+
+            def version_side_effect(command):
+                if command[0] == "java":
+                    return ProcessRunResult(
+                        classification=BuildClassification(BuildResultKind.SUCCESS, "version checked"),
+                        exit_code=0,
+                        stderr=['openjdk version "21.0.2"'],
+                    )
+                return ProcessRunResult(
+                    classification=BuildClassification(BuildResultKind.SUCCESS, "version checked"),
+                    exit_code=0,
+                    stdout=["Apache Maven 3.6.2"],
+                )
+
+            with patch(
+                "migration_factory.agents.build_agent.agent._run_version_command",
+                side_effect=version_side_effect,
+            ):
+                result = run_build_agent(
+                    project / "shoppoc-app",
+                    stream_output=False,
+                    validation_unit_id="spring-boot-4-0",
+                    source_changing_unit=True,
+                )
+
+            self.assertFalse(result.succeeded)
+            self.assertIn("Maven version 3.6.2 is incompatible", result.message)
+
     def test_writes_json_contract_when_project_detection_fails(self) -> None:
         with workspace_temp_dir() as tmp:
             output_dir = tmp / "contracts" / "build"

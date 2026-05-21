@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
+import subprocess
 import time
 
 from migration_factory.contracts.build import BuildRunResult, write_build_error
 from migration_factory.contracts.build.schemas import build_error_contract
 from migration_factory.contracts.migration import mark_build_failed, mark_build_passed
 
-from .classifier import command_error_classification
+from .classifier import BuildClassification, BuildResultKind, command_error_classification
 from .detection import (
     BuildTool,
     BuildValidationMode,
@@ -84,6 +86,37 @@ def run_build_agent(
         else []
     )
     validation_mode = _validation_mode(project, validation_unit_id, source_changing_unit, explicit_command)
+    gate_failure = _target_environment_gate(project, validation_unit_id)
+    if gate_failure is not None:
+        classification = command_error_classification(gate_failure)
+        contract = build_error_contract(
+            project_path=project.path,
+            cwd=project.path,
+            build_tool=project.build_tool.value,
+            command=[],
+            result_kind=classification.kind.value,
+            message=classification.message,
+            matched_line=classification.line,
+            exit_code=None,
+            module=module,
+            main_class=main_class,
+            stdout=[],
+            stderr=[],
+        )
+        error_path = write_build_error(contract, resolved_output_dir)
+        build_result = BuildRunResult(
+            succeeded=False,
+            result_kind=classification.kind.value,
+            message=classification.message,
+            error_contract_path=error_path,
+            exit_code=None,
+            matched_line=classification.line,
+            warnings=[gate_failure],
+            command=[],
+            cwd=project.path,
+        )
+        _update_ledger(ledger_file, build_result)
+        return build_result
     resolved_module = module
     resolved_main_class = main_class
     if validation_mode == BuildValidationMode.REACTOR_TEST:
@@ -275,3 +308,73 @@ def _update_ledger(ledger_file: str | Path | None, result: BuildRunResult) -> No
         cwd=result.cwd,
         command_duration_seconds=result.command_duration_seconds,
     )
+
+
+def _target_environment_gate(project: JavaProjectInfo, validation_unit_id: str | None) -> str | None:
+    if not validation_unit_id:
+        return None
+    target_java = _target_java_for_unit(validation_unit_id)
+    boot4 = "spring-boot-4-0" in validation_unit_id
+    if target_java is not None and target_java >= 21:
+        java_result = _run_version_command(["java", "-version"])
+        java_major = _parse_java_major("\n".join([*java_result.stderr, *java_result.stdout]))
+        if java_result.exit_code != 0 or java_major is None:
+            return f"Java runtime version check failed for target Java {target_java}."
+        if java_major < target_java:
+            return f"Java runtime {java_major} is incompatible with target Java {target_java}."
+    if boot4 and project.build_tool == BuildTool.MAVEN:
+        maven_command = project.base_command[0] if project.base_command else "mvn"
+        mvn_result = _run_version_command([maven_command, "-version"])
+        maven_version = _parse_maven_version("\n".join([*mvn_result.stdout, *mvn_result.stderr]))
+        if mvn_result.exit_code != 0 or maven_version is None:
+            return "Maven version check failed for Spring Boot 4 target."
+        if maven_version < (3, 6, 3):
+            return (
+                "Maven version "
+                + ".".join(str(part) for part in maven_version)
+                + " is incompatible with Spring Boot 4 target; Maven >= 3.6.3 is required."
+            )
+    return None
+
+
+def _target_java_for_unit(unit_id: str) -> int | None:
+    if "spring-boot-4-0" in unit_id:
+        return 21
+    match = re.search(r"java-(\d+)", unit_id)
+    return int(match.group(1)) if match else None
+
+
+def _run_version_command(command: list[str]) -> ProcessRunResult:
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return ProcessRunResult(command_error_classification(str(exc)), None, [], [str(exc)])
+    return ProcessRunResult(
+        BuildClassification(BuildResultKind.SUCCESS, "version checked")
+        if completed.returncode == 0
+        else command_error_classification("version check failed"),
+        completed.returncode,
+        completed.stdout.splitlines(),
+        completed.stderr.splitlines(),
+    )
+
+
+def _parse_java_major(output: str) -> int | None:
+    match = re.search(r'version "([^"]+)"', output)
+    if not match:
+        match = re.search(r"\b(?:openjdk|java)\s+(\d+(?:\.\d+)*)", output, re.IGNORECASE)
+    if not match:
+        return None
+    version = match.group(1)
+    if version.startswith("1."):
+        parts = version.split(".")
+        return int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+    major = version.split(".", 1)[0]
+    return int(major) if major.isdigit() else None
+
+
+def _parse_maven_version(output: str) -> tuple[int, int, int] | None:
+    match = re.search(r"Apache Maven\s+(\d+)\.(\d+)\.(\d+)", output)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())

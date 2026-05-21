@@ -17,15 +17,25 @@ def _facts_indicate_major_migration(analysis_facts, migration_signals):
     source_java = _major_version(source_stack.get("java"))
     target_java = _major_version(target_stack.get("java"))
 
-    boot_gap = source_boot == 2 and target_boot == 3
-    java_gap = source_java == 11 and target_java == 17
+    boot_gap = source_boot == 2 and target_boot in {3, 4}
+    boot4_gap = source_boot == 2 and target_boot == 4
+    java_gap = (source_java, target_java) in {(11, 17), (8, 21), (11, 21), (17, 21)}
     javax_gap = javax_count > 0
 
     if boot_gap:
         migration_signals["api_or_boot_upgrade"] = True
-        migration_signals["boot_2_to_3_gap"] = True
+        if target_boot == 3:
+            migration_signals["boot_2_to_3_gap"] = True
+        if boot4_gap:
+            migration_signals["boot_2_to_4_gap"] = True
+            migration_signals["boot4_target"] = True
     if java_gap:
-        migration_signals["java_11_to_17_gap"] = True
+        if target_java == 17:
+            migration_signals["java_11_to_17_gap"] = True
+        if target_java == 21:
+            migration_signals["java_21_target"] = True
+            if source_java == 8:
+                migration_signals["java_8_to_21_gap"] = True
     if javax_gap:
         migration_signals["javax_removed"] = True
         migration_signals["javax_present"] = True
@@ -46,6 +56,10 @@ def analyze_rewrite_patch(patch_text, analysis_facts=None):
         "boot_2_to_3_gap": False,
         "java_11_to_17_gap": False,
         "javax_present": False,
+        "boot_2_to_4_gap": False,
+        "boot4_target": False,
+        "java_8_to_21_gap": False,
+        "java_21_target": False,
         "security_config_touched": False,
         "datasource_config_touched": False,
     }

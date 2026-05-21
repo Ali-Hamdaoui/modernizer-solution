@@ -1,17 +1,10 @@
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 from .assist_config import AssistPolicy, build_assist_policy
 
 
 RequiredMode = Literal["yes", "auto"]
-UnitId = Literal[
-    "baseline",
-    "java-17",
-    "spring-boot-3-5-14",
-    "jakarta",
-    "dependency-cleanup",
-    "existing-test-migration",
-]
+UnitId = str
 ToolList = tuple[str, ...]
 
 UNIT_ORDER: tuple[UnitId, ...] = (
@@ -27,7 +20,9 @@ UNIT_ORDER: tuple[UnitId, ...] = (
 TOOLS_BY_UNIT: dict[UnitId, ToolList] = {
     "baseline": ("maven", "junit"),
     "java-17": ("maven",),
+    "java-21": ("maven",),
     "spring-boot-3-5-14": ("maven",),
+    "spring-boot-4-0": ("maven",),
     "jakarta": ("maven", "jdeps"),
     "dependency-cleanup": ("maven",),
     "existing-test-migration": ("maven", "junit"),
@@ -51,7 +46,7 @@ class MigrationUnit:
 
 
 def _tools_for(unit_id: UnitId) -> ToolList:
-    tools = TOOLS_BY_UNIT[unit_id]
+    tools = TOOLS_BY_UNIT.get(unit_id, ("maven",))
     for tool in tools:
         lower_tool = tool.lower()
         if any(token in lower_tool for token in _BANNED_TOOL_TOKENS):
@@ -59,9 +54,14 @@ def _tools_for(unit_id: UnitId) -> ToolList:
     return tools
 
 
-def build_migration_units() -> tuple[MigrationUnit, ...]:
-    """Return deterministic MVP migration units in stable execution order."""
+def build_migration_units(profile: dict[str, Any] | None = None) -> tuple[MigrationUnit, ...]:
+    """Return deterministic migration units in stable execution order."""
     assist_policy = build_assist_policy()
+    target = _target_from_profile(profile)
+    java_unit = f"java-{target.java}"
+    boot_unit = _spring_boot_unit_id(target.spring_boot)
+    java_label = f"Java {target.java}"
+    boot_label = _spring_boot_label(target.spring_boot)
 
     return (
         MigrationUnit(
@@ -77,26 +77,26 @@ def build_migration_units() -> tuple[MigrationUnit, ...]:
             assist_policy=assist_policy,
         ),
         MigrationUnit(
-            id="java-17",
-            goal="Upgrade project runtime and build configuration to Java 17.",
+            id=java_unit,
+            goal=f"Upgrade project runtime and build configuration to {java_label}.",
             writes_source=True,
-            tools=_tools_for("java-17"),
+            tools=_tools_for(java_unit),
             validation=("mvn", "clean", "test"),
             expected_artifacts=("target/classes", "target/surefire-reports"),
-            rollback_strategy="Revert Java 17 configuration and dependency changes.",
-            blocking_gate="Proceed only if Java 17 build and tests pass.",
+            rollback_strategy=f"Revert {java_label} configuration and dependency changes.",
+            blocking_gate=f"Proceed only if {java_label} build and tests pass.",
             required="yes",
             assist_policy=assist_policy,
         ),
         MigrationUnit(
-            id="spring-boot-3-5-14",
-            goal="Upgrade Spring Boot dependencies and plugins to 3.5.14.",
+            id=boot_unit,
+            goal=f"Upgrade Spring Boot dependencies and plugins to {boot_label}.",
             writes_source=True,
-            tools=_tools_for("spring-boot-3-5-14"),
+            tools=_tools_for(boot_unit),
             validation=("mvn", "clean", "test"),
             expected_artifacts=("target/classes", "target/surefire-reports"),
             rollback_strategy="Revert Spring Boot version and related plugin updates.",
-            blocking_gate="Proceed only if Spring Boot 3.5.14 build and tests pass.",
+            blocking_gate=f"Proceed only if Spring Boot {boot_label} build and tests pass.",
             required="yes",
             assist_policy=assist_policy,
         ),
@@ -137,3 +137,48 @@ def build_migration_units() -> tuple[MigrationUnit, ...]:
             assist_policy=assist_policy,
         ),
     )
+
+
+@dataclass(frozen=True)
+class _TargetVersions:
+    java: str = "17"
+    spring_boot: str = "3.5.14"
+
+
+def _target_from_profile(profile: dict[str, Any] | None) -> _TargetVersions:
+    target = profile.get("target") if isinstance(profile, dict) else None
+    if not isinstance(target, dict):
+        return _TargetVersions()
+    java = _major_text(target.get("java")) or "17"
+    spring_boot = _version_text(target.get("spring_boot")) or "3.5.14"
+    return _TargetVersions(java=java, spring_boot=spring_boot)
+
+
+def _spring_boot_unit_id(version: str) -> str:
+    parts = version.split(".")
+    if version == "3.5.14":
+        return "spring-boot-3-5-14"
+    if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+        return f"spring-boot-{parts[0]}-{parts[1]}"
+    return "spring-boot-" + version.replace(".", "-")
+
+
+def _spring_boot_label(version: str) -> str:
+    if version == "3.5.14":
+        return "3.5.14"
+    parts = version.split(".")
+    if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+        return f"{parts[0]}.{parts[1]}"
+    return version
+
+
+def _major_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return text.split(".", 1)[0]
+
+
+def _version_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None

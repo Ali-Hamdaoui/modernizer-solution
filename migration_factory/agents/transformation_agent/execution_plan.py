@@ -79,7 +79,9 @@ def _build_transformer_plan(
         raise TransformationExecutionPlanError("planning/migration_units.yaml must contain units")
 
     active_recipes = _string_list((rewrite_plugin_plan or {}).get("active_recipes"))
+    recipe_artifacts = _string_list((rewrite_plugin_plan or {}).get("recipe_artifacts"))
     first_write_unit = _first_write_unit_id(units) if active_recipes else None
+    first_write_index = _first_write_unit_index(units) if active_recipes else -1
     profile = migration_plan.get("profile") or assessment_report.get("profile")
 
     return {
@@ -96,8 +98,13 @@ def _build_transformer_plan(
             }
         },
         "migration_units": [
-            _adapt_unit(unit, active_recipes=active_recipes, first_write_unit=first_write_unit)
-            for unit in units
+            _adapt_unit(
+                unit,
+                active_recipes=active_recipes,
+                recipe_artifacts=recipe_artifacts if index == first_write_index else None,
+                first_write_unit=first_write_unit,
+            )
+            for index, unit in enumerate(units)
         ],
     }
 
@@ -106,6 +113,7 @@ def _adapt_unit(
     raw_unit: Any,
     *,
     active_recipes: list[str],
+    recipe_artifacts: list[str] | None = None,
     first_write_unit: str | None,
 ) -> dict[str, Any]:
     if not isinstance(raw_unit, dict):
@@ -118,7 +126,10 @@ def _adapt_unit(
 
     transformations: list[dict[str, Any]] = []
     if active_recipes and unit_id == first_write_unit:
-        transformations.append({"type": "openrewrite", "active_recipes": active_recipes})
+        openrewrite_transformation = {"type": "openrewrite", "active_recipes": active_recipes}
+        if recipe_artifacts:
+            openrewrite_transformation["recipe_artifacts"] = recipe_artifacts
+        transformations.append(openrewrite_transformation)
     transformations.append(
         {
             "type": "custom_code_change",
@@ -165,6 +176,13 @@ def _first_write_unit_id(units: list[Any]) -> str | None:
         if isinstance(unit, dict) and unit.get("id"):
             return str(unit["id"])
     return None
+
+
+def _first_write_unit_index(units: list[Any]) -> int:
+    for index, unit in enumerate(units):
+        if isinstance(unit, dict) and unit.get("writes_source") is True and unit.get("id"):
+            return index
+    return 0
 
 
 def _string_list(value: Any) -> list[str]:

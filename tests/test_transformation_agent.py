@@ -105,6 +105,10 @@ class TransformationAgentTests(unittest.TestCase):
                 payload["migration_units"][1]["transformations"][0]["active_recipes"],
                 ["org.openrewrite.java.migrate.UpgradeToJava17"],
             )
+            self.assertEqual(
+                payload["migration_units"][1]["transformations"][0]["recipe_artifacts"],
+                ["org.openrewrite.recipe:rewrite-migrate-java:3.20.0"],
+            )
             self.assertEqual(loaded_plan.migration_id, run_id)
             self.assertEqual([unit.id for unit in loaded_plan.units], ["baseline", "java-17"])
 

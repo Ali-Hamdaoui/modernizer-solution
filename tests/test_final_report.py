@@ -27,6 +27,8 @@ def test_successful_full_sandbox_writes_final_report_and_summary(tmp_path: Path,
     assert payload["limitations"] == [
         "No production promotion performed.",
         "No pull request creation performed.",
+        "No deployment performed.",
+        "No automatic merge performed.",
     ]
     assert _as_posix(payload["timing"]["timing_report"]).endswith("performance/timing_report.json")
     assert _as_posix(payload["timing"]["timing_summary"]).endswith("performance/timing_summary.md")
@@ -105,6 +107,73 @@ def test_missing_test_report_blocks_final_report_generation(tmp_path: Path) -> N
     assert result["final_status"] == "FAILED"
     assert "final_migration_report" not in result["artifact_refs"]
     assert any("post_transform_test_report" in blocker for blocker in result["blockers"])
+
+
+def test_final_report_extracts_transform_unit_recipes_and_boot4_target(tmp_path: Path) -> None:
+    state = _successful_state(tmp_path)
+    run_dir = Path(state["run_dir"])
+    planning_dir = Path(state["planning_dir"])
+    assessment_dir = Path(state["assessment_dir"])
+    transform_plan = Path(state["artifact_refs"]["transformation_execution_plan"])
+    (planning_dir / "migration_plan.yaml").write_text(
+        """
+profile: springboot-2-java8-to-boot4-java21
+risk: HIGH
+requires_human_approval: true
+target_stack:
+  java: "21"
+  spring_boot: "4.0.0"
+  spring_framework: "7.x"
+profile_governance:
+  strategy: direct_openrewrite_sandbox
+  risk_level: high
+  production_allowed: false
+  fallback_profile: springboot-2-to-3-5-to-4-java21
+warnings:
+  - Spring Framework 7 required
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (assessment_dir / "assessment_report.json").write_text(
+        json.dumps(
+            {
+                "source_stack": {"java": "8", "spring_boot": "2.7.18"},
+                "target_stack": {"java": "21", "spring_boot": "4.0.0"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    transform_plan.write_text(
+        """
+migration_units:
+  - id: java-21
+    transformations:
+      - type: openrewrite
+        active_recipes:
+          - org.openrewrite.java.migrate.UpgradeToJava21
+          - org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    result = finalize_orchestration_state(state)
+
+    payload = json.loads(Path(result["artifact_refs"]["final_migration_report"]).read_text(encoding="utf-8"))
+    assert payload["target_stack"]["java"] == "21"
+    assert payload["target_stack"]["spring_boot"] == "4.0.0"
+    assert payload["target_stack"]["spring_framework"] == "7.x"
+    assert payload["risk_level"] == "high"
+    assert payload["strategy"] == "direct_openrewrite_sandbox"
+    assert payload["fallback_profile"] == "springboot-2-to-3-5-to-4-java21"
+    assert payload["production_allowed"] is False
+    assert payload["recipes"] == [
+        "org.openrewrite.java.migrate.UpgradeToJava21",
+        "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0",
+    ]
+    assert any("Servlet 6.1" in warning for warning in payload["boot4_warnings"])
+    assert "No deployment performed." in payload["limitations"]
+    assert "No automatic merge performed." in payload["limitations"]
 
 
 def _successful_state(tmp_path: Path) -> dict:

@@ -65,6 +65,7 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
     execution_plan = _read_yaml(Path(artifact_refs["transformation_execution_plan"]), warnings)
     test_report = _read_json(Path(artifact_refs["post_transform_test_report"]), warnings)
     orchestration_summary = _read_json(Path(artifact_refs["orchestration_summary"]), warnings)
+    migration_plan = _read_yaml(run_dir / "planning" / "migration_plan.yaml", warnings)
 
     test_status = str(state.get("test_status") or "")
     totals = dict(state.get("test_totals", {}) or {})
@@ -75,13 +76,23 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
             totals = dict(report_totals)
 
     source_stack = _object_or_empty((assessment_report or {}).get("source_stack"))
-    target_stack = _object_or_empty((assessment_report or {}).get("target_stack"))
+    target_stack = {
+        **_object_or_empty((migration_plan or {}).get("target_stack")),
+        **_object_or_empty((assessment_report or {}).get("target_stack")),
+    }
     recipes = _extract_recipes(execution_plan or {})
+    profile_governance = _object_or_empty((migration_plan or {}).get("profile_governance"))
+    boot4_warnings = _boot4_warnings(target_stack, state, assessment_report, migration_plan)
 
     report_payload = {
         "run_id": state.get("run_id", ""),
         "source_stack": source_stack,
         "target_stack": target_stack,
+        "risk_level": profile_governance.get("risk_level") or (migration_plan or {}).get("risk", ""),
+        "strategy": profile_governance.get("strategy", ""),
+        "fallback_profile": profile_governance.get("fallback_profile", ""),
+        "production_allowed": profile_governance.get("production_allowed"),
+        "requires_human_approval": (migration_plan or {}).get("requires_human_approval", True),
         "approval": {
             "status": state.get("approval_status", ""),
             "decision": (approval_decision or {}).get("decision", state.get("approval_decision")),
@@ -97,6 +108,8 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
         "test_status": test_status,
         "test_totals": totals,
         "recipes": recipes,
+        "executed_recipes": recipes,
+        "boot4_warnings": boot4_warnings,
         "artifact_refs": {
             **artifact_refs,
             "final_migration_report": str(json_path),
@@ -106,10 +119,12 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
             "timing_report": artifact_refs.get("timing_report", ""),
             "timing_summary": artifact_refs.get("timing_summary", ""),
         },
-        "warnings": list(state.get("warnings", []) or []),
+        "warnings": [*list(state.get("warnings", []) or []), *boot4_warnings],
         "limitations": [
             "No production promotion performed.",
             "No pull request creation performed.",
+            "No deployment performed.",
+            "No automatic merge performed.",
         ],
         "sandbox_path": state.get("sandbox_path", ""),
         "log_paths": _collect_log_paths(state, artifact_refs, test_report, orchestration_summary),
@@ -153,10 +168,19 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
 
 def _build_markdown_summary(payload: dict[str, Any]) -> str:
     totals = payload.get("test_totals", {}) or {}
+    target_stack = dict(payload.get("target_stack", {}) or {})
+    recipes = list(payload.get("recipes", []) or [])
     lines = [
         "# Migration Summary",
         "",
         f"- Run ID: {payload.get('run_id', '')}",
+        f"- Target Java: {target_stack.get('java', '')}",
+        f"- Target Spring Boot: {target_stack.get('spring_boot', '')}",
+        f"- Target Spring Framework: {target_stack.get('spring_framework', '')}",
+        f"- Risk Level: {payload.get('risk_level', '')}",
+        f"- Strategy: {payload.get('strategy', '')}",
+        f"- Fallback Profile: {payload.get('fallback_profile', '')}",
+        f"- Production Allowed: {str(payload.get('production_allowed')).lower()}",
         f"- Approval: {payload.get('approval', {}).get('decision', '')}",
         f"- Transform: {payload.get('transform_status', '')}",
         f"- Build: {payload.get('build_status', '')}",
@@ -169,10 +193,15 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
             f"errors={totals.get('errors', 0)} "
             f"skipped={totals.get('skipped', 0)}"
         ),
-        "- Scope Limits: no production promotion, no PR creation",
+        f"- Executed Recipes: {', '.join(str(recipe) for recipe in recipes) if recipes else 'none'}",
+        "- Scope Limits: no production promotion, no PR creation, no deployment, no automatic merge",
         "",
         "POC-ready sandbox migration artifacts are captured under this run directory.",
     ]
+    boot4_warnings = list(payload.get("boot4_warnings", []) or [])
+    if boot4_warnings:
+        lines.extend(["", "## Boot 4 Warnings", ""])
+        lines.extend(f"- {warning}" for warning in boot4_warnings)
     statement = payload.get("copilot_advisory_statement")
     if isinstance(statement, dict):
         artifact_refs = statement.get("artifact_refs", {})
@@ -377,7 +406,58 @@ def _extract_recipes(execution_plan: dict[str, Any]) -> list[str]:
             step_recipes = step.get("recipes")
             if isinstance(step_recipes, list):
                 recipes.extend(str(item) for item in step_recipes if isinstance(item, (str, int, float)))
+    migration_units = execution_plan.get("migration_units")
+    if isinstance(migration_units, list):
+        for unit in migration_units:
+            if not isinstance(unit, dict):
+                continue
+            transformations = unit.get("transformations")
+            if not isinstance(transformations, list):
+                continue
+            for transformation in transformations:
+                if not isinstance(transformation, dict):
+                    continue
+                active_recipes = transformation.get("active_recipes")
+                if isinstance(active_recipes, list):
+                    recipes.extend(
+                        str(item) for item in active_recipes if isinstance(item, (str, int, float))
+                    )
     return recipes
+
+
+def _boot4_warnings(
+    target_stack: dict[str, Any],
+    state: dict[str, Any],
+    assessment_report: dict[str, Any] | None,
+    migration_plan: dict[str, Any] | None,
+) -> list[str]:
+    spring_boot = str(target_stack.get("spring_boot", ""))
+    if not spring_boot.startswith("4."):
+        return []
+
+    collected: list[str] = []
+    for source in (
+        state.get("warnings", []),
+        (assessment_report or {}).get("warnings", []),
+        (migration_plan or {}).get("warnings", []),
+    ):
+        if isinstance(source, list):
+            collected.extend(str(item) for item in source)
+    defaults = [
+        "Spring Framework 7.x is required for Spring Boot 4.",
+        "Jakarta EE 11 / Servlet 6.1 baseline applies.",
+        "Boot 3 deprecated APIs removed in Boot 4 must be reviewed.",
+        "Spring Cloud compatibility must be reviewed.",
+        "Spring Security, Spring Data, Hibernate, and custom starter risk requires human review.",
+        "javax.* leftovers must be eliminated.",
+        "Maven >= 3.6.3 and Java 21 runtime validation are required for this sandbox profile.",
+        "Official Boot guidance prefers latest 3.5.x before Boot 4; direct migration must use the fallback profile if unstable.",
+    ]
+    deduped: list[str] = []
+    for warning in [*collected, *defaults]:
+        if warning and warning not in deduped:
+            deduped.append(warning)
+    return deduped
 
 
 def _object_or_empty(value: Any) -> dict[str, Any]:

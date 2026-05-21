@@ -1,4 +1,5 @@
 import argparse
+import inspect
 import json
 import sys
 from dataclasses import dataclass
@@ -9,7 +10,7 @@ from context_manager import MigrationContext
 from copilot_enricher import enrich_with_ai
 from dependency_adapter import run_dependency_tree
 from import_scanner import scan_java_imports
-from maven_scanner import scan_root_pom
+from maven_scanner import load_profile_target_stack, scan_root_pom
 from openrewrite_adapter import run_openrewrite_dryrun
 from readonly_verifier import snapshot_tree, write_read_only_verification
 from report_assembler import assemble_report
@@ -38,7 +39,8 @@ def run_analysis_agent(context: MigrationContext) -> AnalysisResult:
     before_legacy = snapshot_tree(legacy_root)
     before_modernized = snapshot_tree(modernized_root)
 
-    maven_results = scan_root_pom(legacy_pom)
+    target_stack = load_profile_target_stack(context.ai_hub_path, context.profile)
+    maven_results = _scan_root_pom_with_target(legacy_pom, target_stack)
     run_dependency_tree(context)
 
     import_results = scan_java_imports(legacy_root)
@@ -57,6 +59,7 @@ def run_analysis_agent(context: MigrationContext) -> AnalysisResult:
 
     rewrite_result = run_openrewrite_dryrun(context, analysis_facts=analysis_facts) or {}
     rewrite_status = rewrite_result.get("status", "SKIPPED")
+    warnings.extend(maven_results.get("warnings", []))
     warnings.extend(rewrite_result.get("warnings", []))
 
     report_data = assemble_report(context, maven_results, import_results)
@@ -100,6 +103,13 @@ def run_analysis_agent(context: MigrationContext) -> AnalysisResult:
         assist_status=assist_status,
         rewrite_status=rewrite_status,
     )
+
+
+def _scan_root_pom_with_target(legacy_pom, target_stack):
+    signature = inspect.signature(scan_root_pom)
+    if "target_stack" in signature.parameters:
+        return scan_root_pom(legacy_pom, target_stack=target_stack)
+    return scan_root_pom(legacy_pom)
 
 
 def main():

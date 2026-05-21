@@ -79,7 +79,8 @@ def _format_stack(stack: StackFingerprint) -> str:
     return (
         f"- Build tool: `{stack.build_tool or 'unknown'}`\n"
         f"- Java: `{stack.java or 'unknown'}`\n"
-        f"- Spring Boot: `{stack.spring_boot or 'unknown'}`"
+        f"- Spring Boot: `{stack.spring_boot or 'unknown'}`\n"
+        f"- Spring Framework: `{stack.spring_framework or 'unknown'}`"
     )
 
 
