@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 from migration_factory.contracts.build import BuildRunResult, write_build_error
 from migration_factory.contracts.build.schemas import build_error_contract
@@ -70,6 +71,17 @@ def run_build_agent(
         stream_output=stream_output,
         stop_after_start=stop_after_start,
     )
+
+    if _should_retry_with_maven_rebuild(project.build_tool, result):
+        rebuild_succeeded = _run_maven_rebuild(project.base_command[0], project.path)
+        if rebuild_succeeded:
+            result = run_until_build_result(
+                command=command,
+                cwd=project.path,
+                timeout_seconds=timeout_seconds,
+                stream_output=stream_output,
+                stop_after_start=stop_after_start,
+            )
 
     if result.succeeded:
         build_result = _success_result(result)
@@ -142,3 +154,30 @@ def _update_ledger(ledger_file: str | Path | None, result: BuildRunResult) -> No
         matched_line=result.matched_line,
         exit_code=result.exit_code,
     )
+
+
+def _should_retry_with_maven_rebuild(build_tool: BuildTool, result: ProcessRunResult) -> bool:
+    if build_tool != BuildTool.MAVEN:
+        return False
+    if result.classification.kind.value != "missing_config":
+        return False
+
+    merged_output = "\n".join([*result.stdout, *result.stderr]).lower()
+    indicators = (
+        "not a managed type",
+        "beancreationexception",
+        "enablejparepositories",
+    )
+    return any(indicator in merged_output for indicator in indicators)
+
+
+def _run_maven_rebuild(maven_executable: str, cwd: Path) -> bool:
+    completed = subprocess.run(
+        [maven_executable, "clean", "install", "-DskipTests"],
+        cwd=str(cwd),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    return completed.returncode == 0

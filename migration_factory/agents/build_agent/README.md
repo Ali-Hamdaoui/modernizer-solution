@@ -70,5 +70,12 @@ Each failure JSON includes:
 - module and main class inputs
 - stdout/stderr tails for downstream diagnosis
 
-jakarta error run this command : PS C:\Users\ur_folder\shoppoc-app> C:\Tools\apache-maven-3.9.15\bin\mvn.cmd clean install -DskipTests
+If Maven startup fails with known JPA bootstrap symptoms (for example,
+`BeanCreationException` / `Not a managed type`), the agent automatically runs:
+
+```text
+<maven-executable> clean install -DskipTests
+```
+
+Then it retries `spring-boot:run` once.
 
