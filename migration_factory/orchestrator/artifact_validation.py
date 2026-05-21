@@ -56,6 +56,11 @@ SUCCESSFUL_FULL_SANDBOX_REQUIRED_ARTIFACT_REFS = (
 SUCCESSFUL_FULL_SANDBOX_OPTIONAL_ARTIFACT_REFS = (
     "copilot_migration_statement_json",
     "copilot_migration_statement_md",
+    "copilot_migration_overview",
+    "copilot_technical_changes",
+    "copilot_validation_evidence",
+    "copilot_risks_and_warnings",
+    "copilot_review",
 )
 
 SCHEMA_BACKED_ARTIFACTS = {

@@ -6,6 +6,9 @@ import time
 from typing import Any
 
 from migration_factory.final_report import generate_final_migration_report
+from migration_factory.agents.copilot_doc_agent import (
+    generate_copilot_documentation_package,
+)
 from migration_factory.orchestrator.artifact_validation import (
     validate_successful_full_sandbox_orchestration,
 )
@@ -115,9 +118,37 @@ def finalize_orchestration_state(
         **final_report.artifact_refs,
     }
     result["artifact_refs"] = artifact_refs
+
+    copilot_docs_started = time.monotonic()
+    copilot_docs = generate_copilot_documentation_package(result)
+    record_phase_duration(
+        result,
+        phase="copilot_documentation",
+        duration_seconds=time.monotonic() - copilot_docs_started,
+    )
+    if copilot_docs.blockers:
+        result["warnings"] = [
+            *list(result.get("warnings", []) or []),
+            *[
+                f"copilot documentation generation skipped: {blocker}"
+                for blocker in copilot_docs.blockers
+            ],
+        ]
+    if copilot_docs.warnings:
+        result["warnings"] = [
+            *list(result.get("warnings", []) or []),
+            *copilot_docs.warnings,
+        ]
+    result["artifact_refs"] = {
+        **dict(result.get("artifact_refs", {}) or {}),
+        **copilot_docs.artifact_refs,
+    }
+    timing_refs = write_timing_artifacts(result)
+    result["artifact_refs"] = {**dict(result.get("artifact_refs", {}) or {}), **timing_refs}
     summary_writer(result)  # type: ignore[arg-type]
     validation = validate_successful_full_sandbox_orchestration(result)  # type: ignore[arg-type]
     result["orchestration_artifacts_valid"] = validation.valid
+    artifact_refs = dict(result.get("artifact_refs", {}) or {})
     result["artifact_refs"] = {
         **artifact_refs,
         **validation.artifact_refs,

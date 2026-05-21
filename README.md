@@ -34,6 +34,7 @@ The profile also allows Java 8 as source input, but the POC runbook below assume
 - Test Agent: parses Surefire reports from the sandbox validation output and writes post-transform test artifacts.
 - Timing: records phase and command durations under `performance/`.
 - Final Report: writes final sandbox migration JSON and Markdown summaries only after successful full sandbox validation.
+- Copilot Documentation Agent: after successful sandbox validation, reads deterministic run artifacts and writes advisory Markdown documentation under `final/copilot_docs/` with source-artifact traceability.
 - Optional Copilot advisory: when `AI_MIGRATION_ENABLE_COPILOT_STATEMENT=true`, writes local advisory statement artifacts based on deterministic facts.
 
 ## Repository Layout
@@ -44,6 +45,7 @@ The profile also allows Java 8 as source input, but the POC runbook below assume
 - `migration_factory/agents/planning_agent/`: planning and approval request generation.
 - `migration_factory/agents/build_agent/`: Maven/Gradle build and startup/test validation.
 - `migration_factory/agents/test_agent/`: Surefire parsing and post-transform test report writing.
+- `migration_factory/agents/copilot_doc_agent/`: advisory documentation package generation from completed run artifacts.
 - `migration_factory/approval/`: approval decision and approved plan lock CLI/helpers.
 - `migration_factory/final_report/`: final migration report writer.
 - `modernizer-solution-ai-hub/`: profiles, OpenRewrite catalogs, policies, and schemas.
@@ -215,6 +217,11 @@ Important paths:
 - `orchestration/orchestration_summary.json`
 - `final/migration_report.json`
 - `final/migration_summary.md`
+- `final/copilot_docs/migration_overview.md`
+- `final/copilot_docs/technical_changes.md`
+- `final/copilot_docs/validation_evidence.md`
+- `final/copilot_docs/risks_and_warnings.md`
+- `final/copilot_docs/copilot_review.md`
 - `final/copilot_migration_statement.json` and `.md` only when the optional advisory env var is enabled
 
 ## Expected Success Statuses
@@ -264,5 +271,5 @@ Strict validation currently repeats Maven validation commands such as `mvn clean
 - No pull request creation.
 - No deployment.
 - No direct legacy app writes.
+- Copilot documentation is advisory only and cannot mutate source, approvals, plans, gates, PRs, deployments, or promotion state.
 - No bypassing human approval, `approval_decision.json`, `approved_plan_lock.json`, artifact schema validation, hash checks, sandbox transform/build/test gates, or fail-closed behavior.
-
