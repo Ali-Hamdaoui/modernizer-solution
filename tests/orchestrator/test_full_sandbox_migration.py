@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from uuid import uuid4
 
 import yaml
 
@@ -40,8 +41,6 @@ def test_resume_approved_records_approval_and_runs_sandbox_transform(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    state = _paused_full_run(monkeypatch, tmp_path)
-    _write_phase_1_run(Path(state["run_dir"]), state["run_id"])
     transform_calls: list[str] = []
 
     def fake_transform(resumed_state):
@@ -61,7 +60,8 @@ def test_resume_approved_records_approval_and_runs_sandbox_transform(
         test_dir.mkdir(parents=True, exist_ok=True)
         log_path.write_text("ok\n", encoding="utf-8")
         plan_path.write_text(
-            "run_id: run-001\nrecipes:\n  - org.openrewrite.java.migrate.UpgradeToJava17\n",
+            f"run_id: {resumed_state['run_id']}\n"
+            "recipes:\n  - org.openrewrite.java.migrate.UpgradeToJava17\n",
             encoding="utf-8",
         )
         ledger_path.write_text("{}\n", encoding="utf-8")
@@ -121,7 +121,17 @@ def test_resume_approved_records_approval_and_runs_sandbox_transform(
             },
         }
 
+    real_build_graph = graph_module.build_graph
+
+    def build_graph_with_fake_transform(*args, **kwargs):
+        kwargs.setdefault("phase_services", _passing_services())
+        kwargs.setdefault("sandbox_transform_service", fake_transform)
+        return real_build_graph(*args, **kwargs)
+
     monkeypatch.setattr(graph_module, "run_sandbox_transform_phase", fake_transform)
+    monkeypatch.setattr(graph_module, "build_graph", build_graph_with_fake_transform)
+    state = _paused_full_run(monkeypatch, tmp_path)
+    _write_phase_1_run(Path(state["run_dir"]), state["run_id"])
 
     result = resume.resume_orchestration(
         run_id=state["run_id"],
@@ -279,13 +289,14 @@ def _initial_full_state(tmp_path: Path) -> dict:
     modernized.mkdir()
     (ai_hub / "profiles").mkdir(parents=True)
     (ai_hub / "profiles" / "java17.yaml").write_text("id: java17\n", encoding="utf-8")
+    run_id = f"run-{uuid4().hex}"
     return build_initial_state(
-        run_id="run-001",
+        run_id=run_id,
         legacy_app_path=str(legacy),
         modernized_app_path=str(modernized),
         ai_hub_path=str(ai_hub),
         profile_id="java17",
-        thread_id="run-001",
+        thread_id=run_id,
         mode=FULL_SANDBOX_MIGRATION_MODE,
     )
 
