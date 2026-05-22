@@ -42,12 +42,8 @@ def get_copilot_status_lines(
     active_run: bool = False,
 ) -> list[str]:
     response_path = Path(run_dir) / "final" / "copilot_report_response.json" if run_dir is not None else None
-    report_enabled = _copilot_report_enabled()
-    payload = (
-        _read_response(response_path)
-        if prefer_response and response_path is not None and response_path.is_file()
-        else _cached_detector_payload()
-    )
+    response_exists = prefer_response and response_path is not None and response_path.is_file()
+    payload = _read_response(response_path) if response_exists and response_path is not None else _cached_detector_payload()
     connectivity = str(payload.get("connectivity") or "not_configured")
     provider = str(payload.get("provider") or "github_copilot")
     adapter = str(payload.get("adapter") or "local_deterministic_template")
@@ -55,10 +51,8 @@ def get_copilot_status_lines(
     auth_status = str(payload.get("auth_status") or "unknown")
     cli_status = str(payload.get("cli_status") or "not_installed")
     report_status = str(payload.get("report_status") or "")
-    response_exists = response_path is not None and response_path.is_file()
-    if not report_enabled and not (prefer_response and response_exists):
-        report_status = "disabled"
-    elif not (prefer_response and response_exists):
+    report_enabled = _copilot_report_enabled() or response_exists
+    if not response_exists:
         report_status = "pending" if active_run else "not_started"
     lines = [
         f"Copilot: {_CONNECTIVITY_LABELS.get(connectivity, 'Unavailable')}",
@@ -71,7 +65,10 @@ def get_copilot_status_lines(
         f"Report generation: {'Enabled' if report_enabled else 'Disabled'}",
     ]
     if report_status == "generated_with_fallback":
-        lines.append("Copilot warning: CLI failed, fallback used")
+        if str(payload.get("fallback_reason") or "").lower() == "timeout" or payload.get("timed_out") is True:
+            lines.append("Copilot warning: CLI timed out, fallback used")
+        else:
+            lines.append("Copilot warning: CLI failed, fallback used")
     return lines
 
 
@@ -94,7 +91,7 @@ def _normalize_model(model: str) -> str:
     return value or "unknown"
 
 
-_CACHED_DETECTOR_PAYLOAD: tuple[tuple[str, str, int], dict[str, Any]] | None = None
+_CACHED_DETECTOR_PAYLOAD: tuple[tuple[str, str, object], dict[str, Any]] | None = None
 
 
 def _cached_detector_payload() -> dict[str, Any]:
@@ -102,7 +99,7 @@ def _cached_detector_payload() -> dict[str, Any]:
     cache_key = (
         os.environ.get("AI_MIGRATION_COPILOT_MODEL", ""),
         os.environ.get("AI_MIGRATION_COPILOT_PROVIDER", ""),
-        id(detect_copilot_cli_status),
+        detect_copilot_cli_status,
     )
     if _CACHED_DETECTOR_PAYLOAD is None or _CACHED_DETECTOR_PAYLOAD[0] != cache_key:
         _CACHED_DETECTOR_PAYLOAD = (cache_key, detect_copilot_cli_status(timeout_seconds=15.0).to_dict())

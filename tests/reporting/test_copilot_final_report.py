@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from subprocess import CompletedProcess
+from subprocess import CompletedProcess, TimeoutExpired
 from pathlib import Path
 
 import pytest
@@ -20,6 +20,30 @@ from migration_factory.final_report.copilot import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AI_HUB = REPO_ROOT / "modernizer-solution-ai-hub"
+
+
+VALID_COPILOT_MARKDOWN = """# Copilot Final Migration Report
+
+## 1. Summary
+
+Generated.
+
+## 2. Source Of Truth
+
+Deterministic artifacts are authoritative.
+
+## 10. Test Results
+
+Passed.
+
+## 15. Copilot Advisory Scope
+
+Copilot is advisory only.
+
+## 18. Final Verdict
+
+Ready for manual review.
+"""
 
 
 def test_manifest_loads_from_ai_hub_and_resolves_paths() -> None:
@@ -112,6 +136,107 @@ def test_deterministic_render_writes_request_response_and_report(tmp_path: Path)
     assert response["can_change_gates"] is False
     assert response["can_mutate_source"] is False
     assert response["can_override_status"] is False
+
+
+def test_application_name_is_derived_from_legacy_path(tmp_path: Path) -> None:
+    run_dir = _run_dir_with_required_artifacts(tmp_path)
+    manifest = load_copilot_report_manifest(AI_HUB)
+
+    request = build_copilot_report_request(
+        run_dir,
+        manifest,
+        context={
+            "legacy_app_path": r"%USERPROFILE%\Desktop\shoppoc-app",
+            "profile_id": "springboot-2.7-to-3.5-java17",
+        },
+    )
+
+    assert request.payload["template_context"]["application_name"] == "shoppoc-app"
+
+
+def test_source_framework_is_safely_derived_from_boot_27_profile(tmp_path: Path) -> None:
+    run_dir = _run_dir_with_required_artifacts(tmp_path)
+    manifest = load_copilot_report_manifest(AI_HUB)
+
+    request = build_copilot_report_request(
+        run_dir,
+        manifest,
+        context={"profile_id": "springboot-2.7-to-3.5-java17"},
+    )
+
+    context = request.payload["template_context"]
+    assert context["source_spring_framework_version"] == "Spring Framework 5.x"
+
+
+def test_empty_blockers_render_one_clean_line(tmp_path: Path) -> None:
+    run_dir = _run_dir_with_required_artifacts(tmp_path)
+
+    result = generate_copilot_report_skeleton(run_dir, AI_HUB)
+    report = Path(result["artifact_refs"]["copilot_migration_report"]).read_text(encoding="utf-8")
+    blocker_section = report.split("Blockers:", 1)[1].split("Risk summary:", 1)[0]
+
+    assert "No blockers recorded." in report
+    assert "| `` | `` |" not in blocker_section
+
+
+def test_empty_deterministic_patches_render_one_clean_row(tmp_path: Path) -> None:
+    run_dir = _run_dir_with_required_artifacts(tmp_path)
+
+    result = generate_copilot_report_skeleton(run_dir, AI_HUB)
+    report = Path(result["artifact_refs"]["copilot_migration_report"]).read_text(encoding="utf-8")
+    patch_section = report.split("## 8. Deterministic Patches", 1)[1].split("Patch traceability:", 1)[0]
+
+    assert patch_section.count("No deterministic patches recorded for this profile.") == 1
+    assert "`not_available`" not in patch_section
+
+
+def test_review_focus_is_enriched_from_security_warning(tmp_path: Path) -> None:
+    run_dir = _run_dir_with_required_artifacts(tmp_path)
+    final_report = run_dir / "final" / "migration_report.json"
+    payload = json.loads(final_report.read_text(encoding="utf-8"))
+    payload["warnings"] = ["OPENREWRITE_SECURITY_CONFIG_TOUCHED: OpenRewrite touched security config."]
+    final_report.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    result = generate_copilot_report_skeleton(run_dir, AI_HUB)
+    report = Path(result["artifact_refs"]["copilot_migration_report"]).read_text(encoding="utf-8")
+
+    assert "Review Spring Security/auth behavior." in report
+
+
+def test_live_success_metadata_does_not_report_fallback_used(tmp_path: Path) -> None:
+    run_dir = _run_dir_with_required_artifacts(tmp_path)
+
+    result = generate_copilot_report_skeleton(
+        run_dir,
+        AI_HUB,
+        status=CopilotAdapterStatus(
+            adapter="copilot_cli",
+            connectivity="connected",
+            report_status="generated",
+            auth_status="authenticated",
+            cli_status="installed",
+        ),
+    )
+    report = Path(result["artifact_refs"]["copilot_migration_report"]).read_text(encoding="utf-8")
+
+    assert "| Adapter | `copilot_cli` |" in report
+    assert "| Fallback Used | `false` |" in report
+
+
+def test_output_validation_rejects_missing_application_name_when_legacy_path_exists(tmp_path: Path) -> None:
+    run_dir = _run_dir_with_required_artifacts(tmp_path)
+    manifest = load_copilot_report_manifest(AI_HUB)
+    request = build_copilot_report_request(
+        run_dir,
+        manifest,
+        context={"legacy_app_path": r"%USERPROFILE%\Desktop\shoppoc-app"},
+    )
+    bad_report = VALID_COPILOT_MARKDOWN.replace("Generated.", "| Application | `not_available` |", 1)
+    good_report = VALID_COPILOT_MARKDOWN.replace("Generated.", "| Application | `shoppoc-app` |", 1)
+
+    with pytest.raises(RuntimeError, match="application is not_available"):
+        copilot_module._validate_copilot_markdown(bad_report, request_payload=request.payload)
+    copilot_module._validate_copilot_markdown(good_report, request_payload=request.payload)
 
 
 def test_renderer_uses_deterministic_placeholder_substitution(tmp_path: Path) -> None:
@@ -328,6 +453,62 @@ def test_request_response_and_report_do_not_persist_secrets(tmp_path: Path) -> N
     assert request_payload["artifacts"]["required"]["final/migration_report.json"]["nested"]["password"] == "[REDACTED]"
 
 
+def test_invoke_copilot_cli_uses_stdin_programmatic_mode(monkeypatch) -> None:
+    resolved_path = r"C:\Users\x\AppData\Roaming\npm\copilot.cmd"
+    seen: dict[str, object] = {}
+
+    def fake_run(args, **kwargs) -> CompletedProcess[str]:
+        seen["args"] = list(args)
+        seen["kwargs"] = dict(kwargs)
+        return CompletedProcess(args=args, returncode=0, stdout=VALID_COPILOT_MARKDOWN, stderr="")
+
+    monkeypatch.setattr("migration_factory.final_report.copilot.subprocess.run", fake_run)
+
+    markdown = copilot_module._invoke_copilot_cli("hello", "gpt-5-mini", 12, resolved_path)
+
+    assert markdown.startswith("# Copilot Final Migration Report")
+    assert seen["args"][:5] == [resolved_path, "-s", "--no-ask-user", "--model", "gpt-5-mini"]
+    assert "--log-dir" in seen["args"]
+    assert "--log-level" in seen["args"]
+    assert seen["kwargs"]["input"] == "hello"
+    assert seen["kwargs"]["text"] is True
+    assert seen["kwargs"]["capture_output"] is True
+    assert seen["kwargs"]["timeout"] == 30
+    assert "-p" not in seen["args"]
+    assert "--prompt" not in seen["args"]
+
+
+def test_strict_prompt_includes_template_context_and_markdown_only_instruction(tmp_path: Path) -> None:
+    run_dir = _run_dir_with_required_artifacts(tmp_path)
+    manifest = load_copilot_report_manifest(AI_HUB)
+    request = build_copilot_report_request(run_dir, manifest)
+    template = manifest.template_path.read_text(encoding="utf-8")
+
+    prompt = copilot_module._build_strict_copilot_prompt(request.payload, template)
+
+    assert template in prompt
+    assert '"artifact_refs_summary": {' in prompt
+    assert '"template_context": {' in prompt
+    assert "Return markdown only" in prompt
+    assert "Use this template exactly" in prompt
+
+
+def test_copilot_output_validation_accepts_required_template_sections() -> None:
+    copilot_module._validate_copilot_markdown(VALID_COPILOT_MARKDOWN)
+
+
+def test_copilot_output_validation_rejects_missing_required_sections() -> None:
+    with pytest.raises(RuntimeError, match="missing section"):
+        copilot_module._validate_copilot_markdown("# Copilot Final Migration Report\n\n## 1. Summary\n")
+
+
+def test_copilot_output_validation_rejects_forbidden_execution_claims() -> None:
+    with pytest.raises(RuntimeError, match="forbidden Copilot execution claim"):
+        copilot_module._validate_copilot_markdown(
+            VALID_COPILOT_MARKDOWN + "\nCopilot approved and deployed the application.\n"
+        )
+
+
 def test_copilot_cli_provider_writes_live_markdown_and_response(tmp_path: Path, monkeypatch) -> None:
     run_dir = _run_dir_with_required_artifacts(tmp_path)
     calls: list[list[str]] = []
@@ -341,7 +522,7 @@ def test_copilot_cli_provider_writes_live_markdown_and_response(tmp_path: Path, 
             return CompletedProcess(args=args, returncode=0, stdout="GitHub Copilot CLI 1.0.51\n", stderr="")
         if args[1:] == ["auth", "status"]:
             return CompletedProcess(args=args, returncode=0, stdout="logged in\n", stderr="")
-        return CompletedProcess(args=args, returncode=0, stdout="# Live Copilot Report\n\nGenerated.\n", stderr="")
+        return CompletedProcess(args=args, returncode=0, stdout=VALID_COPILOT_MARKDOWN, stderr="")
 
     monkeypatch.setattr("migration_factory.final_report.copilot.shutil.which", fake_which)
     monkeypatch.setattr("migration_factory.final_report.copilot.subprocess.run", fake_run)
@@ -360,11 +541,164 @@ def test_copilot_cli_provider_writes_live_markdown_and_response(tmp_path: Path, 
     assert response["adapter"] == "copilot_cli"
     assert response["report_status"] == "generated"
     assert response["model"] == "gpt-5-mini"
-    assert "# Live Copilot Report" in report
-    assert any(call[:2] == ["/tools/copilot", "-p"] for call in calls)
-    prompt_call = next(call for call in calls if call[:2] == ["/tools/copilot", "-p"])
+    assert "# Copilot Final Migration Report" in report
+    assert any(call[:2] == ["/tools/copilot", "-s"] for call in calls)
+    prompt_call = next(call for call in calls if call[:2] == ["/tools/copilot", "-s"])
+    assert "-p" not in prompt_call
+    assert "--prompt" not in prompt_call
     assert "--no-ask-user" in prompt_call
     assert "--model" in prompt_call
+
+
+def test_copilot_cli_provider_writes_safe_invocation_log(tmp_path: Path, monkeypatch) -> None:
+    run_dir = _run_dir_with_required_artifacts(tmp_path)
+    resolved_path = r"C:\Users\x\AppData\Roaming\npm\copilot.cmd"
+
+    def fake_detect(**kwargs) -> CopilotAdapterStatus:
+        return CopilotAdapterStatus(
+            adapter="copilot_cli",
+            model="gpt-5-mini",
+            connectivity="connected",
+            auth_status="authenticated",
+            cli_status="installed",
+            resolved_executable_path=resolved_path,
+        )
+
+    def fake_run(args, **kwargs) -> CompletedProcess[str]:
+        return CompletedProcess(args=args, returncode=0, stdout=VALID_COPILOT_MARKDOWN, stderr="token=ghp_abcdefghijklmnopqrstuvwxyz123456")
+
+    monkeypatch.setattr(copilot_module, "detect_copilot_cli_status", fake_detect)
+    monkeypatch.setattr("migration_factory.final_report.copilot.subprocess.run", fake_run)
+
+    generate_copilot_report(
+        run_dir,
+        AI_HUB,
+        env={
+            "AI_MIGRATION_COPILOT_PROVIDER": "copilot_cli",
+            "AI_MIGRATION_COPILOT_MODEL": "gpt-5-mini",
+        },
+    )
+
+    invocation_path = run_dir / "logs" / "copilot" / "copilot_cli_invocation.json"
+    text = invocation_path.read_text(encoding="utf-8")
+    payload = json.loads(text)
+    assert payload["input_mode"] == "stdin"
+    assert payload["command_basename"] == "copilot.cmd"
+    assert payload["validation_status"] == "passed"
+    assert resolved_path not in text
+    assert "ghp_" not in text
+    assert "environment" not in text.lower()
+    assert "Approved compact deterministic context" not in text
+
+
+def test_copilot_cli_provider_timeout_falls_back_with_diagnostics(tmp_path: Path, monkeypatch) -> None:
+    run_dir = _run_dir_with_required_artifacts(tmp_path)
+    resolved_path = r"C:\Users\x\AppData\Roaming\npm\copilot.cmd"
+
+    def fake_detect(**kwargs) -> CopilotAdapterStatus:
+        return CopilotAdapterStatus(
+            adapter="copilot_cli",
+            model="gpt-5-mini",
+            connectivity="connected",
+            auth_status="authenticated",
+            cli_status="installed",
+            resolved_executable_path=resolved_path,
+        )
+
+    def fake_run(args, **kwargs) -> CompletedProcess[str]:
+        raise TimeoutExpired(cmd=args, timeout=kwargs["timeout"], output="", stderr="still waiting")
+
+    monkeypatch.setattr(copilot_module, "detect_copilot_cli_status", fake_detect)
+    monkeypatch.setattr("migration_factory.final_report.copilot.subprocess.run", fake_run)
+
+    result = generate_copilot_report(
+        run_dir,
+        AI_HUB,
+        env={
+            "AI_MIGRATION_COPILOT_PROVIDER": "copilot_cli",
+            "AI_MIGRATION_COPILOT_MODEL": "gpt-5-mini",
+            "AI_MIGRATION_COPILOT_TIMEOUT_SECONDS": "45",
+        },
+    )
+
+    response = json.loads(Path(result["artifact_refs"]["copilot_report_response"]).read_text(encoding="utf-8"))
+    invocation = json.loads((run_dir / "logs" / "copilot" / "copilot_cli_invocation.json").read_text(encoding="utf-8"))
+    assert response["adapter"] == "local_deterministic_template"
+    assert response["report_status"] == "generated_with_fallback"
+    assert response["fallback_reason"] == "timeout"
+    assert response["timed_out"] is True
+    assert response["copilot_timeout_seconds"] == 45
+    assert response["copilot_input_mode"] == "stdin"
+    assert response["copilot_prompt_chars"] > 0
+    assert response["copilot_log_dir"] == "logs/copilot"
+    assert invocation["timed_out"] is True
+    assert invocation["timeout_seconds"] == 45
+
+
+def test_copilot_prompt_is_compact_and_omits_report_paths(tmp_path: Path) -> None:
+    run_dir = _run_dir_with_required_artifacts(tmp_path)
+    report = run_dir / "final" / "migration_report.json"
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    payload["report_paths"] = [f"long/path/{index}/test-report.json" for index in range(2000)]
+    report.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    manifest = load_copilot_report_manifest(AI_HUB)
+    request = build_copilot_report_request(run_dir, manifest)
+    template = manifest.template_path.read_text(encoding="utf-8")
+
+    prompt = copilot_module._build_strict_copilot_prompt(request.payload, template)
+    raw_request = json.dumps(request.payload, indent=2, sort_keys=True)
+
+    assert template in prompt
+    assert "Use this template exactly" in prompt
+    assert '"run_id": "run-001"' in prompt
+    assert '"application_name":' in prompt
+    assert '"source_stack": {' in prompt
+    assert '"target_stack": {' in prompt
+    assert "report_paths" not in prompt
+    assert len(prompt) < len(raw_request)
+
+
+def test_copilot_cli_redacts_captured_stderr_tail(tmp_path: Path, monkeypatch) -> None:
+    run_dir = _run_dir_with_required_artifacts(tmp_path)
+    secret_stderr = (
+        "Authorization: Bearer abcdefghijklmnop\n"
+        "TOKEN=gho_abcdefghijklmnopqrstuvwxyz123456\n"
+        "github_pat_abcdefghijklmnopqrstuvwxyz123456\n"
+    )
+
+    def fake_detect(**kwargs) -> CopilotAdapterStatus:
+        return CopilotAdapterStatus(
+            adapter="copilot_cli",
+            model="gpt-5-mini",
+            connectivity="connected",
+            auth_status="authenticated",
+            cli_status="installed",
+            resolved_executable_path="/tools/copilot",
+        )
+
+    def fake_run(args, **kwargs) -> CompletedProcess[str]:
+        return CompletedProcess(args=args, returncode=1, stdout="", stderr=secret_stderr)
+
+    monkeypatch.setattr(copilot_module, "detect_copilot_cli_status", fake_detect)
+    monkeypatch.setattr("migration_factory.final_report.copilot.subprocess.run", fake_run)
+
+    generate_copilot_report(
+        run_dir,
+        AI_HUB,
+        env={
+            "AI_MIGRATION_COPILOT_PROVIDER": "copilot_cli",
+            "AI_MIGRATION_COPILOT_MODEL": "gpt-5-mini",
+        },
+    )
+
+    stderr_text = (run_dir / "logs" / "copilot" / "copilot_cli_stderr.redacted.log").read_text(encoding="utf-8")
+    response_text = (run_dir / "final" / "copilot_report_response.json").read_text(encoding="utf-8")
+    assert "gho_" not in stderr_text
+    assert "github_pat_" not in stderr_text
+    assert "Bearer abcdef" not in stderr_text
+    assert "Authorization:" not in stderr_text
+    assert "gho_" not in response_text
+    assert "github_pat_" not in response_text
 
 
 def test_copilot_cli_provider_uses_resolved_cmd_path_on_windows(tmp_path: Path, monkeypatch) -> None:
@@ -386,8 +720,8 @@ def test_copilot_cli_provider_uses_resolved_cmd_path_on_windows(tmp_path: Path, 
             return CompletedProcess(args=args, returncode=0, stdout="GitHub Copilot CLI 1.0.51\n", stderr="")
         if args[1:] == ["auth", "status"]:
             return CompletedProcess(args=args, returncode=0, stdout="logged in\n", stderr="")
-        if args[0].endswith("copilot.cmd") and args[1] == "-p":
-            return CompletedProcess(args=args, returncode=0, stdout="# Live Windows Copilot Report\n", stderr="")
+        if args[0].endswith("copilot.cmd") and args[1] == "-s":
+            return CompletedProcess(args=args, returncode=0, stdout=VALID_COPILOT_MARKDOWN, stderr="")
         raise AssertionError(f"unexpected command: {args}")
 
     monkeypatch.setattr(copilot_module.os, "name", "nt")
@@ -407,7 +741,7 @@ def test_copilot_cli_provider_uses_resolved_cmd_path_on_windows(tmp_path: Path, 
     assert response["adapter"] == "copilot_cli"
     assert response["report_status"] == "generated"
     assert response["resolved_executable_basename"] == "copilot.cmd"
-    assert any(call[:2] == [r"C:\Users\ada\AppData\Roaming\npm\copilot.cmd", "-p"] for call in calls)
+    assert any(call[:2] == [r"C:\Users\ada\AppData\Roaming\npm\copilot.cmd", "-s"] for call in calls)
 
 
 def test_copilot_cli_provider_uses_internal_resolved_path_without_publishing_it(
@@ -430,7 +764,7 @@ def test_copilot_cli_provider_uses_internal_resolved_path_without_publishing_it(
 
     def fake_run(args, **kwargs) -> CompletedProcess[str]:
         calls.append(list(args))
-        return CompletedProcess(args=args, returncode=0, stdout="# Live Copilot Report\n", stderr="")
+        return CompletedProcess(args=args, returncode=0, stdout=VALID_COPILOT_MARKDOWN, stderr="")
 
     monkeypatch.setattr(copilot_module, "detect_copilot_cli_status", fake_detect)
     monkeypatch.setattr("migration_factory.final_report.copilot.subprocess.run", fake_run)
@@ -450,9 +784,51 @@ def test_copilot_cli_provider_uses_internal_resolved_path_without_publishing_it(
     assert response["adapter"] == "copilot_cli"
     assert response["report_status"] == "generated"
     assert response["resolved_executable_basename"] == "copilot.cmd"
-    assert calls[0][:2] == [resolved_path, "-p"]
+    assert calls[0][:5] == [resolved_path, "-s", "--no-ask-user", "--model", "gpt-5-mini"]
+    assert "--log-dir" in calls[0]
+    assert "--log-level" in calls[0]
     assert resolved_path not in response_path.read_text(encoding="utf-8")
     assert resolved_path not in request_path.read_text(encoding="utf-8")
+
+
+def test_copilot_cli_provider_falls_back_when_live_output_fails_template_validation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = _run_dir_with_required_artifacts(tmp_path)
+    resolved_path = r"C:\Users\x\AppData\Roaming\npm\copilot.cmd"
+
+    def fake_detect(**kwargs) -> CopilotAdapterStatus:
+        return CopilotAdapterStatus(
+            adapter="copilot_cli",
+            model="gpt-5-mini",
+            connectivity="connected",
+            auth_status="authenticated",
+            cli_status="installed",
+            resolved_executable_path=resolved_path,
+        )
+
+    def fake_run(args, **kwargs) -> CompletedProcess[str]:
+        return CompletedProcess(args=args, returncode=0, stdout="# Wrong Report\n\nCopilot created a PR.\n", stderr="")
+
+    monkeypatch.setattr(copilot_module, "detect_copilot_cli_status", fake_detect)
+    monkeypatch.setattr("migration_factory.final_report.copilot.subprocess.run", fake_run)
+
+    result = generate_copilot_report(
+        run_dir,
+        AI_HUB,
+        env={
+            "AI_MIGRATION_COPILOT_PROVIDER": "copilot_cli",
+            "AI_MIGRATION_COPILOT_MODEL": "gpt-5-mini",
+        },
+    )
+
+    response = json.loads(Path(result["artifact_refs"]["copilot_report_response"]).read_text(encoding="utf-8"))
+    report = Path(result["artifact_refs"]["copilot_migration_report"]).read_text(encoding="utf-8")
+    assert response["adapter"] == "local_deterministic_template"
+    assert response["report_status"] == "generated_with_fallback"
+    assert "missing section # Copilot Final Migration Report" in "\n".join(response["warnings"])
+    assert report.startswith("# Copilot Final Migration Report")
 
 
 def test_copilot_cli_provider_falls_back_when_installed_status_lacks_internal_path(

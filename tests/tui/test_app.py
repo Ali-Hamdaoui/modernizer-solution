@@ -54,7 +54,7 @@ async def _assert_setup_screen_renders_full_config_fields() -> None:
     )
 
     async with app.run_test():
-        assert app.title == "EGA Modernizer / Migration Ops"
+        assert app.title == "Migration Ops"
         for field_id in (
             "legacy_app_path",
             "modernized_app_path",
@@ -79,6 +79,22 @@ async def _assert_setup_screen_renders_full_config_fields() -> None:
         assert app.query_one("#reset_setup", Button).label.plain == "Reset/Clear setup"
         assert app.query_one("#quit_app", Button).label.plain == "Quit"
         assert app.query_one("#approval").display is False
+
+
+def test_setup_screen_uses_neutral_migration_ops_branding(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_tui_env(monkeypatch)
+    asyncio.run(_assert_setup_screen_uses_neutral_migration_ops_branding())
+
+
+async def _assert_setup_screen_uses_neutral_migration_ops_branding() -> None:
+    app = MigrationFactorySetupApp()
+
+    async with app.run_test():
+        rendered = "\n".join(str(node.content) for node in app.query(Static))
+        assert app.title == "Migration Ops"
+        assert "Migration Ops" in rendered
+        assert "EGA Modernizer" not in rendered
+        assert "EGA MODERNIZER" not in rendered
 
 
 def test_setup_screen_renders_field_labels(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1067,6 +1083,77 @@ async def _assert_terminal_timer_stops_on_success(tmp_path: Path) -> None:
         await pilot.pause()
 
         assert app.query_one("#run_header_line", Static).content == first
+
+
+def test_terminal_run_polls_until_copilot_response_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_tui_env(monkeypatch)
+    monkeypatch.setenv("AI_MIGRATION_ENABLE_COPILOT_REPORT", "true")
+    asyncio.run(_assert_terminal_run_polls_until_copilot_response_exists(tmp_path))
+
+
+async def _assert_terminal_run_polls_until_copilot_response_exists(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run-copilot-refresh"
+    _write_summary(
+        run_dir,
+        {
+            "run_id": "run-copilot-refresh",
+            "analysis_status": "PASS",
+            "planning_status": "PASS",
+            "assessment_status": "PASS",
+            "approval_status": "COMPLETED",
+            "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+            "build_status": "BUILD_PASSED_IN_SANDBOX",
+            "test_status": "TEST_PASSED",
+            "final_status": "GENERATED",
+        },
+    )
+    app = MigrationFactorySetupApp()
+    app._active_run_dir = run_dir
+    app.current_view_model = _full_sandbox_vm(
+        run_dir=run_dir,
+        summary={
+            "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+            "build_status": "BUILD_PASSED_IN_SANDBOX",
+            "test_status": "TEST_PASSED",
+        },
+    )
+
+    async with app.run_test() as pilot:
+        app._set_view("run")
+        app._update_run_screen()
+        await pilot.pause()
+
+        assert app._should_poll_current_run() is True
+        assert "Report: Pending" in app.query_one("#copilot_status", Static).content
+
+        final_dir = run_dir / "final"
+        final_dir.mkdir(parents=True, exist_ok=True)
+        (final_dir / "copilot_report_response.json").write_text(
+            json.dumps(
+                {
+                    "provider": "github_copilot",
+                    "model": "gpt-5-mini",
+                    "connectivity": "connected",
+                    "adapter": "copilot_cli",
+                    "auth_status": "authenticated",
+                    "cli_status": "installed",
+                    "report_status": "generated",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        app._poll_current_run()
+        await pilot.pause()
+
+        copilot_status = app.query_one("#copilot_status", Static).content
+        assert "Adapter: copilot_cli" in copilot_status
+        assert "Model: gpt-5-mini" in copilot_status
+        assert "Report: Generated" in copilot_status
+        assert app._should_poll_current_run() is False
 
 
 def test_waiting_for_approval_mapping() -> None:

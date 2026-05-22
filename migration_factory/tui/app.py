@@ -172,7 +172,7 @@ class DashboardScreen(Screen[None]):
         yield Header(show_clock=True)
         with VerticalScroll(id="main"):
             with Vertical(id="dashboard_panel", classes="panel"):
-                yield Label("EGA MODERNIZER / MIGRATION OPS", markup=False)
+                yield Label("Migration Ops", markup=False)
                 yield Static("", id="setup_summary", markup=False)
                 yield Static("", id="copilot_status", markup=False)
                 with Horizontal(classes="button_row"):
@@ -352,7 +352,7 @@ class ApprovalModal(ModalScreen[str | None]):
 
 
 class MigrationFactorySetupApp(App[None]):
-    TITLE = "EGA Modernizer / Migration Ops"
+    TITLE = "Migration Ops"
     SUB_TITLE = "Setup, launch, and approval console"
 
     CSS = EGA_CSS
@@ -395,6 +395,7 @@ class MigrationFactorySetupApp(App[None]):
         self._backend_active = False
         self._run_started_at: datetime | None = None
         self._terminal_elapsed_label: str | None = None
+        self._awaiting_copilot_response = False
 
     def compose(self) -> ComposeResult:
         if False:
@@ -668,7 +669,7 @@ class MigrationFactorySetupApp(App[None]):
                 "#copilot_status",
                 _format_copilot_status(
                     self.current_view_model.run_dir,
-                    active_run=not _terminal_from_vm(self.current_view_model),
+                    active_run=not _terminal_from_vm(self.current_view_model) or self._waiting_for_copilot_response(),
                 ),
             )
         else:
@@ -866,15 +867,33 @@ class MigrationFactorySetupApp(App[None]):
 
         self._force_poll_from_active_run()
         self._update_run_screen()
+        if _file_exists(_copilot_response_path(self._active_run_dir)):
+            self._awaiting_copilot_response = False
 
     def _should_poll_current_run(self) -> bool:
         if self._backend_active:
             return True
         if self.current_view_model is not None and not _terminal_from_vm(self.current_view_model):
             return True
+        if self._waiting_for_copilot_response():
+            self._awaiting_copilot_response = True
+            return True
+        if (
+            self._awaiting_copilot_response
+            and self._active_run_dir is not None
+            and _file_exists(_copilot_response_path(self._active_run_dir))
+        ):
+            return True
         if self._active_run_dir is None:
             return False
         return _file_exists(self._active_run_dir / "orchestration" / "approval_interrupt_state.json")
+
+    def _waiting_for_copilot_response(self) -> bool:
+        if self._active_run_dir is None or not _copilot_report_enabled():
+            return False
+        if self.current_view_model is None or not _terminal_from_vm(self.current_view_model):
+            return False
+        return not _file_exists(_copilot_response_path(self._active_run_dir))
 
     def _force_poll_from_active_run(self) -> None:
         if self._active_run_dir is None:
@@ -938,7 +957,10 @@ class MigrationFactorySetupApp(App[None]):
         self._update_pipeline_table(vm)
         # Update current phase/status line
         self._update_static("#current_phase_line", _current_phase_status_line(vm))
-        self._update_static("#copilot_status", _format_copilot_status(vm.run_dir, active_run=not _terminal_from_vm(vm)))
+        self._update_static(
+            "#copilot_status",
+            _format_copilot_status(vm.run_dir, active_run=not _terminal_from_vm(vm) or self._waiting_for_copilot_response()),
+        )
         # Handle approval panel visibility
         approval_panel = list(self.query("#approval"))
         if approval_panel:
@@ -1702,6 +1724,10 @@ def _format_copilot_status_lines(
 
 def _copilot_report_enabled() -> bool:
     return os.environ.get(_COPILOT_REPORT_ENV, "").strip().lower() == "true"
+
+
+def _copilot_response_path(run_dir: Path) -> Path:
+    return run_dir / "final" / "copilot_report_response.json"
 
 
 def _present_copilot_report_paths(run_dir: Path) -> list[tuple[str, Path]]:

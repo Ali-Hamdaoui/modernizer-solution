@@ -8,14 +8,14 @@ import migration_factory.tui.copilot_status as copilot_status
 from migration_factory.tui.copilot_status import get_copilot_status_lines
 
 
-def test_copilot_status_maps_present_response(tmp_path: Path) -> None:
+def test_copilot_status_maps_live_cli_generated_response(tmp_path: Path) -> None:
     final_dir = tmp_path / "final"
     final_dir.mkdir()
     (final_dir / "copilot_report_response.json").write_text(
         json.dumps(
             {
                 "provider": "github_copilot",
-                "model": "detected:gpt-5",
+                "model": "detected:gpt-5-mini",
                 "connectivity": "connected",
                 "adapter": "copilot_cli",
                 "auth_status": "authenticated",
@@ -31,15 +31,15 @@ def test_copilot_status_maps_present_response(tmp_path: Path) -> None:
         "Copilot: Connected",
         "Provider: github_copilot",
         "Adapter: copilot_cli",
-        "Model: gpt-5",
+        "Model: gpt-5-mini",
         "Auth: Authenticated",
         "CLI: Installed",
         "Report: Generated",
-        "Report generation: Disabled",
+        "Report generation: Enabled",
     ]
 
 
-def test_copilot_status_uses_live_detector_when_response_missing(monkeypatch) -> None:
+def test_copilot_status_shows_not_started_before_run_when_response_missing(monkeypatch) -> None:
     monkeypatch.setattr(
         copilot_status,
         "detect_copilot_cli_status",
@@ -59,7 +59,7 @@ def test_copilot_status_uses_live_detector_when_response_missing(monkeypatch) ->
         "Model: unknown",
         "Auth: Unknown",
         "CLI: Not installed",
-        "Report: Disabled",
+        "Report: Not started",
         "Report generation: Disabled",
     ]
 
@@ -175,7 +175,7 @@ def test_copilot_status_maps_unavailable_and_failed(tmp_path: Path) -> None:
         "Auth: Unauthenticated",
         "CLI: Installed",
         "Report: Failed",
-        "Report generation: Disabled",
+        "Report generation: Enabled",
     ]
 
 
@@ -204,3 +204,31 @@ def test_copilot_status_maps_fallback_warning_separately(monkeypatch, tmp_path: 
 
     assert "Report: Generated with fallback" in lines
     assert "Copilot warning: CLI failed, fallback used" in lines
+
+
+def test_copilot_status_maps_timeout_fallback_warning(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("AI_MIGRATION_ENABLE_COPILOT_REPORT", "true")
+    final_dir = tmp_path / "final"
+    final_dir.mkdir()
+    (final_dir / "copilot_report_response.json").write_text(
+        json.dumps(
+            {
+                "provider": "github_copilot",
+                "model": "gpt-5-mini",
+                "connectivity": "connected",
+                "adapter": "local_deterministic_template",
+                "auth_status": "authenticated",
+                "cli_status": "installed",
+                "report_status": "generated_with_fallback",
+                "fallback_reason": "timeout",
+                "timed_out": True,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    lines = get_copilot_status_lines(tmp_path)
+
+    assert "Report: Generated with fallback" in lines
+    assert "Copilot warning: CLI timed out, fallback used" in lines

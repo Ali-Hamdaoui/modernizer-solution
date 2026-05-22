@@ -14,6 +14,30 @@ from migration_factory.orchestrator.state import FULL_SANDBOX_MIGRATION_MODE, bu
 from migration_factory.orchestrator.summary import finalize_orchestration_state
 
 
+VALID_COPILOT_MARKDOWN = """# Copilot Final Migration Report
+
+## 1. Summary
+
+Generated.
+
+## 2. Source Of Truth
+
+Deterministic artifacts are authoritative.
+
+## 10. Test Results
+
+Passed.
+
+## 15. Copilot Advisory Scope
+
+Copilot is advisory only.
+
+## 18. Final Verdict
+
+Ready for manual review.
+"""
+
+
 @pytest.fixture(autouse=True)
 def _clear_copilot_doc_env(monkeypatch) -> None:
     for name in (
@@ -127,7 +151,7 @@ def test_enabled_copilot_final_report_uses_internal_resolved_path_only_in_memory
 
     def fake_run(args, **kwargs):
         calls.append(list(args))
-        return subprocess.CompletedProcess(args, 0, stdout="# Live report\n", stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout=VALID_COPILOT_MARKDOWN, stderr="")
 
     monkeypatch.setattr(summary_module, "detect_copilot_cli_status", fake_detect)
     monkeypatch.setattr(copilot_module, "detect_copilot_cli_status", fake_detect)
@@ -138,7 +162,9 @@ def test_enabled_copilot_final_report_uses_internal_resolved_path_only_in_memory
     response_ref = Path(result["artifact_refs"]["copilot_report_response"])
     request_ref = Path(result["artifact_refs"]["copilot_report_request"])
     response = json.loads(response_ref.read_text(encoding="utf-8"))
-    assert calls[0][:2] == [resolved_path, "-p"]
+    assert calls[0][:5] == [resolved_path, "-s", "--no-ask-user", "--model", "gpt-5-mini"]
+    assert "--log-dir" in calls[0]
+    assert "--log-level" in calls[0]
     assert response["adapter"] == "copilot_cli"
     assert response["report_status"] == "generated"
     assert response["resolved_executable_basename"] == "copilot.cmd"

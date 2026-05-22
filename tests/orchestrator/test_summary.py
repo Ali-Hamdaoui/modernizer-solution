@@ -15,6 +15,30 @@ from migration_factory.orchestrator.summary import (
 )
 
 
+VALID_COPILOT_MARKDOWN = """# Copilot Final Migration Report
+
+## 1. Summary
+
+Generated.
+
+## 2. Source Of Truth
+
+Deterministic artifacts are authoritative.
+
+## 10. Test Results
+
+Passed.
+
+## 15. Copilot Advisory Scope
+
+Copilot is advisory only.
+
+## 18. Final Verdict
+
+Ready for manual review.
+"""
+
+
 def _state(tmp_path: Path):
     state = build_initial_state(
         run_id="run-001",
@@ -297,7 +321,7 @@ def test_finalize_live_copilot_report_uses_internal_resolved_cmd_path(tmp_path: 
 
     def fake_run(args, **kwargs):
         calls.append(list(args))
-        return subprocess.CompletedProcess(args, 0, stdout="# Live report\n", stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout=VALID_COPILOT_MARKDOWN, stderr="")
 
     monkeypatch.setattr(summary_module, "detect_copilot_cli_status", fake_detect)
     monkeypatch.setattr(copilot_module.subprocess, "run", fake_run)
@@ -335,7 +359,9 @@ def test_finalize_live_copilot_report_uses_internal_resolved_cmd_path(tmp_path: 
     response_path = Path(result["artifact_refs"]["copilot_report_response"])
     request_path = Path(result["artifact_refs"]["copilot_report_request"])
     response = json.loads(response_path.read_text(encoding="utf-8"))
-    assert calls[0][:2] == [resolved_path, "-p"]
+    assert calls[0][:5] == [resolved_path, "-s", "--no-ask-user", "--model", "gpt-5-mini"]
+    assert "--log-dir" in calls[0]
+    assert "--log-level" in calls[0]
     assert response["adapter"] == "copilot_cli"
     assert response["report_status"] == "generated"
     assert response["resolved_executable_basename"] == "copilot.cmd"

@@ -126,6 +126,7 @@ Main risk areas:
 | Build Validation | `{{build_status}}` | `{{build_started_at}}` | `{{build_ended_at}}` | `{{build_duration}}` |
 | Test Validation | `{{test_status}}` | `{{test_started_at}}` | `{{test_ended_at}}` | `{{test_duration}}` |
 | Final Report | `{{final_report_status}}` | `{{final_report_started_at}}` | `{{final_report_ended_at}}` | `{{final_report_duration}}` |
+| Copilot Report Generation | `{{final_report_status}}` | `{{copilot_report_generation_started_at}}` | `{{copilot_report_generation_ended_at}}` | `{{copilot_report_generation_duration}}` |
 
 **Total machine execution time:** `{{total_machine_duration}}`  
 **Manual approval time:** excluded from machine timing.
@@ -195,10 +196,7 @@ Deterministic patches applied after OpenRewrite:
 
 | Patch ID | File / Area | Reason | Status |
 |---|---|---|---|
-| `{{patch_1_id}}` | `{{patch_1_file}}` | `{{patch_1_reason}}` | `{{patch_1_status}}` |
-| `{{patch_2_id}}` | `{{patch_2_file}}` | `{{patch_2_reason}}` | `{{patch_2_status}}` |
-| `{{patch_3_id}}` | `{{patch_3_file}}` | `{{patch_3_reason}}` | `{{patch_3_status}}` |
-| `{{patch_4_id}}` | `{{patch_4_file}}` | `{{patch_4_reason}}` | `{{patch_4_status}}` |
+{{deterministic_patch_rows}}
 
 Patch traceability:
 
@@ -342,8 +340,7 @@ Blockers:
 
 | Blocker | Status |
 |---|---|
-| `{{blocker_1}}` | `{{blocker_1_status}}` |
-| `{{blocker_2}}` | `{{blocker_2_status}}` |
+{{blocker_rows}}
 
 Risk summary:
 
