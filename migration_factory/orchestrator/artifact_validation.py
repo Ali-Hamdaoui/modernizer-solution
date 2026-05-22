@@ -56,6 +56,9 @@ SUCCESSFUL_FULL_SANDBOX_REQUIRED_ARTIFACT_REFS = (
 SUCCESSFUL_FULL_SANDBOX_OPTIONAL_ARTIFACT_REFS = (
     "copilot_migration_statement_json",
     "copilot_migration_statement_md",
+    "copilot_report_request",
+    "copilot_report_response",
+    "copilot_migration_report",
     "copilot_migration_overview",
     "copilot_technical_changes",
     "copilot_validation_evidence",

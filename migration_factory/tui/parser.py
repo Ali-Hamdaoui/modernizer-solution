@@ -43,7 +43,7 @@ _ALIASES = {
 
 def parse_config_variables(content: str, *, home: Path | None = None) -> dict[str, str]:
     parsed: dict[str, str] = {}
-    variables: dict[str, str] = {"HOME": str(home or Path.home())}
+    variables: dict[str, str] = {"HOME": _home_value(home)}
     for line in content.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
@@ -102,3 +102,7 @@ def _expand_home(value: str, home: str) -> str:
     if value.startswith("~/"):
         return f"{home}{value[1:]}"
     return value
+
+
+def _home_value(home: Path | None) -> str:
+    return (home or Path.home()).expanduser().as_posix()

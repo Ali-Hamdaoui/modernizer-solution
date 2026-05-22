@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import sys
 from dataclasses import dataclass, replace
@@ -8,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
@@ -36,6 +38,7 @@ from migration_factory.tui.config import (
     load_config,
     save_config,
 )
+from migration_factory.tui.copilot_status import get_copilot_status_lines
 from migration_factory.tui.history import RunDashboard, discover_run_dashboards, load_run_dashboard
 from migration_factory.tui.parser import config_from_paste, parse_config_variables
 from migration_factory.tui.runner_adapter import (
@@ -114,6 +117,12 @@ _FAILURE_ARTIFACTS = (
     ("read_only_verification.json", "analysis/read_only_verification.json"),
     ("analysis_summary.md", "analysis/analysis_summary.md"),
 )
+_COPILOT_REPORT_ENV = "AI_MIGRATION_ENABLE_COPILOT_REPORT"
+_COPILOT_REPORT_ARTIFACTS = (
+    ("Copilot report request", "final/copilot_report_request.json"),
+    ("Copilot report response", "final/copilot_report_response.json"),
+    ("Copilot migration report", "final/copilot_migration_report.md"),
+)
 
 
 @dataclass(frozen=True)
@@ -165,6 +174,7 @@ class DashboardScreen(Screen[None]):
             with Vertical(id="dashboard_panel", classes="panel"):
                 yield Label("EGA MODERNIZER / MIGRATION OPS", markup=False)
                 yield Static("", id="setup_summary", markup=False)
+                yield Static("", id="copilot_status", markup=False)
                 with Horizontal(classes="button_row"):
                     yield Button("Launch run", id="launch_run", variant="primary")
                     yield Button("Refresh history", id="refresh_history")
@@ -250,6 +260,7 @@ class RunScreen(Screen[None]):
             yield DataTable(id="pipeline_table")
             # Current phase/status line
             yield Static("", id="current_phase_line", markup=False)
+            yield Static("", id="copilot_status", markup=False)
             # Run monitor status (textual summary for backward compatibility)
             yield Static("", id="run_monitor_status", markup=False)
             # Approval panel (only shown when waiting for approval)
@@ -648,10 +659,20 @@ class MigrationFactorySetupApp(App[None]):
                     f"Profile: {config.profile_id or '-'}",
                     f"Mode: {config.mode or '-'}",
                     f"Legacy: {_path_name(config.legacy_app_path)}",
-                    "Target: Java 21 / Spring Boot 4",
+                    _format_target_summary(config),
                 ]
             ),
         )
+        if self.current_view_model is not None and self.current_view_model.run_dir is not None:
+            self._update_static(
+                "#copilot_status",
+                _format_copilot_status(
+                    self.current_view_model.run_dir,
+                    active_run=not _terminal_from_vm(self.current_view_model),
+                ),
+            )
+        else:
+            self._update_static("#copilot_status", _format_copilot_status(None, prefer_response=False, active_run=False))
 
     def _refresh_launch_preview(self) -> None:
         matches = list(self.query("#launch_preview"))
@@ -876,6 +897,14 @@ class MigrationFactorySetupApp(App[None]):
             and not _is_terminal_summary(dashboard_summary, None)
         ):
             approval = self.runner_adapter.load_approval_state(self.config, payload=approval_payload)
+        elif (
+            self.current_approval is not None
+            and self.current_view_model is not None
+            and self.current_view_model.approval_required
+            and dashboard_summary.get("approval_status") != "COMPLETED"
+            and not _is_terminal_summary(dashboard_summary, None)
+        ):
+            approval = self.current_approval
         self.current_approval = approval
 
         if self.current_view_model is None:
@@ -909,6 +938,7 @@ class MigrationFactorySetupApp(App[None]):
         self._update_pipeline_table(vm)
         # Update current phase/status line
         self._update_static("#current_phase_line", _current_phase_status_line(vm))
+        self._update_static("#copilot_status", _format_copilot_status(vm.run_dir, active_run=not _terminal_from_vm(vm)))
         # Handle approval panel visibility
         approval_panel = list(self.query("#approval"))
         if approval_panel:
@@ -924,7 +954,6 @@ class MigrationFactorySetupApp(App[None]):
         if failure_panel:
             failure_panel[0].display = bool(failure)
         self._update_static("#failure_screen", failure)
-        self._update_static("#launch_output", "")
 
     def _show_approval_buttons(self, vm: RunViewModel) -> None:
         options = set(vm.decision_options or _APPROVAL_DECISIONS)
@@ -968,9 +997,9 @@ class MigrationFactorySetupApp(App[None]):
         self._update_static("#launch_output", _format_raw_output(vm))
 
     def _update_static(self, selector: str, content: str) -> None:
-        matches = list(self.query(selector))
-        if matches and isinstance(matches[0], Static):
-            matches[0].update(content)
+        for match in self.query(selector):
+            if isinstance(match, Static):
+                match.update(content)
 
 
 def _view_model_from_launch(
@@ -1231,6 +1260,9 @@ def _format_dashboard(run: RunDashboard) -> str:
         f"Final status: {run.final_status}",
         f"Run dir: {run.run_dir}",
         f"Orchestration summary: {run.summary_path}",
+        "",
+        "Copilot status:",
+        *_format_copilot_status_lines(run.run_dir),
         "",
         "Statuses:",
     ]
@@ -1610,6 +1642,9 @@ def _format_details(vm: RunViewModel, dashboard: RunDashboard | None) -> str:
         "Backend result:",
         json.dumps(vm.raw_backend, indent=2, sort_keys=True, default=str),
         "",
+        "Copilot status:",
+        *_format_copilot_status_lines(vm.run_dir),
+        "",
         _format_run_monitor_from_view(vm),
         "",
         "Artifact refs:",
@@ -1633,9 +1668,53 @@ def _format_details(vm: RunViewModel, dashboard: RunDashboard | None) -> str:
         else:
             lines.append("- none recorded")
     if vm.run_dir is not None:
+        copilot_paths = _present_copilot_report_paths(vm.run_dir)
+        if copilot_paths:
+            lines.extend(["", "Copilot report artifacts:"])
+            lines.extend(f"- {label}: {path}" for label, path in copilot_paths)
         lines.extend(["", "Failure artifact fallbacks:"])
         lines.extend(f"- {label}: {vm.run_dir / rel_path}" for label, rel_path in _FAILURE_ARTIFACTS)
     return "\n".join(lines)
+
+
+def _format_copilot_status(
+    run_dir: Path | None,
+    *,
+    prefer_response: bool = True,
+    active_run: bool = False,
+) -> str:
+    return "\n".join(
+        _format_copilot_status_lines(run_dir, prefer_response=prefer_response, active_run=active_run)
+    )
+
+
+def _format_copilot_status_lines(
+    run_dir: Path | None,
+    *,
+    prefer_response: bool = True,
+    active_run: bool = False,
+) -> list[str]:
+    try:
+        return get_copilot_status_lines(run_dir, prefer_response=prefer_response, active_run=active_run)
+    except TypeError:
+        return get_copilot_status_lines(run_dir)
+
+
+def _copilot_report_enabled() -> bool:
+    return os.environ.get(_COPILOT_REPORT_ENV, "").strip().lower() == "true"
+
+
+def _present_copilot_report_paths(run_dir: Path) -> list[tuple[str, Path]]:
+    paths: list[tuple[str, Path]] = []
+    for label, rel_path in _COPILOT_REPORT_ARTIFACTS:
+        path = run_dir / rel_path
+        try:
+            is_present = path.is_file()
+        except OSError:
+            is_present = False
+        if is_present:
+            paths.append((label, path))
+    return paths
 
 
 def _format_raw_output(vm: RunViewModel) -> str:
@@ -1871,7 +1950,8 @@ def _test_counts_failed(values: dict[str, Any]) -> bool:
 
 def _backend_failed(value: Any) -> bool:
     if isinstance(value, dict):
-        return any(_backend_failed(item) for item in value.values())
+        ignored_keys = {"warnings", "artifact_refs", "copilot_report_response", "copilot_migration_report"}
+        return any(_backend_failed(item) for key, item in value.items() if str(key) not in ignored_keys)
     if isinstance(value, (list, tuple)):
         return any(_backend_failed(item) for item in value)
     return _is_failure_status(_string_value(value))
@@ -1972,7 +2052,7 @@ def _format_launch_preview(config: TuiConfig, *, validation_status: str = "Not v
     preview_run_id = "<generated-on-launch>"
     current_run_id = config.run_id.strip() or "-"
     run_dir = (
-        Path(config.modernized_app_path).expanduser() / ".migration" / "runs" / preview_run_id
+        _display_joined_path(config.modernized_app_path, ".migration", "runs", preview_run_id)
         if config.modernized_app_path.strip()
         else "-"
     )
@@ -2013,6 +2093,13 @@ def _format_launch_preview(config: TuiConfig, *, validation_status: str = "Not v
             f"Approval behavior: {approval_effect}",
         ]
     )
+
+
+def _display_joined_path(base: str, *parts: str) -> str:
+    stripped = base.strip()
+    if "/" in stripped and "\\" not in stripped:
+        return "/".join([stripped.rstrip("/"), *parts])
+    return str(Path(stripped).expanduser().joinpath(*parts))
 
 
 def _looks_like_config_paste(text: str) -> bool:
@@ -2074,6 +2161,80 @@ def _run_identity(config: TuiConfig, vm: RunViewModel) -> tuple[str, str]:
         or "read_only_assessment"
     )
     return profile, mode
+
+
+def _format_target_summary(config: TuiConfig) -> str:
+    target = _target_from_profile(config) or _target_from_latest_final_report(config)
+    if not target:
+        return "Target: unknown"
+    parts = []
+    java = _string_value(target.get("java")).strip()
+    boot = _string_value(target.get("spring_boot")).strip()
+    framework = _string_value(target.get("spring_framework")).strip()
+    if java:
+        parts.append(f"Java {java}")
+    if boot:
+        parts.append(f"Spring Boot {boot}")
+    if framework:
+        parts.append(f"Spring Framework {framework}")
+    return "Target: " + (" / ".join(parts) if parts else "unknown")
+
+
+def _target_from_profile(config: TuiConfig) -> dict[str, Any]:
+    profile_id = config.profile_id.strip()
+    if not profile_id:
+        return {}
+    for hub in _candidate_ai_hub_paths(config):
+        profile_path = hub / "profiles" / f"{profile_id}.yaml"
+        try:
+            payload = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("target_stack"), dict):
+            return dict(payload["target_stack"])
+    return {}
+
+
+def _candidate_ai_hub_paths(config: TuiConfig) -> list[Path]:
+    paths: list[Path] = []
+    if config.ai_hub_path.strip():
+        paths.append(Path(config.ai_hub_path).expanduser())
+    paths.append(Path(__file__).resolve().parents[2] / "modernizer-solution-ai-hub")
+    return paths
+
+
+def _target_from_latest_final_report(config: TuiConfig) -> dict[str, Any]:
+    latest = _latest_run_dir(config)
+    if latest is None:
+        return {}
+    report_path = latest / "final" / "migration_report.json"
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if isinstance(payload, dict) and isinstance(payload.get("target_stack"), dict):
+        return dict(payload["target_stack"])
+    return {}
+
+
+def _latest_run_dir(config: TuiConfig) -> Path | None:
+    if not config.modernized_app_path.strip():
+        return None
+    runs_root = Path(config.modernized_app_path).expanduser() / ".migration" / "runs"
+    try:
+        run_dirs = [path for path in runs_root.iterdir() if path.is_dir()]
+    except OSError:
+        return None
+    if not run_dirs:
+        return None
+    return max(run_dirs, key=lambda path: (_path_mtime(path), path.name))
+
+
+def _path_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def _path_name(path: str) -> str:

@@ -14,6 +14,7 @@ from migration_factory.tui.app import (
     _current_phase_status_line,
     _format_details,
     _format_failure_from_view,
+    _format_target_summary,
     _friendly_status,
     _normalized_run_state,
     _pipeline_rows,
@@ -29,6 +30,7 @@ from migration_factory.tui.theme import BACKEND_BADGES, STATE_BADGES
 def _clear_tui_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for env_key, _field_name in ENV_FIELD_MAP:
         monkeypatch.delenv(env_key, raising=False)
+    monkeypatch.delenv("AI_MIGRATION_ENABLE_COPILOT_REPORT", raising=False)
 
 
 def test_setup_screen_renders_full_config_fields(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -103,6 +105,31 @@ async def _assert_setup_screen_renders_field_labels() -> None:
         for label_id, text in expected.items():
             assert app.query_one(f"#{label_id}", Static).content == text
         assert "read_only_assessment = assessment only" in app.query_one("#mode_help", Static).content
+
+
+def test_target_summary_uses_selected_profile_target_stack(tmp_path: Path) -> None:
+    ai_hub = tmp_path / "ai-hub"
+    profiles = ai_hub / "profiles"
+    profiles.mkdir(parents=True)
+    (profiles / "springboot-2.7-to-3.5-java17.yaml").write_text(
+        "\n".join(
+            [
+                "id: springboot-2.7-to-3.5-java17",
+                "target_stack:",
+                '  java: "17"',
+                '  spring_boot: "3.5.14"',
+                '  spring_framework: "6.2.18"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = _format_target_summary(
+        TuiConfig(ai_hub_path=str(ai_hub), profile_id="springboot-2.7-to-3.5-java17")
+    )
+
+    assert summary == "Target: Java 17 / Spring Boot 3.5.14 / Spring Framework 6.2.18"
 
 
 def test_import_config_action_updates_fields(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -684,6 +711,103 @@ async def _assert_successful_completed_run_refreshes_history(tmp_path: Path) -> 
         assert "run-complete" in app.query_one("#dashboard", Static).content
 
 
+def test_run_and_dashboard_render_copilot_status_read_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_tui_env(monkeypatch)
+    monkeypatch.setenv("AI_MIGRATION_ENABLE_COPILOT_REPORT", "true")
+    asyncio.run(_assert_run_and_dashboard_render_copilot_status_read_only(tmp_path))
+
+
+async def _assert_run_and_dashboard_render_copilot_status_read_only(tmp_path: Path) -> None:
+    modernized = tmp_path / "modernized"
+    run_dir = modernized / ".migration" / "runs" / "run-copilot"
+    _write_summary(
+        run_dir,
+        {
+            "run_id": "run-copilot",
+            "analysis_status": "PASS",
+            "planning_status": "PASS",
+            "assessment_status": "PASS",
+            "approval_status": "COMPLETED",
+            "orchestration_status": "PASS",
+            "final_status": "READ_ONLY_ASSESSMENT_COMPLETE",
+        },
+    )
+    final_dir = run_dir / "final"
+    final_dir.mkdir(parents=True, exist_ok=True)
+    (final_dir / "copilot_report_response.json").write_text(
+        json.dumps(
+            {
+                "provider": "github_copilot",
+                "model": "configured:gpt-5",
+                "connectivity": "connected",
+                "report_status": "generated",
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = RunnerLaunchResult(
+        run_id="run-copilot",
+        returncode=0,
+        backend_result={"run_id": "run-copilot", "final_status": "READ_ONLY_ASSESSMENT_COMPLETE"},
+        run_dir=run_dir,
+    )
+    app = MigrationFactorySetupApp()
+    app.config = TuiConfig(modernized_app_path=str(modernized))
+
+    async with app.run_test() as pilot:
+        app._show_launch_result(result)
+        await pilot.pause()
+
+        copilot_status = app.query_one("#copilot_status", Static).content
+        assert "Copilot: Connected" in copilot_status
+        assert "Provider: github_copilot" in copilot_status
+        assert "Model: gpt-5" in copilot_status
+        assert "Report: Generated" in copilot_status
+        assert "Report generation: Enabled" in copilot_status
+
+        dashboard = app.query_one("#dashboard", Static).content
+        assert "Copilot status:" in dashboard
+        assert "Copilot: Connected" in dashboard
+
+
+def test_details_render_default_copilot_status_and_present_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_tui_env(monkeypatch)
+    monkeypatch.setattr(
+        "migration_factory.tui.app.get_copilot_status_lines",
+        lambda run_dir: [
+            "Copilot: Not configured",
+            "Provider: github_copilot",
+            "Adapter: local_deterministic_template",
+            "Model: unknown",
+            "Auth: Unknown",
+            "CLI: Not installed",
+            "Report: Skipped",
+        ],
+    )
+    run_dir = tmp_path / "run-copilot-details"
+    final_dir = run_dir / "final"
+    final_dir.mkdir(parents=True)
+    (final_dir / "copilot_report_request.json").write_text("{}", encoding="utf-8")
+    (final_dir / "copilot_migration_report.md").write_text("# report\n", encoding="utf-8")
+    vm = _full_sandbox_vm(run_dir=run_dir)
+
+    details = _format_details(vm, dashboard=None)
+
+    assert "Copilot status:" in details
+    assert "Copilot: Not configured" in details
+    assert "Report: Skipped" in details
+    assert "Copilot report artifacts:" in details
+    assert f"Copilot report request: {final_dir / 'copilot_report_request.json'}" in details
+    assert f"Copilot migration report: {final_dir / 'copilot_migration_report.md'}" in details
+    assert "Copilot report response:" not in details
+
+
 def test_backend_launch_exception_shows_launch_failed_before_run_dir(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1124,6 +1248,25 @@ def test_success_evidence_maps_transform_build_test_pass_and_success_status(tmp_
     assert rows["Build validation"] == "PASS"
     assert rows["Test validation"] == "PASS"
     assert _current_phase_status_line(vm) == "Migration succeeded."
+    assert _normalized_run_state(vm) == "Success"
+
+
+def test_copilot_report_fallback_warning_does_not_fail_successful_run() -> None:
+    vm = _full_sandbox_vm(
+        summary={
+            "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+            "build_status": "BUILD_PASSED_IN_SANDBOX",
+            "test_status": "TEST_PASSED",
+        },
+        raw_backend={
+            "warnings": [
+                "copilot CLI report generation failed; used deterministic fallback: "
+                "FileNotFoundError: Copilot executable path was not resolved for live call"
+            ]
+        },
+    )
+
+    assert _view_launch_state(vm) == "Run completed"
     assert _normalized_run_state(vm) == "Success"
 
 

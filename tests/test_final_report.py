@@ -7,6 +7,9 @@ import subprocess
 import migration_factory.final_report.writer as final_report_writer
 import pytest
 import migration_factory.agents.copilot_doc_agent.agent as copilot_doc_agent
+import migration_factory.final_report.copilot as copilot_module
+import migration_factory.orchestrator.summary as summary_module
+from migration_factory.final_report.copilot import CopilotAdapterStatus
 from migration_factory.orchestrator.state import FULL_SANDBOX_MIGRATION_MODE, build_initial_state
 from migration_factory.orchestrator.summary import finalize_orchestration_state
 
@@ -19,6 +22,7 @@ def _clear_copilot_doc_env(monkeypatch) -> None:
         "AI_MIGRATION_COPILOT_CLI_PATH",
         "AI_MIGRATION_COPILOT_DOCS_TIMEOUT_SECONDS",
         "AI_MIGRATION_COPILOT_DOCS_FALLBACK_ENABLED",
+        "AI_MIGRATION_ENABLE_COPILOT_REPORT",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -49,7 +53,11 @@ def test_successful_full_sandbox_writes_final_report_and_summary(tmp_path: Path,
     assert _as_posix(payload["timing"]["timing_summary"]).endswith("performance/timing_summary.md")
     assert "copilot_migration_statement_json" not in result["artifact_refs"]
     assert "copilot_migration_statement_md" not in result["artifact_refs"]
+    assert "copilot_report_request" not in result["artifact_refs"]
+    assert "copilot_report_response" not in result["artifact_refs"]
+    assert "copilot_migration_report" not in result["artifact_refs"]
     assert not (Path(state["run_dir"]) / "final" / "copilot_migration_statement.json").exists()
+    assert not (Path(state["run_dir"]) / "final" / "copilot_migration_report.md").exists()
     assert "Copilot Advisory Statement" not in final_summary.read_text(encoding="utf-8")
     assert Path(result["artifact_refs"]["copilot_migration_overview"]).is_file()
     assert Path(result["artifact_refs"]["copilot_technical_changes"]).is_file()
@@ -59,6 +67,83 @@ def test_successful_full_sandbox_writes_final_report_and_summary(tmp_path: Path,
     overview = Path(result["artifact_refs"]["copilot_migration_overview"]).read_text(encoding="utf-8")
     assert "Advisory documentation only" in overview
     assert str(Path(state["artifact_refs"]["analysis_report"])) in overview
+
+
+def test_enabled_copilot_final_report_writes_optional_sidecar_artifacts(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AI_MIGRATION_ENABLE_COPILOT_REPORT", "true")
+    state = _successful_state(tmp_path)
+
+    result = finalize_orchestration_state(state)
+
+    request_ref = Path(result["artifact_refs"]["copilot_report_request"])
+    response_ref = Path(result["artifact_refs"]["copilot_report_response"])
+    report_ref = Path(result["artifact_refs"]["copilot_migration_report"])
+    assert request_ref.is_file()
+    assert response_ref.is_file()
+    assert report_ref.is_file()
+
+    response = json.loads(response_ref.read_text(encoding="utf-8"))
+    assert response["provider"] == "github_copilot"
+    assert response["adapter"] == "local_deterministic_template"
+    assert response["connectivity"] == "not_configured"
+    assert response["model"] == "gpt-5-mini"
+    assert response["report_status"] == "generated"
+    assert response["advisory_only"] is True
+    assert response["can_approve"] is False
+    assert response["can_transform"] is False
+    assert response["can_change_gates"] is False
+    assert response["can_mutate_source"] is False
+    assert response["can_override_status"] is False
+
+    final_report = json.loads(Path(result["artifact_refs"]["final_migration_report"]).read_text(encoding="utf-8"))
+    assert "copilot_report_request" not in final_report["artifact_refs"]
+    summary = json.loads((Path(state["orchestration_dir"]) / "orchestration_summary.json").read_text(encoding="utf-8"))
+    assert summary["artifact_refs"]["copilot_report_request"] == str(request_ref)
+    assert summary["artifact_refs"]["copilot_report_response"] == str(response_ref)
+    assert summary["artifact_refs"]["copilot_migration_report"] == str(report_ref)
+    assert result["orchestration_status"] == "PASS"
+    assert result["final_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
+
+
+def test_enabled_copilot_final_report_uses_internal_resolved_path_only_in_memory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    resolved_path = r"C:\Users\x\AppData\Roaming\npm\copilot.cmd"
+    calls: list[list[str]] = []
+    monkeypatch.setenv("AI_MIGRATION_ENABLE_COPILOT_REPORT", "true")
+    monkeypatch.setenv("AI_MIGRATION_COPILOT_PROVIDER", "copilot_cli")
+    monkeypatch.setenv("AI_MIGRATION_COPILOT_MODEL", "gpt-5-mini")
+
+    def fake_detect(**kwargs) -> CopilotAdapterStatus:
+        return CopilotAdapterStatus(
+            adapter="copilot_cli",
+            model="gpt-5-mini",
+            connectivity="connected",
+            auth_status="authenticated",
+            cli_status="installed",
+            resolved_executable_path=resolved_path,
+        )
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(args, 0, stdout="# Live report\n", stderr="")
+
+    monkeypatch.setattr(summary_module, "detect_copilot_cli_status", fake_detect)
+    monkeypatch.setattr(copilot_module, "detect_copilot_cli_status", fake_detect)
+    monkeypatch.setattr(copilot_module.subprocess, "run", fake_run)
+
+    result = finalize_orchestration_state(_successful_state(tmp_path))
+
+    response_ref = Path(result["artifact_refs"]["copilot_report_response"])
+    request_ref = Path(result["artifact_refs"]["copilot_report_request"])
+    response = json.loads(response_ref.read_text(encoding="utf-8"))
+    assert calls[0][:2] == [resolved_path, "-p"]
+    assert response["adapter"] == "copilot_cli"
+    assert response["report_status"] == "generated"
+    assert response["resolved_executable_basename"] == "copilot.cmd"
+    assert resolved_path not in response_ref.read_text(encoding="utf-8")
+    assert resolved_path not in request_ref.read_text(encoding="utf-8")
 
 
 def test_copilot_documentation_cli_missing_records_status_and_falls_back(tmp_path: Path, monkeypatch) -> None:
