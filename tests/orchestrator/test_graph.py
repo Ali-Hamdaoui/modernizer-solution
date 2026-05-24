@@ -9,11 +9,13 @@ from migration_factory.orchestrator.state import build_initial_state
 
 
 def _state(tmp_path: Path):
-    return build_initial_state(
+    state = build_initial_state(
         run_id="run-001",
         legacy_app_path=str(tmp_path / "legacy"),
         modernized_app_path=str(tmp_path / "modernized"),
     )
+    state["copilot_assist_mode"] = "off"
+    return state
 
 
 def _validation(valid: bool = True) -> ArtifactValidationResult:

@@ -11,6 +11,10 @@ from migration_factory.orchestrator.artifact_validation import (
     validate_assessment_artifacts,
     validate_planning_artifacts,
 )
+from migration_factory.orchestrator.copilot_assist import (
+    copilot_final_report,
+    copilot_phase_assist,
+)
 from migration_factory.orchestrator.phase_services import (
     PhaseServices,
     default_phase_services,
@@ -19,6 +23,7 @@ from migration_factory.orchestrator.phase_services import (
 )
 from migration_factory.orchestrator.state import MigrationState
 from migration_factory.orchestrator.state import FULL_SANDBOX_MIGRATION_MODE
+from migration_factory.orchestrator.summary import finalize_orchestration_state
 
 
 ValidationCallable = Callable[[MigrationState], ArtifactValidationResult]
@@ -38,7 +43,10 @@ def build_graph(
         _phase_node(
             services.run_analysis_phase,
             validate_analysis_artifacts,
+            phase="analysis",
+            status_key="analysis_status",
             artifacts_valid_key="analysis_artifacts_valid",
+            next_on_pass="planning",
         ),
     )
     graph.add_node(
@@ -46,7 +54,10 @@ def build_graph(
         _phase_node(
             services.run_planning_phase,
             validate_planning_artifacts,
+            phase="planning",
+            status_key="planning_status",
             artifacts_valid_key="planning_artifacts_valid",
+            next_on_pass="assessment",
         ),
     )
     graph.add_node(
@@ -54,9 +65,13 @@ def build_graph(
         _phase_node(
             services.run_assessment_phase,
             validate_assessment_artifacts,
+            phase="assessment",
+            status_key="assessment_status",
             artifacts_valid_key="assessment_artifacts_valid",
+            next_on_pass="approval",
         ),
     )
+    graph.add_node("copilot_phase_assist", copilot_phase_assist)
     graph.add_node("approval", approval_node)
     graph.add_node(
         "approval_record",
@@ -66,22 +81,29 @@ def build_graph(
         "sandbox_transform",
         sandbox_transform_service or run_sandbox_transform_phase,
     )
+    graph.add_node("final_report", _deterministic_final_report_node)
+    graph.add_node("copilot_final_report", copilot_final_report)
 
     graph.add_edge(START, "analysis")
     graph.add_conditional_edges(
         "analysis",
         _route_analysis,
-        {"planning": "planning", END: END},
+        {"planning": "planning", "copilot_phase_assist": "copilot_phase_assist", END: END},
     )
     graph.add_conditional_edges(
         "planning",
         _route_planning,
-        {"assessment": "assessment", END: END},
+        {"assessment": "assessment", "copilot_phase_assist": "copilot_phase_assist", END: END},
     )
     graph.add_conditional_edges(
         "assessment",
         _route_assessment,
-        {"approval": "approval", END: END},
+        {"approval": "approval", "copilot_phase_assist": "copilot_phase_assist", END: END},
+    )
+    graph.add_conditional_edges(
+        "copilot_phase_assist",
+        _route_after_copilot_phase_assist,
+        {"planning": "planning", "assessment": "assessment", "approval": "approval", END: END},
     )
     graph.add_conditional_edges(
         "approval",
@@ -93,7 +115,13 @@ def build_graph(
         _route_after_approval_record,
         {"sandbox_transform": "sandbox_transform", END: END},
     )
-    graph.add_edge("sandbox_transform", END)
+    graph.add_edge("sandbox_transform", "final_report")
+    graph.add_conditional_edges(
+        "final_report",
+        _route_after_final_report,
+        {"copilot_final_report": "copilot_final_report", END: END},
+    )
+    graph.add_edge("copilot_final_report", END)
 
     if checkpointer is not None:
         return graph.compile(checkpointer=checkpointer)
@@ -104,7 +132,10 @@ def _phase_node(
     run_phase: Callable[[MigrationState], MigrationState],
     validate_artifacts: ValidationCallable,
     *,
+    phase: str,
+    status_key: str,
     artifacts_valid_key: str,
+    next_on_pass: str,
 ):
     def node(state: MigrationState) -> MigrationState:
         result = dict(state)
@@ -124,27 +155,70 @@ def _phase_node(
             *list(result.get("warnings", []) or []),
             *validation.warnings,
         ]
+        validation_passed = result.get(status_key) == "PASS" and validation.valid
+        result["copilot_assist_phase"] = phase
+        result["copilot_route_after_assist"] = next_on_pass if validation_passed else END
+        result["copilot_validation_had_warnings"] = bool(validation.warnings)
         return result  # type: ignore[return-value]
 
     return node
 
 
 def _route_analysis(state: MigrationState) -> str:
-    if state.get("analysis_status") == "PASS" and state.get("analysis_artifacts_valid") is True:
-        return "planning"
-    return END
+    return _route_after_validation(
+        state,
+        status_key="analysis_status",
+        artifacts_valid_key="analysis_artifacts_valid",
+        next_on_pass="planning",
+    )
 
 
 def _route_planning(state: MigrationState) -> str:
-    if state.get("planning_status") == "PASS" and state.get("planning_artifacts_valid") is True:
-        return "assessment"
-    return END
+    return _route_after_validation(
+        state,
+        status_key="planning_status",
+        artifacts_valid_key="planning_artifacts_valid",
+        next_on_pass="assessment",
+    )
 
 
 def _route_assessment(state: MigrationState) -> str:
-    if state.get("assessment_status") == "PASS" and state.get("assessment_artifacts_valid") is True:
-        return "approval"
-    return END
+    return _route_after_validation(
+        state,
+        status_key="assessment_status",
+        artifacts_valid_key="assessment_artifacts_valid",
+        next_on_pass="approval",
+    )
+
+
+def _route_after_validation(
+    state: MigrationState,
+    *,
+    status_key: str,
+    artifacts_valid_key: str,
+    next_on_pass: str,
+) -> str:
+    validation_passed = state.get(status_key) == "PASS" and state.get(artifacts_valid_key) is True
+    deterministic_route = next_on_pass if validation_passed else END
+    if _should_route_to_copilot_assist(state, validation_passed=validation_passed):
+        return "copilot_phase_assist"
+    return deterministic_route
+
+
+def _should_route_to_copilot_assist(state: MigrationState, *, validation_passed: bool) -> bool:
+    mode = str(state.get("copilot_assist_mode") or "off").lower()
+    if mode == "off":
+        return False
+    if mode == "always":
+        return True
+    if not validation_passed:
+        return mode == "failures"
+    return mode == "warnings" and bool(state.get("copilot_validation_had_warnings"))
+
+
+def _route_after_copilot_phase_assist(state: MigrationState) -> str:
+    route = state.get("copilot_route_after_assist")
+    return str(route) if route in {"planning", "assessment", "approval"} else END
 
 
 def _route_after_approval(state: MigrationState) -> str:
@@ -162,4 +236,14 @@ def _route_after_approval_record(state: MigrationState) -> str:
         and state.get("orchestration_status") != "FAIL"
     ):
         return "sandbox_transform"
+    return END
+
+
+def _deterministic_final_report_node(state: MigrationState) -> MigrationState:
+    return finalize_orchestration_state(state)
+
+
+def _route_after_final_report(state: MigrationState) -> str:
+    if state.get("copilot_report_enabled") is True:
+        return "copilot_final_report"
     return END

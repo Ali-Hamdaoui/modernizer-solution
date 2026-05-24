@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import inspect
 from subprocess import CompletedProcess, TimeoutExpired
 from pathlib import Path
 
 import pytest
 
+import migration_factory.orchestrator.copilot_assist as orchestrator_copilot_module
+import migration_factory.orchestrator.graph as graph_module
 import migration_factory.final_report.copilot as copilot_module
 from migration_factory.copilot_assist.providers import DeterministicCopilotProvider, ProviderResult
 from migration_factory.final_report.copilot import (
@@ -45,6 +48,80 @@ Copilot is advisory only.
 
 Ready for manual review.
 """
+
+
+def test_graph_runs_report_context_before_copilot_final_report(monkeypatch, tmp_path: Path) -> None:
+    calls: list[str] = []
+    _patch_successful_graph(monkeypatch, tmp_path, calls)
+    monkeypatch.setattr(orchestrator_copilot_module, "CopilotAssistService", _RecordingFinalCopilotService)
+    app = graph_module.build_graph(
+        phase_services=_graph_services(calls),
+        approval_record_service=_recording_approval_record(calls),
+        sandbox_transform_service=_recording_sandbox_transform(calls),
+    )
+    state = _graph_state(tmp_path, copilot_report_enabled=True)
+
+    result = app.invoke(state)
+
+    assert calls == ["analysis", "planning", "assessment", "approval", "approval_record", "sandbox_transform", "final_report"]
+    assert result["copilot_phase_statuses"]["final"] == "generated"
+    assert result["final_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
+    assert result["orchestration_status"] == "PASS"
+
+
+def test_graph_skips_disabled_copilot_final_report(monkeypatch, tmp_path: Path) -> None:
+    calls: list[str] = []
+    _patch_successful_graph(monkeypatch, tmp_path, calls)
+
+    class FailingService:
+        def __init__(self, state):
+            raise AssertionError("Copilot final report should be skipped")
+
+    monkeypatch.setattr(orchestrator_copilot_module, "CopilotAssistService", FailingService)
+    app = graph_module.build_graph(
+        phase_services=_graph_services(calls),
+        approval_record_service=_recording_approval_record(calls),
+        sandbox_transform_service=_recording_sandbox_transform(calls),
+    )
+
+    result = app.invoke(_graph_state(tmp_path, copilot_report_enabled=False))
+
+    assert calls == ["analysis", "planning", "assessment", "approval", "approval_record", "sandbox_transform", "final_report"]
+    assert result["copilot_phase_statuses"] == {}
+
+
+def test_copilot_final_report_cannot_change_verdict_or_statuses(monkeypatch, tmp_path: Path) -> None:
+    calls: list[str] = []
+    _patch_successful_graph(monkeypatch, tmp_path, calls)
+    monkeypatch.setattr(orchestrator_copilot_module, "CopilotAssistService", _RecordingFinalCopilotService)
+    app = graph_module.build_graph(
+        phase_services=_graph_services(calls),
+        approval_record_service=_recording_approval_record(calls),
+        sandbox_transform_service=_recording_sandbox_transform(calls),
+    )
+    state = _graph_state(tmp_path, copilot_report_enabled=True)
+
+    result = app.invoke(state)
+
+    assert result["final_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
+    assert result["orchestration_status"] == "PASS"
+    assert result["analysis_status"] == "PASS"
+    assert result["planning_status"] == "PASS"
+    assert result["assessment_status"] == "PASS"
+    assert result["blockers"] == []
+    assert result["warnings"] == []
+    assert result["errors"] == []
+
+
+def test_summary_does_not_hide_copilot_final_report_execution() -> None:
+    import migration_factory.orchestrator.summary as summary_module
+
+    source = inspect.getsource(summary_module)
+
+    assert "generate_copilot_report(" not in source
+    assert "generate_final_report(" not in source
+    assert "_generate_optional_copilot_final_report" not in source
+    assert "interrupt(" not in inspect.getsource(orchestrator_copilot_module)
 
 
 def test_manifest_loads_from_ai_hub_and_resolves_paths() -> None:
@@ -1030,3 +1107,129 @@ def _run_dir_with_required_artifacts(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return run_dir
+
+
+def _graph_state(tmp_path: Path, *, copilot_report_enabled: bool) -> dict:
+    from migration_factory.orchestrator.state import FULL_SANDBOX_MIGRATION_MODE, build_initial_state
+
+    state = build_initial_state(
+        run_id="run-001",
+        legacy_app_path=str(tmp_path / "legacy"),
+        modernized_app_path=str(tmp_path / "modernized"),
+        mode=FULL_SANDBOX_MIGRATION_MODE,
+    )
+    state["copilot_report_enabled"] = copilot_report_enabled
+    state["copilot_provider"] = "deterministic"
+    return state
+
+
+def _graph_services(calls: list[str]):
+    from migration_factory.orchestrator.phase_services import PhaseServices
+
+    def run_analysis_phase(state):
+        calls.append("analysis")
+        return {"analysis_status": "PASS"}
+
+    def run_planning_phase(state):
+        calls.append("planning")
+        return {"planning_status": "PASS"}
+
+    def run_assessment_phase(state):
+        calls.append("assessment")
+        return {"assessment_status": "PASS"}
+
+    return PhaseServices(
+        run_analysis_phase=run_analysis_phase,
+        run_planning_phase=run_planning_phase,
+        run_assessment_phase=run_assessment_phase,
+    )
+
+
+def _patch_successful_graph(monkeypatch, tmp_path: Path, calls: list[str]) -> None:
+    from migration_factory.orchestrator.artifact_validation import ArtifactValidationResult
+
+    validation = ArtifactValidationResult(valid=True, artifact_refs={}, blockers=[], warnings=[])
+    monkeypatch.setattr(graph_module, "validate_analysis_artifacts", lambda state: validation)
+    monkeypatch.setattr(graph_module, "validate_planning_artifacts", lambda state: validation)
+    monkeypatch.setattr(graph_module, "validate_assessment_artifacts", lambda state: validation)
+
+    def approval(state):
+        calls.append("approval")
+        return {"approval_status": "COMPLETED", "approval_decision": "approved"}
+
+    def finalize(state):
+        calls.append("final_report")
+        result = dict(state)
+        final_dir = Path(result["run_dir"]) / "final"
+        final_dir.mkdir(parents=True, exist_ok=True)
+        (final_dir / "migration_report.json").write_text(json.dumps({"final_status": result["final_status"]}) + "\n", encoding="utf-8")
+        (final_dir / "migration_summary.md").write_text("# Summary\n", encoding="utf-8")
+        (final_dir / "report_context.json").write_text(json.dumps({"run_id": result["run_id"], "statuses": {"final": result["final_status"]}}) + "\n", encoding="utf-8")
+        result["artifact_refs"] = {
+            **dict(result.get("artifact_refs", {}) or {}),
+            "final_migration_report": str(final_dir / "migration_report.json"),
+            "final_migration_summary": str(final_dir / "migration_summary.md"),
+            "copilot_report_context": str(final_dir / "report_context.json"),
+        }
+        return result
+
+    monkeypatch.setattr(graph_module, "approval_node", approval)
+    monkeypatch.setattr(graph_module, "finalize_orchestration_state", finalize)
+
+
+def _approval_record(state):
+    return {
+        "approval_status": "COMPLETED",
+        "approval_decision": "approved",
+        "orchestration_status": "PASS",
+    }
+
+
+def _recording_approval_record(calls: list[str]):
+    def run(state):
+        calls.append("approval_record")
+        return _approval_record(state)
+
+    return run
+
+
+def _sandbox_transform(state):
+    return {
+        "orchestration_status": "PASS",
+        "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+        "build_status": "BUILD_PASSED_IN_SANDBOX",
+        "test_status": "TEST_PASSED",
+        "test_totals": {"tests": 1, "passed": 1, "failures": 0, "errors": 0, "skipped": 0},
+        "sandbox_path": "sandbox",
+        "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+    }
+
+
+def _recording_sandbox_transform(calls: list[str]):
+    def run(state):
+        calls.append("sandbox_transform")
+        return _sandbox_transform(state)
+
+    return run
+
+
+class _RecordingFinalCopilotService:
+    def __init__(self, state):
+        self.state = state
+
+    def generate_final_report(self, state):
+        context_path = Path(state["run_dir"]) / "final" / "report_context.json"
+        assert context_path.is_file()
+        state["copilot_phase_statuses"] = {**dict(state.get("copilot_phase_statuses", {}) or {}), "final": "generated"}
+        state["copilot_artifact_refs"] = {
+            **dict(state.get("copilot_artifact_refs", {}) or {}),
+            "copilot_migration_report": "final/copilot_migration_report.md",
+        }
+        state["final_status"] = "FAILED"
+        state["orchestration_status"] = "FAIL"
+        state["analysis_status"] = "FAIL"
+        state["planning_status"] = "FAIL"
+        state["assessment_status"] = "FAIL"
+        state["blockers"] = ["copilot blocker"]
+        state["warnings"] = ["copilot warning"]
+        state["errors"] = ["copilot error"]

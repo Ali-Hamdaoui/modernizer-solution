@@ -101,6 +101,9 @@ class MigrationState(TypedDict, total=False):
     copilot_warnings: list[str]
     copilot_errors: list[str]
     copilot_fallback_used: bool
+    copilot_assist_phase: str
+    copilot_route_after_assist: str
+    copilot_validation_had_warnings: bool
 
 
 def build_initial_state(
@@ -176,6 +179,9 @@ def build_copilot_state_defaults() -> MigrationState:
         "copilot_warnings": [],
         "copilot_errors": [],
         "copilot_fallback_used": False,
+        "copilot_assist_phase": "",
+        "copilot_route_after_assist": "",
+        "copilot_validation_had_warnings": False,
     }
 
 

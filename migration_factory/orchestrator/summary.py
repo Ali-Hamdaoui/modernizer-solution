@@ -1,21 +1,13 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import time
 from typing import Any
 
 from migration_factory.final_report import (
-    CopilotAdapterStatus,
-    detect_copilot_cli_status,
-    generate_copilot_report,
     generate_final_migration_report,
     write_report_context,
-    write_failed_copilot_report_response,
-)
-from migration_factory.agents.copilot_doc_agent import (
-    generate_copilot_documentation_package,
 )
 from migration_factory.orchestrator.artifact_validation import (
     validate_successful_full_sandbox_orchestration,
@@ -32,8 +24,6 @@ EXECUTION_CLAIMS = {
     "migrated_tests_executed": False,
     "final_migration_executed": False,
 }
-_COPILOT_REPORT_ENV = "AI_MIGRATION_ENABLE_COPILOT_REPORT"
-_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
 def build_orchestration_summary(state: MigrationState) -> dict:
@@ -64,6 +54,11 @@ def build_orchestration_summary(state: MigrationState) -> dict:
         "warnings": list(state.get("warnings", []) or []),
         "errors": list(state.get("errors", []) or []),
         "artifact_refs": dict(state.get("artifact_refs", {}) or {}),
+        "copilot_phase_statuses": dict(state.get("copilot_phase_statuses", {}) or {}),
+        "copilot_artifact_refs": dict(state.get("copilot_artifact_refs", {}) or {}),
+        "copilot_warnings": list(state.get("copilot_warnings", []) or []),
+        "copilot_errors": list(state.get("copilot_errors", []) or []),
+        "copilot_fallback_used": bool(state.get("copilot_fallback_used", False)),
         "timing": dict(state.get("timing", {}) or {}),
         **execution_claims,
     }
@@ -135,42 +130,6 @@ def finalize_orchestration_state(
         "copilot_report_context": str(report_context_path),
     }
 
-    copilot_report = _generate_optional_copilot_final_report(result)
-    if copilot_report["warnings"]:
-        result["warnings"] = [
-            *list(result.get("warnings", []) or []),
-            *copilot_report["warnings"],
-        ]
-    if copilot_report["artifact_refs"]:
-        result["artifact_refs"] = {
-            **dict(result.get("artifact_refs", {}) or {}),
-            **copilot_report["artifact_refs"],
-        }
-
-    copilot_docs_started = time.monotonic()
-    copilot_docs = generate_copilot_documentation_package(result)
-    record_phase_duration(
-        result,
-        phase="copilot_documentation",
-        duration_seconds=time.monotonic() - copilot_docs_started,
-    )
-    if copilot_docs.blockers:
-        result["warnings"] = [
-            *list(result.get("warnings", []) or []),
-            *[
-                f"copilot documentation generation skipped: {blocker}"
-                for blocker in copilot_docs.blockers
-            ],
-        ]
-    if copilot_docs.warnings:
-        result["warnings"] = [
-            *list(result.get("warnings", []) or []),
-            *copilot_docs.warnings,
-        ]
-    result["artifact_refs"] = {
-        **dict(result.get("artifact_refs", {}) or {}),
-        **copilot_docs.artifact_refs,
-    }
     timing_refs = write_timing_artifacts(result)
     result["artifact_refs"] = {**dict(result.get("artifact_refs", {}) or {}), **timing_refs}
     summary_writer(result)  # type: ignore[arg-type]
@@ -193,85 +152,6 @@ def finalize_orchestration_state(
         ]
     summary_writer(result)  # type: ignore[arg-type]
     return result  # type: ignore[return-value]
-
-
-def _generate_optional_copilot_final_report(state: dict[str, Any]) -> dict[str, Any]:
-    if not _copilot_report_enabled():
-        return {"artifact_refs": {}, "warnings": []}
-
-    run_dir = Path(str(state.get("run_dir") or ""))
-    ai_hub_path = _resolve_ai_hub_path(state)
-    context = {
-        "application_name": state.get("application_name", ""),
-        "profile_id": state.get("profile_id", ""),
-        "mode": state.get("mode", ""),
-        "legacy_app_path": state.get("legacy_app_path", ""),
-        "sandbox_path": state.get("sandbox_path", ""),
-        "final_verdict": state.get("final_status", ""),
-        "orchestration_status": state.get("orchestration_status", ""),
-        "preflight_status": state.get("preflight_status", ""),
-        "analysis_status": state.get("analysis_status", ""),
-        "planning_status": state.get("planning_status", ""),
-        "assessment_status": state.get("assessment_status", ""),
-        "final_conclusion": "Deterministic factory artifacts remain the source of truth.",
-        "recommended_next_step": "manual review",
-    }
-    try:
-        copilot_status = (
-            detect_copilot_cli_status(timeout_seconds=15.0)
-            if os.getenv("AI_MIGRATION_COPILOT_PROVIDER", "").strip().lower() == "copilot_cli"
-            else CopilotAdapterStatus(
-                model=os.getenv("AI_MIGRATION_COPILOT_MODEL", "").strip() or "gpt-5-mini",
-                connectivity="not_configured",
-                report_status="generated",
-            )
-        )
-        return generate_copilot_report(
-            run_dir,
-            ai_hub_path,
-            context=context,
-            status=copilot_status,
-        )
-    except ValueError as exc:
-        warning = f"copilot final report skipped: {exc}"
-        try:
-            response = write_failed_copilot_report_response(
-                run_dir,
-                ai_hub_path,
-                warning=warning,
-                report_status="skipped",
-            )
-        except Exception:
-            return {"artifact_refs": {}, "warnings": [warning]}
-        return {
-            "artifact_refs": response.get("artifact_refs", {}),
-            "warnings": [warning],
-        }
-    except Exception as exc:  # pragma: no cover - defensive safety net
-        warning = f"copilot final report failed: {exc}"
-        try:
-            response = write_failed_copilot_report_response(
-                run_dir,
-                ai_hub_path,
-                warning=warning,
-            )
-        except Exception:
-            return {"artifact_refs": {}, "warnings": [warning]}
-        return {
-            "artifact_refs": response.get("artifact_refs", {}),
-            "warnings": [warning],
-        }
-
-
-def _copilot_report_enabled() -> bool:
-    return os.getenv(_COPILOT_REPORT_ENV, "").strip().lower() in _TRUE_VALUES
-
-
-def _resolve_ai_hub_path(state: dict[str, Any]) -> Path:
-    configured = Path(str(state.get("ai_hub_path") or ""))
-    if configured and (configured / "templates" / "reports" / "copilot_final_migration_report_v1.yaml").is_file():
-        return configured
-    return Path(__file__).resolve().parents[2] / "modernizer-solution-ai-hub"
 
 
 def _final_status(state: MigrationState) -> str:
