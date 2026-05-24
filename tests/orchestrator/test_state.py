@@ -3,9 +3,12 @@ from pathlib import Path
 from migration_factory.orchestrator.state import (
     APPROVAL_DECISION_VALUES,
     APPROVAL_STATUS_VALUES,
+    CopilotConfigError,
     PHASE_STATUS_VALUES,
     READ_ONLY_ASSESSMENT_MODE,
+    apply_copilot_config,
     build_initial_state,
+    parse_copilot_config_from_env,
 )
 
 
@@ -90,3 +93,111 @@ def test_initial_state_has_no_transformation_status(tmp_path: Path) -> None:
     )
 
     assert "transformation_status" not in state
+
+
+def test_initial_state_has_default_copilot_config(tmp_path: Path) -> None:
+    state = build_initial_state(
+        run_id="run-001",
+        legacy_app_path=str(tmp_path / "legacy"),
+        modernized_app_path=str(tmp_path / "modernized"),
+    )
+
+    assert state["copilot_enabled"] is True
+    assert state["copilot_assist_mode"] == "failures"
+    assert state["copilot_report_enabled"] is True
+    assert state["copilot_provider"] == "cli"
+    assert state["copilot_model"] == "gpt-5-mini"
+    assert state["copilot_timeout_seconds"] == 300
+    assert state["copilot_phase_statuses"] == {}
+    assert state["copilot_artifact_refs"] == {}
+    assert state["copilot_warnings"] == []
+    assert state["copilot_errors"] == []
+    assert state["copilot_fallback_used"] is False
+
+
+def test_copilot_config_supports_env_overrides() -> None:
+    config = parse_copilot_config_from_env(
+        {
+            "AI_MIGRATION_COPILOT_ASSIST": "always",
+            "AI_MIGRATION_ENABLE_COPILOT_REPORT": "false",
+            "AI_MIGRATION_COPILOT_PROVIDER": "sdk",
+            "AI_MIGRATION_COPILOT_MODEL": "gpt-5",
+            "AI_MIGRATION_COPILOT_TIMEOUT_SECONDS": "45",
+        }
+    )
+
+    assert config["copilot_enabled"] is True
+    assert config["copilot_assist_mode"] == "always"
+    assert config["copilot_report_enabled"] is False
+    assert config["copilot_provider"] == "sdk"
+    assert config["copilot_model"] == "gpt-5"
+    assert config["copilot_timeout_seconds"] == 45
+
+
+def test_copilot_off_assist_mode_disables_copilot() -> None:
+    config = parse_copilot_config_from_env({"AI_MIGRATION_COPILOT_ASSIST": "off"})
+
+    assert config["copilot_enabled"] is False
+    assert config["copilot_assist_mode"] == "off"
+
+
+def test_invalid_copilot_assist_mode_fails_validation() -> None:
+    try:
+        parse_copilot_config_from_env({"AI_MIGRATION_COPILOT_ASSIST": "sometimes"})
+    except CopilotConfigError as exc:
+        assert "AI_MIGRATION_COPILOT_ASSIST" in str(exc)
+    else:
+        raise AssertionError("invalid Copilot assist mode should fail validation")
+
+
+def test_invalid_copilot_provider_fails_validation() -> None:
+    try:
+        parse_copilot_config_from_env({"AI_MIGRATION_COPILOT_PROVIDER": "copilot_cli"})
+    except CopilotConfigError as exc:
+        assert "AI_MIGRATION_COPILOT_PROVIDER" in str(exc)
+    else:
+        raise AssertionError("invalid Copilot provider should fail validation")
+
+
+def test_invalid_copilot_timeout_fails_validation() -> None:
+    for timeout in ("0", "-1", "not-a-number"):
+        try:
+            parse_copilot_config_from_env({"AI_MIGRATION_COPILOT_TIMEOUT_SECONDS": timeout})
+        except CopilotConfigError as exc:
+            assert "AI_MIGRATION_COPILOT_TIMEOUT_SECONDS" in str(exc)
+        else:
+            raise AssertionError(f"invalid Copilot timeout should fail validation: {timeout}")
+
+
+def test_copilot_config_does_not_mutate_official_status_or_issue_fields(tmp_path: Path) -> None:
+    state = build_initial_state(
+        run_id="run-001",
+        legacy_app_path=str(tmp_path / "legacy"),
+        modernized_app_path=str(tmp_path / "modernized"),
+    )
+    state["analysis_status"] = "PASS"
+    state["planning_status"] = "FAIL"
+    state["assessment_status"] = "SKIPPED"
+    state["orchestration_status"] = "RUNNING"
+    state["blockers"] = ["deterministic blocker"]
+    state["errors"] = ["deterministic error"]
+    state["warnings"] = ["deterministic warning"]
+
+    updated = apply_copilot_config(
+        state,
+        {
+            "AI_MIGRATION_COPILOT_ASSIST": "always",
+            "AI_MIGRATION_COPILOT_PROVIDER": "deterministic",
+            "AI_MIGRATION_COPILOT_TIMEOUT_SECONDS": "60",
+        },
+    )
+
+    assert updated["analysis_status"] == "PASS"
+    assert updated["planning_status"] == "FAIL"
+    assert updated["assessment_status"] == "SKIPPED"
+    assert updated["orchestration_status"] == "RUNNING"
+    assert updated["blockers"] == ["deterministic blocker"]
+    assert updated["errors"] == ["deterministic error"]
+    assert updated["warnings"] == ["deterministic warning"]
+    assert updated["copilot_errors"] == []
+    assert updated["copilot_warnings"] == []

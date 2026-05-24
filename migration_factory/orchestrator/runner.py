@@ -15,7 +15,9 @@ from migration_factory.orchestrator.preflight import (
 from migration_factory.orchestrator.state import (
     FULL_SANDBOX_MIGRATION_MODE,
     READ_ONLY_ASSESSMENT_MODE,
+    apply_copilot_config,
     build_initial_state,
+    parse_copilot_config_from_env,
 )
 from migration_factory.orchestrator.summary import (
     finalize_orchestration_state,
@@ -57,10 +59,11 @@ def main(argv: list[str] | None = None) -> int:
         thread_id=args.run_id,
         mode=args.mode,
     )
-    start_total_run_timing(state)
-    config = build_langgraph_config(args.run_id)
 
     try:
+        state = load_copilot_config(state)
+        start_total_run_timing(state)
+        config = build_langgraph_config(args.run_id)
         validate_preflight(state, config)
         graph = build_graph(checkpointer=_default_checkpointer_for_run(state["run_dir"]))
         result = graph.invoke(state, config=config)
@@ -95,6 +98,14 @@ def _render_result(result: Any) -> Any:
             "decision_options": interrupt_payload.get("decision_options", []),
         }
     return _to_json_safe(result)
+
+
+def load_copilot_config(state: dict[str, Any]) -> dict[str, Any]:
+    return apply_copilot_config(state)
+
+
+def parse_copilot_config() -> dict[str, Any]:
+    return parse_copilot_config_from_env()
 
 
 def _extract_interrupt_payload(result: Any) -> dict[str, Any] | None:

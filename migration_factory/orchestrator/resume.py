@@ -12,7 +12,11 @@ from migration_factory.orchestrator.checkpointing import default_checkpointer
 from migration_factory.orchestrator import graph as graph_module
 from migration_factory.orchestrator.phase_services import record_approval_decision_phase
 from migration_factory.orchestrator.preflight import build_langgraph_config
-from migration_factory.orchestrator.state import APPROVAL_DECISION_VALUES
+from migration_factory.orchestrator.state import (
+    APPROVAL_DECISION_VALUES,
+    apply_copilot_config,
+    parse_copilot_config_from_env,
+)
 from migration_factory.orchestrator.summary import finalize_orchestration_state
 from migration_factory.orchestrator.timing import start_total_run_timing
 
@@ -208,7 +212,7 @@ def _with_explicit_run_paths(state: dict[str, Any], run_dir: Path) -> dict[str, 
     updated["planning_dir"] = str(run_dir / "planning")
     updated["assessment_dir"] = str(run_dir / "assessment")
     updated["orchestration_dir"] = str(run_dir / "orchestration")
-    return updated
+    return load_copilot_config(updated)
 
 
 def _normalize_resume_result(
@@ -237,6 +241,14 @@ def _to_json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
+
+
+def load_copilot_config(state: dict[str, Any]) -> dict[str, Any]:
+    return apply_copilot_config(state)
+
+
+def parse_copilot_config() -> dict[str, Any]:
+    return parse_copilot_config_from_env()
 
 
 if __name__ == "__main__":

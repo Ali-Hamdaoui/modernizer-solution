@@ -1,3 +1,5 @@
+import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, TypedDict
 
@@ -11,10 +13,32 @@ ORCHESTRATION_MODES = {
 PHASE_STATUS_VALUES = {"PENDING", "RUNNING", "PASS", "FAIL", "SKIPPED"}
 APPROVAL_STATUS_VALUES = {"PENDING", "INTERRUPTED", "COMPLETED", "FAILED"}
 APPROVAL_DECISION_VALUES = {"approved", "rejected", "replan_required"}
+COPILOT_ASSIST_MODE_VALUES = {"off", "failures", "warnings", "always"}
+COPILOT_PROVIDER_VALUES = {"cli", "sdk", "deterministic"}
+
+DEFAULT_COPILOT_ASSIST_MODE = "failures"
+DEFAULT_COPILOT_REPORT_ENABLED = True
+DEFAULT_COPILOT_PROVIDER = "cli"
+DEFAULT_COPILOT_MODEL = "gpt-5-mini"
+DEFAULT_COPILOT_TIMEOUT_SECONDS = 300
+
+_COPILOT_ASSIST_ENV = "AI_MIGRATION_COPILOT_ASSIST"
+_COPILOT_REPORT_ENV = "AI_MIGRATION_ENABLE_COPILOT_REPORT"
+_COPILOT_PROVIDER_ENV = "AI_MIGRATION_COPILOT_PROVIDER"
+_COPILOT_MODEL_ENV = "AI_MIGRATION_COPILOT_MODEL"
+_COPILOT_TIMEOUT_ENV = "AI_MIGRATION_COPILOT_TIMEOUT_SECONDS"
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
 
 PhaseStatus = Literal["PENDING", "RUNNING", "PASS", "FAIL", "SKIPPED"]
 ApprovalStatus = Literal["PENDING", "INTERRUPTED", "COMPLETED", "FAILED"]
 ApprovalDecision = Literal["approved", "rejected", "replan_required"]
+CopilotAssistMode = Literal["off", "failures", "warnings", "always"]
+CopilotProvider = Literal["cli", "sdk", "deterministic"]
+
+
+class CopilotConfigError(ValueError):
+    """Raised when Copilot configuration is invalid."""
 
 
 class MigrationState(TypedDict, total=False):
@@ -66,6 +90,18 @@ class MigrationState(TypedDict, total=False):
     assessment_dir: str
     orchestration_dir: str
 
+    copilot_enabled: bool
+    copilot_assist_mode: CopilotAssistMode
+    copilot_report_enabled: bool
+    copilot_provider: CopilotProvider
+    copilot_model: str
+    copilot_timeout_seconds: int
+    copilot_phase_statuses: dict[str, str]
+    copilot_artifact_refs: dict[str, str]
+    copilot_warnings: list[str]
+    copilot_errors: list[str]
+    copilot_fallback_used: bool
+
 
 def build_initial_state(
     *,
@@ -79,7 +115,7 @@ def build_initial_state(
 ) -> MigrationState:
     run_dir = Path(modernized_app_path) / ".migration" / "runs" / run_id
 
-    return {
+    state: MigrationState = {
         "run_id": run_id,
         "mode": mode,
         "legacy_app_path": str(legacy_app_path),
@@ -123,3 +159,98 @@ def build_initial_state(
         "assessment_dir": str(run_dir / "assessment"),
         "orchestration_dir": str(run_dir / "orchestration"),
     }
+    state.update(build_copilot_state_defaults())
+    return state
+
+
+def build_copilot_state_defaults() -> MigrationState:
+    return {
+        "copilot_enabled": DEFAULT_COPILOT_ASSIST_MODE != "off",
+        "copilot_assist_mode": DEFAULT_COPILOT_ASSIST_MODE,
+        "copilot_report_enabled": DEFAULT_COPILOT_REPORT_ENABLED,
+        "copilot_provider": DEFAULT_COPILOT_PROVIDER,
+        "copilot_model": DEFAULT_COPILOT_MODEL,
+        "copilot_timeout_seconds": DEFAULT_COPILOT_TIMEOUT_SECONDS,
+        "copilot_phase_statuses": {},
+        "copilot_artifact_refs": {},
+        "copilot_warnings": [],
+        "copilot_errors": [],
+        "copilot_fallback_used": False,
+    }
+
+
+def parse_copilot_config_from_env(env: Mapping[str, str] | None = None) -> MigrationState:
+    source = env or os.environ
+    assist_mode = _normalized_env_value(source, _COPILOT_ASSIST_ENV, DEFAULT_COPILOT_ASSIST_MODE)
+    if assist_mode not in COPILOT_ASSIST_MODE_VALUES:
+        raise CopilotConfigError(
+            f"{_COPILOT_ASSIST_ENV} must be one of: {', '.join(sorted(COPILOT_ASSIST_MODE_VALUES))}"
+        )
+
+    provider = _normalized_env_value(source, _COPILOT_PROVIDER_ENV, DEFAULT_COPILOT_PROVIDER)
+    if provider not in COPILOT_PROVIDER_VALUES:
+        raise CopilotConfigError(
+            f"{_COPILOT_PROVIDER_ENV} must be one of: {', '.join(sorted(COPILOT_PROVIDER_VALUES))}"
+        )
+
+    timeout_seconds = _positive_int_env_value(
+        source,
+        _COPILOT_TIMEOUT_ENV,
+        DEFAULT_COPILOT_TIMEOUT_SECONDS,
+    )
+    report_enabled = _bool_env_value(
+        source,
+        _COPILOT_REPORT_ENV,
+        DEFAULT_COPILOT_REPORT_ENABLED,
+    )
+    model = str(source.get(_COPILOT_MODEL_ENV, "")).strip() or DEFAULT_COPILOT_MODEL
+
+    config: MigrationState = build_copilot_state_defaults()
+    config.update(
+        {
+            "copilot_enabled": assist_mode != "off",
+            "copilot_assist_mode": assist_mode,
+            "copilot_report_enabled": report_enabled,
+            "copilot_provider": provider,
+            "copilot_model": model,
+            "copilot_timeout_seconds": timeout_seconds,
+        }
+    )
+    return config
+
+
+def apply_copilot_config(
+    state: Mapping[str, object],
+    env: Mapping[str, str] | None = None,
+) -> MigrationState:
+    updated: MigrationState = dict(state)
+    updated.update(parse_copilot_config_from_env(env))
+    return updated
+
+
+def _normalized_env_value(source: Mapping[str, str], name: str, default: str) -> str:
+    return str(source.get(name, "")).strip().lower() or default
+
+
+def _bool_env_value(source: Mapping[str, str], name: str, default: bool) -> bool:
+    raw = str(source.get(name, "")).strip().lower()
+    if not raw:
+        return default
+    if raw in _TRUE_VALUES:
+        return True
+    if raw in _FALSE_VALUES:
+        return False
+    return False
+
+
+def _positive_int_env_value(source: Mapping[str, str], name: str, default: int) -> int:
+    raw = str(source.get(name, "")).strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise CopilotConfigError(f"{name} must be a positive integer") from exc
+    if value <= 0:
+        raise CopilotConfigError(f"{name} must be a positive integer")
+    return value
