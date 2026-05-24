@@ -297,6 +297,30 @@ VALID_PAYLOADS = {
         "blockers": [],
         "errors": [],
     },
+    "copilot_report_request.schema.json": {
+        "schema_version": "1.0.0",
+        "run_id": "run-1",
+        "provider": "deterministic",
+        "model": "local-template",
+        "template_id": "final-report-default",
+        "context_ref": "final/report_context.json",
+        "advisory_only": True,
+        "guardrails": {
+            "no_state_mutation": True,
+            "use_provided_context_only": True,
+        },
+    },
+    "copilot_report_response.schema.json": {
+        "schema_version": "1.0.0",
+        "run_id": "run-1",
+        "provider": "deterministic",
+        "model": "local-template",
+        "status": "generated",
+        "fallback_used": False,
+        "output_ref": "final/copilot_migration_report.md",
+        "validation": {"valid": True},
+        "warnings": [],
+    },
 }
 
 
@@ -350,9 +374,8 @@ def test_schema_enums_match_contract_constants() -> None:
     assert _load_schema("approval_decision.schema.json")["properties"]["decision"][
         "enum"
     ] == list(APPROVAL_DECISION_VALUES)
-    assert _load_schema("copilot_assist.schema.json")["properties"]["status"]["enum"] == list(
-        COPILOT_STATUS_VALUES
-    )
+    legacy_assist = _load_schema("copilot_assist.schema.json")["definitions"]["legacy_assist"]
+    assert legacy_assist["properties"]["status"]["enum"] == list(COPILOT_STATUS_VALUES)
 
 
 @pytest.mark.parametrize("field", ["schema_version", "run_id"])
@@ -435,12 +458,96 @@ def test_assessment_report_rejects_execution_claims() -> None:
         _validate("assessment_report.schema.json", payload)
 
 
-def test_copilot_assist_rejects_advisory_flag_true() -> None:
+def test_copilot_legacy_assist_rejects_mutable_guardrail_flag() -> None:
     payload = deepcopy(VALID_PAYLOADS["copilot_assist.schema.json"])
     payload["can_modify_tools"] = True
 
     with pytest.raises(jsonschema.ValidationError):
         _validate("copilot_assist.schema.json", payload)
+
+
+def _phase_assist_payload(phase: str) -> dict:
+    return {
+        "schema_version": "1.0.0",
+        "run_id": "run-1",
+        "phase": phase,
+        "agent": f"{phase}_agent",
+        "provider": "deterministic",
+        "model": "local-template",
+        "status": "fallback",
+        "advisory_only": True,
+        "trigger": "fallback",
+        "validation_snapshot": {"status": "not_captured"},
+        "root_cause_summary": "No external Copilot result was available.",
+        "evidence": ["Provided deterministic context only."],
+        "recommended_actions": ["Review deterministic artifacts."],
+        "blocked_actions": ["Do not mutate official migration state."],
+        "confidence": "medium",
+        "fallback_used": True,
+        "created_at": "2026-05-19T00:00:00Z",
+    }
+
+
+@pytest.mark.parametrize(
+    "phase",
+    ["analysis", "planning", "assessment", "transformation", "build", "quality", "security", "final"],
+)
+def test_copilot_assist_accepts_supported_phase_advisory_payloads(phase: str) -> None:
+    _validate("copilot_assist.schema.json", _phase_assist_payload(phase))
+
+
+def test_copilot_assist_rejects_new_payload_when_advisory_only_false() -> None:
+    payload = _phase_assist_payload("analysis")
+    payload["advisory_only"] = False
+
+    with pytest.raises(jsonschema.ValidationError):
+        _validate("copilot_assist.schema.json", payload)
+
+
+def test_copilot_assist_rejects_unsupported_phase() -> None:
+    payload = _phase_assist_payload("deployment")
+
+    with pytest.raises(jsonschema.ValidationError):
+        _validate("copilot_assist.schema.json", payload)
+
+
+@pytest.mark.parametrize("phase,agent", [("analysis", "analysis_agent"), ("planning", "planning_agent")])
+def test_copilot_assist_accepts_legacy_analysis_and_planning_payloads(phase: str, agent: str) -> None:
+    payload = deepcopy(VALID_PAYLOADS["copilot_assist.schema.json"])
+    payload["phase"] = phase
+    payload["agent"] = agent
+
+    _validate("copilot_assist.schema.json", payload)
+
+
+def test_copilot_report_request_requires_advisory_only_true() -> None:
+    payload = deepcopy(VALID_PAYLOADS["copilot_report_request.schema.json"])
+    payload["advisory_only"] = False
+
+    with pytest.raises(jsonschema.ValidationError):
+        _validate("copilot_report_request.schema.json", payload)
+
+
+@pytest.mark.parametrize(
+    "status,fallback_used,output_ref",
+    [
+        ("generated", False, "final/copilot_migration_report.md"),
+        ("generated_with_fallback", True, "final/copilot_migration_report.md"),
+        ("failed", False, None),
+    ],
+)
+def test_copilot_report_response_accepts_supported_statuses(
+    status: str, fallback_used: bool, output_ref: str | None
+) -> None:
+    payload = deepcopy(VALID_PAYLOADS["copilot_report_response.schema.json"])
+    payload["status"] = status
+    payload["fallback_used"] = fallback_used
+    payload["output_ref"] = output_ref
+    if status == "failed":
+        payload["validation"] = {"valid": False, "errors": ["generation failed"]}
+        payload["warnings"] = ["No report generated."]
+
+    _validate("copilot_report_response.schema.json", payload)
 
 
 def test_approval_artifacts_write_and_check(tmp_path: Path) -> None:

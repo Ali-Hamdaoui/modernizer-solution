@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import migration_factory.final_report.copilot as copilot_module
+from migration_factory.copilot_assist.providers import DeterministicCopilotProvider, ProviderResult
 from migration_factory.final_report.copilot import (
     CopilotAdapterStatus,
     build_copilot_report_request,
@@ -136,6 +137,39 @@ def test_deterministic_render_writes_request_response_and_report(tmp_path: Path)
     assert response["can_change_gates"] is False
     assert response["can_mutate_source"] is False
     assert response["can_override_status"] is False
+
+
+def test_deterministic_provider_returns_final_report_fallback_result() -> None:
+    provider = DeterministicCopilotProvider()
+
+    result = provider.final_report_fallback(
+        run_id="run-001",
+        context={
+            "statuses": {
+                "final": "TRANSFORM_APPLIED_IN_SANDBOX",
+                "build": "BUILD_PASSED_IN_SANDBOX",
+                "tests": "TEST_PASSED",
+            },
+            "warnings": ["manual review required"],
+        },
+        output_ref="final/copilot_migration_report.md",
+        warnings=["copilot CLI unavailable; deterministic fallback used"],
+    )
+    payload = result.to_dict()
+
+    assert isinstance(result, ProviderResult)
+    assert payload["schema_version"] == "1.0.0"
+    assert payload["run_id"] == "run-001"
+    assert payload["provider"] == "deterministic"
+    assert payload["model"] == "local-template"
+    assert payload["status"] == "generated_with_fallback"
+    assert payload["advisory_only"] is True
+    assert payload["fallback_used"] is True
+    assert payload["output_ref"] == "final/copilot_migration_report.md"
+    assert payload["validation"]["valid"] is True
+    assert payload["validation"]["uses_provided_context_only"] is True
+    assert payload["warnings"] == ["copilot CLI unavailable; deterministic fallback used"]
+    assert payload["content"]["statuses"]["final"] == "TRANSFORM_APPLIED_IN_SANDBOX"
 
 
 def test_application_name_is_derived_from_legacy_path(tmp_path: Path) -> None:
