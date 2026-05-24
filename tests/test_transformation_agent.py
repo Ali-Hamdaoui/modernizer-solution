@@ -24,9 +24,11 @@ from migration_factory.agents.transformation_agent.execution_plan import (
 from migration_factory.agents.transformation_agent.executor import CommandResult
 from migration_factory.agents.transformation_agent.plan import load_migration_plan
 from migration_factory.agents.transformation_agent.pom_patches import (
+    patch_forbidden_source_patterns_allow_jakarta,
     patch_batch_config_flat_file_item_reader_constructor,
     patch_maven_enforcer_java_version,
     patch_pom_property,
+    patch_quality_rules_allow_jakarta,
     patch_security_config_authorize_http_requests,
 )
 from migration_factory.approval import write_approval_decision, write_approved_plan_lock
@@ -401,6 +403,43 @@ migration_units:
                 batch.read_text(encoding="utf-8"),
             )
 
+    def test_boot3_policy_patches_allow_jakarta_after_migration(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            architecture = app / "shoppoc-app" / "src" / "test" / "java" / "com" / "shoppoc" / "architecture"
+            architecture.mkdir(parents=True)
+            forbidden = architecture / "ForbiddenSourcePatternsTest.java"
+            quality = architecture / "QualityRulesTest.java"
+            forbidden.write_text(
+                """class ForbiddenSourcePatternsTest {
+    void check(String line) {
+        if (line.startsWith("import jakarta.")) {
+            throw new IllegalStateException(" uses jakarta import");
+        }
+    }
+}
+""",
+                encoding="utf-8",
+            )
+            quality.write_text(
+                """class QualityRulesTest {
+    String ruleName = "no_jakarta_imports";
+    String packageName = "jakarta..";
+}
+""",
+                encoding="utf-8",
+            )
+
+            forbidden_patches = patch_forbidden_source_patterns_allow_jakarta(app, unit_id="java-17")
+            quality_patches = patch_quality_rules_allow_jakarta(app, unit_id="java-17")
+
+            self.assertEqual(len(forbidden_patches), 1)
+            self.assertIn('line.startsWith("import javax.")', forbidden.read_text(encoding="utf-8"))
+            self.assertIn(" uses javax import", forbidden.read_text(encoding="utf-8"))
+            self.assertEqual(len(quality_patches), 1)
+            self.assertIn("no_javax_imports", quality.read_text(encoding="utf-8"))
+            self.assertIn('"javax.."', quality.read_text(encoding="utf-8"))
+
     def test_boot4_java21_profile_adds_post_openrewrite_enforcer_patch(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"
@@ -630,14 +669,21 @@ migration_units:
             self.assertEqual(ledger["build_validation"]["unit_id"], "baseline")
             self.assertEqual((app / "pom.xml").read_text(encoding="utf-8"), original_pom)
 
-    def test_java17_profile_does_not_add_enforcer_patch_without_configuration(self) -> None:
+    def test_java17_profile_adds_boot3_policy_patches_but_not_enforcer_patch(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"
             app.mkdir()
             run_id = "run-1"
             _write_approved_run_artifacts(app, run_id, include_rewrite_plan=True)
             ai_hub = tmp / "ai-hub"
-            _write_ai_hub_profile(ai_hub)
+            _write_ai_hub_profile(
+                ai_hub,
+                extra_profile_yaml="""
+  post_apply_patches:
+    - type: forbidden_source_patterns_allow_jakarta
+    - type: quality_rules_allow_jakarta
+""",
+            )
             plan_path = write_transformation_execution_plan(app, run_id)
 
             transform_module._apply_openrewrite_apply_settings(plan_path, str(ai_hub), "java17")
@@ -645,6 +691,14 @@ migration_units:
 
             self.assertNotIn(
                 "maven_enforcer_java_version",
+                json.dumps(payload),
+            )
+            self.assertIn(
+                "forbidden_source_patterns_allow_jakarta",
+                json.dumps(payload),
+            )
+            self.assertIn(
+                "quality_rules_allow_jakarta",
                 json.dumps(payload),
             )
 

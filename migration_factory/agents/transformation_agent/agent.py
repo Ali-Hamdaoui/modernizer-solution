@@ -19,9 +19,11 @@ from migration_factory.contracts.migration import (
 from .executor import CommandResult, run_command
 from .plan import MigrationPlan, MigrationUnit, load_migration_plan
 from .pom_patches import (
+    patch_forbidden_source_patterns_allow_jakarta,
     patch_batch_config_flat_file_item_reader_constructor,
     patch_maven_enforcer_java_version,
     patch_pom_property,
+    patch_quality_rules_allow_jakarta,
     patch_security_config_authorize_http_requests,
 )
 from .rewrite import build_rewrite_run_command, rewrite_plugin_version_from_xml
@@ -249,6 +251,44 @@ def _run_unit(
 
         if transformation_type == "batch_flat_file_item_reader_constructor":
             patches = [] if dry_run else patch_batch_config_flat_file_item_reader_constructor(
+                plan.target_path,
+                unit_id=unit.id,
+            )
+            for patch in patches:
+                print(f"unit={patch.unit} patch={patch.patch} file={patch.file}")
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "applied" if patches else "not_applicable",
+                    "patches": [
+                        {"file": patch.file, "patch": patch.patch, "unit": patch.unit}
+                        for patch in patches
+                    ],
+                }
+            )
+            continue
+
+        if transformation_type == "forbidden_source_patterns_allow_jakarta":
+            patches = [] if dry_run else patch_forbidden_source_patterns_allow_jakarta(
+                plan.target_path,
+                unit_id=unit.id,
+            )
+            for patch in patches:
+                print(f"unit={patch.unit} patch={patch.patch} file={patch.file}")
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "applied" if patches else "not_applicable",
+                    "patches": [
+                        {"file": patch.file, "patch": patch.patch, "unit": patch.unit}
+                        for patch in patches
+                    ],
+                }
+            )
+            continue
+
+        if transformation_type == "quality_rules_allow_jakarta":
+            patches = [] if dry_run else patch_quality_rules_allow_jakarta(
                 plan.target_path,
                 unit_id=unit.id,
             )

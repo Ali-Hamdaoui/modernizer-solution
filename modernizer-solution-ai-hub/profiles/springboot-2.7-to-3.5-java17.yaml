@@ -31,6 +31,9 @@ openrewrite:
   preview_allowed: true
   apply_allowed: false
   catalog_path: catalogs/openrewrite/springboot-3.5-java17.yaml
+  post_apply_patches:
+    - type: forbidden_source_patterns_allow_jakarta
+    - type: quality_rules_allow_jakarta
 policies:
   safety: policies/safety.yaml
   planning: policies/planning.yaml

@@ -207,6 +207,70 @@ def patch_batch_config_flat_file_item_reader_constructor(
     ]
 
 
+def patch_forbidden_source_patterns_allow_jakarta(
+    project_path: Path,
+    *,
+    unit_id: str,
+) -> list[SourcePatch]:
+    path = _find_any_file(
+        project_path,
+        Path("shoppoc-app/src/test/java/com/shoppoc/architecture/ForbiddenSourcePatternsTest.java"),
+        "ForbiddenSourcePatternsTest.java",
+    )
+    if not path.is_file():
+        return []
+    relative_path = path.relative_to(project_path)
+
+    text = path.read_text(encoding="utf-8")
+    updated = text.replace(
+        'if (line.startsWith("import jakarta.")) {',
+        'if (line.startsWith("import javax.")) {',
+    ).replace(
+        " uses jakarta import",
+        " uses javax import",
+    )
+    if updated == text:
+        return []
+
+    path.write_text(updated, encoding="utf-8")
+    return [
+        SourcePatch(
+            file=str(relative_path),
+            patch="forbidden_source_patterns_allow_jakarta",
+            unit=unit_id,
+        )
+    ]
+
+
+def patch_quality_rules_allow_jakarta(
+    project_path: Path,
+    *,
+    unit_id: str,
+) -> list[SourcePatch]:
+    path = _find_any_file(
+        project_path,
+        Path("shoppoc-app/src/test/java/com/shoppoc/architecture/QualityRulesTest.java"),
+        "QualityRulesTest.java",
+    )
+    if not path.is_file():
+        return []
+    relative_path = path.relative_to(project_path)
+
+    text = path.read_text(encoding="utf-8")
+    updated = text.replace("no_jakarta_imports", "no_javax_imports").replace('"jakarta.."', '"javax.."')
+    if updated == text:
+        return []
+
+    path.write_text(updated, encoding="utf-8")
+    return [
+        SourcePatch(
+            file=str(relative_path),
+            patch="quality_rules_allow_jakarta",
+            unit=unit_id,
+        )
+    ]
+
+
 def _find_source_file(project_path: Path, filename: str) -> Path:
     source_root = project_path / "src" / "main" / "java"
     if not source_root.is_dir():
@@ -215,6 +279,16 @@ def _find_source_file(project_path: Path, filename: str) -> Path:
     if not matches:
         return project_path / filename
     return matches[0]
+
+
+def _find_any_file(project_path: Path, preferred_relative_path: Path, filename: str) -> Path:
+    preferred = project_path / preferred_relative_path
+    if preferred.is_file():
+        return preferred
+    matches = sorted(project_path.rglob(filename))
+    if matches:
+        return matches[0]
+    return preferred
 
 
 def _namespace(tag: str) -> str:
