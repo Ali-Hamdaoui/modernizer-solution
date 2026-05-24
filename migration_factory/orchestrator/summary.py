@@ -11,6 +11,7 @@ from migration_factory.final_report import (
     detect_copilot_cli_status,
     generate_copilot_report,
     generate_final_migration_report,
+    write_report_context,
     write_failed_copilot_report_response,
 )
 from migration_factory.agents.copilot_doc_agent import (
@@ -127,6 +128,12 @@ def finalize_orchestration_state(
         **final_report.artifact_refs,
     }
     result["artifact_refs"] = artifact_refs
+
+    report_context_path = write_report_context(result["run_dir"])
+    result["artifact_refs"] = {
+        **dict(result.get("artifact_refs", {}) or {}),
+        "copilot_report_context": str(report_context_path),
+    }
 
     copilot_report = _generate_optional_copilot_final_report(result)
     if copilot_report["warnings"]:

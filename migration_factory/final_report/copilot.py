@@ -31,6 +31,7 @@ DEFAULT_MANIFEST_RELATIVE_PATH = Path("templates") / "reports" / "copilot_final_
 COPILOT_LOG_DIR = Path("logs") / "copilot"
 COPILOT_GITHUB_CLI_LOG_DIR = COPILOT_LOG_DIR / "github-cli"
 _EXTRA_CONTEXT_ARTIFACTS = (
+    Path("final") / "report_context.json",
     Path("analysis") / "analysis_report.json",
     Path("analysis") / "dependency_graph.json",
     Path("analysis") / "config_inventory.json",

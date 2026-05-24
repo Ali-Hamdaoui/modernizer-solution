@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from migration_factory.final_report.context_builder import build_report_context, write_report_context
 from migration_factory.final_report.writer import generate_final_migration_report
 
 _COPILOT_EXPORTS = {
@@ -18,6 +19,8 @@ _COPILOT_EXPORTS = {
 
 __all__ = [
     "generate_final_migration_report",
+    "build_report_context",
+    "write_report_context",
     *_COPILOT_EXPORTS,
 ]
 
