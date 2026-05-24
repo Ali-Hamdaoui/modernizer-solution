@@ -764,6 +764,7 @@ async def _assert_run_and_dashboard_render_copilot_status_read_only(tmp_path: Pa
         ),
         encoding="utf-8",
     )
+    (final_dir / "copilot_migration_report.md").write_text("# report\n", encoding="utf-8")
     result = RunnerLaunchResult(
         run_id="run-copilot",
         returncode=0,
@@ -778,15 +779,17 @@ async def _assert_run_and_dashboard_render_copilot_status_read_only(tmp_path: Pa
         await pilot.pause()
 
         copilot_status = app.query_one("#copilot_status", Static).content
-        assert "Copilot: Connected" in copilot_status
+        assert "Advisory report status: Advisory report generated" in copilot_status
+        assert "Copilot Assist is advisory and does not affect migration result." in copilot_status
+        assert "Copilot Assist: Connected" in copilot_status
         assert "Provider: github_copilot" in copilot_status
         assert "Model: gpt-5" in copilot_status
-        assert "Report: Generated" in copilot_status
         assert "Report generation: Enabled" in copilot_status
+        assert f"Copilot Assist report: {final_dir / 'copilot_migration_report.md'}" in copilot_status
 
         dashboard = app.query_one("#dashboard", Static).content
-        assert "Copilot status:" in dashboard
-        assert "Copilot: Connected" in dashboard
+        assert "Copilot Assist:" in dashboard
+        assert "Copilot Assist: Connected" in dashboard
 
 
 def test_details_render_default_copilot_status_and_present_paths(
@@ -797,13 +800,15 @@ def test_details_render_default_copilot_status_and_present_paths(
     monkeypatch.setattr(
         "migration_factory.tui.app.get_copilot_status_lines",
         lambda run_dir: [
-            "Copilot: Not configured",
+            "Advisory report status: Advisory report not generated for this run",
+            "Report generation: Disabled",
+            "Copilot Assist: Not configured",
             "Provider: github_copilot",
             "Adapter: local_deterministic_template",
             "Model: unknown",
             "Auth: Unknown",
             "CLI: Not installed",
-            "Report: Skipped",
+            "Copilot Assist is advisory and does not affect migration result.",
         ],
     )
     run_dir = tmp_path / "run-copilot-details"
@@ -815,13 +820,13 @@ def test_details_render_default_copilot_status_and_present_paths(
 
     details = _format_details(vm, dashboard=None)
 
-    assert "Copilot status:" in details
-    assert "Copilot: Not configured" in details
-    assert "Report: Skipped" in details
-    assert "Copilot report artifacts:" in details
-    assert f"Copilot report request: {final_dir / 'copilot_report_request.json'}" in details
-    assert f"Copilot migration report: {final_dir / 'copilot_migration_report.md'}" in details
-    assert "Copilot report response:" not in details
+    assert "Copilot Assist:" in details
+    assert "Copilot Assist: Not configured" in details
+    assert "Advisory report status: Advisory report not generated for this run" in details
+    assert "Copilot Assist artifacts:" in details
+    assert f"Copilot Assist report request: {final_dir / 'copilot_report_request.json'}" in details
+    assert f"Copilot Assist report: {final_dir / 'copilot_migration_report.md'}" in details
+    assert "Copilot Assist report response:" not in details
 
 
 def test_backend_launch_exception_shows_launch_failed_before_run_dir(
@@ -1126,8 +1131,11 @@ async def _assert_terminal_run_polls_until_copilot_response_exists(tmp_path: Pat
         app._update_run_screen()
         await pilot.pause()
 
-        assert app._should_poll_current_run() is True
-        assert "Report: Pending" in app.query_one("#copilot_status", Static).content
+        assert app._should_poll_current_run() is False
+        assert (
+            "Advisory report status: Advisory report not generated for this run"
+            in app.query_one("#copilot_status", Static).content
+        )
 
         final_dir = run_dir / "final"
         final_dir.mkdir(parents=True, exist_ok=True)
@@ -1146,13 +1154,14 @@ async def _assert_terminal_run_polls_until_copilot_response_exists(tmp_path: Pat
             encoding="utf-8",
         )
 
-        app._poll_current_run()
+        app._force_poll_from_active_run()
+        app._update_run_screen()
         await pilot.pause()
 
         copilot_status = app.query_one("#copilot_status", Static).content
         assert "Adapter: copilot_cli" in copilot_status
         assert "Model: gpt-5-mini" in copilot_status
-        assert "Report: Generated" in copilot_status
+        assert "Advisory report status: Advisory report generated" in copilot_status
         assert app._should_poll_current_run() is False
 
 

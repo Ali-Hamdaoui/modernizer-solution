@@ -15,13 +15,13 @@ _CONNECTIVITY_LABELS = {
     "not_configured": "Not configured",
 }
 _REPORT_LABELS = {
-    "generated": "Generated",
-    "generated_with_fallback": "Generated with fallback",
-    "not_started": "Not started",
-    "pending": "Pending",
-    "disabled": "Disabled",
-    "skipped": "Skipped",
-    "failed": "Failed",
+    "generated": "Advisory report generated",
+    "generated_with_fallback": "Advisory report generated via fallback",
+    "not_generated": "Advisory report not generated for this run",
+    "pending": "Advisory report pending while run is active",
+    "disabled": "Copilot Assist disabled",
+    "skipped": "Advisory report not generated for this run",
+    "failed": "Advisory report unavailable",
 }
 _AUTH_LABELS = {
     "authenticated": "Authenticated",
@@ -40,6 +40,7 @@ def get_copilot_status_lines(
     *,
     prefer_response: bool = True,
     active_run: bool = False,
+    state: dict[str, Any] | None = None,
 ) -> list[str]:
     response_path = Path(run_dir) / "final" / "copilot_report_response.json" if run_dir is not None else None
     response_exists = prefer_response and response_path is not None and response_path.is_file()
@@ -50,26 +51,40 @@ def get_copilot_status_lines(
     model = str(payload.get("model") or "unknown")
     auth_status = str(payload.get("auth_status") or "unknown")
     cli_status = str(payload.get("cli_status") or "not_installed")
-    report_status = str(payload.get("report_status") or "")
-    report_enabled = _copilot_report_enabled() or response_exists
+    report_status = str(payload.get("report_status") or payload.get("status") or "")
+    report_enabled = _copilot_report_enabled(state) or response_exists
     if not response_exists:
-        report_status = "pending" if active_run else "not_started"
+        report_status = _missing_response_status(report_enabled=report_enabled, active_run=active_run, state=state)
     lines = [
-        f"Copilot: {_CONNECTIVITY_LABELS.get(connectivity, 'Unavailable')}",
+        f"Advisory report status: {_REPORT_LABELS.get(report_status, 'Advisory report unavailable')}",
+        f"Report generation: {'Enabled' if report_enabled else 'Disabled'}",
+        f"Copilot Assist: {_CONNECTIVITY_LABELS.get(connectivity, 'Unavailable')}",
         f"Provider: {provider}",
         f"Adapter: {adapter}",
         f"Model: {_normalize_model(model)}",
         f"Auth: {_AUTH_LABELS.get(auth_status, 'Unknown')}",
         f"CLI: {_CLI_LABELS.get(cli_status, 'Error')}",
-        f"Report: {_REPORT_LABELS.get(report_status, 'Failed')}",
-        f"Report generation: {'Enabled' if report_enabled else 'Disabled'}",
+        "Copilot Assist is advisory and does not affect migration result.",
     ]
+    report_path = _copilot_markdown_report_path(run_dir, report_status)
+    if report_path is not None:
+        lines.append(f"Copilot Assist report: {report_path}")
     if report_status == "generated_with_fallback":
         if str(payload.get("fallback_reason") or "").lower() == "timeout" or payload.get("timed_out") is True:
             lines.append("Copilot warning: CLI timed out, fallback used")
         else:
             lines.append("Copilot warning: CLI failed, fallback used")
     return lines
+
+
+def _copilot_markdown_report_path(run_dir: str | Path | None, report_status: str) -> Path | None:
+    if report_status not in {"generated", "generated_with_fallback"} or run_dir is None:
+        return None
+    path = Path(run_dir) / "final" / "copilot_migration_report.md"
+    try:
+        return path if path.is_file() else None
+    except OSError:
+        return None
 
 
 def _read_response(path: Path) -> dict[str, Any]:
@@ -80,7 +95,36 @@ def _read_response(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _copilot_report_enabled() -> bool:
+def _missing_response_status(
+    *,
+    report_enabled: bool,
+    active_run: bool,
+    state: dict[str, Any] | None,
+) -> str:
+    if not report_enabled:
+        return "disabled"
+    if active_run or _copilot_report_active(state):
+        return "pending"
+    return "not_generated"
+
+
+def _copilot_report_active(state: dict[str, Any] | None) -> bool:
+    if not isinstance(state, dict):
+        return False
+    for key in ("copilot_report_status", "copilot_status"):
+        value = str(state.get(key) or "").strip().lower()
+        if value in {"active", "running", "pending", "in_progress"}:
+            return True
+    phase_statuses = state.get("copilot_phase_statuses")
+    if isinstance(phase_statuses, dict):
+        value = str(phase_statuses.get("final") or phase_statuses.get("report") or "").strip().lower()
+        return value in {"active", "running", "pending", "in_progress"}
+    return False
+
+
+def _copilot_report_enabled(state: dict[str, Any] | None = None) -> bool:
+    if isinstance(state, dict) and "copilot_report_enabled" in state:
+        return state.get("copilot_report_enabled") is True
     return os.environ.get(_COPILOT_REPORT_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 

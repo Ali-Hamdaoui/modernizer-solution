@@ -119,9 +119,9 @@ _FAILURE_ARTIFACTS = (
 )
 _COPILOT_REPORT_ENV = "AI_MIGRATION_ENABLE_COPILOT_REPORT"
 _COPILOT_REPORT_ARTIFACTS = (
-    ("Copilot report request", "final/copilot_report_request.json"),
-    ("Copilot report response", "final/copilot_report_response.json"),
-    ("Copilot migration report", "final/copilot_migration_report.md"),
+    ("Copilot Assist report request", "final/copilot_report_request.json"),
+    ("Copilot Assist report response", "final/copilot_report_response.json"),
+    ("Copilot Assist report", "final/copilot_migration_report.md"),
 )
 
 
@@ -669,7 +669,7 @@ class MigrationFactorySetupApp(App[None]):
                 "#copilot_status",
                 _format_copilot_status(
                     self.current_view_model.run_dir,
-                    active_run=not _terminal_from_vm(self.current_view_model) or self._waiting_for_copilot_response(),
+                    active_run=not _terminal_from_vm(self.current_view_model),
                 ),
             )
         else:
@@ -889,11 +889,7 @@ class MigrationFactorySetupApp(App[None]):
         return _file_exists(self._active_run_dir / "orchestration" / "approval_interrupt_state.json")
 
     def _waiting_for_copilot_response(self) -> bool:
-        if self._active_run_dir is None or not _copilot_report_enabled():
-            return False
-        if self.current_view_model is None or not _terminal_from_vm(self.current_view_model):
-            return False
-        return not _file_exists(_copilot_response_path(self._active_run_dir))
+        return False
 
     def _force_poll_from_active_run(self) -> None:
         if self._active_run_dir is None:
@@ -959,7 +955,7 @@ class MigrationFactorySetupApp(App[None]):
         self._update_static("#current_phase_line", _current_phase_status_line(vm))
         self._update_static(
             "#copilot_status",
-            _format_copilot_status(vm.run_dir, active_run=not _terminal_from_vm(vm) or self._waiting_for_copilot_response()),
+            _format_copilot_status(vm.run_dir, active_run=not _terminal_from_vm(vm)),
         )
         # Handle approval panel visibility
         approval_panel = list(self.query("#approval"))
@@ -1283,7 +1279,7 @@ def _format_dashboard(run: RunDashboard) -> str:
         f"Run dir: {run.run_dir}",
         f"Orchestration summary: {run.summary_path}",
         "",
-        "Copilot status:",
+        "Copilot Assist:",
         *_format_copilot_status_lines(run.run_dir),
         "",
         "Statuses:",
@@ -1664,7 +1660,7 @@ def _format_details(vm: RunViewModel, dashboard: RunDashboard | None) -> str:
         "Backend result:",
         json.dumps(vm.raw_backend, indent=2, sort_keys=True, default=str),
         "",
-        "Copilot status:",
+        "Copilot Assist:",
         *_format_copilot_status_lines(vm.run_dir),
         "",
         _format_run_monitor_from_view(vm),
@@ -1692,7 +1688,7 @@ def _format_details(vm: RunViewModel, dashboard: RunDashboard | None) -> str:
     if vm.run_dir is not None:
         copilot_paths = _present_copilot_report_paths(vm.run_dir)
         if copilot_paths:
-            lines.extend(["", "Copilot report artifacts:"])
+            lines.extend(["", "Copilot Assist artifacts:"])
             lines.extend(f"- {label}: {path}" for label, path in copilot_paths)
         lines.extend(["", "Failure artifact fallbacks:"])
         lines.extend(f"- {label}: {vm.run_dir / rel_path}" for label, rel_path in _FAILURE_ARTIFACTS)
@@ -1715,15 +1711,16 @@ def _format_copilot_status_lines(
     *,
     prefer_response: bool = True,
     active_run: bool = False,
+    state: dict[str, Any] | None = None,
 ) -> list[str]:
     try:
-        return get_copilot_status_lines(run_dir, prefer_response=prefer_response, active_run=active_run)
+        return get_copilot_status_lines(run_dir, prefer_response=prefer_response, active_run=active_run, state=state)
     except TypeError:
         return get_copilot_status_lines(run_dir)
 
 
 def _copilot_report_enabled() -> bool:
-    return os.environ.get(_COPILOT_REPORT_ENV, "").strip().lower() == "true"
+    return os.environ.get(_COPILOT_REPORT_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _copilot_response_path(run_dir: Path) -> Path:
@@ -1977,7 +1974,11 @@ def _test_counts_failed(values: dict[str, Any]) -> bool:
 def _backend_failed(value: Any) -> bool:
     if isinstance(value, dict):
         ignored_keys = {"warnings", "artifact_refs", "copilot_report_response", "copilot_migration_report"}
-        return any(_backend_failed(item) for key, item in value.items() if str(key) not in ignored_keys)
+        return any(
+            _backend_failed(item)
+            for key, item in value.items()
+            if str(key) not in ignored_keys and not str(key).startswith("copilot_")
+        )
     if isinstance(value, (list, tuple)):
         return any(_backend_failed(item) for item in value)
     return _is_failure_status(_string_value(value))
