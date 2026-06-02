@@ -503,6 +503,7 @@ Workflow position:
 Purpose:
 
 - Provide advisory phase assistance and final migration documentation.
+- In failure-repair mode, run only when deterministic build/test validation fails or when configured routing asks for advisory sidecars.
 - Never mutate official state or source.
 
 Inputs:
@@ -539,3 +540,10 @@ Tests:
 - `tests/reporting/test_copilot_final_report.py`
 - `tests/test_final_report.py`
 - `tests/tui/test_copilot_status.py`
+
+Current V1 validation note:
+
+- Copilot CLI was available as `GitHub Copilot CLI 1.0.58`.
+- Copilot repair/fallback foundation had been validated earlier.
+- In the final two-stage V1 run, Copilot was not invoked because build/test did not fail.
+- `AI_MIGRATION_AUTO_APPLY_SAFE_REPAIRS=false`, so repairs remain proposal-only.

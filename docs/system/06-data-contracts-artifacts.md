@@ -343,6 +343,14 @@ It includes:
 
 `final/report_context.json` is a redacted, provenance-rich source for Copilot/reporting.
 
+For the validated V1 proof, final summaries and reports should preserve:
+
+- proof level `build_test_verified`
+- transform/build/test statuses per stage
+- final manual Maven command and exit code
+- explicit non-claims for runtime/H2, endpoint smoke, SQL Server, security/keystore readiness, and production readiness
+- caveats such as Tomcat 9 override, old Zalando/problem dependency, and remaining non-source `javax.*` strings
+
 ## Copilot Contracts
 
 Important schemas:
@@ -362,6 +370,18 @@ Guardrail fields consistently include false values for capabilities such as:
 - override status
 - create PR
 - deploy
+
+Failure repair artifacts include:
+
+- `preflight/copilot_availability.json`
+- `failures/failure_classification.json`
+- `failures/copilot_repair_request.json`
+- `failures/copilot_repair_response.json`
+- `failures/repair_plan.md`
+- `transformation/openrewrite_diff_safety_report.json`
+- optional `runtime/h2_startup_report.json`
+
+These artifacts describe proposed repair behavior only. They do not authorize source mutation, gate changes, approval, deployment, or production readiness claims.
 
 ## Tests Covering Contracts
 

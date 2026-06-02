@@ -2,6 +2,14 @@
 
 This list separates current code behavior from missing factory capabilities.
 
+Current V1 boundary:
+
+- `V1 build/test proof: DONE`
+- `Runtime/H2 proof: V2`
+- `Endpoint smoke: V2`
+- `SQL Server: V2`
+- `Production readiness: not claimed`
+
 ## Build Success Is Not Enough
 
 Current state:
@@ -9,6 +17,7 @@ Current state:
 - Build Agent can run build/startup or plan commands.
 - Test Agent parses Surefire XML.
 - Final validation requires `TEST_PASSED`.
+- The validated V1 two-stage run accepted `PASS_WITH_WARNINGS` plus final manual `mvn clean test -DskipITs` exit code `0` as build/test proof.
 
 Gap:
 
@@ -53,6 +62,7 @@ Needed:
 Current state:
 
 - No dedicated rule found for Tomcat override compatibility.
+- Final Stage 2 sandbox still had `tomcat.version = 9.0.102`.
 
 Gap:
 
@@ -67,6 +77,8 @@ Needed:
 Current state:
 
 - `import_scanner.py` scans source `.java` imports only.
+- Final Stage 2 sandbox source search excluding `target` found 3 `javax.*` occurrences, all logger names in `src/test/resources/logback.xml`.
+- Final Stage 2 sandbox had 5 `jakarta.persistence.*` imports in `Translation.java`.
 
 Gap:
 
@@ -92,6 +104,8 @@ Known high-risk libraries and stacks:
 Current state:
 
 - Assessment heuristics can flag Hibernate, security, old Maven plugins, internal dependencies, unsupported bytecode, missing tests.
+- Final Stage 2 sandbox still had `org-zalando.version = 0.24.0`.
+- `problem-spring-web` remained in `pom.xml`.
 
 Gap:
 
@@ -101,11 +115,7 @@ Needed:
 
 - Rules that map dependency coordinates and versions to migration actions, blockers, warnings, and proof requirements.
 
-Real evidence to encode:
-
-- `problem-spring-web 0.29.1` worked in the observed Boot `3.5.14` migration.
-- `common-utils 2.9.41-SNAPSHOT` worked.
-- `msa-dto 3.3.22-SNAPSHOT` worked.
+V2 should detect and report old Zalando/problem dependencies under Boot 3.5 instead of treating compile/test success as compatibility proof.
 
 ## SQL Init Analyzer
 
@@ -123,7 +133,12 @@ Needed:
 
 Real evidence:
 
-- Runtime smoke used H2 override and `spring.sql.init.mode=never`.
+- H2 smoke config injection with `spring.config.additional-location` worked after a path fix.
+- H2 startup still failed due to `common-utils` runtime config.
+- Exact missing cache key found in `common-utils`: `caching.time-out`.
+- `CachingConfig` manually loads profile YAML with `YamlPropertiesFactoryBean`, not normal Spring Boot environment binding.
+- `common-utils-test.yml` contains `caching.time-out: 15`.
+- Running profile `test` fails earlier because `config/application-test.yml` contains invalid `spring.profiles.active` in a profile-specific resource.
 
 ## Security/Keystore Validation Classification
 
@@ -140,9 +155,7 @@ Needed:
 
 - Security Env Classifier that separates compile blockers, boot blockers, smoke blockers, and expected local-secret warnings.
 
-Real evidence:
-
-- Keystore/JWT errors remained security-env warnings, not migration compile blockers.
+V1 did not validate security/keystore readiness.
 
 ## Endpoint Smoke Checks
 
@@ -210,6 +223,23 @@ Risk:
 Needed:
 
 - Run docs should always call out required env override for guarded sandbox transforms.
+
+## Missing Direct V1 Profile
+
+Current state:
+
+- Validated V1 path is two-stage:
+  - `springboot-2.1.6-to-2.7-java11`
+  - `springboot-2.7-to-3.5-java17`
+- Direct requested profile `springboot-2.1.6-to-3.5-java17-v1-build-only` does not exist.
+
+Risk:
+
+- Operators may try to apply `springboot-2.7-to-3.5-java17` directly to the original Spring Boot `2.1.6.RELEASE` app.
+
+Needed:
+
+- Profile/path validation messages and docs should explain that the Boot 3.5 profile requires `2.7.*` source input.
 
 ## Stage Evidence Is Not Yet First-Class
 

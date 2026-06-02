@@ -2,6 +2,15 @@
 
 Copilot integration is advisory. It can generate sidecar context and documentation, but official migration state and source files remain controlled by deterministic agents.
 
+Current V1 status:
+
+- Copilot CLI available: `GitHub Copilot CLI 1.0.58`.
+- Copilot repair/fallback foundation was validated earlier.
+- Copilot is optional advisory.
+- If Copilot returns invalid, prose-only, or schema-invalid output, the system generates a deterministic fallback repair plan.
+- In the final V1 two-stage run, Copilot was not invoked because build/test did not fail.
+- Auto-apply remains disabled: `AI_MIGRATION_AUTO_APPLY_SAFE_REPAIRS=false`.
+
 ## Where Copilot Is Configured
 
 AI Hub config:
@@ -72,6 +81,8 @@ The first safe failure-handling MVP adds proposal-only repair infrastructure:
 - `runtime/h2_startup_report.json` records optional H2-only startup evidence.
 
 Repair Copilot must not run from repository root, sandbox root, legacy app path, or run root. It receives redacted evidence only, returns valid JSON only, and does not apply patches.
+
+In the final V1 two-stage run this repair path stayed idle because no build/test failure required it. Copilot availability was recorded as available, invocation was `SKIPPED`, and fallback was `false`.
 
 ### Planning assist
 
@@ -163,6 +174,8 @@ flowchart TB
     Template --> FinalValidate
     FinalValidate --> FinalSidecars[final/copilot_* artifacts]
 ```
+
+Failure-repair behavior is intentionally narrower than general reporting: it is triggered by deterministic failure evidence, validates Copilot output against schema, and falls back deterministically when the live advisory output is unusable.
 
 ## Copilot Artifacts
 

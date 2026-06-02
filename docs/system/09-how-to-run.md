@@ -8,10 +8,42 @@ C:\Users\abdelilah.mortaki\Desktop\modernizer-solution
 
 Do not run these against production paths. Use a modernized output directory dedicated to run artifacts.
 
+The validated V1 path is build/test-only and two-stage. Do not use a direct `springboot-2.1.6-to-3.5-java17-v1-build-only` profile; it does not exist. Do not apply `springboot-2.7-to-3.5-java17` directly to the original Spring Boot `2.1.6.RELEASE` app.
+
 ## Run Tests
 
 ```powershell
 py -m pytest -q
+```
+
+## Current V1 Terminal Environment
+
+```powershell
+cd C:\Users\abdelilah.mortaki\Desktop\modernizer-solution
+git switch copilotfull-integration
+
+$env:PYTHONPATH = "."
+$env:JAVA_HOME = "C:\Program Files\Java\jdk-21.0.10"
+$env:MAVEN_CMD = "C:\Tools\apache-maven-3.9.15\bin\mvn.cmd"
+$env:Path = "$env:JAVA_HOME\bin;C:\Tools\apache-maven-3.9.15\bin;$env:Path"
+
+$env:AI_MIGRATION_COPILOT_FAILURE_AGENT_ENABLED = "true"
+$env:AI_MIGRATION_COPILOT_REQUIRED = "true"
+$env:AI_MIGRATION_COPILOT_PROVIDER = "copilot_cli"
+$env:AI_MIGRATION_COPILOT_MODEL = "gpt-5-mini"
+$env:AI_MIGRATION_AUTO_APPLY_SAFE_REPAIRS = "false"
+
+$env:AI_MIGRATION_H2_STARTUP_REQUIRED = "false"
+$env:AI_MIGRATION_SKIP_ENDPOINT_SMOKE = "true"
+$env:AI_MIGRATION_PROOF_LEVEL = "build_test_verified"
+
+$legacy = "C:\Users\abdelilah.mortaki\Desktop\MSA-translation-service-msa-test-1.34\MSA-translation-service-msa-test-1.34"
+$modernizedStage1 = "C:\Users\abdelilah.mortaki\Desktop\modernized-app-copilotfull-v1-stage1"
+$modernizedStage2 = "C:\Users\abdelilah.mortaki\Desktop\modernized-app-copilotfull-v1-stage2"
+$aihub = "C:\Users\abdelilah.mortaki\Desktop\modernizer-solution\modernizer-solution-ai-hub"
+
+$profileStage1 = "springboot-2.1.6-to-2.7-java11"
+$profileStage2 = "springboot-2.7-to-3.5-java17"
 ```
 
 ## Run Read-Only Assessment
@@ -211,9 +243,66 @@ Recommended staged order:
 
 Each stage should use a separate run id and preserve prior stage evidence.
 
+Validated V1 Stage 1 run:
+
+```powershell
+$runId1 = "v1-stage1-216-to-27-watchonly-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+$runDir1 = Join-Path $modernizedStage1 ".migration\runs\$runId1"
+
+py -m migration_factory.orchestrator.runner `
+  --run-id $runId1 `
+  --legacy $legacy `
+  --modernized $modernizedStage1 `
+  --ai-hub $aihub `
+  --profile $profileStage1 `
+  --mode full_sandbox_migration
+
+py -m migration_factory.orchestrator.resume `
+  --run-id $runId1 `
+  --run-dir $runDir1 `
+  --decision approved `
+  --approved-by manual-v1-build-only `
+  --comments "Approved Stage 1 Boot 2.1.6 to 2.7 Java 11 sandbox migration; runtime/H2 non-blocking."
+```
+
+Validated V1 Stage 2 run:
+
+```powershell
+$stage2Legacy = "$runDir1\workspaces\sandbox"
+$runId2 = "v1-stage2-27-to-35-watchonly-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+$runDir2 = Join-Path $modernizedStage2 ".migration\runs\$runId2"
+
+py -m migration_factory.orchestrator.runner `
+  --run-id $runId2 `
+  --legacy $stage2Legacy `
+  --modernized $modernizedStage2 `
+  --ai-hub $aihub `
+  --profile $profileStage2 `
+  --mode full_sandbox_migration
+
+py -m migration_factory.orchestrator.resume `
+  --run-id $runId2 `
+  --run-dir $runDir2 `
+  --decision approved `
+  --approved-by manual-v1-build-only `
+  --comments "Approved Stage 2 Boot 2.7 to 3.5 Java 17 sandbox migration; runtime/H2 non-blocking."
+```
+
+Final V1 verification:
+
+```powershell
+cd "$runDir2\workspaces\sandbox"
+& $env:MAVEN_CMD clean test -DskipITs
+```
+
+Validated run ids:
+
+- Stage 1: `v1-stage1-216-to-27-watchonly-20260602-233409`
+- Stage 2: `v1-stage2-27-to-35-watchonly-20260602-233720`
+
 ## Runtime Smoke Notes
 
-Current factory does not have a runtime smoke agent. If runtime evidence is collected manually, record:
+Current factory does not have a runtime smoke agent, and runtime/H2 was intentionally not tested for the V1 verdict. If runtime evidence is collected manually in V2, record:
 
 - JDK used.
 - Maven command or IDE run config.
@@ -223,4 +312,9 @@ Current factory does not have a runtime smoke agent. If runtime evidence is coll
 - Endpoint results.
 - Security env warnings such as keystore/JWT missing secrets.
 
-In the observed migration, keystore/JWT errors were security-environment warnings, not migration compile blockers.
+Current V2 runtime/H2 finding:
+
+- H2 smoke config injection with `spring.config.additional-location` worked after a path fix.
+- H2 startup still fails due to `common-utils` runtime config.
+- Missing key: `caching.time-out`.
+- Running profile `test` fails earlier because `config/application-test.yml` contains invalid `spring.profiles.active` in a profile-specific resource.

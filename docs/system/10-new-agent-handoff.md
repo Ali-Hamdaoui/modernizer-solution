@@ -4,7 +4,15 @@ This handoff is for the next agent or engineer extending the AI Migration Factor
 
 ## Current System In One Sentence
 
-The factory is an artifact-driven LangGraph orchestration that analyzes and plans migrations read-only, pauses for human approval, then transforms only a sandbox and validates it through build/test/report contracts.
+The factory is an artifact-driven LangGraph orchestration that analyzes and plans migrations read-only, pauses for human approval, then transforms only a sandbox and has V1 validation as a build/test-only migration proof.
+
+Current verdict:
+
+- `V1 build/test proof: DONE`
+- `Runtime/H2 proof: V2`
+- `Endpoint smoke: V2`
+- `SQL Server: V2`
+- `Production readiness: not claimed`
 
 ## Do Not Change Without Approval
 
@@ -49,20 +57,29 @@ AI Hub:
 - `modernizer-solution-ai-hub/agents/`
 - `modernizer-solution-ai-hub/templates/reports/`
 
-## Real Migration Evidence To Carry Forward
+## V1 Migration Evidence To Carry Forward
 
 Preserve this as operator evidence:
 
 - Source app used Spring Boot `2.1.6.RELEASE` via BOM/property.
-- Stage A worked to Boot `2.7`.
-- Stage B worked to Boot `3.5.14`.
-- Runtime eventually started on Java `21`.
-- Working internal versions:
-  - `common-utils 2.9.41-SNAPSHOT`
-  - `msa-dto 3.3.22-SNAPSHOT`
-  - `problem-spring-web 0.29.1`
-- Runtime smoke used H2 override and `spring.sql.init.mode=never`.
-- Keystore/JWT errors remain security-env warnings, not migration compile blockers.
+- Stage 1 profile: `springboot-2.1.6-to-2.7-java11`.
+- Stage 1 run id: `v1-stage1-216-to-27-watchonly-20260602-233409`.
+- Stage 1 result: transform `TRANSFORM_APPLIED_IN_SANDBOX`, build `BUILD_PASSED_IN_SANDBOX`, tests `PASS_WITH_WARNINGS`, Copilot `AVAILABLE`, Copilot invocation `SKIPPED`, fallback `false`.
+- Stage 2 profile: `springboot-2.7-to-3.5-java17`.
+- Stage 2 run id: `v1-stage2-27-to-35-watchonly-20260602-233720`.
+- Stage 2 result: transform `TRANSFORM_APPLIED_IN_SANDBOX`, build `BUILD_PASSED_IN_SANDBOX`, tests `PASS_WITH_WARNINGS`, Copilot `AVAILABLE`, Copilot invocation `SKIPPED`, fallback `false`.
+- Final sandbox `pom.xml` had Java `17` and Spring Boot `3.5.14`.
+- Final manual verification passed: `mvn clean test -DskipITs`, exit code `0`.
+- Direct profile `springboot-2.1.6-to-3.5-java17-v1-build-only` does not exist.
+- Do not apply `springboot-2.7-to-3.5-java17` directly to the original app because it requires Spring Boot `2.7.*` source.
+
+Known final Stage 2 caveats:
+
+- `tomcat.version = 9.0.102` still present.
+- `org-zalando.version = 0.24.0` and `problem-spring-web` still present.
+- `javax.*` search excluding `target` found 3 occurrences, all logger names in `src/test/resources/logback.xml`.
+- `Translation.java` has 5 `jakarta.persistence.*` imports.
+- Runtime/H2 was intentionally not tested in V1.
 
 ## Best Next Agent To Build
 
@@ -71,8 +88,17 @@ Recommended: Runtime Smoke Agent.
 Why:
 
 - Current build/test success is not enough.
-- The real migration required runtime proof with H2 override and SQL init disabled.
+- Runtime/H2 proof is explicitly V2.
 - Security-env classification needs structured evidence.
+
+Runtime/H2 investigation to start from:
+
+- H2 smoke config injection with `spring.config.additional-location` worked after a path fix.
+- H2 startup still fails due to `common-utils` runtime config.
+- Exact missing cache key found in `common-utils`: `caching.time-out`.
+- `CachingConfig` manually loads profile YAML with `YamlPropertiesFactoryBean`, not normal Spring Boot environment binding.
+- `common-utils-test.yml` contains `caching.time-out: 15`.
+- Running profile `test` fails earlier because `config/application-test.yml` contains invalid `spring.profiles.active` in a profile-specific resource.
 
 Suggested files:
 
@@ -184,3 +210,4 @@ Targeted suites:
 - `read_only_verification.json` is optional in constants but required by orchestrator artifact validation.
 - Transform wrapper accepts `PASS_WITH_WARNINGS`/`TESTS_NOT_FOUND`, while final success validation requires `TEST_PASSED`.
 - No multi-stage run ledger links Stage A/B/C evidence.
+- Add V2 proof-level reporting: `build_test_verified`, `runtime_startup_verified`, `endpoint_smoke_verified`, `production_ready_not_claimed`.

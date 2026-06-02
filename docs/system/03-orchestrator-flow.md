@@ -112,6 +112,8 @@ Resume with `approved`:
 approval_record -> sandbox_transform -> final_report -> optional copilot_final_report
 ```
 
+For V1, the approved resume performs sandbox transform plus build/test validation only. Runtime/H2 startup and endpoint smoke are optional/future proof layers and are not required for the V1 `build_test_verified` verdict.
+
 Resume with `rejected` or `replan_required`:
 
 ```text
@@ -178,6 +180,8 @@ Within `transform_v1_after_approval.py`:
 - If build passes, transform continues with the next unit.
 - After final unit, Test Agent parses Surefire reports and writes post-transform test artifacts.
 
+The validated V1 two-stage run reached `TRANSFORM_APPLIED_IN_SANDBOX` and `BUILD_PASSED_IN_SANDBOX` in both stages. Test status was `PASS_WITH_WARNINGS` because the V1 proof was accepted as build/test-only with warnings, followed by manual Stage 2 verification using `mvn clean test -DskipITs`.
+
 ## Final Report Generation
 
 `finalize_orchestration_state()` in `migration_factory/orchestrator/summary.py`:
@@ -191,7 +195,7 @@ Within `transform_v1_after_approval.py`:
 7. Always attempts Copilot documentation package after successful sandbox validation.
 8. Validates successful full sandbox artifact refs and statuses.
 
-Required successful status values are enforced in `validate_successful_full_sandbox_orchestration()`:
+Required successful status values in `validate_successful_full_sandbox_orchestration()` are:
 
 - `approval_status = COMPLETED`
 - `approval_decision = approved`
@@ -202,6 +206,8 @@ Required successful status values are enforced in `validate_successful_full_sand
 - `final_status = TRANSFORM_APPLIED_IN_SANDBOX`
 
 TODO/VERIFY: The transform wrapper currently treats `PASS_WITH_WARNINGS` and `TESTS_NOT_FOUND` as acceptable transform outcomes, but successful full sandbox orchestration validation requires `TEST_PASSED`.
+
+V1 operational verdict was accepted from the run evidence and final manual Maven verification, not from a runtime startup proof. See `docs/system/11-current-problems-and-v2-roadmap.md` for the V2 proof-level cleanup.
 
 ## Checkpointing
 

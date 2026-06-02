@@ -1,6 +1,6 @@
 # Runtime, Build, Test, And Validation
 
-The current factory has strong build/test artifact plumbing, but runtime smoke validation is still a known gap.
+The current factory has strong build/test artifact plumbing, but runtime smoke validation is still a known gap. The validated V1 proof is `build_test_verified`; it does not claim runtime/H2 startup, endpoint smoke, SQL Server behavior, security/keystore readiness, or production readiness.
 
 ## Transformation Validation Model
 
@@ -144,14 +144,31 @@ For baseline unit, it uses source JDK. For later units, it uses target JDK.
 
 TODO/VERIFY: Stage A and Stage B profiles currently do not define JDK env fields, so operators must document local `JAVA_HOME`/Maven configuration externally.
 
-## Real Runtime Evidence To Preserve
+## V1 Build/Test Evidence
 
-Observed field evidence:
+Validated two-stage evidence:
 
-- Boot `3.5.14` runtime eventually started on Java `21`.
-- Runtime smoke used H2 override.
-- Runtime smoke set `spring.sql.init.mode=never`.
-- Keystore/JWT errors remained security-environment warnings, not migration compile blockers.
+- Stage 1 run id: `v1-stage1-216-to-27-watchonly-20260602-233409`.
+- Stage 1 result: transform `TRANSFORM_APPLIED_IN_SANDBOX`, build `BUILD_PASSED_IN_SANDBOX`, tests `PASS_WITH_WARNINGS`.
+- Stage 2 run id: `v1-stage2-27-to-35-watchonly-20260602-233720`.
+- Stage 2 result: transform `TRANSFORM_APPLIED_IN_SANDBOX`, build `BUILD_PASSED_IN_SANDBOX`, tests `PASS_WITH_WARNINGS`.
+- Final Stage 2 sandbox `pom.xml`: Java `17`, Spring Boot `3.5.14`.
+- Final manual verification in Stage 2 sandbox: `mvn clean test -DskipITs` passed with exit code `0`.
+
+Do not infer runtime compatibility from this evidence alone.
+
+## Runtime/H2 Investigation Moved To V2
+
+Observed runtime investigation:
+
+- H2 smoke config injection with `spring.config.additional-location` worked after a path fix.
+- H2 startup still failed due to `common-utils` runtime config.
+- Exact missing cache key found in `common-utils`: `caching.time-out`.
+- `CachingConfig` manually loads profile YAML with `YamlPropertiesFactoryBean`, not normal Spring Boot environment binding.
+- `common-utils-test.yml` contains `caching.time-out: 15`.
+- Running profile `test` fails earlier because `config/application-test.yml` contains invalid `spring.profiles.active` in a profile-specific resource.
+
+This runtime config problem is V2, not V1.
 
 Current factory handling:
 

@@ -2,6 +2,8 @@
 
 The repository is organized around deterministic agents and durable run artifacts. The orchestrator wires phases together with LangGraph, while each agent owns a narrow artifact contract.
 
+V1 validated the factory as a build/test-only migration proof. It does not claim runtime/H2 startup, endpoint smoke, SQL Server behavior, security/keystore readiness, or production readiness.
+
 ## Main Components
 
 | Area | Main paths | Responsibility |
@@ -117,6 +119,17 @@ The system relies on artifacts, not implicit memory. Each phase writes files, va
 - `migration_factory/approval/approve_run.py`
 - `migration_factory/final_report/writer.py`
 
+## Proof Levels
+
+Current documentation uses these proof-level labels:
+
+- `build_test_verified`: sandbox transform, Maven build/test command, and test parsing/manual command evidence passed.
+- `runtime_startup_verified`: future V2 proof that the transformed application starts under a declared smoke configuration.
+- `endpoint_smoke_verified`: future V2 proof that declared endpoints respond under smoke rules.
+- `production_ready_not_claimed`: explicit boundary for all V1 and V2 factory evidence unless a separate production readiness process is added.
+
+The validated V1 proof level is `build_test_verified`. Runtime and endpoint proof remain V2.
+
 ## Safety And Isolation
 
 Analysis writes only to the run `analysis/` directory and verifies no source changes with file hashes.
@@ -129,6 +142,13 @@ Transformation is blocked unless:
 - AI Hub profile guardrails allow sandbox transform, or `sandbox_transform_allowed: true` plus `AI_MIGRATION_ALLOW_GUARDED_SANDBOX_TRANSFORM` is enabled.
 
 Sandbox creation copies legacy code into `workspaces/sandbox` and excludes generated/heavy directories such as `.git`, `.migration`, `target`, `build`, `node_modules`, and caches.
+
+The validated Spring Boot path is intentionally two-stage:
+
+1. `springboot-2.1.6-to-2.7-java11`
+2. `springboot-2.7-to-3.5-java17`
+
+The direct requested profile `springboot-2.1.6-to-3.5-java17-v1-build-only` does not exist. The `springboot-2.7-to-3.5-java17` profile cannot be applied directly to the original legacy app because the source app is Spring Boot `2.1.6.RELEASE`, while that profile requires `2.7.*`.
 
 ## Current Quality/Security Logic
 

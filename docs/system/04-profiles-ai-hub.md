@@ -41,14 +41,20 @@ Profile validation expects at least:
 
 ## Staged Spring Migration Flow
 
+Validated V1 path:
+
+1. `springboot-2.1.6-to-2.7-java11`
+2. `springboot-2.7-to-3.5-java17`
+
+The direct requested profile `springboot-2.1.6-to-3.5-java17-v1-build-only` does not exist. Do not apply `springboot-2.7-to-3.5-java17` directly to the original app because the original app is Spring Boot `2.1.6.RELEASE`, while that profile requires a Spring Boot `2.7.*` source.
+
 ```mermaid
 flowchart LR
     Source[Spring Boot 2.1.6.RELEASE<br/>Java 11] --> StageA[Stage A<br/>springboot-2.1.6-to-2.7-java11]
     StageA --> Boot27[Spring Boot 2.7.18<br/>Java 11]
     Boot27 --> StageB[Stage B<br/>springboot-2.7-to-3.5-java17]
     StageB --> Boot35[Spring Boot 3.5.14<br/>Spring Framework 6.2.18<br/>Java 17 release]
-    Boot35 --> StageC[Optional Stage C<br/>springboot-3.5-java17-to-java21]
-    StageC --> Runtime21[Java 21 runtime validation]
+    Boot35 --> V2[V2 runtime/H2 and endpoint proof]
 ```
 
 ### Stage A: `springboot-2.1.6-to-2.7-java11`
@@ -81,7 +87,8 @@ Catalog:
 Real migration evidence:
 
 - Source Boot was `2.1.6.RELEASE` through BOM/property metadata.
-- Stage A worked to Boot `2.7`.
+- Validated Stage 1 run id: `v1-stage1-216-to-27-watchonly-20260602-233409`.
+- Stage 1 reached transform `TRANSFORM_APPLIED_IN_SANDBOX`, build `BUILD_PASSED_IN_SANDBOX`, tests `PASS_WITH_WARNINGS`.
 
 ### Stage B: `springboot-2.7-to-3.5-java17`
 
@@ -93,6 +100,9 @@ Purpose:
 
 - Migrate Spring Boot `2.7` applications to Spring Boot `3.5.14` on Java `17`.
 - Introduce Spring Framework `6.2.18` and Jakarta-era compatibility.
+- Spring Boot 3 requires Java 17 or newer.
+- Spring Boot 3 uses Spring Framework 6 and Jakarta EE APIs.
+- Jakarta migration means source and compatible dependencies must move away from old `javax.*` APIs where applicable.
 
 Important values:
 
@@ -114,11 +124,19 @@ Catalog:
 
 Real migration evidence:
 
-- Stage B worked from Boot `2.7` to Boot `3.5.14`.
-- Internal dependency versions that worked:
-  - `common-utils 2.9.41-SNAPSHOT`
-  - `msa-dto 3.3.22-SNAPSHOT`
-  - `problem-spring-web 0.29.1`
+- Validated Stage 2 run id: `v1-stage2-27-to-35-watchonly-20260602-233720`.
+- Stage 2 reached transform `TRANSFORM_APPLIED_IN_SANDBOX`, build `BUILD_PASSED_IN_SANDBOX`, tests `PASS_WITH_WARNINGS`.
+- Final Stage 2 sandbox `pom.xml` had Java `17` and Spring Boot `3.5.14`.
+- Final manual verification passed with exit code `0`: `mvn clean test -DskipITs`.
+- Runtime/H2 and endpoint smoke were intentionally not validated in V1.
+
+Known caveats in final Stage 2 sandbox:
+
+- `tomcat.version = 9.0.102` override still present.
+- `org-zalando.version = 0.24.0` still present.
+- `problem-spring-web` remains in `pom.xml`.
+- `javax.*` source search excluding `target` found 3 occurrences, all logger names in `src/test/resources/logback.xml`.
+- `jakarta.*` exists as 5 `jakarta.persistence.*` imports in `Translation.java`.
 
 ### Optional Stage C: `springboot-3.5-java17-to-java21`
 
@@ -146,9 +164,10 @@ Planning behavior:
   - `baseline`
   - `java-21-runtime-validation`
 
-Real migration evidence:
+V1 note:
 
-- Runtime eventually started on Java `21`.
+- Stage C was not part of the final V1 proof.
+- Do not treat Java 21 runtime startup as validated by the V1 two-stage run.
 
 ## Java Release Vs Runtime JDK
 

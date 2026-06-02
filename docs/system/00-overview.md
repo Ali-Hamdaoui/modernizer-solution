@@ -1,8 +1,16 @@
 # AI Migration Factory Overview
 
-This package documents the AI Migration Factory implemented in this repository. It is based on the current code under `migration_factory/`, `modernizer-solution-ai-hub/`, and `tests/`.
+This package documents the AI Migration Factory implemented in this repository. It is based on the current code under `migration_factory/`, `modernizer-solution-ai-hub/`, `tests/`, and the validated V1 two-stage migration evidence from June 2, 2026.
 
 The factory is a staged, artifact-driven migration system for Java/Spring applications. It separates read-only analysis and planning from source-changing sandbox transformation, uses human approval as a required control point, and treats Copilot as advisory/reporting only.
+
+Current validated status:
+
+- `V1 build/test proof: DONE`
+- `Runtime/H2 proof: V2`
+- `Endpoint smoke: V2`
+- `SQL Server: V2`
+- `Production readiness: not claimed`
 
 ## Core Goals
 
@@ -16,6 +24,8 @@ The factory is a staged, artifact-driven migration system for Java/Spring applic
 
 ## Non-Goals And Safety Boundaries
 
+- V1 does not claim runtime compatibility from compile/test success alone.
+- V1 does not claim H2 startup, endpoint smoke, SQL Server readiness, security/keystore readiness, or production readiness.
 - No production promotion.
 - No automatic pull request creation.
 - No deployment.
@@ -80,22 +90,28 @@ flowchart LR
 - Pauses at approval.
 - On approved resume, records approval artifacts, locks approved inputs, creates a sandbox, transforms the sandbox, validates build/tests, and emits final reports.
 
-## Real Migration Evidence Captured
+## Current V1 Migration Evidence
 
-The following field evidence should be preserved in reports and future agent prompts:
+The final validated V1 path is two-stage:
 
 - Source app used Spring Boot `2.1.6.RELEASE` through BOM/property metadata.
-- Stage A worked from Spring Boot `2.1.6.RELEASE` to Boot `2.7`.
-- Stage B worked from Boot `2.7` to Boot `3.5.14`.
-- Runtime eventually started on Java `21`.
-- Internal dependency versions that worked:
-  - `common-utils 2.9.41-SNAPSHOT`
-  - `msa-dto 3.3.22-SNAPSHOT`
-  - `problem-spring-web 0.29.1`
-- Runtime smoke used an H2 override and `spring.sql.init.mode=never`.
-- Keystore/JWT errors remain security-environment warnings, not migration compile blockers.
+- Stage 1 profile: `springboot-2.1.6-to-2.7-java11`
+- Stage 1 run id: `v1-stage1-216-to-27-watchonly-20260602-233409`
+- Stage 1 result: transform `TRANSFORM_APPLIED_IN_SANDBOX`, build `BUILD_PASSED_IN_SANDBOX`, tests `PASS_WITH_WARNINGS`, Copilot `AVAILABLE`, Copilot invocation `SKIPPED`, fallback `false`.
+- Stage 2 profile: `springboot-2.7-to-3.5-java17`
+- Stage 2 run id: `v1-stage2-27-to-35-watchonly-20260602-233720`
+- Stage 2 result: transform `TRANSFORM_APPLIED_IN_SANDBOX`, build `BUILD_PASSED_IN_SANDBOX`, tests `PASS_WITH_WARNINGS`, Copilot `AVAILABLE`, Copilot invocation `SKIPPED`, fallback `false`.
+- Final sandbox `pom.xml` had Java `17` and Spring Boot `3.5.14`.
+- Final manual verification in Stage 2 sandbox passed with exit code `0`: `mvn clean test -DskipITs`.
 
-TODO/VERIFY: The current factory records build and parsed Surefire evidence, but it does not yet contain a dedicated runtime smoke agent that can encode all of this runtime evidence automatically.
+Important migration context:
+
+- Spring Boot 3 requires Java 17 or newer.
+- Spring Boot 3 uses Spring Framework 6 and Jakarta EE APIs.
+- Jakarta migration means source and compatible dependencies must move away from old `javax.*` APIs where applicable.
+- Compile/test success does not prove runtime compatibility.
+
+Known final Stage 2 sandbox caveats are tracked in `docs/system/11-current-problems-and-v2-roadmap.md`.
 
 ## Documentation Index
 
@@ -109,3 +125,4 @@ TODO/VERIFY: The current factory records build and parsed Surefire evidence, but
 - `docs/system/08-known-gaps-and-risks.md` - current gaps and recommended future agents.
 - `docs/system/09-how-to-run.md` - command examples and operational cautions.
 - `docs/system/10-new-agent-handoff.md` - implementation handoff for a new agent.
+- `docs/system/11-current-problems-and-v2-roadmap.md` - current V1 boundaries, known problems, and V2 roadmap.
