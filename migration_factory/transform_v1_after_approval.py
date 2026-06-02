@@ -4,6 +4,7 @@ import argparse
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 import json
+import os
 import sys
 from pathlib import Path
 import time
@@ -15,7 +16,9 @@ from migration_factory.agents.build_agent import run_build_agent
 from migration_factory.agents.test_agent import (
     TEST_STATUS_ERROR,
     TEST_STATUS_FAILED,
+    TEST_STATUS_PASS_WITH_WARNINGS,
     TEST_STATUS_PASSED,
+    TEST_STATUS_TESTS_NOT_FOUND,
     run_test_agent,
 )
 from migration_factory.agents.transformation_agent import run_transformation_agent
@@ -58,6 +61,8 @@ STATUS_BUILD_FAILED = "BUILD_FAILED_IN_SANDBOX"
 STATUS_TEST_PASSED = TEST_STATUS_PASSED
 STATUS_TEST_FAILED = TEST_STATUS_FAILED
 STATUS_TEST_ERROR = TEST_STATUS_ERROR
+STATUS_TEST_PASS_WITH_WARNINGS = TEST_STATUS_PASS_WITH_WARNINGS
+STATUS_TESTS_NOT_FOUND = TEST_STATUS_TESTS_NOT_FOUND
 STATUS_APPROVAL_FAILED = "APPROVAL_FAILED"
 
 _T = TypeVar("_T")
@@ -141,6 +146,7 @@ def apply_approved_sandbox_transform(
             )
         _ensure_run_dir_matches_modernized_app(run_dir, modernized_app, run_id)
         emit(STATUS_APPROVED)
+        _ensure_profile_allows_sandbox_transform(ai_hub, profile)
 
         generated_plan = write_transformation_execution_plan(modernized_app, run_id)
         plugin_xml = _write_openrewrite_plugin_xml(run_dir, ai_hub, profile)
@@ -494,6 +500,7 @@ def _finalize_with_test_validation(
     status_writer: Callable[[str], None],
 ) -> TransformSandboxResult:
     command, cwd = _build_command_and_cwd(ledger_file)
+    build_exit_code = _build_exit_code(ledger_file)
     test_result = run_test_agent(
         sandbox_path=sandbox_path,
         run_dir=run_dir,
@@ -501,6 +508,9 @@ def _finalize_with_test_validation(
         source_log_path=log_file,
         command=command,
         cwd=cwd,
+        build_status=build_status,
+        build_exit_code=build_exit_code,
+        require_test_reports=False,
     )
     _record_ledger_test_validation(
         ledger_file=ledger_file,
@@ -517,7 +527,7 @@ def _finalize_with_test_validation(
         duration_seconds=test_result.parse_duration_seconds,
     )
 
-    if test_result.test_status == STATUS_TEST_PASSED:
+    if test_result.test_status in {STATUS_TEST_PASSED, STATUS_TEST_PASS_WITH_WARNINGS, STATUS_TESTS_NOT_FOUND}:
         _write_partial_timing_artifacts(run_dir)
         status_writer(STATUS_APPLIED)
         status_writer("Sandbox migration candidate ready.")
@@ -569,6 +579,16 @@ def _build_command_and_cwd(ledger_file: Path) -> tuple[list[str], str | None]:
     command = validation.get("command")
     cwd = validation.get("cwd")
     return (list(command) if isinstance(command, list) else []), str(cwd) if cwd else None
+
+
+def _build_exit_code(ledger_file: Path) -> int | None:
+    try:
+        ledger = load_ledger(ledger_file)
+    except LedgerError:
+        return None
+    validation = ledger.get("build_validation", {})
+    exit_code = validation.get("exit_code")
+    return exit_code if isinstance(exit_code, int) else None
 
 
 def _record_ledger_test_validation(
@@ -872,6 +892,69 @@ def _load_openrewrite_apply_settings(ai_hub: str, profile: str) -> dict[str, Any
     if patches:
         settings["post_openrewrite_patches"] = patches
     return settings
+
+
+def _ensure_profile_allows_sandbox_transform(ai_hub: str, profile: str) -> None:
+    profile_payload = _load_profile_payload(ai_hub, profile)
+    blockers = _profile_transform_blockers(profile_payload)
+    if not blockers:
+        return
+    if _safe_transform_override_enabled(profile_payload):
+        return
+    raise TransformV1AfterApprovalError(
+        "Profile guardrails block sandbox source-changing transformation: "
+        + "; ".join(blockers)
+    )
+
+
+def _profile_transform_blockers(profile_payload: dict[str, Any]) -> list[str]:
+    rules = profile_payload.get("rules") if isinstance(profile_payload.get("rules"), dict) else {}
+    openrewrite = (
+        profile_payload.get("openrewrite") if isinstance(profile_payload.get("openrewrite"), dict) else {}
+    )
+    catalog = {}
+    try:
+        catalog = _load_ai_hub_openrewrite_catalog_payload(
+            Path(str(profile_payload.get("_ai_hub_path") or "")).resolve(),
+            profile_payload,
+        )
+    except TransformV1AfterApprovalError:
+        catalog = {}
+
+    blockers: list[str] = []
+    if profile_payload.get("production_allowed") is False:
+        blockers.append("production_allowed=false")
+    if profile_payload.get("dry_run_only") is True or rules.get("dry_run_only") is True:
+        blockers.append("dry_run_only=true")
+    if openrewrite.get("apply_allowed") is False or rules.get("openrewrite_apply_allowed") is False:
+        blockers.append("openrewrite.apply_allowed=false")
+    if catalog.get("dry_run_only") is True or catalog.get("rewrite_run_allowed") is False:
+        blockers.append("openrewrite catalog is preview-only")
+    return blockers
+
+
+def _safe_transform_override_enabled(profile_payload: dict[str, Any]) -> bool:
+    if profile_payload.get("sandbox_transform_allowed") is not True:
+        return False
+    if os.getenv("AI_MIGRATION_ALLOW_GUARDED_SANDBOX_TRANSFORM", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return False
+    return True
+
+
+def _load_profile_payload(ai_hub: str, profile: str) -> dict[str, Any]:
+    profile_path = Path(ai_hub).expanduser().resolve() / "profiles" / f"{profile}.yaml"
+    if not profile_path.is_file():
+        raise TransformV1AfterApprovalError(f"AI Hub profile not found: {profile_path}")
+    payload = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(payload, dict):
+        return {}
+    payload["_ai_hub_path"] = str(Path(ai_hub).expanduser().resolve())
+    return payload
 
 
 def _write_openrewrite_plugin_xml(run_dir: Path, ai_hub: str, profile: str) -> Path:

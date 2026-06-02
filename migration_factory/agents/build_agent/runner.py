@@ -5,8 +5,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 import os
+import platform
 import queue
 import signal
+import shutil
 import subprocess
 import threading
 import time
@@ -33,6 +35,9 @@ class ProcessRunResult:
     stdout: list[str] = field(default_factory=list)
     stderr: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    requested_command: list[str] = field(default_factory=list)
+    resolved_command: list[str] = field(default_factory=list)
+    diagnostics: dict[str, str | None] = field(default_factory=dict)
 
     @property
     def succeeded(self) -> bool:
@@ -48,6 +53,9 @@ def run_until_build_result(
     on_startup_result: Callable[[BuildClassification], None] | None = None,
     env: dict[str, str] | None = None,
 ) -> ProcessRunResult:
+    requested_command = list(command)
+    command = resolve_command(command, env=env)
+    diagnostics = command_diagnostics(requested_command, command, env=env)
     try:
         popen_kwargs: dict[str, object] = {}
         if os.name == "nt":
@@ -67,11 +75,23 @@ def run_until_build_result(
             **popen_kwargs,
         )
     except FileNotFoundError as exc:
-        command_name = command[0] if command else "<empty command>"
-        return ProcessRunResult(command_error_classification(f"Command not found: {command_name}", str(exc)), None)
+        command_name = requested_command[0] if requested_command else "<empty command>"
+        return ProcessRunResult(
+            command_error_classification(f"Command not found: {command_name}", str(exc)),
+            None,
+            requested_command=requested_command,
+            resolved_command=command,
+            diagnostics=diagnostics,
+        )
     except PermissionError as exc:
-        command_name = command[0] if command else "<empty command>"
-        return ProcessRunResult(command_error_classification(f"Command is not executable: {command_name}", str(exc)), None)
+        command_name = requested_command[0] if requested_command else "<empty command>"
+        return ProcessRunResult(
+            command_error_classification(f"Command is not executable: {command_name}", str(exc)),
+            None,
+            requested_command=requested_command,
+            resolved_command=command,
+            diagnostics=diagnostics,
+        )
 
     output_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
     stdout: list[str] = []
@@ -98,6 +118,9 @@ def run_until_build_result(
                     stdout,
                     stderr,
                     termination.warnings,
+                    requested_command,
+                    command,
+                    diagnostics,
                 )
 
             exit_code = process.poll()
@@ -105,10 +128,34 @@ def run_until_build_result(
                 _drain_queue(output_queue, stdout, stderr, stream_output)
                 _close_process_streams(process)
                 if startup_success is not None:
-                    return ProcessRunResult(startup_success, exit_code, stdout, stderr)
+                    return ProcessRunResult(
+                        startup_success,
+                        exit_code,
+                        stdout,
+                        stderr,
+                        requested_command=requested_command,
+                        resolved_command=command,
+                        diagnostics=diagnostics,
+                    )
                 if last_failure is not None:
-                    return ProcessRunResult(last_failure, exit_code, stdout, stderr)
-                return ProcessRunResult(process_exit_classification(exit_code), exit_code, stdout, stderr)
+                    return ProcessRunResult(
+                        last_failure,
+                        exit_code,
+                        stdout,
+                        stderr,
+                        requested_command=requested_command,
+                        resolved_command=command,
+                        diagnostics=diagnostics,
+                    )
+                return ProcessRunResult(
+                    process_exit_classification(exit_code),
+                    exit_code,
+                    stdout,
+                    stderr,
+                    requested_command=requested_command,
+                    resolved_command=command,
+                    diagnostics=diagnostics,
+                )
 
             try:
                 source, line = output_queue.get(timeout=0.1)
@@ -135,6 +182,9 @@ def run_until_build_result(
                         stdout,
                         stderr,
                         termination.warnings,
+                        requested_command,
+                        command,
+                        diagnostics,
                     )
                 continue
 
@@ -146,17 +196,32 @@ def run_until_build_result(
                 stdout,
                 stderr,
                 termination.warnings,
+                requested_command,
+                command,
+                diagnostics,
             )
     except KeyboardInterrupt:
         termination = _terminate_process_tree(process)
         if startup_success is not None:
-            return ProcessRunResult(startup_success, process.poll(), stdout, stderr, termination.warnings)
+            return ProcessRunResult(
+                startup_success,
+                process.poll(),
+                stdout,
+                stderr,
+                termination.warnings,
+                requested_command,
+                command,
+                diagnostics,
+            )
         return ProcessRunResult(
             unknown_failure_classification(process.poll()),
             process.poll(),
             stdout,
             stderr,
             termination.warnings,
+            requested_command,
+            command,
+            diagnostics,
         )
 
 
@@ -167,6 +232,9 @@ def run_until_exit(
     stream_output: bool = True,
     env: dict[str, str] | None = None,
 ) -> ProcessRunResult:
+    requested_command = list(command)
+    command = resolve_command(command, env=env)
+    diagnostics = command_diagnostics(requested_command, command, env=env)
     try:
         process = subprocess.Popen(
             command,
@@ -179,11 +247,23 @@ def run_until_exit(
             env=env,
         )
     except FileNotFoundError as exc:
-        command_name = command[0] if command else "<empty command>"
-        return ProcessRunResult(command_error_classification(f"Command not found: {command_name}", str(exc)), None)
+        command_name = requested_command[0] if requested_command else "<empty command>"
+        return ProcessRunResult(
+            command_error_classification(f"Command not found: {command_name}", str(exc)),
+            None,
+            requested_command=requested_command,
+            resolved_command=command,
+            diagnostics=diagnostics,
+        )
     except PermissionError as exc:
-        command_name = command[0] if command else "<empty command>"
-        return ProcessRunResult(command_error_classification(f"Command is not executable: {command_name}", str(exc)), None)
+        command_name = requested_command[0] if requested_command else "<empty command>"
+        return ProcessRunResult(
+            command_error_classification(f"Command is not executable: {command_name}", str(exc)),
+            None,
+            requested_command=requested_command,
+            resolved_command=command,
+            diagnostics=diagnostics,
+        )
 
     output_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
     stdout: list[str] = []
@@ -207,6 +287,9 @@ def run_until_exit(
                 stdout,
                 stderr,
                 termination.warnings,
+                requested_command,
+                command,
+                diagnostics,
             )
 
         exit_code = process.poll()
@@ -219,10 +302,29 @@ def run_until_exit(
                     exit_code,
                     stdout,
                     stderr,
+                    requested_command=requested_command,
+                    resolved_command=command,
+                    diagnostics=diagnostics,
                 )
             if last_failure is not None:
-                return ProcessRunResult(last_failure, exit_code, stdout, stderr)
-            return ProcessRunResult(unknown_failure_classification(exit_code), exit_code, stdout, stderr)
+                return ProcessRunResult(
+                    last_failure,
+                    exit_code,
+                    stdout,
+                    stderr,
+                    requested_command=requested_command,
+                    resolved_command=command,
+                    diagnostics=diagnostics,
+                )
+            return ProcessRunResult(
+                unknown_failure_classification(exit_code),
+                exit_code,
+                stdout,
+                stderr,
+                requested_command=requested_command,
+                resolved_command=command,
+                diagnostics=diagnostics,
+            )
 
         try:
             source, line = output_queue.get(timeout=0.1)
@@ -235,6 +337,59 @@ def run_until_exit(
         classification = classify_line(line)
         if classification is not None and classification.kind != BuildResultKind.SUCCESS:
             last_failure = classification
+
+
+def resolve_command(command: list[str], env: dict[str, str] | None = None) -> list[str]:
+    if not command:
+        return command
+
+    executable = command[0]
+    if executable.lower() != "mvn":
+        return command
+
+    effective_env = _effective_env(env)
+    maven_cmd = effective_env.get("MAVEN_CMD")
+    if maven_cmd:
+        return [maven_cmd, *command[1:]]
+
+    if os.name == "nt":
+        resolved = shutil.which("mvn.cmd", path=effective_env.get("PATH"))
+    else:
+        resolved = shutil.which("mvn", path=effective_env.get("PATH"))
+
+    return [resolved, *command[1:]] if resolved else command
+
+
+def command_diagnostics(
+    requested_command: list[str],
+    resolved_command: list[str],
+    env: dict[str, str] | None = None,
+) -> dict[str, str | None]:
+    effective_env = _effective_env(env)
+    path_value = effective_env.get("PATH")
+    return {
+        "requested_command": " ".join(requested_command),
+        "resolved_command": " ".join(resolved_command),
+        "MAVEN_CMD": effective_env.get("MAVEN_CMD"),
+        "MAVEN_HOME": effective_env.get("MAVEN_HOME"),
+        "JAVA_HOME": effective_env.get("JAVA_HOME"),
+        "PATH_excerpt": _path_excerpt(path_value),
+        "platform": platform.platform(),
+    }
+
+
+def _effective_env(env: dict[str, str] | None) -> dict[str, str]:
+    if env is None:
+        return os.environ.copy()
+    merged = os.environ.copy()
+    merged.update(env)
+    return merged
+
+
+def _path_excerpt(path_value: str | None, *, max_chars: int = 500) -> str | None:
+    if path_value is None or len(path_value) <= max_chars:
+        return path_value
+    return path_value[:max_chars] + "...[truncated]"
 
 
 def _enqueue_lines(source: str, stream: TextIO | None, output_queue: queue.Queue[tuple[str, str | None]]) -> None:

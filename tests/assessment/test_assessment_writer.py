@@ -233,3 +233,33 @@ def test_assessment_blocks_schema_invalid_planning_artifact(tmp_path: Path) -> N
         blocker.startswith("Schema validation failed for planning/migration_plan.yaml")
         for blocker in result.report["blockers"]
     )
+
+
+def test_assessment_flags_enterprise_compatibility_risks(tmp_path: Path) -> None:
+    app_dir, analysis_dir, planning_dir = _run_dirs(tmp_path)
+    _write_required_artifacts(analysis_dir, planning_dir)
+    report = json.loads((analysis_dir / "analysis_report.json").read_text(encoding="utf-8"))
+    report["imports"] = ["javax.persistence.Entity"]
+    report["classes"] = ["WebSecurityConfigurerAdapter"]
+    report["dependencies"] = [
+        "org.hibernate:hibernate-core:5.4.0.Final",
+        "com.company:internal-starter:1.0-SNAPSHOT",
+    ]
+    report["plugins"] = ["maven-surefire-plugin:2.22.2"]
+    report["bytecode"] = ["major version 52"]
+    report["test_notes"] = "missing smoke tests"
+    (analysis_dir / "analysis_report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    result = write_assessment_artifacts(app_dir, "run-1")
+
+    findings = {finding["code"] for finding in result.report["enterprise_compatibility"]["findings"]}
+    assert result.report["enterprise_compatibility"]["status"] == "REVIEW_REQUIRED"
+    assert {
+        "old_spring_security_config",
+        "javax_to_jakarta",
+        "jpa_hibernate_risk",
+        "maven_plugin_risk",
+        "internal_corporate_dependencies",
+        "unsupported_bytecode",
+        "missing_tests_or_smoke_tests",
+    }.issubset(findings)

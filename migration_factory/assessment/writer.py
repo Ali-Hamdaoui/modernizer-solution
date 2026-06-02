@@ -158,6 +158,10 @@ def _build_report(
             "artifact_ref": "../planning/migration_plan.yaml",
         },
         "openrewrite_dry_run": _openrewrite_section(rewrite_impact),
+        "enterprise_compatibility": _enterprise_compatibility_section(
+            analysis_report=analysis_report,
+            migration_plan=migration_plan,
+        ),
         "migration_units": {
             "count": len(units),
             "units": units,
@@ -213,6 +217,64 @@ def _openrewrite_section(rewrite_impact: dict[str, Any] | None) -> dict[str, Any
         "counts": counts,
         "artifact_ref": "../analysis/rewrite_impact_summary.json",
     }
+
+
+def _enterprise_compatibility_section(
+    *,
+    analysis_report: dict[str, Any],
+    migration_plan: dict[str, Any],
+) -> dict[str, Any]:
+    findings = _enterprise_findings(analysis_report, migration_plan)
+    return {
+        "status": "REVIEW_REQUIRED" if findings else "CLEAR",
+        "findings": findings,
+    }
+
+
+def _enterprise_findings(analysis_report: dict[str, Any], migration_plan: dict[str, Any]) -> list[dict[str, str]]:
+    text = json.dumps({"analysis": analysis_report, "plan": migration_plan}, sort_keys=True).lower()
+    findings: list[dict[str, str]] = []
+    checks = (
+        (
+            "old_spring_security_config",
+            ("websecurityconfigureradapter", "antmatchers", "authorizerequests", "spring-security-config:5."),
+            "Old Spring Security configuration detected; review SecurityFilterChain and authorizeHttpRequests migration.",
+        ),
+        (
+            "javax_to_jakarta",
+            ("javax.", "javax/", "javax.persistence", "javax.servlet"),
+            "javax imports or dependencies detected; Jakarta namespace migration is required before Boot 3.",
+        ),
+        (
+            "jpa_hibernate_risk",
+            ("hibernate-core:5.", "javax.persistence", "spring-boot-starter-data-jpa", "entitymanager"),
+            "JPA/Hibernate usage detected; review Hibernate 6 behavior, dialects, naming, and query compatibility.",
+        ),
+        (
+            "maven_plugin_risk",
+            ("maven-compiler-plugin:3.1", "maven-surefire-plugin:2.", "spring-boot-maven-plugin:2.1"),
+            "Older Maven plugin versions detected; validate compiler, surefire/failsafe, and Boot plugin compatibility.",
+        ),
+        (
+            "internal_corporate_dependencies",
+            ("com.company", "com.mycorp", "corp.", "internal", "snapshot"),
+            "Internal or corporate dependencies detected; verify Java 17, Jakarta, and Spring Boot 3 compatibility.",
+        ),
+        (
+            "unsupported_bytecode",
+            ("bytecode 52", "major version 52", "target=1.8", "source=1.8", "java 8 bytecode"),
+            "Unsupported or old Java bytecode risk detected; verify dependency bytecode with Java 17.",
+        ),
+        (
+            "missing_tests_or_smoke_tests",
+            ("\"tests\": []", "\"test_count\": 0", "no tests", "missing smoke"),
+            "Missing tests or smoke tests detected; add at least build, context-load, and smoke validation before approval.",
+        ),
+    )
+    for code, needles, message in checks:
+        if any(needle in text for needle in needles):
+            findings.append({"code": code, "severity": "WARNING", "message": message})
+    return findings
 
 
 def _artifact_refs(*, read_only: bool, copilot: bool) -> dict[str, str]:
@@ -351,6 +413,7 @@ def _render_summary(report: dict[str, Any]) -> str:
         f"- Planning: {report['planning']['status']}",
         f"- OpenRewrite dry-run: {report['openrewrite_dry_run']['status']} "
         f"({report['openrewrite_dry_run']['overall_impact']})",
+        f"- Enterprise compatibility: {report['enterprise_compatibility']['status']}",
         f"- Migration units: {report['migration_units']['count']}",
         f"- Copilot advisory: {report['copilot']['status']}",
         f"- Read-only verification: {report['read_only_verification']['status']}",
@@ -362,6 +425,9 @@ def _render_summary(report: dict[str, Any]) -> str:
         "",
         "## Warnings",
         *_markdown_list(report["warnings"]),
+        "",
+        "## Enterprise Compatibility",
+        *_markdown_list([finding["message"] for finding in report["enterprise_compatibility"]["findings"]]),
         "",
         "## Not Executed",
         "- Transformation was not executed.",

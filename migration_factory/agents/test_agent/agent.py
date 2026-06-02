@@ -12,6 +12,13 @@ import xml.etree.ElementTree as ET
 TEST_STATUS_PASSED = "TEST_PASSED"
 TEST_STATUS_FAILED = "TEST_FAILED"
 TEST_STATUS_ERROR = "TEST_ERROR"
+TEST_STATUS_PASS_WITH_WARNINGS = "PASS_WITH_WARNINGS"
+TEST_STATUS_TESTS_NOT_FOUND = "TESTS_NOT_FOUND"
+BUILD_STATUS_PASSED = "BUILD_PASSED_IN_SANDBOX"
+BUILD_STATUS_FAILED = "BUILD_FAILED_IN_SANDBOX"
+NO_SUREFIRE_REPORTS_WARNING = (
+    "NO_SUREFIRE_REPORTS_FOUND: Maven test phase passed but no Surefire XML reports were produced."
+)
 
 
 @dataclass(frozen=True)
@@ -33,6 +40,9 @@ def run_test_agent(
     source_log_path: str | Path,
     command: list[str] | None = None,
     cwd: str | None = None,
+    build_status: str | None = None,
+    build_exit_code: int | None = None,
+    require_test_reports: bool = False,
 ) -> TestAgentResult:
     resolved_sandbox = Path(sandbox_path).expanduser().resolve()
     resolved_run_dir = Path(run_dir).expanduser().resolve()
@@ -47,15 +57,52 @@ def run_test_agent(
     report_paths: list[str] = []
     totals = {"tests": 0, "passed": 0, "failures": 0, "errors": 0, "skipped": 0}
     test_status = TEST_STATUS_ERROR
+    warnings: list[str] = []
+    reason = ""
     started = time.monotonic()
+    surefire_report_dir = resolved_sandbox / "target" / "surefire-reports"
+    surefire_report_dir_exists = surefire_report_dir.is_dir()
+    detected_test_sources: list[str] = []
+    runnable_test_candidates: list[str] = []
+    non_runnable_test_sources: list[str] = []
 
     if not resolved_sandbox.is_dir():
         log_lines.append(f"Invalid sandbox path: {resolved_sandbox}")
+        reason = "INVALID_SANDBOX_PATH"
+    elif build_status and build_status != BUILD_STATUS_PASSED:
+        log_lines.append(f"Build command did not pass: {build_status}")
+        reason = "BUILD_COMMAND_FAILED"
+        test_status = TEST_STATUS_ERROR
     else:
+        test_sources = _detect_test_sources(resolved_sandbox)
+        detected_test_sources = [_relative_or_name(path, resolved_sandbox) for path in test_sources]
+        runnable_paths = [path for path in test_sources if _is_surefire_default_candidate(path)]
+        runnable_test_candidates = [_relative_or_name(path, resolved_sandbox) for path in runnable_paths]
+        non_runnable_test_sources = [
+            _relative_or_name(path, resolved_sandbox) for path in test_sources if path not in set(runnable_paths)
+        ]
+
         candidates = sorted(resolved_sandbox.glob("**/target/surefire-reports/TEST-*.xml"))
         report_paths = [str(path) for path in candidates]
+        discovered_report_dirs = sorted({path.parent for path in candidates})
+        if discovered_report_dirs:
+            surefire_report_dir = discovered_report_dirs[0]
+            surefire_report_dir_exists = True
         if not candidates:
-            log_lines.append("No surefire reports found.")
+            warnings.append(NO_SUREFIRE_REPORTS_WARNING)
+            log_lines.append(NO_SUREFIRE_REPORTS_WARNING)
+            if build_status == BUILD_STATUS_PASSED and not require_test_reports and not runnable_paths:
+                test_status = TEST_STATUS_PASS_WITH_WARNINGS
+                reason = "BUILD_PASSED_NO_SUREFIRE_REPORTS_NO_RUNNABLE_TESTS"
+            elif build_status == BUILD_STATUS_PASSED and not require_test_reports and runnable_paths:
+                test_status = TEST_STATUS_PASS_WITH_WARNINGS
+                reason = "BUILD_PASSED_NO_SUREFIRE_REPORTS_RUNNABLE_TESTS_DETECTED"
+            elif require_test_reports:
+                test_status = TEST_STATUS_ERROR
+                reason = "REQUIRE_TEST_REPORTS_TRUE_NO_SUREFIRE_REPORTS"
+            else:
+                test_status = TEST_STATUS_ERROR
+                reason = "NO_SUREFIRE_REPORTS_FOUND"
         else:
             parse_error: str | None = None
             for report in candidates:
@@ -83,10 +130,13 @@ def run_test_agent(
 
             if parse_error:
                 log_lines.append(parse_error)
+                reason = "SUREFIRE_REPORT_PARSE_ERROR"
             elif totals["failures"] > 0 or totals["errors"] > 0:
                 test_status = TEST_STATUS_FAILED
+                reason = "SUREFIRE_REPORTS_CONTAIN_FAILURES"
             else:
                 test_status = TEST_STATUS_PASSED
+                reason = "SUREFIRE_REPORTS_PASSED"
 
     source_log = str(Path(source_log_path).expanduser().resolve())
     payload = {
@@ -95,6 +145,8 @@ def run_test_agent(
         "run_id": run_id,
         "phase": "post_transform",
         "test_status": test_status,
+        "build_status": build_status,
+        "build_exit_code": build_exit_code,
         "totals": totals,
         "command": command or [],
         "cwd": cwd,
@@ -102,6 +154,13 @@ def run_test_agent(
         "execution_owner": "build-agent",
         "execution_mode": "parse_existing_surefire",
         "report_paths": report_paths,
+        "warnings": warnings,
+        "surefire_report_dir": str(surefire_report_dir),
+        "surefire_report_dir_exists": surefire_report_dir_exists,
+        "detected_test_sources": detected_test_sources,
+        "runnable_test_candidates": runnable_test_candidates,
+        "non_runnable_test_sources": non_runnable_test_sources,
+        "reason": reason,
         "test_log_path": str(log_path),
         "source_log_path": source_log,
         "created_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
@@ -136,12 +195,36 @@ def _int_attr(root: ET.Element, attr: str) -> int:
         return -1
 
 
+def _detect_test_sources(sandbox: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in sandbox.glob("**/src/test/**/*.java")
+        if path.is_file() and "target" not in path.parts
+    )
+
+
+def _is_surefire_default_candidate(path: Path) -> bool:
+    name = path.name
+    return (
+        (name.startswith("Test") and name.endswith(".java"))
+        or name.endswith("Test.java")
+        or name.endswith("Tests.java")
+        or name.endswith("TestCase.java")
+    )
+
+
+def _relative_or_name(path: Path, root: Path) -> str:
+    return path.name
+
+
 def _summary_markdown(payload: dict[str, Any]) -> str:
     totals = payload["totals"]
     lines = [
         "# Test Summary (Post Transform)",
         "",
         f"- test_status: {payload['test_status']}",
+        f"- build_status: {payload.get('build_status')}",
+        f"- reason: {payload.get('reason', '')}",
         f"- tests: {totals['tests']}",
         f"- passed: {totals['passed']}",
         f"- failures: {totals['failures']}",
@@ -156,5 +239,8 @@ def _summary_markdown(payload: dict[str, Any]) -> str:
         lines.extend([f"  - {path}" for path in payload["report_paths"]])
     else:
         lines.append("- report_paths: []")
+    if payload.get("warnings"):
+        lines.append("- warnings:")
+        lines.extend([f"  - {warning}" for warning in payload["warnings"]])
     lines.append("")
     return "\n".join(lines)

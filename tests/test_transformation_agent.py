@@ -1304,7 +1304,7 @@ target_jdk_home_env: JAVA21_HOME
             self.assertIn("[ERROR] COMPILATION ERROR full Maven output", stderr.getvalue())
             self.assertTrue((run_dir / "performance" / "timing_report.json").is_file())
 
-    def test_transform_v1_after_approval_blocks_candidate_when_test_reports_missing(self) -> None:
+    def test_transform_v1_after_approval_allows_candidate_when_build_passed_and_test_reports_missing(self) -> None:
         with workspace_temp_dir() as tmp:
             legacy = tmp / "legacy-app"
             modernized = tmp / "modernized-app"
@@ -1363,9 +1363,12 @@ target_jdk_home_env: JAVA21_HOME
                             ]
                         )
 
-            self.assertEqual(result, 1)
-            self.assertIn("TEST_ERROR", stdout.getvalue())
-            self.assertNotIn("Sandbox migration candidate ready.", stdout.getvalue())
+            self.assertEqual(result, 0)
+            self.assertIn("TRANSFORM_APPLIED_IN_SANDBOX", stdout.getvalue())
+            self.assertIn("Sandbox migration candidate ready.", stdout.getvalue())
+            report = json.loads((run_dir / "test" / "post_transform" / "test_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["test_status"], "PASS_WITH_WARNINGS")
+            self.assertEqual(report["reason"], "BUILD_PASSED_NO_SUREFIRE_REPORTS_NO_RUNNABLE_TESTS")
 
     def test_transform_v1_after_approval_reports_transform_failure(self) -> None:
         with workspace_temp_dir() as tmp:

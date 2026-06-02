@@ -25,6 +25,8 @@ class BuildErrorContract:
     message: str
     matched_line: str | None
     exit_code: int | None
+    requested_command: list[str] = field(default_factory=list)
+    resolved_command: list[str] = field(default_factory=list)
     module: str | None = None
     main_class: str | None = None
     stdout_tail: list[str] = field(default_factory=list)
@@ -36,6 +38,11 @@ class BuildErrorContract:
     required_minimum: str | None = None
     profile: str | None = None
     target_unit: str | None = None
+    MAVEN_CMD: str | None = None
+    MAVEN_HOME: str | None = None
+    JAVA_HOME: str | None = None
+    PATH_excerpt: str | None = None
+    platform: str | None = None
 
 
 @dataclass(frozen=True)
@@ -85,8 +92,12 @@ def build_error_contract(
     required_minimum: str | None = None,
     profile: str | None = None,
     target_unit: str | None = None,
+    requested_command: list[str] | None = None,
+    resolved_command: list[str] | None = None,
+    diagnostics: dict[str, str | None] | None = None,
     tail_size: int = 40,
 ) -> BuildErrorContract:
+    diagnostics = diagnostics or {}
     return BuildErrorContract(
         schema_version=SCHEMA_VERSION,
         agent=DEFAULT_AGENT_NAME,
@@ -100,6 +111,8 @@ def build_error_contract(
         message=message,
         matched_line=matched_line,
         exit_code=exit_code,
+        requested_command=requested_command if requested_command is not None else command,
+        resolved_command=resolved_command if resolved_command is not None else command,
         module=module,
         main_class=main_class,
         stdout_tail=stdout[-tail_size:],
@@ -111,6 +124,11 @@ def build_error_contract(
         required_minimum=required_minimum,
         profile=profile,
         target_unit=target_unit,
+        MAVEN_CMD=diagnostics.get("MAVEN_CMD"),
+        MAVEN_HOME=diagnostics.get("MAVEN_HOME"),
+        JAVA_HOME=diagnostics.get("JAVA_HOME"),
+        PATH_excerpt=diagnostics.get("PATH_excerpt"),
+        platform=diagnostics.get("platform"),
     )
 
 

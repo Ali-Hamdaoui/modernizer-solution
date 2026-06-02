@@ -26,7 +26,7 @@ from .detection import (
     is_startup_validation_command,
     plan_validation_command,
 )
-from .runner import ProcessRunResult, run_until_build_result, run_until_exit
+from .runner import ProcessRunResult, command_diagnostics, run_until_build_result, run_until_exit
 
 
 STARTUP_TIMEOUT_SECONDS = 120
@@ -232,6 +232,9 @@ def run_build_agent(
         unit_id=validation_unit_id,
         java_home=java_home,
         java_home_env=java_env_name,
+        requested_command=result.requested_command or command,
+        resolved_command=result.resolved_command or command,
+        diagnostics=result.diagnostics or command_diagnostics(command, command, env=command_env),
     )
     error_path = write_build_error(contract, resolved_output_dir)
 

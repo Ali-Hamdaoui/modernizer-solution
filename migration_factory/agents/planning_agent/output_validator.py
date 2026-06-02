@@ -47,6 +47,12 @@ ALLOWED_UNIT_ORDERS: tuple[tuple[str, ...], ...] = (
         "dependency-cleanup",
         "existing-test-migration",
     ),
+    (
+        "baseline",
+        "spring-boot-2-7",
+        "dependency-cleanup",
+        "existing-test-migration",
+    ),
 )
 APPROVAL_OPTIONS = APPROVAL_DECISION_VALUES
 

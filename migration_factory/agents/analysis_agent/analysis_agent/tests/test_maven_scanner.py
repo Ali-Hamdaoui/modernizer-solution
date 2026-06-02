@@ -64,6 +64,33 @@ def test_scan_root_pom_uses_profile_target_and_boot4_warnings(tmp_path):
     assert any("Servlet 6.1" in warning for warning in result["warnings"])
 
 
+def test_scan_root_pom_resolves_spring_boot_bom_property(tmp_path):
+    fake_pom = tmp_path / "pom.xml"
+    fake_pom.write_text("""<?xml version="1.0" encoding="UTF-8"?>
+    <project xmlns="http://maven.apache.org/POM/4.0.0">
+        <properties>
+            <java.version>11</java.version>
+            <spring-boot.version>2.1.6.RELEASE</spring-boot.version>
+        </properties>
+        <dependencyManagement>
+            <dependencies>
+                <dependency>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-dependencies</artifactId>
+                    <version>${spring-boot.version}</version>
+                    <type>pom</type>
+                    <scope>import</scope>
+                </dependency>
+            </dependencies>
+        </dependencyManagement>
+    </project>
+    """, encoding="utf-8")
+
+    result = scan_root_pom(str(fake_pom))
+
+    assert result["source_stack"]["spring_boot"] == "2.1.6.RELEASE"
+
+
 def test_scan_root_pom_parse_failure_keeps_analysis_contract(tmp_path):
     fake_pom = tmp_path / "pom.xml"
     fake_pom.write_text("<project>", encoding="utf-8")

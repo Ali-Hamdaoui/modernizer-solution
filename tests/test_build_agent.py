@@ -19,7 +19,7 @@ from migration_factory.agents.build_agent.detection import (
     full_validation_command,
 )
 from migration_factory.agents.build_agent import runner as runner_module
-from migration_factory.agents.build_agent.runner import ProcessRunResult, run_until_build_result, run_until_exit
+from migration_factory.agents.build_agent.runner import ProcessRunResult, resolve_command, run_until_build_result, run_until_exit
 from migration_factory.contracts.migration import (
     BuildValidationStatus,
     initialize_ledger,
@@ -155,6 +155,14 @@ class BuildAgentTests(unittest.TestCase):
             self.assertEqual(result.classification.kind, BuildResultKind.TIMEOUT)
             self.assertEqual(result.classification.message, "Command timed out after 1 seconds before completion")
             self.assertNotIn("startup", result.classification.message)
+
+    def test_resolve_maven_command_prefers_maven_cmd_env(self) -> None:
+        maven_cmd = r"C:\Tools\apache-maven-3.9.15\bin\mvn.cmd"
+
+        resolved = resolve_command(["mvn", "clean", "test"], env={"MAVEN_CMD": maven_cmd})
+
+        self.assertEqual(resolved[0], maven_cmd)
+        self.assertEqual(resolved[1:], ["clean", "test"])
 
     def test_runner_failure_pattern_kills_process_tree_and_returns_failure(self) -> None:
         with workspace_temp_dir() as tmp:

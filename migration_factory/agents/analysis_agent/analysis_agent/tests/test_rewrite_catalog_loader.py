@@ -170,3 +170,33 @@ def test_real_java17_profile_preview_command_unchanged(tmp_path):
     cmd = build_rewrite_maven_command(result["openrewrite"])
     assert "-Denforcer.skip=true" not in cmd
     assert cmd[1].endswith(":dryRun")
+
+
+def test_real_minimal_library_catalog_loads_preview_only_targeted_recipes(tmp_path):
+    legacy = tmp_path / "legacy"
+    modernized = tmp_path / "modernized"
+    legacy.mkdir()
+    modernized.mkdir()
+    repo_root = Path(__file__).resolve().parents[5]
+    hub = repo_root / "modernizer-solution-ai-hub"
+
+    result = load_rewrite_catalog(
+        DummyContext(legacy, modernized, hub, "library-jakarta-java17-minimal")
+    )
+
+    assert result["status"] == "USED"
+    assert result["openrewrite"]["plugin"] == "org.openrewrite.maven:rewrite-maven-plugin:6.40.0"
+    assert result["openrewrite"]["recipe_artifacts"] == [
+        "org.openrewrite.recipe:rewrite-migrate-java:3.35.0"
+    ]
+    assert result["openrewrite"]["active_recipes"] == [
+        "org.openrewrite.java.migrate.UpgradeBuildToJava17",
+        "org.openrewrite.java.migrate.jakarta.JavaxAnnotationMigrationToJakartaAnnotation",
+        "org.openrewrite.java.migrate.jakarta.JavaxXmlBindMigrationToJakartaXmlBind",
+        "org.openrewrite.java.migrate.jakarta.JavaxPersistenceToJakartaPersistence",
+        "org.openrewrite.java.migrate.jakarta.JavaxServletToJakartaServlet",
+    ]
+    assert "org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5" not in result["openrewrite"]["active_recipes"]
+    assert "org.openrewrite.java.migrate.jakarta.JakartaEE10" not in result["openrewrite"]["active_recipes"]
+    assert result["openrewrite"]["dry_run"] == "rewrite:dryRun"
+    assert "rewrite:run" in result["forbidden_apply_goals"]

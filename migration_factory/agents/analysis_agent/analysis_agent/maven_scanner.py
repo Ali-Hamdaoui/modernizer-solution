@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import xml.etree.ElementTree as ET
 
 import yaml
@@ -63,21 +64,8 @@ def scan_root_pom(file_path, target_stack=None):
         tree = ET.parse(file_path)
         root = tree.getroot()
 
-        parent_group = root.find(".//mvn:parent/mvn:groupId", ns)
-        parent_artifact = root.find(".//mvn:parent/mvn:artifactId", ns)
-        parent_version = root.find(".//mvn:parent/mvn:version", ns)
-        parent_is_boot = (
-            parent_group is not None
-            and parent_artifact is not None
-            and parent_group.text == "org.springframework.boot"
-            and parent_artifact.text == "spring-boot-starter-parent"
-        )
-        spring_boot = (
-            parent_version.text
-            if parent_version is not None
-            and (parent_is_boot or parent_group is None or parent_artifact is None)
-            else "unknown"
-        )
+        properties = _maven_properties(root, ns)
+        spring_boot = _detect_spring_boot_version(root, ns, properties)
 
         java_ver_elem = root.find(".//mvn:properties/mvn:java.version", ns)
         compiler_source_elem = root.find(".//mvn:properties/mvn:maven.compiler.source", ns)
@@ -139,3 +127,75 @@ def _target_warnings(target, source_java, source_boot):
     if str(source_boot).startswith("2.") and target_boot.startswith("4."):
         warnings.append("Direct Spring Boot 2.x to 4.x migration is sandbox-only and high risk.")
     return warnings
+
+
+def _maven_properties(root, ns):
+    properties = {}
+    properties_elem = root.find("./mvn:properties", ns)
+    if properties_elem is None:
+        return properties
+
+    for child in list(properties_elem):
+        key = _strip_namespace(child.tag)
+        value = _text(child)
+        if key and value:
+            properties[key] = value
+    return properties
+
+
+def _detect_spring_boot_version(root, ns, properties):
+    for property_name in ("spring-boot.version", "spring.boot.version"):
+        version = _resolve_property_placeholders(properties.get(property_name, ""), properties)
+        if version:
+            return version
+
+    parent_group = root.find("./mvn:parent/mvn:groupId", ns)
+    parent_artifact = root.find("./mvn:parent/mvn:artifactId", ns)
+    parent_version = root.find("./mvn:parent/mvn:version", ns)
+    if (
+        _text(parent_group) == "org.springframework.boot"
+        and _text(parent_artifact) == "spring-boot-starter-parent"
+    ):
+        version = _resolve_property_placeholders(_text(parent_version), properties)
+        if version:
+            return version
+
+    for dependency in root.findall("./mvn:dependencyManagement/mvn:dependencies/mvn:dependency", ns):
+        if (
+            _text(dependency.find("./mvn:groupId", ns)) == "org.springframework.boot"
+            and _text(dependency.find("./mvn:artifactId", ns)) == "spring-boot-dependencies"
+        ):
+            version = _resolve_property_placeholders(
+                _text(dependency.find("./mvn:version", ns)),
+                properties,
+            )
+            if version:
+                return version
+
+    if parent_group is None and parent_artifact is None:
+        version = _resolve_property_placeholders(_text(parent_version), properties)
+        if version:
+            return version
+
+    return "unknown"
+
+
+def _resolve_property_placeholders(value, properties):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+
+    def replace(match):
+        property_name = match.group(1)
+        return str(properties.get(property_name, match.group(0))).strip()
+
+    resolved = re.sub(r"\$\{([^}]+)\}", replace, value)
+    return resolved.strip()
+
+
+def _text(element):
+    return element.text.strip() if element is not None and element.text else ""
+
+
+def _strip_namespace(tag):
+    return tag.rsplit("}", 1)[-1] if "}" in tag else tag

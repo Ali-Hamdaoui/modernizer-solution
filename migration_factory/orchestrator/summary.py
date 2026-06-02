@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import time
 from typing import Any
 
+from migration_factory.agents.copilot_doc_agent import generate_copilot_documentation_package
 from migration_factory.final_report import (
+    detect_copilot_cli_status,
     generate_final_migration_report,
     write_report_context,
 )
+from migration_factory.final_report import copilot as copilot_report_module
 from migration_factory.orchestrator.artifact_validation import (
     validate_successful_full_sandbox_orchestration,
 )
@@ -24,6 +28,10 @@ EXECUTION_CLAIMS = {
     "migrated_tests_executed": False,
     "final_migration_executed": False,
 }
+_COPILOT_REPORT_ENV = "AI_MIGRATION_ENABLE_COPILOT_REPORT"
+_COPILOT_PROVIDER_ENV = "AI_MIGRATION_COPILOT_PROVIDER"
+_COPILOT_TRUE_VALUES = {"1", "true", "yes", "on"}
+_COPILOT_CLI_PROVIDER = "copilot_cli"
 
 
 def build_orchestration_summary(state: MigrationState) -> dict:
@@ -129,6 +137,8 @@ def finalize_orchestration_state(
         **dict(result.get("artifact_refs", {}) or {}),
         "copilot_report_context": str(report_context_path),
     }
+    _maybe_generate_copilot_final_report(result)
+    _generate_copilot_docs(result)
 
     timing_refs = write_timing_artifacts(result)
     result["artifact_refs"] = {**dict(result.get("artifact_refs", {}) or {}), **timing_refs}
@@ -152,6 +162,100 @@ def finalize_orchestration_state(
         ]
     summary_writer(result)  # type: ignore[arg-type]
     return result  # type: ignore[return-value]
+
+
+def _maybe_generate_copilot_final_report(state: dict[str, Any]) -> None:
+    if os.getenv(_COPILOT_REPORT_ENV, "").strip().lower() not in _COPILOT_TRUE_VALUES:
+        return
+
+    try:
+        status = None
+        if os.getenv(_COPILOT_PROVIDER_ENV, "").strip().lower() == _COPILOT_CLI_PROVIDER:
+            status = detect_copilot_cli_status(
+                timeout_seconds=15.0,
+                env=os.environ,
+            )
+        else:
+            status = copilot_report_module.CopilotAdapterStatus(
+                model=str(state.get("copilot_model") or "gpt-5-mini"),
+                connectivity="not_configured",
+                report_status="generated",
+            )
+        result = getattr(copilot_report_module, "generate_copilot_report")(
+            state.get("run_dir", ""),
+            _copilot_report_ai_hub(state),
+            context=_copilot_report_context(state),
+            status=status,
+            timeout_seconds=float(state.get("copilot_timeout_seconds") or 300),
+            env=os.environ,
+        )
+    except Exception as exc:
+        fallback = copilot_report_module.write_failed_copilot_report_response(
+            state.get("run_dir", ""),
+            _copilot_report_ai_hub(state),
+            warning=f"copilot final report generation failed: {exc}",
+        )
+        _merge_copilot_report_result(state, fallback)
+        return
+
+    _merge_copilot_report_result(state, result)
+
+
+def _merge_copilot_report_result(state: dict[str, Any], result: dict[str, Any]) -> None:
+    artifact_refs = dict(result.get("artifact_refs", {}) or {})
+    state["artifact_refs"] = {
+        **dict(state.get("artifact_refs", {}) or {}),
+        **artifact_refs,
+    }
+    if result.get("warnings"):
+        state["warnings"] = [
+            *list(state.get("warnings", []) or []),
+            *list(result.get("warnings", []) or []),
+        ]
+
+
+def _generate_copilot_docs(state: dict[str, Any]) -> None:
+    result = generate_copilot_documentation_package(state)
+    if result.blockers:
+        state["warnings"] = [
+            *list(state.get("warnings", []) or []),
+            "copilot documentation generation skipped: " + "; ".join(result.blockers),
+            *result.warnings,
+        ]
+        return
+    state["artifact_refs"] = {
+        **dict(state.get("artifact_refs", {}) or {}),
+        **result.artifact_refs,
+    }
+    if result.warnings:
+        state["warnings"] = [
+            *list(state.get("warnings", []) or []),
+            *result.warnings,
+        ]
+
+
+def _copilot_report_context(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "run_id": state.get("run_id", ""),
+        "profile_id": state.get("profile_id", ""),
+        "mode": state.get("mode", ""),
+        "legacy_app_path": state.get("legacy_app_path", ""),
+        "sandbox_path": state.get("sandbox_path", ""),
+        "preflight_status": state.get("preflight_status", ""),
+        "analysis_status": state.get("analysis_status", ""),
+        "planning_status": state.get("planning_status", ""),
+        "assessment_status": state.get("assessment_status", ""),
+        "final_verdict": state.get("final_status", ""),
+    }
+
+
+def _copilot_report_ai_hub(state: dict[str, Any]) -> str:
+    configured = Path(str(state.get("ai_hub_path") or ""))
+    manifest = configured / "templates" / "reports" / "copilot_final_migration_report_v1.yaml"
+    if configured.is_dir() and manifest.is_file():
+        return str(configured)
+    repo_hub = Path(__file__).resolve().parents[2] / "modernizer-solution-ai-hub"
+    return str(repo_hub)
 
 
 def _final_status(state: MigrationState) -> str:
