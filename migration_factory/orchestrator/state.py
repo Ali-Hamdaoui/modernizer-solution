@@ -14,11 +14,11 @@ PHASE_STATUS_VALUES = {"PENDING", "RUNNING", "PASS", "FAIL", "SKIPPED"}
 APPROVAL_STATUS_VALUES = {"PENDING", "INTERRUPTED", "COMPLETED", "FAILED"}
 APPROVAL_DECISION_VALUES = {"approved", "rejected", "replan_required"}
 COPILOT_ASSIST_MODE_VALUES = {"off", "failures", "warnings", "always"}
-COPILOT_PROVIDER_VALUES = {"cli", "sdk", "deterministic"}
+COPILOT_PROVIDER_VALUES = {"cli", "sdk", "deterministic", "copilot_cli"}
 
 DEFAULT_COPILOT_ASSIST_MODE = "failures"
 DEFAULT_COPILOT_REPORT_ENABLED = True
-DEFAULT_COPILOT_PROVIDER = "cli"
+DEFAULT_COPILOT_PROVIDER = "copilot_cli"
 DEFAULT_COPILOT_MODEL = "gpt-5-mini"
 DEFAULT_COPILOT_TIMEOUT_SECONDS = 300
 
@@ -27,6 +27,10 @@ _COPILOT_REPORT_ENV = "AI_MIGRATION_ENABLE_COPILOT_REPORT"
 _COPILOT_PROVIDER_ENV = "AI_MIGRATION_COPILOT_PROVIDER"
 _COPILOT_MODEL_ENV = "AI_MIGRATION_COPILOT_MODEL"
 _COPILOT_TIMEOUT_ENV = "AI_MIGRATION_COPILOT_TIMEOUT_SECONDS"
+_COPILOT_REQUIRED_ENV = "AI_MIGRATION_COPILOT_REQUIRED"
+_COPILOT_FAILURE_AGENT_ENABLED_ENV = "AI_MIGRATION_COPILOT_FAILURE_AGENT_ENABLED"
+_H2_STARTUP_REQUIRED_ENV = "AI_MIGRATION_H2_STARTUP_REQUIRED"
+_COPILOT_REPAIR_STRICT_CONTAINMENT_ENV = "AI_MIGRATION_COPILOT_REPAIR_STRICT_CONTAINMENT"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
 
@@ -104,6 +108,20 @@ class MigrationState(TypedDict, total=False):
     copilot_assist_phase: str
     copilot_route_after_assist: str
     copilot_validation_had_warnings: bool
+    copilot_required: bool
+    copilot_failure_agent_enabled: bool
+    copilot_availability_status: str
+    copilot_feature_probe: dict[str, object]
+    copilot_invocation_status: str
+    repair_mode: str
+    repair_loop_status: str
+    failure_classification_status: str
+    openrewrite_diff_risk_status: str
+    h2_startup_required: bool
+    h2_startup_status: str
+    runtime_security_warnings: list[str]
+    final_proof_level: str
+    copilot_repair_strict_containment: bool
 
 
 def build_initial_state(
@@ -182,6 +200,20 @@ def build_copilot_state_defaults() -> MigrationState:
         "copilot_assist_phase": "",
         "copilot_route_after_assist": "",
         "copilot_validation_had_warnings": False,
+        "copilot_required": False,
+        "copilot_failure_agent_enabled": False,
+        "copilot_availability_status": "SKIPPED",
+        "copilot_feature_probe": {},
+        "copilot_invocation_status": "SKIPPED",
+        "repair_mode": "proposal_only",
+        "repair_loop_status": "NOT_IMPLEMENTED",
+        "failure_classification_status": "PENDING",
+        "openrewrite_diff_risk_status": "UNKNOWN",
+        "h2_startup_required": False,
+        "h2_startup_status": "H2_STARTUP_SKIPPED",
+        "runtime_security_warnings": [],
+        "final_proof_level": "not_verified",
+        "copilot_repair_strict_containment": True,
     }
 
 
@@ -220,6 +252,18 @@ def parse_copilot_config_from_env(env: Mapping[str, str] | None = None) -> Migra
             "copilot_provider": provider,
             "copilot_model": model,
             "copilot_timeout_seconds": timeout_seconds,
+            "copilot_required": _bool_env_value(source, _COPILOT_REQUIRED_ENV, False),
+            "copilot_failure_agent_enabled": _bool_env_value(
+                source,
+                _COPILOT_FAILURE_AGENT_ENABLED_ENV,
+                False,
+            ),
+            "h2_startup_required": _bool_env_value(source, _H2_STARTUP_REQUIRED_ENV, False),
+            "copilot_repair_strict_containment": _bool_env_value(
+                source,
+                _COPILOT_REPAIR_STRICT_CONTAINMENT_ENV,
+                True,
+            ),
         }
     )
     return config

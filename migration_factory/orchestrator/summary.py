@@ -55,6 +55,16 @@ def build_orchestration_summary(state: MigrationState) -> dict:
         "test_summary_path": state.get("test_summary_path", ""),
         "test_log_path": state.get("test_log_path", ""),
         "test_phase": state.get("test_phase", ""),
+        "copilot_availability_status": state.get("copilot_availability_status", "SKIPPED"),
+        "copilot_invocation_status": state.get("copilot_invocation_status", "SKIPPED"),
+        "repair_mode": state.get("repair_mode", "proposal_only"),
+        "repair_loop_status": state.get("repair_loop_status", "NOT_IMPLEMENTED"),
+        "failure_classification_status": state.get("failure_classification_status", "PENDING"),
+        "openrewrite_diff_risk_status": state.get("openrewrite_diff_risk_status", "UNKNOWN"),
+        "h2_startup_required": bool(state.get("h2_startup_required", False)),
+        "h2_startup_status": state.get("h2_startup_status", "H2_STARTUP_SKIPPED"),
+        "runtime_security_warnings": list(state.get("runtime_security_warnings", []) or []),
+        "final_proof_level": state.get("final_proof_level", "not_verified"),
         "sandbox_path": state.get("sandbox_path", ""),
         "log_path": state.get("transform_log_path", ""),
         "stop_reason": state.get("stop_reason"),
@@ -174,6 +184,7 @@ def _maybe_generate_copilot_final_report(state: dict[str, Any]) -> None:
             status = detect_copilot_cli_status(
                 timeout_seconds=15.0,
                 env=os.environ,
+                cwd=Path(str(state.get("run_dir") or "")) / "logs" / "copilot",
             )
         else:
             status = copilot_report_module.CopilotAdapterStatus(

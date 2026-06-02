@@ -18,6 +18,10 @@ Runtime/env config:
 - `AI_MIGRATION_COPILOT_PROVIDER`
 - `AI_MIGRATION_COPILOT_MODEL`
 - `AI_MIGRATION_COPILOT_TIMEOUT_SECONDS`
+- `AI_MIGRATION_COPILOT_REQUIRED`
+- `AI_MIGRATION_COPILOT_FAILURE_AGENT_ENABLED`
+- `AI_MIGRATION_H2_STARTUP_REQUIRED`
+- `AI_MIGRATION_COPILOT_REPAIR_STRICT_CONTAINMENT`
 - `AI_MIGRATION_COPILOT_LOG_LEVEL`
 - `AI_MIGRATION_ENABLE_COPILOT_STATEMENT`
 - `AI_MIGRATION_COPILOT_DOCS_ENABLED`
@@ -42,19 +46,32 @@ Do not store actual secret values in docs or artifacts.
 
 - `DEFAULT_COPILOT_ASSIST_MODE = "failures"`
 - `DEFAULT_COPILOT_REPORT_ENABLED = True`
-- `DEFAULT_COPILOT_PROVIDER = "cli"`
+- `DEFAULT_COPILOT_PROVIDER = "copilot_cli"`
 - `DEFAULT_COPILOT_MODEL = "gpt-5-mini"`
 - `DEFAULT_COPILOT_TIMEOUT_SECONDS = 300`
 
 `parse_copilot_config_from_env()` validates:
 
 - Assist mode: `off`, `failures`, `warnings`, `always`
-- Provider: `cli`, `sdk`, `deterministic`
+- Provider: `cli`, `sdk`, `deterministic`, `copilot_cli`
 - Positive timeout
 - Report enabled boolean
 - Model string
 
 TODO/VERIFY: `sdk` is an allowed provider value in state, but `CopilotAssistService._provider()` currently routes non-`cli` providers to deterministic fallback.
+
+### Failure repair MVP
+
+The first safe failure-handling MVP adds proposal-only repair infrastructure:
+
+- `preflight/copilot_availability.json` records Copilot CLI feature probe results.
+- `copilot/evidence_session_<n>/` is the only allowed Copilot repair cwd.
+- `failures/failure_classification.json` is deterministic and authoritative.
+- `failures/copilot_repair_request.json`, `failures/copilot_repair_response.json`, and `failures/repair_plan.md` are proposal-only artifacts.
+- `transformation/openrewrite_diff_safety_report.json` records deterministic diff risk.
+- `runtime/h2_startup_report.json` records optional H2-only startup evidence.
+
+Repair Copilot must not run from repository root, sandbox root, legacy app path, or run root. It receives redacted evidence only, returns valid JSON only, and does not apply patches.
 
 ### Planning assist
 

@@ -67,12 +67,13 @@ def test_successful_full_sandbox_writes_final_report_and_summary(tmp_path: Path,
     assert payload["test_totals"]["tests"] == 3
     assert payload["approval"]["approval_ref"].endswith("approval_decision.json")
     assert payload["lock_status"]["lock_ref"].endswith("approved_plan_lock.json")
-    assert payload["limitations"] == [
+    assert payload["limitations"][:4] == [
         "No production promotion performed.",
         "No pull request creation performed.",
         "No deployment performed.",
         "No automatic merge performed.",
     ]
+    assert "SQL Server production behavior not validated." in payload["limitations"]
     assert _as_posix(payload["timing"]["timing_report"]).endswith("performance/timing_report.json")
     assert _as_posix(payload["timing"]["timing_summary"]).endswith("performance/timing_summary.md")
     assert "copilot_migration_statement_json" not in result["artifact_refs"]
@@ -244,7 +245,7 @@ def test_copilot_documentation_cli_success_uses_generated_docs(tmp_path: Path, m
     def fake_run(args, **kwargs):
         if "--version" in args:
             return subprocess.CompletedProcess(args, 0, stdout="copilot 1.0\n", stderr="")
-        docs_dir = Path(kwargs["cwd"]) / "final" / "copilot_docs"
+        docs_dir = Path(kwargs["cwd"])
         for artifact in copilot_doc_agent.DOC_ARTIFACTS:
             (docs_dir / artifact).write_text(f"# CLI {artifact}\n", encoding="utf-8")
         return subprocess.CompletedProcess(args, 0, stdout="ok", stderr="")
@@ -273,7 +274,7 @@ def test_copilot_documentation_cli_outside_write_is_rejected_and_falls_back(tmp_
         if "--version" in args:
             return subprocess.CompletedProcess(args, 0, stdout="copilot 1.0\n", stderr="")
         protected.write_text(json.dumps({"decision": "changed"}) + "\n", encoding="utf-8")
-        docs_dir = Path(kwargs["cwd"]) / "final" / "copilot_docs"
+        docs_dir = Path(kwargs["cwd"])
         for artifact in copilot_doc_agent.DOC_ARTIFACTS:
             (docs_dir / artifact).write_text(f"# CLI {artifact}\n", encoding="utf-8")
         return subprocess.CompletedProcess(args, 0, stdout="ok", stderr="")

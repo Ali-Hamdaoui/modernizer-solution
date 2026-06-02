@@ -83,6 +83,7 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
     recipes = _extract_recipes(execution_plan or {})
     profile_governance = _object_or_empty((migration_plan or {}).get("profile_governance"))
     boot4_warnings = _boot4_warnings(target_stack, state, assessment_report, migration_plan)
+    validation_scope = _validation_scope(state)
 
     report_payload = {
         "run_id": state.get("run_id", ""),
@@ -107,6 +108,14 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
         "build_status": state.get("build_status", ""),
         "test_status": test_status,
         "test_totals": totals,
+        "proof": {
+            "final_proof_level": validation_scope["final_proof_level"],
+            "h2_startup_required": bool(state.get("h2_startup_required", False)),
+            "h2_startup_status": state.get("h2_startup_status", "H2_STARTUP_SKIPPED"),
+            "runtime_security_warnings": list(state.get("runtime_security_warnings", []) or []),
+        },
+        "validated": validation_scope["validated"],
+        "not_validated": validation_scope["not_validated"],
         "recipes": recipes,
         "executed_recipes": recipes,
         "boot4_warnings": boot4_warnings,
@@ -125,6 +134,10 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
             "No pull request creation performed.",
             "No deployment performed.",
             "No automatic merge performed.",
+            "SQL Server production behavior not validated.",
+            "Production DB scripts not validated.",
+            "Endpoint/business behavior not validated.",
+            "Production secrets/JWT/keystore validity not validated.",
         ],
         "sandbox_path": state.get("sandbox_path", ""),
         "log_paths": _collect_log_paths(state, artifact_refs, test_report, orchestration_summary),
@@ -185,6 +198,7 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
         f"- Transform: {payload.get('transform_status', '')}",
         f"- Build: {payload.get('build_status', '')}",
         f"- Test: {payload.get('test_status', '')}",
+        f"- Proof Level: {dict(payload.get('proof', {}) or {}).get('final_proof_level', 'not_verified')}",
         (
             "- Test Totals: "
             f"tests={totals.get('tests', 0)} "
@@ -195,6 +209,14 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
         ),
         f"- Executed Recipes: {', '.join(str(recipe) for recipe in recipes) if recipes else 'none'}",
         "- Scope Limits: no production promotion, no PR creation, no deployment, no automatic merge",
+        "",
+        "## Validated",
+        "",
+        *[f"- {item}" for item in list(payload.get("validated", []) or [])],
+        "",
+        "## Not Validated",
+        "",
+        *[f"- {item}" for item in list(payload.get("not_validated", []) or [])],
         "",
         "POC-ready sandbox migration artifacts are captured under this run directory.",
     ]
@@ -223,6 +245,33 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
 
 def _copilot_statement_enabled() -> bool:
     return os.getenv(_COPILOT_STATEMENT_ENV, "").strip().lower() in _TRUE_VALUES
+
+
+def _validation_scope(state: dict[str, Any]) -> dict[str, Any]:
+    validated: list[str] = []
+    if state.get("transform_status") == "TRANSFORM_APPLIED_IN_SANDBOX":
+        validated.append("sandbox transform applied")
+    if state.get("build_status") == "BUILD_PASSED_IN_SANDBOX":
+        validated.append("Maven build passed")
+    if state.get("test_status") == "TEST_PASSED":
+        validated.append("tests passed")
+    h2_status = str(state.get("h2_startup_status") or "H2_STARTUP_SKIPPED")
+    proof = "unit_tests_passed" if state.get("test_status") == "TEST_PASSED" else "compiled" if state.get("build_status") == "BUILD_PASSED_IN_SANDBOX" else "not_verified"
+    if h2_status in {"H2_STARTUP_PASSED", "H2_STARTUP_WARNING"}:
+        validated.append("H2 migration-smoke startup passed")
+        proof = "h2_runtime_started"
+    return {
+        "final_proof_level": state.get("final_proof_level") or proof,
+        "validated": validated,
+        "not_validated": [
+            "SQL Server production behavior",
+            "production DB scripts",
+            "endpoint/business behavior",
+            "production secrets/JWT/keystore validity",
+            "deployment",
+            "PR creation/merge",
+        ],
+    }
 
 
 def _generate_copilot_advisory_statement(payload: dict[str, Any], final_dir: Path) -> dict[str, str]:

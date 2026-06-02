@@ -171,7 +171,7 @@ def _generate_cli_documentation_package(
     _write_manifest(manifest_path, state, run_dir, docs_dir, trace_refs)
     protected_before = _snapshot_protected_paths(state, run_dir, docs_dir, trace_refs)
 
-    version = _run_copilot_version(config, run_dir)
+    version = _run_copilot_version(config, docs_dir)
     status["version_check"] = version
     if not version["available"]:
         warnings.append("copilot documentation CLI unavailable; using local fallback")
@@ -188,8 +188,8 @@ def _generate_cli_documentation_package(
     try:
         completed = subprocess.run(
             [config.command],
-            input=_cli_prompt(manifest_path, run_dir),
-            cwd=run_dir,
+            input=_cli_prompt(manifest_path, docs_dir),
+            cwd=docs_dir,
             timeout=config.timeout_seconds,
             capture_output=True,
             text=True,
@@ -375,10 +375,10 @@ def _write_manifest(
 ) -> None:
     payload = {
         "run_id": state.get("run_id", ""),
-        "output_dir": _display_path(docs_dir, run_dir),
+        "output_dir": _display_path(docs_dir, docs_dir),
         "required_outputs": list(DOC_ARTIFACTS),
         "read_only_artifacts": {
-            name: _display_path(Path(ref), run_dir)
+            name: _display_path(Path(ref), docs_dir)
             for name, ref in artifact_refs.items()
             if name in REQUIRED_ARTIFACT_REFS
         },
@@ -402,11 +402,11 @@ def _new_cli_status(config: CopilotDocConfig) -> dict[str, Any]:
     }
 
 
-def _run_copilot_version(config: CopilotDocConfig, run_dir: Path) -> dict[str, Any]:
+def _run_copilot_version(config: CopilotDocConfig, cwd: Path) -> dict[str, Any]:
     try:
         completed = subprocess.run(
             [config.command, "--version"],
-            cwd=run_dir,
+            cwd=cwd,
             timeout=min(config.timeout_seconds, 30),
             capture_output=True,
             text=True,

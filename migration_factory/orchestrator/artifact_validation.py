@@ -64,6 +64,14 @@ SUCCESSFUL_FULL_SANDBOX_OPTIONAL_ARTIFACT_REFS = (
     "copilot_validation_evidence",
     "copilot_risks_and_warnings",
     "copilot_review",
+    "copilot_availability",
+    "openrewrite_diff_safety_report",
+    "h2_startup_report",
+    "failure_classification",
+    "copilot_repair_request",
+    "copilot_repair_response",
+    "repair_plan",
+    "copilot_evidence_manifest",
 )
 
 SCHEMA_BACKED_ARTIFACTS = {
@@ -75,6 +83,12 @@ SCHEMA_BACKED_ARTIFACTS = {
     "migration_units.yaml": "migration_units.schema.json",
     "approval_request.json": "approval_request.schema.json",
     "assessment_report.json": "assessment_report.schema.json",
+    "copilot_availability.json": "copilot_availability.schema.json",
+    "openrewrite_diff_safety_report.json": "openrewrite_diff_safety_report.schema.json",
+    "h2_startup_report.json": "h2_startup_report.schema.json",
+    "failure_classification.json": "failure_classification.schema.json",
+    "copilot_repair_request.json": "copilot_repair_request.schema.json",
+    "copilot_repair_response.json": "copilot_repair_response.schema.json",
 }
 
 ASSESSMENT_EXECUTION_CLAIMS = (

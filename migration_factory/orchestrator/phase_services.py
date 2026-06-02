@@ -186,6 +186,54 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         )
         return failed
 
+    h2_updates: dict[str, Any] = {
+        "h2_startup_status": "H2_STARTUP_SKIPPED",
+        "final_proof_level": "unit_tests_passed" if result.test_status == "TEST_PASSED" else "compiled",
+    }
+    if state.get("h2_startup_required") is True:
+        from migration_factory.agents.h2_runtime_startup_agent import (
+            build_h2_startup_report,
+            write_h2_startup_report,
+        )
+
+        h2_report = build_h2_startup_report(
+            run_id=state.get("run_id", ""),
+            run_dir=Path(state.get("run_dir", "")),
+            sandbox_path=result.sandbox_path,
+            required=True,
+        )
+        h2_path = write_h2_startup_report(run_dir=Path(state.get("run_dir", "")), report=h2_report)
+        artifact_refs["h2_startup_report"] = str(h2_path)
+        h2_updates.update(
+            {
+                "h2_startup_status": h2_report.get("h2_status", "H2_STARTUP_FAILED"),
+                "final_proof_level": h2_report.get("proof_level", "not_verified"),
+                "runtime_security_warnings": list(h2_report.get("security_env_warnings", []) or []),
+            }
+        )
+        if h2_report.get("h2_status") == "H2_STARTUP_FAILED":
+            failed = _with_phase_failure(
+                state,
+                phase="h2_runtime_startup",
+                status_key="orchestration_status",
+                message="required H2 runtime startup failed",
+            )
+            failed.update(
+                {
+                    "transform_status": result.status,
+                    "build_status": result.build_status or "",
+                    "test_status": result.test_status or "",
+                    "test_totals": dict(result.test_totals or {}),
+                    "sandbox_path": str(result.sandbox_path),
+                    "transform_log_path": str(result.log_file),
+                    "artifact_refs": artifact_refs,
+                    "final_status": "H2_STARTUP_FAILED",
+                    "stop_reason": "required H2 runtime startup failed",
+                    **h2_updates,
+                }
+            )
+            return failed
+
     return {
         "current_phase": "sandbox_transform",
         "orchestration_status": "PASS",
@@ -203,6 +251,7 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         "final_status": STATUS_APPLIED,
         "stop_reason": result.message,
         "timing": _merged_timing_state(Path(state.get("run_dir", "")), state),
+        **h2_updates,
     }
 
 

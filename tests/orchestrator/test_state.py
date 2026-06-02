@@ -105,7 +105,7 @@ def test_initial_state_has_default_copilot_config(tmp_path: Path) -> None:
     assert state["copilot_enabled"] is True
     assert state["copilot_assist_mode"] == "failures"
     assert state["copilot_report_enabled"] is True
-    assert state["copilot_provider"] == "cli"
+    assert state["copilot_provider"] == "copilot_cli"
     assert state["copilot_model"] == "gpt-5-mini"
     assert state["copilot_timeout_seconds"] == 300
     assert state["copilot_phase_statuses"] == {}
@@ -152,11 +152,17 @@ def test_invalid_copilot_assist_mode_fails_validation() -> None:
 
 def test_invalid_copilot_provider_fails_validation() -> None:
     try:
-        parse_copilot_config_from_env({"AI_MIGRATION_COPILOT_PROVIDER": "copilot_cli"})
+        parse_copilot_config_from_env({"AI_MIGRATION_COPILOT_PROVIDER": "unknown"})
     except CopilotConfigError as exc:
         assert "AI_MIGRATION_COPILOT_PROVIDER" in str(exc)
     else:
         raise AssertionError("invalid Copilot provider should fail validation")
+
+
+def test_copilot_cli_provider_is_valid() -> None:
+    config = parse_copilot_config_from_env({"AI_MIGRATION_COPILOT_PROVIDER": "copilot_cli"})
+
+    assert config["copilot_provider"] == "copilot_cli"
 
 
 def test_invalid_copilot_timeout_fails_validation() -> None:

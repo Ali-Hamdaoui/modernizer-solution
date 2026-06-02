@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -194,6 +195,7 @@ def detect_copilot_cli_status(
     *,
     timeout_seconds: float = 15.0,
     env: Mapping[str, str] | None = None,
+    cwd: str | Path | None = None,
 ) -> CopilotAdapterStatus:
     """Read-only availability/auth probe for status displays.
 
@@ -214,7 +216,7 @@ def detect_copilot_cli_status(
                 cli_status="not_installed",
             )
 
-        _copilot_version_proves_cli(copilot_path, timeout_seconds)
+        _copilot_version_proves_cli(copilot_path, timeout_seconds, cwd=_copilot_probe_cwd(cwd))
 
         auth_status = _detect_gh_auth_status(timeout_seconds)
         connectivity = "connected" if auth_status == "authenticated" else "unavailable"
@@ -904,7 +906,11 @@ def _generate_copilot_cli_report(
     copilot_log_dir.mkdir(parents=True, exist_ok=True)
     github_cli_log_dir.mkdir(parents=True, exist_ok=True)
     manifest = load_copilot_report_manifest(ai_hub_path)
-    detected_status = status or detect_copilot_cli_status(timeout_seconds=15.0, env=env)
+    detected_status = status or detect_copilot_cli_status(
+        timeout_seconds=15.0,
+        env=env,
+        cwd=_copilot_cli_cwd(run_path),
+    )
     cli_status = CopilotAdapterStatus(
         provider=PROVIDER,
         adapter=CLI_ADAPTER,
@@ -942,7 +948,7 @@ def _generate_copilot_cli_report(
             cli_status.model,
             timeout_seconds,
             cli_status.resolved_executable_path,
-            cwd=run_path,
+            cwd=_copilot_cli_cwd(run_path),
             log_dir=github_cli_log_dir,
             log_level=log_level,
         )
@@ -1263,13 +1269,14 @@ def _invoke_copilot_cli(
     *,
     cwd: str | Path | None = None,
 ) -> str:
-    log_dir = Path(cwd or ".") / COPILOT_GITHUB_CLI_LOG_DIR
+    effective_cwd = Path(cwd).resolve() if cwd is not None else _copilot_probe_cwd()
+    log_dir = effective_cwd / COPILOT_GITHUB_CLI_LOG_DIR
     result = _invoke_copilot_cli_raw(
         prompt,
         model,
         _clamp_timeout_seconds(timeout_seconds),
         resolved_executable_path,
-        cwd=cwd,
+        cwd=effective_cwd,
         log_dir=log_dir,
         log_level=DEFAULT_COPILOT_LOG_LEVEL,
     )
@@ -1300,6 +1307,7 @@ def _invoke_copilot_cli_raw(
     if not command.strip():
         raise FileNotFoundError("Copilot executable path was not resolved for live call")
     command_args = _copilot_cli_command(command, model, Path(log_dir), log_level)
+    effective_cwd = Path(cwd).resolve() if cwd is not None else _copilot_probe_cwd()
     started = time.monotonic()
     started_at = _utc_now()
     try:
@@ -1308,7 +1316,7 @@ def _invoke_copilot_cli_raw(
             input=prompt,
             capture_output=True,
             text=True,
-            cwd=str(cwd) if cwd else None,
+            cwd=str(effective_cwd),
             timeout=timeout_seconds,
             check=False,
         )
@@ -1325,6 +1333,12 @@ def _invoke_copilot_cli_raw(
         elapsed_seconds=round(time.monotonic() - started, 3),
         command=command_args,
     )
+
+
+def _copilot_cli_cwd(run_dir: str | Path) -> Path:
+    cwd = (Path(run_dir) / COPILOT_LOG_DIR).resolve()
+    cwd.mkdir(parents=True, exist_ok=True)
+    return cwd
 
 
 def _copilot_cli_command(command: str, model: str, log_dir: Path, log_level: str) -> list[str]:
@@ -1585,18 +1599,25 @@ def _find_copilot_command(timeout_seconds: float) -> str | None:
     return None
 
 
-def _copilot_version_proves_cli(command: str, timeout_seconds: float) -> bool:
+def _copilot_version_proves_cli(command: str, timeout_seconds: float, *, cwd: Path) -> bool:
     try:
         completed = subprocess.run(
             [command, "version"],
             capture_output=True,
             text=True,
+            cwd=cwd,
             timeout=timeout_seconds,
             check=False,
         )
     except (OSError, subprocess.SubprocessError, TimeoutError):
         return False
     return _looks_like_copilot_version(completed.stdout or "")
+
+
+def _copilot_probe_cwd(cwd: str | Path | None = None) -> Path:
+    probe_cwd = Path(cwd) if cwd is not None else Path(tempfile.gettempdir()) / "ai-migration-copilot-probe"
+    probe_cwd.mkdir(parents=True, exist_ok=True)
+    return probe_cwd.resolve()
 
 
 def _detect_gh_auth_status(timeout_seconds: float) -> str:
