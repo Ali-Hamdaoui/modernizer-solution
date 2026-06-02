@@ -69,6 +69,9 @@ def test_summary_includes_phase_statuses_and_stop_reason(tmp_path: Path) -> None
     summary = build_orchestration_summary(_state(tmp_path))
 
     assert summary["run_id"] == "run-001"
+    assert summary["mode"] == "read_only_assessment"
+    assert summary["resumed_from_mode"] == ""
+    assert summary["resume_semantics"] == ""
     assert summary["final_status"] == "FAILED"
     assert summary["current_phase"] == "assessment"
     assert summary["analysis_status"] == "PASS"
@@ -76,6 +79,7 @@ def test_summary_includes_phase_statuses_and_stop_reason(tmp_path: Path) -> None
     assert summary["assessment_status"] == "PASS"
     assert summary["orchestration_status"] == "PENDING"
     assert summary["approval_status"] == "COMPLETED"
+    assert summary["orchestration_artifacts_valid"] is False
     assert summary["stop_reason"] == "approved"
     assert summary["blockers"] == ["manual follow-up"]
     assert summary["warnings"] == ["warning"]
@@ -97,6 +101,8 @@ def test_summary_has_false_execution_claims_and_no_completion_claim(tmp_path: Pa
     assert summary["migrated_build_executed"] is False
     assert summary["migrated_tests_executed"] is False
     assert summary["final_migration_executed"] is False
+    assert summary["sandbox_migration_executed"] is False
+    assert summary["production_promotion_executed"] is False
     assert "migration_complete" not in summary
 
 
@@ -121,11 +127,86 @@ def test_summary_migrated_tests_executed_requires_test_passed(tmp_path: Path) ->
     assert summary["migrated_tests_executed"] is False
 
 
+def test_finalize_allows_zero_test_warning_completion(tmp_path: Path) -> None:
+    state = _state(tmp_path)
+    run_dir = Path(state["run_dir"])
+    sandbox = run_dir / "workspaces" / "sandbox"
+    approval = run_dir / "approval"
+    transform = run_dir / "transformation"
+    logs = run_dir / "logs"
+    test_dir = run_dir / "test" / "post_transform"
+    for directory in (Path(state["analysis_dir"]), Path(state["assessment_dir"]), sandbox, approval, transform, logs, test_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+    (Path(state["assessment_dir"]) / "assessment_report.json").write_text(
+        json.dumps({"source_stack": {}, "target_stack": {}}) + "\n",
+        encoding="utf-8",
+    )
+    (Path(state["analysis_dir"]) / "analysis_report.json").write_text("{}\n", encoding="utf-8")
+    (approval / "approval_decision.json").write_text(json.dumps({"decision": "approved"}) + "\n", encoding="utf-8")
+    (approval / "approved_plan_lock.json").write_text("{}\n", encoding="utf-8")
+    (transform / "transformation_execution_plan.yaml").write_text("recipes: []\n", encoding="utf-8")
+    (sandbox / ".migration").mkdir(parents=True, exist_ok=True)
+    (sandbox / ".migration" / "ledger.json").write_text("{}\n", encoding="utf-8")
+    (logs / "phase2_transform.log").write_text("ok\n", encoding="utf-8")
+    (test_dir / "test_summary.md").write_text("# test\n", encoding="utf-8")
+    (test_dir / "test_agent.log").write_text("ok\n", encoding="utf-8")
+    (test_dir / "test_report.json").write_text(
+        json.dumps(
+            {
+                "test_status": "NO_TESTS_FOUND",
+                "severity": "WARNING",
+                "message": "No Surefire reports found, but baseline analysis detected no tests. Build passed; treating as warning.",
+                "totals": {"tests": 0, "passed": 0, "failures": 0, "errors": 0, "skipped": 0},
+                "warnings": [
+                    "No Surefire reports found, but baseline analysis detected no tests. Build passed; treating as warning."
+                ],
+                "test_log_path": str(test_dir / "test_agent.log"),
+                "source_log_path": str(logs / "phase2_transform.log"),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    state.update(
+        {
+            "mode": "full_sandbox_migration",
+            "approval_status": "COMPLETED",
+            "approval_decision": "approved",
+            "orchestration_status": "PASS",
+            "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+            "build_status": "BUILD_PASSED_IN_SANDBOX",
+            "test_status": "NO_TESTS_FOUND",
+            "final_status": "SANDBOX_MIGRATION_COMPLETED_WITH_WARNINGS",
+            "blockers": [],
+            "errors": [],
+            "warnings": [],
+            "sandbox_path": str(sandbox),
+            "artifact_refs": {
+                "approval_decision": str(approval / "approval_decision.json"),
+                "approved_plan_lock": str(approval / "approved_plan_lock.json"),
+                "transformation_execution_plan": str(transform / "transformation_execution_plan.yaml"),
+                "migration_ledger": str(sandbox / ".migration" / "ledger.json"),
+                "phase2_log": str(logs / "phase2_transform.log"),
+                "post_transform_test_report": str(test_dir / "test_report.json"),
+                "post_transform_test_summary": str(test_dir / "test_summary.md"),
+                "post_transform_test_log": str(test_dir / "test_agent.log"),
+            },
+        }
+    )
+
+    result = finalize_orchestration_state(state)
+
+    assert result["orchestration_artifacts_valid"] is True
+    assert result["final_status"] == "SANDBOX_MIGRATION_COMPLETED_WITH_WARNINGS"
+
+
 def test_summary_includes_full_sandbox_migration_outputs(tmp_path: Path) -> None:
     state = _state(tmp_path)
     state.update(
         {
-            "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+            "mode": "full_sandbox_migration",
+            "final_status": "SANDBOX_MIGRATION_COMPLETED",
             "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
             "build_status": "BUILD_PASSED_IN_SANDBOX",
             "test_status": "TEST_PASSED",
@@ -153,7 +234,8 @@ def test_summary_includes_full_sandbox_migration_outputs(tmp_path: Path) -> None
 
     summary = build_orchestration_summary(state)
 
-    assert summary["final_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
+    assert summary["final_status"] == "SANDBOX_MIGRATION_COMPLETED"
+    assert summary["mode"] == "full_sandbox_migration"
     assert summary["orchestration_status"] == "PASS"
     assert summary["approval_status"] == "COMPLETED"
     assert summary["approval_decision"] == "approved"
@@ -183,7 +265,28 @@ def test_summary_includes_full_sandbox_migration_outputs(tmp_path: Path) -> None
     assert summary["transformation_executed"] is True
     assert summary["migrated_build_executed"] is True
     assert summary["migrated_tests_executed"] is True
-    assert summary["final_migration_executed"] is False
+    assert summary["final_migration_executed"] is True
+    assert summary["sandbox_migration_executed"] is True
+    assert summary["production_promotion_executed"] is False
+
+
+def test_summary_includes_resume_metadata_and_artifact_validation(tmp_path: Path) -> None:
+    state = _state(tmp_path)
+    state.update(
+        {
+            "mode": "full_sandbox_migration",
+            "resumed_from_mode": "read_only_assessment",
+            "resume_semantics": "approved_sandbox_migration",
+            "orchestration_artifacts_valid": True,
+        }
+    )
+
+    summary = build_orchestration_summary(state)
+
+    assert summary["mode"] == "full_sandbox_migration"
+    assert summary["resumed_from_mode"] == "read_only_assessment"
+    assert summary["resume_semantics"] == "approved_sandbox_migration"
+    assert summary["orchestration_artifacts_valid"] is True
 
 
 def test_write_orchestration_summary_uses_orchestration_dir_under_run_dir(
@@ -244,7 +347,7 @@ def test_finalize_writes_summary_with_final_report_refs(tmp_path: Path) -> None:
             "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
             "build_status": "BUILD_PASSED_IN_SANDBOX",
             "test_status": "TEST_PASSED",
-            "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+            "final_status": "SANDBOX_MIGRATION_COMPLETED",
             "sandbox_path": str(sandbox),
             "artifact_refs": {
                 "approval_decision": str(approval / "approval_decision.json"),
@@ -265,6 +368,187 @@ def test_finalize_writes_summary_with_final_report_refs(tmp_path: Path) -> None:
     assert _as_posix(result["artifact_refs"]["final_migration_report"]).endswith("final/migration_report.json")
     assert _as_posix(result["artifact_refs"]["final_migration_summary"]).endswith("final/migration_summary.md")
     assert _as_posix(summary["artifact_refs"]["final_migration_report"]).endswith("final/migration_report.json")
+    assert _as_posix(summary["artifact_refs"]["final_migration_summary"]).endswith("final/migration_summary.md")
+
+
+def test_finalize_maps_test_passed_to_sandbox_completed(tmp_path: Path) -> None:
+    state = _state(tmp_path)
+    run_dir = Path(state["run_dir"])
+    sandbox = run_dir / "workspaces" / "sandbox"
+    approval = run_dir / "approval"
+    transform = run_dir / "transformation"
+    logs = run_dir / "logs"
+    test_dir = run_dir / "test" / "post_transform"
+    for directory in (Path(state["analysis_dir"]), Path(state["assessment_dir"]), sandbox, approval, transform, logs, test_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+    (Path(state["assessment_dir"]) / "assessment_report.json").write_text(
+        json.dumps({"source_stack": {}, "target_stack": {}}) + "\n",
+        encoding="utf-8",
+    )
+    (Path(state["analysis_dir"]) / "analysis_report.json").write_text("{}\n", encoding="utf-8")
+    (approval / "approval_decision.json").write_text(json.dumps({"decision": "approved"}) + "\n", encoding="utf-8")
+    (approval / "approved_plan_lock.json").write_text("{}\n", encoding="utf-8")
+    (transform / "transformation_execution_plan.yaml").write_text("recipes: []\n", encoding="utf-8")
+    (sandbox / ".migration").mkdir(parents=True, exist_ok=True)
+    (sandbox / ".migration" / "ledger.json").write_text("{}\n", encoding="utf-8")
+    (logs / "phase2_transform.log").write_text("ok\n", encoding="utf-8")
+    (test_dir / "test_summary.md").write_text("# test\n", encoding="utf-8")
+    (test_dir / "test_agent.log").write_text("ok\n", encoding="utf-8")
+    (test_dir / "test_report.json").write_text(
+        json.dumps(
+            {
+                "test_status": "TEST_PASSED",
+                "severity": "INFO",
+                "message": "Surefire reports parsed successfully.",
+                "totals": {"tests": 1, "passed": 1, "failures": 0, "errors": 0, "skipped": 0},
+                "warnings": [],
+                "test_log_path": str(test_dir / "test_agent.log"),
+                "source_log_path": str(logs / "phase2_transform.log"),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    state.update(
+        {
+            "mode": "full_sandbox_migration",
+            "approval_status": "COMPLETED",
+            "approval_decision": "approved",
+            "orchestration_status": "PASS",
+            "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+            "build_status": "BUILD_PASSED_IN_SANDBOX",
+            "test_status": "TEST_PASSED",
+            "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+            "blockers": [],
+            "errors": [],
+            "warnings": [],
+            "sandbox_path": str(sandbox),
+            "artifact_refs": {
+                "approval_decision": str(approval / "approval_decision.json"),
+                "approved_plan_lock": str(approval / "approved_plan_lock.json"),
+                "transformation_execution_plan": str(transform / "transformation_execution_plan.yaml"),
+                "migration_ledger": str(sandbox / ".migration" / "ledger.json"),
+                "phase2_log": str(logs / "phase2_transform.log"),
+                "post_transform_test_report": str(test_dir / "test_report.json"),
+                "post_transform_test_summary": str(test_dir / "test_summary.md"),
+                "post_transform_test_log": str(test_dir / "test_agent.log"),
+            },
+        }
+    )
+
+    result = finalize_orchestration_state(state)
+
+    assert result["final_status"] == "SANDBOX_MIGRATION_COMPLETED"
+    assert result["orchestration_artifacts_valid"] is True
+
+
+def test_finalize_failed_sandbox_writes_failure_report_and_classification_refs(tmp_path: Path) -> None:
+    state = _state(tmp_path)
+    run_dir = Path(state["run_dir"])
+    sandbox = run_dir / "workspaces" / "sandbox"
+    approval = run_dir / "approval"
+    transform = run_dir / "transformation"
+    logs = run_dir / "logs"
+    test_dir = run_dir / "test" / "post_transform"
+    build_dir = run_dir / "build"
+    for directory in (Path(state["analysis_dir"]), Path(state["assessment_dir"]), sandbox, approval, transform, logs, test_dir, build_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+    (Path(state["assessment_dir"]) / "assessment_report.json").write_text(
+        json.dumps({"source_stack": {}, "target_stack": {}}) + "\n",
+        encoding="utf-8",
+    )
+    (Path(state["analysis_dir"]) / "analysis_report.json").write_text("{}\n", encoding="utf-8")
+    (approval / "approval_decision.json").write_text(json.dumps({"decision": "approved"}) + "\n", encoding="utf-8")
+    (approval / "approved_plan_lock.json").write_text("{}\n", encoding="utf-8")
+    (transform / "transformation_execution_plan.yaml").write_text("recipes: []\n", encoding="utf-8")
+    (sandbox / ".migration").mkdir(parents=True, exist_ok=True)
+    (sandbox / ".migration" / "ledger.json").write_text("{}\n", encoding="utf-8")
+    (logs / "phase2_transform.log").write_text("failed\n", encoding="utf-8")
+    (test_dir / "test_summary.md").write_text("# test\n", encoding="utf-8")
+    (test_dir / "test_agent.log").write_text("failed\n", encoding="utf-8")
+    (test_dir / "test_report.json").write_text(
+        json.dumps(
+            {
+                "test_status": "TEST_FAILED_IN_SANDBOX",
+                "severity": "ERROR",
+                "message": "Surefire reported post-transform test failures.",
+                "totals": {"tests": 2, "passed": 0, "failures": 1, "errors": 1, "skipped": 0},
+                "test_log_path": str(test_dir / "test_agent.log"),
+                "source_log_path": str(logs / "phase2_transform.log"),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    classification = build_dir / "post_transform_failure_classification.json"
+    classification.write_text(
+        json.dumps(
+            {
+                "unit_id": "spring-boot-3-5-14",
+                "failure_count": 1,
+                "category_counts": {"HTTP_STATUS_CONTRACT_DRIFT": 1},
+                "failures": [
+                    {
+                        "test_class": "com.example.CustomExceptionTranslatorTest",
+                        "test_method": "requestMethodNotSupported",
+                        "category": "HTTP_STATUS_CONTRACT_DRIFT",
+                        "symptom": "expected:<404> but was:<405>",
+                        "suggested_next_action": "Review expected HTTP status codes and exception-to-response mappings under Spring Boot 3.",
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    build_error = build_dir / "build-error-20260602-120000-test_failure.json"
+    build_error.write_text(
+        json.dumps(
+            {
+                "unit_id": "spring-boot-3-5-14",
+                "failure_classification_path": str(classification),
+                "failure_categories": {"HTTP_STATUS_CONTRACT_DRIFT": 1},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    state.update(
+        {
+            "mode": "full_sandbox_migration",
+            "approval_status": "COMPLETED",
+            "approval_decision": "approved",
+            "orchestration_status": "FAIL",
+            "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+            "test_status": "TEST_FAILED_IN_SANDBOX",
+            "final_status": "TEST_FAILED_IN_SANDBOX",
+            "sandbox_path": str(sandbox),
+            "current_unit": "spring-boot-3-5-14",
+            "artifact_refs": {
+                "approval_decision": str(approval / "approval_decision.json"),
+                "approved_plan_lock": str(approval / "approved_plan_lock.json"),
+                "transformation_execution_plan": str(transform / "transformation_execution_plan.yaml"),
+                "migration_ledger": str(sandbox / ".migration" / "ledger.json"),
+                "phase2_log": str(logs / "phase2_transform.log"),
+                "post_transform_test_report": str(test_dir / "test_report.json"),
+                "post_transform_test_summary": str(test_dir / "test_summary.md"),
+                "post_transform_test_log": str(test_dir / "test_agent.log"),
+                "build_error_contract": str(build_error),
+            },
+        }
+    )
+
+    result = finalize_orchestration_state(state)
+    summary = json.loads((Path(state["orchestration_dir"]) / "orchestration_summary.json").read_text(encoding="utf-8"))
+
+    assert result["orchestration_artifacts_valid"] is False
+    assert _as_posix(result["artifact_refs"]["final_migration_report"]).endswith("final/migration_report.json")
+    assert summary["artifact_refs"]["post_transform_failure_classification"].endswith(
+        "post_transform_failure_classification.json"
+    )
     assert _as_posix(summary["artifact_refs"]["final_migration_summary"]).endswith("final/migration_summary.md")
 
 
@@ -334,7 +618,7 @@ def test_finalize_live_copilot_report_uses_internal_resolved_cmd_path(tmp_path: 
             "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
             "build_status": "BUILD_PASSED_IN_SANDBOX",
             "test_status": "TEST_PASSED",
-            "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+            "final_status": "SANDBOX_MIGRATION_COMPLETED",
             "sandbox_path": str(sandbox),
             "transform_log_path": str(logs / "phase2_transform.log"),
             "test_report_path": str(test_dir / "test_report.json"),

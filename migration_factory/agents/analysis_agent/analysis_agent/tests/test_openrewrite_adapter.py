@@ -16,7 +16,7 @@ class DummyContext:
         return str(self.output_dir / name)
 
 
-def _write_catalog(modernized: Path, goal="dryRun"):
+def _write_catalog(modernized: Path, goal="dryRun", source_jdk_home_env: str | None = None):
     (modernized / ".migration").mkdir(parents=True, exist_ok=True)
     payload = {
         "openrewrite.plugin": "org.openrewrite.maven:rewrite-maven-plugin:5.40.0",
@@ -24,6 +24,8 @@ def _write_catalog(modernized: Path, goal="dryRun"):
         "openrewrite.active_recipes": "org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_0",
         "openrewrite.dry_run": goal,
     }
+    if source_jdk_home_env:
+        payload["source_jdk_home_env"] = source_jdk_home_env
     (modernized / ".migration" / "ai_hub_profile.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
@@ -82,6 +84,7 @@ def test_success_captures_patch_and_no_pom_write(monkeypatch, tmp_path):
     assert preview["exit_code"] == 0
     assert preview["patch_path"] == str(patch)
     assert preview["patch_produced"] is True
+    assert preview["failure_category"] is None
     assert "ok" in preview["stdout_tail"]
     plan = json.loads((output / "rewrite_plugin_plan.json").read_text(encoding="utf-8"))
     assert plan["schema_version"] == "1.0.0"
@@ -186,7 +189,9 @@ def test_dryrun_failure_records_stdout_stderr_diagnostic(monkeypatch, tmp_path):
     result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized))
 
     assert result["status"] == "FAILED"
+    assert result["failure_category"] == "rewrite_preview_failed"
     diagnostic = result["failure_diagnostic"]
+    assert diagnostic["classification"] == "rewrite_preview_failed"
     assert diagnostic["exit_code"] == 1
     assert diagnostic["command"]
     assert diagnostic["cwd"] == str(legacy)
@@ -195,6 +200,7 @@ def test_dryrun_failure_records_stdout_stderr_diagnostic(monkeypatch, tmp_path):
 
     impact = json.loads((output / "rewrite_impact_summary.json").read_text(encoding="utf-8"))
     assert impact["status"] == "FAIL"
+    assert impact["failure_category"] == "rewrite_preview_failed"
     assert impact["failure_diagnostic"]["exit_code"] == 1
     assert any("stdout detail" in reason for reason in impact["blocked_reasons"])
     assert any("stderr detail" in reason for reason in impact["blocked_reasons"])
@@ -232,3 +238,93 @@ def test_preview_only_enforcer_skip_warns_and_uses_analysis_command(monkeypatch,
     assert impact["status"] == "PASS"
     assert impact["overall_impact"] != "BLOCKED"
     assert any("final sandbox validation" in warning for warning in impact["warnings"])
+
+
+def test_profile_source_jdk_env_sets_preview_java_home(monkeypatch, tmp_path):
+    legacy = tmp_path / "legacy"
+    output = tmp_path / "out"
+    modernized = tmp_path / "modernized"
+    java_home = tmp_path / "jdk11"
+    (java_home / "bin").mkdir(parents=True)
+    (java_home / "bin" / "java.exe").write_text("", encoding="utf-8")
+    legacy.mkdir()
+    output.mkdir()
+    modernized.mkdir()
+    _write_catalog(modernized, source_jdk_home_env="JAVA_HOME_11")
+    monkeypatch.setenv("JAVA_HOME_11", str(java_home))
+
+    captured = {}
+
+    def _run(cmd, *args, **kwargs):
+        if str(cmd[0]).endswith("java.exe") and len(cmd) > 1 and cmd[1] == "-version":
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr='openjdk version "11.0.31"\n')
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("subprocess.run", _run)
+
+    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized))
+
+    assert result["status"] == "USED"
+    assert result["java_home_env_used"] == "JAVA_HOME_11"
+    assert result["java_home_used"] == str(java_home)
+    assert result["java_version_used"] == "11.0.31"
+    assert captured["env"]["JAVA_HOME"] == str(java_home)
+    assert str(java_home / "bin") in captured["env"]["PATH"]
+    preview = json.loads((output / "rewrite_preview.json").read_text(encoding="utf-8"))
+    assert preview["jdk_diagnostic"]["status"] == "SOURCE_PROFILE_JDK"
+
+
+def test_missing_source_jdk_env_falls_back_with_warning(monkeypatch, tmp_path):
+    legacy = tmp_path / "legacy"
+    output = tmp_path / "out"
+    modernized = tmp_path / "modernized"
+    java_home = tmp_path / "current-jdk"
+    (java_home / "bin").mkdir(parents=True)
+    (java_home / "bin" / "java.exe").write_text("", encoding="utf-8")
+    legacy.mkdir()
+    output.mkdir()
+    modernized.mkdir()
+    _write_catalog(modernized)
+
+    monkeypatch.setenv("JAVA_HOME", str(java_home))
+
+    def _run(cmd, *args, **kwargs):
+        if str(cmd[0]).endswith("java.exe") and len(cmd) > 1 and cmd[1] == "-version":
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr='openjdk version "17.0.19"\n')
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("subprocess.run", _run)
+
+    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized))
+
+    assert result["status"] == "USED"
+    assert result["java_home_env_used"] == "JAVA_HOME"
+    assert result["java_home_used"] == str(java_home)
+    assert result["java_version_used"] == "17.0.19"
+    assert any("source JDK not configured" in warning for warning in result["warnings"])
+    preview = json.loads((output / "rewrite_preview.json").read_text(encoding="utf-8"))
+    assert preview["jdk_diagnostic"]["status"] == "FALLBACK_CURRENT_PROCESS"
+
+
+def test_invalid_source_jdk_env_gives_structured_diagnostic(monkeypatch, tmp_path):
+    legacy = tmp_path / "legacy"
+    output = tmp_path / "out"
+    modernized = tmp_path / "modernized"
+    legacy.mkdir()
+    output.mkdir()
+    modernized.mkdir()
+    _write_catalog(modernized, source_jdk_home_env="JAVA_HOME_11")
+    monkeypatch.setenv("JAVA_HOME_11", str(tmp_path / "missing-jdk"))
+
+    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized))
+
+    assert result["status"] == "FAILED"
+    assert result["failure_category"] == "rewrite_preview_failed"
+    assert result["jdk_diagnostic"]["status"] == "INVALID_SOURCE_JDK_ENV"
+    assert "JAVA_HOME_11" in result["failure_diagnostic"]["error"]
+    assert result["failure_diagnostic"]["classification"] == "rewrite_preview_failed"
+    impact = json.loads((output / "rewrite_impact_summary.json").read_text(encoding="utf-8"))
+    assert impact["failure_category"] == "rewrite_preview_failed"
+    assert impact["jdk_diagnostic"]["status"] == "INVALID_SOURCE_JDK_ENV"

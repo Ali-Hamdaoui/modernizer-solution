@@ -138,7 +138,20 @@ def planning_node(state: MigrationState) -> MigrationState:
             "planning_assist_warnings": compatibility.warnings,
         }
 
-    risk_result = classify_planning_risks(loaded_artifacts, compatibility.source_stack)
+    units = build_migration_units(
+        loaded_profile.profile,
+        selected_route_id=compatibility.selected_route_id,
+        selected_hops=compatibility.selected_hops,
+    )
+    risk_result = classify_planning_risks(
+        loaded_artifacts,
+        compatibility.source_stack,
+        target_stack=compatibility.target_stack,
+        selected_route_id=compatibility.selected_route_id,
+        route_strategy=compatibility.route_strategy,
+        selected_hops=compatibility.selected_hops,
+        planned_unit_ids=tuple(unit.id for unit in units),
+    )
     risk_messages = [f"[{risk.severity}] {risk.code}: {risk.message}" for risk in risk_result.risks]
     blocker_messages = [
         f"{risk.code}: {risk.message}"
@@ -152,8 +165,9 @@ def planning_node(state: MigrationState) -> MigrationState:
     ]
     deterministic_warnings = [*compatibility.warnings, *risk_warning_messages]
 
-    units = build_migration_units(loaded_profile.profile)
     profile_governance = _profile_governance(loaded_profile.profile)
+    tooling_versions = _profile_tooling_versions(loaded_profile.profile)
+    framework_versions = _profile_framework_versions(loaded_profile.profile)
     write_migration_plan(
         modernized_app_path=state.get("modernized_app_path", ""),
         payload=MigrationPlanPayload(
@@ -169,6 +183,14 @@ def planning_node(state: MigrationState) -> MigrationState:
             risk_level=profile_governance.get("risk_level"),
             production_allowed=profile_governance.get("production_allowed"),
             fallback_profile=profile_governance.get("fallback_profile"),
+            selected_route_id=compatibility.selected_route_id,
+            route_strategy=compatibility.route_strategy,
+            route_risk_level=compatibility.route_risk_level,
+            route_production_allowed=compatibility.route_production_allowed,
+            recommended_intermediate=compatibility.recommended_intermediate,
+            selected_hops=compatibility.selected_hops,
+            tooling_versions=tooling_versions,
+            framework_versions=framework_versions,
         ),
     )
     write_migration_units(
@@ -188,6 +210,7 @@ def planning_node(state: MigrationState) -> MigrationState:
             profile=profile_id,
             summary=deterministic_approval_summary,
             units=units,
+            risks=tuple(risk_messages),
             blockers=tuple(blocker_messages),
             warnings=tuple(deterministic_warnings),
         ),
@@ -216,6 +239,8 @@ def planning_node(state: MigrationState) -> MigrationState:
             "tools": list(unit.tools),
             "validation": list(unit.validation),
             "required": unit.required,
+            "java_home_env": unit.java_home_env,
+            "hop_id": unit.hop_id,
         }
         for unit in units
     ]
@@ -244,6 +269,8 @@ def planning_node(state: MigrationState) -> MigrationState:
                 "warnings": list(deterministic_warnings),
                 "migration_units": unit_payload,
                 "approval_summary": deterministic_approval_summary,
+                "tooling_versions": tooling_versions,
+                "framework_versions": framework_versions,
             },
             allowed_fields=["warnings", "approval_summary", "operator_notes", "risks"],
             forbidden_fields=[
@@ -347,3 +374,29 @@ def _profile_governance(profile: dict) -> dict:
         ),
         "fallback_profile": profile.get("fallback_profile") or governance.get("fallback_profile"),
     }
+
+
+def _profile_tooling_versions(profile: dict) -> dict[str, str]:
+    payload = profile.get("tooling_versions")
+    if not isinstance(payload, dict):
+        return {}
+    result: dict[str, str] = {}
+    for key, value in payload.items():
+        key_text = str(key).strip()
+        value_text = str(value or "").strip()
+        if key_text and value_text:
+            result[key_text] = value_text
+    return result
+
+
+def _profile_framework_versions(profile: dict) -> dict[str, str]:
+    payload = profile.get("framework_versions")
+    if not isinstance(payload, dict):
+        return {}
+    result: dict[str, str] = {}
+    for key, value in payload.items():
+        key_text = str(key).strip()
+        value_text = str(value or "").strip()
+        if key_text and value_text:
+            result[key_text] = value_text
+    return result

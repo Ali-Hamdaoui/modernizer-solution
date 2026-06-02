@@ -82,13 +82,28 @@ def test_full_analysis_flow_generates_artifacts_without_source_writes(monkeypatc
 
     assert result.status == "COMPLETED"
 
-    required = ["analysis_report", "dependency_graph", "test_inventory", "analysis_summary"]
+    required = ["analysis_report", "dependency_graph", "internal_dependencies", "test_inventory", "analysis_summary"]
     for key in required:
         assert Path(result.artifact_paths[key]).exists(), f"missing {key}"
 
     optional = ["rewrite_preview", "rewrite_plugin_plan", "rewrite_impact_summary"]
     for key in optional:
         assert Path(result.artifact_paths[key]).exists(), f"missing optional {key}"
+
+    report = json.loads(Path(result.artifact_paths["analysis_report"]).read_text(encoding="utf-8"))
+    assert report["project_kind"] == "shared_library"
+    assert report["has_spring_boot_main"] is False
+    assert report["has_rest_contracts"] is False
+    assert report["has_juneau_contracts"] is False
+    assert report["packaging"] == "jar"
+    assert report["internal_dependencies_count"] == 0
+    assert report["internal_dependencies"] == []
+
+    internal_dependencies = json.loads(Path(result.artifact_paths["internal_dependencies"]).read_text(encoding="utf-8"))
+    assert internal_dependencies == {
+        "internal_dependencies_count": 0,
+        "internal_dependencies": [],
+    }
 
     after_hash = _hash_tree(legacy)
     assert after_hash == before_hash

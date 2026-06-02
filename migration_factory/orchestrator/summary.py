@@ -39,12 +39,16 @@ def build_orchestration_summary(state: MigrationState) -> dict:
     execution_claims = _execution_claims(state)
     return {
         "run_id": state.get("run_id", ""),
+        "mode": state.get("mode", ""),
+        "resumed_from_mode": state.get("resumed_from_mode", ""),
+        "resume_semantics": state.get("resume_semantics", ""),
         "final_status": _final_status(state),
         "current_phase": state.get("current_phase", state.get("current_unit", "")),
         "analysis_status": state.get("analysis_status", ""),
         "planning_status": state.get("planning_status", ""),
         "assessment_status": state.get("assessment_status", ""),
         "orchestration_status": state.get("orchestration_status", ""),
+        "orchestration_artifacts_valid": state.get("orchestration_artifacts_valid"),
         "approval_status": state.get("approval_status", ""),
         "approval_decision": state.get("approval_decision"),
         "approved_by": state.get("approved_by", ""),
@@ -95,9 +99,36 @@ def finalize_orchestration_state(
 
     timing_refs = write_timing_artifacts(result)
     result["artifact_refs"] = {**result["artifact_refs"], **timing_refs}
+    result = _normalize_completed_sandbox_state(result)  # type: ignore[assignment]
+    result = _enrich_failure_artifact_refs(result)  # type: ignore[assignment]
 
     if not _is_successful_full_sandbox_migration(result):  # type: ignore[arg-type]
         result["orchestration_artifacts_valid"] = False
+        if _is_reportable_failed_sandbox_migration(result):  # type: ignore[arg-type]
+            summary_writer(result)  # type: ignore[arg-type]
+            final_report_started = time.monotonic()
+            final_report = generate_final_migration_report(result)
+            record_phase_duration(result, phase="final_report", duration_seconds=time.monotonic() - final_report_started)
+            timing_refs = write_timing_artifacts(result)
+            result["artifact_refs"] = {**dict(result.get("artifact_refs", {}) or {}), **timing_refs}
+            if final_report.blockers:
+                result["blockers"] = [
+                    *list(result.get("blockers", []) or []),
+                    *final_report.blockers,
+                ]
+            if final_report.warnings:
+                result["warnings"] = [
+                    *list(result.get("warnings", []) or []),
+                    *final_report.warnings,
+                ]
+            if final_report.artifact_refs:
+                result["artifact_refs"] = {
+                    **dict(result.get("artifact_refs", {}) or {}),
+                    **final_report.artifact_refs,
+                }
+            result = _enrich_failure_artifact_refs(result)  # type: ignore[assignment]
+            summary_writer(result)  # type: ignore[arg-type]
+            return result  # type: ignore[return-value]
         summary_writer(result)  # type: ignore[arg-type]
         return result  # type: ignore[return-value]
 
@@ -287,6 +318,12 @@ def _final_status(state: MigrationState) -> str:
 
 
 def _is_successful_full_sandbox_migration(state: MigrationState) -> bool:
+    accepted_test_statuses = {"TEST_PASSED", "NO_TESTS_FOUND", "NO_TESTS_EXECUTED"}
+    accepted_final_statuses = {
+        "TRANSFORM_APPLIED_IN_SANDBOX",
+        "SANDBOX_MIGRATION_COMPLETED",
+        "SANDBOX_MIGRATION_COMPLETED_WITH_WARNINGS",
+    }
     return (
         state.get("mode") == FULL_SANDBOX_MIGRATION_MODE
         and state.get("approval_status") == "COMPLETED"
@@ -294,8 +331,21 @@ def _is_successful_full_sandbox_migration(state: MigrationState) -> bool:
         and state.get("orchestration_status") == "PASS"
         and state.get("transform_status") == "TRANSFORM_APPLIED_IN_SANDBOX"
         and state.get("build_status") == "BUILD_PASSED_IN_SANDBOX"
-        and state.get("test_status") == "TEST_PASSED"
-        and _final_status(state) == "TRANSFORM_APPLIED_IN_SANDBOX"
+        and state.get("test_status") in accepted_test_statuses
+        and _final_status(state) in accepted_final_statuses
+    )
+
+
+def _is_reportable_failed_sandbox_migration(state: MigrationState) -> bool:
+    return (
+        state.get("mode") == FULL_SANDBOX_MIGRATION_MODE
+        and state.get("approval_status") == "COMPLETED"
+        and state.get("approval_decision") == "approved"
+        and state.get("orchestration_status") == "FAIL"
+        and any(
+            str(state.get(key) or "")
+            for key in ("transform_status", "build_status", "test_status")
+        )
     )
 
 
@@ -308,7 +358,73 @@ def _execution_claims(state: MigrationState) -> dict[str, bool]:
         claims["migrated_build_executed"] = True
     if state.get("test_status") == "TEST_PASSED":
         claims["migrated_tests_executed"] = True
+    claims["sandbox_migration_executed"] = claims["transformation_executed"] and claims["migrated_build_executed"]
+    claims["production_promotion_executed"] = False
+    claims["final_migration_executed"] = claims["sandbox_migration_executed"]
     return claims
+
+
+def _enrich_failure_artifact_refs(state: MigrationState) -> MigrationState:
+    result = dict(state)
+    run_dir = Path(str(result.get("run_dir") or ""))
+    if not run_dir:
+        return result  # type: ignore[return-value]
+    build_dir = run_dir / "build"
+    artifact_refs = dict(result.get("artifact_refs", {}) or {})
+    build_error_contract = artifact_refs.get("build_error_contract")
+    if not build_error_contract:
+        latest = _latest_build_error_contract(build_dir)
+        if latest is not None:
+            artifact_refs["build_error_contract"] = str(latest)
+            build_error_contract = str(latest)
+    if build_error_contract and not artifact_refs.get("post_transform_failure_classification"):
+        classification = _failure_classification_ref(Path(str(build_error_contract)))
+        if classification:
+            artifact_refs["post_transform_failure_classification"] = classification
+    result["artifact_refs"] = artifact_refs
+    return result  # type: ignore[return-value]
+
+
+def _latest_build_error_contract(build_dir: Path) -> Path | None:
+    candidates = sorted(build_dir.glob("build-error-*.json"))
+    if not candidates:
+        return None
+    return candidates[-1]
+
+
+def _failure_classification_ref(build_error_contract: Path) -> str:
+    try:
+        payload = json.loads(build_error_contract.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    ref = str(payload.get("failure_classification_path") or "").strip()
+    if not ref:
+        return ""
+    return ref
+
+
+def _normalize_completed_sandbox_state(state: MigrationState) -> MigrationState:
+    result = dict(state)
+    if result.get("mode") != FULL_SANDBOX_MIGRATION_MODE:
+        return result  # type: ignore[return-value]
+    if result.get("approval_status") != "COMPLETED" or result.get("approval_decision") != "approved":
+        return result  # type: ignore[return-value]
+    if result.get("orchestration_status") != "PASS":
+        return result  # type: ignore[return-value]
+    if result.get("transform_status") != "TRANSFORM_APPLIED_IN_SANDBOX":
+        return result  # type: ignore[return-value]
+    if result.get("build_status") != "BUILD_PASSED_IN_SANDBOX":
+        return result  # type: ignore[return-value]
+    test_status = str(result.get("test_status") or "")
+    if test_status == "TEST_PASSED":
+        result["final_status"] = "SANDBOX_MIGRATION_COMPLETED"
+        result["stop_reason"] = result.get("stop_reason") or "Sandbox migration completed."
+    elif test_status in {"NO_TESTS_FOUND", "NO_TESTS_EXECUTED"}:
+        result["final_status"] = "SANDBOX_MIGRATION_COMPLETED_WITH_WARNINGS"
+        result["stop_reason"] = result.get("stop_reason") or "Sandbox migration completed with warnings."
+    return result  # type: ignore[return-value]
 
 
 def _to_json_safe(value: Any) -> Any:

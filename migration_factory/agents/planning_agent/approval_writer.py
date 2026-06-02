@@ -18,6 +18,7 @@ class ApprovalRequestPayload:
     profile: str
     summary: str
     units: tuple[MigrationUnit, ...]
+    risks: tuple[str, ...]
     blockers: tuple[str, ...]
     warnings: tuple[str, ...]
 
@@ -50,6 +51,7 @@ def _build_payload(payload: ApprovalRequestPayload) -> dict[str, object]:
         "recommended_decision": None,
         "summary": payload.summary,
         "units_to_execute": [unit.id for unit in payload.units],
+        "risks": list(payload.risks),
         "blockers": list(payload.blockers),
         "warnings": list(payload.warnings),
         "artifact_refs": {

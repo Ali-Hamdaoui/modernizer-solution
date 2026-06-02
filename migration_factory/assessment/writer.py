@@ -125,6 +125,7 @@ def _build_report(
             *_as_string_list(migration_plan.get("warnings")),
         ]
     )
+    planning_risks = _as_string_list(migration_plan.get("risks"))
     if read_only and read_only.get("source_modified") is True:
         blockers = _dedupe_strings([*blockers, "Analysis read-only verification failed."])
 
@@ -157,6 +158,7 @@ def _build_report(
             "executable": bool(migration_plan.get("executable")),
             "artifact_ref": "../planning/migration_plan.yaml",
         },
+        "planning_risks": planning_risks,
         "openrewrite_dry_run": _openrewrite_section(rewrite_impact),
         "migration_units": {
             "count": len(units),
@@ -244,14 +246,16 @@ def _overall_risk(
 ) -> str:
     if blockers:
         return "BLOCKED"
-    impact = rewrite_impact.get("overall_impact") if rewrite_impact else None
-    if impact in {"LOW", "MEDIUM", "HIGH"}:
-        return str(impact)
     risks = _as_string_list(migration_plan.get("risks"))
     if any("[BLOCKER]" in risk for risk in risks):
         return "BLOCKED"
+    if any("[HIGH]" in risk for risk in risks):
+        return "HIGH"
     if any("[WARNING]" in risk for risk in risks):
         return "MEDIUM"
+    impact = rewrite_impact.get("overall_impact") if rewrite_impact else None
+    if impact in {"LOW", "MEDIUM", "HIGH"}:
+        return str(impact)
     return "LOW" if risks else "UNKNOWN"
 
 

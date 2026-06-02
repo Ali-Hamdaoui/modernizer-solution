@@ -3,11 +3,21 @@
   "$id": "migration-profile.schema.json",
   "title": "Migration Profile",
   "type": "object",
-  "required": ["id", "source", "target", "rules", "requirements", "openrewrite", "policies"],
+  "required": ["id", "rules", "requirements", "openrewrite", "policies"],
   "properties": {
     "id": { "type": "string" },
     "schema": { "type": "string" },
     "description": { "type": "string" },
+    "source_jdk_home_env": { "type": "string" },
+    "target_jdk_home_env": { "type": "string" },
+    "tooling_versions": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "framework_versions": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
     "source": {
       "type": "object",
       "required": ["java", "spring_boot", "build"],
@@ -55,6 +65,143 @@
         "spring_boot": { "type": "string" },
         "spring_framework": { "type": "string" },
         "build": { "type": "string" }
+      }
+    },
+    "routes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": { "type": "string" },
+          "preferred": { "type": "boolean" },
+          "source": {
+            "type": "object",
+            "properties": {
+              "java": {
+                "type": "object",
+                "properties": {
+                  "allowed_versions": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "minItems": 1
+                  }
+                }
+              },
+              "spring_boot": {
+                "type": "object",
+                "properties": {
+                  "allowed_version_prefixes": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "minItems": 1
+                  }
+                }
+              },
+              "build": {
+                "type": "object",
+                "properties": {
+                  "allowed_tools": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "minItems": 1
+                  }
+                }
+              }
+            }
+          },
+          "target": {
+            "type": "object",
+            "required": ["java", "spring_boot", "build"],
+            "properties": {
+              "java": { "type": "string" },
+              "spring_boot": { "type": "string" },
+              "spring_framework": { "type": "string" },
+              "build": { "type": "string" }
+            }
+          },
+          "strategy": { "type": "string" },
+          "risk_level": { "type": "string" },
+          "production_allowed": { "type": "boolean" },
+          "supported": { "type": "boolean" },
+          "recommended_intermediate": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "hops": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["id", "source", "target"],
+              "properties": {
+                "id": { "type": "string" },
+                "source": {
+                  "type": "object",
+                  "properties": {
+                    "java": {
+                      "type": "object",
+                      "properties": {
+                        "allowed_versions": {
+                          "type": "array",
+                          "items": { "type": "string" },
+                          "minItems": 1
+                        }
+                      }
+                    },
+                    "spring_boot": {
+                      "type": "object",
+                      "properties": {
+                        "allowed_version_prefixes": {
+                          "type": "array",
+                          "items": { "type": "string" },
+                          "minItems": 1
+                        }
+                      }
+                    },
+                    "build": {
+                      "type": "object",
+                      "properties": {
+                        "allowed_tools": {
+                          "type": "array",
+                          "items": { "type": "string" },
+                          "minItems": 1
+                        }
+                      }
+                    }
+                  }
+                },
+                "target": {
+                  "type": "object",
+                  "required": ["java", "spring_boot", "build"],
+                  "properties": {
+                    "java": { "type": "string" },
+                    "spring_boot": { "type": "string" },
+                    "spring_framework": { "type": "string" },
+                    "build": { "type": "string" }
+                  }
+                },
+                "validation": {
+                  "type": "object",
+                  "properties": {
+                    "build_required": { "type": "boolean" },
+                    "tests_required": { "type": "boolean" }
+                  }
+                },
+                "approval": {
+                  "type": "object",
+                  "properties": {
+                    "required": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "anyOf": [
+          { "required": ["source", "target"] },
+          { "required": ["hops"] }
+        ]
       }
     },
     "requirements": {

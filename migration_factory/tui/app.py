@@ -81,7 +81,7 @@ _MONITOR_STATUS_KEYS = (
 _PRE_APPROVAL_STATUS_KEYS = ("analysis_status", "planning_status", "assessment_status")
 _FAIL_VALUES = {"FAIL", "FAILED", "ERROR"}
 _BUILD_PASS_VALUES = {"BUILD_PASSED_IN_SANDBOX", "PASS", "PASSED"}
-_TEST_PASS_VALUES = {"TEST_PASSED", "PASS", "PASSED"}
+_TEST_PASS_VALUES = {"TEST_PASSED", "NO_TESTS_FOUND", "NO_TESTS_EXECUTED", "PASS", "PASSED"}
 _TRUE_SUCCESS_VALUES = {
     "PASS",
     "PASSED",
@@ -95,6 +95,8 @@ _COMPLETED_STATUSES = {
     "COMPLETED",
     "DONE",
     "READ_ONLY_ASSESSMENT_COMPLETE",
+    "SANDBOX_MIGRATION_COMPLETED",
+    "SANDBOX_MIGRATION_COMPLETED_WITH_WARNINGS",
 }
 _APPROVAL_DECISIONS = ("approved", "rejected", "replan_required")
 _PIPELINE_PHASES = (
@@ -1463,7 +1465,7 @@ def build_pipeline_rows(vm: RunViewModel) -> list[PipelineRow]:
         states["test_validation"] = "SKIP"
     elif _test_counts_failed(vm.summary) or _test_counts_failed(vm.raw_backend) or _is_failure_status(test_upper):
         states["test_validation"] = "FAIL"
-    elif test_upper == "TEST_PASSED":
+    elif test_upper in {"TEST_PASSED", "NO_TESTS_FOUND", "NO_TESTS_EXECUTED"}:
         states["test_validation"] = "PASS"
     elif states["build_validation"] == "PASS" and (vm.resume_worker_active or vm.status == "running"):
         states["test_validation"] = "RUN"
@@ -1838,16 +1840,20 @@ def _summary_success(summary: dict[str, str], status: str = "") -> bool:
     full_sandbox_passed = (
         summary.get("transform_status", "").upper() == "TRANSFORM_APPLIED_IN_SANDBOX"
         and summary.get("build_status", "").upper() == "BUILD_PASSED_IN_SANDBOX"
-        and summary.get("test_status", "").upper() == "TEST_PASSED"
+        and summary.get("test_status", "").upper() in {"TEST_PASSED", "NO_TESTS_FOUND", "NO_TESTS_EXECUTED"}
         and not _summary_failed(summary)
     )
     if full_sandbox_passed:
         return True
-    if final_status == "TRANSFORM_APPLIED_IN_SANDBOX":
+    if final_status in {
+        "TRANSFORM_APPLIED_IN_SANDBOX",
+        "SANDBOX_MIGRATION_COMPLETED",
+        "SANDBOX_MIGRATION_COMPLETED_WITH_WARNINGS",
+    }:
         return (
             summary.get("transform_status", "").upper() == "TRANSFORM_APPLIED_IN_SANDBOX"
             and summary.get("build_status", "").upper() == "BUILD_PASSED_IN_SANDBOX"
-            and summary.get("test_status", "").upper() == "TEST_PASSED"
+            and summary.get("test_status", "").upper() in {"TEST_PASSED", "NO_TESTS_FOUND", "NO_TESTS_EXECUTED"}
             and not _summary_failed(summary)
         )
     if final_status in _COMPLETED_STATUSES:

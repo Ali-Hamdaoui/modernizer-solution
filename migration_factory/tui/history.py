@@ -309,7 +309,11 @@ def _is_successful_full_sandbox(summary: dict[str, Any]) -> bool:
         and _string_value(summary.get("orchestration_status")) == "PASS"
         and _string_value(summary.get("approval_status")) == "COMPLETED"
         and _string_value(summary.get("approval_decision")) == "approved"
-        and _string_value(summary.get("final_status")) == "TRANSFORM_APPLIED_IN_SANDBOX"
+        and _string_value(summary.get("final_status")) in {
+            "TRANSFORM_APPLIED_IN_SANDBOX",
+            "SANDBOX_MIGRATION_COMPLETED",
+            "SANDBOX_MIGRATION_COMPLETED_WITH_WARNINGS",
+        }
     )
 
 

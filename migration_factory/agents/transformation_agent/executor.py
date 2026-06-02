@@ -22,7 +22,12 @@ class CommandResult:
         return self.exit_code == 0
 
 
-def run_command(command: str, cwd: Path, stream_output: bool = True) -> CommandResult:
+def run_command(
+    command: str,
+    cwd: Path,
+    stream_output: bool = True,
+    env: dict[str, str] | None = None,
+) -> CommandResult:
     started = time.monotonic()
     args = _split_command(command)
     args = _resolve_executable(args)
@@ -34,6 +39,7 @@ def run_command(command: str, cwd: Path, stream_output: bool = True) -> CommandR
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=env,
         )
     except FileNotFoundError as exc:
         return CommandResult(

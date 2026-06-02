@@ -42,6 +42,12 @@ def run_analysis_agent(context: MigrationContext) -> AnalysisResult:
     target_stack = load_profile_target_stack(context.ai_hub_path, context.profile)
     maven_results = _scan_root_pom_with_target(legacy_pom, target_stack)
     run_dependency_tree(context)
+    internal_dependencies_payload = {
+        "internal_dependencies_count": maven_results.get("internal_dependencies_count", 0),
+        "internal_dependencies": maven_results.get("internal_dependencies", []),
+    }
+    with open(context.get_output_path("internal_dependencies.json"), "w", encoding="utf-8") as handle:
+        json.dump(internal_dependencies_payload, handle, indent=4)
 
     import_results = scan_java_imports(legacy_root)
     analysis_facts = {
@@ -82,6 +88,7 @@ def run_analysis_agent(context: MigrationContext) -> AnalysisResult:
         "test_inventory": context.get_output_path("test_inventory.json"),
         "analysis_summary": summary_path,
         "config_inventory": context.get_output_path("config_inventory.json"),
+        "internal_dependencies": context.get_output_path("internal_dependencies.json"),
         "rewrite_preview": context.get_output_path("rewrite_preview.json"),
         "rewrite_patch": context.get_output_path("rewrite_dry_run.patch"),
         "rewrite_plugin_plan": context.get_output_path("rewrite_plugin_plan.json"),

@@ -7,6 +7,11 @@ import xml.etree.ElementTree as ET
 
 
 LEGACY_JAVA8_ENFORCER_RANGES = {"[1.8,1.9)", "[8,9)", "1.8", "8"}
+SPRING_DATA_SORT_IMPORT = "import org.springframework.data.domain.Sort;"
+SPRING_DATA_SORT_CONSTRUCTOR_PATTERN = re.compile(
+    r"new\s+(?P<qualifier>(?:org\.springframework\.data\.domain\.)?Sort)\s*"
+    r"\(\s*(?P<direction>[^,\n]+?)\s*,\s*(?P<property>[^)\n]+?)\s*\)"
+)
 
 
 @dataclass(frozen=True)
@@ -31,6 +36,22 @@ class SourcePatch:
     file: str
     patch: str
     unit: str
+    old_signature: str | None = None
+    new_signature: str | None = None
+
+
+SPRING6_HTTPSTATUS_OVERRIDE_PATTERN = re.compile(
+    r"(?P<prefix>@Override\s+(?:public|protected)\s+[^{;]+?\bhandle[A-Za-z0-9_]*\s*\([^)]*?)"
+    r"(?P<type>\bHttpStatus\b)"
+    r"(?P<suffix>[^)]*\))",
+    re.DOTALL,
+)
+SPRING6_CONSTRAINT_OVERRIDE_PATTERN = re.compile(
+    r"(?P<signature>@Override\s+(?:public|protected)\s+[^{;]+?\bhandleConstraintViolation\s*"
+    r"\(\s*final\s+)(?P<type>(?:jakarta|javax)\.validation\.ConstraintViolationException|ConstraintViolationException)"
+    r"(?P<suffix>\s+exception\s*,\s*final\s+NativeWebRequest\s+request\s*\))",
+    re.DOTALL,
+)
 
 
 def patch_maven_enforcer_java_version(
@@ -271,6 +292,66 @@ def patch_quality_rules_allow_jakarta(
     ]
 
 
+def patch_spring_data_sort_constructor_usage(
+    project_path: Path,
+    *,
+    unit_id: str,
+) -> list[SourcePatch]:
+    patches: list[SourcePatch] = []
+    for path in sorted(project_path.rglob("*.java")):
+        try:
+            relative_path = path.relative_to(project_path)
+        except ValueError:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if SPRING_DATA_SORT_IMPORT not in text and "org.springframework.data.domain.Sort" not in text:
+            continue
+        updated = _replace_spring_data_sort_constructor_usage(text)
+        if updated == text:
+            continue
+        path.write_text(updated, encoding="utf-8")
+        patches.append(
+            SourcePatch(
+                file=str(relative_path),
+                patch="spring_data_sort_by_factory_method",
+                unit=unit_id,
+            )
+        )
+    return patches
+
+
+def patch_spring6_exception_handler_override_signatures(
+    project_path: Path,
+    *,
+    unit_id: str,
+) -> list[SourcePatch]:
+    patches: list[SourcePatch] = []
+    for path in sorted(project_path.rglob("*.java")):
+        try:
+            relative_path = path.relative_to(project_path)
+        except ValueError:
+            continue
+        text = path.read_text(encoding="utf-8")
+        updated = text
+        local_patches: list[SourcePatch] = []
+
+        if "@Override" in updated and "handleConstraintViolation" in updated:
+            updated, patch = _patch_constraint_violation_override(updated, relative_path, unit_id)
+            if patch is not None:
+                local_patches.append(patch)
+
+        if "@Override" in updated and "HttpStatus" in updated and "handle" in updated:
+            updated, patch = _patch_httpstatus_override(updated, relative_path, unit_id)
+            if patch is not None:
+                local_patches.append(patch)
+
+        if updated == text:
+            continue
+        path.write_text(updated, encoding="utf-8")
+        patches.extend(local_patches)
+    return patches
+
+
 def _find_source_file(project_path: Path, filename: str) -> Path:
     source_root = project_path / "src" / "main" / "java"
     if not source_root.is_dir():
@@ -301,3 +382,94 @@ def _tag(namespace: str, name: str) -> str:
     if namespace:
         return f"{{{namespace}}}{name}"
     return name
+
+
+def _replace_spring_data_sort_constructor_usage(text: str) -> str:
+    def _replacement(match: re.Match[str]) -> str:
+        qualifier = match.group("qualifier")
+        direction = match.group("direction").strip()
+        property_value = match.group("property").strip()
+        factory_target = (
+            "org.springframework.data.domain.Sort"
+            if qualifier.startswith("org.springframework.data.domain.Sort")
+            else "Sort"
+        )
+        return f"{factory_target}.by({direction}, {property_value})"
+
+    return SPRING_DATA_SORT_CONSTRUCTOR_PATTERN.sub(_replacement, text)
+
+
+def _patch_constraint_violation_override(
+    text: str,
+    relative_path: Path,
+    unit_id: str,
+) -> tuple[str, SourcePatch | None]:
+    match = SPRING6_CONSTRAINT_OVERRIDE_PATTERN.search(text)
+    if match is None:
+        return text, None
+    old_signature = " ".join(match.group("signature").strip().split()) + match.group("type") + match.group("suffix")
+    replacement_type = "javax.validation.ConstraintViolationException"
+    if match.group("type") == replacement_type:
+        return text, None
+    updated = (
+        text[: match.start("type")]
+        + replacement_type
+        + text[match.end("type") :]
+    )
+    if "import jakarta.validation.ConstraintViolationException;" in updated:
+        updated = updated.replace(
+            "import jakarta.validation.ConstraintViolationException;",
+            "import javax.validation.ConstraintViolationException;",
+            1,
+        )
+    new_match = SPRING6_CONSTRAINT_OVERRIDE_PATTERN.search(updated)
+    new_signature = old_signature
+    if new_match is not None:
+        new_signature = " ".join(new_match.group("signature").strip().split()) + new_match.group("type") + new_match.group("suffix")
+    return updated, SourcePatch(
+        file=str(relative_path),
+        patch="spring6_exception_handler_override_alignment",
+        unit=unit_id,
+        old_signature=old_signature,
+        new_signature=new_signature,
+    )
+
+
+def _patch_httpstatus_override(
+    text: str,
+    relative_path: Path,
+    unit_id: str,
+) -> tuple[str, SourcePatch | None]:
+    match = SPRING6_HTTPSTATUS_OVERRIDE_PATTERN.search(text)
+    if match is None:
+        return text, None
+    old_signature = "".join((match.group("prefix"), match.group("type"), match.group("suffix")))
+    updated = (
+        text[: match.start("type")]
+        + "HttpStatusCode"
+        + text[match.end("type") :]
+    )
+    if "import org.springframework.http.HttpStatusCode;" not in updated:
+        if "import org.springframework.http.HttpStatus;" in updated:
+            updated = updated.replace(
+                "import org.springframework.http.HttpStatus;",
+                "import org.springframework.http.HttpStatus;\nimport org.springframework.http.HttpStatusCode;",
+                1,
+            )
+        else:
+            updated = updated.replace(
+                "import org.springframework.http.ResponseEntity;",
+                "import org.springframework.http.HttpStatusCode;\nimport org.springframework.http.ResponseEntity;",
+                1,
+            )
+    new_match = SPRING6_HTTPSTATUS_OVERRIDE_PATTERN.search(updated)
+    new_signature = old_signature.replace("HttpStatus", "HttpStatusCode", 1)
+    if new_match is not None:
+        new_signature = "".join((new_match.group("prefix"), new_match.group("type"), new_match.group("suffix")))
+    return updated, SourcePatch(
+        file=str(relative_path),
+        patch="spring6_exception_handler_override_alignment",
+        unit=unit_id,
+        old_signature=old_signature,
+        new_signature=new_signature,
+    )

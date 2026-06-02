@@ -1,5 +1,6 @@
 REPORT_FILE = "analysis_report.json"
 DEP_GRAPH_FILE = "dependency_graph.json"
+INTERNAL_DEPENDENCIES_FILE = "internal_dependencies.json"
 TEST_INVENTORY_FILE = "test_inventory.json"
 SUMMARY_FILE = "analysis_summary.md"
 OUTPUT_PATH_TEMPLATE = "modernized-app/.migration/runs/{run_id}/analysis/"

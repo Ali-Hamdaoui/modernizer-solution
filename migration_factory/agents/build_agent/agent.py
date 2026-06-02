@@ -13,6 +13,7 @@ from migration_factory.contracts.build.schemas import build_error_contract
 from migration_factory.contracts.migration import mark_build_failed, mark_build_passed
 
 from .classifier import BuildClassification, BuildResultKind, command_error_classification
+from .failure_classifier import classify_post_transform_test_failures
 from .detection import (
     BuildTool,
     BuildValidationMode,
@@ -58,6 +59,7 @@ def run_build_agent(
     validation_unit_id: str | None = None,
     source_changing_unit: bool = False,
     validation_command: str | list[str] | tuple[str, ...] | None = None,
+    java_home_env: str | None = None,
     source_jdk_home_env: str | None = None,
     target_jdk_home_env: str | None = None,
 ) -> BuildRunResult:
@@ -103,11 +105,45 @@ def run_build_agent(
         else []
     )
     validation_mode = _validation_mode(project, validation_unit_id, source_changing_unit, explicit_command)
-    java_env_name, java_home = _java_runtime_for_unit(
+    java_env_name, java_home, java_runtime_error = _java_runtime_for_unit(
         validation_unit_id,
+        java_home_env=java_home_env,
         source_jdk_home_env=source_jdk_home_env,
         target_jdk_home_env=target_jdk_home_env,
     )
+    if java_runtime_error is not None:
+        classification = command_error_classification(java_runtime_error)
+        contract = build_error_contract(
+            project_path=project.path,
+            cwd=project.path,
+            build_tool=project.build_tool.value,
+            command=[],
+            result_kind=classification.kind.value,
+            message=classification.message,
+            matched_line=classification.line,
+            exit_code=None,
+            module=module,
+            main_class=main_class,
+            stdout=[],
+            stderr=[],
+            unit_id=validation_unit_id,
+            java_home=java_home,
+            java_home_env=java_env_name,
+        )
+        error_path = write_build_error(contract, resolved_output_dir)
+        build_result = BuildRunResult(
+            succeeded=False,
+            result_kind=classification.kind.value,
+            message=classification.message,
+            error_contract_path=error_path,
+            exit_code=None,
+            matched_line=classification.line,
+            warnings=[java_runtime_error],
+            command=[],
+            cwd=project.path,
+        )
+        _update_ledger(ledger_file, build_result)
+        return build_result
     command_env = _build_command_env(java_home)
     gate_failure = _target_environment_gate(project, validation_unit_id, explicit_command, env=command_env)
     if gate_failure is not None:
@@ -216,6 +252,11 @@ def run_build_agent(
         _update_ledger(ledger_file, build_result)
         return build_result
 
+    failure_classification = classify_post_transform_test_failures(
+        project.path,
+        output_dir=resolved_output_dir,
+        unit_id=validation_unit_id,
+    )
     contract = build_error_contract(
         project_path=project.path,
         cwd=project.path,
@@ -232,6 +273,10 @@ def run_build_agent(
         unit_id=validation_unit_id,
         java_home=java_home,
         java_home_env=java_env_name,
+        failure_classification_path=(
+            str(failure_classification.artifact_path) if failure_classification.artifact_path is not None else None
+        ),
+        failure_categories=failure_classification.category_counts,
     )
     error_path = write_build_error(contract, resolved_output_dir)
 
@@ -350,18 +395,29 @@ def _update_ledger(ledger_file: str | Path | None, result: BuildRunResult) -> No
 def _java_runtime_for_unit(
     validation_unit_id: str | None,
     *,
+    java_home_env: str | None,
     source_jdk_home_env: str | None,
     target_jdk_home_env: str | None,
-) -> tuple[str | None, str | None]:
+) -> tuple[str | None, str | None, str | None]:
     env_name = None
-    if validation_unit_id == "baseline":
+    if java_home_env:
+        env_name = java_home_env
+    elif validation_unit_id == "baseline":
         env_name = source_jdk_home_env
     elif validation_unit_id:
         env_name = target_jdk_home_env
     if not env_name:
-        return None, None
+        return None, None, None
     java_home = os.environ.get(env_name)
-    return env_name, java_home if java_home else None
+    if not java_home:
+        return env_name, None, f"Configured Java home env '{env_name}' is not set."
+    java_home_path = Path(java_home)
+    java_bin = java_home_path / "bin" / ("java.exe" if os.name == "nt" else "java")
+    if not java_home_path.is_dir() or not java_bin.is_file():
+        return env_name, str(java_home), (
+            f"Configured Java home env '{env_name}' points to invalid JAVA_HOME: {java_home}"
+        )
+    return env_name, str(java_home), None
 
 
 def _build_command_env(java_home: str | None) -> dict[str, str] | None:

@@ -12,7 +12,11 @@ from migration_factory.orchestrator.checkpointing import default_checkpointer
 from migration_factory.orchestrator import graph as graph_module
 from migration_factory.orchestrator.phase_services import record_approval_decision_phase
 from migration_factory.orchestrator.preflight import build_langgraph_config
-from migration_factory.orchestrator.state import APPROVAL_DECISION_VALUES
+from migration_factory.orchestrator.state import (
+    APPROVAL_DECISION_VALUES,
+    FULL_SANDBOX_MIGRATION_MODE,
+    READ_ONLY_ASSESSMENT_MODE,
+)
 from migration_factory.orchestrator.summary import finalize_orchestration_state
 from migration_factory.orchestrator.timing import start_total_run_timing
 
@@ -88,6 +92,7 @@ def resume_orchestration(
         ),
         config=config,
     )
+    result = _normalize_resumed_sandbox_state(dict(result), decision=decision)
     result = _normalize_resume_result(
         _with_explicit_run_paths(dict(result), resolved_run_dir),
         decision=decision,
@@ -152,6 +157,7 @@ def _resume_from_interrupt_snapshot(
         raise ResumeCliError("approval interrupt checkpoint run_id mismatch")
     state["run_dir"] = str(run_dir)
     state = _with_explicit_run_paths(state, run_dir)
+    state = _normalize_resumed_sandbox_state(state, decision=decision)
 
     state.update(
         {
@@ -224,6 +230,16 @@ def _normalize_resume_result(
     if decision != "approved":
         result["stop_reason"] = f"Approval decision '{decision}' recorded; stopping."
         result["final_status"] = decision.upper()
+    return result
+
+
+def _normalize_resumed_sandbox_state(state: dict[str, Any], *, decision: str) -> dict[str, Any]:
+    if decision != "approved" or state.get("mode") != READ_ONLY_ASSESSMENT_MODE:
+        return state
+    result = dict(state)
+    result["resumed_from_mode"] = READ_ONLY_ASSESSMENT_MODE
+    result["resume_semantics"] = "approved_sandbox_migration"
+    result["mode"] = FULL_SANDBOX_MIGRATION_MODE
     return result
 
 

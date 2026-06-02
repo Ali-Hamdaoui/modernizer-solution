@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from unittest import mock
 import io
@@ -30,6 +31,8 @@ from migration_factory.agents.transformation_agent.pom_patches import (
     patch_pom_property,
     patch_quality_rules_allow_jakarta,
     patch_security_config_authorize_http_requests,
+    patch_spring_data_sort_constructor_usage,
+    patch_spring6_exception_handler_override_signatures,
 )
 from migration_factory.approval import write_approval_decision, write_approved_plan_lock
 from migration_factory.agents.transformation_agent import run_transformation_agent
@@ -121,6 +124,779 @@ class TransformationAgentTests(unittest.TestCase):
             )
             self.assertEqual(loaded_plan.migration_id, run_id)
             self.assertEqual([unit.id for unit in loaded_plan.units], ["baseline", "java-17"])
+
+    def test_execution_plan_adapter_uses_per_unit_openrewrite_on_matching_unit(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            _write_approved_run_artifacts(
+                app,
+                run_id,
+                include_rewrite_plan=False,
+                planning_units_yaml="""
+schema_version: "1.0.0"
+run_id: "run-1"
+status: "PASS"
+artifact_refs:
+  self: "migration_units.yaml"
+units:
+  - id: "baseline"
+    goal: "Establish baseline build."
+    tools: ["maven", "junit"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: false
+    required: "yes"
+    expected_artifacts: ["target/surefire-reports"]
+  - id: "spring-boot-2-7-stabilization"
+    goal: "Stabilize Spring Boot 2.7."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: true
+    required: "yes"
+    expected_artifacts: ["target/classes"]
+    openrewrite:
+      active_recipes:
+        - org.openrewrite.java.spring.boot2.UpgradeSpringBoot_2_7
+""",
+            )
+
+            output_path = write_transformation_execution_plan(app, run_id)
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+            transformations = payload["migration_units"][1]["transformations"]
+
+            self.assertEqual(transformations[0]["type"], "openrewrite")
+            self.assertEqual(
+                transformations[0]["active_recipes"],
+                ["org.openrewrite.java.spring.boot2.UpgradeSpringBoot_2_7"],
+            )
+
+    def test_execution_plan_adapter_attaches_multiple_unit_level_openrewrite_transformations(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            _write_approved_run_artifacts(
+                app,
+                run_id,
+                include_rewrite_plan=True,
+                planning_units_yaml="""
+schema_version: "1.0.0"
+run_id: "run-1"
+status: "PASS"
+artifact_refs:
+  self: "migration_units.yaml"
+units:
+  - id: "baseline"
+    goal: "Establish baseline build."
+    tools: ["maven", "junit"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: false
+    required: "yes"
+    expected_artifacts: ["target/surefire-reports"]
+  - id: "spring-boot-2-7-stabilization"
+    goal: "Stabilize Spring Boot 2.7."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: true
+    required: "yes"
+    expected_artifacts: ["target/classes"]
+    openrewrite:
+      active_recipes:
+        - org.openrewrite.java.spring.boot2.UpgradeSpringBoot_2_7
+  - id: "jakarta"
+    goal: "Migrate to Jakarta."
+    tools: ["maven", "jdeps"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: true
+    required: "yes"
+    expected_artifacts: ["target/classes"]
+    openrewrite:
+      active_recipes:
+        - org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta
+      recipe_artifacts:
+        - org.openrewrite.recipe:rewrite-migrate-java:3.34.1
+      apply_goal: run
+      apply_maven_args:
+        - -DskipTests
+      analysis_preview_maven_args:
+        - -DsomeFlag=true
+""",
+            )
+
+            output_path = write_transformation_execution_plan(app, run_id)
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+
+            boot_transform = payload["migration_units"][1]["transformations"][0]
+            jakarta_transform = payload["migration_units"][2]["transformations"][0]
+
+            self.assertEqual(boot_transform["type"], "openrewrite")
+            self.assertEqual(
+                boot_transform["active_recipes"],
+                ["org.openrewrite.java.spring.boot2.UpgradeSpringBoot_2_7"],
+            )
+            self.assertEqual(
+                boot_transform["recipe_artifacts"],
+                ["org.openrewrite.recipe:rewrite-migrate-java:3.20.0"],
+            )
+            self.assertEqual(jakarta_transform["type"], "openrewrite")
+            self.assertEqual(
+                jakarta_transform["active_recipes"],
+                ["org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta"],
+            )
+            self.assertEqual(
+                jakarta_transform["recipe_artifacts"],
+                ["org.openrewrite.recipe:rewrite-migrate-java:3.34.1"],
+            )
+            self.assertEqual(jakarta_transform["apply_goal"], "run")
+            self.assertEqual(jakarta_transform["apply_maven_args"], ["-DskipTests"])
+            self.assertEqual(jakarta_transform["analysis_preview_maven_args"], ["-DsomeFlag=true"])
+
+    def test_execution_plan_adapter_includes_per_unit_jdk_metadata(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            java11_home = tmp / "jdk11"
+            java17_home = tmp / "jdk17"
+            with mock.patch.dict(
+                "os.environ",
+                {"JAVA_HOME_11": str(java11_home), "JAVA_HOME_17": str(java17_home)},
+                clear=False,
+            ):
+                _write_approved_run_artifacts(
+                    app,
+                    run_id,
+                    include_rewrite_plan=False,
+                    planning_units_yaml="""
+schema_version: "1.0.0"
+run_id: "run-1"
+status: "PASS"
+artifact_refs:
+  self: "migration_units.yaml"
+units:
+  - id: "baseline"
+    goal: "Establish baseline build."
+    tools: ["maven", "junit"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: false
+    required: "yes"
+    java_home_env: "JAVA_HOME_11"
+    hop_id: "boot-2.1-to-2.7-java11"
+    expected_artifacts: ["target/surefire-reports"]
+  - id: "java-17"
+    goal: "Upgrade Java."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: true
+    required: "yes"
+    java_home_env: "JAVA_HOME_17"
+    hop_id: "boot-2.7-to-3.5-java17"
+    expected_artifacts: ["target/classes"]
+""",
+                )
+
+                output_path = write_transformation_execution_plan(app, run_id)
+
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+            baseline = payload["migration_units"][0]
+            java17 = payload["migration_units"][1]
+            self.assertEqual(baseline["java_home_env"], "JAVA_HOME_11")
+            self.assertEqual(baseline["java_home_used"], str(java11_home))
+            self.assertEqual(baseline["hop_id"], "boot-2.1-to-2.7-java11")
+            self.assertEqual(java17["java_home_env"], "JAVA_HOME_17")
+            self.assertEqual(java17["java_home_used"], str(java17_home))
+            self.assertEqual(java17["hop_id"], "boot-2.7-to-3.5-java17")
+
+    def test_execution_plan_adapter_adds_sort_compile_fix_to_boot27_stabilization(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            _write_approved_run_artifacts(
+                app,
+                run_id,
+                include_rewrite_plan=False,
+                planning_units_yaml="""
+schema_version: "1.0.0"
+run_id: "run-1"
+status: "PASS"
+artifact_refs:
+  self: "migration_units.yaml"
+units:
+  - id: "spring-boot-2-7-stabilization"
+    goal: "Stabilize Spring Boot 2.7."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: true
+    required: "yes"
+    java_home_env: "JAVA_HOME_11"
+    hop_id: "boot-2.1-to-2.7-java11"
+    expected_artifacts: ["target/classes"]
+""",
+            )
+
+            output_path = write_transformation_execution_plan(app, run_id)
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+            transformations = payload["migration_units"][0]["transformations"]
+
+            self.assertEqual(transformations[0]["type"], "spring_data_sort_by_factory_method")
+            self.assertEqual(transformations[1]["type"], "maven_pom_patch")
+            self.assertEqual(
+                transformations[1]["operations"][0],
+                {"op": "align_jackson_dependency_management", "version": "2.13.5"},
+            )
+
+    def test_execution_plan_adapter_passes_optional_jackson_artifacts_from_dependency_graph(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            _write_approved_run_artifacts(
+                app,
+                run_id,
+                include_rewrite_plan=False,
+                planning_units_yaml="""
+schema_version: "1.0.0"
+run_id: "run-1"
+status: "PASS"
+artifact_refs:
+  self: "migration_units.yaml"
+units:
+  - id: "spring-boot-2-7-stabilization"
+    goal: "Stabilize Spring Boot 2.7."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: true
+    required: "yes"
+    java_home_env: "JAVA_HOME_11"
+    hop_id: "boot-2.1-to-2.7-java11"
+    expected_artifacts: ["target/classes"]
+""",
+                dependency_graph_payload={
+                    "root": {
+                        "name": "com.example:demo",
+                        "dependencies": [
+                            {
+                                "name": "com.fasterxml.jackson.dataformat:jackson-dataformat-xml",
+                                "dependencies": [],
+                            },
+                            {
+                                "name": "com.fasterxml.jackson.module:jackson-module-jaxb-annotations",
+                                "dependencies": [],
+                            },
+                        ],
+                    }
+                },
+            )
+
+            output_path = write_transformation_execution_plan(app, run_id)
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+            operation = payload["migration_units"][0]["transformations"][1]["operations"][0]
+
+            self.assertEqual(
+                operation["present_artifacts"],
+                [
+                    "com.fasterxml.jackson.dataformat:jackson-dataformat-xml",
+                    "com.fasterxml.jackson.module:jackson-module-jaxb-annotations",
+                ],
+            )
+
+    def test_execution_plan_adapter_adds_lombok_alignment_to_java17_when_tooling_version_configured(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            _write_approved_run_artifacts(
+                app,
+                run_id,
+                include_rewrite_plan=False,
+                planning_units_yaml="""
+schema_version: "1.0.0"
+run_id: "run-1"
+status: "PASS"
+artifact_refs:
+  self: "migration_units.yaml"
+units:
+  - id: "java-17"
+    goal: "Upgrade Java."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: true
+    required: "yes"
+    java_home_env: "JAVA_HOME_17"
+    hop_id: "boot-2.7-to-3.5-java17"
+    expected_artifacts: ["target/classes"]
+""",
+                tooling_versions_payload={
+                    "lombok": "1.18.34",
+                    "jacoco": "0.8.12",
+                    "maven_compiler_plugin": "3.14.1",
+                },
+                framework_versions_payload={
+                    "jackson": "2.21.2",
+                    "jackson_annotations": "2.21",
+                    "thymeleaf": "3.1.3.RELEASE",
+                    "slf4j_api": "2.0.17",
+                    "spring_security": "6.5.10",
+                },
+                analysis_report_payload={
+                    "project_metadata": {"imports": ["javax.validation.Valid"]},
+                    "dependencies": [],
+                },
+            )
+
+            output_path = write_transformation_execution_plan(app, run_id)
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+            transformations = payload["migration_units"][0]["transformations"]
+
+            self.assertEqual(transformations[0]["type"], "maven_pom_patch")
+            self.assertEqual(transformations[0]["operations"][0], {"op": "align_lombok_version", "version": "1.18.34"})
+            self.assertEqual(transformations[0]["operations"][1], {"op": "align_jacoco_version", "version": "0.8.12"})
+
+    def test_write_transformation_execution_plan_adds_thymeleaf_alignment_for_boot35_unit(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            _write_approved_run_artifacts(
+                app,
+                run_id,
+                include_rewrite_plan=False,
+                planning_units_yaml="""
+schema_version: "1.0.0"
+run_id: "run-1"
+status: "PASS"
+artifact_refs:
+  self: "migration_units.yaml"
+units:
+  - id: "spring-boot-3-5-14"
+    goal: "Upgrade Spring Boot."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: true
+    required: "yes"
+    java_home_env: "JAVA_HOME_17"
+    hop_id: "boot-2.7-to-3.5-java17"
+    expected_artifacts: ["target/classes"]
+""",
+                framework_versions_payload={
+                    "jackson": "2.21.2",
+                    "jackson_annotations": "2.21",
+                    "thymeleaf": "3.1.3.RELEASE",
+                    "slf4j_api": "2.0.17",
+                    "spring_security": "6.5.10",
+                },
+                tooling_versions_payload={
+                    "maven_compiler_plugin": "3.14.1",
+                },
+                analysis_report_payload={
+                    "project_metadata": {"imports": ["javax.validation.Valid"]},
+                    "dependencies": [],
+                },
+            )
+
+            output_path = write_transformation_execution_plan(app, run_id)
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+            transformations = payload["migration_units"][0]["transformations"]
+
+            self.assertEqual(transformations[0]["type"], "spring6_exception_handler_override_alignment")
+            self.assertEqual(transformations[1]["type"], "maven_pom_patch")
+            self.assertEqual(
+                transformations[1]["operations"][0],
+                {
+                    "op": "align_jackson_dependency_management",
+                    "version": "2.21.2",
+                    "version_overrides": {
+                        "com.fasterxml.jackson.core:jackson-annotations": "2.21",
+                    },
+                },
+            )
+            self.assertEqual(
+                transformations[1]["operations"][1],
+                {
+                    "op": "align_thymeleaf_dependencies",
+                    "version": "3.1.3.RELEASE",
+                    "prefer_bom_managed": True,
+                },
+            )
+            self.assertEqual(transformations[1]["operations"][2]["op"], "align_validation_dependencies")
+            self.assertEqual(transformations[1]["operations"][2]["prefer_boot_starter"], True)
+            self.assertIn("javax.validation.Valid", transformations[1]["operations"][2]["detected_validation_usage"])
+            self.assertEqual(transformations[1]["operations"][3], {"op": "align_slf4j_logging", "slf4j_api_version": "2.0.17"})
+            self.assertEqual(
+                transformations[1]["operations"][4],
+                {
+                    "op": "align_spring_security_dependencies",
+                    "present_artifacts": [],
+                    "spring_security_version": "6.5.10",
+                },
+            )
+            self.assertEqual(
+                transformations[1]["operations"][5],
+                {
+                    "op": "align_maven_compiler_parameters",
+                    "plugin_version": "3.14.1",
+                },
+            )
+
+    def test_patch_spring6_exception_handler_override_updates_httpstatus_parameter(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "Advice.java"
+            java_file.write_text(
+                """package com.example;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
+
+public class Advice extends ResponseEntityExceptionHandler {
+    @Override
+    protected ResponseEntity<Object> handleExceptionInternal(
+            Exception ex, Object body, org.springframework.http.HttpHeaders headers, HttpStatus status, WebRequest request) {
+        return super.handleExceptionInternal(ex, body, headers, status, request);
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            before = java_file.read_text(encoding="utf-8")
+            patches = patch_spring6_exception_handler_override_signatures(app, unit_id="spring-boot-3-5-14")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("@Override", after)
+            self.assertIn("HttpStatusCode status", after)
+            self.assertIn("import org.springframework.http.HttpStatusCode;", after)
+            self.assertIn("return super.handleExceptionInternal(ex, body, headers, status, request);", after)
+            self.assertNotEqual(before, after)
+
+    def test_patch_spring6_exception_handler_override_updates_constraint_violation_type(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "Advice.java"
+            java_file.write_text(
+                """package com.example;
+
+import jakarta.validation.ConstraintViolationException;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.context.request.NativeWebRequest;
+import org.zalando.problem.Problem;
+
+public class Advice {
+    @Override
+    public ResponseEntity<Problem> handleConstraintViolation(final ConstraintViolationException exception, final NativeWebRequest request) {
+        return null;
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_spring6_exception_handler_override_signatures(app, unit_id="spring-boot-3-5-14")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("import javax.validation.ConstraintViolationException;", after)
+            self.assertIn("@Override", after)
+            self.assertIn("handleConstraintViolation(final javax.validation.ConstraintViolationException exception", after)
+
+    def test_patch_spring6_exception_handler_override_is_noop_for_unrelated_class(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "Plain.java"
+            java_file.write_text(
+                """package com.example;
+public class Plain {
+    public void ok() {}
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_spring6_exception_handler_override_signatures(app, unit_id="spring-boot-3-5-14")
+
+            self.assertEqual(patches, [])
+
+    def test_patch_spring6_exception_handler_override_is_noop_when_already_spring6_compatible(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "Advice.java"
+            java_file.write_text(
+                """package com.example;
+
+import org.springframework.http.HttpStatusCode;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
+
+public class Advice extends ResponseEntityExceptionHandler {
+    @Override
+    protected ResponseEntity<Object> handleExceptionInternal(
+            Exception ex, Object body, org.springframework.http.HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+        return super.handleExceptionInternal(ex, body, headers, status, request);
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_spring6_exception_handler_override_signatures(app, unit_id="spring-boot-3-5-14")
+            self.assertEqual(patches, [])
+
+    def test_openrewrite_transformation_uses_unit_level_java_home_env(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+            plugin = tmp / "plugin.xml"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+            plan_path = tmp / "plan.yaml"
+            plan_path.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: "run-1"
+  name: "Test"
+workspaces:
+  target:
+    path: "."
+    migration_dir: ".migration"
+    ledger_file: ".migration/ledger.json"
+migration_units:
+  - id: "spring-boot-2-7-stabilization"
+    title: "Stabilize"
+    java_home_env: "JAVA_HOME_11"
+    java_home_used: "C:/fake/jdk11"
+    hop_id: "boot-2.1-to-2.7-java11"
+    expected_files: ["target/classes"]
+    transformations:
+      - type: openrewrite
+        active_recipes:
+          - org.openrewrite.java.spring.boot2.UpgradeSpringBoot_2_7
+    checks:
+      - id: validation
+        command: mvn clean test
+        required: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            with mock.patch(
+                "migration_factory.agents.transformation_agent.agent.run_command",
+                return_value=CommandResult(command="mvn", exit_code=0, stdout=[], stderr=[], duration_seconds=0.01),
+            ) as run_command_mock:
+                with mock.patch("builtins.input", return_value=""):
+                    run_transformation_agent(app, plugin, plan_path, wait_for_continue=False)
+
+            env = run_command_mock.call_args.kwargs["env"]
+            self.assertEqual(env["JAVA_HOME"], "C:/fake/jdk11")
+            self.assertTrue(env["PATH"].startswith(str(Path("C:/fake/jdk11") / "bin") + os.pathsep))
+
+    def test_sort_constructor_patch_replaces_simple_usage(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "app"
+            source = app / "src" / "main" / "java" / "demo"
+            source.mkdir(parents=True)
+            java_file = source / "Demo.java"
+            java_file.write_text(
+                """
+package demo;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Sort.Direction;
+class Demo {
+    Sort build() {
+        return new Sort(Direction.ASC, "name");
+    }
+}
+""".strip(),
+                encoding="utf-8",
+            )
+
+            patches = patch_spring_data_sort_constructor_usage(app, unit_id="spring-boot-2-7-stabilization")
+            updated = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn('Sort.by(Direction.ASC, "name")', updated)
+            self.assertNotIn('new Sort(Direction.ASC, "name")', updated)
+
+    def test_sort_constructor_patch_replaces_variable_property_expression(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "app"
+            source = app / "src" / "main" / "java" / "demo"
+            source.mkdir(parents=True)
+            java_file = source / "Demo.java"
+            java_file.write_text(
+                """
+package demo;
+import org.springframework.data.domain.Sort;
+class Demo {
+    Sort build(Sort.Direction direction, String property) {
+        return new Sort(direction, property);
+    }
+}
+""".strip(),
+                encoding="utf-8",
+            )
+
+            patches = patch_spring_data_sort_constructor_usage(app, unit_id="spring-boot-2-7-stabilization")
+            updated = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("Sort.by(direction, property)", updated)
+
+    def test_sort_constructor_patch_does_not_modify_unrelated_constructor(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "app"
+            source = app / "src" / "main" / "java" / "demo"
+            source.mkdir(parents=True)
+            java_file = source / "Demo.java"
+            original = """
+package demo;
+class Demo {
+    Object build(Direction direction, String property) {
+        return new Something(direction, property);
+    }
+}
+""".strip()
+            java_file.write_text(original, encoding="utf-8")
+
+            patches = patch_spring_data_sort_constructor_usage(app, unit_id="spring-boot-2-7-stabilization")
+
+            self.assertEqual(patches, [])
+            self.assertEqual(java_file.read_text(encoding="utf-8"), original)
+
+    def test_sort_constructor_patch_skips_files_without_spring_data_sort_usage(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "app"
+            source = app / "src" / "main" / "java" / "demo"
+            source.mkdir(parents=True)
+            java_file = source / "Demo.java"
+            original = """
+package demo;
+class Demo {
+    Object build() {
+        return new Sort(Direction.ASC, "name");
+    }
+}
+""".strip()
+            java_file.write_text(original, encoding="utf-8")
+
+            patches = patch_spring_data_sort_constructor_usage(app, unit_id="spring-boot-2-7-stabilization")
+
+            self.assertEqual(patches, [])
+            self.assertEqual(java_file.read_text(encoding="utf-8"), original)
+
+    def test_sort_constructor_patch_records_applied_file_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+            source = app / "src" / "main" / "java" / "demo"
+            source.mkdir(parents=True)
+            (source / "Demo.java").write_text(
+                """
+package demo;
+import org.springframework.data.domain.Sort;
+class Demo {
+    Sort build(Sort.Direction direction, String property) {
+        return new Sort(direction, property);
+    }
+}
+""".strip(),
+                encoding="utf-8",
+            )
+            plugin = tmp / "plugin.xml"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+            plan_path = tmp / "plan.yaml"
+            plan_path.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: "run-1"
+  name: "Test"
+workspaces:
+  target:
+    path: "."
+    migration_dir: ".migration"
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: "spring-boot-2-7-stabilization"
+    title: "Stabilize"
+    expected_files: ["target/classes"]
+    transformations:
+      - type: spring_data_sort_by_factory_method
+    checks:
+      - id: validation
+        command: mvn clean test
+        required: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            with mock.patch("builtins.input", return_value=""):
+                result = run_transformation_agent(app, plugin, plan_path, wait_for_continue=False)
+
+            self.assertEqual(result.status, LedgerStatus.AWAITING_BUILD_AGENT)
+            ledger = load_ledger(app / ".migration" / "ledger.json")
+            transformation = ledger["units"]["spring-boot-2-7-stabilization"]["transformations"][0]
+            self.assertEqual(transformation["type"], "spring_data_sort_by_factory_method")
+            self.assertEqual(transformation["status"], "applied")
+            self.assertEqual(transformation["patches"][0]["file"], "src\\main\\java\\demo\\Demo.java")
+
+    def test_execution_plan_adapter_units_without_openrewrite_do_not_receive_openrewrite_transformation(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            _write_approved_run_artifacts(
+                app,
+                run_id,
+                include_rewrite_plan=False,
+                planning_units_yaml="""
+schema_version: "1.0.0"
+run_id: "run-1"
+status: "PASS"
+artifact_refs:
+  self: "migration_units.yaml"
+units:
+  - id: "baseline"
+    goal: "Establish baseline build."
+    tools: ["maven", "junit"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: false
+    required: "yes"
+    expected_artifacts: ["target/surefire-reports"]
+  - id: "dependency-cleanup"
+    goal: "Cleanup dependencies."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: true
+    required: "yes"
+    expected_artifacts: ["target/dependency"]
+""",
+            )
+
+            output_path = write_transformation_execution_plan(app, run_id)
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+
+            for unit in payload["migration_units"]:
+                self.assertEqual([item["type"] for item in unit["transformations"]], ["custom_code_change"])
+
+    def test_execution_plan_adapter_no_recipes_means_no_openrewrite_transformation(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            _write_approved_run_artifacts(app, run_id, include_rewrite_plan=False)
+
+            output_path = write_transformation_execution_plan(app, run_id)
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+
+            for unit in payload["migration_units"]:
+                self.assertEqual([item["type"] for item in unit["transformations"]], ["custom_code_change"])
 
     def test_execution_plan_adapter_rejects_missing_approval_decision(self) -> None:
         with workspace_temp_dir() as tmp:
@@ -557,6 +1333,765 @@ migration_units:
                 (app / "pom.xml").read_text(encoding="utf-8"),
             )
             run_command.assert_called_once()
+
+    def test_maven_pom_patch_updates_sandbox_pom_and_records_ledger_operations(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project>
+  <properties>
+    <java.version>11</java.version>
+    <spring-boot.version>2.1.6.RELEASE</spring-boot.version>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>javax.xml.bind</groupId>
+      <artifactId>jaxb-api</artifactId>
+      <version>2.3.1</version>
+    </dependency>
+    <dependency>
+      <groupId>javax.xml.bind</groupId>
+      <artifactId>jaxb-api</artifactId>
+      <version>2.3.1</version>
+    </dependency>
+  </dependencies>
+</project>""",
+                encoding="utf-8",
+            )
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: spring-boot-3-5-14
+    title: Spring Boot 3.5.14
+    transformations:
+      - type: maven_pom_patch
+        operations:
+          - op: update_property
+            name: java.version
+            value: "17"
+          - op: update_property
+            name: spring-boot.version
+            value: "3.5.14"
+          - op: replace_dependency
+            old_group_id: javax.xml.bind
+            old_artifact_id: jaxb-api
+            new_group_id: jakarta.xml.bind
+            new_artifact_id: jakarta.xml.bind-api
+            new_version: "4.0.2"
+          - op: remove_duplicate_dependencies
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            result = run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            pom_text = (app / "pom.xml").read_text(encoding="utf-8")
+
+            self.assertEqual(transformation["type"], "maven_pom_patch")
+            self.assertEqual(transformation["transformation_type"], "maven_pom_patch")
+            self.assertEqual(transformation["status"], "applied")
+            self.assertEqual(transformation["operation_count"], 4)
+            self.assertEqual(len(transformation["operations_applied"]), 4)
+            self.assertEqual(transformation["files_changed"], ["pom.xml"])
+            self.assertIsNone(transformation["error_message"])
+            self.assertIn("<java.version>17</java.version>", pom_text)
+            self.assertIn("<spring-boot.version>3.5.14</spring-boot.version>", pom_text)
+            self.assertIn("<groupId>jakarta.xml.bind</groupId>", pom_text)
+            self.assertEqual(pom_text.count("<artifactId>jakarta.xml.bind-api</artifactId>"), 1)
+
+    def test_maven_pom_patch_failure_blocks_unit_when_path_escapes_sandbox(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: java-17
+    title: Java 17
+    transformations:
+      - type: maven_pom_patch
+        pom_path: ../legacy/pom.xml
+        operations:
+          - op: update_property
+            name: java.version
+            value: "17"
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                TransformationAgentError,
+                "MAVEN_POM_PATCH_FAILED POM_PATH_OUTSIDE_SANDBOX",
+            ):
+                run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(app / ".migration" / "ledger.json")
+            transformation = ledger["units"]["java-17"]["transformations"][0]
+            self.assertEqual(ledger["status"], LedgerStatus.BLOCKED)
+            self.assertEqual(ledger["blocked_unit"], "java-17")
+            self.assertEqual(transformation["status"], "failed")
+            self.assertEqual(transformation["error_code"], "POM_PATH_OUTSIDE_SANDBOX")
+
+    def test_maven_pom_patch_records_jackson_alignment_operations_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <properties>
+    <fasterxml-jackson.version>2.10.0</fasterxml-jackson.version>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>com.fasterxml.jackson.dataformat</groupId>
+      <artifactId>jackson-dataformat-csv</artifactId>
+      <version>${fasterxml-jackson.version}</version>
+    </dependency>
+  </dependencies>
+</project>""",
+                encoding="utf-8",
+            )
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: spring-boot-2-7-stabilization
+    title: Spring Boot 2.7 Stabilization
+    transformations:
+      - type: maven_pom_patch
+        operations:
+          - op: align_jackson_dependency_management
+            version: "2.13.5"
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            result = run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["spring-boot-2-7-stabilization"]["transformations"][0]
+            operation = transformation["operations_applied"][0]
+            self.assertEqual(transformation["type"], "maven_pom_patch")
+            self.assertEqual(transformation["status"], "applied")
+            self.assertEqual(operation["op"], "align_jackson_dependency_management")
+            self.assertEqual(operation["status"], "updated")
+            self.assertEqual(operation["target_version"], "2.13.5")
+            self.assertIn("fasterxml-jackson.version", operation["updated_properties"])
+            self.assertIn(
+                "com.fasterxml.jackson.dataformat:jackson-dataformat-csv",
+                operation["managed_artifacts"],
+            )
+
+    def test_maven_pom_patch_records_boot3_jackson_alignment_separately_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>2.13.5</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-core</artifactId>
+        <version>2.13.5</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.13.5</version>
+    </dependency>
+  </dependencies>
+</project>
+""",
+                encoding="utf-8",
+            )
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: spring-boot-3-5-14
+    title: Spring Boot 3.5.14
+    transformations:
+      - type: maven_pom_patch
+        operations:
+          - op: align_jackson_dependency_management
+            version: "2.21.2"
+            version_overrides:
+              com.fasterxml.jackson.core:jackson-annotations: "2.21"
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            result = run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            operation = transformation["operations_applied"][0]
+            self.assertEqual(operation["op"], "align_jackson_dependency_management")
+            self.assertEqual(operation["target_version"], "2.21.2")
+            self.assertEqual(operation["detected_versions"], ["2.13.5"])
+            self.assertEqual(
+                operation["version_overrides"],
+                {"com.fasterxml.jackson.core:jackson-annotations": "2.21"},
+            )
+
+    def test_maven_pom_patch_records_lombok_alignment_operations_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencies>
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <version>0.11.8</version>
+    </dependency>
+  </dependencies>
+</project>""",
+                encoding="utf-8",
+            )
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: java-17
+    title: Java 17
+    transformations:
+      - type: maven_pom_patch
+        operations:
+          - op: align_lombok_version
+            version: "1.18.34"
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            result = run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["java-17"]["transformations"][0]
+            operation = transformation["operations_applied"][0]
+            self.assertEqual(transformation["type"], "maven_pom_patch")
+            self.assertEqual(operation["op"], "align_lombok_version")
+            self.assertEqual(operation["status"], "updated")
+            self.assertEqual(operation["old_versions"], ["0.11.8"])
+            self.assertEqual(operation["new_version"], "1.18.34")
+            self.assertEqual(transformation["files_changed"], ["pom.xml"])
+
+    def test_maven_pom_patch_records_jacoco_alignment_operations_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <properties>
+    <jacoco-maven-plugin.version>0.8.2</jacoco-maven-plugin.version>
+  </properties>
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.jacoco</groupId>
+          <artifactId>jacoco-maven-plugin</artifactId>
+          <version>${jacoco-maven-plugin.version}</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+  </build>
+</project>""",
+                encoding="utf-8",
+            )
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: java-17
+    title: Java 17
+    transformations:
+      - type: maven_pom_patch
+        operations:
+          - op: align_jacoco_version
+            version: "0.8.12"
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            result = run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["java-17"]["transformations"][0]
+            operation = transformation["operations_applied"][0]
+            self.assertEqual(transformation["type"], "maven_pom_patch")
+            self.assertEqual(operation["op"], "align_jacoco_version")
+            self.assertEqual(operation["status"], "updated")
+            self.assertEqual(operation["old_versions"], ["0.8.2"])
+            self.assertEqual(operation["new_version"], "0.8.12")
+            self.assertEqual(operation["updated_properties"], ["jacoco-maven-plugin.version"])
+            self.assertEqual(transformation["files_changed"], ["pom.xml"])
+
+    def test_maven_pom_patch_records_thymeleaf_alignment_operations_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>3.5.14</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>org.thymeleaf</groupId>
+      <artifactId>thymeleaf-spring5</artifactId>
+      <version>3.0.11.RELEASE</version>
+    </dependency>
+  </dependencies>
+</project>""",
+                encoding="utf-8",
+            )
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: spring-boot-3-5-14
+    title: Spring Boot 3.5.14
+    transformations:
+      - type: maven_pom_patch
+        operations:
+          - op: align_thymeleaf_dependencies
+            version: "3.1.3.RELEASE"
+            prefer_bom_managed: true
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            result = run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            operation = transformation["operations_applied"][0]
+            self.assertEqual(transformation["type"], "maven_pom_patch")
+            self.assertEqual(operation["op"], "align_thymeleaf_dependencies")
+            self.assertEqual(operation["status"], "updated")
+            self.assertTrue(operation["used_bom_management"])
+            self.assertEqual(operation["replacements"][0]["old_artifact_id"], "thymeleaf-spring5")
+            self.assertEqual(operation["replacements"][0]["new_artifact_id"], "thymeleaf-spring6")
+            self.assertEqual(transformation["files_changed"], ["pom.xml"])
+
+    def test_maven_pom_patch_records_validation_alignment_operations_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>3.5.14</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+  </dependencies>
+</project>""",
+                encoding="utf-8",
+            )
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: spring-boot-3-5-14
+    title: Spring Boot 3.5.14
+    transformations:
+      - type: maven_pom_patch
+        operations:
+          - op: align_validation_dependencies
+            prefer_boot_starter: true
+            detected_validation_usage:
+              - jakarta.validation.Valid
+              - ConstraintViolationException
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            result = run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            operation = transformation["operations_applied"][0]
+            self.assertEqual(transformation["type"], "maven_pom_patch")
+            self.assertEqual(operation["op"], "align_validation_dependencies")
+            self.assertEqual(operation["status"], "added")
+            self.assertEqual(
+                operation["dependency_added"],
+                "org.springframework.boot:spring-boot-starter-validation",
+            )
+            self.assertIn("jakarta.validation.Valid", operation["detected_validation_usage"])
+            self.assertEqual(transformation["files_changed"], ["pom.xml"])
+
+    def test_maven_pom_patch_records_slf4j_alignment_operations_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <properties>
+    <org.slf4j.version>1.7.25</org.slf4j.version>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>${org.slf4j.version}</version>
+    </dependency>
+  </dependencies>
+</project>""",
+                encoding="utf-8",
+            )
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: spring-boot-3-5-14
+    title: Spring Boot 3.5.14
+    transformations:
+      - type: maven_pom_patch
+        operations:
+          - op: align_slf4j_logging
+            slf4j_api_version: "2.0.17"
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            result = run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            operation = transformation["operations_applied"][0]
+            self.assertEqual(transformation["type"], "maven_pom_patch")
+            self.assertEqual(operation["op"], "align_slf4j_logging")
+            self.assertEqual(operation["status"], "updated")
+            self.assertEqual(operation["old_versions"], ["1.7.25"])
+            self.assertEqual(operation["new_versions"], ["2.0.17"])
+
+    def test_maven_pom_patch_records_spring_security_alignment_operations_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <properties>
+    <spring-security.version>5.8.16</spring-security.version>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-test</artifactId>
+      <version>${spring-security.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>
+""",
+                encoding="utf-8",
+            )
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: spring-boot-3-5-14
+    title: Spring Boot 3.5.14
+    transformations:
+      - type: maven_pom_patch
+        operations:
+          - op: align_spring_security_dependencies
+            spring_security_version: "6.5.10"
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            result = run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            operation = transformation["operations_applied"][0]
+            self.assertEqual(transformation["type"], "maven_pom_patch")
+            self.assertEqual(operation["op"], "align_spring_security_dependencies")
+            self.assertEqual(operation["status"], "updated")
+            self.assertEqual(operation["old_versions"], ["5.8.16"])
+            self.assertEqual(operation["new_versions"], ["6.5.10"])
+
+    def test_maven_pom_patch_records_maven_compiler_parameters_alignment_operations_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.8.1</version>
+        <configuration>
+          <source>17</source>
+          <target>17</target>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+""",
+                encoding="utf-8",
+            )
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: spring-boot-3-5-14
+    title: Spring Boot 3.5.14
+    transformations:
+      - type: maven_pom_patch
+        operations:
+          - op: align_maven_compiler_parameters
+            plugin_version: "3.14.1"
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            result = run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            operation = transformation["operations_applied"][0]
+            self.assertEqual(transformation["type"], "maven_pom_patch")
+            self.assertEqual(operation["op"], "align_maven_compiler_parameters")
+            self.assertEqual(operation["status"], "updated")
+            self.assertEqual(operation["new_version"], "3.14.1")
+            self.assertEqual(operation["new_compiler_configuration_summary"]["parameters_enabled"], True)
+
+    def test_spring6_exception_handler_override_alignment_records_signature_patch_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            (source / "Advice.java").write_text(
+                """package com.example;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
+
+public class Advice extends ResponseEntityExceptionHandler {
+    @Override
+    protected ResponseEntity<Object> handleExceptionInternal(
+            Exception ex, Object body, org.springframework.http.HttpHeaders headers, HttpStatus status, WebRequest request) {
+        return super.handleExceptionInternal(ex, body, headers, status, request);
+    }
+}
+""",
+                encoding="utf-8",
+            )
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: spring-boot-3-5-14
+    title: Spring Boot 3.5.14
+    transformations:
+      - type: spring6_exception_handler_override_alignment
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            result = run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            patch = transformation["patches"][0]
+            self.assertEqual(transformation["type"], "spring6_exception_handler_override_alignment")
+            self.assertEqual(transformation["status"], "applied")
+            self.assertIn("HttpStatus status", patch["old_signature"])
+            self.assertIn("HttpStatusCode status", patch["new_signature"])
 
     def test_required_enforcer_patch_missing_match_fails_before_validation(self) -> None:
         with workspace_temp_dir() as tmp:
@@ -1281,6 +2816,136 @@ target_jdk_home_env: JAVA21_HOME
             self.assertEqual(ledger["build_validation"]["command"], command)
             self.assertEqual(ledger["build_validation"]["cwd"], str(sandbox_path))
 
+    def test_transform_v1_after_approval_passes_unit_level_java_home_env_to_build_agent(self) -> None:
+        with workspace_temp_dir() as tmp:
+            legacy = tmp / "legacy-app"
+            modernized = tmp / "modernized-app"
+            ai_hub = tmp / "ai-hub"
+            run_id = "run-1"
+            run_dir = _run_dir(modernized, run_id)
+            legacy.mkdir()
+            modernized.mkdir()
+            (legacy / "pom.xml").write_text("<project />", encoding="utf-8")
+            _write_ai_hub_profile(
+                ai_hub,
+                extra_profile_yaml="""
+source_jdk_home_env: JAVA_HOME_11
+target_jdk_home_env: JAVA_HOME_17
+""",
+            )
+            _write_approved_run_artifacts(
+                modernized,
+                run_id,
+                include_rewrite_plan=False,
+                planning_units_yaml="""
+schema_version: "1.0.0"
+run_id: "run-1"
+status: "PASS"
+artifact_refs:
+  self: "migration_units.yaml"
+units:
+  - id: "baseline"
+    goal: "Baseline."
+    tools: ["maven", "junit"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: false
+    required: "yes"
+    java_home_env: "JAVA_HOME_11"
+    hop_id: "boot-2.1-to-2.7-java11"
+    expected_artifacts: ["target/surefire-reports"]
+  - id: "spring-boot-2-7-stabilization"
+    goal: "Stabilize."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: true
+    required: "yes"
+    java_home_env: "JAVA_HOME_11"
+    hop_id: "boot-2.1-to-2.7-java11"
+    expected_artifacts: ["target/classes"]
+""",
+            )
+            ledger_file = run_dir / "workspaces" / "sandbox" / ".migration" / "ledger.json"
+
+            def run_agent_side_effect(*args: object, **kwargs: object) -> TransformationRunResult:
+                start_unit = kwargs.get("start_unit")
+                if start_unit is None:
+                    _write_awaiting_build_ledger(ledger_file, "baseline")
+                else:
+                    _write_awaiting_build_ledger(ledger_file, "spring-boot-2-7-stabilization")
+                return TransformationRunResult(
+                    ledger_file=ledger_file,
+                    status=LedgerStatus.AWAITING_BUILD_AGENT,
+                    completed_units=[],
+                )
+
+            build_calls: list[dict[str, object]] = []
+
+            def build_side_effect(**kwargs: object) -> BuildRunResult:
+                build_calls.append(dict(kwargs))
+                unit_id = str(kwargs["validation_unit_id"])
+                mark_build_passed(Path(str(kwargs["ledger_file"])), result_kind="success", message="ok")
+                if unit_id == "spring-boot-2-7-stabilization":
+                    return BuildRunResult(succeeded=True, result_kind="success", message="ok")
+                return BuildRunResult(succeeded=True, result_kind="success", message="ok")
+
+            completed_once = {"done": False}
+
+            def run_agent_completed(*args: object, **kwargs: object) -> TransformationRunResult:
+                start_unit = kwargs.get("start_unit")
+                if start_unit is None:
+                    _write_awaiting_build_ledger(ledger_file, "baseline")
+                    return TransformationRunResult(
+                        ledger_file=ledger_file,
+                        status=LedgerStatus.AWAITING_BUILD_AGENT,
+                        completed_units=[],
+                    )
+                if not completed_once["done"]:
+                    completed_once["done"] = True
+                    _write_awaiting_build_ledger(ledger_file, "spring-boot-2-7-stabilization")
+                    return TransformationRunResult(
+                        ledger_file=ledger_file,
+                        status=LedgerStatus.AWAITING_BUILD_AGENT,
+                        completed_units=["baseline"],
+                    )
+                return TransformationRunResult(
+                    ledger_file=ledger_file,
+                    status=LedgerStatus.COMPLETED,
+                    completed_units=["baseline", "spring-boot-2-7-stabilization"],
+                )
+
+            with mock.patch(
+                "migration_factory.transform_v1_after_approval.run_transformation_agent",
+                side_effect=run_agent_completed,
+            ):
+                with mock.patch(
+                    "migration_factory.transform_v1_after_approval.run_build_agent",
+                    side_effect=build_side_effect,
+                ):
+                    with mock.patch(
+                        "migration_factory.transform_v1_after_approval.run_test_agent",
+                        return_value=_passed_test_result(run_dir),
+                    ):
+                        result = transform_v1_after_approval_main(
+                            [
+                                "--run-dir",
+                                str(run_dir),
+                                "--legacy-app",
+                                str(legacy),
+                                "--modernized-app",
+                                str(modernized),
+                                "--ai-hub",
+                                str(ai_hub),
+                                "--profile",
+                                "java17",
+                                "--approved-by",
+                                "human",
+                            ]
+                        )
+
+            self.assertEqual(result, 0)
+            self.assertEqual([call["validation_unit_id"] for call in build_calls], ["baseline", "spring-boot-2-7-stabilization"])
+            self.assertTrue(all(call["java_home_env"] == "JAVA_HOME_11" for call in build_calls))
+
     def test_transform_v1_after_approval_reports_build_failure(self) -> None:
         with workspace_temp_dir() as tmp:
             legacy = tmp / "legacy-app"
@@ -1687,12 +3352,15 @@ def _passed_test_result(run_dir: Path) -> _TestAgentResult:
     log.write_text("ok\n", encoding="utf-8")
     return _TestAgentResult(
         test_status="TEST_PASSED",
+        severity="INFO",
+        message="Surefire reports parsed successfully.",
         totals={"tests": 1, "passed": 1, "failures": 0, "errors": 0, "skipped": 0},
         report_path=report,
         summary_path=summary,
         log_path=log,
         report_paths=[str(report)],
         parse_duration_seconds=0.01,
+        warnings=[],
     )
 
 
@@ -1739,6 +3407,11 @@ def _write_approved_run_artifacts(
     include_rewrite_plan: bool = False,
     source_unit_id: str = "java-17",
     source_unit_goal: str = "Upgrade project runtime to Java 17.",
+    planning_units_yaml: str | None = None,
+    dependency_graph_payload: dict[str, object] | None = None,
+    tooling_versions_payload: dict[str, str] | None = None,
+    framework_versions_payload: dict[str, str] | None = None,
+    analysis_report_payload: dict[str, object] | None = None,
 ) -> None:
     _write_run_artifacts(
         app,
@@ -1746,6 +3419,11 @@ def _write_approved_run_artifacts(
         include_rewrite_plan=include_rewrite_plan,
         source_unit_id=source_unit_id,
         source_unit_goal=source_unit_goal,
+        planning_units_yaml=planning_units_yaml,
+        dependency_graph_payload=dependency_graph_payload,
+        tooling_versions_payload=tooling_versions_payload,
+        framework_versions_payload=framework_versions_payload,
+        analysis_report_payload=analysis_report_payload,
     )
     run_dir = _run_dir(app, run_id)
     write_approved_plan_lock(run_dir, run_id)
@@ -1764,6 +3442,11 @@ def _write_run_artifacts(
     include_rewrite_plan: bool = False,
     source_unit_id: str = "java-17",
     source_unit_goal: str = "Upgrade project runtime to Java 17.",
+    planning_units_yaml: str | None = None,
+    dependency_graph_payload: dict[str, object] | None = None,
+    tooling_versions_payload: dict[str, str] | None = None,
+    framework_versions_payload: dict[str, str] | None = None,
+    analysis_report_payload: dict[str, object] | None = None,
 ) -> None:
     run_dir = _run_dir(app, run_id)
     planning_dir = run_dir / "planning"
@@ -1772,6 +3455,10 @@ def _write_run_artifacts(
     planning_dir.mkdir(parents=True, exist_ok=True)
     assessment_dir.mkdir(parents=True, exist_ok=True)
     analysis_dir.mkdir(parents=True, exist_ok=True)
+    (analysis_dir / "analysis_report.json").write_text(
+        json.dumps(analysis_report_payload or {"status": "PASS"}),
+        encoding="utf-8",
+    )
 
     (planning_dir / "migration_plan.yaml").write_text(
         f"""
@@ -1780,13 +3467,16 @@ run_id: "{run_id}"
 status: "PASS"
 risk: "LOW"
 profile: "java17"
+tooling_versions:
+{_tooling_versions_yaml(tooling_versions_payload)}
+framework_versions:
+{_tooling_versions_yaml(framework_versions_payload)}
 artifact_refs:
   self: "migration_plan.yaml"
 """.lstrip(),
         encoding="utf-8",
     )
-    (planning_dir / "migration_units.yaml").write_text(
-        f"""
+    units_yaml = planning_units_yaml or f"""
 schema_version: "1.0.0"
 run_id: "{run_id}"
 status: "PASS"
@@ -1818,13 +3508,20 @@ units:
     required: "yes"
     expected_artifacts:
       - "target/classes"
-""".lstrip(),
+""".lstrip()
+    (planning_dir / "migration_units.yaml").write_text(
+        units_yaml,
         encoding="utf-8",
     )
     (assessment_dir / "assessment_report.json").write_text(
         json.dumps({"profile": "java17"}),
         encoding="utf-8",
     )
+    if dependency_graph_payload is not None:
+        (analysis_dir / "dependency_graph.json").write_text(
+            json.dumps(dependency_graph_payload),
+            encoding="utf-8",
+        )
     if include_rewrite_plan:
         (analysis_dir / "rewrite_plugin_plan.json").write_text(
             json.dumps(
@@ -1866,6 +3563,12 @@ recipe_artifacts:
 """.lstrip(),
         encoding="utf-8",
     )
+
+
+def _tooling_versions_yaml(values: dict[str, str] | None) -> str:
+    if not values:
+        return "  {}\n"
+    return "".join(f'  {key}: "{value}"\n' for key, value in values.items())
 
 
 if __name__ == "__main__":

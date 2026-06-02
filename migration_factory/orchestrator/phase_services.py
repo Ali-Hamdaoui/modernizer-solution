@@ -118,6 +118,7 @@ def record_approval_decision_phase(state: MigrationState) -> MigrationState:
 def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
     from migration_factory.transform_v1_after_approval import (
         STATUS_APPLIED,
+        STATUS_COMPLETED_WITH_WARNINGS,
         apply_approved_sandbox_transform,
     )
 
@@ -158,7 +159,9 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
     if result.test_log_path is not None:
         artifact_refs["post_transform_test_log"] = str(result.test_log_path)
 
-    if result.exit_code != 0 or result.status != STATUS_APPLIED or result.sandbox_path is None:
+    warnings = [*list(state.get("warnings", []) or []), *list(result.warnings or [])]
+
+    if result.exit_code != 0 or result.sandbox_path is None:
         message = result.message or f"sandbox transform failed with status {result.status}"
         failed = _with_phase_failure(
             state,
@@ -168,7 +171,7 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         )
         failed.update(
             {
-                "transform_status": result.status,
+                "transform_status": result.transform_status or result.status,
                 "build_status": result.build_status or "",
                 "test_status": result.test_status or "",
                 "test_totals": dict(result.test_totals or {}),
@@ -181,6 +184,7 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
                 "artifact_refs": artifact_refs,
                 "final_status": result.status,
                 "stop_reason": message,
+                "warnings": warnings,
                 "timing": _merged_timing_state(Path(state.get("run_dir", "")), state),
             }
         )
@@ -189,7 +193,7 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
     return {
         "current_phase": "sandbox_transform",
         "orchestration_status": "PASS",
-        "transform_status": result.status,
+        "transform_status": result.transform_status or STATUS_APPLIED,
         "build_status": result.build_status or "",
         "test_status": result.test_status or "",
         "test_totals": dict(result.test_totals or {}),
@@ -200,8 +204,9 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         "sandbox_path": str(result.sandbox_path),
         "transform_log_path": str(result.log_file),
         "artifact_refs": artifact_refs,
-        "final_status": STATUS_APPLIED,
+        "final_status": result.status if result.status == STATUS_COMPLETED_WITH_WARNINGS else STATUS_APPLIED,
         "stop_reason": result.message,
+        "warnings": warnings,
         "timing": _merged_timing_state(Path(state.get("run_dir", "")), state),
     }
 

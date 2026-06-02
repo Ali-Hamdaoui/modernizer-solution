@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -33,14 +34,17 @@ def write_transformation_execution_plan(
     migration_units = _read_yaml_mapping(run_dir / "planning" / "migration_units.yaml")
     assessment_report = _read_json_mapping(run_dir / "assessment" / "assessment_report.json")
     rewrite_plugin_plan = _read_optional_json_mapping(run_dir / "analysis" / "rewrite_plugin_plan.json")
+    dependency_graph = _read_optional_json_mapping(run_dir / "analysis" / "dependency_graph.json")
 
     payload = _build_transformer_plan(
         app_path=app_path,
         run_id=run_id,
         migration_plan=migration_plan,
         migration_units=migration_units,
+        analysis_report=_read_json_mapping(run_dir / "analysis" / "analysis_report.json"),
         assessment_report=assessment_report,
         rewrite_plugin_plan=rewrite_plugin_plan,
+        dependency_graph=dependency_graph,
     )
 
     output_path = run_dir / TRANSFORMATION_DIR_NAME / TRANSFORMATION_EXECUTION_PLAN
@@ -71,18 +75,22 @@ def _build_transformer_plan(
     run_id: str,
     migration_plan: dict[str, Any],
     migration_units: dict[str, Any],
+    analysis_report: dict[str, Any],
     assessment_report: dict[str, Any],
     rewrite_plugin_plan: dict[str, Any] | None,
+    dependency_graph: dict[str, Any] | None,
 ) -> dict[str, Any]:
     units = migration_units.get("units")
     if not isinstance(units, list) or not units:
         raise TransformationExecutionPlanError("planning/migration_units.yaml must contain units")
 
-    active_recipes = _string_list((rewrite_plugin_plan or {}).get("active_recipes"))
-    recipe_artifacts = _string_list((rewrite_plugin_plan or {}).get("recipe_artifacts"))
-    first_write_unit = _first_write_unit_id(units) if active_recipes else None
-    first_write_index = _first_write_unit_index(units) if active_recipes else -1
+    global_openrewrite = _global_openrewrite_config(rewrite_plugin_plan)
+    has_unit_openrewrite = any(_unit_openrewrite_config(unit, global_openrewrite) is not None for unit in units)
+    first_write_unit = _first_write_unit_id(units) if global_openrewrite["active_recipes"] and not has_unit_openrewrite else None
     profile = migration_plan.get("profile") or assessment_report.get("profile")
+    tooling_versions = _mapping_of_strings(migration_plan.get("tooling_versions"))
+    framework_versions = _mapping_of_strings(migration_plan.get("framework_versions"))
+    validation_signals = _detected_validation_usage(app_path, analysis_report, dependency_graph)
 
     return {
         "schema_version": TRANSFORMATION_PLAN_SCHEMA_VERSION,
@@ -100,11 +108,14 @@ def _build_transformer_plan(
         "migration_units": [
             _adapt_unit(
                 unit,
-                active_recipes=active_recipes,
-                recipe_artifacts=recipe_artifacts if index == first_write_index else None,
+                global_openrewrite=global_openrewrite,
                 first_write_unit=first_write_unit,
+                dependency_graph=dependency_graph,
+                tooling_versions=tooling_versions,
+                framework_versions=framework_versions,
+                validation_signals=validation_signals,
             )
-            for index, unit in enumerate(units)
+            for unit in units
         ],
     }
 
@@ -112,9 +123,12 @@ def _build_transformer_plan(
 def _adapt_unit(
     raw_unit: Any,
     *,
-    active_recipes: list[str],
-    recipe_artifacts: list[str] | None = None,
+    global_openrewrite: dict[str, Any],
     first_write_unit: str | None,
+    dependency_graph: dict[str, Any] | None,
+    tooling_versions: dict[str, str],
+    framework_versions: dict[str, str],
+    validation_signals: list[str],
 ) -> dict[str, Any]:
     if not isinstance(raw_unit, dict):
         raise TransformationExecutionPlanError("planning/migration_units.yaml units must be mappings")
@@ -125,11 +139,27 @@ def _adapt_unit(
     unit_id = str(unit_id)
 
     transformations: list[dict[str, Any]] = []
-    if active_recipes and unit_id == first_write_unit:
-        openrewrite_transformation = {"type": "openrewrite", "active_recipes": active_recipes}
-        if recipe_artifacts:
-            openrewrite_transformation["recipe_artifacts"] = recipe_artifacts
+    unit_openrewrite = _unit_openrewrite_config(raw_unit, global_openrewrite)
+    if unit_openrewrite is not None:
+        openrewrite_transformation = {"type": "openrewrite", **unit_openrewrite}
         transformations.append(openrewrite_transformation)
+    elif global_openrewrite["active_recipes"] and unit_id == first_write_unit:
+        openrewrite_transformation = {
+            "type": "openrewrite",
+            "active_recipes": list(global_openrewrite["active_recipes"]),
+        }
+        if global_openrewrite["recipe_artifacts"]:
+            openrewrite_transformation["recipe_artifacts"] = list(global_openrewrite["recipe_artifacts"])
+        transformations.append(openrewrite_transformation)
+    transformations.extend(
+        _deterministic_source_transformations(
+            raw_unit,
+            dependency_graph,
+            tooling_versions,
+            framework_versions,
+            validation_signals,
+        )
+    )
     transformations.append(
         {
             "type": "custom_code_change",
@@ -140,6 +170,9 @@ def _adapt_unit(
     return {
         "id": unit_id,
         "title": raw_unit.get("goal") or raw_unit.get("title"),
+        "java_home_env": _string_or_none(raw_unit.get("java_home_env")),
+        "java_home_used": _resolve_java_home(_string_or_none(raw_unit.get("java_home_env"))),
+        "hop_id": _string_or_none(raw_unit.get("hop_id")),
         "expected_files": _expected_files(raw_unit),
         "transformations": transformations,
         "checks": _checks(raw_unit),
@@ -185,6 +218,289 @@ def _first_write_unit_index(units: list[Any]) -> int:
     return 0
 
 
+def _global_openrewrite_config(rewrite_plugin_plan: dict[str, Any] | None) -> dict[str, Any]:
+    plan = rewrite_plugin_plan or {}
+    return {
+        "active_recipes": _string_list(plan.get("active_recipes")),
+        "recipe_artifacts": _string_list(plan.get("recipe_artifacts")),
+    }
+
+
+def _unit_openrewrite_config(raw_unit: Any, global_openrewrite: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(raw_unit, dict):
+        return None
+    config = raw_unit.get("openrewrite")
+    if not isinstance(config, dict):
+        return None
+
+    active_recipes = _string_list(config.get("active_recipes"))
+    if not active_recipes:
+        return None
+
+    recipe_artifacts = _string_list(config.get("recipe_artifacts")) or list(global_openrewrite["recipe_artifacts"])
+    unit_config: dict[str, Any] = {"active_recipes": active_recipes}
+    if recipe_artifacts:
+        unit_config["recipe_artifacts"] = recipe_artifacts
+
+    for key in ("apply_goal",):
+        value = config.get(key)
+        if value is not None:
+            unit_config[key] = str(value)
+    for key in ("apply_maven_args", "analysis_preview_maven_args"):
+        values = _string_list(config.get(key))
+        if values:
+            unit_config[key] = values
+    return unit_config
+
+
+def _deterministic_source_transformations(
+    raw_unit: Any,
+    dependency_graph: dict[str, Any] | None,
+    tooling_versions: dict[str, str],
+    framework_versions: dict[str, str],
+    validation_signals: list[str],
+) -> list[dict[str, Any]]:
+    if not isinstance(raw_unit, dict):
+        return []
+    unit_id = str(raw_unit.get("id") or "")
+    if unit_id == "spring-boot-2-7-stabilization":
+        jackson_operation: dict[str, Any] = {
+            "op": "align_jackson_dependency_management",
+            "version": "2.13.5",
+        }
+        present_artifacts = _present_optional_jackson_artifacts(dependency_graph)
+        if present_artifacts:
+            jackson_operation["present_artifacts"] = present_artifacts
+        return [
+            {"type": "spring_data_sort_by_factory_method"},
+            {
+                "type": "maven_pom_patch",
+                "operations": [jackson_operation],
+            },
+        ]
+    if unit_id == "java-17":
+        lombok_version = tooling_versions.get("lombok")
+        jacoco_version = tooling_versions.get("jacoco")
+        operations: list[dict[str, Any]] = []
+        if lombok_version:
+            operations.append(
+                {
+                    "op": "align_lombok_version",
+                    "version": lombok_version,
+                }
+            )
+        if jacoco_version:
+            operations.append(
+                {
+                    "op": "align_jacoco_version",
+                    "version": jacoco_version,
+                }
+            )
+        if not operations:
+            return []
+        return [
+            {
+                "type": "maven_pom_patch",
+                "operations": operations,
+            }
+        ]
+    if unit_id == "spring-boot-3-5-14":
+        jackson_version = framework_versions.get("jackson")
+        jackson_annotations_version = framework_versions.get("jackson_annotations")
+        thymeleaf_version = framework_versions.get("thymeleaf")
+        compiler_plugin_version = tooling_versions.get("maven_compiler_plugin")
+        operations: list[dict[str, Any]] = []
+        if jackson_version:
+            jackson_operation: dict[str, Any] = {
+                "op": "align_jackson_dependency_management",
+                "version": jackson_version,
+            }
+            if jackson_annotations_version:
+                jackson_operation["version_overrides"] = {
+                    "com.fasterxml.jackson.core:jackson-annotations": jackson_annotations_version,
+                }
+            present_artifacts = _present_optional_jackson_artifacts(dependency_graph)
+            if present_artifacts:
+                jackson_operation["present_artifacts"] = present_artifacts
+            operations.append(jackson_operation)
+        thymeleaf_operation: dict[str, Any] = {
+            "op": "align_thymeleaf_dependencies",
+            "prefer_bom_managed": True,
+        }
+        if thymeleaf_version:
+            thymeleaf_operation["version"] = thymeleaf_version
+        operations.append(thymeleaf_operation)
+        operations.append(
+            {
+                "op": "align_validation_dependencies",
+                "detected_validation_usage": validation_signals,
+                "prefer_boot_starter": True,
+                **(
+                    {"non_boot_api_version": framework_versions["jakarta_validation_api"]}
+                    if framework_versions.get("jakarta_validation_api")
+                    else {}
+                ),
+            }
+        )
+        slf4j_version = framework_versions.get("slf4j_api")
+        spring_security_version = framework_versions.get("spring_security")
+        operations.append(
+            {
+                "op": "align_slf4j_logging",
+                **({"slf4j_api_version": slf4j_version} if slf4j_version else {}),
+            }
+        )
+        operations.append(
+            {
+                "op": "align_spring_security_dependencies",
+                "present_artifacts": _present_spring_security_artifacts(dependency_graph),
+                **(
+                    {"spring_security_version": spring_security_version}
+                    if spring_security_version
+                    else {}
+                ),
+            }
+        )
+        compiler_operation: dict[str, Any] = {"op": "align_maven_compiler_parameters"}
+        if compiler_plugin_version:
+            compiler_operation["plugin_version"] = compiler_plugin_version
+        operations.append(compiler_operation)
+        return [
+            {"type": "spring6_exception_handler_override_alignment"},
+            {
+                "type": "maven_pom_patch",
+                "operations": operations,
+            }
+        ]
+    return []
+
+
+def _detected_validation_usage(
+    app_path: Path,
+    analysis_report: dict[str, Any] | None,
+    dependency_graph: dict[str, Any] | None,
+) -> list[str]:
+    signals: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            signals.append(text)
+
+    report = analysis_report if isinstance(analysis_report, dict) else {}
+    for key in ("imports", "java_imports", "detected_imports"):
+        value = report.get(key)
+        if isinstance(value, list):
+            for item in value:
+                token = str(item).strip()
+                if token.startswith(("jakarta.validation", "javax.validation")):
+                    add(token)
+                if token.endswith("ConstraintViolationException"):
+                    add(token)
+
+    project_metadata = report.get("project_metadata")
+    if isinstance(project_metadata, dict):
+        imports = project_metadata.get("imports")
+        if isinstance(imports, list):
+            for item in imports:
+                token = str(item).strip()
+                if token.startswith(("jakarta.validation", "javax.validation")):
+                    add(token)
+                if token.endswith("ConstraintViolationException"):
+                    add(token)
+        import_stats = project_metadata.get("import_stats")
+        if isinstance(import_stats, dict):
+            javax_count = import_stats.get("javax_count")
+            if isinstance(javax_count, int) and javax_count > 0:
+                add("javax_count>0")
+
+    dependencies = report.get("dependencies")
+    if isinstance(dependencies, list):
+        for item in dependencies:
+            if not isinstance(item, dict):
+                continue
+            hay = " ".join(
+                str(item.get(key) or "").lower()
+                for key in ("groupId", "group_id", "artifactId", "artifact_id")
+            )
+            if "validation-api" in hay or "jakarta.validation" in hay:
+                add(hay)
+
+    if isinstance(dependency_graph, dict):
+        for name in sorted(_collect_dependency_names(dependency_graph.get("root"))):
+            lower = name.lower()
+            if "validation-api" in lower or "jakarta.validation" in lower:
+                add(name)
+
+    source_root = app_path / "src" / "main" / "java"
+    if source_root.is_dir():
+        for java_file in source_root.rglob("*.java"):
+            try:
+                text = java_file.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                text = java_file.read_text(encoding="latin-1")
+            if "jakarta.validation" in text:
+                add("jakarta.validation")
+            if "javax.validation" in text:
+                add("javax.validation")
+            if "ConstraintViolationException" in text:
+                add("ConstraintViolationException")
+
+    return signals
+
+
+def _present_optional_jackson_artifacts(dependency_graph: dict[str, Any] | None) -> list[str]:
+    if not isinstance(dependency_graph, dict):
+        return []
+    root = dependency_graph.get("root")
+    names = _collect_dependency_names(root)
+    matches: list[str] = []
+    for coordinate in (
+        "com.fasterxml.jackson.dataformat:jackson-dataformat-csv",
+        "com.fasterxml.jackson.dataformat:jackson-dataformat-xml",
+        "com.fasterxml.jackson.module:jackson-module-jaxb-annotations",
+    ):
+        if coordinate in names:
+            matches.append(coordinate)
+    return matches
+
+
+def _present_spring_security_artifacts(dependency_graph: dict[str, Any] | None) -> list[str]:
+    if not isinstance(dependency_graph, dict):
+        return []
+    root = dependency_graph.get("root")
+    names = _collect_dependency_names(root)
+    return sorted(name for name in names if name.startswith("org.springframework.security:"))
+
+
+def _collect_dependency_names(node: Any) -> set[str]:
+    if not isinstance(node, dict):
+        return set()
+    names: set[str] = set()
+    raw_name = node.get("name")
+    if isinstance(raw_name, str):
+        parts = raw_name.split(":")
+        if len(parts) >= 2:
+            names.add(f"{parts[0]}:{parts[1]}")
+    for child in node.get("dependencies", []):
+        names.update(_collect_dependency_names(child))
+    return names
+
+
+def _mapping_of_strings(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, str] = {}
+    for key, item in value.items():
+        key_text = str(key).strip()
+        value_text = str(item or "").strip()
+        if key_text and value_text:
+            result[key_text] = value_text
+    return result
+
+
 def _string_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -193,6 +509,21 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, tuple):
         return [str(item) for item in value]
     return [str(value)]
+
+
+def _string_or_none(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _resolve_java_home(java_home_env: str | None) -> str | None:
+    if not java_home_env:
+        return None
+    value = os.environ.get(java_home_env)
+    if not value:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _read_json_mapping(path: Path) -> dict[str, Any]:

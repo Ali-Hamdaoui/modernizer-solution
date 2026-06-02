@@ -64,6 +64,9 @@ def test_successful_full_sandbox_writes_final_report_and_summary(tmp_path: Path,
 
     payload = json.loads(final_report.read_text(encoding="utf-8"))
     assert payload["test_status"] == "TEST_PASSED"
+    assert payload["test_confidence"] == "HIGHER"
+    assert payload["sandbox_migration_executed"] is True
+    assert payload["production_promotion_executed"] is False
     assert payload["test_totals"]["tests"] == 3
     assert payload["approval"]["approval_ref"].endswith("approval_decision.json")
     assert payload["lock_status"]["lock_ref"].endswith("approved_plan_lock.json")
@@ -91,6 +94,116 @@ def test_successful_full_sandbox_writes_final_report_and_summary(tmp_path: Path,
     overview = Path(result["artifact_refs"]["copilot_migration_overview"]).read_text(encoding="utf-8")
     assert "Advisory documentation only" in overview
     assert str(Path(state["artifact_refs"]["analysis_report"])) in overview
+
+
+def test_final_report_prefers_selected_route_strategy_and_exposes_hops(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("AI_MIGRATION_ENABLE_COPILOT_STATEMENT", raising=False)
+    state = _successful_state(tmp_path)
+    planning_dir = Path(state["planning_dir"])
+    (planning_dir / "migration_plan.yaml").write_text(
+        """
+status: PASS
+target_stack:
+  java: "17"
+  spring_boot: "3.5.14"
+  spring_framework: "6.2.18"
+profile_governance:
+  strategy: direct_sandbox
+  risk_level: high
+  production_allowed: false
+selected_route_id: boot-2.1-to-3.5-java17
+route_strategy: multi_hop
+selected_hops:
+  - id: boot-2.1-to-2.7-java11
+  - id: boot-2.7-to-3.5-java17
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    result = finalize_orchestration_state(state)
+
+    payload = json.loads(Path(result["artifact_refs"]["final_migration_report"]).read_text(encoding="utf-8"))
+    assert payload["strategy"] == "multi_hop"
+    assert payload["route_strategy"] == "multi_hop"
+    assert payload["selected_route_id"] == "boot-2.1-to-3.5-java17"
+    assert [hop["id"] for hop in payload["selected_hops"]] == [
+        "boot-2.1-to-2.7-java11",
+        "boot-2.7-to-3.5-java17",
+    ]
+
+
+def test_final_report_deduplicates_warnings_preserving_order(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("AI_MIGRATION_ENABLE_COPILOT_STATEMENT", raising=False)
+    state = _successful_state(tmp_path)
+    state["warnings"] = ["same-warning", "same-warning", "next-warning"]
+    report_path = Path(state["artifact_refs"]["post_transform_test_report"])
+    report_path.write_text(
+        json.dumps(
+            {
+                "test_status": "NO_TESTS_FOUND",
+                "severity": "WARNING",
+                "message": "No Surefire reports found, but baseline analysis detected no tests. Build passed; treating as warning.",
+                "totals": {"tests": 0, "passed": 0, "failures": 0, "errors": 0, "skipped": 0},
+                "warnings": ["same-warning", "Contract library has no automated tests; consumer compatibility validation is required."],
+                "test_log_path": state["artifact_refs"]["post_transform_test_log"],
+                "source_log_path": state["artifact_refs"]["phase2_log"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    state["test_status"] = "NO_TESTS_FOUND"
+    state["final_status"] = "SANDBOX_MIGRATION_COMPLETED_WITH_WARNINGS"
+
+    result = finalize_orchestration_state(state)
+
+    payload = json.loads(Path(result["artifact_refs"]["final_migration_report"]).read_text(encoding="utf-8"))
+    assert payload["warnings"][0:3] == [
+        "same-warning",
+        "next-warning",
+        "Contract library has no automated tests; consumer compatibility validation is required.",
+    ]
+    assert payload["warnings"].count("same-warning") == 1
+
+
+def test_final_report_includes_zero_test_warning(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("AI_MIGRATION_ENABLE_COPILOT_STATEMENT", raising=False)
+    state = _successful_state(tmp_path)
+    state["test_status"] = "NO_TESTS_FOUND"
+    state["final_status"] = "SANDBOX_MIGRATION_COMPLETED_WITH_WARNINGS"
+    report_path = Path(state["artifact_refs"]["post_transform_test_report"])
+    report_path.write_text(
+        json.dumps(
+            {
+                "test_status": "NO_TESTS_FOUND",
+                "severity": "WARNING",
+                "message": "No Surefire reports found, but baseline analysis detected no tests. Build passed; treating as warning.",
+                "totals": {"tests": 0, "passed": 0, "failures": 0, "errors": 0, "skipped": 0},
+                "warnings": [
+                    "No Surefire reports found, but baseline analysis detected no tests. Build passed; treating as warning.",
+                    "Contract library has no automated tests; consumer compatibility validation is required.",
+                ],
+                "test_log_path": state["artifact_refs"]["post_transform_test_log"],
+                "source_log_path": state["artifact_refs"]["phase2_log"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = finalize_orchestration_state(state)
+
+    payload = json.loads(Path(result["artifact_refs"]["final_migration_report"]).read_text(encoding="utf-8"))
+    summary = Path(result["artifact_refs"]["final_migration_summary"]).read_text(encoding="utf-8")
+    assert payload["test_status"] == "NO_TESTS_FOUND"
+    assert payload["test_severity"] == "WARNING"
+    assert payload["test_confidence"] == "LOWER"
+    assert "Build passed" in payload["test_message"]
+    assert any("consumer compatibility validation is required" in warning for warning in payload["warnings"])
+    assert any("confidence is lower" in warning for warning in payload["warnings"])
+    assert result["final_status"] == "SANDBOX_MIGRATION_COMPLETED_WITH_WARNINGS"
+    assert "Test Severity: WARNING" in summary
+    assert "Test Confidence: LOWER" in summary
 
 
 def test_enabled_copilot_final_report_writes_optional_sidecar_artifacts(tmp_path: Path, monkeypatch) -> None:
@@ -126,7 +239,7 @@ def test_enabled_copilot_final_report_writes_optional_sidecar_artifacts(tmp_path
     assert summary["artifact_refs"]["copilot_report_response"] == str(response_ref)
     assert summary["artifact_refs"]["copilot_migration_report"] == str(report_ref)
     assert result["orchestration_status"] == "PASS"
-    assert result["final_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
+    assert result["final_status"] == "SANDBOX_MIGRATION_COMPLETED"
 
 
 def test_enabled_copilot_final_report_uses_internal_resolved_path_only_in_memory(
@@ -338,7 +451,7 @@ def test_copilot_advisory_failure_records_warning_without_failing_report(tmp_pat
     result = finalize_orchestration_state(state)
 
     assert result["orchestration_status"] == "PASS"
-    assert result["final_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
+    assert result["final_status"] == "SANDBOX_MIGRATION_COMPLETED"
     assert result["orchestration_artifacts_valid"] is True
     assert Path(result["artifact_refs"]["final_migration_report"]).is_file()
     assert "copilot_migration_statement_json" not in result["artifact_refs"]
@@ -367,7 +480,7 @@ def test_copilot_documentation_warns_when_required_source_artifact_ref_is_missin
     result = finalize_orchestration_state(state)
 
     assert result["orchestration_status"] == "PASS"
-    assert result["final_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
+    assert result["final_status"] == "SANDBOX_MIGRATION_COMPLETED"
     assert "copilot_migration_overview" not in result["artifact_refs"]
     assert any("copilot documentation generation skipped" in warning for warning in result["warnings"])
 
@@ -404,6 +517,49 @@ def test_copilot_documentation_runs_only_after_successful_sandbox_validation(tmp
 
     assert result["orchestration_artifacts_valid"] is False
     assert "copilot_migration_overview" not in result["artifact_refs"]
+
+
+def test_failed_sandbox_with_classification_generates_final_failure_report(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("AI_MIGRATION_ENABLE_COPILOT_STATEMENT", raising=False)
+    state = _failed_state(tmp_path)
+
+    result = finalize_orchestration_state(state)
+
+    report_path = Path(result["artifact_refs"]["final_migration_report"])
+    summary_path = Path(result["artifact_refs"]["final_migration_summary"])
+    assert report_path.is_file()
+    assert summary_path.is_file()
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    summary = summary_path.read_text(encoding="utf-8")
+    assert payload["final_status"] == "TEST_FAILED_IN_SANDBOX"
+    assert payload["orchestration_status"] == "FAIL"
+    assert payload["failed_unit"] == "spring-boot-3-5-14"
+    assert payload["production_promotion_executed"] is False
+    assert payload["production_allowed"] is False
+    assert payload["human_review_required"] is True
+    assert payload["category_counts"]["HTTP_STATUS_CONTRACT_DRIFT"] == 1
+    assert payload["post_transform_failure_classification_path"].endswith("post_transform_failure_classification.json")
+    assert payload["build_error_contract_path"].endswith(".json")
+    assert payload["artifact_refs"]["post_transform_failure_classification"].endswith(
+        "post_transform_failure_classification.json"
+    )
+    assert summary.count("HTTP_STATUS_CONTRACT_DRIFT: 1") == 1
+    assert "Sandbox migration failed with classified post-transform test failures." in summary
+    assert result["orchestration_artifacts_valid"] is False
+
+
+def test_failed_sandbox_without_classification_still_generates_final_failure_report(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("AI_MIGRATION_ENABLE_COPILOT_STATEMENT", raising=False)
+    state = _failed_state(tmp_path, include_classification=False)
+
+    result = finalize_orchestration_state(state)
+
+    payload = json.loads(Path(result["artifact_refs"]["final_migration_report"]).read_text(encoding="utf-8"))
+    assert payload["final_status"] == "BUILD_FAILED_IN_SANDBOX"
+    assert payload["orchestration_status"] == "FAIL"
+    assert payload["category_counts"] == {}
+    assert payload["post_transform_failure_classification_path"] == ""
+    assert result["orchestration_artifacts_valid"] is False
 
 
 def test_final_report_extracts_transform_unit_recipes_and_boot4_target(tmp_path: Path) -> None:
@@ -576,6 +732,113 @@ def _successful_state(tmp_path: Path) -> dict:
             },
         }
     )
+    return state
+
+
+def _failed_state(tmp_path: Path, *, include_classification: bool = True) -> dict:
+    state = _successful_state(tmp_path)
+    run_dir = Path(state["run_dir"])
+    build_dir = run_dir / "build"
+    build_dir.mkdir(parents=True, exist_ok=True)
+    state.update(
+        {
+            "orchestration_status": "FAIL",
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+            "test_status": "TEST_FAILED_IN_SANDBOX",
+            "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+            "final_status": "TEST_FAILED_IN_SANDBOX" if include_classification else "BUILD_FAILED_IN_SANDBOX",
+            "stop_reason": "Sandbox migration failed after post-transform tests.",
+            "warnings": [],
+            "errors": ["post-transform test failures"],
+            "blockers": ["post-transform test failures"],
+            "current_unit": "spring-boot-3-5-14",
+        }
+    )
+    if include_classification:
+        classification_path = build_dir / "post_transform_failure_classification.json"
+        classification_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0.0",
+                    "agent": "build-agent",
+                    "created_at": "2026-06-02T12:00:00+00:00",
+                    "project_path": str(run_dir / "workspaces" / "sandbox"),
+                    "unit_id": "spring-boot-3-5-14",
+                    "suite_count": 1,
+                    "failure_count": 2,
+                    "category_counts": {
+                        "HTTP_STATUS_CONTRACT_DRIFT": 1,
+                        "MOCKITO_FINAL_CLASS_MOCKING_LIMITATION": 1,
+                    },
+                    "failures": [
+                        {
+                            "test_class": "com.example.CustomExceptionTranslatorTest",
+                            "test_method": "requestMethodNotSupported",
+                            "outcome": "failure",
+                            "symptom": "expected:<404> but was:<405>",
+                            "exception_type": "org.junit.ComparisonFailure",
+                            "category": "HTTP_STATUS_CONTRACT_DRIFT",
+                            "suggested_next_action": "Review expected HTTP status codes and exception-to-response mappings under Spring Boot 3.",
+                        },
+                        {
+                            "test_class": "com.example.AzureBusTopicTest",
+                            "test_method": "createsTopicClient",
+                            "outcome": "error",
+                            "symptom": "Cannot mock/spy class because it is a final class",
+                            "exception_type": "org.mockito.exceptions.base.MockitoException",
+                            "category": "MOCKITO_FINAL_CLASS_MOCKING_LIMITATION",
+                            "suggested_next_action": "Review test double strategy for final classes or enable supported Mockito inline/final-class configuration.",
+                        },
+                    ],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        build_error_path = build_dir / "build-error-20260602-120000-test_failure.json"
+        build_error_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "agent": "build-agent",
+                    "created_at": "2026-06-02T12:00:01+00:00",
+                    "project_path": str(run_dir / "workspaces" / "sandbox"),
+                    "status": "failed",
+                    "result_kind": "test_failure",
+                    "message": "Surefire reported post-transform test failures.",
+                    "unit_id": "spring-boot-3-5-14",
+                    "failure_classification_path": str(classification_path),
+                    "failure_categories": {
+                        "HTTP_STATUS_CONTRACT_DRIFT": 1,
+                        "MOCKITO_FINAL_CLASS_MOCKING_LIMITATION": 1,
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    else:
+        build_error_path = build_dir / "build-error-20260602-120000-build_failure.json"
+        build_error_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "agent": "build-agent",
+                    "created_at": "2026-06-02T12:00:01+00:00",
+                    "project_path": str(run_dir / "workspaces" / "sandbox"),
+                    "status": "failed",
+                    "result_kind": "build_failure",
+                    "message": "Build failed in sandbox.",
+                    "unit_id": "spring-boot-3-5-14",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    state["artifact_refs"] = {
+        **dict(state.get("artifact_refs", {})),
+        "build_error_contract": str(build_error_path),
+    }
     return state
 
 

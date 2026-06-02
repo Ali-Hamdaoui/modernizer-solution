@@ -17,6 +17,13 @@ def assemble_report(context, maven_data, import_data):
         "source_stack": source_stack,
         "target_stack": target_stack,
         "warnings": maven_data.get("warnings", []),
+        "project_kind": maven_data.get("project_kind", "unknown"),
+        "has_spring_boot_main": maven_data.get("has_spring_boot_main", False),
+        "has_rest_contracts": maven_data.get("has_rest_contracts", False),
+        "has_juneau_contracts": maven_data.get("has_juneau_contracts", False),
+        "packaging": maven_data.get("packaging", "unknown"),
+        "internal_dependencies_count": maven_data.get("internal_dependencies_count", 0),
+        "internal_dependencies": maven_data.get("internal_dependencies", []),
         
         "project_metadata": {
             "modules": project_structure.get("modules", []),
@@ -44,6 +51,7 @@ def assemble_report(context, maven_data, import_data):
         "artifact_refs": {
             "self": "analysis_report.json",
             "dependency_graph": "dependency_graph.json",
+            "internal_dependencies": "internal_dependencies.json",
             "test_inventory": "test_inventory.json",
             "analysis_summary": "analysis_summary.md",
             "rewrite_preview": "rewrite_preview.json",

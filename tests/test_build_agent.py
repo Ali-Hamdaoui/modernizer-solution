@@ -6,10 +6,20 @@ import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from xml.sax.saxutils import escape
 
 from helpers import workspace_temp_dir
 from migration_factory.agents.build_agent import run_build_agent
 from migration_factory.agents.build_agent.classifier import BuildClassification, BuildResultKind, classify_line
+from migration_factory.agents.build_agent.failure_classifier import (
+    APPLICATION_BEHAVIOR_REGRESSION,
+    HTTP_STATUS_CONTRACT_DRIFT,
+    JAKARTA_VALIDATION_HANDLER_MISMATCH,
+    MOCKITO_FINAL_CLASS_MOCKING_LIMITATION,
+    SPRING_MVC_EXCEPTION_HANDLER_BEHAVIOR_DRIFT,
+    UNKNOWN_TEST_FAILURE,
+    classify_post_transform_test_failures,
+)
 from migration_factory.agents.build_agent.detection import (
     BuildTool,
     JavaProjectInfo,
@@ -265,7 +275,10 @@ public class Application {
     def test_baseline_validation_uses_source_jdk_env(self) -> None:
         with workspace_temp_dir() as project:
             _write_multi_module_project(project)
-            java8_home = str(project / "jdk8")
+            java8_home_path = project / "jdk8"
+            (java8_home_path / "bin").mkdir(parents=True)
+            (java8_home_path / "bin" / ("java.exe" if os.name == "nt" else "java")).write_text("", encoding="utf-8")
+            java8_home = str(java8_home_path)
             process_result = ProcessRunResult(
                 classification=BuildClassification(BuildResultKind.SUCCESS, "Build completed successfully"),
                 exit_code=0,
@@ -327,7 +340,10 @@ public class Application {
     def test_target_validation_uses_target_jdk_env(self) -> None:
         with workspace_temp_dir() as project:
             _write_multi_module_project(project)
-            java21_home = str(project / "jdk21")
+            java21_home_path = project / "jdk21"
+            (java21_home_path / "bin").mkdir(parents=True)
+            (java21_home_path / "bin" / ("java.exe" if os.name == "nt" else "java")).write_text("", encoding="utf-8")
+            java21_home = str(java21_home_path)
             process_result = ProcessRunResult(
                 classification=BuildClassification(BuildResultKind.SUCCESS, "Build completed successfully"),
                 exit_code=0,
@@ -350,6 +366,177 @@ public class Application {
             env = run_process.call_args.kwargs["env"]
             self.assertEqual(env["JAVA_HOME"], java21_home)
             self.assertTrue(env["PATH"].startswith(str(Path(java21_home) / "bin") + os.pathsep))
+
+    def test_unit_level_java_home_env_overrides_source_target_mapping(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_multi_module_project(project)
+            java11_home = project / "jdk11"
+            (java11_home / "bin").mkdir(parents=True)
+            (java11_home / "bin" / ("java.exe" if os.name == "nt" else "java")).write_text("", encoding="utf-8")
+            process_result = ProcessRunResult(
+                classification=BuildClassification(BuildResultKind.SUCCESS, "Build completed successfully"),
+                exit_code=0,
+            )
+
+            with patch.dict(
+                os.environ,
+                {"JAVA_HOME_11": str(java11_home), "JAVA_HOME_17": str(project / "unused-jdk17")},
+                clear=False,
+            ):
+                with patch(
+                    "migration_factory.agents.build_agent.agent.run_until_exit",
+                    return_value=process_result,
+                ) as run_process:
+                    result = run_build_agent(
+                        project / "shoppoc-app",
+                        stream_output=False,
+                        validation_unit_id="spring-boot-2-7-stabilization",
+                        source_changing_unit=True,
+                        java_home_env="JAVA_HOME_11",
+                        source_jdk_home_env="JAVA_HOME_11",
+                        target_jdk_home_env="JAVA_HOME_17",
+                    )
+
+            self.assertTrue(result.succeeded)
+            env = run_process.call_args.kwargs["env"]
+            self.assertEqual(env["JAVA_HOME"], str(java11_home))
+
+    def test_invalid_unit_level_java_home_env_writes_structured_error(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_multi_module_project(project)
+            output_dir = project / "build-errors"
+
+            with patch.dict(os.environ, {"BROKEN_JAVA_HOME": str(project / "missing-jdk")}, clear=False):
+                result = run_build_agent(
+                    project / "shoppoc-app",
+                    output_dir=output_dir,
+                    stream_output=False,
+                    validation_unit_id="spring-boot-2-7-stabilization",
+                    source_changing_unit=True,
+                    java_home_env="BROKEN_JAVA_HOME",
+                )
+
+            self.assertFalse(result.succeeded)
+            self.assertEqual(result.result_kind, BuildResultKind.COMMAND_ERROR.value)
+            self.assertIsNotNone(result.error_contract_path)
+            payload = json.loads(Path(result.error_contract_path).read_text(encoding="utf-8"))
+            self.assertEqual(payload["java_home_env"], "BROKEN_JAVA_HOME")
+            self.assertEqual(payload["java_home"], str(project / "missing-jdk"))
+            self.assertIn("invalid JAVA_HOME", payload["message"])
+
+    def test_failure_classifier_detects_jakarta_validation_handler_mismatch(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_project_with_legacy_validation_handler(project)
+            _write_surefire_failure(
+                project,
+                suite="com.example.AdviceTest",
+                test_name="constraintViolations",
+                outcome="error",
+                message="Request processing failed: jakarta.validation.ConstraintViolationException: test constraintViolation",
+                error_type="jakarta.servlet.ServletException",
+            )
+
+            result = classify_post_transform_test_failures(project, output_dir=project / "build", unit_id="spring-boot-3-5-14")
+
+            self.assertEqual(result.category_counts[JAKARTA_VALIDATION_HANDLER_MISMATCH], 1)
+            self.assertEqual(result.failures[0].category, JAKARTA_VALIDATION_HANDLER_MISMATCH)
+
+    def test_failure_classifier_detects_http_status_drift(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_surefire_failure(
+                project,
+                suite="com.example.WebTest",
+                test_name="requestMethodNotSupported",
+                outcome="failure",
+                message="Response status expected:<404> but was:<405>",
+                error_type="java.lang.AssertionError",
+            )
+
+            result = classify_post_transform_test_failures(project, output_dir=project / "build")
+
+            self.assertEqual(result.failures[0].category, HTTP_STATUS_CONTRACT_DRIFT)
+
+    def test_failure_classifier_detects_mockito_final_class_limitation(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_surefire_failure(
+                project,
+                suite="com.example.AzureBusTopicTest",
+                test_name="cannotMockTopicClient",
+                outcome="error",
+                message="Cannot mock/spy class com.microsoft.azure.servicebus.TopicClient",
+                error_type="org.mockito.exceptions.base.MockitoException",
+                detail_text="Mockito cannot mock/spy because : final class",
+            )
+
+            result = classify_post_transform_test_failures(project, output_dir=project / "build")
+
+            self.assertEqual(result.failures[0].category, MOCKITO_FINAL_CLASS_MOCKING_LIMITATION)
+
+    def test_failure_classifier_detects_controller_advice_servlet_exception_drift(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_surefire_failure(
+                project,
+                suite="com.example.CustomExceptionTranslatorTest",
+                test_name="missingToken",
+                outcome="error",
+                message="Request processing failed: io.jsonwebtoken.JwtException: Missing Token",
+                error_type="jakarta.servlet.ServletException",
+            )
+
+            result = classify_post_transform_test_failures(project, output_dir=project / "build")
+
+            self.assertEqual(result.failures[0].category, SPRING_MVC_EXCEPTION_HANDLER_BEHAVIOR_DRIFT)
+
+    def test_failure_classifier_marks_unknown_failure_when_pattern_not_matched(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_surefire_failure(
+                project,
+                suite="com.example.OtherTest",
+                test_name="randomFailure",
+                outcome="error",
+                message="weird crash happened",
+                error_type="java.lang.IllegalStateException",
+            )
+
+            result = classify_post_transform_test_failures(project, output_dir=project / "build")
+
+            self.assertEqual(result.failures[0].category, UNKNOWN_TEST_FAILURE)
+
+    def test_run_build_agent_writes_failure_classification_artifact_when_surefire_failures_exist(self) -> None:
+        with workspace_temp_dir() as project:
+            (project / "pom.xml").write_text("<project />", encoding="utf-8")
+            _write_surefire_failure(
+                project,
+                suite="com.example.TranslatorAdapterTest",
+                test_name="translateMissingValue",
+                outcome="error",
+                message="NoSuchElementException: No value present",
+                error_type="java.util.NoSuchElementException",
+            )
+            process_result = ProcessRunResult(
+                classification=BuildClassification(BuildResultKind.UNKNOWN_FAILURE, "Application failed with exit code 1"),
+                exit_code=1,
+            )
+
+            with patch(
+                "migration_factory.agents.build_agent.agent.run_until_exit",
+                return_value=process_result,
+            ):
+                result = run_build_agent(
+                    project,
+                    output_dir=project / "build-errors",
+                    stream_output=False,
+                    validation_unit_id="spring-boot-3-5-14",
+                    source_changing_unit=True,
+                    validation_command="mvn clean test",
+                )
+
+            self.assertFalse(result.succeeded)
+            payload = json.loads(Path(result.error_contract_path).read_text(encoding="utf-8"))
+            self.assertTrue(payload["failure_classification_path"].endswith("post_transform_failure_classification.json"))
+            self.assertEqual(payload["failure_categories"][APPLICATION_BEHAVIOR_REGRESSION], 1)
+            artifact = json.loads(Path(payload["failure_classification_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(artifact["category_counts"][APPLICATION_BEHAVIOR_REGRESSION], 1)
 
     def test_post_transform_multi_module_validation_honors_timeout_override(self) -> None:
         with workspace_temp_dir() as project:
@@ -753,6 +940,57 @@ public class ShoppocApplication {
         SpringApplication.run(ShoppocApplication.class, args);
     }
 }
+""",
+        encoding="utf-8",
+    )
+
+
+def _write_project_with_legacy_validation_handler(project: Path) -> None:
+    source = project / "src" / "main" / "java" / "com" / "example"
+    source.mkdir(parents=True)
+    (source / "Advice.java").write_text(
+        """package com.example;
+
+import javax.validation.ConstraintViolationException;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.context.request.NativeWebRequest;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
+
+public class Advice extends ResponseEntityExceptionHandler {
+    public ResponseEntity<Object> handleConstraintViolation(
+            final ConstraintViolationException exception,
+            final NativeWebRequest request) {
+        return null;
+    }
+}
+""",
+        encoding="utf-8",
+    )
+
+
+def _write_surefire_failure(
+    project: Path,
+    *,
+    suite: str,
+    test_name: str,
+    outcome: str,
+    message: str,
+    error_type: str,
+    detail_text: str | None = None,
+) -> None:
+    reports = project / "target" / "surefire-reports"
+    reports.mkdir(parents=True, exist_ok=True)
+    tag = "failure" if outcome == "failure" else "error"
+    payload = detail_text or message
+    xml_message = escape(message, {'"': "&quot;"})
+    xml_type = escape(error_type, {'"': "&quot;"})
+    (reports / f"TEST-{suite}.xml").write_text(
+        f"""<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="{suite}" tests="1" failures="{1 if tag == 'failure' else 0}" errors="{1 if tag == 'error' else 0}" skipped="0">
+  <testcase classname="{suite}" name="{test_name}" time="0.1">
+    <{tag} message="{xml_message}" type="{xml_type}"><![CDATA[{payload}]]></{tag}>
+  </testcase>
+</testsuite>
 """,
         encoding="utf-8",
     )

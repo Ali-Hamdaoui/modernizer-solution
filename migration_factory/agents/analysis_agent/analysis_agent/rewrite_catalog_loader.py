@@ -163,6 +163,8 @@ def _load_ai_hub_catalog(context):
             "path": str(catalog_path),
             "profile_id": str(profile.get("id") or profile_id),
             "catalog_id": str(catalog["id"]),
+            "source_jdk_home_env": profile.get("source_jdk_home_env"),
+            "target_jdk_home_env": profile.get("target_jdk_home_env"),
             "preview_goals": preview_goals,
             "forbidden_apply_goals": blocked,
             "openrewrite": {
@@ -227,6 +229,8 @@ def load_rewrite_catalog(context):
             "path": str(candidate),
             "profile_id": None,
             "catalog_id": None,
+            "source_jdk_home_env": payload.get("source_jdk_home_env"),
+            "target_jdk_home_env": payload.get("target_jdk_home_env"),
             "preview_goals": [_as_rewrite_goal(dry_run_goal)],
             "openrewrite": {
                 "plugin": str(payload["openrewrite.plugin"]),

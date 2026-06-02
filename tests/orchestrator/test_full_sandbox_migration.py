@@ -13,6 +13,7 @@ from migration_factory.orchestrator.checkpointing import default_checkpointer
 from migration_factory.orchestrator.phase_services import PhaseServices
 from migration_factory.orchestrator.state import (
     FULL_SANDBOX_MIGRATION_MODE,
+    READ_ONLY_ASSESSMENT_MODE,
     build_initial_state,
 )
 from migration_factory.transform_v1_after_approval import STATUS_APPLIED
@@ -148,7 +149,7 @@ def test_resume_approved_records_approval_and_runs_sandbox_transform(
     assert decision["comments"] == "go"
     assert (approval_dir / "approved_plan_lock.json").is_file()
     assert transform_calls == ["approved"]
-    assert result["final_status"] == STATUS_APPLIED
+    assert result["final_status"] == "SANDBOX_MIGRATION_COMPLETED"
     assert result["orchestration_status"] == "PASS"
     assert result["orchestration_artifacts_valid"] is True
     assert result["stop_reason"] == "Sandbox migration candidate ready."
@@ -170,6 +171,389 @@ def test_resume_approved_records_approval_and_runs_sandbox_transform(
     timing_summary = Path(result["artifact_refs"]["timing_summary"]).read_text(encoding="utf-8")
     assert "total_duration_seconds" in timing_summary
     assert "Slowest Phases" in timing_summary
+
+
+def test_resume_approved_allows_zero_test_warning_completion(monkeypatch, tmp_path: Path) -> None:
+    def fake_transform(resumed_state):
+        sandbox_path = Path(resumed_state["run_dir"]) / "workspaces" / "sandbox"
+        log_path = Path(resumed_state["run_dir"]) / "logs" / "phase2_transform.log"
+        plan_path = Path(resumed_state["run_dir"]) / "transformation" / "transformation_execution_plan.yaml"
+        ledger_path = sandbox_path / ".migration" / "ledger.json"
+        test_dir = Path(resumed_state["run_dir"]) / "test" / "post_transform"
+        test_report = test_dir / "test_report.json"
+        test_summary = test_dir / "test_summary.md"
+        test_log = test_dir / "test_agent.log"
+        sandbox_path.mkdir(parents=True, exist_ok=True)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        plan_path.parent.mkdir(parents=True, exist_ok=True)
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        test_dir.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("ok\n", encoding="utf-8")
+        plan_path.write_text("run_id: zero-tests\nrecipes: []\n", encoding="utf-8")
+        ledger_path.write_text("{}\n", encoding="utf-8")
+        test_report.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0.0",
+                    "agent": "test-agent",
+                    "run_id": resumed_state["run_id"],
+                    "phase": "post_transform",
+                    "test_status": "NO_TESTS_FOUND",
+                    "severity": "WARNING",
+                    "message": "No Surefire reports found, but baseline analysis detected no tests. Build passed; treating as warning.",
+                    "totals": {"tests": 0, "passed": 0, "failures": 0, "errors": 0, "skipped": 0},
+                    "command": ["mvn", "clean", "test"],
+                    "cwd": str(sandbox_path),
+                    "sandbox_path": str(sandbox_path),
+                    "execution_owner": "build-agent",
+                    "execution_mode": "parse_existing_surefire",
+                    "report_paths": [],
+                    "warnings": [
+                        "No Surefire reports found, but baseline analysis detected no tests. Build passed; treating as warning.",
+                        "Contract library has no automated tests; consumer compatibility validation is required.",
+                    ],
+                    "test_log_path": str(test_log),
+                    "source_log_path": str(log_path),
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "artifact_refs": {
+                        "self": str(test_report),
+                        "summary": str(test_summary),
+                        "log": str(test_log),
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        test_summary.write_text("# test\n", encoding="utf-8")
+        test_log.write_text("no tests\n", encoding="utf-8")
+        return {
+            "current_phase": "sandbox_transform",
+            "orchestration_status": "PASS",
+            "transform_status": STATUS_APPLIED,
+            "build_status": "BUILD_PASSED_IN_SANDBOX",
+            "test_status": "NO_TESTS_FOUND",
+            "test_totals": {"tests": 0, "passed": 0, "failures": 0, "errors": 0, "skipped": 0},
+            "test_report_path": str(test_report),
+            "test_summary_path": str(test_summary),
+            "test_log_path": str(test_log),
+            "test_phase": "post_transform",
+            "sandbox_path": str(sandbox_path),
+            "transform_log_path": str(log_path),
+            "final_status": "SANDBOX_MIGRATION_COMPLETED_WITH_WARNINGS",
+            "stop_reason": "No Surefire reports found, but baseline analysis detected no tests. Build passed; treating as warning.",
+            "warnings": [
+                "No Surefire reports found, but baseline analysis detected no tests. Build passed; treating as warning.",
+                "Contract library has no automated tests; consumer compatibility validation is required.",
+            ],
+            "artifact_refs": {
+                **dict(resumed_state.get("artifact_refs", {})),
+                "transformation_execution_plan": str(plan_path),
+                "migration_ledger": str(ledger_path),
+                "phase2_log": str(log_path),
+                "post_transform_test_report": str(test_report),
+                "post_transform_test_summary": str(test_summary),
+                "post_transform_test_log": str(test_log),
+            },
+        }
+
+    real_build_graph = graph_module.build_graph
+
+    def build_graph_with_fake_transform(*args, **kwargs):
+        kwargs.setdefault("phase_services", _passing_services())
+        kwargs.setdefault("sandbox_transform_service", fake_transform)
+        return real_build_graph(*args, **kwargs)
+
+    monkeypatch.setattr(graph_module, "run_sandbox_transform_phase", fake_transform)
+    monkeypatch.setattr(graph_module, "build_graph", build_graph_with_fake_transform)
+    state = _paused_full_run(monkeypatch, tmp_path)
+    _write_phase_1_run(Path(state["run_dir"]), state["run_id"])
+
+    result = resume.resume_orchestration(
+        run_id=state["run_id"],
+        run_dir=Path(state["run_dir"]),
+        decision="approved",
+        approved_by="reviewer",
+        comments="go",
+    )
+
+    assert result["orchestration_status"] == "PASS"
+    assert result["build_status"] == "BUILD_PASSED_IN_SANDBOX"
+    assert result["test_status"] == "NO_TESTS_FOUND"
+    assert result["transform_status"] == STATUS_APPLIED
+    assert result["final_status"] == "SANDBOX_MIGRATION_COMPLETED_WITH_WARNINGS"
+    assert result["orchestration_artifacts_valid"] is True
+    assert any("consumer compatibility validation is required" in warning for warning in result["warnings"])
+
+
+def test_resume_approved_from_read_only_normalizes_to_sandbox_mode(monkeypatch, tmp_path: Path) -> None:
+    def fake_transform(resumed_state):
+        sandbox_path = Path(resumed_state["run_dir"]) / "workspaces" / "sandbox"
+        log_path = Path(resumed_state["run_dir"]) / "logs" / "phase2_transform.log"
+        plan_path = Path(resumed_state["run_dir"]) / "transformation" / "transformation_execution_plan.yaml"
+        ledger_path = sandbox_path / ".migration" / "ledger.json"
+        test_dir = Path(resumed_state["run_dir"]) / "test" / "post_transform"
+        test_report = test_dir / "test_report.json"
+        test_summary = test_dir / "test_summary.md"
+        test_log = test_dir / "test_agent.log"
+        sandbox_path.mkdir(parents=True, exist_ok=True)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        plan_path.parent.mkdir(parents=True, exist_ok=True)
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        test_dir.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("ok\n", encoding="utf-8")
+        plan_path.write_text("recipes: []\n", encoding="utf-8")
+        ledger_path.write_text("{}\n", encoding="utf-8")
+        test_report.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0.0",
+                    "agent": "test-agent",
+                    "run_id": resumed_state["run_id"],
+                    "phase": "post_transform",
+                    "test_status": "TEST_PASSED",
+                    "severity": "INFO",
+                    "message": "Surefire reports parsed successfully.",
+                    "totals": {"tests": 1, "passed": 1, "failures": 0, "errors": 0, "skipped": 0},
+                    "command": ["mvn", "clean", "test"],
+                    "cwd": str(sandbox_path),
+                    "sandbox_path": str(sandbox_path),
+                    "execution_owner": "build-agent",
+                    "execution_mode": "parse_existing_surefire",
+                    "report_paths": [],
+                    "warnings": [],
+                    "test_log_path": str(test_log),
+                    "source_log_path": str(log_path),
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "artifact_refs": {
+                        "self": str(test_report),
+                        "summary": str(test_summary),
+                        "log": str(test_log),
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        test_summary.write_text("# test\n", encoding="utf-8")
+        test_log.write_text("ok\n", encoding="utf-8")
+        assert resumed_state["mode"] == FULL_SANDBOX_MIGRATION_MODE
+        assert resumed_state["resumed_from_mode"] == READ_ONLY_ASSESSMENT_MODE
+        assert resumed_state["resume_semantics"] == "approved_sandbox_migration"
+        return {
+            "current_phase": "sandbox_transform",
+            "orchestration_status": "PASS",
+            "transform_status": STATUS_APPLIED,
+            "build_status": "BUILD_PASSED_IN_SANDBOX",
+            "test_status": "TEST_PASSED",
+            "test_totals": {"tests": 1, "passed": 1, "failures": 0, "errors": 0, "skipped": 0},
+            "test_report_path": str(test_report),
+            "test_summary_path": str(test_summary),
+            "test_log_path": str(test_log),
+            "test_phase": "post_transform",
+            "sandbox_path": str(sandbox_path),
+            "transform_log_path": str(log_path),
+            "final_status": STATUS_APPLIED,
+            "stop_reason": "Sandbox migration candidate ready.",
+            "artifact_refs": {
+                **dict(resumed_state.get("artifact_refs", {})),
+                "transformation_execution_plan": str(plan_path),
+                "migration_ledger": str(ledger_path),
+                "phase2_log": str(log_path),
+                "post_transform_test_report": str(test_report),
+                "post_transform_test_summary": str(test_summary),
+                "post_transform_test_log": str(test_log),
+            },
+        }
+
+    monkeypatch.setattr(graph_module, "run_sandbox_transform_phase", fake_transform)
+    state = _paused_read_only_run(monkeypatch, tmp_path)
+    _write_phase_1_run(Path(state["run_dir"]), state["run_id"])
+
+    class _ApprovalOnlyGraph:
+        def invoke(self, command, config=None):
+            return {
+                **state,
+                "mode": READ_ONLY_ASSESSMENT_MODE,
+                "approval_status": "COMPLETED",
+                "approval_decision": "approved",
+                "approved_by": "reviewer",
+                "approval_comments": "go",
+                "orchestration_status": "PASS",
+                "transform_status": "",
+                "final_status": "",
+                "errors": [],
+                "blockers": [],
+            }
+
+    monkeypatch.setattr(graph_module, "build_graph", lambda **kwargs: _ApprovalOnlyGraph())
+
+    result = resume.resume_orchestration(
+        run_id=state["run_id"],
+        run_dir=Path(state["run_dir"]),
+        decision="approved",
+        approved_by="reviewer",
+        comments="go",
+    )
+
+    assert result["mode"] == FULL_SANDBOX_MIGRATION_MODE
+    assert result["resumed_from_mode"] == READ_ONLY_ASSESSMENT_MODE
+    assert result["resume_semantics"] == "approved_sandbox_migration"
+    assert result["final_status"] == "SANDBOX_MIGRATION_COMPLETED"
+    assert result["orchestration_artifacts_valid"] is True
+
+
+def test_resume_approved_direct_graph_result_from_read_only_generates_final_report(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state = _initial_read_only_state(tmp_path)
+    _write_phase_1_run(Path(state["run_dir"]), state["run_id"])
+    run_dir = Path(state["run_dir"])
+    sandbox_path = run_dir / "workspaces" / "sandbox"
+    approval_dir = run_dir / "approval"
+    transform_dir = run_dir / "transformation"
+    logs_dir = run_dir / "logs"
+    test_dir = run_dir / "test" / "post_transform"
+    analysis_dir = Path(state["analysis_dir"])
+    assessment_dir = Path(state["assessment_dir"])
+    sandbox_path.mkdir(parents=True, exist_ok=True)
+    approval_dir.mkdir(parents=True, exist_ok=True)
+    transform_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    test_dir.mkdir(parents=True, exist_ok=True)
+    (analysis_dir / "analysis_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0.0",
+                "run_id": state["run_id"],
+                "status": "PASS",
+                "project_kind": "contract_library",
+                "artifact_refs": {"self": "analysis_report.json"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (assessment_dir / "assessment_report.json").write_text(
+        json.dumps(
+            {
+                **_assessment_report(state["run_id"]),
+                "source_stack": {"java": "11"},
+                "target_stack": {"java": "17"},
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (approval_dir / "approval_decision.json").write_text(
+        json.dumps({"decision": "approved", "decided_by": "reviewer"}) + "\n",
+        encoding="utf-8",
+    )
+    (approval_dir / "approved_plan_lock.json").write_text("{}\n", encoding="utf-8")
+    (transform_dir / "transformation_execution_plan.yaml").write_text("recipes: []\n", encoding="utf-8")
+    (sandbox_path / ".migration").mkdir(parents=True, exist_ok=True)
+    (sandbox_path / ".migration" / "ledger.json").write_text("{}\n", encoding="utf-8")
+    (logs_dir / "phase2_transform.log").write_text("ok\n", encoding="utf-8")
+    (test_dir / "test_summary.md").write_text("# Test\n", encoding="utf-8")
+    (test_dir / "test_agent.log").write_text("no tests\n", encoding="utf-8")
+    (test_dir / "test_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0.0",
+                "agent": "test-agent",
+                "run_id": state["run_id"],
+                "phase": "post_transform",
+                "test_status": "NO_TESTS_FOUND",
+                "severity": "WARNING",
+                "message": "No Surefire reports found, but baseline analysis detected no tests and no baseline Surefire reports. Build passed; treating as warning.",
+                "totals": {"tests": 0, "passed": 0, "failures": 0, "errors": 0, "skipped": 0},
+                "command": ["mvn", "clean", "test"],
+                "cwd": str(sandbox_path),
+                "sandbox_path": str(sandbox_path),
+                "execution_owner": "build-agent",
+                "execution_mode": "parse_existing_surefire",
+                "report_paths": [],
+                "warnings": [
+                    "No Surefire reports found, but baseline analysis detected no tests and no baseline Surefire reports. Build passed; treating as warning.",
+                    "Contract library has no automated tests; consumer compatibility validation is required.",
+                ],
+                "test_log_path": str(test_dir / "test_agent.log"),
+                "source_log_path": str(logs_dir / "phase2_transform.log"),
+                "created_at": "2026-01-01T00:00:00Z",
+                "artifact_refs": {
+                    "self": str(test_dir / "test_report.json"),
+                    "summary": str(test_dir / "test_summary.md"),
+                    "log": str(test_dir / "test_agent.log"),
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class _FakeGraph:
+        def invoke(self, command, config=None):
+            return {
+                **state,
+                "mode": READ_ONLY_ASSESSMENT_MODE,
+                "approval_status": "COMPLETED",
+                "approval_decision": "approved",
+                "approved_by": "reviewer",
+                "orchestration_status": "PASS",
+                "transform_status": STATUS_APPLIED,
+                "build_status": "BUILD_PASSED_IN_SANDBOX",
+                "test_status": "NO_TESTS_FOUND",
+                "test_totals": {"tests": 0, "passed": 0, "failures": 0, "errors": 0, "skipped": 0},
+                "test_report_path": str(test_dir / "test_report.json"),
+                "test_summary_path": str(test_dir / "test_summary.md"),
+                "test_log_path": str(test_dir / "test_agent.log"),
+                "test_phase": "post_transform",
+                "sandbox_path": str(sandbox_path),
+                "transform_log_path": str(logs_dir / "phase2_transform.log"),
+                "artifact_refs": {
+                    "analysis_report": str(analysis_dir / "analysis_report.json"),
+                    "approval_decision": str(approval_dir / "approval_decision.json"),
+                    "approved_plan_lock": str(approval_dir / "approved_plan_lock.json"),
+                    "assessment_report": str(assessment_dir / "assessment_report.json"),
+                    "migration_plan": str(Path(state["planning_dir"]) / "migration_plan.yaml"),
+                    "transformation_execution_plan": str(transform_dir / "transformation_execution_plan.yaml"),
+                    "migration_ledger": str(sandbox_path / ".migration" / "ledger.json"),
+                    "phase2_log": str(logs_dir / "phase2_transform.log"),
+                    "post_transform_test_report": str(test_dir / "test_report.json"),
+                    "post_transform_test_summary": str(test_dir / "test_summary.md"),
+                    "post_transform_test_log": str(test_dir / "test_agent.log"),
+                },
+                "stop_reason": "No Surefire reports found, but baseline analysis detected no tests and no baseline Surefire reports. Build passed; treating as warning.",
+                "warnings": [
+                    "No Surefire reports found, but baseline analysis detected no tests and no baseline Surefire reports. Build passed; treating as warning.",
+                    "Contract library has no automated tests; consumer compatibility validation is required.",
+                ],
+                "errors": [],
+                "blockers": [],
+            }
+
+    monkeypatch.setattr(graph_module, "build_graph", lambda **kwargs: _FakeGraph())
+
+    result = resume.resume_orchestration(
+        run_id=state["run_id"],
+        run_dir=run_dir,
+        decision="approved",
+        approved_by="reviewer",
+        comments="go",
+    )
+
+    assert result["mode"] == FULL_SANDBOX_MIGRATION_MODE
+    assert result["resumed_from_mode"] == READ_ONLY_ASSESSMENT_MODE
+    assert result["resume_semantics"] == "approved_sandbox_migration"
+    assert result["final_status"] == "SANDBOX_MIGRATION_COMPLETED_WITH_WARNINGS"
+    assert result["orchestration_artifacts_valid"] is True
+    assert _as_posix(result["artifact_refs"]["final_migration_report"]).endswith("final/migration_report.json")
+    final_report = json.loads(Path(result["artifact_refs"]["final_migration_report"]).read_text(encoding="utf-8"))
+    assert final_report["test_status"] == "NO_TESTS_FOUND"
+    assert final_report["test_severity"] == "WARNING"
 
 
 def test_resume_cli_accepts_required_approval_fields(monkeypatch, tmp_path: Path, capsys) -> None:
@@ -281,6 +665,17 @@ def _paused_full_run(monkeypatch, tmp_path: Path) -> dict:
     return state
 
 
+def _paused_read_only_run(monkeypatch, tmp_path: Path) -> dict:
+    state = _initial_read_only_state(tmp_path)
+    _patch_validators(monkeypatch)
+    app = graph_module.build_graph(
+        checkpointer=default_checkpointer(state["run_dir"]),
+        phase_services=_passing_services(),
+    )
+    app.invoke(state, config={"configurable": {"thread_id": state["run_id"]}})
+    return state
+
+
 def _initial_full_state(tmp_path: Path) -> dict:
     legacy = tmp_path / "legacy"
     modernized = tmp_path / "modernized"
@@ -298,6 +693,26 @@ def _initial_full_state(tmp_path: Path) -> dict:
         profile_id="java17",
         thread_id=run_id,
         mode=FULL_SANDBOX_MIGRATION_MODE,
+    )
+
+
+def _initial_read_only_state(tmp_path: Path) -> dict:
+    legacy = tmp_path / "legacy"
+    modernized = tmp_path / "modernized"
+    ai_hub = tmp_path / "ai-hub"
+    legacy.mkdir()
+    modernized.mkdir()
+    (ai_hub / "profiles").mkdir(parents=True)
+    (ai_hub / "profiles" / "java17.yaml").write_text("id: java17\n", encoding="utf-8")
+    run_id = f"run-{uuid4().hex}"
+    return build_initial_state(
+        run_id=run_id,
+        legacy_app_path=str(legacy),
+        modernized_app_path=str(modernized),
+        ai_hub_path=str(ai_hub),
+        profile_id="java17",
+        thread_id=run_id,
+        mode=READ_ONLY_ASSESSMENT_MODE,
     )
 
 

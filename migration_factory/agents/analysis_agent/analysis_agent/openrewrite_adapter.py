@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -66,6 +67,110 @@ def _failure_diagnostic(exc, cmd, cwd):
     return diagnostic
 
 
+def _java_command(java_home: str | None):
+    if not java_home:
+        return "java"
+    bin_dir = Path(java_home) / "bin"
+    windows_java = bin_dir / "java.exe"
+    if windows_java.is_file():
+        return str(windows_java)
+    return str(bin_dir / "java")
+
+
+def _java_version_from_output(stdout: str, stderr: str):
+    combined = "\n".join(part for part in (stdout, stderr) if part)
+    marker = 'version "'
+    if marker not in combined:
+        return None
+    version = combined.split(marker, 1)[1].split('"', 1)[0].strip()
+    return version or None
+
+
+def _detect_java_version(java_home: str | None):
+    if not java_home:
+        return None
+    java_exe = _java_command(java_home)
+    try:
+        completed = subprocess.run(
+            [java_exe, "-version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=_build_java_env(java_home),
+        )
+    except Exception:
+        return None
+    if completed.returncode != 0:
+        return None
+    return _java_version_from_output(completed.stdout, completed.stderr)
+
+
+def _build_java_env(java_home: str | None):
+    if not java_home:
+        return None
+    env = os.environ.copy()
+    env["JAVA_HOME"] = java_home
+    env["PATH"] = str(Path(java_home) / "bin") + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def _resolve_preview_java_runtime(catalog):
+    requested_env = catalog.get("source_jdk_home_env")
+    fallback_java_home = os.environ.get("JAVA_HOME")
+    if not requested_env:
+        return {
+            "status": "FALLBACK_CURRENT_PROCESS",
+            "java_home_env_used": "JAVA_HOME" if fallback_java_home else None,
+            "java_home_used": fallback_java_home,
+            "java_version_used": _detect_java_version(fallback_java_home),
+            "warning": "OpenRewrite preview source JDK not configured; using current process Java runtime.",
+            "error": None,
+            "requested_java_home_env": None,
+            "env": None,
+        }
+
+    java_home = os.environ.get(requested_env)
+    if not java_home:
+        return {
+            "status": "INVALID_SOURCE_JDK_ENV",
+            "java_home_env_used": requested_env,
+            "java_home_used": None,
+            "java_version_used": None,
+            "warning": None,
+            "error": f"OpenRewrite preview source JDK env '{requested_env}' is not set.",
+            "requested_java_home_env": requested_env,
+            "env": None,
+        }
+
+    java_home_path = Path(java_home)
+    java_exe = Path(_java_command(java_home))
+    if not java_home_path.is_dir() or not java_exe.is_file():
+        return {
+            "status": "INVALID_SOURCE_JDK_ENV",
+            "java_home_env_used": requested_env,
+            "java_home_used": java_home,
+            "java_version_used": None,
+            "warning": None,
+            "error": (
+                f"OpenRewrite preview source JDK env '{requested_env}' points to invalid JAVA_HOME: "
+                f"{java_home}"
+            ),
+            "requested_java_home_env": requested_env,
+            "env": None,
+        }
+
+    return {
+        "status": "SOURCE_PROFILE_JDK",
+        "java_home_env_used": requested_env,
+        "java_home_used": java_home,
+        "java_version_used": _detect_java_version(java_home),
+        "warning": None,
+        "error": None,
+        "requested_java_home_env": requested_env,
+        "env": _build_java_env(java_home),
+    }
+
+
 def _impact_summary(
     context,
     status,
@@ -76,8 +181,10 @@ def _impact_summary(
     warnings=None,
     source_modified=False,
     failure_diagnostic=None,
+    java_runtime=None,
 ):
     analysis = analysis or {}
+    java_runtime = java_runtime or {}
     return {
         "schema_version": "1.0.0",
         "run_id": getattr(context, "run_id", "unknown"),
@@ -106,6 +213,18 @@ def _impact_summary(
         "blocked_reasons": blocked_reasons or [],
         "warnings": warnings or [],
         "failure_diagnostic": failure_diagnostic,
+        "failure_category": (
+            failure_diagnostic.get("classification") if isinstance(failure_diagnostic, dict) else None
+        ),
+        "java_home_env_used": java_runtime.get("java_home_env_used"),
+        "java_home_used": java_runtime.get("java_home_used"),
+        "java_version_used": java_runtime.get("java_version_used"),
+        "jdk_diagnostic": {
+            "status": java_runtime.get("status"),
+            "requested_java_home_env": java_runtime.get("requested_java_home_env"),
+            "warning": java_runtime.get("warning"),
+            "error": java_runtime.get("error"),
+        },
         "source_modified": source_modified,
         "artifact_refs": {"self": "rewrite_impact_summary.json"},
     }
@@ -122,6 +241,16 @@ def run_openrewrite_dryrun(context, analysis_facts=None):
         "stdout_tail": "",
         "stderr_tail": "",
         "patch_produced": False,
+        "failure_category": None,
+        "java_home_env_used": None,
+        "java_home_used": None,
+        "java_version_used": None,
+        "jdk_diagnostic": {
+            "status": "UNSET",
+            "requested_java_home_env": None,
+            "warning": None,
+            "error": None,
+        },
     }
     project_dir = Path(context.legacy_app_path)
     preview_path = context.get_output_path("rewrite_preview.json")
@@ -130,6 +259,19 @@ def run_openrewrite_dryrun(context, analysis_facts=None):
 
     catalog = load_rewrite_catalog(context)
     write_rewrite_plugin_plan(plan_path, context, catalog)
+    before_hash = _hash_project_sources(project_dir)
+    java_runtime = _resolve_preview_java_runtime(catalog)
+    result_data["java_home_env_used"] = java_runtime.get("java_home_env_used")
+    result_data["java_home_used"] = java_runtime.get("java_home_used")
+    result_data["java_version_used"] = java_runtime.get("java_version_used")
+    result_data["jdk_diagnostic"] = {
+        "status": java_runtime.get("status"),
+        "requested_java_home_env": java_runtime.get("requested_java_home_env"),
+        "warning": java_runtime.get("warning"),
+        "error": java_runtime.get("error"),
+    }
+    if java_runtime.get("warning"):
+        result_data["warnings"].append(java_runtime["warning"])
     preview_maven_args = catalog.get("openrewrite", {}).get("analysis_preview_maven_args", [])
     preview_skip_warning = None
     if "-Denforcer.skip=true" in preview_maven_args:
@@ -145,14 +287,51 @@ def run_openrewrite_dryrun(context, analysis_facts=None):
         if catalog["status"] == "FAILED":
             result_data["status"] = "FAILED"
         _write_json(preview_path, result_data)
-        _write_json(impact_path, _impact_summary(context, "SKIPPED", "UNKNOWN"))
+        _write_json(impact_path, _impact_summary(context, "SKIPPED", "UNKNOWN", java_runtime=java_runtime))
         return result_data
 
-    before_hash = _hash_project_sources(project_dir)
+    if java_runtime.get("error"):
+        result_data["status"] = "FAILED"
+        result_data["failure_category"] = "rewrite_preview_failed"
+        result_data["warnings"].append(java_runtime["error"])
+        diagnostic = {
+            "classification": "rewrite_preview_failed",
+            "command": [],
+            "cwd": str(project_dir),
+            "exit_code": None,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "error": java_runtime["error"],
+            "java_home_env_used": java_runtime.get("java_home_env_used"),
+            "java_home_used": java_runtime.get("java_home_used"),
+            "java_version_used": java_runtime.get("java_version_used"),
+        }
+        result_data["failure_diagnostic"] = diagnostic
+        _write_json(
+            impact_path,
+            _impact_summary(
+                context,
+                "FAIL",
+                "BLOCKED",
+                blocked_reasons=[java_runtime["error"]],
+                warnings=[preview_skip_warning] if preview_skip_warning else [],
+                failure_diagnostic=diagnostic,
+                java_runtime=java_runtime,
+            ),
+        )
+        _write_json(preview_path, result_data)
+        return result_data
 
     try:
         cmd = build_rewrite_maven_command(catalog["openrewrite"])
-        completed = subprocess.run(cmd, cwd=str(project_dir), capture_output=True, text=True, check=True)
+        completed = subprocess.run(
+            cmd,
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            check=True,
+            env=java_runtime.get("env"),
+        )
         result_data["status"] = "USED"
         result_data["command"] = list(cmd)
         result_data["cwd"] = str(project_dir)
@@ -179,6 +358,7 @@ def run_openrewrite_dryrun(context, analysis_facts=None):
                     impact["overall_impact"],
                     analysis=impact,
                     warnings=[preview_skip_warning] if preview_skip_warning else [],
+                    java_runtime=java_runtime,
                 ),
             )
         else:
@@ -193,6 +373,7 @@ def run_openrewrite_dryrun(context, analysis_facts=None):
                     impact["overall_impact"],
                     analysis=impact,
                     warnings=[preview_skip_warning] if preview_skip_warning else [],
+                    java_runtime=java_runtime,
                 ),
             )
 
@@ -201,10 +382,15 @@ def run_openrewrite_dryrun(context, analysis_facts=None):
         result_data["cwd"] = str(project_dir)
         result_data["status"] = "SKIPPED"
         result_data["warnings"].append("OpenRewrite dry-run skipped: Maven executable not found")
-        _write_json(impact_path, _impact_summary(context, "SKIPPED", "UNKNOWN"))
+        _write_json(impact_path, _impact_summary(context, "SKIPPED", "UNKNOWN", java_runtime=java_runtime))
     except Exception as exc:
         diagnostic = _failure_diagnostic(exc, locals().get("cmd"), project_dir)
+        diagnostic["classification"] = "rewrite_preview_failed"
+        diagnostic["java_home_env_used"] = java_runtime.get("java_home_env_used")
+        diagnostic["java_home_used"] = java_runtime.get("java_home_used")
+        diagnostic["java_version_used"] = java_runtime.get("java_version_used")
         result_data["status"] = "FAILED"
+        result_data["failure_category"] = "rewrite_preview_failed"
         result_data["warnings"].append(f"OpenRewrite dry-run failed: {exc}")
         result_data["failure_diagnostic"] = diagnostic
         result_data["command"] = diagnostic["command"]
@@ -228,6 +414,7 @@ def run_openrewrite_dryrun(context, analysis_facts=None):
                 blocked_reasons=blocked,
                 warnings=[preview_skip_warning] if preview_skip_warning else [],
                 failure_diagnostic=diagnostic,
+                java_runtime=java_runtime,
             ),
         )
     finally:
@@ -247,6 +434,7 @@ def run_openrewrite_dryrun(context, analysis_facts=None):
                         "Source safety violation: project sources changed during dry-run"
                     ],
                     source_modified=True,
+                    java_runtime=java_runtime,
                 ),
             )
 

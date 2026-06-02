@@ -15,6 +15,8 @@ from migration_factory.agents.build_agent import run_build_agent
 from migration_factory.agents.test_agent import (
     TEST_STATUS_ERROR,
     TEST_STATUS_FAILED,
+    TEST_STATUS_NO_TESTS_EXECUTED,
+    TEST_STATUS_NO_TESTS_FOUND,
     TEST_STATUS_PASSED,
     run_test_agent,
 )
@@ -58,7 +60,11 @@ STATUS_BUILD_FAILED = "BUILD_FAILED_IN_SANDBOX"
 STATUS_TEST_PASSED = TEST_STATUS_PASSED
 STATUS_TEST_FAILED = TEST_STATUS_FAILED
 STATUS_TEST_ERROR = TEST_STATUS_ERROR
+STATUS_NO_TESTS_FOUND = TEST_STATUS_NO_TESTS_FOUND
+STATUS_NO_TESTS_EXECUTED = TEST_STATUS_NO_TESTS_EXECUTED
+STATUS_COMPLETED_WITH_WARNINGS = "SANDBOX_MIGRATION_COMPLETED_WITH_WARNINGS"
 STATUS_APPROVAL_FAILED = "APPROVAL_FAILED"
+SUCCESSFUL_TEST_WARNING_STATUSES = {STATUS_NO_TESTS_FOUND, STATUS_NO_TESTS_EXECUTED}
 
 _T = TypeVar("_T")
 
@@ -74,9 +80,11 @@ class TransformSandboxResult:
     message: str
     sandbox_path: Path | None
     log_file: Path
+    warnings: list[str] | None = None
     generated_plan: Path | None = None
     plugin_xml: Path | None = None
     ledger_file: Path | None = None
+    transform_status: str | None = None
     build_status: str | None = None
     test_status: str | None = None
     test_totals: dict[str, int] | None = None
@@ -292,6 +300,9 @@ def _run_transformer_with_build_validation(
                 "source_changing_unit": unit_id in source_unit_ids,
                 "validation_command": _validation_command_for_unit(plan, unit_id),
             }
+            unit_java_home_env = _unit_java_home_env(plan, unit_id)
+            if unit_java_home_env:
+                build_kwargs["java_home_env"] = unit_java_home_env
             if jdk_env:
                 build_kwargs.update(jdk_env)
             if build_timeout_seconds is not None:
@@ -501,6 +512,7 @@ def _finalize_with_test_validation(
         source_log_path=log_file,
         command=command,
         cwd=cwd,
+        build_succeeded=build_status == STATUS_BUILD_PASSED,
     )
     _record_ledger_test_validation(
         ledger_file=ledger_file,
@@ -527,9 +539,35 @@ def _finalize_with_test_validation(
             message="Sandbox migration candidate ready.",
             sandbox_path=sandbox_path,
             log_file=log_file,
+            warnings=list(test_result.warnings),
             generated_plan=generated_plan,
             plugin_xml=plugin_xml,
             ledger_file=ledger_file,
+            transform_status=STATUS_APPLIED,
+            build_status=build_status,
+            test_status=test_result.test_status,
+            test_totals=test_result.totals,
+            test_report_path=test_result.report_path,
+            test_summary_path=test_result.summary_path,
+            test_log_path=test_result.log_path,
+            test_phase="post_transform",
+        )
+
+    if test_result.test_status in SUCCESSFUL_TEST_WARNING_STATUSES:
+        _write_partial_timing_artifacts(run_dir)
+        status_writer(test_result.test_status)
+        status_writer(test_result.message)
+        return TransformSandboxResult(
+            exit_code=0,
+            status=STATUS_COMPLETED_WITH_WARNINGS,
+            message=test_result.message,
+            sandbox_path=sandbox_path,
+            log_file=log_file,
+            warnings=list(test_result.warnings),
+            generated_plan=generated_plan,
+            plugin_xml=plugin_xml,
+            ledger_file=ledger_file,
+            transform_status=STATUS_APPLIED,
             build_status=build_status,
             test_status=test_result.test_status,
             test_totals=test_result.totals,
@@ -547,9 +585,11 @@ def _finalize_with_test_validation(
         message=f"Sandbox candidate blocked by test_status={test_result.test_status}.",
         sandbox_path=sandbox_path,
         log_file=log_file,
+        warnings=list(test_result.warnings),
         generated_plan=generated_plan,
         plugin_xml=plugin_xml,
         ledger_file=ledger_file,
+        transform_status=test_result.test_status,
         build_status=build_status,
         test_status=test_result.test_status,
         test_totals=test_result.totals,
@@ -739,6 +779,16 @@ def _validation_command_for_unit(plan: MigrationPlan, unit_id: str) -> Any | Non
     build_validation = plan.raw.get("build_validation")
     if isinstance(build_validation, dict) and build_validation.get("command"):
         return build_validation["command"]
+
+
+def _unit_java_home_env(plan: MigrationPlan, unit_id: str) -> str | None:
+    for unit in plan.units:
+        if unit.id != unit_id:
+            continue
+        value = unit.raw.get("java_home_env")
+        text = str(value or "").strip()
+        return text or None
+    return None
 
 
 def _profile_jdk_env(ai_hub: str, profile: str) -> dict[str, str]:

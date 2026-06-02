@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import os
 import time
 from typing import Any
 
@@ -17,6 +18,7 @@ from migration_factory.contracts.migration import (
 )
 
 from .executor import CommandResult, run_command
+from .maven_pom_patcher import MavenPomPatchError, apply_maven_pom_patch
 from .plan import MigrationPlan, MigrationUnit, load_migration_plan
 from .pom_patches import (
     patch_forbidden_source_patterns_allow_jakarta,
@@ -25,6 +27,8 @@ from .pom_patches import (
     patch_pom_property,
     patch_quality_rules_allow_jakarta,
     patch_security_config_authorize_http_requests,
+    patch_spring_data_sort_constructor_usage,
+    patch_spring6_exception_handler_override_signatures,
 )
 from .rewrite import build_rewrite_run_command, rewrite_plugin_version_from_xml
 
@@ -132,7 +136,12 @@ def _run_unit(
             if dry_run:
                 command_results.append({"command": command, "dry_run": True, "exit_code": 0})
                 continue
-            result = run_command(command, cwd=plan.target_path, stream_output=stream_output)
+            result = run_command(
+                command,
+                cwd=plan.target_path,
+                stream_output=stream_output,
+                env=_unit_java_env(unit),
+            )
             command_results.append(_command_result_to_dict(result))
             if not result.succeeded:
                 _mark_unit_blocked(plan, unit, f"OpenRewrite command failed: {command}", command_results)
@@ -230,6 +239,75 @@ def _run_unit(
             )
             continue
 
+        if transformation_type == "maven_pom_patch":
+            operations = transformation.get("operations")
+            operation_list = operations if isinstance(operations, list) else []
+            pom_path = str(transformation.get("pom_path") or "pom.xml")
+            if dry_run:
+                recorded_transformations.append(
+                    {
+                        "unit_id": unit.id,
+                        "type": transformation_type,
+                        "transformation_type": transformation_type,
+                        "status": "dry_run",
+                        "operation_count": len(operation_list),
+                        "operations_applied": [],
+                        "files_changed": [],
+                    }
+                )
+                continue
+            try:
+                result = apply_maven_pom_patch(
+                    plan.target_path,
+                    unit_id=unit.id,
+                    operations=operation_list,
+                    pom_path=pom_path,
+                )
+            except MavenPomPatchError as exc:
+                failure_record = {
+                    "unit_id": unit.id,
+                    "type": transformation_type,
+                    "transformation_type": transformation_type,
+                    "status": "failed",
+                    "operation_count": len(operation_list),
+                    "operations_applied": exc.operations_applied,
+                    "files_changed": [],
+                    "error_message": exc.message,
+                    "error_code": exc.code,
+                    "pom_file": exc.pom_file,
+                }
+                recorded_transformations.append(failure_record)
+                _mark_unit_blocked(
+                    plan,
+                    unit,
+                    f"MAVEN_POM_PATCH_FAILED {exc.code}: {exc.message}",
+                    command_results,
+                    recorded_transformations=recorded_transformations,
+                )
+                raise TransformationAgentError(
+                    f"MAVEN_POM_PATCH_FAILED {exc.code}: {exc.message}"
+                ) from exc
+
+            for operation in result.operations_applied:
+                print(
+                    f"unit={unit.id} patch=maven_pom_patch file={result.pom_file} "
+                    f"op={operation.get('op')} status={operation.get('status')}"
+                )
+            recorded_transformations.append(
+                {
+                    "unit_id": result.unit_id,
+                    "type": transformation_type,
+                    "transformation_type": transformation_type,
+                    "status": result.status,
+                    "operation_count": result.operation_count,
+                    "operations_applied": result.operations_applied,
+                    "files_changed": result.files_changed,
+                    "pom_file": result.pom_file,
+                    "error_message": None,
+                }
+            )
+            continue
+
         if transformation_type == "security_authorize_http_requests":
             patches = [] if dry_run else patch_security_config_authorize_http_requests(
                 plan.target_path,
@@ -300,6 +378,50 @@ def _run_unit(
                     "status": "applied" if patches else "not_applicable",
                     "patches": [
                         {"file": patch.file, "patch": patch.patch, "unit": patch.unit}
+                        for patch in patches
+                    ],
+                }
+            )
+            continue
+
+        if transformation_type == "spring_data_sort_by_factory_method":
+            patches = [] if dry_run else patch_spring_data_sort_constructor_usage(
+                plan.target_path,
+                unit_id=unit.id,
+            )
+            for patch in patches:
+                print(f"unit={patch.unit} patch={patch.patch} file={patch.file}")
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "applied" if patches else "not_applicable",
+                    "patches": [
+                        {"file": patch.file, "patch": patch.patch, "unit": patch.unit}
+                        for patch in patches
+                    ],
+                }
+            )
+            continue
+
+        if transformation_type == "spring6_exception_handler_override_alignment":
+            patches = [] if dry_run else patch_spring6_exception_handler_override_signatures(
+                plan.target_path,
+                unit_id=unit.id,
+            )
+            for patch in patches:
+                print(f"unit={patch.unit} patch={patch.patch} file={patch.file}")
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "applied" if patches else "not_applicable",
+                    "patches": [
+                        {
+                            "file": patch.file,
+                            "patch": patch.patch,
+                            "unit": patch.unit,
+                            "old_signature": patch.old_signature,
+                            "new_signature": patch.new_signature,
+                        }
                         for patch in patches
                     ],
                 }
@@ -396,6 +518,20 @@ def _command_result_to_dict(result: CommandResult) -> dict[str, Any]:
         "stdout_tail": result.stdout[-40:],
         "stderr_tail": result.stderr[-40:],
     }
+
+
+def _unit_java_env(unit: MigrationUnit) -> dict[str, str] | None:
+    java_home = str(unit.raw.get("java_home_used") or "").strip()
+    if not java_home:
+        java_home_env = str(unit.raw.get("java_home_env") or "").strip()
+        if java_home_env:
+            java_home = str(os.environ.get(java_home_env) or "").strip()
+    if not java_home:
+        return None
+    env = os.environ.copy()
+    env["JAVA_HOME"] = java_home
+    env["PATH"] = str(Path(java_home) / "bin") + os.pathsep + env.get("PATH", "")
+    return env
 
 
 def _result_from_ledger(ledger_file: Path, ledger: dict[str, Any]) -> TransformationRunResult:

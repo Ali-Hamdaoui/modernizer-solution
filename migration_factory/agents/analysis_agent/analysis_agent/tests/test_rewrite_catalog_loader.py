@@ -42,13 +42,22 @@ def test_missing_catalog_skipped_cleanly(tmp_path):
     assert result["status"] == "SKIPPED"
 
 
-def _write_ai_hub(hub: Path, profile_id="java17", catalog_path="catalogs/openrewrite/java17.yaml", preview_goals=None):
+def _write_ai_hub(
+    hub: Path,
+    profile_id="java17",
+    catalog_path="catalogs/openrewrite/java17.yaml",
+    preview_goals=None,
+    source_jdk_home_env: str | None = None,
+    target_jdk_home_env: str | None = None,
+):
     preview_goals = preview_goals or ["dryRun", "dryRunNoFork"]
+    source_line = f"source_jdk_home_env: {source_jdk_home_env}\n" if source_jdk_home_env else ""
+    target_line = f"target_jdk_home_env: {target_jdk_home_env}\n" if target_jdk_home_env else ""
     (hub / "profiles").mkdir(parents=True)
     (hub / "catalogs" / "openrewrite").mkdir(parents=True)
     (hub / "profiles" / f"{profile_id}.yaml").write_text(
         f"""id: {profile_id}
-openrewrite:
+{source_line}{target_line}openrewrite:
   catalog_path: {catalog_path}
 """,
         encoding="utf-8",
@@ -96,6 +105,21 @@ def test_ai_hub_yaml_profile_resolves_catalog_and_selects_dryrun(tmp_path):
     assert result["openrewrite"]["active_recipes"] == [
         "org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5"
     ]
+
+
+def test_ai_hub_profile_exposes_source_jdk_metadata(tmp_path):
+    legacy = tmp_path / "legacy"
+    modernized = tmp_path / "modernized"
+    hub = tmp_path / "hub"
+    legacy.mkdir()
+    modernized.mkdir()
+    _write_ai_hub(hub, source_jdk_home_env="JAVA_HOME_11", target_jdk_home_env="JAVA_HOME_17")
+
+    result = load_rewrite_catalog(DummyContext(legacy, modernized, hub, "java17"))
+
+    assert result["status"] == "USED"
+    assert result["source_jdk_home_env"] == "JAVA_HOME_11"
+    assert result["target_jdk_home_env"] == "JAVA_HOME_17"
 
 
 def test_ai_hub_missing_path_and_profile_fail_clearly(tmp_path):

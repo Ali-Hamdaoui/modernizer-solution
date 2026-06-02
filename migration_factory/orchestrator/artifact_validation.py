@@ -133,17 +133,23 @@ def validate_successful_full_sandbox_orchestration(state: MigrationState) -> Art
     warnings: list[str] = []
 
     expected_values = {
-        "approval_status": "COMPLETED",
-        "approval_decision": "approved",
-        "orchestration_status": "PASS",
-        "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
-        "build_status": "BUILD_PASSED_IN_SANDBOX",
-        "test_status": "TEST_PASSED",
-        "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+        "approval_status": {"COMPLETED"},
+        "approval_decision": {"approved"},
+        "orchestration_status": {"PASS"},
+        "transform_status": {"TRANSFORM_APPLIED_IN_SANDBOX"},
+        "build_status": {"BUILD_PASSED_IN_SANDBOX"},
+        "test_status": {"TEST_PASSED", "NO_TESTS_FOUND", "NO_TESTS_EXECUTED"},
+        "final_status": {
+            "TRANSFORM_APPLIED_IN_SANDBOX",
+            "SANDBOX_MIGRATION_COMPLETED",
+            "SANDBOX_MIGRATION_COMPLETED_WITH_WARNINGS",
+        },
     }
-    for key, expected in expected_values.items():
-        if state.get(key) != expected:
-            blockers.append(f"{key} must be {expected} for successful full_sandbox_migration")
+    for key, allowed in expected_values.items():
+        if state.get(key) not in allowed:
+            blockers.append(
+                f"{key} must be one of {sorted(allowed)} for successful full_sandbox_migration"
+            )
 
     if state.get("errors"):
         blockers.append("successful full_sandbox_migration must not have errors")

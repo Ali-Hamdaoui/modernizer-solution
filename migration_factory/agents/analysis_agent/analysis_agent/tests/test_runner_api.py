@@ -50,7 +50,8 @@ def test_run_analysis_agent_returns_stable_result_shape(monkeypatch, tmp_path):
     assert result.rewrite_status in {"FAILED", "SKIPPED", "USED"}
     assert result.assist_status in {"USED", "SKIPPED", "FAILED", "SUCCESS"}
     assert set(result.artifact_paths).issuperset(
-        {"analysis_report", "dependency_graph", "test_inventory", "analysis_summary"}
+        {"analysis_report", "dependency_graph", "internal_dependencies", "test_inventory", "analysis_summary"}
     )
     assert Path(result.artifact_paths["analysis_report"]).exists()
+    assert Path(result.artifact_paths["internal_dependencies"]).exists()
     assert Path(result.artifact_paths["analysis_summary"]).exists()

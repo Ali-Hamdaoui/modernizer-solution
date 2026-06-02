@@ -36,6 +36,8 @@ class BuildErrorContract:
     required_minimum: str | None = None
     profile: str | None = None
     target_unit: str | None = None
+    failure_classification_path: str | None = None
+    failure_categories: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,8 @@ def build_error_contract(
     required_minimum: str | None = None,
     profile: str | None = None,
     target_unit: str | None = None,
+    failure_classification_path: str | None = None,
+    failure_categories: dict[str, int] | None = None,
     tail_size: int = 40,
 ) -> BuildErrorContract:
     return BuildErrorContract(
@@ -111,6 +115,8 @@ def build_error_contract(
         required_minimum=required_minimum,
         profile=profile,
         target_unit=target_unit,
+        failure_classification_path=failure_classification_path,
+        failure_categories=dict(failure_categories or {}),
     )
 
 
