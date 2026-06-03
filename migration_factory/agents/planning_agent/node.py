@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from migration_factory.agents.planning_agent.assist_config import (
     load_planning_assist_config,
 )
@@ -55,6 +57,7 @@ from migration_factory.contracts.planning_assist import (
     PlanningAssistRequest,
     PlanningAssistResult,
 )
+from migration_factory.dependency_policy import write_target_dependency_plan
 from migration_factory.orchestrator.state import MigrationState
 
 
@@ -204,6 +207,13 @@ def planning_node(state: MigrationState) -> MigrationState:
             units=units,
         ),
     )
+    target_dependency_plan_path = write_target_dependency_plan(
+        run_dir=Path(state.get("modernized_app_path", "")) / ".migration" / "runs" / state.get("run_id", ""),
+        source_boot_version=compatibility.source_stack.spring_boot or "",
+        target_boot_version=compatibility.target_stack.spring_boot or "",
+        target_java_version=compatibility.target_stack.java or "",
+        openrewrite_recipes_expected=_expected_openrewrite_recipes(loaded_profile.profile, state),
+    )
     validation_result = validate_planning_outputs(
         modernized_app_path=state.get("modernized_app_path", ""),
         run_id=state.get("run_id", ""),
@@ -330,6 +340,10 @@ def planning_node(state: MigrationState) -> MigrationState:
         "planning_operator_notes": merged_output.operator_notes,
         "planning_risk_explanations": merged_output.risk_explanations,
         "planning_assist_warnings": assist_result_warnings,
+        "artifact_refs": {
+            **dict(state.get("artifact_refs", {}) or {}),
+            "target_dependency_plan": str(target_dependency_plan_path),
+        },
     }
 
 
@@ -347,3 +361,23 @@ def _profile_governance(profile: dict) -> dict:
         ),
         "fallback_profile": profile.get("fallback_profile") or governance.get("fallback_profile"),
     }
+
+
+def _expected_openrewrite_recipes(profile: dict, state: MigrationState) -> list[str]:
+    openrewrite = profile.get("openrewrite")
+    if not isinstance(openrewrite, dict):
+        return []
+    catalog_rel = str(openrewrite.get("catalog_path") or "").strip()
+    if not catalog_rel:
+        return []
+    try:
+        import yaml
+
+        catalog_path = Path(state.get("ai_hub_path", "")) / catalog_rel
+        payload = yaml.safe_load(catalog_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return []
+    recipes = payload.get("active_recipes") if isinstance(payload, dict) else None
+    if not isinstance(recipes, list):
+        return []
+    return [str(recipe) for recipe in recipes]

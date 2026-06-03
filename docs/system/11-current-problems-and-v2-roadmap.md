@@ -33,7 +33,7 @@ Do not claim runtime compatibility from compile/test success alone.
 - No dedicated runtime smoke agent.
 - No endpoint smoke agent.
 - No SQL Server proof mode.
-- No dependency compatibility scanner for Boot 3.5/Jakarta risks.
+- Deterministic dependency policy scanner exists for the first Boot 3.5/Jakarta risks; deeper compatibility matrix and internal JAR inspection remain V2.
 - No old `javax.*` dependency scanner for internal artifacts.
 - No first-class multi-stage ledger connecting Stage 1 and Stage 2 evidence.
 
@@ -62,7 +62,18 @@ Known final Stage 2 sandbox caveats:
 - `javax.*` search excluding `target` found 3 occurrences, all in `src/test/resources/logback.xml` logger names.
 - `jakarta.*` exists as 5 imports in `Translation.java`, all `jakarta.persistence.*`.
 
-V2 needs Tomcat 9 override detection/removal under Boot 3.5, Zalando `problem-spring-web` upgrade/detection, and old `javax.*` source/dependency scanning.
+The factory now creates `planning/target_dependency_plan.json`, runs dependency policy after OpenRewrite, and writes `assessment/dependency_policy_report.json`.
+
+Current deterministic policy rules:
+
+- `DEP-TOMCAT-BOOT3-001`: flags `tomcat.version=9.*` under Boot 3 and can remove it in sandbox when `AI_MIGRATION_APPLY_DEPENDENCY_POLICY_FIXES=true`.
+- `DEP-TOMCAT-BOOT3-002`: flags explicit `tomcat-embed-*` versions under Boot 3 and can remove explicit versions in sandbox when policy patching is enabled.
+- `DEP-ZALANDO-BOOT3-001`: flags old `org.zalando:problem-spring-web <= 0.24.0`; it does not auto-upgrade unless a configured safe target exists.
+- `DEP-JAVAX-DEPS-001`: separates Java source `javax.*` imports from resource/logger names and dependency-tree evidence.
+- `DEP-INTERNAL-JAR-001`: flags heuristic internal JAR risk.
+- `DEP-BOOT-BOM-001`: records the Boot BOM/version-management preference.
+
+V2 still needs a compatibility matrix, internal JAR bytecode scanning, and configured company-approved target versions.
 
 ## 6. Profile/path problem
 
@@ -78,9 +89,11 @@ The missing direct profile should stay documented as missing unless it is intent
 - Copilot CLI available: `GitHub Copilot CLI 1.0.58`.
 - Copilot repair/fallback foundation was validated earlier.
 - Copilot is optional advisory.
+- Dependency policy Copilot advisory is proposal-only and writes `dependency_copilot_request.json`, `dependency_copilot_response.json`, and `dependency_repair_plan.md`.
 - If Copilot returns invalid, prose-only, or schema-invalid output, deterministic fallback plan generation is used.
 - For the final V1 two-stage run, Copilot was not invoked because build/test did not fail.
 - Auto-apply remains disabled: `AI_MIGRATION_AUTO_APPLY_SAFE_REPAIRS=false`.
+- Copilot dependency proposals are never auto-applied. Deterministic dependency policy patches use a separate sandbox-only flag: `AI_MIGRATION_APPLY_DEPENDENCY_POLICY_FIXES=false` by default.
 
 Copilot must not approve runs, mutate source, change gates, override status, create PRs, deploy, or claim production readiness.
 
@@ -90,9 +103,9 @@ Copilot must not approve runs, mutate source, change gates, override status, cre
 - Fix or account for `common-utils` config handling.
 - Fix or avoid invalid `application-test.yml` profile activation.
 - Generate safe smoke-only config.
-- Detect/remove Tomcat 9 overrides under Boot 3.5.
-- Detect or upgrade old Zalando `problem-spring-web`.
-- Add old `javax.*` dependency scanner.
+- Expand Tomcat override scanning to exclusions and dependency management edge cases.
+- Add configured safe Zalando target policy before deterministic upgrades.
+- Add internal JAR bytecode scanning for old `javax.*`.
 - Add endpoint smoke later, after runtime startup proof is stable.
 - Add proof-level reporting:
   - `build_test_verified`

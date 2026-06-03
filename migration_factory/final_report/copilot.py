@@ -14,6 +14,8 @@ from typing import Any, Mapping
 
 import yaml
 
+from migration_factory.copilot_cli import resolve_copilot_cli_executable
+
 
 PROVIDER = "github_copilot"
 ADAPTER = "local_deterministic_template"
@@ -1567,11 +1569,9 @@ def _normalize_model(model: str) -> str:
 
 
 def _find_copilot_command(timeout_seconds: float) -> str | None:
-    preferred_names = ("copilot.cmd", "copilot") if os.name == "nt" else ("copilot",)
-    for name in preferred_names:
-        found = shutil.which(name)
-        if found:
-            return found
+    found = resolve_copilot_cli_executable()
+    if found:
+        return found
     where_commands = tuple(dict.fromkeys(item for item in (shutil.which("where.exe"), shutil.which("where")) if item))
     for where_exe in where_commands:
         try:

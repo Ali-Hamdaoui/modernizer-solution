@@ -1,4 +1,4 @@
-import shutil
+from migration_factory.maven import resolve_maven_executable
 
 _ALLOWED_GOALS = {"dryRun"}
 _FORBIDDEN_GOALS = {"run", "runNoFork"}
@@ -36,7 +36,7 @@ def build_rewrite_maven_command(catalog):
         recipes = ",".join(recipes)
     preview_maven_args = [str(arg) for arg in catalog.get("analysis_preview_maven_args", [])]
 
-    maven_executable = shutil.which("mvn") or shutil.which("mvn.cmd") or "mvn"
+    maven_executable = resolve_maven_executable()
     cmd = [
         maven_executable,
         *preview_maven_args,

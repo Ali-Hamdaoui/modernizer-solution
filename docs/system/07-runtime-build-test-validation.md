@@ -24,8 +24,13 @@ Flow:
 8. Force the execution plan target to the sandbox path.
 9. Run Transform Agent unit loop.
 10. Run Build Agent at every `awaiting_build_agent` stop.
-11. Run Test Agent after final transform completion.
-12. Return a `TransformSandboxResult`.
+11. Run dependency policy scan on the transformed sandbox POM/source.
+12. Optionally apply deterministic dependency policy patches when `AI_MIGRATION_APPLY_DEPENDENCY_POLICY_FIXES=true`.
+13. Write proposal-only Copilot dependency advisory artifacts when unresolved policy risks remain.
+14. Run Test Agent after final transform completion.
+15. Return a `TransformSandboxResult`.
+
+The dependency policy layer does not run runtime/H2, endpoint smoke, SQL Server, deployment, or PR creation.
 
 ## Build Agent Validation
 
@@ -88,6 +93,27 @@ Outputs:
 - `test/post_transform/test_report.json`
 - `test/post_transform/test_summary.md`
 - `test/post_transform/test_agent.log`
+
+## Dependency Policy Validation
+
+Dependency policy runs after OpenRewrite and before final test reporting.
+
+Outputs:
+
+- `planning/target_dependency_plan.json`
+- `assessment/dependency_policy_report.json`
+- `assessment/dependency_policy_report.md`
+- `assessment/policy_patch_plan.json`
+- `assessment/policy_patch_result.json`
+- `assessment/policy_patch_pom.diff` when a deterministic POM patch changes the sandbox
+- `assessment/dependency_copilot_request.json`, `dependency_copilot_response.json`, and `dependency_repair_plan.md` when unresolved advisory risks remain
+
+Default behavior:
+
+- Reports only.
+- No POM patching unless `AI_MIGRATION_APPLY_DEPENDENCY_POLICY_FIXES=true`.
+- Never auto-applies Copilot output.
+- V1 build/test can still pass with dependency warnings when the risk is V2 runtime compatibility rather than a compile/test blocker.
 
 Current behavior:
 

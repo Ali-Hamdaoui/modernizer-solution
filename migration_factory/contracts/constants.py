@@ -32,6 +32,7 @@ PLANNING_REQUIRED_ARTIFACTS: tuple[str, ...] = (
 
 PLANNING_OPTIONAL_ARTIFACTS: tuple[str, ...] = (
     "copilot_assist.json",
+    "target_dependency_plan.json",
 )
 
 ASSESSMENT_REQUIRED_ARTIFACTS: tuple[str, ...] = (

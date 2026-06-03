@@ -46,9 +46,15 @@ _ARTIFACTS: dict[str, str] = {
     "rewrite_impact_summary": "analysis/rewrite_impact_summary.json",
     "read_only_verification": "analysis/read_only_verification.json",
     "migration_plan": "planning/migration_plan.yaml",
+    "target_dependency_plan": "planning/target_dependency_plan.json",
     "migration_units": "planning/migration_units.yaml",
     "approval_request": "planning/approval_request.json",
     "assessment_report": "assessment/assessment_report.json",
+    "dependency_policy_report": "assessment/dependency_policy_report.json",
+    "dependency_policy_summary": "assessment/dependency_policy_report.md",
+    "dependency_copilot_request": "assessment/dependency_copilot_request.json",
+    "dependency_copilot_response": "assessment/dependency_copilot_response.json",
+    "dependency_repair_plan": "assessment/dependency_repair_plan.md",
     "approval_decision": "approval/approval_decision.json",
     "approved_plan_lock": "approval/approved_plan_lock.json",
     "transformation_execution_plan": "transformation/transformation_execution_plan.yaml",
@@ -95,6 +101,7 @@ def build_report_context(run_dir: str | Path) -> dict[str, Any]:
     transform_plan = _obj(data.get("transformation_execution_plan"))
     ledger = _obj(data.get("migration_ledger"))
     test_report = _obj(data.get("post_transform_test_report"))
+    dependency_policy_report = _obj(data.get("dependency_policy_report"))
 
     provenance: dict[str, Any] = {}
     context = {
@@ -120,6 +127,7 @@ def build_report_context(run_dir: str | Path) -> dict[str, Any]:
         "transformation": _transformation(final_report, orchestration, transform_plan, ledger, run_path, provenance),
         "build": _build(final_report, orchestration, ledger, test_report, provenance),
         "tests": _tests(final_report, orchestration, test_report, provenance),
+        "dependency_policy": _dependency_policy(final_report, dependency_policy_report, artifact_refs, provenance),
         "security": _security(analysis, assessment, final_report, provenance),
         "scope_limits": _scope_limits(final_report, provenance),
         "artifact_refs": artifact_refs,
@@ -420,6 +428,66 @@ def _tests(
         "execution_owner": _value_or(test_report.get("execution_owner"), fallback=NOT_CAPTURED),
         "execution_mode": _value_or(test_report.get("execution_mode"), fallback=NOT_CAPTURED),
         "report_paths": _value_or(test_report.get("report_paths"), fallback=[]),
+    }
+
+
+def _dependency_policy(
+    final_report: dict[str, Any],
+    dependency_policy_report: dict[str, Any],
+    artifact_refs: dict[str, str],
+    provenance: dict[str, Any],
+) -> dict[str, Any]:
+    final_policy = _obj(final_report.get("dependency_policy"))
+    risks = _list(dependency_policy_report.get("risks"))
+    provenance["dependency_policy.status"] = [
+        _ref("final/migration_report.json", "/dependency_policy/status"),
+        _ref("assessment/dependency_policy_report.json", "/status"),
+    ]
+    return {
+        "target_dependency_plan_ref": _value_or(
+            final_report.get("target_dependency_plan_ref"),
+            final_policy.get("target_plan_ref"),
+            artifact_refs.get("target_dependency_plan"),
+            fallback=NOT_CAPTURED,
+        ),
+        "report_ref": _value_or(
+            final_report.get("dependency_policy_report_ref"),
+            final_policy.get("report_ref"),
+            artifact_refs.get("dependency_policy_report"),
+            fallback=NOT_CAPTURED,
+        ),
+        "status": _value_or(
+            final_report.get("dependency_policy_status"),
+            final_policy.get("status"),
+            dependency_policy_report.get("status"),
+            fallback=NOT_RUN,
+        ),
+        "risks_count": _value_or(
+            final_report.get("dependency_policy_risks_count"),
+            final_policy.get("risks_count"),
+            len(risks),
+            fallback=0,
+        ),
+        "blockers_count": _value_or(
+            final_report.get("dependency_policy_blockers_count"),
+            final_policy.get("blockers_count"),
+            fallback=0,
+        ),
+        "copilot_advisory_status": _value_or(
+            final_report.get("copilot_dependency_advisory_status"),
+            final_policy.get("copilot_advisory_status"),
+            fallback=NOT_RUN,
+        ),
+        "policy_patch_applied": _value_or(
+            final_report.get("policy_patch_applied"),
+            final_policy.get("policy_patch_applied"),
+            fallback=False,
+        ),
+        "unresolved_v2_dependency_risks": _value_or(
+            final_report.get("unresolved_v2_dependency_risks"),
+            final_policy.get("unresolved_v2_dependency_risks"),
+            fallback=[],
+        ),
     }
 
 

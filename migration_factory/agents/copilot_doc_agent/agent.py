@@ -9,6 +9,8 @@ from typing import Any
 
 import yaml
 
+from migration_factory.copilot_cli import resolve_copilot_cli_executable
+
 
 DOC_DIR_NAME = "copilot_docs"
 DOC_ARTIFACTS = (
@@ -166,12 +168,17 @@ def _generate_cli_documentation_package(
     manifest_ref = {"copilot_input_manifest": str(manifest_path)}
     status_ref = {"copilot_cli_status": str(status_path)}
     status = _new_cli_status(config)
+    command = resolve_copilot_cli_executable(config.command)
+    status["command"] = command or ""
 
     trace_refs = {**artifact_refs, **resolved_refs}
     _write_manifest(manifest_path, state, run_dir, docs_dir, trace_refs)
     protected_before = _snapshot_protected_paths(state, run_dir, docs_dir, trace_refs)
 
-    version = _run_copilot_version(config, docs_dir)
+    if not command:
+        version = {"available": False, "exit_code": None, "timeout": False, "error": "Copilot executable path was not resolved"}
+    else:
+        version = _run_copilot_version(command, config, docs_dir)
     status["version_check"] = version
     if not version["available"]:
         warnings.append("copilot documentation CLI unavailable; using local fallback")
@@ -187,7 +194,7 @@ def _generate_cli_documentation_package(
 
     try:
         completed = subprocess.run(
-            [config.command],
+            [command],
             input=_cli_prompt(manifest_path, docs_dir),
             cwd=docs_dir,
             timeout=config.timeout_seconds,
@@ -402,10 +409,10 @@ def _new_cli_status(config: CopilotDocConfig) -> dict[str, Any]:
     }
 
 
-def _run_copilot_version(config: CopilotDocConfig, cwd: Path) -> dict[str, Any]:
+def _run_copilot_version(command: str, config: CopilotDocConfig, cwd: Path) -> dict[str, Any]:
     try:
         completed = subprocess.run(
-            [config.command, "--version"],
+            [command, "--version"],
             cwd=cwd,
             timeout=min(config.timeout_seconds, 30),
             capture_output=True,

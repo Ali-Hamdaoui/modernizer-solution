@@ -283,6 +283,18 @@ VALID_PAYLOADS = {
             "execution_mode": "parse_existing_surefire",
             "report_paths": [],
         },
+        "dependency_policy": {
+            "target_dependency_plan_ref": "planning/target_dependency_plan.json",
+            "report_ref": "assessment/dependency_policy_report.json",
+            "status": "PASS_WITH_WARNINGS",
+            "risks_count": 1,
+            "blockers_count": 0,
+            "copilot_advisory_status": "FALLBACK",
+            "policy_patch_applied": False,
+            "unresolved_v2_dependency_risks": [
+                {"rule_id": "DEP-TOMCAT-BOOT3-001", "severity": "WARNING"}
+            ],
+        },
         "security": {"status": "not_captured", "security_config_touched": False, "warnings": []},
         "scope_limits": ["No production promotion performed."],
         "artifact_refs": {

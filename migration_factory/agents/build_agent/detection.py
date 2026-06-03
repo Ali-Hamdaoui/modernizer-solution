@@ -8,6 +8,8 @@ import shlex
 import shutil
 import xml.etree.ElementTree as ET
 
+from migration_factory.maven import resolve_maven_executable
+
 
 class BuildTool(str, Enum):
     MAVEN = "maven"
@@ -210,6 +212,9 @@ def _wrapper_command(path: Path, base_name: str) -> str | None:
 
 
 def _resolve_system_command(base_name: str) -> str:
+    if base_name == "mvn":
+        return resolve_maven_executable()
+
     candidates = [base_name]
     if os.name == "nt":
         candidates = [f"{base_name}.cmd", f"{base_name}.bat", f"{base_name}.exe", base_name]

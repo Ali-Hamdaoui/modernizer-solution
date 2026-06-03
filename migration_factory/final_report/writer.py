@@ -66,6 +66,10 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
     test_report = _read_json(Path(artifact_refs["post_transform_test_report"]), warnings)
     orchestration_summary = _read_json(Path(artifact_refs["orchestration_summary"]), warnings)
     migration_plan = _read_yaml(run_dir / "planning" / "migration_plan.yaml", warnings)
+    dependency_policy_report = _read_optional_json(
+        Path(str(artifact_refs.get("dependency_policy_report") or run_dir / "assessment" / "dependency_policy_report.json")),
+        warnings,
+    )
 
     test_status = str(state.get("test_status") or "")
     totals = dict(state.get("test_totals", {}) or {})
@@ -84,6 +88,8 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
     profile_governance = _object_or_empty((migration_plan or {}).get("profile_governance"))
     boot4_warnings = _boot4_warnings(target_stack, state, assessment_report, migration_plan)
     validation_scope = _validation_scope(state)
+    repair_loop = _repair_loop_context(state, artifact_refs)
+    dependency_policy = _dependency_policy_context(state, artifact_refs, dependency_policy_report)
 
     report_payload = {
         "run_id": state.get("run_id", ""),
@@ -116,6 +122,16 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
         },
         "validated": validation_scope["validated"],
         "not_validated": validation_scope["not_validated"],
+        "repair_loop": repair_loop,
+        "dependency_policy": dependency_policy,
+        "target_dependency_plan_ref": artifact_refs.get("target_dependency_plan", ""),
+        "dependency_policy_report_ref": artifact_refs.get("dependency_policy_report", ""),
+        "dependency_policy_status": dependency_policy["status"],
+        "dependency_policy_risks_count": dependency_policy["risks_count"],
+        "dependency_policy_blockers_count": dependency_policy["blockers_count"],
+        "copilot_dependency_advisory_status": dependency_policy["copilot_advisory_status"],
+        "policy_patch_applied": dependency_policy["policy_patch_applied"],
+        "unresolved_v2_dependency_risks": dependency_policy["unresolved_v2_dependency_risks"],
         "recipes": recipes,
         "executed_recipes": recipes,
         "boot4_warnings": boot4_warnings,
@@ -138,6 +154,8 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
             "Production DB scripts not validated.",
             "Endpoint/business behavior not validated.",
             "Production secrets/JWT/keystore validity not validated.",
+            "Deployment not validated.",
+            "PR creation/merge not validated.",
         ],
         "sandbox_path": state.get("sandbox_path", ""),
         "log_paths": _collect_log_paths(state, artifact_refs, test_report, orchestration_summary),
@@ -199,6 +217,8 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
         f"- Build: {payload.get('build_status', '')}",
         f"- Test: {payload.get('test_status', '')}",
         f"- Proof Level: {dict(payload.get('proof', {}) or {}).get('final_proof_level', 'not_verified')}",
+        f"- Repair Loop: {dict(payload.get('repair_loop', {}) or {}).get('final_status', 'DISABLED')}",
+        f"- Dependency Policy: {dict(payload.get('dependency_policy', {}) or {}).get('status', 'NOT_RUN')}",
         (
             "- Test Totals: "
             f"tests={totals.get('tests', 0)} "
@@ -224,6 +244,38 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
     if boot4_warnings:
         lines.extend(["", "## Boot 4 Warnings", ""])
         lines.extend(f"- {warning}" for warning in boot4_warnings)
+    repair_loop = dict(payload.get("repair_loop", {}) or {})
+    if repair_loop:
+        lines.extend(
+            [
+                "",
+                "## Repair Loop",
+                "",
+                f"- Enabled: {str(repair_loop.get('enabled', False)).lower()}",
+                f"- Max Attempts: {repair_loop.get('max_attempts', 3)}",
+                f"- Attempts: {repair_loop.get('attempts_count', 0)}",
+                f"- Final Status: {repair_loop.get('final_status', '')}",
+                f"- Ledger: {repair_loop.get('ledger_ref', '')}",
+                f"- Copilot Used: {str(repair_loop.get('copilot_used', False)).lower()}",
+                f"- Safe Patch Applied: {str(repair_loop.get('safe_patch_applied', False)).lower()}",
+                f"- Human Review Required: {str(repair_loop.get('human_review_required', False)).lower()}",
+            ]
+        )
+    dependency_policy = dict(payload.get("dependency_policy", {}) or {})
+    if dependency_policy:
+        lines.extend(
+            [
+                "",
+                "## Dependency Policy",
+                "",
+                f"- Status: {dependency_policy.get('status', '')}",
+                f"- Risks: {dependency_policy.get('risks_count', 0)}",
+                f"- Blockers: {dependency_policy.get('blockers_count', 0)}",
+                f"- Copilot Advisory: {dependency_policy.get('copilot_advisory_status', 'SKIPPED')}",
+                f"- Policy Patch Applied: {str(dependency_policy.get('policy_patch_applied', False)).lower()}",
+                f"- Report: {dependency_policy.get('report_ref', '')}",
+            ]
+        )
     statement = payload.get("copilot_advisory_statement")
     if isinstance(statement, dict):
         artifact_refs = statement.get("artifact_refs", {})
@@ -271,6 +323,59 @@ def _validation_scope(state: dict[str, Any]) -> dict[str, Any]:
             "deployment",
             "PR creation/merge",
         ],
+    }
+
+
+def _repair_loop_context(state: dict[str, Any], artifact_refs: dict[str, str]) -> dict[str, Any]:
+    return {
+        "enabled": bool(state.get("repair_loop_enabled", False)),
+        "max_attempts": int(state.get("repair_max_attempts") or 3),
+        "ledger_ref": artifact_refs.get("repair_ledger", ""),
+        "attempts_count": int(state.get("repair_attempts_count") or 0),
+        "final_status": state.get("repair_loop_status", "DISABLED"),
+        "copilot_used": state.get("copilot_invocation_status") == "USED",
+        "copilot_unavailable": state.get("repair_loop_status") == "COPILOT_UNAVAILABLE",
+        "invalid_copilot_response": state.get("repair_loop_status") == "INVALID_COPILOT_RESPONSE",
+        "safe_patch_applied": bool(state.get("repair_safe_patch_applied", False)),
+        "human_review_required": bool(state.get("repair_human_review_required", False)),
+        "validation_after_repair": {
+            "build": state.get("build_status", ""),
+            "tests": state.get("test_status", ""),
+            "h2": state.get("h2_startup_status", "H2_STARTUP_SKIPPED"),
+        },
+    }
+
+
+def _dependency_policy_context(
+    state: dict[str, Any],
+    artifact_refs: dict[str, str],
+    report: dict[str, Any] | None,
+) -> dict[str, Any]:
+    report = report or {}
+    risks = list(report.get("risks", []) or [])
+    unresolved_runtime = [
+        risk
+        for risk in risks
+        if isinstance(risk, dict)
+        and risk.get("blocks_v2_runtime") is True
+        and risk.get("severity") in {"WARNING", "ERROR", "BLOCKER"}
+    ]
+    return {
+        "target_plan_ref": artifact_refs.get("target_dependency_plan", ""),
+        "report_ref": artifact_refs.get("dependency_policy_report", ""),
+        "summary_ref": artifact_refs.get("dependency_policy_summary", ""),
+        "status": state.get("dependency_policy_status") or report.get("status") or "NOT_RUN",
+        "risks_count": int(state.get("dependency_policy_risks_count") or len(risks)),
+        "blockers_count": int(
+            state.get("dependency_policy_blockers_count")
+            or len([risk for risk in risks if isinstance(risk, dict) and risk.get("blocks_v1_build_test")])
+        ),
+        "copilot_advisory_status": state.get("copilot_dependency_advisory_status", "SKIPPED"),
+        "copilot_request_ref": artifact_refs.get("dependency_copilot_request", ""),
+        "copilot_response_ref": artifact_refs.get("dependency_copilot_response", ""),
+        "repair_plan_ref": artifact_refs.get("dependency_repair_plan", ""),
+        "policy_patch_applied": bool(state.get("policy_patch_applied", False)),
+        "unresolved_v2_dependency_risks": unresolved_runtime,
     }
 
 
@@ -525,6 +630,12 @@ def _read_json(path: Path, warnings: list[str]) -> dict[str, Any] | None:
         return payload
     warnings.append(f"unexpected payload type for {path.name}")
     return None
+
+
+def _read_optional_json(path: Path, warnings: list[str]) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    return _read_json(path, warnings)
 
 
 def _read_yaml(path: Path, warnings: list[str]) -> dict[str, Any] | None:

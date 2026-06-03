@@ -157,6 +157,12 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         artifact_refs["post_transform_test_summary"] = str(result.test_summary_path)
     if result.test_log_path is not None:
         artifact_refs["post_transform_test_log"] = str(result.test_log_path)
+    for key, value in dict(result.dependency_policy_artifact_refs or {}).items():
+        artifact_refs[key] = value
+    if result.dependency_policy_report_path is not None:
+        artifact_refs["dependency_policy_report"] = str(result.dependency_policy_report_path)
+    if result.dependency_policy_summary_path is not None:
+        artifact_refs["dependency_policy_summary"] = str(result.dependency_policy_summary_path)
 
     if result.exit_code != 0 or result.status != STATUS_APPLIED or result.sandbox_path is None:
         message = result.message or f"sandbox transform failed with status {result.status}"
@@ -176,6 +182,11 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
                 "test_summary_path": str(result.test_summary_path or ""),
                 "test_log_path": str(result.test_log_path or ""),
                 "test_phase": result.test_phase or "",
+                "dependency_policy_status": result.dependency_policy_status,
+                "dependency_policy_risks_count": result.dependency_policy_risks_count,
+                "dependency_policy_blockers_count": result.dependency_policy_blockers_count,
+                "copilot_dependency_advisory_status": result.copilot_dependency_advisory_status,
+                "policy_patch_applied": result.policy_patch_applied,
                 "sandbox_path": str(result.sandbox_path or ""),
                 "transform_log_path": str(result.log_file),
                 "artifact_refs": artifact_refs,
@@ -184,7 +195,7 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
                 "timing": _merged_timing_state(Path(state.get("run_dir", "")), state),
             }
         )
-        return failed
+        return _merge_repair_updates(failed)
 
     h2_updates: dict[str, Any] = {
         "h2_startup_status": "H2_STARTUP_SKIPPED",
@@ -232,7 +243,7 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
                     **h2_updates,
                 }
             )
-            return failed
+            return _merge_repair_updates(failed, h2_startup_report=h2_report)
 
     return {
         "current_phase": "sandbox_transform",
@@ -245,6 +256,11 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         "test_summary_path": str(result.test_summary_path or ""),
         "test_log_path": str(result.test_log_path or ""),
         "test_phase": result.test_phase or "",
+        "dependency_policy_status": result.dependency_policy_status,
+        "dependency_policy_risks_count": result.dependency_policy_risks_count,
+        "dependency_policy_blockers_count": result.dependency_policy_blockers_count,
+        "copilot_dependency_advisory_status": result.copilot_dependency_advisory_status,
+        "policy_patch_applied": result.policy_patch_applied,
         "sandbox_path": str(result.sandbox_path),
         "transform_log_path": str(result.log_file),
         "artifact_refs": artifact_refs,
@@ -253,6 +269,31 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         "timing": _merged_timing_state(Path(state.get("run_dir", "")), state),
         **h2_updates,
     }
+
+
+def _merge_repair_updates(
+    failed_state: MigrationState,
+    *,
+    h2_startup_report: dict[str, Any] | None = None,
+) -> MigrationState:
+    from migration_factory.repair_loop.orchestrator import run_post_failure_repair_loop
+
+    updates = run_post_failure_repair_loop(failed_state, h2_startup_report=h2_startup_report)
+    result: MigrationState = dict(failed_state)
+    artifact_refs = dict(result.get("artifact_refs", {}) or {})
+    artifact_refs.update(dict(updates.get("artifact_refs", {}) or {}))
+    result.update(updates)
+    result["artifact_refs"] = artifact_refs
+    repair_status = str(updates.get("repair_loop_status") or "")
+    if repair_status == "REPAIR_VALIDATED":
+        result["orchestration_status"] = "PASS"
+        result["final_status"] = "REPAIR_VALIDATED"
+        result["stop_reason"] = "safe deterministic repair patch validated in sandbox"
+    elif repair_status and repair_status != "DISABLED":
+        result["final_status"] = repair_status
+        if repair_status == "REPAIR_BLOCKED_HUMAN_REVIEW":
+            result["stop_reason"] = "Copilot repair proposal requires human review"
+    return result
 
 
 def _merged_timing_state(run_dir: Path, state: MigrationState) -> dict[str, Any]:

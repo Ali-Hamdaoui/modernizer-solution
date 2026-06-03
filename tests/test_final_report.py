@@ -6,6 +6,7 @@ import subprocess
 
 import migration_factory.final_report.writer as final_report_writer
 import pytest
+import migration_factory.copilot_cli as copilot_cli_module
 import migration_factory.agents.copilot_doc_agent.agent as copilot_doc_agent
 import migration_factory.final_report.copilot as copilot_module
 import migration_factory.orchestrator.summary as summary_module
@@ -197,7 +198,15 @@ def test_copilot_documentation_cli_missing_records_status_and_falls_back(tmp_pat
 def test_copilot_documentation_cli_nonzero_records_bounded_status_and_falls_back(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AI_MIGRATION_COPILOT_CLI_ENABLED", "true")
     state = _successful_state(tmp_path)
+    resolved = r"C:\Users\test\AppData\Roaming\npm\copilot.cmd"
     calls: list[list[str]] = []
+
+    monkeypatch.setattr(copilot_cli_module.os, "name", "nt")
+    monkeypatch.setattr(
+        copilot_cli_module.shutil,
+        "which",
+        lambda name: resolved if name == "copilot.cmd" else None,
+    )
 
     def fake_run(args, **kwargs):
         calls.append(list(args))
@@ -210,7 +219,8 @@ def test_copilot_documentation_cli_nonzero_records_bounded_status_and_falls_back
     result = finalize_orchestration_state(state)
 
     status = json.loads(Path(result["artifact_refs"]["copilot_cli_status"]).read_text(encoding="utf-8"))
-    assert calls == [["copilot", "--version"], ["copilot"]]
+    assert calls == [[resolved, "--version"], [resolved]]
+    assert status["command"] == resolved
     assert status["exit_code"] == 2
     assert status["fallback_status"] == "used"
     assert len(status["stdout_preview"]) < 2100

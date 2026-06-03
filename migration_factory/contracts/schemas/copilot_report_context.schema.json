@@ -13,6 +13,7 @@
     "transformation",
     "build",
     "tests",
+    "dependency_policy",
     "security",
     "scope_limits",
     "artifact_refs",
@@ -73,6 +74,30 @@
     "tests": {
       "type": "object",
       "required": ["status", "totals", "execution_owner", "execution_mode", "report_paths"],
+      "additionalProperties": true
+    },
+    "dependency_policy": {
+      "type": "object",
+      "required": [
+        "target_dependency_plan_ref",
+        "report_ref",
+        "status",
+        "risks_count",
+        "blockers_count",
+        "copilot_advisory_status",
+        "policy_patch_applied",
+        "unresolved_v2_dependency_risks"
+      ],
+      "properties": {
+        "target_dependency_plan_ref": {"type": "string"},
+        "report_ref": {"type": "string"},
+        "status": {"type": "string"},
+        "risks_count": {"type": ["integer", "number"], "minimum": 0},
+        "blockers_count": {"type": ["integer", "number"], "minimum": 0},
+        "copilot_advisory_status": {"type": "string"},
+        "policy_patch_applied": {"type": "boolean"},
+        "unresolved_v2_dependency_risks": {"type": "array", "items": {"type": "object"}}
+      },
       "additionalProperties": true
     },
     "security": {

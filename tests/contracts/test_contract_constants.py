@@ -44,7 +44,10 @@ def test_required_artifact_names_are_frozen() -> None:
         "approval_request.json",
         "plan_validation_report.json",
     )
-    assert PLANNING_OPTIONAL_ARTIFACTS == ("copilot_assist.json",)
+    assert PLANNING_OPTIONAL_ARTIFACTS == (
+        "copilot_assist.json",
+        "target_dependency_plan.json",
+    )
     assert ASSESSMENT_REQUIRED_ARTIFACTS == (
         "assessment_report.json",
         "assessment_summary.md",

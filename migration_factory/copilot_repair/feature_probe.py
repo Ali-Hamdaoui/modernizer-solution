@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
 from migration_factory.contracts import SCHEMA_VERSION
+from migration_factory.copilot_cli import resolve_copilot_cli_executable
 from migration_factory.copilot_repair.skill_validator import validate_agent_and_skills
 
 
@@ -48,11 +48,23 @@ def probe_copilot_availability(
         payload.update({"status": "SKIPPED", "reason": f"provider {provider} is not copilot_cli"})
         return _write(output_path, payload)
 
-    cli_path = shutil.which(executable) or executable
-    payload["cli_path"] = Path(cli_path).name if cli_path else ""
+    cli_path = resolve_copilot_cli_executable(executable)
+    payload["cli_path"] = cli_path or ""
+    if not cli_path:
+        payload.update(
+            {
+                "status": "UNAVAILABLE",
+                "reason": "copilot cli executable was not found",
+                "agent_status": "SKIPPED",
+                "skills_status": "SKIPPED",
+                "dry_probe_status": "FAILED",
+                "errors": ["Copilot executable path was not resolved"],
+            }
+        )
+        return _write(output_path, payload)
     try:
         help_result = run(
-            [executable, "--help"],
+            [cli_path, "--help"],
             capture_output=True,
             text=True,
             check=False,
@@ -84,7 +96,7 @@ def probe_copilot_availability(
     version = ""
     try:
         version_result = run(
-            [executable, "--version"],
+            [cli_path, "--version"],
             capture_output=True,
             text=True,
             check=False,

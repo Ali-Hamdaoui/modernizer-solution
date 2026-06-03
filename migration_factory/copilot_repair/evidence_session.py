@@ -10,8 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from migration_factory.contracts import SCHEMA_VERSION
+from migration_factory.copilot_repair.request_builder import COPILOT_RESPONSE_TEMPLATE
 from migration_factory.copilot_repair.skill_validator import AGENT_PATH, SKILL_PATHS
 
+
+RESPONSE_SCHEMA_SOURCE = Path("migration_factory/contracts/schemas/copilot_repair_response.schema.json")
+RESPONSE_SCHEMA_EVIDENCE_PATH = Path("evidence/copilot_repair_response.schema.json")
+RESPONSE_TEMPLATE_EVIDENCE_PATH = Path("evidence/copilot_repair_response.template.json")
 
 SECRET_PATTERNS = (
     re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"),
@@ -47,6 +52,8 @@ def create_evidence_session(
     evidence_dir.mkdir(parents=True, exist_ok=True)
     request_path = evidence_dir / "copilot_repair_request.json"
     request_path.write_text(json.dumps(_redact(evidence), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _copy_response_schema(root, session_dir)
+    _write_response_template(session_dir)
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -113,6 +120,21 @@ def _copy_agent_and_skills(repo_root: Path, session_dir: Path) -> None:
         shutil.copy2(source, destination)
 
 
+def _copy_response_schema(repo_root: Path, session_dir: Path) -> None:
+    source = repo_root / RESPONSE_SCHEMA_SOURCE
+    if not source.is_file():
+        return
+    destination = session_dir / RESPONSE_SCHEMA_EVIDENCE_PATH
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+
+
+def _write_response_template(session_dir: Path) -> None:
+    destination = session_dir / RESPONSE_TEMPLATE_EVIDENCE_PATH
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(COPILOT_RESPONSE_TEMPLATE, indent=2) + "\n", encoding="utf-8")
+
+
 def _relative_files(session_dir: Path) -> list[str]:
     return sorted(path.relative_to(session_dir).as_posix() for path in session_dir.rglob("*") if path.is_file())
 
@@ -121,7 +143,7 @@ def _unexpected_mutations(before: dict[str, str], after: dict[str, str]) -> list
     mutations: list[dict[str, str]] = []
     all_paths = sorted(set(before) | set(after))
     for rel in all_paths:
-        if rel == "evidence_manifest.json":
+        if rel in {"evidence_manifest.json", "copilot_invocation_debug.json"}:
             continue
         old = before.get(rel)
         new = after.get(rel)

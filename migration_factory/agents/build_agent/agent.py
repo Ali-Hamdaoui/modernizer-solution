@@ -11,6 +11,7 @@ import time
 from migration_factory.contracts.build import BuildRunResult, write_build_error
 from migration_factory.contracts.build.schemas import build_error_contract
 from migration_factory.contracts.migration import mark_build_failed, mark_build_passed
+from migration_factory.maven import resolve_maven_command
 
 from .classifier import BuildClassification, BuildResultKind, command_error_classification
 from .detection import (
@@ -220,7 +221,7 @@ def run_build_agent(
         project_path=project.path,
         cwd=project.path,
         build_tool=project.build_tool.value,
-        command=command,
+        command=result.resolved_command or command,
         result_kind=result.classification.kind.value,
         message=result.classification.message,
         matched_line=result.classification.line,
@@ -246,7 +247,7 @@ def run_build_agent(
         exit_code=result.exit_code,
         matched_line=result.classification.line,
         warnings=result.warnings,
-        command=command,
+        command=result.resolved_command or command,
         cwd=project.path,
         command_duration_seconds=command_duration_seconds,
     )
@@ -306,7 +307,7 @@ def _success_result(
         exit_code=result.exit_code,
         matched_line=result.classification.line,
         warnings=result.warnings,
-        command=command,
+        command=result.resolved_command or command,
         cwd=cwd,
         command_duration_seconds=command_duration_seconds,
     )
@@ -441,7 +442,7 @@ def _maven_version_executable(project: JavaProjectInfo, validation_command: list
         if _is_non_executable_local_file(candidate):
             LOGGER.info("Skipping non-executable Maven wrapper for version gate: %s", candidate)
             continue
-        return candidate
+        return resolve_maven_command([candidate])[0]
     return "mvn"
 
 

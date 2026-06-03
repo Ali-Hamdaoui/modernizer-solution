@@ -21,6 +21,7 @@ DEFAULT_COPILOT_REPORT_ENABLED = True
 DEFAULT_COPILOT_PROVIDER = "copilot_cli"
 DEFAULT_COPILOT_MODEL = "gpt-5-mini"
 DEFAULT_COPILOT_TIMEOUT_SECONDS = 300
+DEFAULT_COPILOT_REPAIR_MAX_ATTEMPTS = 3
 
 _COPILOT_ASSIST_ENV = "AI_MIGRATION_COPILOT_ASSIST"
 _COPILOT_REPORT_ENV = "AI_MIGRATION_ENABLE_COPILOT_REPORT"
@@ -29,6 +30,8 @@ _COPILOT_MODEL_ENV = "AI_MIGRATION_COPILOT_MODEL"
 _COPILOT_TIMEOUT_ENV = "AI_MIGRATION_COPILOT_TIMEOUT_SECONDS"
 _COPILOT_REQUIRED_ENV = "AI_MIGRATION_COPILOT_REQUIRED"
 _COPILOT_FAILURE_AGENT_ENABLED_ENV = "AI_MIGRATION_COPILOT_FAILURE_AGENT_ENABLED"
+_COPILOT_REPAIR_MAX_ATTEMPTS_ENV = "AI_MIGRATION_COPILOT_REPAIR_MAX_ATTEMPTS"
+_AUTO_APPLY_SAFE_REPAIRS_ENV = "AI_MIGRATION_AUTO_APPLY_SAFE_REPAIRS"
 _H2_STARTUP_REQUIRED_ENV = "AI_MIGRATION_H2_STARTUP_REQUIRED"
 _COPILOT_REPAIR_STRICT_CONTAINMENT_ENV = "AI_MIGRATION_COPILOT_REPAIR_STRICT_CONTAINMENT"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -115,6 +118,13 @@ class MigrationState(TypedDict, total=False):
     copilot_invocation_status: str
     repair_mode: str
     repair_loop_status: str
+    repair_loop_enabled: bool
+    repair_max_attempts: int
+    auto_apply_safe_repairs: bool
+    repair_attempts_count: int
+    repair_fallback_generated: bool
+    repair_safe_patch_applied: bool
+    repair_human_review_required: bool
     failure_classification_status: str
     openrewrite_diff_risk_status: str
     h2_startup_required: bool
@@ -122,6 +132,11 @@ class MigrationState(TypedDict, total=False):
     runtime_security_warnings: list[str]
     final_proof_level: str
     copilot_repair_strict_containment: bool
+    dependency_policy_status: str
+    dependency_policy_risks_count: int
+    dependency_policy_blockers_count: int
+    copilot_dependency_advisory_status: str
+    policy_patch_applied: bool
 
 
 def build_initial_state(
@@ -207,6 +222,13 @@ def build_copilot_state_defaults() -> MigrationState:
         "copilot_invocation_status": "SKIPPED",
         "repair_mode": "proposal_only",
         "repair_loop_status": "NOT_IMPLEMENTED",
+        "repair_loop_enabled": False,
+        "repair_max_attempts": DEFAULT_COPILOT_REPAIR_MAX_ATTEMPTS,
+        "auto_apply_safe_repairs": False,
+        "repair_attempts_count": 0,
+        "repair_fallback_generated": False,
+        "repair_safe_patch_applied": False,
+        "repair_human_review_required": False,
         "failure_classification_status": "PENDING",
         "openrewrite_diff_risk_status": "UNKNOWN",
         "h2_startup_required": False,
@@ -214,6 +236,11 @@ def build_copilot_state_defaults() -> MigrationState:
         "runtime_security_warnings": [],
         "final_proof_level": "not_verified",
         "copilot_repair_strict_containment": True,
+        "dependency_policy_status": "NOT_RUN",
+        "dependency_policy_risks_count": 0,
+        "dependency_policy_blockers_count": 0,
+        "copilot_dependency_advisory_status": "SKIPPED",
+        "policy_patch_applied": False,
     }
 
 
@@ -258,6 +285,21 @@ def parse_copilot_config_from_env(env: Mapping[str, str] | None = None) -> Migra
                 _COPILOT_FAILURE_AGENT_ENABLED_ENV,
                 False,
             ),
+            "repair_loop_enabled": _bool_env_value(
+                source,
+                _COPILOT_FAILURE_AGENT_ENABLED_ENV,
+                False,
+            ),
+            "repair_max_attempts": _positive_int_env_value(
+                source,
+                _COPILOT_REPAIR_MAX_ATTEMPTS_ENV,
+                DEFAULT_COPILOT_REPAIR_MAX_ATTEMPTS,
+            ),
+            "auto_apply_safe_repairs": _bool_env_value(
+                source,
+                _AUTO_APPLY_SAFE_REPAIRS_ENV,
+                False,
+            ),
             "h2_startup_required": _bool_env_value(source, _H2_STARTUP_REQUIRED_ENV, False),
             "copilot_repair_strict_containment": _bool_env_value(
                 source,
@@ -274,7 +316,27 @@ def apply_copilot_config(
     env: Mapping[str, str] | None = None,
 ) -> MigrationState:
     updated: MigrationState = dict(state)
+    preserve_runtime = {
+        key: updated[key]
+        for key in (
+            "copilot_availability_status",
+            "copilot_feature_probe",
+            "copilot_invocation_status",
+            "repair_loop_status",
+            "repair_attempts_count",
+            "repair_fallback_generated",
+            "repair_safe_patch_applied",
+            "repair_human_review_required",
+            "failure_classification_status",
+            "openrewrite_diff_risk_status",
+            "h2_startup_status",
+            "runtime_security_warnings",
+            "final_proof_level",
+        )
+        if key in updated
+    }
     updated.update(parse_copilot_config_from_env(env))
+    updated.update(preserve_runtime)
     return updated
 
 

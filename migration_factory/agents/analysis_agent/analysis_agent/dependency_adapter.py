@@ -1,7 +1,8 @@
 import json
-import shutil
 import subprocess
 from typing import Any, Dict, List, Optional
+
+from migration_factory.maven import resolve_maven_executable
 
 
 def _new_graph(raw_file: Optional[str] = None) -> Dict[str, Any]:
@@ -110,7 +111,7 @@ def _write_graph(context, graph: Dict[str, Any]) -> None:
 
 
 def run_dependency_tree(context):
-    maven_executable = shutil.which("mvn") or shutil.which("mvn.cmd") or "mvn"
+    maven_executable = resolve_maven_executable()
     json_cmd = [maven_executable, "dependency:tree", "-DoutputType=json"]
     text_cmd = [maven_executable, "dependency:tree", "-DoutputType=text"]
 

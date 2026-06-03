@@ -121,6 +121,13 @@ Catalog:
 - Active recipes:
   - `org.openrewrite.java.migrate.UpgradeToJava17`
   - `org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5`
+  - `org.openrewrite.maven.RemoveRedundantDependencyVersions`
+
+OpenRewrite coverage audit for Stage B:
+
+- Covered first: Java 17 migration, Spring Boot 3.5 migration, Spring Framework/Jakarta API migrations known to OpenRewrite, build-file changes from the Boot 3.5 recipe, and redundant dependency version cleanup via Maven recipe.
+- Not guaranteed: removal of a lingering `tomcat.version=9.*` property, all explicit `tomcat-embed-*` overrides, company-specific/internal JAR compatibility, and deterministic selection of a Boot 3/Jakarta-compatible `org.zalando:problem-spring-web` target.
+- Factory dependency policy now runs after OpenRewrite in the sandbox to catch those gaps before final build/test reporting.
 
 Real migration evidence:
 
@@ -137,6 +144,16 @@ Known caveats in final Stage 2 sandbox:
 - `problem-spring-web` remains in `pom.xml`.
 - `javax.*` source search excluding `target` found 3 occurrences, all logger names in `src/test/resources/logback.xml`.
 - `jakarta.*` exists as 5 `jakarta.persistence.*` imports in `Translation.java`.
+
+New dependency policy artifacts for future Stage B runs:
+
+- `planning/target_dependency_plan.json`
+- `assessment/dependency_policy_report.json`
+- `assessment/dependency_policy_report.md`
+- Optional proposal-only advisory artifacts:
+  - `assessment/dependency_copilot_request.json`
+  - `assessment/dependency_copilot_response.json`
+  - `assessment/dependency_repair_plan.md`
 
 ### Optional Stage C: `springboot-3.5-java17-to-java21`
 

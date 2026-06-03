@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-import os
 import shlex
-import shutil
 import subprocess
 import time
+
+from migration_factory.maven import resolve_maven_command
 
 
 @dataclass(frozen=True)
@@ -26,6 +26,7 @@ def run_command(command: str, cwd: Path, stream_output: bool = True) -> CommandR
     started = time.monotonic()
     args = _split_command(command)
     args = _resolve_executable(args)
+    recorded_command = " ".join(args)
 
     try:
         process = subprocess.Popen(
@@ -37,7 +38,7 @@ def run_command(command: str, cwd: Path, stream_output: bool = True) -> CommandR
         )
     except FileNotFoundError as exc:
         return CommandResult(
-            command=command,
+            command=recorded_command,
             exit_code=127,
             stdout=[],
             stderr=[
@@ -60,7 +61,7 @@ def run_command(command: str, cwd: Path, stream_output: bool = True) -> CommandR
             print(line)
 
     return CommandResult(
-        command=command,
+        command=recorded_command,
         exit_code=process.returncode,
         stdout=stdout,
         stderr=stderr,
@@ -73,21 +74,4 @@ def _split_command(command: str) -> list[str]:
 
 
 def _resolve_executable(args: list[str]) -> list[str]:
-    if not args:
-        return args
-
-    executable = args[0]
-
-    if executable.lower() in {"mvn", "mvn.cmd", "mvn.bat"}:
-        maven_cmd = (
-            os.environ.get("MAVEN_CMD")
-            or os.environ.get("MVN_CMD")
-            or shutil.which("mvn.cmd")
-            or shutil.which("mvn.bat")
-            or shutil.which("mvn")
-        )
-
-        if maven_cmd:
-            return [maven_cmd, *args[1:]]
-
-    return args
+    return resolve_maven_command(args)

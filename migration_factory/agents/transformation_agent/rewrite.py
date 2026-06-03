@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import shutil
 import xml.etree.ElementTree as ET
+
+from migration_factory.maven import resolve_maven_executable
 
 DEFAULT_OPENREWRITE_MAVEN_PLUGIN_VERSION = "6.39.0"
 OPENREWRITE_MAVEN_PLUGIN = ("org.openrewrite.maven", "rewrite-maven-plugin")
@@ -63,7 +64,7 @@ def build_rewrite_run_command(
         args.append(f"-Drewrite.recipeArtifactCoordinates={','.join(recipe_artifacts)}")
     if maven_args:
         args.extend(str(item) for item in maven_args)
-    return "mvn " + " ".join(args)
+    return " ".join([resolve_maven_executable(), *args])
 
 
 def rewrite_plugin_version_from_xml(plugin_txt_path: str | Path) -> str:

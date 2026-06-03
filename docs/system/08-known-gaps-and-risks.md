@@ -33,14 +33,18 @@ Current state:
 
 - Analysis can run Maven dependency tree.
 - Assessment has text-based enterprise compatibility heuristics.
+- A deterministic dependency policy layer now runs after OpenRewrite and before final build/test reporting.
+- It writes `planning/target_dependency_plan.json` and `assessment/dependency_policy_report.json`.
+- It detects Tomcat 9 overrides under Boot 3, explicit `tomcat-embed-*` versions, old Zalando `problem-spring-web <= 0.24.0`, source `javax.*` imports, resource/logger `javax.*` references, dependency-tree `javax.*` evidence, and heuristic internal JAR risk.
 
 Gap:
 
-- No compatibility matrix scanner for Spring Boot/Spring Framework/Jakarta/Hibernate/Zalando/Springfox/SQL Server/internal dependencies.
+- No full compatibility matrix scanner for Spring Boot/Spring Framework/Jakarta/Hibernate/Springfox/SQL Server/internal dependencies.
+- No bytecode resolver for private/internal JAR APIs.
 
 Needed:
 
-- Dependency Compatibility Scanner that reads dependency graph, BOMs, properties, managed dependencies, and internal artifacts.
+- Expand dependency policy into a matrix scanner that reads dependency graph, BOMs, properties, managed dependencies, and internal artifacts.
 
 ## Internal Artifact Resolver
 
@@ -61,7 +65,8 @@ Needed:
 
 Current state:
 
-- No dedicated rule found for Tomcat override compatibility.
+- Dedicated rule `DEP-TOMCAT-BOOT3-001` flags `tomcat.version=9.*` under Boot 3.
+- Dedicated rule `DEP-TOMCAT-BOOT3-002` flags explicit `tomcat-embed-*` dependency versions under Boot 3.
 - Final Stage 2 sandbox still had `tomcat.version = 9.0.102`.
 
 Gap:
@@ -70,7 +75,7 @@ Gap:
 
 Needed:
 
-- Rule scanning dependency management, properties, exclusions, and explicit Tomcat artifacts.
+- Extend scanning to exclusions and dependency management edge cases.
 
 ## `javax.*` Scanner In Internal JARs
 
@@ -104,6 +109,7 @@ Known high-risk libraries and stacks:
 Current state:
 
 - Assessment heuristics can flag Hibernate, security, old Maven plugins, internal dependencies, unsupported bytecode, missing tests.
+- Dedicated rule `DEP-ZALANDO-BOOT3-001` flags `org.zalando:problem-spring-web <= 0.24.0` under Boot 3.
 - Final Stage 2 sandbox still had `org-zalando.version = 0.24.0`.
 - `problem-spring-web` remained in `pom.xml`.
 
@@ -115,7 +121,7 @@ Needed:
 
 - Rules that map dependency coordinates and versions to migration actions, blockers, warnings, and proof requirements.
 
-V2 should detect and report old Zalando/problem dependencies under Boot 3.5 instead of treating compile/test success as compatibility proof.
+The new V1 dependency policy reports old Zalando/problem dependencies under Boot 3.5 instead of treating compile/test success as compatibility proof. V2 still needs a curated compatibility matrix and configured target version policy before auto-upgrading Zalando.
 
 ## SQL Init Analyzer
 

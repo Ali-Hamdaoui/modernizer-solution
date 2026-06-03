@@ -45,6 +45,13 @@ from migration_factory.approval import (
     read_approval_decision,
 )
 from migration_factory.contracts.migration import LedgerError, LedgerStatus, load_ledger, save_ledger
+from migration_factory.dependency_policy import (
+    apply_policy_patches_if_enabled,
+    invoke_dependency_copilot_advisory,
+    scan_dependency_policy,
+    write_dependency_policy_artifacts,
+)
+from migration_factory.dependency_policy.scanner import load_target_plan
 from migration_factory.orchestrator.timing import record_command_duration, record_phase_duration, write_timing_artifacts
 
 
@@ -89,6 +96,14 @@ class TransformSandboxResult:
     test_summary_path: Path | None = None
     test_log_path: Path | None = None
     test_phase: str | None = None
+    dependency_policy_report_path: Path | None = None
+    dependency_policy_summary_path: Path | None = None
+    dependency_policy_status: str = ""
+    dependency_policy_risks_count: int = 0
+    dependency_policy_blockers_count: int = 0
+    copilot_dependency_advisory_status: str = "SKIPPED"
+    policy_patch_applied: bool = False
+    dependency_policy_artifact_refs: dict[str, str] | None = None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -499,6 +514,11 @@ def _finalize_with_test_validation(
     build_status: str | None,
     status_writer: Callable[[str], None],
 ) -> TransformSandboxResult:
+    dependency_policy = _run_dependency_policy_layer(
+        sandbox_path=sandbox_path,
+        run_dir=run_dir,
+        build_passed=build_status == STATUS_BUILD_PASSED,
+    )
     command, cwd = _build_command_and_cwd(ledger_file)
     build_exit_code = _build_exit_code(ledger_file)
     test_result = run_test_agent(
@@ -547,6 +567,14 @@ def _finalize_with_test_validation(
             test_summary_path=test_result.summary_path,
             test_log_path=test_result.log_path,
             test_phase="post_transform",
+            dependency_policy_report_path=dependency_policy.get("dependency_policy_report_path"),
+            dependency_policy_summary_path=dependency_policy.get("dependency_policy_summary_path"),
+            dependency_policy_status=str(dependency_policy.get("dependency_policy_status") or ""),
+            dependency_policy_risks_count=int(dependency_policy.get("dependency_policy_risks_count") or 0),
+            dependency_policy_blockers_count=int(dependency_policy.get("dependency_policy_blockers_count") or 0),
+            copilot_dependency_advisory_status=str(dependency_policy.get("copilot_dependency_advisory_status") or "SKIPPED"),
+            policy_patch_applied=bool(dependency_policy.get("policy_patch_applied", False)),
+            dependency_policy_artifact_refs=dict(dependency_policy.get("artifact_refs", {}) or {}),
         )
 
     status_writer(test_result.test_status)
@@ -567,7 +595,78 @@ def _finalize_with_test_validation(
         test_summary_path=test_result.summary_path,
         test_log_path=test_result.log_path,
         test_phase="post_transform",
+        dependency_policy_report_path=dependency_policy.get("dependency_policy_report_path"),
+        dependency_policy_summary_path=dependency_policy.get("dependency_policy_summary_path"),
+        dependency_policy_status=str(dependency_policy.get("dependency_policy_status") or ""),
+        dependency_policy_risks_count=int(dependency_policy.get("dependency_policy_risks_count") or 0),
+        dependency_policy_blockers_count=int(dependency_policy.get("dependency_policy_blockers_count") or 0),
+        copilot_dependency_advisory_status=str(dependency_policy.get("copilot_dependency_advisory_status") or "SKIPPED"),
+        policy_patch_applied=bool(dependency_policy.get("policy_patch_applied", False)),
+        dependency_policy_artifact_refs=dict(dependency_policy.get("artifact_refs", {}) or {}),
     )
+
+
+def _run_dependency_policy_layer(
+    *,
+    sandbox_path: Path,
+    run_dir: Path,
+    build_passed: bool,
+) -> dict[str, Any]:
+    target_plan = load_target_plan(run_dir)
+    report = scan_dependency_policy(
+        sandbox_path=sandbox_path,
+        target_plan=target_plan,
+        build_passed=build_passed,
+    )
+    refs = {
+        key: str(path)
+        for key, path in write_dependency_policy_artifacts(run_dir=run_dir, report=report).items()
+    }
+    patch_refs = apply_policy_patches_if_enabled(
+        sandbox_path=sandbox_path,
+        run_dir=run_dir,
+        report=report,
+        target_plan=target_plan,
+    )
+    refs.update({key: str(path) for key, path in patch_refs.items() if isinstance(path, Path)})
+    policy_patch_applied = bool(patch_refs.get("policy_patch_applied", False))
+    if policy_patch_applied:
+        report = scan_dependency_policy(
+            sandbox_path=sandbox_path,
+            target_plan=target_plan,
+            build_passed=build_passed,
+        )
+        refs.update(
+            {
+                key: str(path)
+                for key, path in write_dependency_policy_artifacts(run_dir=run_dir, report=report).items()
+            }
+        )
+
+    copilot_status = "SKIPPED"
+    if report.copilot_advisory_required and target_plan.get("copilot_advisory_enabled", True):
+        advisory = invoke_dependency_copilot_advisory(
+            run_dir=run_dir,
+            sandbox_path=sandbox_path,
+            target_plan=target_plan,
+            policy_report=report,
+        )
+        copilot_status = str(advisory.get("status") or "FALLBACK")
+        refs.update(dict(advisory.get("artifact_refs", {}) or {}))
+
+    blockers = [
+        risk for risk in report.risks if risk.severity == "BLOCKER" or risk.blocks_v1_build_test
+    ]
+    return {
+        "artifact_refs": refs,
+        "dependency_policy_report_path": Path(refs["dependency_policy_report"]),
+        "dependency_policy_summary_path": Path(refs["dependency_policy_summary"]),
+        "dependency_policy_status": report.status,
+        "dependency_policy_risks_count": len(report.risks),
+        "dependency_policy_blockers_count": len(blockers),
+        "copilot_dependency_advisory_status": copilot_status,
+        "policy_patch_applied": policy_patch_applied,
+    }
 
 
 def _build_command_and_cwd(ledger_file: Path) -> tuple[list[str], str | None]:
@@ -922,7 +1021,7 @@ def _profile_transform_blockers(profile_payload: dict[str, Any]) -> list[str]:
         catalog = {}
 
     blockers: list[str] = []
-    if profile_payload.get("production_allowed") is False:
+    if profile_payload.get("production_allowed") is False and profile_payload.get("sandbox_transform_allowed") is not True:
         blockers.append("production_allowed=false")
     if profile_payload.get("dry_run_only") is True or rules.get("dry_run_only") is True:
         blockers.append("dry_run_only=true")

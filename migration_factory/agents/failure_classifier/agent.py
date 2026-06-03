@@ -36,9 +36,27 @@ def classify_failure(
         combined += "\n" + json.dumps(openrewrite_report)
     if h2_report:
         combined += "\n" + json.dumps(h2_report)
-    lowered = combined.lower()
+    lowered = combined.replace('\\"', '"').replace("\\'", "'").lower()
+    security_warning_detected = any(token in lowered for token in SECURITY_ENV_TOKENS)
+    related_warnings = ["SECURITY_ENV_WARNING"] if security_warning_detected else []
 
-    if any(token in lowered for token in SECURITY_ENV_TOKENS):
+    if _is_caching_config_missing_property(lowered, h2_report or {}):
+        return _payload(
+            run_id,
+            failure_type="H2_STARTUP_FAILURE",
+            severity="BLOCKER",
+            migration_blocker=True,
+            security_env_warning=False,
+            likely_root_cause="cachingConfig is missing a runtime property required for H2 startup.",
+            evidence=_runtime_config_evidence(lowered, h2_report or {}),
+            recommended_next_step="Identify the required cachingConfig property and add a smoke-safe runtime configuration value.",
+            send_to_copilot=True,
+            requires_human_review=False,
+            related_warnings=related_warnings,
+            root_cause="RUNTIME_CONFIG_MISSING_PROPERTY",
+        )
+
+    if security_warning_detected:
         h2_required = bool((h2_report or {}).get("required"))
         h2_failed = (h2_report or {}).get("h2_status") == "H2_STARTUP_FAILED"
         if not (h2_required and h2_failed):
@@ -53,21 +71,25 @@ def classify_failure(
                 recommended_next_step="Provide non-production local secrets for runtime smoke or review manually.",
                 send_to_copilot=False,
                 requires_human_review=True,
+                root_cause="security environment missing common config",
             )
 
     for failure_type, tokens, severity, next_step in CLASSIFIERS:
         if any(token.lower() in lowered for token in tokens):
+            root_cause = tokens[0]
             return _payload(
                 run_id,
                 failure_type=failure_type,
                 severity=severity,
                 migration_blocker=severity == "BLOCKER",
                 security_env_warning=False,
-                likely_root_cause=tokens[0],
+                likely_root_cause=root_cause,
                 evidence=[token for token in tokens if token.lower() in lowered][:5],
                 recommended_next_step=next_step,
                 send_to_copilot=severity == "BLOCKER",
                 requires_human_review=failure_type in {"SPRING_SECURITY_6_BREAK", "OPENREWRITE_BAD_REMOVAL"},
+                related_warnings=related_warnings,
+                root_cause=root_cause,
             )
 
     return _payload(
@@ -103,8 +125,10 @@ def _payload(
     recommended_next_step: str,
     send_to_copilot: bool,
     requires_human_review: bool,
+    related_warnings: list[str] | None = None,
+    root_cause: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
         "failure_type": failure_type,
@@ -117,3 +141,40 @@ def _payload(
         "send_to_copilot": send_to_copilot,
         "requires_human_review": requires_human_review,
     }
+    if related_warnings:
+        payload["related_warnings"] = related_warnings
+    if root_cause:
+        payload["root_cause"] = root_cause
+    return payload
+
+
+def _is_caching_config_missing_property(lowered: str, h2_report: dict[str, Any]) -> bool:
+    findings = h2_report.get("runtime_config_findings")
+    if isinstance(findings, list):
+        for finding in findings:
+            if isinstance(finding, dict) and finding.get("type") == "RUNTIME_CONFIG_MISSING_PROPERTY":
+                return True
+    return (
+        "beancreationexception" in lowered
+        and "cachingconfig" in lowered
+        and (
+            "properties.get(object) returned null" in lowered
+            or "java.util.properties.get(object) returned null" in lowered
+            or "return value of \"java.util.properties.get(object)\" is null" in lowered
+            or "return value of 'java.util.properties.get(object)' is null" in lowered
+        )
+    )
+
+
+def _runtime_config_evidence(lowered: str, h2_report: dict[str, Any]) -> list[str]:
+    evidence = ["BeanCreationException", "cachingConfig"]
+    if (
+        "properties.get(object) returned null" in lowered
+        or "return value of \"java.util.properties.get(object)\" is null" in lowered
+        or "return value of 'java.util.properties.get(object)' is null" in lowered
+    ):
+        evidence.append("Properties.get(Object) returned null")
+    for finding in h2_report.get("runtime_config_findings", []) or []:
+        if isinstance(finding, dict) and finding.get("property_key"):
+            evidence.append(f"property_key={finding['property_key']}")
+    return evidence[:5]

@@ -8,10 +8,11 @@ import os
 import platform
 import queue
 import signal
-import shutil
 import subprocess
 import threading
 import time
+
+from migration_factory.maven import resolve_maven_command
 
 from .classifier import (
     BuildClassification,
@@ -340,24 +341,7 @@ def run_until_exit(
 
 
 def resolve_command(command: list[str], env: dict[str, str] | None = None) -> list[str]:
-    if not command:
-        return command
-
-    executable = command[0]
-    if executable.lower() != "mvn":
-        return command
-
-    effective_env = _effective_env(env)
-    maven_cmd = effective_env.get("MAVEN_CMD")
-    if maven_cmd:
-        return [maven_cmd, *command[1:]]
-
-    if os.name == "nt":
-        resolved = shutil.which("mvn.cmd", path=effective_env.get("PATH"))
-    else:
-        resolved = shutil.which("mvn", path=effective_env.get("PATH"))
-
-    return [resolved, *command[1:]] if resolved else command
+    return resolve_maven_command(command, env=env)
 
 
 def command_diagnostics(

@@ -594,7 +594,8 @@ public class Application {
                     )
 
             self.assertTrue(result.succeeded)
-            self.assertEqual(version_commands[1], ["mvn", "-version"])
+            self.assertTrue(str(version_commands[1][0]).endswith(("mvn", "mvn.cmd", "mvn.bat", "mvn.exe")))
+            self.assertEqual(version_commands[1][1:], ["-version"])
 
     def test_boot4_validation_allows_maven_39x(self) -> None:
         with workspace_temp_dir() as project:
