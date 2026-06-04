@@ -143,8 +143,8 @@ def test_real_boot4_java21_catalog_loads_multiple_artifacts_and_recipes(tmp_path
 
     assert result["status"] == "USED"
     assert result["openrewrite"]["recipe_artifacts"] == [
-        "org.openrewrite.recipe:rewrite-migrate-java:RELEASE",
-        "org.openrewrite.recipe:rewrite-spring:RELEASE",
+        "org.openrewrite.recipe:rewrite-migrate-java:3.36.0",
+        "org.openrewrite.recipe:rewrite-spring:6.31.0",
     ]
     assert result["openrewrite"]["active_recipes"] == [
         "org.openrewrite.java.migrate.UpgradeToJava21",
