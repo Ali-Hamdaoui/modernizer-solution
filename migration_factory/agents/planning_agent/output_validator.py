@@ -41,6 +41,18 @@ ALLOWED_UNIT_ORDERS: tuple[tuple[str, ...], ...] = (
     REQUIRED_UNIT_ORDER,
     (
         "baseline",
+        "java-17",
+        "spring-boot-3-5",
+        "jakarta",
+        "dependency-cleanup",
+        "existing-test-migration",
+    ),
+    (
+        "baseline",
+        "java-21-runtime-validation",
+    ),
+    (
+        "baseline",
         "java-21",
         "spring-boot-4-0",
         "jakarta",

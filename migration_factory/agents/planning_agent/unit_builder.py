@@ -172,13 +172,13 @@ def _java21_validation_unit(assist_policy: AssistPolicy) -> MigrationUnit:
     return MigrationUnit(
         id="java-21-runtime-validation",
         goal="Validate the already-migrated Spring Boot 3.5 application on a Java 21 runtime.",
-        writes_source=False,
+        writes_source=True,
         tools=_tools_for("java-21-runtime-validation"),
         validation=("mvn", "clean", "test"),
         expected_artifacts=("target/classes", "target/surefire-reports"),
-        rollback_strategy="Restore Java 17 runtime validation settings.",
-        blocking_gate="Proceed only if Java 21 runtime validation passes.",
-        required="auto",
+        rollback_strategy="Revert Java 21 recipe application and restore prior Java 17-compatible sources.",
+        blocking_gate="Proceed only if Java 21 recipe application and runtime validation pass.",
+        required="yes",
         assist_policy=assist_policy,
     )
 
