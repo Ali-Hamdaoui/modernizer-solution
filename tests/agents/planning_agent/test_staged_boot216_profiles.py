@@ -97,12 +97,43 @@ def test_java21_stage_is_validation_only_and_preview_only(tmp_path: Path) -> Non
     catalog = load_rewrite_catalog(DummyContext(legacy, modernized, profile["id"]))
 
     assert [unit.id for unit in units] == ["baseline", "java-21-runtime-validation"]
-    assert all(unit.writes_source is False for unit in units)
-    assert profile["rules"]["dry_run_only"] is True
-    assert profile["openrewrite"]["apply_allowed"] is False
+    assert tuple(unit.id for unit in units) in ALLOWED_UNIT_ORDERS
+    assert units[0].writes_source is False
+    assert units[1].writes_source is True
+    assert profile["openrewrite"]["apply_allowed"] is True
+    assert profile["openrewrite"]["apply_goal"] == "runNoFork"
+    assert profile["target_jdk_home_env"] == "JAVA21_HOME"
     assert catalog["status"] == "USED"
     assert catalog["openrewrite"]["active_recipes"] == ["org.openrewrite.java.migrate.UpgradeToJava21"]
-    assert "rewrite:run" in catalog["forbidden_apply_goals"]
+    assert catalog["openrewrite"]["plugin"] == "org.openrewrite.maven:rewrite-maven-plugin:6.40.0"
+    assert catalog["openrewrite"]["recipe_artifacts"] == [
+        "org.openrewrite.recipe:rewrite-migrate-java:3.35.0"
+    ]
+
+
+def test_stage_b_boot_356_units_match_allowed_order() -> None:
+    profile = yaml.safe_load(
+        (AI_HUB / "profiles" / "springboot-2.7-to-3.5-java17.yaml").read_text(encoding="utf-8")
+    )
+
+    units = build_migration_units(profile)
+
+    assert [unit.id for unit in units] == [
+        "baseline",
+        "java-17",
+        "spring-boot-3-5",
+        "jakarta",
+        "dependency-cleanup",
+        "existing-test-migration",
+    ]
+    assert tuple(unit.id for unit in units) in ALLOWED_UNIT_ORDERS
+    assert profile["openrewrite"]["post_apply_patches"] == [
+        {
+            "type": "spring_boot_version",
+            "old_value": "3.5.14",
+            "new_value": "3.5.6",
+        }
+    ]
 
 
 def test_stage_a_catalog_does_not_target_boot4(tmp_path: Path) -> None:

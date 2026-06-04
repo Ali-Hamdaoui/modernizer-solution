@@ -1,6 +1,9 @@
 from pathlib import Path
 
+import yaml
+
 from migration_factory.orchestrator.state import (
+    FULL_SANDBOX_MIGRATION_MODE,
     ORCHESTRATION_MODES,
     READ_ONLY_ASSESSMENT_MODE,
     MigrationState,
@@ -56,6 +59,7 @@ def validate_preflight(state: MigrationState, config: dict) -> None:
     profile_path = ai_hub_path / "profiles" / f"{profile_id}.yaml"
     if not profile_path.is_file():
         raise PreflightError(f"AI Hub profile not found: {profile_path}")
+    _validate_profile_mode_compatibility(profile_path, state)
 
     thread_id = config.get("configurable", {}).get("thread_id")
     if thread_id != run_id:
@@ -78,3 +82,35 @@ def validate_preflight(state: MigrationState, config: dict) -> None:
     state["copilot_feature_probe"] = availability
     if state.get("copilot_required") is True and availability.get("status") != "AVAILABLE":
         raise PreflightError(f"Copilot repair proposal preflight failed: {availability.get('reason', '')}")
+
+
+def _validate_profile_mode_compatibility(profile_path: Path, state: MigrationState) -> None:
+    try:
+        profile_payload = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+    except OSError as exc:
+        raise PreflightError(f"AI Hub profile could not be read: {profile_path}") from exc
+    except yaml.YAMLError as exc:
+        raise PreflightError(f"AI Hub profile is invalid YAML: {profile_path}") from exc
+
+    if not isinstance(profile_payload, dict):
+        raise PreflightError(f"AI Hub profile must be a YAML mapping: {profile_path}")
+
+    rules = profile_payload.get("rules") if isinstance(profile_payload.get("rules"), dict) else {}
+    openrewrite = (
+        profile_payload.get("openrewrite") if isinstance(profile_payload.get("openrewrite"), dict) else {}
+    )
+
+    if state.get("mode") != FULL_SANDBOX_MIGRATION_MODE:
+        return
+
+    if (
+        profile_payload.get("dry_run_only") is True
+        or rules.get("dry_run_only") is True
+        or openrewrite.get("apply_allowed") is False
+    ):
+        profile_id = str(state.get("profile_id") or profile_payload.get("id") or profile_path.stem)
+        raise PreflightError(
+            "profile "
+            f"{profile_id} does not support mode {FULL_SANDBOX_MIGRATION_MODE}; "
+            f"use {READ_ONLY_ASSESSMENT_MODE} instead"
+        )

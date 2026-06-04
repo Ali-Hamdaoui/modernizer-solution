@@ -33,12 +33,12 @@ def test_boot4_catalog_emits_multiple_recipe_artifacts_and_active_recipes() -> N
         {
             "group_id": "org.openrewrite.recipe",
             "artifact_id": "rewrite-migrate-java",
-            "version": "RELEASE",
+            "version": "3.36.0",
         },
         {
             "group_id": "org.openrewrite.recipe",
             "artifact_id": "rewrite-spring",
-            "version": "RELEASE",
+            "version": "6.31.0",
         },
     ]
     assert catalog["active_recipes"] == [

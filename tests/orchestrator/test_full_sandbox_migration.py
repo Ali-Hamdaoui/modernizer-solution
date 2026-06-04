@@ -8,6 +8,7 @@ import yaml
 
 from migration_factory.orchestrator import graph as graph_module
 from migration_factory.orchestrator import resume
+from migration_factory.orchestrator.state import READ_ONLY_ASSESSMENT_MODE
 from migration_factory.orchestrator.artifact_validation import ArtifactValidationResult
 from migration_factory.orchestrator.checkpointing import default_checkpointer
 from migration_factory.orchestrator.phase_services import PhaseServices
@@ -268,6 +269,41 @@ def test_resume_replan_required_records_decision_and_does_not_run_transform(
     assert not (Path(state["run_dir"]) / "approval" / "approved_plan_lock.json").exists()
     assert result["approval_decision"] == "replan_required"
     assert result["stop_reason"] == "Approval decision 'replan_required' recorded; stopping."
+
+
+def test_read_only_resume_approved_records_decision_and_does_not_run_transform(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state = _paused_full_run(monkeypatch, tmp_path)
+    state["mode"] = READ_ONLY_ASSESSMENT_MODE
+    _write_phase_1_run(Path(state["run_dir"]), state["run_id"])
+    snapshot_path = Path(state["run_dir"]) / "orchestration" / "approval_interrupt_state.json"
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    snapshot["mode"] = READ_ONLY_ASSESSMENT_MODE
+    snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+    monkeypatch.setattr(
+        graph_module,
+        "run_sandbox_transform_phase",
+        lambda resumed_state: (_ for _ in ()).throw(AssertionError("transform should not run")),
+    )
+
+    result = resume.resume_orchestration(
+        run_id=state["run_id"],
+        run_dir=Path(state["run_dir"]),
+        decision="approved",
+        approved_by="reviewer",
+        comments="ok",
+    )
+
+    decision = json.loads(
+        (Path(state["run_dir"]) / "approval" / "approval_decision.json").read_text(encoding="utf-8")
+    )
+    assert decision["decision"] == "approved"
+    assert result["mode"] == READ_ONLY_ASSESSMENT_MODE
+    assert result["approval_decision"] == "approved"
+    assert result["stop_reason"] == "Approval decision 'approved' recorded; stopping."
 
 
 def _paused_full_run(monkeypatch, tmp_path: Path) -> dict:
