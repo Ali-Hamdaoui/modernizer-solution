@@ -23,6 +23,7 @@ from .pom_patches import (
     patch_maven_enforcer_java_version,
     patch_pom_property,
     patch_security_config_authorize_http_requests,
+    patch_spring_boot_version,
 )
 from .rewrite import build_rewrite_run_command, rewrite_plugin_version_from_xml
 
@@ -218,6 +219,52 @@ def _run_unit(
                         {
                             "file": patch.file,
                             "property": patch.property,
+                            "old_value": patch.old_value,
+                            "new_value": patch.new_value,
+                            "unit": patch.unit,
+                        }
+                        for patch in patches
+                    ],
+                }
+            )
+            continue
+
+        if transformation_type == "spring_boot_version":
+            old_value = str(transformation.get("old_value") or "")
+            new_value = str(transformation.get("new_value") or "")
+            patches = [] if dry_run else patch_spring_boot_version(
+                plan.target_path,
+                unit_id=unit.id,
+                old_value=old_value,
+                new_value=new_value,
+            )
+            required = transformation.get("required", True) is not False
+            if required and not dry_run and not patches:
+                _mark_unit_blocked(
+                    plan,
+                    unit,
+                    "REQUIRED_POM_PATCH_NOT_APPLIED spring_boot_version",
+                    command_results,
+                    recorded_transformations=recorded_transformations,
+                )
+                raise TransformationAgentError(
+                    "REQUIRED_POM_PATCH_NOT_APPLIED spring_boot_version"
+                )
+            for patch in patches:
+                print(
+                    f"unit={patch.unit} patch=spring_boot_version file={patch.file} "
+                    f"location={patch.location} old_value={patch.old_value} "
+                    f"new_value={patch.new_value}"
+                )
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "applied" if patches else "not_applicable",
+                    "file": "pom.xml",
+                    "patches": [
+                        {
+                            "file": patch.file,
+                            "location": patch.location,
                             "old_value": patch.old_value,
                             "new_value": patch.new_value,
                             "unit": patch.unit,

@@ -27,6 +27,15 @@ class PomPropertyPatch:
 
 
 @dataclass(frozen=True)
+class SpringBootVersionPatch:
+    file: str
+    location: str
+    old_value: str
+    new_value: str
+    unit: str
+
+
+@dataclass(frozen=True)
 class SourcePatch:
     file: str
     patch: str
@@ -112,6 +121,104 @@ def patch_pom_property(
             unit=unit_id,
         )
     ]
+
+
+def patch_spring_boot_version(
+    project_path: Path,
+    *,
+    unit_id: str,
+    old_value: str,
+    new_value: str,
+) -> list[SpringBootVersionPatch]:
+    pom_path = project_path / "pom.xml"
+    if not pom_path.is_file():
+        return []
+
+    tree = ET.parse(pom_path)
+    root = tree.getroot()
+    namespace = _namespace(root.tag)
+    if namespace:
+        ET.register_namespace("", namespace)
+
+    patches: list[SpringBootVersionPatch] = []
+
+    properties = root.find(_tag(namespace, "properties"))
+    if properties is not None:
+        for property_name in ("spring-boot.version", "spring.boot.version", "org.springframework.version"):
+            property_node = properties.find(_tag(namespace, property_name))
+            if property_node is None or property_node.text is None:
+                continue
+            current_value = property_node.text.strip()
+            if current_value != old_value:
+                continue
+            property_node.text = new_value
+            patches.append(
+                SpringBootVersionPatch(
+                    file="pom.xml",
+                    location=f"properties/{property_name}",
+                    old_value=current_value,
+                    new_value=new_value,
+                    unit=unit_id,
+                )
+            )
+
+    parent = root.find(_tag(namespace, "parent"))
+    if parent is not None:
+        group_id = parent.find(_tag(namespace, "groupId"))
+        artifact_id = parent.find(_tag(namespace, "artifactId"))
+        version = parent.find(_tag(namespace, "version"))
+        if (
+            group_id is not None
+            and artifact_id is not None
+            and version is not None
+            and group_id.text is not None
+            and artifact_id.text is not None
+            and version.text is not None
+            and group_id.text.strip() == "org.springframework.boot"
+            and artifact_id.text.strip() == "spring-boot-starter-parent"
+            and version.text.strip() == old_value
+        ):
+            version.text = new_value
+            patches.append(
+                SpringBootVersionPatch(
+                    file="pom.xml",
+                    location="parent/version",
+                    old_value=old_value,
+                    new_value=new_value,
+                    unit=unit_id,
+                )
+            )
+
+    for dependency in root.findall(f".//{_tag(namespace, 'dependency')}"):
+        group_id = dependency.find(_tag(namespace, "groupId"))
+        artifact_id = dependency.find(_tag(namespace, "artifactId"))
+        version = dependency.find(_tag(namespace, "version"))
+        if (
+            group_id is None
+            or artifact_id is None
+            or version is None
+            or group_id.text is None
+            or artifact_id.text is None
+            or version.text is None
+        ):
+            continue
+        current_value = version.text.strip()
+        if group_id.text.strip() != "org.springframework.boot" or current_value != old_value:
+            continue
+        version.text = new_value
+        patches.append(
+            SpringBootVersionPatch(
+                file="pom.xml",
+                location=f"dependency/{artifact_id.text.strip()}",
+                old_value=current_value,
+                new_value=new_value,
+                unit=unit_id,
+            )
+        )
+
+    if patches:
+        tree.write(pom_path, encoding="utf-8", xml_declaration=True)
+    return patches
 
 
 def patch_security_config_authorize_http_requests(
