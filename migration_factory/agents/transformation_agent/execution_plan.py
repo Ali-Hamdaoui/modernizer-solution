@@ -201,9 +201,22 @@ def _checks(unit: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "id": "validation",
             "command": " ".join(validation),
-            "required": unit.get("required") != "auto",
+            "required": _is_required_check(unit.get("required")),
         }
     ]
+
+
+def _is_required_check(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return True
+    text = str(value).strip().lower()
+    if text in {"no", "false", "auto"}:
+        return False
+    if text in {"yes", "true"}:
+        return True
+    return True
 
 
 def _first_write_unit_id(units: list[Any]) -> str | None:

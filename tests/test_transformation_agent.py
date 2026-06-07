@@ -307,6 +307,76 @@ migration_units:
 
             self.assertEqual(loaded.openrewrite_policy, default_openrewrite_policy())
 
+    def test_execution_plan_checks_convert_required_semantics_and_legacy_booleans(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-required"
+            _write_approved_run_artifacts(
+                app,
+                run_id,
+                include_rewrite_plan=False,
+                planning_units_yaml="""
+schema_version: "1.0.0"
+run_id: "run-required"
+status: "PASS"
+artifact_refs:
+  self: "migration_units.yaml"
+units:
+  - id: "required-auto"
+    goal: "Auto check."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: false
+    required: "auto"
+    expected_artifacts: ["target/surefire-reports"]
+  - id: "required-no"
+    goal: "No check."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: false
+    required: "no"
+    expected_artifacts: ["target/surefire-reports"]
+  - id: "required-false"
+    goal: "False check."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: false
+    required: false
+    expected_artifacts: ["target/surefire-reports"]
+  - id: "required-yes"
+    goal: "Yes check."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: false
+    required: "yes"
+    expected_artifacts: ["target/surefire-reports"]
+  - id: "required-true"
+    goal: "True check."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: false
+    required: true
+    expected_artifacts: ["target/surefire-reports"]
+  - id: "required-missing"
+    goal: "Missing check."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: false
+    expected_artifacts: ["target/surefire-reports"]
+""",
+            )
+
+            output_path = write_transformation_execution_plan(app, run_id)
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+            checks_by_id = {unit["id"]: unit["checks"][0]["required"] for unit in payload["migration_units"]}
+
+            self.assertFalse(checks_by_id["required-auto"])
+            self.assertFalse(checks_by_id["required-no"])
+            self.assertFalse(checks_by_id["required-false"])
+            self.assertTrue(checks_by_id["required-yes"])
+            self.assertTrue(checks_by_id["required-true"])
+            self.assertTrue(checks_by_id["required-missing"])
+
     def test_execution_plan_adapter_includes_per_unit_jdk_metadata(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"

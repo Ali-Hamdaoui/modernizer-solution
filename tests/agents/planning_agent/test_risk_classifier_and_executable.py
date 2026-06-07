@@ -1,13 +1,17 @@
+from dataclasses import replace
+
 import yaml
 
+from migration_factory.agents.planning_agent.assist_config import build_assist_policy
 from migration_factory.agents.planning_agent.artifact_reader import LoadedAnalysisArtifacts
 from migration_factory.agents.planning_agent.plan_writer import (
     MigrationPlanPayload,
     write_migration_plan,
+    write_migration_units,
 )
 from migration_factory.agents.planning_agent.profile_compatibility import StackFingerprint
 from migration_factory.agents.planning_agent.risk_classifier import classify_planning_risks
-from migration_factory.agents.planning_agent.unit_builder import build_migration_units
+from migration_factory.agents.planning_agent.unit_builder import MigrationUnit, build_migration_units
 
 
 def test_unreadable_or_invalid_pom_metadata_creates_blocker() -> None:
@@ -91,3 +95,62 @@ def test_deterministic_blocker_sets_migration_plan_executable_false(tmp_path) ->
 
     payload = yaml.safe_load(plan_path.read_text(encoding="utf-8"))
     assert payload["executable"] is False
+
+
+def test_write_migration_units_preserves_auto_required_semantics(tmp_path) -> None:
+    app_dir = tmp_path / "app"
+    run_id = "required-auto"
+    units = build_migration_units()
+
+    units_path = write_migration_units(str(app_dir), run_id, units)
+    payload = yaml.safe_load(units_path.read_text(encoding="utf-8"))
+
+    existing_test = next(unit for unit in payload["units"] if unit["id"] == "existing-test-migration")
+    assert existing_test["required"] == "auto"
+    assert 'required: "auto"' in units_path.read_text(encoding="utf-8")
+
+
+def test_write_migration_units_normalizes_required_yes_true_and_no_false(tmp_path) -> None:
+    app_dir = tmp_path / "app"
+    run_id = "required-normalization"
+    assist_policy = build_assist_policy()
+    units = (
+        MigrationUnit(
+            id="required-yes",
+            goal="Required yes.",
+            writes_source=False,
+            tools=("maven",),
+            validation=("mvn", "test"),
+            expected_artifacts=("target/surefire-reports",),
+            rollback_strategy="none",
+            blocking_gate="none",
+            required=True,  # type: ignore[arg-type]
+            assist_policy=assist_policy,
+        ),
+        MigrationUnit(
+            id="required-no",
+            goal="Required no.",
+            writes_source=False,
+            tools=("maven",),
+            validation=("mvn", "test"),
+            expected_artifacts=("target/surefire-reports",),
+            rollback_strategy="none",
+            blocking_gate="none",
+            required=False,  # type: ignore[arg-type]
+            assist_policy=assist_policy,
+        ),
+        replace(build_migration_units()[0], id="required-auto-unknown", required="maybe"),  # type: ignore[arg-type]
+    )
+
+    units_path = write_migration_units(str(app_dir), run_id, units)
+    payload = yaml.safe_load(units_path.read_text(encoding="utf-8"))
+    required_by_id = {unit["id"]: unit["required"] for unit in payload["units"]}
+    text = units_path.read_text(encoding="utf-8")
+
+    assert required_by_id["required-yes"] == "yes"
+    assert required_by_id["required-no"] == "no"
+    assert required_by_id["required-auto-unknown"] == "yes"
+    assert 'required: "yes"' in text
+    assert 'required: "no"' in text
+    assert "required: true" not in text
+    assert "required: false" not in text

@@ -161,7 +161,7 @@ def _render_units_yaml(run_id: str, units: tuple[MigrationUnit, ...]) -> str:
         lines.append("    validation:")
         lines.extend(_yaml_list(unit.validation, indent=6))
         lines.append(f"    writes_source: {'true' if unit.writes_source else 'false'}")
-        lines.append(f"    required: {'true' if unit.required else 'false'}")
+        lines.append(f"    required: {_yaml_quote(_normalize_required_mode(unit.required))}")
         lines.append(f"    java_home_env: {_yaml_scalar(unit.java_home_env)}")
         lines.append(f"    hop_id: {_yaml_scalar(unit.hop_id)}")
         lines.append("    expected_artifacts:")
@@ -263,6 +263,19 @@ def _yaml_nested_value(value: Any, indent: int) -> list[str]:
 def _yaml_quote(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _normalize_required_mode(value: Any) -> str:
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    text = str(value or "").strip().lower()
+    if text in {"yes", "true"}:
+        return "yes"
+    if text in {"no", "false"}:
+        return "no"
+    if text == "auto":
+        return "auto"
+    return "yes"
 
 
 def _status(blockers: tuple[str, ...], warnings: tuple[str, ...], risks: tuple[str, ...]) -> str:
