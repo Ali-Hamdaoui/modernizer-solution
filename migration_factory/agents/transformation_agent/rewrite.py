@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 DEFAULT_OPENREWRITE_MAVEN_PLUGIN_VERSION = "6.39.0"
 OPENREWRITE_MAVEN_PLUGIN = ("org.openrewrite.maven", "rewrite-maven-plugin")
 DEFAULT_PREVIEW_GOALS = ("dryRun", "dryRunNoFork", "discover")
+DEFAULT_SANDBOX_APPLY_GOALS = ("run", "runNoFork", "rewrite:run", "rewrite:runNoFork")
 DEFAULT_FORBIDDEN_APPLY_GOALS = ("run", "runNoFork", "rewrite:run", "rewrite:runNoFork")
 
 
@@ -22,10 +23,26 @@ class RewritePluginInjection:
 
 
 @dataclass(frozen=True)
+class OpenRewriteExecutionContext:
+    unit_id: str
+    run_dir: Path | None = None
+    workspace_path: Path | None = None
+    approved_plan_lock_path: Path | None = None
+    approval_decision: str | None = None
+    approval_approved: bool = False
+    sandbox_execution: bool = False
+
+
+@dataclass(frozen=True)
 class OpenRewritePolicy:
     preview_allowed: bool = True
     apply_allowed: bool = False
+    sandbox_apply_allowed: bool = False
+    sandbox_apply_requires_approval: bool = True
+    sandbox_apply_requires_plan_lock: bool = True
+    sandbox_apply_requires_workspace_under_run: bool = True
     allowed_preview_goals: tuple[str, ...] = DEFAULT_PREVIEW_GOALS
+    allowed_sandbox_apply_goals: tuple[str, ...] = ()
     forbidden_apply_goals: tuple[str, ...] = DEFAULT_FORBIDDEN_APPLY_GOALS
 
 
@@ -38,12 +55,30 @@ def openrewrite_policy_from_mapping(payload: object) -> OpenRewritePolicy:
         return default_openrewrite_policy()
     preview_allowed = payload.get("preview_allowed")
     apply_allowed = payload.get("apply_allowed")
+    sandbox_apply_allowed = payload.get("sandbox_apply_allowed")
+    sandbox_apply_requires_approval = payload.get("sandbox_apply_requires_approval")
+    sandbox_apply_requires_plan_lock = payload.get("sandbox_apply_requires_plan_lock")
+    sandbox_apply_requires_workspace_under_run = payload.get("sandbox_apply_requires_workspace_under_run")
     allowed_preview_goals = _string_tuple(payload.get("allowed_preview_goals")) or DEFAULT_PREVIEW_GOALS
+    allowed_sandbox_apply_goals = _string_tuple(payload.get("allowed_sandbox_apply_goals"))
     forbidden_apply_goals = _string_tuple(payload.get("forbidden_apply_goals")) or DEFAULT_FORBIDDEN_APPLY_GOALS
     return OpenRewritePolicy(
         preview_allowed=True if preview_allowed is None else bool(preview_allowed),
         apply_allowed=False if apply_allowed is None else bool(apply_allowed),
+        sandbox_apply_allowed=False if sandbox_apply_allowed is None else bool(sandbox_apply_allowed),
+        sandbox_apply_requires_approval=(
+            True if sandbox_apply_requires_approval is None else bool(sandbox_apply_requires_approval)
+        ),
+        sandbox_apply_requires_plan_lock=(
+            True if sandbox_apply_requires_plan_lock is None else bool(sandbox_apply_requires_plan_lock)
+        ),
+        sandbox_apply_requires_workspace_under_run=(
+            True
+            if sandbox_apply_requires_workspace_under_run is None
+            else bool(sandbox_apply_requires_workspace_under_run)
+        ),
         allowed_preview_goals=allowed_preview_goals,
+        allowed_sandbox_apply_goals=allowed_sandbox_apply_goals,
         forbidden_apply_goals=forbidden_apply_goals,
     )
 
@@ -83,8 +118,9 @@ def build_rewrite_run_command(
     apply_goal: str | None = None,
     maven_args: list[str] | None = None,
     policy: OpenRewritePolicy | None = None,
+    context: OpenRewriteExecutionContext | None = None,
 ) -> str:
-    goal_name = validate_openrewrite_goal(apply_goal, policy=policy)
+    goal_name = validate_openrewrite_goal(apply_goal, policy=policy, context=context)
     goal = f"{OPENREWRITE_MAVEN_PLUGIN[0]}:{OPENREWRITE_MAVEN_PLUGIN[1]}:{_concrete_plugin_version(plugin_version)}:{goal_name}"
     args = [goal]
     if active_recipes:
@@ -108,12 +144,17 @@ def validate_openrewrite_goal(
     requested_goal: str | None,
     *,
     policy: OpenRewritePolicy | None = None,
+    context: OpenRewriteExecutionContext | None = None,
 ) -> str:
     effective_policy = policy or default_openrewrite_policy()
     normalized_goal = normalize_openrewrite_goal(requested_goal)
     allowed_preview = {
         normalize_openrewrite_goal(goal)
         for goal in effective_policy.allowed_preview_goals
+    }
+    allowed_sandbox_apply = {
+        normalize_openrewrite_goal(goal)
+        for goal in effective_policy.allowed_sandbox_apply_goals
     }
     forbidden_apply = {
         normalize_openrewrite_goal(goal)
@@ -128,13 +169,20 @@ def validate_openrewrite_goal(
             )
         return normalized_goal
 
-    if normalized_goal in forbidden_apply:
-        if not effective_policy.apply_allowed:
-            raise RewritePluginError(
-                f"OPENREWRITE_GOAL_FORBIDDEN apply goal '{requested_goal or normalized_goal}' "
-                f"blocked by policy"
-            )
-        return normalized_goal
+    if normalized_goal in forbidden_apply or normalized_goal in allowed_sandbox_apply:
+        if effective_policy.apply_allowed:
+            return normalized_goal
+        sandbox_reason = _validate_sandbox_apply_context(
+            normalized_goal,
+            policy=effective_policy,
+            context=context,
+        )
+        if sandbox_reason is None:
+            return normalized_goal
+        raise RewritePluginError(
+            f"OPENREWRITE_GOAL_FORBIDDEN apply goal '{requested_goal or normalized_goal}' "
+            f"blocked by policy: {sandbox_reason}"
+        )
 
     raise RewritePluginError(
         f"OPENREWRITE_GOAL_FORBIDDEN goal '{requested_goal or normalized_goal}' not allowed by policy"
@@ -149,6 +197,55 @@ def normalize_openrewrite_goal(goal: str | None) -> str:
     if suffix in {"dryRun", "dryRunNoFork", "discover", "run", "runNoFork"}:
         return suffix
     return value
+
+
+def _validate_sandbox_apply_context(
+    normalized_goal: str,
+    *,
+    policy: OpenRewritePolicy,
+    context: OpenRewriteExecutionContext | None,
+) -> str | None:
+    if not policy.sandbox_apply_allowed:
+        return "sandbox apply is not enabled"
+
+    allowed_sandbox_apply = {
+        normalize_openrewrite_goal(goal)
+        for goal in policy.allowed_sandbox_apply_goals
+    }
+    if normalized_goal not in allowed_sandbox_apply:
+        return f"goal '{normalized_goal}' is not in allowed_sandbox_apply_goals"
+
+    if context is None:
+        return "sandbox execution context is missing"
+
+    if not context.sandbox_execution:
+        return f"unit={context.unit_id} is not running in sandbox execution mode"
+
+    if policy.sandbox_apply_requires_approval and not context.approval_approved:
+        decision = str(context.approval_decision or "").strip() or "missing"
+        return f"unit={context.unit_id} approval is not approved (decision={decision})"
+
+    if policy.sandbox_apply_requires_plan_lock:
+        lock_path = context.approved_plan_lock_path
+        if lock_path is None:
+            return f"unit={context.unit_id} approved plan lock path is missing"
+        if not lock_path.is_file():
+            return f"unit={context.unit_id} approved plan lock not found at {lock_path}"
+
+    if policy.sandbox_apply_requires_workspace_under_run:
+        run_dir = context.run_dir
+        workspace_path = context.workspace_path
+        if run_dir is None or workspace_path is None:
+            return f"unit={context.unit_id} run_dir/workspace_path is missing"
+        sandbox_root = run_dir.resolve() / "workspaces" / "sandbox"
+        try:
+            workspace_path.resolve().relative_to(sandbox_root.resolve())
+        except ValueError:
+            return (
+                f"unit={context.unit_id} workspace {workspace_path} is outside sandbox root {sandbox_root}"
+            )
+
+    return None
 
 
 def _resolve_pom(project_path: Path, module: str | None) -> Path:

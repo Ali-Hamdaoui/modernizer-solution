@@ -5,10 +5,19 @@ source_writes_condition: after_human_approval_only
 openrewrite:
   preview_allowed: true
   apply_allowed: false
+  sandbox_apply_allowed: true
+  sandbox_apply_requires_approval: true
+  sandbox_apply_requires_plan_lock: true
+  sandbox_apply_requires_workspace_under_run: true
   allowed_preview_goals:
     - dryRun
     - dryRunNoFork
     - discover
+  allowed_sandbox_apply_goals:
+    - run
+    - runNoFork
+    - rewrite:run
+    - rewrite:runNoFork
   forbidden_apply_goals:
     - run
     - runNoFork

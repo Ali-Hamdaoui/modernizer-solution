@@ -26,6 +26,7 @@ from migration_factory.agents.transformation_agent import execution_plan as exec
 from migration_factory.agents.transformation_agent.executor import CommandResult
 from migration_factory.agents.transformation_agent.plan import load_migration_plan
 from migration_factory.agents.transformation_agent.rewrite import (
+    OpenRewriteExecutionContext,
     RewritePluginError,
     build_rewrite_run_command,
     default_openrewrite_policy,
@@ -136,7 +137,12 @@ class TransformationAgentTests(unittest.TestCase):
                 {
                     "preview_allowed": True,
                     "apply_allowed": False,
+                    "sandbox_apply_allowed": True,
+                    "sandbox_apply_requires_approval": True,
+                    "sandbox_apply_requires_plan_lock": True,
+                    "sandbox_apply_requires_workspace_under_run": True,
                     "allowed_preview_goals": ["dryRun", "dryRunNoFork", "discover"],
+                    "allowed_sandbox_apply_goals": ["run", "runNoFork", "rewrite:run", "rewrite:runNoFork"],
                     "forbidden_apply_goals": ["run", "runNoFork", "rewrite:run", "rewrite:runNoFork"],
                 },
             )
@@ -167,6 +173,28 @@ class TransformationAgentTests(unittest.TestCase):
             self.assertEqual(payload["policies"]["openrewrite"], policy_payload["openrewrite"])
             self.assertFalse(payload["policies"]["openrewrite"]["apply_allowed"])
 
+    def test_execution_plan_adapter_carries_sandbox_execution_metadata(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            _write_approved_run_artifacts(app, run_id, include_rewrite_plan=True)
+
+            output_path = write_transformation_execution_plan(app, run_id)
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+            run_dir = app / ".migration" / "runs" / run_id
+
+            self.assertEqual(payload["workspaces"]["sandbox"]["path"], str((run_dir / "workspaces" / "sandbox").resolve()))
+            self.assertEqual(payload["execution_context"]["run_dir"], str(run_dir.resolve()))
+            self.assertTrue(payload["execution_context"]["sandbox_execution"])
+            self.assertEqual(
+                payload["execution_context"]["workspace_path"],
+                str((run_dir / "workspaces" / "sandbox").resolve()),
+            )
+            self.assertEqual(
+                payload["execution_context"]["approved_plan_lock_path"],
+                str((run_dir / "approval" / "approved_plan_lock.json").resolve()),
+            )
+
     def test_execution_plan_adapter_falls_back_to_fail_safe_default_when_ai_hub_policy_unavailable(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"
@@ -175,7 +203,12 @@ class TransformationAgentTests(unittest.TestCase):
             default_policy = {
                 "preview_allowed": True,
                 "apply_allowed": False,
+                "sandbox_apply_allowed": False,
+                "sandbox_apply_requires_approval": True,
+                "sandbox_apply_requires_plan_lock": True,
+                "sandbox_apply_requires_workspace_under_run": True,
                 "allowed_preview_goals": ["dryRun", "dryRunNoFork", "discover"],
+                "allowed_sandbox_apply_goals": [],
                 "forbidden_apply_goals": ["run", "runNoFork", "rewrite:run", "rewrite:runNoFork"],
             }
 
@@ -2637,6 +2670,187 @@ migration_units:
                 )
                 self.assertIn(f"rewrite-maven-plugin:6.23.0:{goal}", command)
 
+    def test_openrewrite_command_builder_blocks_apply_outside_sandbox_when_global_apply_forbidden(self) -> None:
+        policy = openrewrite_policy_from_mapping(
+            {
+                "preview_allowed": True,
+                "apply_allowed": False,
+                "sandbox_apply_allowed": True,
+                "sandbox_apply_requires_approval": True,
+                "sandbox_apply_requires_plan_lock": True,
+                "sandbox_apply_requires_workspace_under_run": True,
+                "allowed_preview_goals": ["dryRun", "dryRunNoFork", "discover"],
+                "allowed_sandbox_apply_goals": ["run", "runNoFork", "rewrite:run", "rewrite:runNoFork"],
+                "forbidden_apply_goals": ["run", "runNoFork", "rewrite:run", "rewrite:runNoFork"],
+            }
+        )
+
+        with self.assertRaisesRegex(RewritePluginError, "sandbox execution context is missing"):
+            build_rewrite_run_command(
+                ["org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5"],
+                plugin_version="6.23.0",
+                apply_goal="run",
+                policy=policy,
+            )
+
+    def test_openrewrite_command_builder_blocks_sandbox_apply_without_approval(self) -> None:
+        with workspace_temp_dir() as tmp:
+            run_dir = tmp / "run"
+            sandbox = run_dir / "workspaces" / "sandbox"
+            approval_lock = run_dir / "approval" / "approved_plan_lock.json"
+            sandbox.mkdir(parents=True)
+            approval_lock.parent.mkdir(parents=True)
+            approval_lock.write_text("{}\n", encoding="utf-8")
+            policy = openrewrite_policy_from_mapping(
+                {
+                    "preview_allowed": True,
+                    "apply_allowed": False,
+                    "sandbox_apply_allowed": True,
+                    "sandbox_apply_requires_approval": True,
+                    "sandbox_apply_requires_plan_lock": True,
+                    "sandbox_apply_requires_workspace_under_run": True,
+                    "allowed_preview_goals": ["dryRun", "dryRunNoFork", "discover"],
+                    "allowed_sandbox_apply_goals": ["run", "runNoFork", "rewrite:run", "rewrite:runNoFork"],
+                    "forbidden_apply_goals": ["run", "runNoFork", "rewrite:run", "rewrite:runNoFork"],
+                }
+            )
+            context = OpenRewriteExecutionContext(
+                unit_id="java-17",
+                run_dir=run_dir,
+                workspace_path=sandbox,
+                approved_plan_lock_path=approval_lock,
+                approval_decision="rejected",
+                approval_approved=False,
+                sandbox_execution=True,
+            )
+
+            with self.assertRaisesRegex(RewritePluginError, "approval is not approved"):
+                build_rewrite_run_command(
+                    ["org.openrewrite.java.migrate.UpgradeToJava17"],
+                    plugin_version="6.23.0",
+                    apply_goal="run",
+                    policy=policy,
+                    context=context,
+                )
+
+    def test_openrewrite_command_builder_blocks_sandbox_apply_without_plan_lock(self) -> None:
+        with workspace_temp_dir() as tmp:
+            run_dir = tmp / "run"
+            sandbox = run_dir / "workspaces" / "sandbox"
+            sandbox.mkdir(parents=True)
+            policy = openrewrite_policy_from_mapping(
+                {
+                    "preview_allowed": True,
+                    "apply_allowed": False,
+                    "sandbox_apply_allowed": True,
+                    "sandbox_apply_requires_approval": True,
+                    "sandbox_apply_requires_plan_lock": True,
+                    "sandbox_apply_requires_workspace_under_run": True,
+                    "allowed_preview_goals": ["dryRun", "dryRunNoFork", "discover"],
+                    "allowed_sandbox_apply_goals": ["run", "runNoFork", "rewrite:run", "rewrite:runNoFork"],
+                    "forbidden_apply_goals": ["run", "runNoFork", "rewrite:run", "rewrite:runNoFork"],
+                }
+            )
+            context = OpenRewriteExecutionContext(
+                unit_id="java-17",
+                run_dir=run_dir,
+                workspace_path=sandbox,
+                approved_plan_lock_path=run_dir / "approval" / "approved_plan_lock.json",
+                approval_decision="approved",
+                approval_approved=True,
+                sandbox_execution=True,
+            )
+
+            with self.assertRaisesRegex(RewritePluginError, "approved plan lock not found"):
+                build_rewrite_run_command(
+                    ["org.openrewrite.java.migrate.UpgradeToJava17"],
+                    plugin_version="6.23.0",
+                    apply_goal="run",
+                    policy=policy,
+                    context=context,
+                )
+
+    def test_openrewrite_command_builder_blocks_sandbox_apply_outside_sandbox_workspace(self) -> None:
+        with workspace_temp_dir() as tmp:
+            run_dir = tmp / "run"
+            outside = tmp / "outside-workspace"
+            approval_lock = run_dir / "approval" / "approved_plan_lock.json"
+            outside.mkdir(parents=True)
+            approval_lock.parent.mkdir(parents=True)
+            approval_lock.write_text("{}\n", encoding="utf-8")
+            policy = openrewrite_policy_from_mapping(
+                {
+                    "preview_allowed": True,
+                    "apply_allowed": False,
+                    "sandbox_apply_allowed": True,
+                    "sandbox_apply_requires_approval": True,
+                    "sandbox_apply_requires_plan_lock": True,
+                    "sandbox_apply_requires_workspace_under_run": True,
+                    "allowed_preview_goals": ["dryRun", "dryRunNoFork", "discover"],
+                    "allowed_sandbox_apply_goals": ["run", "runNoFork", "rewrite:run", "rewrite:runNoFork"],
+                    "forbidden_apply_goals": ["run", "runNoFork", "rewrite:run", "rewrite:runNoFork"],
+                }
+            )
+            context = OpenRewriteExecutionContext(
+                unit_id="java-17",
+                run_dir=run_dir,
+                workspace_path=outside,
+                approved_plan_lock_path=approval_lock,
+                approval_decision="approved",
+                approval_approved=True,
+                sandbox_execution=True,
+            )
+
+            with self.assertRaisesRegex(RewritePluginError, "outside sandbox root"):
+                build_rewrite_run_command(
+                    ["org.openrewrite.java.migrate.UpgradeToJava17"],
+                    plugin_version="6.23.0",
+                    apply_goal="runNoFork",
+                    policy=policy,
+                    context=context,
+                )
+
+    def test_openrewrite_command_builder_allows_sandbox_apply_when_governed_conditions_pass(self) -> None:
+        with workspace_temp_dir() as tmp:
+            run_dir = tmp / "run"
+            sandbox = run_dir / "workspaces" / "sandbox"
+            approval_lock = run_dir / "approval" / "approved_plan_lock.json"
+            sandbox.mkdir(parents=True)
+            approval_lock.parent.mkdir(parents=True)
+            approval_lock.write_text("{}\n", encoding="utf-8")
+            policy = openrewrite_policy_from_mapping(
+                {
+                    "preview_allowed": True,
+                    "apply_allowed": False,
+                    "sandbox_apply_allowed": True,
+                    "sandbox_apply_requires_approval": True,
+                    "sandbox_apply_requires_plan_lock": True,
+                    "sandbox_apply_requires_workspace_under_run": True,
+                    "allowed_preview_goals": ["dryRun", "dryRunNoFork", "discover"],
+                    "allowed_sandbox_apply_goals": ["run", "runNoFork", "rewrite:run", "rewrite:runNoFork"],
+                    "forbidden_apply_goals": ["run", "runNoFork", "rewrite:run", "rewrite:runNoFork"],
+                }
+            )
+            context = OpenRewriteExecutionContext(
+                unit_id="java-17",
+                run_dir=run_dir,
+                workspace_path=sandbox,
+                approved_plan_lock_path=approval_lock,
+                approval_decision="approved",
+                approval_approved=True,
+                sandbox_execution=True,
+            )
+
+            command = build_rewrite_run_command(
+                ["org.openrewrite.java.migrate.UpgradeToJava17"],
+                plugin_version="6.23.0",
+                apply_goal="rewrite:runNoFork",
+                policy=policy,
+                context=context,
+            )
+
+            self.assertIn("rewrite-maven-plugin:6.23.0:runNoFork", command)
+
     def test_openrewrite_apply_goal_is_blocked_before_command_execution(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"
@@ -2703,6 +2917,165 @@ migration_units:
             self.assertEqual(ledger["units"]["java-21"]["transformations"][0]["error_code"], "OPENREWRITE_GOAL_FORBIDDEN")
             self.assertEqual(ledger["units"]["java-21"]["commands"], [])
             run_command.assert_not_called()
+
+    def test_openrewrite_apply_goal_is_blocked_before_command_execution_when_sandbox_lock_missing(self) -> None:
+        with workspace_temp_dir() as tmp:
+            sandbox = tmp / "run" / "workspaces" / "sandbox"
+            sandbox.mkdir(parents=True)
+            (sandbox / "pom.xml").write_text("<project />", encoding="utf-8")
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                f"""
+schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: {sandbox.as_posix()}
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+  sandbox:
+    path: {sandbox.as_posix()}
+execution_context:
+  run_dir: {(tmp / "run").as_posix()}
+  sandbox_execution: true
+  workspace_path: {sandbox.as_posix()}
+  approval_decision: approved
+  approved_plan_lock_path: {(tmp / "run" / "approval" / "approved_plan_lock.json").as_posix()}
+policies:
+  openrewrite:
+    preview_allowed: true
+    apply_allowed: false
+    sandbox_apply_allowed: true
+    sandbox_apply_requires_approval: true
+    sandbox_apply_requires_plan_lock: true
+    sandbox_apply_requires_workspace_under_run: true
+    allowed_preview_goals:
+      - dryRun
+      - dryRunNoFork
+      - discover
+    allowed_sandbox_apply_goals:
+      - run
+      - runNoFork
+      - rewrite:run
+      - rewrite:runNoFork
+    forbidden_apply_goals:
+      - run
+      - runNoFork
+      - rewrite:run
+      - rewrite:runNoFork
+migration_units:
+  - id: jakarta
+    title: Jakarta
+    transformations:
+      - type: openrewrite
+        apply_goal: run
+        active_recipes:
+          - org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            with mock.patch("migration_factory.agents.transformation_agent.agent.run_command") as run_command:
+                with self.assertRaisesRegex(
+                    TransformationAgentError,
+                    "OPENREWRITE_GOAL_FORBIDDEN unit=jakarta requested_goal=run",
+                ):
+                    run_transformation_agent(sandbox, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(sandbox / ".migration" / "ledger.json")
+            self.assertEqual(ledger["status"], LedgerStatus.BLOCKED)
+            self.assertEqual(ledger["blocked_unit"], "jakarta")
+            self.assertIn("approved plan lock not found", ledger["units"]["jakarta"]["transformations"][0]["error_message"])
+            run_command.assert_not_called()
+
+    def test_openrewrite_apply_goal_executes_in_approved_sandbox_and_targets_sandbox_workspace(self) -> None:
+        with workspace_temp_dir() as tmp:
+            run_dir = tmp / "run"
+            sandbox = run_dir / "workspaces" / "sandbox"
+            approval_lock = run_dir / "approval" / "approved_plan_lock.json"
+            approval_decision = run_dir / "approval" / "approval_decision.json"
+            sandbox.mkdir(parents=True)
+            approval_lock.parent.mkdir(parents=True)
+            approval_lock.write_text("{}\n", encoding="utf-8")
+            approval_decision.write_text(json.dumps({"decision": "approved"}) + "\n", encoding="utf-8")
+            (sandbox / "pom.xml").write_text("<project />", encoding="utf-8")
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                f"""
+schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: {sandbox.as_posix()}
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+  sandbox:
+    path: {sandbox.as_posix()}
+execution_context:
+  run_dir: {run_dir.as_posix()}
+  sandbox_execution: true
+  workspace_path: {sandbox.as_posix()}
+  approval_decision_path: {approval_decision.as_posix()}
+  approved_plan_lock_path: {approval_lock.as_posix()}
+policies:
+  openrewrite:
+    preview_allowed: true
+    apply_allowed: false
+    sandbox_apply_allowed: true
+    sandbox_apply_requires_approval: true
+    sandbox_apply_requires_plan_lock: true
+    sandbox_apply_requires_workspace_under_run: true
+    allowed_preview_goals:
+      - dryRun
+      - dryRunNoFork
+      - discover
+    allowed_sandbox_apply_goals:
+      - run
+      - runNoFork
+      - rewrite:run
+      - rewrite:runNoFork
+    forbidden_apply_goals:
+      - run
+      - runNoFork
+      - rewrite:run
+      - rewrite:runNoFork
+migration_units:
+  - id: jakarta
+    title: Jakarta
+    transformations:
+      - type: openrewrite
+        apply_goal: runNoFork
+        active_recipes:
+          - org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            with mock.patch(
+                "migration_factory.agents.transformation_agent.agent.run_command",
+                return_value=CommandResult(
+                    command="mvn",
+                    exit_code=0,
+                    stdout=[],
+                    stderr=[],
+                    duration_seconds=0.01,
+                ),
+            ) as run_command:
+                result = run_transformation_agent(sandbox, plugin, plan, wait_for_continue=False)
+
+            self.assertEqual(run_command.call_args.kwargs["cwd"], sandbox)
+            self.assertEqual(result.status, LedgerStatus.AWAITING_BUILD_AGENT)
+            self.assertIn("runNoFork", run_command.call_args.args[0])
 
     def test_non_openrewrite_transformation_still_behaves_as_before(self) -> None:
         with workspace_temp_dir() as tmp:

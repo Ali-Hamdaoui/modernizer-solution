@@ -45,6 +45,7 @@ def write_transformation_execution_plan(
 
     payload = _build_transformer_plan(
         app_path=app_path,
+        run_dir=run_dir,
         run_id=run_id,
         migration_plan=migration_plan,
         migration_units=migration_units,
@@ -79,6 +80,7 @@ def _ensure_approved(run_dir: Path, run_id: str) -> None:
 def _build_transformer_plan(
     *,
     app_path: Path,
+    run_dir: Path,
     run_id: str,
     migration_plan: dict[str, Any],
     migration_units: dict[str, Any],
@@ -110,7 +112,17 @@ def _build_transformer_plan(
                 "path": str(app_path),
                 "migration_dir": ".migration",
                 "ledger_file": ".migration/ledger.json",
-            }
+            },
+            "sandbox": {
+                "path": str((run_dir / "workspaces" / "sandbox").resolve()),
+            },
+        },
+        "execution_context": {
+            "run_dir": str(run_dir.resolve()),
+            "sandbox_execution": True,
+            "workspace_path": str((run_dir / "workspaces" / "sandbox").resolve()),
+            "approval_decision_path": str((run_dir / "approval" / "approval_decision.json").resolve()),
+            "approved_plan_lock_path": str((run_dir / "approval" / "approved_plan_lock.json").resolve()),
         },
         "policies": {
             "openrewrite": _openrewrite_policy_payload(app_path, rewrite_plugin_plan),
@@ -256,7 +268,12 @@ def _openrewrite_policy_payload(app_path: Path, rewrite_plugin_plan: dict[str, A
     return {
         "preview_allowed": effective_policy.preview_allowed,
         "apply_allowed": effective_policy.apply_allowed,
+        "sandbox_apply_allowed": effective_policy.sandbox_apply_allowed,
+        "sandbox_apply_requires_approval": effective_policy.sandbox_apply_requires_approval,
+        "sandbox_apply_requires_plan_lock": effective_policy.sandbox_apply_requires_plan_lock,
+        "sandbox_apply_requires_workspace_under_run": effective_policy.sandbox_apply_requires_workspace_under_run,
         "allowed_preview_goals": list(effective_policy.allowed_preview_goals),
+        "allowed_sandbox_apply_goals": list(effective_policy.allowed_sandbox_apply_goals),
         "forbidden_apply_goals": list(effective_policy.forbidden_apply_goals),
     }
 
@@ -298,10 +315,33 @@ def _policy_from_plan_metadata(rewrite_plugin_plan: dict[str, Any] | None) -> Op
     if not isinstance(plan, dict):
         return None
     has_top_level = any(
-        key in plan for key in ("preview_allowed", "apply_allowed", "preview_goals", "forbidden_apply_goals", "apply_goals_forbidden")
+        key in plan
+        for key in (
+            "preview_allowed",
+            "apply_allowed",
+            "preview_goals",
+            "forbidden_apply_goals",
+            "apply_goals_forbidden",
+            "sandbox_apply_allowed",
+            "sandbox_apply_requires_approval",
+            "sandbox_apply_requires_plan_lock",
+            "sandbox_apply_requires_workspace_under_run",
+            "allowed_sandbox_apply_goals",
+        )
     )
     has_nested = any(
-        key in openrewrite for key in ("preview_allowed", "apply_allowed", "allowed_preview_goals", "forbidden_apply_goals")
+        key in openrewrite
+        for key in (
+            "preview_allowed",
+            "apply_allowed",
+            "allowed_preview_goals",
+            "forbidden_apply_goals",
+            "sandbox_apply_allowed",
+            "sandbox_apply_requires_approval",
+            "sandbox_apply_requires_plan_lock",
+            "sandbox_apply_requires_workspace_under_run",
+            "allowed_sandbox_apply_goals",
+        )
     )
     if not has_top_level and not has_nested:
         return None
@@ -315,9 +355,35 @@ def _policy_from_plan_metadata(rewrite_plugin_plan: dict[str, Any] | None) -> Op
         apply_allowed = not bool(plan.get("apply_goals_forbidden"))
     if apply_allowed is not None:
         metadata["apply_allowed"] = apply_allowed
+    sandbox_apply_allowed = plan.get("sandbox_apply_allowed", openrewrite.get("sandbox_apply_allowed"))
+    if sandbox_apply_allowed is not None:
+        metadata["sandbox_apply_allowed"] = sandbox_apply_allowed
+    sandbox_apply_requires_approval = plan.get(
+        "sandbox_apply_requires_approval",
+        openrewrite.get("sandbox_apply_requires_approval"),
+    )
+    if sandbox_apply_requires_approval is not None:
+        metadata["sandbox_apply_requires_approval"] = sandbox_apply_requires_approval
+    sandbox_apply_requires_plan_lock = plan.get(
+        "sandbox_apply_requires_plan_lock",
+        openrewrite.get("sandbox_apply_requires_plan_lock"),
+    )
+    if sandbox_apply_requires_plan_lock is not None:
+        metadata["sandbox_apply_requires_plan_lock"] = sandbox_apply_requires_plan_lock
+    sandbox_apply_requires_workspace_under_run = plan.get(
+        "sandbox_apply_requires_workspace_under_run",
+        openrewrite.get("sandbox_apply_requires_workspace_under_run"),
+    )
+    if sandbox_apply_requires_workspace_under_run is not None:
+        metadata["sandbox_apply_requires_workspace_under_run"] = sandbox_apply_requires_workspace_under_run
     preview_goals = _string_list(plan.get("preview_goals")) or _string_list(openrewrite.get("allowed_preview_goals"))
     if preview_goals:
         metadata["allowed_preview_goals"] = preview_goals
+    sandbox_apply_goals = _string_list(plan.get("allowed_sandbox_apply_goals")) or _string_list(
+        openrewrite.get("allowed_sandbox_apply_goals")
+    )
+    if sandbox_apply_goals:
+        metadata["allowed_sandbox_apply_goals"] = sandbox_apply_goals
     forbidden_apply_goals = _string_list(plan.get("forbidden_apply_goals")) or _string_list(openrewrite.get("forbidden_apply_goals"))
     if forbidden_apply_goals:
         metadata["forbidden_apply_goals"] = forbidden_apply_goals
@@ -341,7 +407,12 @@ def _merge_openrewrite_policies(
     return OpenRewritePolicy(
         preview_allowed=canonical_policy.preview_allowed and artifact_policy.preview_allowed,
         apply_allowed=canonical_policy.apply_allowed and artifact_policy.apply_allowed,
+        sandbox_apply_allowed=canonical_policy.sandbox_apply_allowed,
+        sandbox_apply_requires_approval=canonical_policy.sandbox_apply_requires_approval,
+        sandbox_apply_requires_plan_lock=canonical_policy.sandbox_apply_requires_plan_lock,
+        sandbox_apply_requires_workspace_under_run=canonical_policy.sandbox_apply_requires_workspace_under_run,
         allowed_preview_goals=tuple(merged_preview),
+        allowed_sandbox_apply_goals=tuple(canonical_policy.allowed_sandbox_apply_goals),
         forbidden_apply_goals=tuple(forbidden_apply_goals),
     )
 

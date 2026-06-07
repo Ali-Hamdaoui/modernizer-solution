@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import json
 import os
 import time
 from typing import Any
@@ -40,6 +41,7 @@ from .review_gates import review_jakarta_hybrid_strategy
 from .review_gates import review_azure_sdk_migration_playbook
 from .review_gates import review_jjwt_api_migration
 from .rewrite import (
+    OpenRewriteExecutionContext,
     RewritePluginError,
     build_rewrite_run_command,
     normalize_openrewrite_goal,
@@ -137,6 +139,7 @@ def _run_unit(
             requested_goal = str(transformation.get("apply_goal") or "").strip() or None
             apply_maven_args = [str(item) for item in transformation.get("apply_maven_args", [])]
             try:
+                openrewrite_context = _openrewrite_execution_context(plan, unit)
                 command = build_rewrite_run_command(
                     active_recipes,
                     recipe_artifacts=recipe_artifacts,
@@ -144,6 +147,7 @@ def _run_unit(
                     apply_goal=requested_goal,
                     maven_args=apply_maven_args,
                     policy=plan.openrewrite_policy,
+                    context=openrewrite_context,
                 )
             except RewritePluginError as exc:
                 normalized_goal = normalize_openrewrite_goal(requested_goal)
@@ -772,6 +776,71 @@ def _command_result_to_dict(result: CommandResult) -> dict[str, Any]:
         "stdout_tail": result.stdout[-40:],
         "stderr_tail": result.stderr[-40:],
     }
+
+
+def _openrewrite_execution_context(plan: MigrationPlan, unit: MigrationUnit) -> OpenRewriteExecutionContext:
+    execution_context = plan.raw.get("execution_context")
+    if not isinstance(execution_context, dict):
+        execution_context = {}
+
+    workspaces = plan.raw.get("workspaces")
+    sandbox_path: Path | None = None
+    if isinstance(workspaces, dict):
+        sandbox_workspace = workspaces.get("sandbox")
+        if isinstance(sandbox_workspace, dict) and sandbox_workspace.get("path"):
+            sandbox_path = Path(str(sandbox_workspace["path"])).expanduser().resolve()
+
+    workspace_path_value = execution_context.get("workspace_path")
+    if workspace_path_value:
+        workspace_path = Path(str(workspace_path_value)).expanduser().resolve()
+    elif sandbox_path is not None:
+        workspace_path = sandbox_path
+    else:
+        workspace_path = plan.target_path
+
+    run_dir_value = execution_context.get("run_dir")
+    run_dir = Path(str(run_dir_value)).expanduser().resolve() if run_dir_value else None
+
+    lock_path_value = execution_context.get("approved_plan_lock_path")
+    approved_plan_lock_path = (
+        Path(str(lock_path_value)).expanduser().resolve()
+        if lock_path_value
+        else None
+    )
+
+    approval_decision_value = execution_context.get("approval_decision")
+    approval_decision = str(approval_decision_value).strip() if approval_decision_value is not None else None
+    if approval_decision is None:
+        approval_decision_path_value = execution_context.get("approval_decision_path")
+        if approval_decision_path_value:
+            approval_decision_path = Path(str(approval_decision_path_value)).expanduser().resolve()
+            if approval_decision_path.is_file():
+                try:
+                    payload = json.loads(approval_decision_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    payload = {}
+                if isinstance(payload, dict) and payload.get("decision") is not None:
+                    approval_decision = str(payload.get("decision")).strip()
+    approval_approved = str(approval_decision or "").strip().lower() == "approved"
+
+    sandbox_execution = execution_context.get("sandbox_execution")
+    if sandbox_execution is None and run_dir is not None:
+        sandbox_root = run_dir / "workspaces" / "sandbox"
+        try:
+            workspace_path.resolve().relative_to(sandbox_root.resolve())
+            sandbox_execution = True
+        except ValueError:
+            sandbox_execution = False
+
+    return OpenRewriteExecutionContext(
+        unit_id=unit.id,
+        run_dir=run_dir,
+        workspace_path=workspace_path,
+        approved_plan_lock_path=approved_plan_lock_path,
+        approval_decision=approval_decision,
+        approval_approved=approval_approved,
+        sandbox_execution=bool(sandbox_execution),
+    )
 
 
 def _unit_java_env(unit: MigrationUnit) -> dict[str, str] | None:
