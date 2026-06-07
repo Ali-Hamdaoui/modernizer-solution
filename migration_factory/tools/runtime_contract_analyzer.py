@@ -21,7 +21,8 @@ CONFIG_SUFFIXES = {".properties", ".yml", ".yaml", ".json"}
 SECURITY_SUFFIXES = {".jks", ".p12", ".pem", ".crt", ".cer", ".key"}
 JAVA_SOURCE_SUFFIXES = {".java", ".kt", ".groovy"}
 ENV_VAR_PATTERN = re.compile(r"\b([A-Z][A-Z0-9_]{2,})\b")
-WORKFLOW_JAVA_PATTERN = re.compile(r"(java-version|distribution)\s*:\s*[\"']?([^\"'\n#]+)")
+WORKFLOW_JAVA_VERSION_PATTERN = re.compile(r"java-version\s*:\s*[\"']?([^\"'\n#]+)")
+WORKFLOW_JAVA_DISTRIBUTION_PATTERN = re.compile(r"distribution\s*:\s*[\"']?([^\"'\n#]+)")
 WORKFLOW_MAVEN_VERSION_PATTERN = re.compile(r"maven-version\s*:\s*[\"']?([^\"'\n#]+)")
 PATH_PATTERN = re.compile(r"([A-Za-z]:\\[^\s\"']+|/(usr|opt|Library)/[^\s\"']+)")
 MAVEN_SETTINGS_FLAG_PATTERN = re.compile(r"\bmvn(?:w)?\b[^\n]*\s(?:-s|--settings)\s+([^\s\"']+)")
@@ -202,21 +203,28 @@ def _collect_workflow_indicators(snapshot: dict[str, str]) -> list[dict[str, Any
         if not relative_path.startswith(".github/workflows/"):
             continue
         found_indicators: set[str] = set()
+        hardcoded_paths = _extract_hardcoded_path_evidence(relative_path, content)
         if "actions/setup-java" in content:
             found_indicators.add("setup-java")
         if "codeartifact" in content.lower():
             found_indicators.add("codeartifact")
         if "settings.xml" in content or "--settings" in content or " -s " in content:
             found_indicators.add("maven-settings")
-        if PATH_PATTERN.search(content):
+        if hardcoded_paths:
             found_indicators.add("hardcoded-tool-path")
         indicators.append(
             {
                 "path": relative_path,
                 "indicators": sorted(found_indicators),
-                "setup_java_versions": sorted({match[1].strip() for match in WORKFLOW_JAVA_PATTERN.findall(content)}),
+                "setup_java_versions": sorted(
+                    {match.strip() for match in WORKFLOW_JAVA_VERSION_PATTERN.findall(content) if match.strip()}
+                ),
+                "setup_java_distributions": sorted(
+                    {match.strip() for match in WORKFLOW_JAVA_DISTRIBUTION_PATTERN.findall(content) if match.strip()}
+                ),
                 "maven_versions": sorted({match.strip() for match in WORKFLOW_MAVEN_VERSION_PATTERN.findall(content)}),
                 "environment_variables": sorted(_extract_env_var_names(content)),
+                "hardcoded_tool_paths": hardcoded_paths,
             }
         )
     return indicators
@@ -241,13 +249,11 @@ def _build_jdk_requirements(
     env_vars: list[dict[str, str]],
 ) -> dict[str, Any]:
     properties = pom_data.get("properties", {})
-    hardcoded_paths = sorted(
-        {
-            entry["path"]
-            for entry in _collect_hardcoded_path_evidence(workflow_indicators)
-            if "java" in entry["match"].lower() or "jdk" in entry["match"].lower()
-        }
-    )
+    hardcoded_paths = [
+        entry
+        for entry in _collect_hardcoded_path_evidence(workflow_indicators)
+        if entry["kind"] == "jdk"
+    ]
     return {
         "java_version": pom_data.get("java_version") or "",
         "compiler_source": properties.get("maven.compiler.source", ""),
@@ -255,6 +261,9 @@ def _build_jdk_requirements(
         "compiler_release": properties.get("maven.compiler.release", ""),
         "workflow_setup_java_versions": sorted(
             {version for workflow in workflow_indicators for version in workflow.get("setup_java_versions", []) if version}
+        ),
+        "workflow_setup_java_distributions": sorted(
+            {value for workflow in workflow_indicators for value in workflow.get("setup_java_distributions", []) if value}
         ),
         "hardcoded_jdk_paths": hardcoded_paths,
         "environment_variables": sorted(
@@ -281,14 +290,19 @@ def _build_maven_requirements(
         }
     )
     settings_evidence: list[dict[str, str]] = []
-    hardcoded_maven_paths: set[str] = set()
+    hardcoded_maven_paths: list[dict[str, str]] = []
     for relative_path, content in sorted(snapshot.items()):
         for match in MAVEN_SETTINGS_FLAG_PATTERN.findall(content):
             settings_evidence.append({"path": relative_path, "settings_arg": match})
-        for raw_match in PATH_PATTERN.findall(content):
-            candidate = raw_match[0]
-            if "maven" in candidate.lower() or "mvn" in candidate.lower():
-                hardcoded_maven_paths.add(relative_path)
+    seen_hardcoded: set[tuple[str, str, str]] = set()
+    for entry in _collect_hardcoded_path_evidence(workflow_indicators):
+        if entry["kind"] != "maven":
+            continue
+        key = (entry["path"], entry["match"], entry["kind"])
+        if key in seen_hardcoded:
+            continue
+        seen_hardcoded.add(key)
+        hardcoded_maven_paths.append(entry)
     return {
         "wrapper_present": any((project_root / name).is_file() for name in ("mvnw", "mvnw.cmd")),
         "plugin_versions": dict(pom_data.get("plugins", {})),
@@ -297,7 +311,7 @@ def _build_maven_requirements(
         "workflow_maven_versions": sorted(
             {version for workflow in workflow_indicators for version in workflow.get("maven_versions", []) if version}
         ),
-        "hardcoded_maven_paths": sorted(hardcoded_maven_paths),
+        "hardcoded_maven_paths": hardcoded_maven_paths,
     }
 
 
@@ -323,7 +337,7 @@ def _build_private_registry_requirements(
             evidence.append({"path": relative_path, "type": "private_registry_hint"})
         for match in MAVEN_SETTINGS_FLAG_PATTERN.findall(content):
             detected_indicators.add("maven-settings")
-            evidence.append({"path": relative_path, "type": "settings_flag", "value": match})
+            evidence.append({"path": relative_path, "type": "settings_flag", "settings_arg": match})
         if "settings.xml" in lowered:
             detected_indicators.add("maven-settings")
     if repository_urls:
@@ -577,10 +591,27 @@ def _build_recommended_actions(detected_risks: list[dict[str, Any]], reference_d
 def _collect_hardcoded_path_evidence(workflow_indicators: list[dict[str, Any]]) -> list[dict[str, str]]:
     evidence: list[dict[str, str]] = []
     for workflow in workflow_indicators:
-        path = workflow["path"]
-        for match in workflow.get("environment_variables", []):
-            if "JAVA_HOME" in match or "MAVEN" in match:
-                evidence.append({"path": path, "match": match})
+        for item in workflow.get("hardcoded_tool_paths", []):
+            evidence.append(dict(item))
+    return evidence
+
+
+def _extract_hardcoded_path_evidence(relative_path: str, content: str) -> list[dict[str, str]]:
+    evidence: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for raw_match in PATH_PATTERN.findall(content):
+        candidate = raw_match[0].strip()
+        lowered = candidate.lower()
+        kind = "generic-tool"
+        if "jdk" in lowered or re.search(r"java[-_/\\]?\d+", lowered):
+            kind = "jdk"
+        elif "maven" in lowered or lowered.endswith("/mvn") or lowered.endswith("\\mvn") or "\\mvn" in lowered or "/mvn" in lowered:
+            kind = "maven"
+        key = (relative_path, candidate, kind)
+        if key in seen:
+            continue
+        seen.add(key)
+        evidence.append({"path": relative_path, "match": candidate, "kind": kind})
     return evidence
 
 

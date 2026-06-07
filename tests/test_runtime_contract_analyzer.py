@@ -107,6 +107,7 @@ jobs:
           distribution: temurin
           java-version: '11'
       - run: mvn -s .mvn/settings.xml clean verify
+      - run: mvn --settings custom-settings.xml test
       - run: echo $JAVA_HOME_17
       - run: echo $CODEARTIFACT_AUTH_TOKEN
       - run: echo $AWS_SECRET_ACCESS_KEY
@@ -140,12 +141,19 @@ def test_runtime_contract_analyzer_detects_generic_runtime_contract_and_writes_j
     assert payload["project"]["primary_pom"] == "pom.xml"
     assert payload["jdk_requirements"]["java_version"] == "17"
     assert payload["jdk_requirements"]["compiler_release"] == "17"
-    assert payload["jdk_requirements"]["workflow_setup_java_versions"] == ["11", "temurin"]
+    assert payload["jdk_requirements"]["workflow_setup_java_versions"] == ["11"]
+    assert payload["jdk_requirements"]["workflow_setup_java_distributions"] == ["temurin"]
     assert "JAVA_HOME_17" in payload["jdk_requirements"]["environment_variables"]
     assert ".github/workflows/build.yml" in {item["path"] for item in payload["workflow_indicators"]}
     assert ".mvn/settings.xml" in payload["maven_requirements"]["settings_files"]
     assert payload["private_registry_requirements"]["repository_urls"] == ["https://packages.example.internal/maven/releases"]
     assert "CODEARTIFACT_AUTH_TOKEN" in payload["private_registry_requirements"]["environment_variables"]
+    assert payload["jdk_requirements"]["hardcoded_jdk_paths"] == [
+        {"path": ".github/workflows/build.yml", "match": "C:\\Java\\jdk-17", "kind": "jdk"}
+    ]
+    assert payload["maven_requirements"]["hardcoded_maven_paths"] == [
+        {"path": ".github/workflows/build.yml", "match": "/opt/maven/apache-maven-3.9.8/bin/mvn", "kind": "maven"}
+    ]
     assert {"path": "src/main/resources/application.yml", "location": "main-resources"} in payload["configuration_files"]
     assert {"path": "src/test/resources/application-test.yml", "location": "test-resources"} in payload["configuration_files"]
     resource_types = {item["type"] for item in payload["resource_access"]}
@@ -179,6 +187,62 @@ def test_runtime_contract_analyzer_detects_generic_runtime_contract_and_writes_j
         "REVIEW_WORKFLOW_ENVIRONMENT",
         "AVOID_COMMITTING_SECRETS",
     } <= action_codes
+
+
+def test_runtime_contract_analyzer_separates_java_versions_from_distributions(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    output = tmp_path / "runtime_contract.json"
+    _write_project_fixture(project)
+
+    payload = analyze_runtime_contract(project_path=project, output_path=output).payload
+    workflow = payload["workflow_indicators"][0]
+
+    assert workflow["setup_java_versions"] == ["11"]
+    assert workflow["setup_java_distributions"] == ["temurin"]
+    assert payload["jdk_requirements"]["workflow_setup_java_versions"] == ["11"]
+    assert "temurin" not in payload["jdk_requirements"]["workflow_setup_java_versions"]
+
+
+def test_runtime_contract_analyzer_captures_hardcoded_tool_path_evidence(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    output = tmp_path / "runtime_contract.json"
+    _write_project_fixture(project)
+
+    payload = analyze_runtime_contract(project_path=project, output_path=output).payload
+
+    assert payload["jdk_requirements"]["hardcoded_jdk_paths"] == [
+        {"path": ".github/workflows/build.yml", "match": "C:\\Java\\jdk-17", "kind": "jdk"}
+    ]
+    assert payload["maven_requirements"]["hardcoded_maven_paths"] == [
+        {"path": ".github/workflows/build.yml", "match": "/opt/maven/apache-maven-3.9.8/bin/mvn", "kind": "maven"}
+    ]
+
+
+def test_runtime_contract_analyzer_captures_env_var_names_only(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    output = tmp_path / "runtime_contract.json"
+    _write_project_fixture(project)
+
+    payload = analyze_runtime_contract(project_path=project, output_path=output).payload
+
+    env_names = {item["name"] for item in payload["environment_variables"]}
+    assert {"JAVA_HOME_17", "CODEARTIFACT_AUTH_TOKEN", "AWS_SECRET_ACCESS_KEY"} <= env_names
+    assert all("value" not in item for item in payload["environment_variables"])
+
+
+def test_runtime_contract_analyzer_captures_safe_maven_settings_evidence(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    output = tmp_path / "runtime_contract.json"
+    _write_project_fixture(project)
+
+    payload = analyze_runtime_contract(project_path=project, output_path=output).payload
+
+    settings_args = {item["settings_arg"] for item in payload["maven_requirements"]["settings_flag_evidence"]}
+    private_evidence = payload["private_registry_requirements"]["evidence"]
+    assert {".mvn/settings.xml", "custom-settings.xml"} <= settings_args
+    assert {"path": ".github/workflows/build.yml", "type": "settings_flag", "settings_arg": ".mvn/settings.xml"} in private_evidence
+    assert {"path": ".github/workflows/build.yml", "type": "settings_flag", "settings_arg": "custom-settings.xml"} in private_evidence
+    assert all("value" not in item for item in private_evidence)
 
 
 def test_runtime_contract_analyzer_enriches_from_reference_delta_and_cli(tmp_path: Path, capsys) -> None:

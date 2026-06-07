@@ -64,8 +64,9 @@ JDK / Maven:
 * Java version from POM properties and compiler plugin settings
 * Maven wrapper
 * workflow `actions/setup-java`
+* workflow Java versions and JDK distributions reported separately
 * Maven version hints in workflow
-* hardcoded JDK or Maven path assumptions
+* hardcoded JDK or Maven path assumptions reported as matched path evidence
 * `JAVA_HOME`, `JAVA_HOME_11`, `JAVA_HOME_17`, `JAVA_HOME_21`, and similar env var names
 
 Private registry / settings:
@@ -75,6 +76,7 @@ Private registry / settings:
 * private repository URLs in POM
 * CodeArtifact-like hints
 * env var names related to registry auth
+* safe Maven settings argument evidence without secret values
 
 Config / resource / security:
 
@@ -123,3 +125,4 @@ Rules:
 * no transformer behavior
 * no source changes
 * no secret values or key contents in report
+* no Java version/distribution mixing in workflow metadata
