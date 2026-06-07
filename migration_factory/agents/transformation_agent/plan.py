@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any
 import json
 
+from .rewrite import OpenRewritePolicy, default_openrewrite_policy, openrewrite_policy_from_mapping
+
 
 class MigrationPlanError(Exception):
     pass
@@ -28,6 +30,7 @@ class MigrationPlan:
     target_path: Path
     migration_dir: Path
     ledger_file: Path
+    openrewrite_policy: OpenRewritePolicy
     units: list[MigrationUnit]
     raw: dict[str, Any]
 
@@ -60,6 +63,7 @@ def load_migration_plan(plan_path: str | Path, modernized_app_path: str | Path |
         target_path=target_path,
         migration_dir=migration_dir,
         ledger_file=ledger_file,
+        openrewrite_policy=_parse_openrewrite_policy(raw),
         units=units,
         raw=raw,
     )
@@ -253,6 +257,13 @@ def _parse_unit(raw_unit: Any) -> MigrationUnit:
         expected_files=[str(item) for item in _list(unit.get("expected_files", []), f"{unit_id}.expected_files")],
         raw=unit,
     )
+
+
+def _parse_openrewrite_policy(raw: dict[str, Any]) -> OpenRewritePolicy:
+    policies = raw.get("policies")
+    if not isinstance(policies, dict):
+        return default_openrewrite_policy()
+    return openrewrite_policy_from_mapping(policies.get("openrewrite"))
 
 
 def _mapping(value: Any, name: str) -> dict[str, Any]:

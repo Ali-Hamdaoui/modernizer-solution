@@ -7,6 +7,8 @@ import xml.etree.ElementTree as ET
 
 DEFAULT_OPENREWRITE_MAVEN_PLUGIN_VERSION = "6.39.0"
 OPENREWRITE_MAVEN_PLUGIN = ("org.openrewrite.maven", "rewrite-maven-plugin")
+DEFAULT_PREVIEW_GOALS = ("dryRun", "dryRunNoFork", "discover")
+DEFAULT_FORBIDDEN_APPLY_GOALS = ("run", "runNoFork", "rewrite:run", "rewrite:runNoFork")
 
 
 class RewritePluginError(Exception):
@@ -17,6 +19,33 @@ class RewritePluginError(Exception):
 class RewritePluginInjection:
     pom_path: Path
     coordinates: tuple[str, str]
+
+
+@dataclass(frozen=True)
+class OpenRewritePolicy:
+    preview_allowed: bool = True
+    apply_allowed: bool = False
+    allowed_preview_goals: tuple[str, ...] = DEFAULT_PREVIEW_GOALS
+    forbidden_apply_goals: tuple[str, ...] = DEFAULT_FORBIDDEN_APPLY_GOALS
+
+
+def default_openrewrite_policy() -> OpenRewritePolicy:
+    return OpenRewritePolicy()
+
+
+def openrewrite_policy_from_mapping(payload: object) -> OpenRewritePolicy:
+    if not isinstance(payload, dict):
+        return default_openrewrite_policy()
+    preview_allowed = payload.get("preview_allowed")
+    apply_allowed = payload.get("apply_allowed")
+    allowed_preview_goals = _string_tuple(payload.get("allowed_preview_goals")) or DEFAULT_PREVIEW_GOALS
+    forbidden_apply_goals = _string_tuple(payload.get("forbidden_apply_goals")) or DEFAULT_FORBIDDEN_APPLY_GOALS
+    return OpenRewritePolicy(
+        preview_allowed=True if preview_allowed is None else bool(preview_allowed),
+        apply_allowed=False if apply_allowed is None else bool(apply_allowed),
+        allowed_preview_goals=allowed_preview_goals,
+        forbidden_apply_goals=forbidden_apply_goals,
+    )
 
 
 def inject_rewrite_plugin(
@@ -51,10 +80,11 @@ def build_rewrite_run_command(
     *,
     recipe_artifacts: list[str] | None = None,
     plugin_version: str = DEFAULT_OPENREWRITE_MAVEN_PLUGIN_VERSION,
-    apply_goal: str = "run",
+    apply_goal: str | None = None,
     maven_args: list[str] | None = None,
+    policy: OpenRewritePolicy | None = None,
 ) -> str:
-    goal_name = str(apply_goal or "run").strip() or "run"
+    goal_name = validate_openrewrite_goal(apply_goal, policy=policy)
     goal = f"{OPENREWRITE_MAVEN_PLUGIN[0]}:{OPENREWRITE_MAVEN_PLUGIN[1]}:{_concrete_plugin_version(plugin_version)}:{goal_name}"
     args = [goal]
     if active_recipes:
@@ -72,6 +102,53 @@ def rewrite_plugin_version_from_xml(plugin_txt_path: str | Path) -> str:
     if (group_id, artifact_id) != OPENREWRITE_MAVEN_PLUGIN:
         return DEFAULT_OPENREWRITE_MAVEN_PLUGIN_VERSION
     return _concrete_plugin_version(_child_text(plugin_element, "version"))
+
+
+def validate_openrewrite_goal(
+    requested_goal: str | None,
+    *,
+    policy: OpenRewritePolicy | None = None,
+) -> str:
+    effective_policy = policy or default_openrewrite_policy()
+    normalized_goal = normalize_openrewrite_goal(requested_goal)
+    allowed_preview = {
+        normalize_openrewrite_goal(goal)
+        for goal in effective_policy.allowed_preview_goals
+    }
+    forbidden_apply = {
+        normalize_openrewrite_goal(goal)
+        for goal in effective_policy.forbidden_apply_goals
+    }
+
+    if normalized_goal in allowed_preview:
+        if not effective_policy.preview_allowed:
+            raise RewritePluginError(
+                f"OPENREWRITE_GOAL_FORBIDDEN preview goal '{requested_goal or normalized_goal}' "
+                f"blocked by policy"
+            )
+        return normalized_goal
+
+    if normalized_goal in forbidden_apply:
+        if not effective_policy.apply_allowed:
+            raise RewritePluginError(
+                f"OPENREWRITE_GOAL_FORBIDDEN apply goal '{requested_goal or normalized_goal}' "
+                f"blocked by policy"
+            )
+        return normalized_goal
+
+    raise RewritePluginError(
+        f"OPENREWRITE_GOAL_FORBIDDEN goal '{requested_goal or normalized_goal}' not allowed by policy"
+    )
+
+
+def normalize_openrewrite_goal(goal: str | None) -> str:
+    value = str(goal or "").strip()
+    if not value:
+        return "dryRun"
+    suffix = value.split(":")[-1]
+    if suffix in {"dryRun", "dryRunNoFork", "discover", "run", "runNoFork"}:
+        return suffix
+    return value
 
 
 def _resolve_pom(project_path: Path, module: str | None) -> Path:
@@ -109,6 +186,17 @@ def _concrete_plugin_version(version: str | None) -> str:
     if not value or value.upper() == "RELEASE":
         return DEFAULT_OPENREWRITE_MAVEN_PLUGIN_VERSION
     return value
+
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (list, tuple)):
+        return tuple(str(item) for item in value if str(item).strip())
+    text = str(value).strip()
+    if not text:
+        return ()
+    return (text,)
 
 
 def _upsert_plugin(

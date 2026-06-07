@@ -24,6 +24,12 @@ from migration_factory.agents.transformation_agent.execution_plan import (
 )
 from migration_factory.agents.transformation_agent.executor import CommandResult
 from migration_factory.agents.transformation_agent.plan import load_migration_plan
+from migration_factory.agents.transformation_agent.rewrite import (
+    RewritePluginError,
+    build_rewrite_run_command,
+    default_openrewrite_policy,
+    openrewrite_policy_from_mapping,
+)
 from migration_factory.agents.transformation_agent.pom_patches import (
     patch_forbidden_source_patterns_allow_jakarta,
     patch_batch_config_flat_file_item_reader_constructor,
@@ -124,6 +130,15 @@ class TransformationAgentTests(unittest.TestCase):
             self.assertEqual(payload["workspaces"]["target"]["path"], str(app.resolve()))
             self.assertEqual([unit["id"] for unit in payload["migration_units"]], ["baseline", "java-17"])
             self.assertEqual(payload["migration_units"][0]["checks"][0]["command"], "mvn clean test")
+            self.assertEqual(
+                payload["policies"]["openrewrite"],
+                {
+                    "preview_allowed": True,
+                    "apply_allowed": False,
+                    "allowed_preview_goals": ["dryRun", "dryRunNoFork", "discover"],
+                    "forbidden_apply_goals": ["run", "runNoFork", "rewrite:run", "rewrite:runNoFork"],
+                },
+            )
             self.assertEqual(payload["migration_units"][1]["transformations"][0]["type"], "openrewrite")
             self.assertEqual(
                 payload["migration_units"][1]["transformations"][0]["active_recipes"],
@@ -260,6 +275,37 @@ units:
             self.assertEqual(jakarta_transform["apply_goal"], "run")
             self.assertEqual(jakarta_transform["apply_maven_args"], ["-DskipTests"])
             self.assertEqual(jakarta_transform["analysis_preview_maven_args"], ["-DsomeFlag=true"])
+
+    def test_load_migration_plan_without_policy_uses_fail_safe_openrewrite_defaults(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: baseline
+    title: Baseline
+    transformations:
+      - type: custom_code_change
+        description: record only
+    checks: []
+""",
+                encoding="utf-8",
+            )
+
+            loaded = load_migration_plan(plan, app)
+
+            self.assertEqual(loaded.openrewrite_policy, default_openrewrite_policy())
 
     def test_execution_plan_adapter_includes_per_unit_jdk_metadata(self) -> None:
         with workspace_temp_dir() as tmp:
@@ -2386,12 +2432,65 @@ migration_units:
             ledger = load_ledger(result.ledger_file)
             command = ledger["units"]["java-17"]["commands"][0]["command"]
 
-            self.assertIn("org.openrewrite.maven:rewrite-maven-plugin:6.39.0:run", command)
+            self.assertIn("org.openrewrite.maven:rewrite-maven-plugin:6.39.0:dryRun", command)
             self.assertIn("-Drewrite.recipeArtifactCoordinates=org.openrewrite.recipe:rewrite-migrate-java:RELEASE", command)
             self.assertNotIn("rewrite:run", command)
             self.assertNotIn("rewrite-maven-plugin:RELEASE", command)
 
-    def test_openrewrite_apply_uses_configured_goal_and_maven_args(self) -> None:
+    def test_openrewrite_command_builder_rejects_forbidden_apply_goals_when_apply_not_allowed(self) -> None:
+        policy = default_openrewrite_policy()
+        active_recipes = ["org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5"]
+        forbidden_goals = [
+            "run",
+            "runNoFork",
+            "rewrite:run",
+            "rewrite:runNoFork",
+            "org.openrewrite.maven:rewrite-maven-plugin:6.23.0:run",
+            "org.openrewrite.maven:rewrite-maven-plugin:6.23.0:runNoFork",
+        ]
+
+        for goal in forbidden_goals:
+            with self.subTest(goal=goal):
+                with self.assertRaisesRegex(RewritePluginError, "OPENREWRITE_GOAL_FORBIDDEN"):
+                    build_rewrite_run_command(
+                        active_recipes,
+                        plugin_version="6.23.0",
+                        apply_goal=goal,
+                        policy=policy,
+                    )
+
+    def test_openrewrite_command_builder_defaults_to_safe_preview_goal(self) -> None:
+        command = build_rewrite_run_command(
+            ["org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5"],
+            plugin_version="6.23.0",
+            policy=default_openrewrite_policy(),
+        )
+
+        self.assertIn("rewrite-maven-plugin:6.23.0:dryRun", command)
+        self.assertNotIn("rewrite-maven-plugin:6.23.0:run", command)
+
+    def test_openrewrite_command_builder_accepts_allowed_preview_goals(self) -> None:
+        policy = openrewrite_policy_from_mapping(
+            {
+                "preview_allowed": True,
+                "apply_allowed": False,
+                "allowed_preview_goals": ["dryRun", "dryRunNoFork", "discover"],
+                "forbidden_apply_goals": ["run", "runNoFork", "rewrite:run", "rewrite:runNoFork"],
+            }
+        )
+        active_recipes = ["org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5"]
+
+        for goal in ("dryRun", "dryRunNoFork", "discover"):
+            with self.subTest(goal=goal):
+                command = build_rewrite_run_command(
+                    active_recipes,
+                    plugin_version="6.23.0",
+                    apply_goal=goal,
+                    policy=policy,
+                )
+                self.assertIn(f"rewrite-maven-plugin:6.23.0:{goal}", command)
+
+    def test_openrewrite_apply_goal_is_blocked_before_command_execution(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"
             app.mkdir()
@@ -2408,6 +2507,19 @@ workspaces:
     path: ./modernized-app
     migration_dir: .migration
     ledger_file: .migration/ledger.json
+policies:
+  openrewrite:
+    preview_allowed: true
+    apply_allowed: false
+    allowed_preview_goals:
+      - dryRun
+      - dryRunNoFork
+      - discover
+    forbidden_apply_goals:
+      - run
+      - runNoFork
+      - rewrite:run
+      - rewrite:runNoFork
 migration_units:
   - id: java-21
     title: Java 21
@@ -2427,12 +2539,43 @@ migration_units:
             plugin = tmp / "rewrite-plugin.txt"
             plugin.write_text(PLUGIN_XML, encoding="utf-8")
 
+            with mock.patch("migration_factory.agents.transformation_agent.agent.run_command") as run_command:
+                with self.assertRaisesRegex(
+                    TransformationAgentError,
+                    "OPENREWRITE_GOAL_FORBIDDEN unit=java-21 requested_goal=runNoFork",
+                ):
+                    run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(app / ".migration" / "ledger.json")
+            self.assertEqual(ledger["status"], LedgerStatus.BLOCKED)
+            self.assertEqual(ledger["blocked_unit"], "java-21")
+            self.assertEqual(
+                ledger["units"]["java-21"]["blocking_reason"],
+                "OPENREWRITE_GOAL_FORBIDDEN unit=java-21 requested_goal=runNoFork normalized_goal=runNoFork",
+            )
+            self.assertEqual(ledger["units"]["java-21"]["transformations"][0]["error_code"], "OPENREWRITE_GOAL_FORBIDDEN")
+            self.assertEqual(ledger["units"]["java-21"]["commands"], [])
+            run_command.assert_not_called()
+
+    def test_non_openrewrite_transformation_still_behaves_as_before(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                PLAN_YAML,
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
             result = run_transformation_agent(app, plugin, plan, dry_run=True, wait_for_continue=False)
             ledger = load_ledger(result.ledger_file)
-            command = ledger["units"]["java-21"]["commands"][0]["command"]
 
-            self.assertIn("org.openrewrite.maven:rewrite-maven-plugin:6.23.0:runNoFork", command)
-            self.assertIn("-Denforcer.skip=true", command)
+            self.assertEqual(result.status, LedgerStatus.AWAITING_BUILD_AGENT)
+            self.assertEqual(ledger["status"], LedgerStatus.AWAITING_BUILD_AGENT)
+            self.assertEqual(ledger["units"]["unit-001"]["commands"], [])
 
     def test_openrewrite_apply_settings_are_loaded_from_profile_and_catalog(self) -> None:
         with workspace_temp_dir() as tmp:
@@ -2665,6 +2808,19 @@ workspaces:
     path: ./modernized-app
     migration_dir: .migration
     ledger_file: .migration/ledger.json
+policies:
+  openrewrite:
+    preview_allowed: true
+    apply_allowed: true
+    allowed_preview_goals:
+      - dryRun
+      - dryRunNoFork
+      - discover
+    forbidden_apply_goals:
+      - run
+      - runNoFork
+      - rewrite:run
+      - rewrite:runNoFork
 migration_units:
   - id: java-21
     title: Java 21
@@ -3671,6 +3827,19 @@ workspaces:
     path: ./modernized-app
     migration_dir: .migration
     ledger_file: .migration/ledger.json
+policies:
+  openrewrite:
+    preview_allowed: true
+    apply_allowed: true
+    allowed_preview_goals:
+      - dryRun
+      - dryRunNoFork
+      - discover
+    forbidden_apply_goals:
+      - run
+      - runNoFork
+      - rewrite:run
+      - rewrite:runNoFork
 migration_units:
   - id: java-21
     title: Java 21
@@ -4181,6 +4350,14 @@ migration_units:
                 modernized,
                 run_id,
                 include_rewrite_plan=True,
+                rewrite_plugin_plan_payload={
+                    "plugin": "org.openrewrite.maven:rewrite-maven-plugin:6.39.0",
+                    "recipe_artifacts": ["org.openrewrite.recipe:rewrite-migrate-java:3.20.0"],
+                    "active_recipes": ["org.openrewrite.java.migrate.UpgradeToJava17"],
+                    "preview_goals": ["dryRun", "dryRunNoFork", "discover"],
+                    "forbidden_apply_goals": ["run", "runNoFork", "rewrite:run", "rewrite:runNoFork"],
+                    "apply_allowed": True,
+                },
                 source_unit_id="java-21",
                 source_unit_goal="Upgrade project runtime to Java 21.",
             )
@@ -4961,6 +5138,7 @@ def _write_approved_run_artifacts(
     run_id: str,
     *,
     include_rewrite_plan: bool = False,
+    rewrite_plugin_plan_payload: dict[str, object] | None = None,
     source_unit_id: str = "java-17",
     source_unit_goal: str = "Upgrade project runtime to Java 17.",
     planning_units_yaml: str | None = None,
@@ -4973,6 +5151,7 @@ def _write_approved_run_artifacts(
         app,
         run_id,
         include_rewrite_plan=include_rewrite_plan,
+        rewrite_plugin_plan_payload=rewrite_plugin_plan_payload,
         source_unit_id=source_unit_id,
         source_unit_goal=source_unit_goal,
         planning_units_yaml=planning_units_yaml,
@@ -4996,6 +5175,7 @@ def _write_run_artifacts(
     run_id: str,
     *,
     include_rewrite_plan: bool = False,
+    rewrite_plugin_plan_payload: dict[str, object] | None = None,
     source_unit_id: str = "java-17",
     source_unit_goal: str = "Upgrade project runtime to Java 17.",
     planning_units_yaml: str | None = None,
@@ -5081,7 +5261,8 @@ units:
     if include_rewrite_plan:
         (analysis_dir / "rewrite_plugin_plan.json").write_text(
             json.dumps(
-                {
+                rewrite_plugin_plan_payload
+                or {
                     "plugin": "org.openrewrite.maven:rewrite-maven-plugin:6.39.0",
                     "recipe_artifacts": ["org.openrewrite.recipe:rewrite-migrate-java:3.20.0"],
                     "active_recipes": ["org.openrewrite.java.migrate.UpgradeToJava17"],

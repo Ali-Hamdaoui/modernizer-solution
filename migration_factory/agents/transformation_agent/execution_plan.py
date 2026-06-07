@@ -11,6 +11,8 @@ from migration_factory.approval import (
     read_approval_decision,
 )
 
+from .rewrite import default_openrewrite_policy
+
 
 TRANSFORMATION_PLAN_SCHEMA_VERSION = "1.3"
 TRANSFORMATION_DIR_NAME = "transformation"
@@ -104,6 +106,9 @@ def _build_transformer_plan(
                 "migration_dir": ".migration",
                 "ledger_file": ".migration/ledger.json",
             }
+        },
+        "policies": {
+            "openrewrite": _openrewrite_policy_payload(rewrite_plugin_plan),
         },
         "migration_units": [
             _adapt_unit(
@@ -223,6 +228,38 @@ def _global_openrewrite_config(rewrite_plugin_plan: dict[str, Any] | None) -> di
     return {
         "active_recipes": _string_list(plan.get("active_recipes")),
         "recipe_artifacts": _string_list(plan.get("recipe_artifacts")),
+    }
+
+
+def _openrewrite_policy_payload(rewrite_plugin_plan: dict[str, Any] | None) -> dict[str, Any]:
+    defaults = default_openrewrite_policy()
+    plan = rewrite_plugin_plan or {}
+    openrewrite = plan.get("openrewrite") if isinstance(plan.get("openrewrite"), dict) else {}
+    preview_allowed = plan.get("preview_allowed")
+    if preview_allowed is None:
+        preview_allowed = openrewrite.get("preview_allowed")
+    apply_allowed = plan.get("apply_allowed")
+    if apply_allowed is None:
+        apply_allowed = openrewrite.get("apply_allowed")
+    if apply_allowed is None and "apply_goals_forbidden" in plan:
+        apply_allowed = not bool(plan.get("apply_goals_forbidden"))
+
+    allowed_preview_goals = (
+        _string_list(plan.get("preview_goals"))
+        or _string_list(openrewrite.get("allowed_preview_goals"))
+        or list(defaults.allowed_preview_goals)
+    )
+    forbidden_apply_goals = (
+        _string_list(plan.get("forbidden_apply_goals"))
+        or _string_list(openrewrite.get("forbidden_apply_goals"))
+        or list(defaults.forbidden_apply_goals)
+    )
+
+    return {
+        "preview_allowed": defaults.preview_allowed if preview_allowed is None else bool(preview_allowed),
+        "apply_allowed": defaults.apply_allowed if apply_allowed is None else bool(apply_allowed),
+        "allowed_preview_goals": allowed_preview_goals,
+        "forbidden_apply_goals": forbidden_apply_goals,
     }
 
 

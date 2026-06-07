@@ -39,7 +39,12 @@ from .review_gates import review_powermock_legacy_test_strategy
 from .review_gates import review_jakarta_hybrid_strategy
 from .review_gates import review_azure_sdk_migration_playbook
 from .review_gates import review_jjwt_api_migration
-from .rewrite import build_rewrite_run_command, rewrite_plugin_version_from_xml
+from .rewrite import (
+    RewritePluginError,
+    build_rewrite_run_command,
+    normalize_openrewrite_goal,
+    rewrite_plugin_version_from_xml,
+)
 
 
 class TransformationAgentError(Exception):
@@ -129,15 +134,44 @@ def _run_unit(
         if transformation_type == "openrewrite":
             active_recipes = [str(item) for item in transformation.get("active_recipes", [])]
             recipe_artifacts = [str(item) for item in transformation.get("recipe_artifacts", [])]
-            command = build_rewrite_run_command(
-                active_recipes,
-                recipe_artifacts=recipe_artifacts,
-                plugin_version=plugin_version,
-                apply_goal=str(transformation.get("apply_goal") or "run"),
-                maven_args=[str(item) for item in transformation.get("apply_maven_args", [])],
-            )
-            apply_goal = str(transformation.get("apply_goal") or "run")
+            requested_goal = str(transformation.get("apply_goal") or "").strip() or None
             apply_maven_args = [str(item) for item in transformation.get("apply_maven_args", [])]
+            try:
+                command = build_rewrite_run_command(
+                    active_recipes,
+                    recipe_artifacts=recipe_artifacts,
+                    plugin_version=plugin_version,
+                    apply_goal=requested_goal,
+                    maven_args=apply_maven_args,
+                    policy=plan.openrewrite_policy,
+                )
+            except RewritePluginError as exc:
+                normalized_goal = normalize_openrewrite_goal(requested_goal)
+                reason = (
+                    f"OPENREWRITE_GOAL_FORBIDDEN unit={unit.id} "
+                    f"requested_goal={requested_goal or normalized_goal} normalized_goal={normalized_goal}"
+                )
+                recorded_transformations.append(
+                    {
+                        "type": transformation_type,
+                        "status": "blocked",
+                        "requested_goal": requested_goal or normalized_goal,
+                        "normalized_goal": normalized_goal,
+                        "error_code": "OPENREWRITE_GOAL_FORBIDDEN",
+                        "error_message": str(exc),
+                        "active_recipes": active_recipes,
+                        "recipe_artifacts": recipe_artifacts,
+                    }
+                )
+                _mark_unit_blocked(
+                    plan,
+                    unit,
+                    reason,
+                    command_results,
+                    recorded_transformations=recorded_transformations,
+                )
+                raise TransformationAgentError(f"{reason}: {exc}") from exc
+            apply_goal = requested_goal or normalize_openrewrite_goal(None)
             print(
                 f"OpenRewrite apply unit={unit.id} openrewrite_goal={apply_goal} "
                 f"apply_maven_args={apply_maven_args}"
