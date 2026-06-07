@@ -11,7 +11,12 @@ from migration_factory.approval import (
     read_approval_decision,
 )
 
-from .rewrite import default_openrewrite_policy
+from .rewrite import (
+    OpenRewritePolicy,
+    default_openrewrite_policy,
+    normalize_openrewrite_goal,
+    openrewrite_policy_from_mapping,
+)
 
 
 TRANSFORMATION_PLAN_SCHEMA_VERSION = "1.3"
@@ -108,7 +113,7 @@ def _build_transformer_plan(
             }
         },
         "policies": {
-            "openrewrite": _openrewrite_policy_payload(rewrite_plugin_plan),
+            "openrewrite": _openrewrite_policy_payload(app_path, rewrite_plugin_plan),
         },
         "migration_units": [
             _adapt_unit(
@@ -244,36 +249,122 @@ def _global_openrewrite_config(rewrite_plugin_plan: dict[str, Any] | None) -> di
     }
 
 
-def _openrewrite_policy_payload(rewrite_plugin_plan: dict[str, Any] | None) -> dict[str, Any]:
-    defaults = default_openrewrite_policy()
+def _openrewrite_policy_payload(app_path: Path, rewrite_plugin_plan: dict[str, Any] | None) -> dict[str, Any]:
+    canonical_policy = _load_ai_hub_openrewrite_policy(app_path)
+    artifact_policy = _policy_from_plan_metadata(rewrite_plugin_plan)
+    effective_policy = _merge_openrewrite_policies(canonical_policy, artifact_policy)
+    return {
+        "preview_allowed": effective_policy.preview_allowed,
+        "apply_allowed": effective_policy.apply_allowed,
+        "allowed_preview_goals": list(effective_policy.allowed_preview_goals),
+        "forbidden_apply_goals": list(effective_policy.forbidden_apply_goals),
+    }
+
+
+def _load_ai_hub_openrewrite_policy(app_path: Path) -> OpenRewritePolicy:
+    path = _canonical_transformation_policy_path(app_path)
+    if path is None or not path.is_file():
+        return default_openrewrite_policy()
+    try:
+        payload = _read_yaml_file(path)
+    except Exception:
+        return default_openrewrite_policy()
+    openrewrite = payload.get("openrewrite")
+    if not isinstance(openrewrite, dict):
+        return default_openrewrite_policy()
+    required_keys = {
+        "preview_allowed",
+        "apply_allowed",
+        "allowed_preview_goals",
+        "forbidden_apply_goals",
+    }
+    if not required_keys.issubset(openrewrite):
+        return default_openrewrite_policy()
+    return openrewrite_policy_from_mapping(openrewrite)
+
+
+def _canonical_transformation_policy_path(app_path: Path) -> Path | None:
+    resolved_app_path = app_path.expanduser().resolve()
+    for base in (resolved_app_path, *resolved_app_path.parents):
+        candidate = base / "modernizer-solution-ai-hub" / "policies" / "transformation.yaml"
+        if candidate.is_file():
+            return candidate
+    return Path(__file__).resolve().parents[3] / "modernizer-solution-ai-hub" / "policies" / "transformation.yaml"
+
+
+def _policy_from_plan_metadata(rewrite_plugin_plan: dict[str, Any] | None) -> OpenRewritePolicy | None:
     plan = rewrite_plugin_plan or {}
     openrewrite = plan.get("openrewrite") if isinstance(plan.get("openrewrite"), dict) else {}
-    preview_allowed = plan.get("preview_allowed")
-    if preview_allowed is None:
-        preview_allowed = openrewrite.get("preview_allowed")
-    apply_allowed = plan.get("apply_allowed")
-    if apply_allowed is None:
-        apply_allowed = openrewrite.get("apply_allowed")
+    if not isinstance(plan, dict):
+        return None
+    has_top_level = any(
+        key in plan for key in ("preview_allowed", "apply_allowed", "preview_goals", "forbidden_apply_goals", "apply_goals_forbidden")
+    )
+    has_nested = any(
+        key in openrewrite for key in ("preview_allowed", "apply_allowed", "allowed_preview_goals", "forbidden_apply_goals")
+    )
+    if not has_top_level and not has_nested:
+        return None
+
+    metadata: dict[str, Any] = {}
+    preview_allowed = plan.get("preview_allowed", openrewrite.get("preview_allowed"))
+    if preview_allowed is not None:
+        metadata["preview_allowed"] = preview_allowed
+    apply_allowed = plan.get("apply_allowed", openrewrite.get("apply_allowed"))
     if apply_allowed is None and "apply_goals_forbidden" in plan:
         apply_allowed = not bool(plan.get("apply_goals_forbidden"))
+    if apply_allowed is not None:
+        metadata["apply_allowed"] = apply_allowed
+    preview_goals = _string_list(plan.get("preview_goals")) or _string_list(openrewrite.get("allowed_preview_goals"))
+    if preview_goals:
+        metadata["allowed_preview_goals"] = preview_goals
+    forbidden_apply_goals = _string_list(plan.get("forbidden_apply_goals")) or _string_list(openrewrite.get("forbidden_apply_goals"))
+    if forbidden_apply_goals:
+        metadata["forbidden_apply_goals"] = forbidden_apply_goals
+    return openrewrite_policy_from_mapping(metadata)
 
-    allowed_preview_goals = (
-        _string_list(plan.get("preview_goals"))
-        or _string_list(openrewrite.get("allowed_preview_goals"))
-        or list(defaults.allowed_preview_goals)
+
+def _merge_openrewrite_policies(
+    canonical_policy: OpenRewritePolicy,
+    artifact_policy: OpenRewritePolicy | None,
+) -> OpenRewritePolicy:
+    if artifact_policy is None:
+        return canonical_policy
+    canonical_preview = _normalized_goal_map(canonical_policy.allowed_preview_goals)
+    artifact_preview = _normalized_goal_map(artifact_policy.allowed_preview_goals)
+    merged_preview = [
+        goal for normalized, goal in canonical_preview.items() if normalized in artifact_preview
+    ] or list(canonical_policy.allowed_preview_goals)
+    forbidden_apply_goals = _dedupe_goals(
+        [*canonical_policy.forbidden_apply_goals, *artifact_policy.forbidden_apply_goals]
     )
-    forbidden_apply_goals = (
-        _string_list(plan.get("forbidden_apply_goals"))
-        or _string_list(openrewrite.get("forbidden_apply_goals"))
-        or list(defaults.forbidden_apply_goals)
+    return OpenRewritePolicy(
+        preview_allowed=canonical_policy.preview_allowed and artifact_policy.preview_allowed,
+        apply_allowed=canonical_policy.apply_allowed and artifact_policy.apply_allowed,
+        allowed_preview_goals=tuple(merged_preview),
+        forbidden_apply_goals=tuple(forbidden_apply_goals),
     )
 
-    return {
-        "preview_allowed": defaults.preview_allowed if preview_allowed is None else bool(preview_allowed),
-        "apply_allowed": defaults.apply_allowed if apply_allowed is None else bool(apply_allowed),
-        "allowed_preview_goals": allowed_preview_goals,
-        "forbidden_apply_goals": forbidden_apply_goals,
-    }
+
+def _normalized_goal_map(goals: tuple[str, ...]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for goal in goals:
+        normalized = normalize_openrewrite_goal(goal)
+        if normalized not in mapping:
+            mapping[normalized] = str(goal)
+    return mapping
+
+
+def _dedupe_goals(goals: list[str] | tuple[str, ...]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for goal in goals:
+        normalized = normalize_openrewrite_goal(goal)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(str(goal))
+    return result
 
 
 def _unit_openrewrite_config(raw_unit: Any, global_openrewrite: dict[str, Any]) -> dict[str, Any] | None:
@@ -615,9 +706,7 @@ def _read_optional_json_mapping(path: Path) -> dict[str, Any] | None:
     return _read_json_mapping(path)
 
 
-def _read_yaml_mapping(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        raise TransformationExecutionPlanError(f"Missing required artifact: {path}")
+def _read_yaml_file(path: Path) -> dict[str, Any]:
     try:
         import yaml  # type: ignore[import-untyped]
     except ImportError as exc:
@@ -625,8 +714,17 @@ def _read_yaml_mapping(path: Path) -> dict[str, Any]:
 
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(loaded, dict):
-        raise TransformationExecutionPlanError(f"Artifact must be a YAML mapping: {path}")
+        raise ValueError(f"Artifact must be a YAML mapping: {path}")
     return loaded
+
+
+def _read_yaml_mapping(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        raise TransformationExecutionPlanError(f"Missing required artifact: {path}")
+    try:
+        return _read_yaml_file(path)
+    except ValueError as exc:
+        raise TransformationExecutionPlanError(str(exc)) from exc
 
 
 def _dump_yaml(payload: dict[str, Any]) -> str:

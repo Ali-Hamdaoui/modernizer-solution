@@ -22,6 +22,7 @@ from migration_factory.agents.transformation_agent.execution_plan import (
     TransformationExecutionPlanError,
     write_transformation_execution_plan,
 )
+from migration_factory.agents.transformation_agent import execution_plan as execution_plan_module
 from migration_factory.agents.transformation_agent.executor import CommandResult
 from migration_factory.agents.transformation_agent.plan import load_migration_plan
 from migration_factory.agents.transformation_agent.rewrite import (
@@ -150,6 +151,82 @@ class TransformationAgentTests(unittest.TestCase):
             )
             self.assertEqual(loaded_plan.migration_id, run_id)
             self.assertEqual([unit.id for unit in loaded_plan.units], ["baseline", "java-17"])
+
+    def test_execution_plan_adapter_loads_openrewrite_policy_from_ai_hub_transformation_policy(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            _write_approved_run_artifacts(app, run_id, include_rewrite_plan=True)
+
+            output_path = write_transformation_execution_plan(app, run_id)
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+            policy_payload = yaml.safe_load(
+                (Path(__file__).resolve().parent / ".." / "modernizer-solution-ai-hub" / "policies" / "transformation.yaml").resolve().read_text(encoding="utf-8")
+            )
+
+            self.assertEqual(payload["policies"]["openrewrite"], policy_payload["openrewrite"])
+            self.assertFalse(payload["policies"]["openrewrite"]["apply_allowed"])
+
+    def test_execution_plan_adapter_falls_back_to_fail_safe_default_when_ai_hub_policy_unavailable(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            _write_approved_run_artifacts(app, run_id, include_rewrite_plan=True)
+            default_policy = {
+                "preview_allowed": True,
+                "apply_allowed": False,
+                "allowed_preview_goals": ["dryRun", "dryRunNoFork", "discover"],
+                "forbidden_apply_goals": ["run", "runNoFork", "rewrite:run", "rewrite:runNoFork"],
+            }
+
+            missing_path = tmp / "missing-hub" / "policies" / "transformation.yaml"
+            with self.subTest("missing"):
+                with mock.patch.object(
+                    execution_plan_module,
+                    "_canonical_transformation_policy_path",
+                    return_value=missing_path,
+                ):
+                    output_path = write_transformation_execution_plan(app, run_id)
+                payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+                self.assertEqual(payload["policies"]["openrewrite"], default_policy)
+
+            malformed_path = tmp / "malformed-hub" / "policies" / "transformation.yaml"
+            malformed_path.parent.mkdir(parents=True, exist_ok=True)
+            malformed_path.write_text("openrewrite: [\n", encoding="utf-8")
+            with self.subTest("malformed"):
+                with mock.patch.object(
+                    execution_plan_module,
+                    "_canonical_transformation_policy_path",
+                    return_value=malformed_path,
+                ):
+                    output_path = write_transformation_execution_plan(app, run_id)
+                payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+                self.assertEqual(payload["policies"]["openrewrite"], default_policy)
+
+            unreadable_path = tmp / "unreadable-hub" / "policies" / "transformation.yaml"
+            unreadable_path.parent.mkdir(parents=True, exist_ok=True)
+            unreadable_path.write_text("openrewrite: {}\n", encoding="utf-8")
+            with self.subTest("unreadable"):
+                original_read_yaml_file = execution_plan_module._read_yaml_file
+
+                def read_yaml_side_effect(path: Path) -> dict[str, object]:
+                    if path == unreadable_path:
+                        raise OSError("denied")
+                    return original_read_yaml_file(path)
+
+                with mock.patch.object(
+                    execution_plan_module,
+                    "_canonical_transformation_policy_path",
+                    return_value=unreadable_path,
+                ):
+                    with mock.patch.object(
+                        execution_plan_module,
+                        "_read_yaml_file",
+                        side_effect=read_yaml_side_effect,
+                    ):
+                        output_path = write_transformation_execution_plan(app, run_id)
+                payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+                self.assertEqual(payload["policies"]["openrewrite"], default_policy)
 
     def test_execution_plan_adapter_uses_per_unit_openrewrite_on_matching_unit(self) -> None:
         with workspace_temp_dir() as tmp:
@@ -4431,6 +4508,28 @@ migration_units:
                 source_unit_id="java-21",
                 source_unit_goal="Upgrade project runtime to Java 21.",
             )
+            policy_path = tmp / "governed-ai-hub" / "policies" / "transformation.yaml"
+            policy_path.parent.mkdir(parents=True, exist_ok=True)
+            policy_path.write_text(
+                """
+id: transformation
+agent: transformer
+openrewrite:
+  preview_allowed: true
+  apply_allowed: true
+  allowed_preview_goals:
+    - dryRun
+    - dryRunNoFork
+    - discover
+  forbidden_apply_goals:
+    - run
+    - runNoFork
+    - rewrite:run
+    - rewrite:runNoFork
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
 
             seen_java21_validation = False
 
@@ -4457,30 +4556,35 @@ migration_units:
                     duration_seconds=0.01,
                 ),
             ):
-                with mock.patch(
-                    "migration_factory.transform_v1_after_approval.run_build_agent",
-                    side_effect=build_side_effect,
+                with mock.patch.object(
+                    execution_plan_module,
+                    "_canonical_transformation_policy_path",
+                    return_value=policy_path,
                 ):
                     with mock.patch(
-                        "migration_factory.transform_v1_after_approval.run_test_agent",
-                        return_value=_passed_test_result(run_dir),
+                        "migration_factory.transform_v1_after_approval.run_build_agent",
+                        side_effect=build_side_effect,
                     ):
-                        result = transform_v1_after_approval_main(
-                            [
-                                "--run-dir",
-                                str(run_dir),
-                                "--legacy-app",
-                                str(legacy),
-                                "--modernized-app",
-                                str(modernized),
-                                "--ai-hub",
-                                str(ai_hub),
-                                "--profile",
-                                "java17",
-                                "--approved-by",
-                                "human",
-                            ]
-                        )
+                        with mock.patch(
+                            "migration_factory.transform_v1_after_approval.run_test_agent",
+                            return_value=_passed_test_result(run_dir),
+                        ):
+                            result = transform_v1_after_approval_main(
+                                [
+                                    "--run-dir",
+                                    str(run_dir),
+                                    "--legacy-app",
+                                    str(legacy),
+                                    "--modernized-app",
+                                    str(modernized),
+                                    "--ai-hub",
+                                    str(ai_hub),
+                                    "--profile",
+                                    "java17",
+                                    "--approved-by",
+                                    "human",
+                                ]
+                            )
 
             ledger = load_ledger(run_dir / "workspaces" / "sandbox" / ".migration" / "ledger.json")
             self.assertEqual(result, 0)
@@ -4729,21 +4833,21 @@ units:
                         return_value=_passed_test_result(run_dir),
                     ):
                         result = transform_v1_after_approval_main(
-                            [
-                                "--run-dir",
-                                str(run_dir),
-                                "--legacy-app",
-                                str(legacy),
-                                "--modernized-app",
-                                str(modernized),
-                                "--ai-hub",
-                                str(ai_hub),
-                                "--profile",
-                                "java17",
-                                "--approved-by",
-                                "human",
-                            ]
-                        )
+                                [
+                                    "--run-dir",
+                                    str(run_dir),
+                                    "--legacy-app",
+                                    str(legacy),
+                                    "--modernized-app",
+                                    str(modernized),
+                                    "--ai-hub",
+                                    str(ai_hub),
+                                    "--profile",
+                                    "java17",
+                                    "--approved-by",
+                                    "human",
+                                ]
+                            )
 
             self.assertEqual(result, 0)
             self.assertEqual([call["validation_unit_id"] for call in build_calls], ["baseline", "spring-boot-2-7-stabilization"])
