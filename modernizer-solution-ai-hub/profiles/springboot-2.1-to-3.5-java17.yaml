@@ -43,6 +43,30 @@ routes:
     preferred: true
     recommended_intermediate:
       spring_boot: "2.7.18"
+    migration_units:
+      order:
+        - baseline
+        - spring-boot-2-7-stabilization
+        - java-17
+        - spring-boot-3-5-14
+        - jakarta
+        - jaxb-jakarta
+        - dependency-cleanup
+        - contract-compatibility-review
+        - existing-test-migration
+      openrewrite:
+        spring-boot-2-7-stabilization:
+          active_recipes:
+            - org.openrewrite.java.spring.boot2.UpgradeSpringBoot_2_7
+        spring-boot-3-5-14:
+          active_recipes:
+            - org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5
+        jakarta:
+          active_recipes:
+            - org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta
+        jaxb-jakarta:
+          active_recipes:
+            - org.openrewrite.java.migrate.jakarta.JavaxXmlBindMigrationToJakartaXmlBind
     hops:
       - id: boot-2.1-to-2.7-java11
         source:

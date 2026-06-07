@@ -1,3 +1,7 @@
+from pathlib import Path
+
+import yaml
+
 from migration_factory.agents.planning_agent.unit_builder import build_migration_units
 
 
@@ -14,10 +18,15 @@ def test_build_migration_units_has_deterministic_ids_in_exact_order() -> None:
 
 
 def test_build_migration_units_route_aware_boot21_sequence() -> None:
-    units = build_migration_units(
-        {"target": {"java": "17", "spring_boot": "3.5.14", "build": "maven"}},
-        selected_route_id="boot-2.1-to-3.5-java17",
+    profile = yaml.safe_load(
+        (
+            Path(__file__).resolve().parents[3]
+            / "modernizer-solution-ai-hub"
+            / "profiles"
+            / "springboot-2.1-to-3.5-java17.yaml"
+        ).read_text(encoding="utf-8")
     )
+    units = build_migration_units(profile, selected_route_id="boot-2.1-to-3.5-java17")
 
     assert [unit.id for unit in units] == [
         "baseline",
@@ -30,10 +39,89 @@ def test_build_migration_units_route_aware_boot21_sequence() -> None:
         "contract-compatibility-review",
         "existing-test-migration",
     ]
-    assert next(unit for unit in units if unit.id == "baseline").java_home_env is None
-    assert next(unit for unit in units if unit.id == "spring-boot-2-7-stabilization").openrewrite is not None
-    assert next(unit for unit in units if unit.id == "jakarta").openrewrite is not None
+    assert next(unit for unit in units if unit.id == "baseline").java_home_env == "JAVA_HOME_11"
+    assert next(unit for unit in units if unit.id == "spring-boot-2-7-stabilization").openrewrite == {
+        "active_recipes": ("org.openrewrite.java.spring.boot2.UpgradeSpringBoot_2_7",)
+    }
+    assert next(unit for unit in units if unit.id == "spring-boot-3-5-14").openrewrite == {
+        "active_recipes": ("org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5",)
+    }
+    assert next(unit for unit in units if unit.id == "jakarta").openrewrite == {
+        "active_recipes": ("org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",)
+    }
+    assert next(unit for unit in units if unit.id == "jaxb-jakarta").openrewrite == {
+        "active_recipes": ("org.openrewrite.java.migrate.jakarta.JavaxXmlBindMigrationToJakartaXmlBind",)
+    }
     assert next(unit for unit in units if unit.id == "contract-compatibility-review").openrewrite is None
+
+
+def test_build_migration_units_route_metadata_absent_uses_legacy_fallback() -> None:
+    profile = {
+        "target": {"java": "17", "spring_boot": "3.5.14", "build": "maven"},
+        "routes": [
+            {
+                "id": "boot-2.1-to-3.5-java17",
+                "strategy": "multi_hop",
+                "hops": [
+                    {"id": "boot-2.1-to-2.7-java11", "target": {"java": "11", "spring_boot": "2.7.18"}},
+                    {"id": "boot-2.7-to-3.5-java17", "target": {"java": "17", "spring_boot": "3.5.14"}},
+                ],
+            }
+        ],
+    }
+
+    units = build_migration_units(profile, selected_route_id="boot-2.1-to-3.5-java17")
+
+    assert [unit.id for unit in units] == [
+        "baseline",
+        "spring-boot-2-7-stabilization",
+        "java-17",
+        "spring-boot-3-5-14",
+        "jakarta",
+        "jaxb-jakarta",
+        "dependency-cleanup",
+        "contract-compatibility-review",
+        "existing-test-migration",
+    ]
+    assert next(unit for unit in units if unit.id == "spring-boot-2-7-stabilization").openrewrite == {
+        "active_recipes": ("org.openrewrite.java.spring.boot2.UpgradeSpringBoot_2_7",)
+    }
+
+
+def test_build_migration_units_prefers_profile_route_metadata_over_legacy_constants() -> None:
+    profile = {
+        "target": {"java": "17", "spring_boot": "3.5.14", "build": "maven"},
+        "routes": [
+            {
+                "id": "boot-2.1-to-3.5-java17",
+                "migration_units": {
+                    "order": [
+                        "baseline",
+                        "java-17",
+                        "spring-boot-2-7-stabilization",
+                        "existing-test-migration",
+                    ],
+                    "openrewrite": {
+                        "spring-boot-2-7-stabilization": {
+                            "active_recipes": ["example.CustomRecipe"],
+                        }
+                    },
+                },
+            }
+        ],
+    }
+
+    units = build_migration_units(profile, selected_route_id="boot-2.1-to-3.5-java17")
+
+    assert [unit.id for unit in units] == [
+        "baseline",
+        "java-17",
+        "spring-boot-2-7-stabilization",
+        "existing-test-migration",
+    ]
+    assert next(unit for unit in units if unit.id == "spring-boot-2-7-stabilization").openrewrite == {
+        "active_recipes": ("example.CustomRecipe",)
+    }
 
 
 def test_build_migration_units_for_boot4_java21_profile() -> None:

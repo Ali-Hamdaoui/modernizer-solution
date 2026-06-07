@@ -99,11 +99,12 @@ def build_migration_units(
     """Return deterministic migration units in stable execution order."""
     assist_policy = build_assist_policy()
     target = _target_from_profile(profile)
-    unit_order = _unit_order_for_route(target, selected_route_id)
+    unit_order = _unit_order_for_route(profile, target, selected_route_id)
     runtime_metadata = _runtime_metadata_for_units(profile, selected_route_id, selected_hops)
     return tuple(
         _build_unit(
             unit_id,
+            profile,
             target,
             assist_policy,
             selected_route_id,
@@ -158,7 +159,15 @@ def _version_text(value: Any) -> str | None:
     return text or None
 
 
-def _unit_order_for_route(target: _TargetVersions, selected_route_id: str | None) -> tuple[UnitId, ...]:
+def _unit_order_for_route(
+    profile: dict[str, Any] | None,
+    target: _TargetVersions,
+    selected_route_id: str | None,
+) -> tuple[UnitId, ...]:
+    route_metadata = _route_migration_units_metadata(profile, selected_route_id)
+    route_order = route_metadata.get("order")
+    if isinstance(route_order, tuple) and route_order:
+        return route_order
     if selected_route_id and selected_route_id in ROUTE_UNIT_ORDERS:
         return ROUTE_UNIT_ORDERS[selected_route_id]
     return (
@@ -173,6 +182,7 @@ def _unit_order_for_route(target: _TargetVersions, selected_route_id: str | None
 
 def _build_unit(
     unit_id: UnitId,
+    profile: dict[str, Any] | None,
     target: _TargetVersions,
     assist_policy: AssistPolicy,
     selected_route_id: str | None,
@@ -180,7 +190,7 @@ def _build_unit(
 ) -> MigrationUnit:
     java_label = f"Java {target.java}"
     boot_label = _spring_boot_label(target.spring_boot)
-    openrewrite = _openrewrite_for_unit(selected_route_id, unit_id)
+    openrewrite = _openrewrite_for_unit(profile, selected_route_id, unit_id)
     java_home_env = _text_or_none(runtime_metadata.get("java_home_env"))
     hop_id = _text_or_none(runtime_metadata.get("hop_id"))
 
@@ -365,15 +375,74 @@ def _text_or_none(value: Any) -> str | None:
     return text or None
 
 
-def _openrewrite_for_unit(selected_route_id: str | None, unit_id: UnitId) -> dict[str, Any] | None:
+def _openrewrite_for_unit(
+    profile: dict[str, Any] | None,
+    selected_route_id: str | None,
+    unit_id: UnitId,
+) -> dict[str, Any] | None:
+    route_metadata = _route_migration_units_metadata(profile, selected_route_id)
+    route_units = route_metadata.get("openrewrite")
+    if isinstance(route_units, dict):
+        config = route_units.get(unit_id)
+        if isinstance(config, dict):
+            return _normalize_openrewrite_config(config)
+
     if not selected_route_id:
         return None
-    route_units = ROUTE_UNIT_OPENREWRITE.get(selected_route_id)
-    if not isinstance(route_units, dict):
+    legacy_route_units = ROUTE_UNIT_OPENREWRITE.get(selected_route_id)
+    if not isinstance(legacy_route_units, dict):
         return None
-    config = route_units.get(unit_id)
+    config = legacy_route_units.get(unit_id)
     if not isinstance(config, dict):
         return None
+    return _normalize_openrewrite_config(config)
+
+
+def _route_migration_units_metadata(
+    profile: dict[str, Any] | None,
+    selected_route_id: str | None,
+) -> dict[str, Any]:
+    if not selected_route_id or not isinstance(profile, dict):
+        return {}
+    selected_route = _selected_route(profile, selected_route_id)
+    if not isinstance(selected_route, dict):
+        return {}
+    migration_units = selected_route.get("migration_units")
+    if not isinstance(migration_units, dict):
+        return {}
+
+    normalized: dict[str, Any] = {}
+    order = migration_units.get("order")
+    if isinstance(order, list) and order:
+        normalized_order = tuple(str(item).strip() for item in order if str(item).strip())
+        if normalized_order:
+            normalized["order"] = normalized_order
+    openrewrite = migration_units.get("openrewrite")
+    if isinstance(openrewrite, dict):
+        normalized_openrewrite: dict[str, dict[str, Any]] = {}
+        for unit_id, config in openrewrite.items():
+            if not isinstance(config, dict):
+                continue
+            unit_key = str(unit_id).strip()
+            if not unit_key:
+                continue
+            normalized_openrewrite[unit_key] = _normalize_openrewrite_config(config)
+        if normalized_openrewrite:
+            normalized["openrewrite"] = normalized_openrewrite
+    return normalized
+
+
+def _selected_route(profile: dict[str, Any], selected_route_id: str) -> dict[str, Any] | None:
+    routes = profile.get("routes")
+    if not isinstance(routes, list):
+        return None
+    for route in routes:
+        if isinstance(route, dict) and str(route.get("id") or "").strip() == selected_route_id:
+            return route
+    return None
+
+
+def _normalize_openrewrite_config(config: dict[str, Any]) -> dict[str, Any]:
     return {
         key: tuple(str(item) for item in value) if isinstance(value, (list, tuple)) else value
         for key, value in config.items()
