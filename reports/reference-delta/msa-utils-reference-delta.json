@@ -1,0 +1,1349 @@
+{
+  "schema_version": "1.0.0",
+  "legacy": {
+    "root_path": "C:\\Users\\ilyas.abarbach\\AppData\\Local\\Temp\\reference-delta-077245d514334df798948876fd1222f5\\msa-utils-legacy",
+    "primary_pom": "common-utils/pom.xml",
+    "discovered_poms": [
+      "common-utils/pom.xml"
+    ],
+    "coordinates": {
+      "group_id": "com.total.corp",
+      "artifact_id": "common-utils",
+      "version": "2.9.45-SNAPSHOT"
+    },
+    "parent": {
+      "group_id": "",
+      "artifact_id": "",
+      "version": ""
+    },
+    "java_version": "11",
+    "spring_boot_version": "2.1.6.RELEASE",
+    "plugin_versions": {
+      "org.apache.maven.plugins:maven-clean-plugin": "3.1.0",
+      "org.apache.maven.plugins:maven-resources-plugin": "3.1.0",
+      "org.apache.maven.plugins:maven-compiler-plugin": "3.8.1",
+      "org.apache.maven.plugins:maven-surefire-plugin": "3.0.0-M3",
+      "org.apache.maven.plugins:maven-jar-plugin": "3.0.2",
+      "org.apache.maven.plugins:maven-install-plugin": "2.5.2",
+      "org.apache.maven.plugins:maven-deploy-plugin": "2.8.2",
+      "org.apache.maven.plugins:maven-site-plugin": "3.7.1",
+      "org.apache.maven.plugins:maven-project-info-reports-plugin": "3.0.0",
+      "org.jacoco:jacoco-maven-plugin": "",
+      "org.sonarsource.scanner.maven:sonar-maven-plugin": "3.6.0.1398"
+    },
+    "dependency_coordinates": [
+      "com.fasterxml.jackson.dataformat:jackson-dataformat-csv",
+      "com.github.ben-manes.caffeine:caffeine",
+      "com.google.code.gson:gson",
+      "com.google.guava:guava-testlib",
+      "com.h2database:h2",
+      "com.microsoft.azure:azure-servicebus-spring-boot-starter",
+      "com.microsoft.azure:azure-storage",
+      "com.microsoft.azure:azure-storage-blob",
+      "com.total.corp:msa-dto",
+      "commons-io:commons-io",
+      "io.jsonwebtoken:jjwt-api",
+      "io.jsonwebtoken:jjwt-impl",
+      "io.jsonwebtoken:jjwt-jackson",
+      "javax.servlet:servlet-api",
+      "javax.xml.bind:jaxb-api",
+      "junit:junit",
+      "nz.net.ultraq.thymeleaf:thymeleaf-layout-dialect",
+      "org.apache.commons:commons-lang3",
+      "org.apache.juneau:juneau-all",
+      "org.apache.juneau:juneau-marshall-rdf",
+      "org.apache.juneau:juneau-microservice-core",
+      "org.apache.juneau:juneau-rest-client",
+      "org.assertj:assertj-core",
+      "org.json:json",
+      "org.powermock:powermock-api-mockito2",
+      "org.powermock:powermock-module-junit4",
+      "org.projectlombok:lombok",
+      "org.slf4j:slf4j-api",
+      "org.springframework.boot:spring-boot",
+      "org.springframework.boot:spring-boot-actuator",
+      "org.springframework.boot:spring-boot-starter-actuator",
+      "org.springframework.boot:spring-boot-starter-cache",
+      "org.springframework.boot:spring-boot-starter-data-jpa",
+      "org.springframework.boot:spring-boot-starter-mail",
+      "org.springframework.boot:spring-boot-starter-security",
+      "org.springframework.boot:spring-boot-starter-test",
+      "org.springframework.boot:spring-boot-starter-web",
+      "org.springframework.security:spring-security-test",
+      "org.springframework:spring-aspects",
+      "org.thymeleaf:thymeleaf-spring5",
+      "org.zalando:problem-spring-web"
+    ],
+    "dependency_management_coordinates": [],
+    "source_file_count": 162,
+    "import_count": 458
+  },
+  "reference": {
+    "root_path": "C:\\Users\\ilyas.abarbach\\AppData\\Local\\Temp\\reference-delta-077245d514334df798948876fd1222f5\\msa-utils",
+    "primary_pom": "common-utils/pom.xml",
+    "discovered_poms": [
+      "common-utils/pom.xml"
+    ],
+    "coordinates": {
+      "group_id": "com.total.corp",
+      "artifact_id": "common-utils",
+      "version": "2.9.41-SNAPSHOT"
+    },
+    "parent": {
+      "group_id": "",
+      "artifact_id": "",
+      "version": ""
+    },
+    "java_version": "21",
+    "spring_boot_version": "3.5.6",
+    "plugin_versions": {
+      "org.apache.maven.plugins:maven-clean-plugin": "3.1.0",
+      "org.apache.maven.plugins:maven-resources-plugin": "3.1.0",
+      "org.apache.maven.plugins:maven-compiler-plugin": "3.11.0",
+      "org.apache.maven.plugins:maven-surefire-plugin": "3.0.0-M3",
+      "org.apache.maven.plugins:maven-jar-plugin": "3.0.2",
+      "org.apache.maven.plugins:maven-install-plugin": "2.5.2",
+      "org.apache.maven.plugins:maven-deploy-plugin": "2.8.2",
+      "org.apache.maven.plugins:maven-site-plugin": "3.7.1",
+      "org.apache.maven.plugins:maven-project-info-reports-plugin": "3.0.0",
+      "org.jacoco:jacoco-maven-plugin": "",
+      "org.sonarsource.scanner.maven:sonar-maven-plugin": "3.6.0.1398"
+    },
+    "dependency_coordinates": [
+      "com.azure:azure-messaging-servicebus",
+      "com.azure:azure-storage-blob",
+      "com.fasterxml.jackson.dataformat:jackson-dataformat-csv",
+      "com.github.ben-manes.caffeine:caffeine",
+      "com.google.code.gson:gson",
+      "com.google.guava:guava-testlib",
+      "com.h2database:h2",
+      "com.microsoft.azure:azure-servicebus-spring-boot-starter",
+      "com.total.corp:msa-dto",
+      "commons-io:commons-io",
+      "io.jsonwebtoken:jjwt-api",
+      "io.jsonwebtoken:jjwt-impl",
+      "io.jsonwebtoken:jjwt-jackson",
+      "jakarta.annotation:jakarta.annotation-api",
+      "jakarta.mail:jakarta.mail-api",
+      "jakarta.servlet:jakarta.servlet-api",
+      "jakarta.validation:jakarta.validation-api",
+      "jakarta.xml.bind:jakarta.xml.bind-api",
+      "junit:junit",
+      "nz.net.ultraq.thymeleaf:thymeleaf-layout-dialect",
+      "org.apache.commons:commons-collections4",
+      "org.apache.commons:commons-lang3",
+      "org.apache.juneau:juneau-all",
+      "org.apache.juneau:juneau-marshall",
+      "org.apache.juneau:juneau-marshall-rdf",
+      "org.apache.juneau:juneau-microservice-core",
+      "org.apache.juneau:juneau-rest-client",
+      "org.apache.maven.surefire:surefire-junit47",
+      "org.assertj:assertj-core",
+      "org.json:json",
+      "org.powermock:powermock-api-mockito2",
+      "org.powermock:powermock-module-junit4",
+      "org.projectlombok:lombok",
+      "org.slf4j:slf4j-api",
+      "org.springframework.boot:spring-boot",
+      "org.springframework.boot:spring-boot-actuator",
+      "org.springframework.boot:spring-boot-starter-actuator",
+      "org.springframework.boot:spring-boot-starter-cache",
+      "org.springframework.boot:spring-boot-starter-data-jpa",
+      "org.springframework.boot:spring-boot-starter-mail",
+      "org.springframework.boot:spring-boot-starter-security",
+      "org.springframework.boot:spring-boot-starter-test",
+      "org.springframework.boot:spring-boot-starter-web",
+      "org.springframework.security:spring-security-test",
+      "org.springframework:spring-aspects",
+      "org.thymeleaf:thymeleaf-spring5",
+      "org.zalando:problem-spring-web"
+    ],
+    "dependency_management_coordinates": [],
+    "source_file_count": 162,
+    "import_count": 458
+  },
+  "pom_delta": {
+    "project_coordinate_change": {
+      "legacy": {
+        "group_id": "com.total.corp",
+        "artifact_id": "common-utils",
+        "version": "2.9.45-SNAPSHOT"
+      },
+      "reference": {
+        "group_id": "com.total.corp",
+        "artifact_id": "common-utils",
+        "version": "2.9.41-SNAPSHOT"
+      }
+    },
+    "java_version_change": {
+      "legacy": "11",
+      "reference": "21"
+    },
+    "spring_boot_version_change": {
+      "legacy": "2.1.6.RELEASE",
+      "reference": "3.5.6"
+    },
+    "parent_pom_change": {
+      "legacy": {
+        "group_id": "",
+        "artifact_id": "",
+        "version": ""
+      },
+      "reference": {
+        "group_id": "",
+        "artifact_id": "",
+        "version": ""
+      }
+    },
+    "maven_plugin_version_changes": [
+      {
+        "coordinate": "org.apache.maven.plugins:maven-compiler-plugin",
+        "legacy_version": "3.8.1",
+        "reference_version": "3.11.0"
+      }
+    ],
+    "dependency_management_changes": {
+      "added": [],
+      "removed": [],
+      "version_changed": []
+    }
+  },
+  "dependency_delta": {
+    "added": [
+      {
+        "coordinate": "com.azure:azure-messaging-servicebus",
+        "version": "7.17.16",
+        "scope": ""
+      },
+      {
+        "coordinate": "com.azure:azure-storage-blob",
+        "version": "12.31.3",
+        "scope": ""
+      },
+      {
+        "coordinate": "jakarta.annotation:jakarta.annotation-api",
+        "version": "2.1.1",
+        "scope": ""
+      },
+      {
+        "coordinate": "jakarta.mail:jakarta.mail-api",
+        "version": "2.1.2",
+        "scope": ""
+      },
+      {
+        "coordinate": "jakarta.servlet:jakarta.servlet-api",
+        "version": "6.0.0",
+        "scope": "provided"
+      },
+      {
+        "coordinate": "jakarta.validation:jakarta.validation-api",
+        "version": "3.1.1",
+        "scope": ""
+      },
+      {
+        "coordinate": "jakarta.xml.bind:jakarta.xml.bind-api",
+        "version": "4.0.4",
+        "scope": ""
+      },
+      {
+        "coordinate": "org.apache.commons:commons-collections4",
+        "version": "4.5.0",
+        "scope": ""
+      },
+      {
+        "coordinate": "org.apache.juneau:juneau-marshall",
+        "version": "9.1.0",
+        "scope": ""
+      },
+      {
+        "coordinate": "org.apache.maven.surefire:surefire-junit47",
+        "version": "3.5.4",
+        "scope": ""
+      }
+    ],
+    "removed": [
+      {
+        "coordinate": "com.microsoft.azure:azure-storage",
+        "version": "8.3.0",
+        "scope": ""
+      },
+      {
+        "coordinate": "com.microsoft.azure:azure-storage-blob",
+        "version": "11.0.0",
+        "scope": ""
+      },
+      {
+        "coordinate": "javax.servlet:servlet-api",
+        "version": "2.5",
+        "scope": "provided"
+      },
+      {
+        "coordinate": "javax.xml.bind:jaxb-api",
+        "version": "2.3.0",
+        "scope": ""
+      }
+    ],
+    "version_changed": [
+      {
+        "coordinate": "com.fasterxml.jackson.dataformat:jackson-dataformat-csv",
+        "legacy_version": "2.10.0",
+        "reference_version": "2.20.0",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "com.github.ben-manes.caffeine:caffeine",
+        "legacy_version": "2.8.5",
+        "reference_version": "3.2.2",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "com.google.code.gson:gson",
+        "legacy_version": "2.10.1",
+        "reference_version": "2.13.2",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "com.google.guava:guava-testlib",
+        "legacy_version": "20.0",
+        "reference_version": "33.5.0-jre",
+        "legacy_scope": "test",
+        "reference_scope": "test"
+      },
+      {
+        "coordinate": "com.h2database:h2",
+        "legacy_version": "1.4.199",
+        "reference_version": "2.4.240",
+        "legacy_scope": "test",
+        "reference_scope": "test"
+      },
+      {
+        "coordinate": "com.microsoft.azure:azure-servicebus-spring-boot-starter",
+        "legacy_version": "2.2.0",
+        "reference_version": "2.2.5",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "commons-io:commons-io",
+        "legacy_version": "2.6",
+        "reference_version": "2.20.0",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "io.jsonwebtoken:jjwt-api",
+        "legacy_version": "0.10.5",
+        "reference_version": "0.12.5",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "io.jsonwebtoken:jjwt-impl",
+        "legacy_version": "0.10.5",
+        "reference_version": "0.12.5",
+        "legacy_scope": "runtime",
+        "reference_scope": "runtime"
+      },
+      {
+        "coordinate": "io.jsonwebtoken:jjwt-jackson",
+        "legacy_version": "0.10.5",
+        "reference_version": "0.12.5",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "junit:junit",
+        "legacy_version": "4.12",
+        "reference_version": "4.13.2",
+        "legacy_scope": "test",
+        "reference_scope": "test"
+      },
+      {
+        "coordinate": "nz.net.ultraq.thymeleaf:thymeleaf-layout-dialect",
+        "legacy_version": "2.3.0",
+        "reference_version": "3.4.0",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.apache.commons:commons-lang3",
+        "legacy_version": "3.9",
+        "reference_version": "3.19.0",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.apache.juneau:juneau-all",
+        "legacy_version": "8.1.1",
+        "reference_version": "9.1.0",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.apache.juneau:juneau-marshall-rdf",
+        "legacy_version": "8.1.1",
+        "reference_version": "8.2.0",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.apache.juneau:juneau-microservice-core",
+        "legacy_version": "8.1.1",
+        "reference_version": "9.1.0",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.apache.juneau:juneau-rest-client",
+        "legacy_version": "8.1.1",
+        "reference_version": "9.1.0",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.assertj:assertj-core",
+        "legacy_version": "3.13.2",
+        "reference_version": "3.27.6",
+        "legacy_scope": "test",
+        "reference_scope": "test"
+      },
+      {
+        "coordinate": "org.json:json",
+        "legacy_version": "20201115",
+        "reference_version": "20250517",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.powermock:powermock-api-mockito2",
+        "legacy_version": "2.0.2",
+        "reference_version": "2.0.9",
+        "legacy_scope": "test",
+        "reference_scope": "test"
+      },
+      {
+        "coordinate": "org.powermock:powermock-module-junit4",
+        "legacy_version": "2.0.2",
+        "reference_version": "2.0.9",
+        "legacy_scope": "test",
+        "reference_scope": "test"
+      },
+      {
+        "coordinate": "org.projectlombok:lombok",
+        "legacy_version": "0.11.8",
+        "reference_version": "1.18.42",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.slf4j:slf4j-api",
+        "legacy_version": "1.7.25",
+        "reference_version": "2.0.17",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.springframework.boot:spring-boot",
+        "legacy_version": "2.1.6.RELEASE",
+        "reference_version": "3.5.6",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.springframework.boot:spring-boot-actuator",
+        "legacy_version": "2.1.6.RELEASE",
+        "reference_version": "3.5.6",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.springframework.boot:spring-boot-starter-actuator",
+        "legacy_version": "2.1.6.RELEASE",
+        "reference_version": "3.5.6",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.springframework.boot:spring-boot-starter-cache",
+        "legacy_version": "2.1.6.RELEASE",
+        "reference_version": "3.5.6",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.springframework.boot:spring-boot-starter-data-jpa",
+        "legacy_version": "2.1.6.RELEASE",
+        "reference_version": "3.5.6",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.springframework.boot:spring-boot-starter-mail",
+        "legacy_version": "2.1.6.RELEASE",
+        "reference_version": "3.5.6",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.springframework.boot:spring-boot-starter-security",
+        "legacy_version": "2.1.6.RELEASE",
+        "reference_version": "3.5.6",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.springframework.boot:spring-boot-starter-test",
+        "legacy_version": "2.1.6.RELEASE",
+        "reference_version": "3.5.6",
+        "legacy_scope": "test",
+        "reference_scope": "test"
+      },
+      {
+        "coordinate": "org.springframework.boot:spring-boot-starter-web",
+        "legacy_version": "2.1.6.RELEASE",
+        "reference_version": "3.5.6",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.springframework.security:spring-security-test",
+        "legacy_version": "5.1.4.RELEASE",
+        "reference_version": "6.5.5",
+        "legacy_scope": "test",
+        "reference_scope": "test"
+      },
+      {
+        "coordinate": "org.springframework:spring-aspects",
+        "legacy_version": "5.1.8.RELEASE",
+        "reference_version": "6.2.11",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.thymeleaf:thymeleaf-spring5",
+        "legacy_version": "3.0.11.RELEASE",
+        "reference_version": "3.1.3.RELEASE",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.zalando:problem-spring-web",
+        "legacy_version": "0.24.0-RC.0",
+        "reference_version": "0.29.1",
+        "legacy_scope": "",
+        "reference_scope": ""
+      }
+    ]
+  },
+  "source_delta": {
+    "added_imports": [
+      "com.azure.core.amqp.AmqpTransportType",
+      "com.azure.messaging.servicebus.ServiceBusClientBuilder",
+      "com.azure.messaging.servicebus.ServiceBusMessage",
+      "com.azure.messaging.servicebus.ServiceBusSenderClient",
+      "com.azure.storage.blob.BlobContainerClient",
+      "com.azure.storage.blob.BlobServiceClient",
+      "com.azure.storage.blob.BlobServiceClientBuilder",
+      "com.azure.storage.blob.models.BlobStorageException",
+      "com.azure.storage.blob.specialized.BlockBlobClient",
+      "com.nimbusds.jose.jwk.source.JWKSourceBuilder",
+      "jakarta.annotation.PostConstruct",
+      "jakarta.mail.MessagingException",
+      "jakarta.persistence.criteria.CriteriaBuilder",
+      "jakarta.persistence.criteria.CriteriaQuery",
+      "jakarta.persistence.criteria.Join",
+      "jakarta.persistence.criteria.Path",
+      "jakarta.persistence.criteria.Predicate",
+      "jakarta.persistence.criteria.Root",
+      "jakarta.servlet.DispatcherType",
+      "jakarta.servlet.Filter",
+      "jakarta.servlet.FilterChain",
+      "jakarta.servlet.ServletException",
+      "jakarta.servlet.ServletRequest",
+      "jakarta.servlet.ServletResponse",
+      "jakarta.servlet.http.HttpServletRequest",
+      "jakarta.servlet.http.HttpServletResponse",
+      "jakarta.validation.ConstraintViolationException",
+      "jakarta.validation.Valid",
+      "jakarta.validation.constraints.NotNull",
+      "java.security.PublicKey",
+      "java.util.Base64",
+      "java.util.Locale.Builder",
+      "org.apache.juneau.rest.client.RestResponse",
+      "org.apache.juneau.swap.ObjectSwap",
+      "org.springframework.boot.autoconfigure.condition.ConditionalOnClass",
+      "org.springframework.lang.Nullable",
+      "org.springframework.security.config.Customizer",
+      "org.springframework.security.config.annotation.web.configurers.HeadersConfigurer.FrameOptionsConfig",
+      "org.springframework.test.context.bean.override.mockito.MockitoBean"
+    ],
+    "removed_imports": [
+      "com.microsoft.azure.storage.CloudStorageAccount",
+      "com.microsoft.azure.storage.OperationContext",
+      "com.microsoft.azure.storage.StorageException",
+      "com.microsoft.azure.storage.blob.BlobRequestOptions",
+      "com.microsoft.azure.storage.blob.CloudBlobClient",
+      "com.microsoft.azure.storage.blob.CloudBlobContainer",
+      "com.microsoft.azure.storage.blob.CloudBlockBlob",
+      "com.nimbusds.jose.jwk.source.RemoteJWKSet",
+      "com.nimbusds.jose.proc.JWSKeySelector",
+      "com.total.corp.common.csv.utils.HttpCsvHelpers",
+      "io.jsonwebtoken.JwsHeader",
+      "io.jsonwebtoken.JwtParser",
+      "io.jsonwebtoken.SignatureAlgorithm",
+      "io.jsonwebtoken.SigningKeyResolverAdapter",
+      "java.net.URISyntaxException",
+      "java.security.InvalidKeyException",
+      "javax.annotation.Nullable",
+      "javax.annotation.PostConstruct",
+      "javax.mail.MessagingException",
+      "javax.persistence.criteria.CriteriaBuilder",
+      "javax.persistence.criteria.CriteriaQuery",
+      "javax.persistence.criteria.Join",
+      "javax.persistence.criteria.Path",
+      "javax.persistence.criteria.Predicate",
+      "javax.persistence.criteria.Root",
+      "javax.servlet.DispatcherType",
+      "javax.servlet.Filter",
+      "javax.servlet.FilterChain",
+      "javax.servlet.ServletException",
+      "javax.servlet.ServletRequest",
+      "javax.servlet.ServletResponse",
+      "javax.servlet.http.HttpServletRequest",
+      "javax.servlet.http.HttpServletResponse",
+      "javax.validation.ConstraintViolationException",
+      "javax.validation.Valid",
+      "javax.validation.constraints.NotNull",
+      "lombok.ToString",
+      "org.apache.juneau.rest.client.RestClientBuilder",
+      "org.apache.juneau.transform.PojoSwap"
+    ],
+    "changed_import_families": [
+      {
+        "family": "javax.",
+        "legacy": [
+          "javax.annotation.Nullable",
+          "javax.annotation.PostConstruct",
+          "javax.mail.MessagingException",
+          "javax.persistence.criteria.CriteriaBuilder",
+          "javax.persistence.criteria.CriteriaQuery",
+          "javax.persistence.criteria.Join",
+          "javax.persistence.criteria.Path",
+          "javax.persistence.criteria.Predicate",
+          "javax.persistence.criteria.Root",
+          "javax.servlet.DispatcherType",
+          "javax.servlet.Filter",
+          "javax.servlet.FilterChain",
+          "javax.servlet.ServletException",
+          "javax.servlet.ServletRequest",
+          "javax.servlet.ServletResponse",
+          "javax.servlet.http.HttpServletRequest",
+          "javax.servlet.http.HttpServletResponse",
+          "javax.validation.ConstraintViolationException",
+          "javax.validation.Valid",
+          "javax.validation.constraints.NotNull"
+        ],
+        "reference": []
+      },
+      {
+        "family": "jakarta.",
+        "legacy": [],
+        "reference": [
+          "jakarta.annotation.PostConstruct",
+          "jakarta.mail.MessagingException",
+          "jakarta.persistence.criteria.CriteriaBuilder",
+          "jakarta.persistence.criteria.CriteriaQuery",
+          "jakarta.persistence.criteria.Join",
+          "jakarta.persistence.criteria.Path",
+          "jakarta.persistence.criteria.Predicate",
+          "jakarta.persistence.criteria.Root",
+          "jakarta.servlet.DispatcherType",
+          "jakarta.servlet.Filter",
+          "jakarta.servlet.FilterChain",
+          "jakarta.servlet.ServletException",
+          "jakarta.servlet.ServletRequest",
+          "jakarta.servlet.ServletResponse",
+          "jakarta.servlet.http.HttpServletRequest",
+          "jakarta.servlet.http.HttpServletResponse",
+          "jakarta.validation.ConstraintViolationException",
+          "jakarta.validation.Valid",
+          "jakarta.validation.constraints.NotNull"
+        ]
+      },
+      {
+        "family": "org.springframework.security.",
+        "legacy": [
+          "org.springframework.security.access.AccessDeniedException",
+          "org.springframework.security.authentication.InsufficientAuthenticationException",
+          "org.springframework.security.authentication.UsernamePasswordAuthenticationToken",
+          "org.springframework.security.config.annotation.SecurityConfigurerAdapter",
+          "org.springframework.security.config.annotation.web.builders.HttpSecurity",
+          "org.springframework.security.config.annotation.web.builders.WebSecurity",
+          "org.springframework.security.config.http.SessionCreationPolicy",
+          "org.springframework.security.core.Authentication",
+          "org.springframework.security.core.AuthenticationException",
+          "org.springframework.security.core.GrantedAuthority",
+          "org.springframework.security.core.authority.SimpleGrantedAuthority",
+          "org.springframework.security.core.context.SecurityContext",
+          "org.springframework.security.core.context.SecurityContextHolder",
+          "org.springframework.security.core.userdetails.User",
+          "org.springframework.security.core.userdetails.UserDetails",
+          "org.springframework.security.test.context.support.WithMockUser",
+          "org.springframework.security.web.DefaultSecurityFilterChain",
+          "org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter"
+        ],
+        "reference": [
+          "org.springframework.security.access.AccessDeniedException",
+          "org.springframework.security.authentication.InsufficientAuthenticationException",
+          "org.springframework.security.authentication.UsernamePasswordAuthenticationToken",
+          "org.springframework.security.config.Customizer",
+          "org.springframework.security.config.annotation.SecurityConfigurerAdapter",
+          "org.springframework.security.config.annotation.web.builders.HttpSecurity",
+          "org.springframework.security.config.annotation.web.builders.WebSecurity",
+          "org.springframework.security.config.annotation.web.configurers.HeadersConfigurer.FrameOptionsConfig",
+          "org.springframework.security.config.http.SessionCreationPolicy",
+          "org.springframework.security.core.Authentication",
+          "org.springframework.security.core.AuthenticationException",
+          "org.springframework.security.core.GrantedAuthority",
+          "org.springframework.security.core.authority.SimpleGrantedAuthority",
+          "org.springframework.security.core.context.SecurityContext",
+          "org.springframework.security.core.context.SecurityContextHolder",
+          "org.springframework.security.core.userdetails.User",
+          "org.springframework.security.core.userdetails.UserDetails",
+          "org.springframework.security.test.context.support.WithMockUser",
+          "org.springframework.security.web.DefaultSecurityFilterChain",
+          "org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter"
+        ]
+      },
+      {
+        "family": "io.jsonwebtoken.",
+        "legacy": [
+          "io.jsonwebtoken.Claims",
+          "io.jsonwebtoken.ExpiredJwtException",
+          "io.jsonwebtoken.JwsHeader",
+          "io.jsonwebtoken.JwtBuilder",
+          "io.jsonwebtoken.JwtException",
+          "io.jsonwebtoken.JwtParser",
+          "io.jsonwebtoken.Jwts",
+          "io.jsonwebtoken.MalformedJwtException",
+          "io.jsonwebtoken.SignatureAlgorithm",
+          "io.jsonwebtoken.SigningKeyResolverAdapter",
+          "io.jsonwebtoken.UnsupportedJwtException",
+          "io.jsonwebtoken.io.Decoders",
+          "io.jsonwebtoken.security.Keys"
+        ],
+        "reference": [
+          "io.jsonwebtoken.Claims",
+          "io.jsonwebtoken.ExpiredJwtException",
+          "io.jsonwebtoken.JwtBuilder",
+          "io.jsonwebtoken.JwtException",
+          "io.jsonwebtoken.Jwts",
+          "io.jsonwebtoken.MalformedJwtException",
+          "io.jsonwebtoken.UnsupportedJwtException",
+          "io.jsonwebtoken.io.Decoders",
+          "io.jsonwebtoken.security.Keys"
+        ]
+      },
+      {
+        "family": "org.apache.juneau.",
+        "legacy": [
+          "org.apache.juneau.BeanSession",
+          "org.apache.juneau.ClassMeta",
+          "org.apache.juneau.json.JsonParser",
+          "org.apache.juneau.json.JsonSerializer",
+          "org.apache.juneau.rest.client.RestCallException",
+          "org.apache.juneau.rest.client.RestClient",
+          "org.apache.juneau.rest.client.RestClientBuilder",
+          "org.apache.juneau.transform.PojoSwap"
+        ],
+        "reference": [
+          "org.apache.juneau.BeanSession",
+          "org.apache.juneau.ClassMeta",
+          "org.apache.juneau.json.JsonParser",
+          "org.apache.juneau.json.JsonSerializer",
+          "org.apache.juneau.rest.client.RestCallException",
+          "org.apache.juneau.rest.client.RestClient",
+          "org.apache.juneau.rest.client.RestResponse",
+          "org.apache.juneau.swap.ObjectSwap"
+        ]
+      },
+      {
+        "family": "com.microsoft.azure.",
+        "legacy": [
+          "com.microsoft.azure.servicebus.ExceptionPhase",
+          "com.microsoft.azure.servicebus.IMessage",
+          "com.microsoft.azure.servicebus.IMessageHandler",
+          "com.microsoft.azure.servicebus.IQueueClient",
+          "com.microsoft.azure.servicebus.Message",
+          "com.microsoft.azure.servicebus.MessageBody",
+          "com.microsoft.azure.servicebus.MessageHandlerOptions",
+          "com.microsoft.azure.servicebus.QueueClient",
+          "com.microsoft.azure.servicebus.ReceiveMode",
+          "com.microsoft.azure.servicebus.SubscriptionClient",
+          "com.microsoft.azure.servicebus.TopicClient",
+          "com.microsoft.azure.servicebus.primitives.ConnectionStringBuilder",
+          "com.microsoft.azure.servicebus.primitives.ServiceBusException",
+          "com.microsoft.azure.storage.CloudStorageAccount",
+          "com.microsoft.azure.storage.OperationContext",
+          "com.microsoft.azure.storage.StorageException",
+          "com.microsoft.azure.storage.blob.BlobRequestOptions",
+          "com.microsoft.azure.storage.blob.CloudBlobClient",
+          "com.microsoft.azure.storage.blob.CloudBlobContainer",
+          "com.microsoft.azure.storage.blob.CloudBlockBlob"
+        ],
+        "reference": [
+          "com.microsoft.azure.servicebus.ExceptionPhase",
+          "com.microsoft.azure.servicebus.IMessage",
+          "com.microsoft.azure.servicebus.IMessageHandler",
+          "com.microsoft.azure.servicebus.IQueueClient",
+          "com.microsoft.azure.servicebus.Message",
+          "com.microsoft.azure.servicebus.MessageBody",
+          "com.microsoft.azure.servicebus.MessageHandlerOptions",
+          "com.microsoft.azure.servicebus.QueueClient",
+          "com.microsoft.azure.servicebus.ReceiveMode",
+          "com.microsoft.azure.servicebus.SubscriptionClient",
+          "com.microsoft.azure.servicebus.TopicClient",
+          "com.microsoft.azure.servicebus.primitives.ConnectionStringBuilder",
+          "com.microsoft.azure.servicebus.primitives.ServiceBusException"
+        ]
+      },
+      {
+        "family": "com.azure.",
+        "legacy": [],
+        "reference": [
+          "com.azure.core.amqp.AmqpTransportType",
+          "com.azure.messaging.servicebus.ServiceBusClientBuilder",
+          "com.azure.messaging.servicebus.ServiceBusMessage",
+          "com.azure.messaging.servicebus.ServiceBusSenderClient",
+          "com.azure.storage.blob.BlobContainerClient",
+          "com.azure.storage.blob.BlobServiceClient",
+          "com.azure.storage.blob.BlobServiceClientBuilder",
+          "com.azure.storage.blob.models.BlobStorageException",
+          "com.azure.storage.blob.specialized.BlockBlobClient"
+        ]
+      }
+    ],
+    "javax_to_jakarta_imports": [
+      {
+        "legacy_prefix": "javax.validation.",
+        "reference_prefix": "jakarta.validation.",
+        "legacy_matches": [
+          "javax.validation.ConstraintViolationException",
+          "javax.validation.Valid",
+          "javax.validation.constraints.NotNull"
+        ],
+        "reference_matches": [
+          "jakarta.validation.ConstraintViolationException",
+          "jakarta.validation.Valid",
+          "jakarta.validation.constraints.NotNull"
+        ]
+      },
+      {
+        "legacy_prefix": "javax.servlet.",
+        "reference_prefix": "jakarta.servlet.",
+        "legacy_matches": [
+          "javax.servlet.DispatcherType",
+          "javax.servlet.Filter",
+          "javax.servlet.FilterChain",
+          "javax.servlet.ServletException",
+          "javax.servlet.ServletRequest",
+          "javax.servlet.ServletResponse",
+          "javax.servlet.http.HttpServletRequest",
+          "javax.servlet.http.HttpServletResponse"
+        ],
+        "reference_matches": [
+          "jakarta.servlet.DispatcherType",
+          "jakarta.servlet.Filter",
+          "jakarta.servlet.FilterChain",
+          "jakarta.servlet.ServletException",
+          "jakarta.servlet.ServletRequest",
+          "jakarta.servlet.ServletResponse",
+          "jakarta.servlet.http.HttpServletRequest",
+          "jakarta.servlet.http.HttpServletResponse"
+        ]
+      },
+      {
+        "legacy_prefix": "javax.persistence.",
+        "reference_prefix": "jakarta.persistence.",
+        "legacy_matches": [
+          "javax.persistence.criteria.CriteriaBuilder",
+          "javax.persistence.criteria.CriteriaQuery",
+          "javax.persistence.criteria.Join",
+          "javax.persistence.criteria.Path",
+          "javax.persistence.criteria.Predicate",
+          "javax.persistence.criteria.Root"
+        ],
+        "reference_matches": [
+          "jakarta.persistence.criteria.CriteriaBuilder",
+          "jakarta.persistence.criteria.CriteriaQuery",
+          "jakarta.persistence.criteria.Join",
+          "jakarta.persistence.criteria.Path",
+          "jakarta.persistence.criteria.Predicate",
+          "jakarta.persistence.criteria.Root"
+        ]
+      },
+      {
+        "legacy_prefix": "javax.annotation.",
+        "reference_prefix": "jakarta.annotation.",
+        "legacy_matches": [
+          "javax.annotation.Nullable",
+          "javax.annotation.PostConstruct"
+        ],
+        "reference_matches": [
+          "jakarta.annotation.PostConstruct"
+        ]
+      }
+    ]
+  },
+  "runtime_environment": {
+    "workflow_files": [
+      ".github/workflows/GitGuardian-all-commits.yml",
+      ".github/workflows/main.yml",
+      ".github/workflows/sonarqube.yml"
+    ],
+    "detected_indicators": [
+      "aws-secrets",
+      "codeartifact",
+      "github-workflows",
+      "jdk-path-assumptions",
+      "keystore-certificate-usage",
+      "maven-path-assumptions",
+      "maven-settings-injection"
+    ],
+    "environment_variables": [
+      "AWS_ACCESS_KEY_ID",
+      "AWS_ACOUNT_ID",
+      "AWS_REGION",
+      "AWS_ROLE_GITHUB",
+      "AWS_ROLE_TO_ASSUME",
+      "AWS_SECRET_ACCESS_KEY",
+      "CODEARTIFACT_AUTH_TOKEN",
+      "CODEARTIFACT_DOMAINE",
+      "GITHUB_ENV",
+      "JAVA_HOME"
+    ],
+    "config_files": [
+      ".github/workflows/GitGuardian-all-commits.yml",
+      ".github/workflows/main.yml",
+      ".github/workflows/sonarqube.yml",
+      "common-utils/src/main/resources/config/common-utils-dev.yml",
+      "common-utils/src/main/resources/config/common-utils-pprod.yml",
+      "common-utils/src/main/resources/config/common-utils-prod.yml",
+      "common-utils/src/main/resources/config/common-utils-test.yml",
+      "common-utils/src/test/resources/config/application.yml",
+      "common-utils/src/test/resources/config/common-utils-unitTest.yml"
+    ],
+    "resource_config_usage": [
+      "@Value",
+      "Environment",
+      "FileSystemResource",
+      "ResourceLoader"
+    ],
+    "keystore_files": [
+      "common-utils/src/main/resources/keys/jwt-test-store.jks",
+      "common-utils/src/main/resources/keys/total.msa.identitystore.1.2.jks",
+      "common-utils/src/main/resources/keys/total.msa.truststore.1.0.jks",
+      "common-utils/src/main/resources/keys/total.msa.truststore.1.1.jks",
+      "common-utils/src/main/resources/keys/total.msa.truststore.1.2.jks",
+      "common-utils/src/main/resources/keys/total.msa.truststore.1.3.jks",
+      "common-utils/src/main/resources/keys/total.msa.truststore.1.4.jks",
+      "common-utils/src/main/resources/keys/total.msa.truststore.1.5.jks",
+      "common-utils/src/main/resources/keys/total.msa.truststore.1.6.jks",
+      "common-utils/src/main/resources/keys/total.msa.truststore.1.7.jks",
+      "common-utils/src/test/resources/keys/cardpro-unit-test.pem",
+      "common-utils/src/test/resources/keys/diac-unit-test.pem",
+      "common-utils/src/test/resources/keys/jwt-test-store.jks",
+      "common-utils/src/test/resources/keys/msa-unit-test-private.pem",
+      "common-utils/src/test/resources/keys/salsa-unit-test.pem"
+    ],
+    "yaml_or_properties_files": [
+      ".github/workflows/GitGuardian-all-commits.yml",
+      ".github/workflows/main.yml",
+      ".github/workflows/sonarqube.yml",
+      "common-utils/src/main/resources/config/common-utils-dev.yml",
+      "common-utils/src/main/resources/config/common-utils-pprod.yml",
+      "common-utils/src/main/resources/config/common-utils-prod.yml",
+      "common-utils/src/main/resources/config/common-utils-test.yml",
+      "common-utils/src/test/resources/config/application.yml",
+      "common-utils/src/test/resources/config/common-utils-unitTest.yml"
+    ]
+  },
+  "api_migration_indicators": {
+    "jjwt_parser_api": {
+      "detected": true,
+      "legacy_markers": [
+        "Jwts.parser(",
+        "io.jsonwebtoken.Jwts"
+      ],
+      "reference_markers": [
+        ".verifyWith(",
+        ".build()",
+        "io.jsonwebtoken.Jwts"
+      ],
+      "legacy_dependencies": [
+        "io.jsonwebtoken:jjwt-api",
+        "io.jsonwebtoken:jjwt-impl",
+        "io.jsonwebtoken:jjwt-jackson"
+      ],
+      "reference_dependencies": [
+        "io.jsonwebtoken:jjwt-api",
+        "io.jsonwebtoken:jjwt-impl",
+        "io.jsonwebtoken:jjwt-jackson"
+      ],
+      "evidence_files": [
+        "common-utils/src/main/java/com/total/corp/common/cache/controller/CacheController.java",
+        "common-utils/src/main/java/com/total/corp/common/config/CachingConfig.java",
+        "common-utils/src/main/java/com/total/corp/common/config/MsaLocaleResolver.java",
+        "common-utils/src/main/java/com/total/corp/common/csv/utils/FileCsvUtils.java",
+        "common-utils/src/main/java/com/total/corp/common/monitoring/MsaHealthIndicator.java",
+        "common-utils/src/main/java/com/total/corp/common/rpc/MsaRpcClientFactory.java",
+        "common-utils/src/main/java/com/total/corp/common/security/jwt/JWTProvider.java",
+        "common-utils/src/main/java/com/total/corp/common/security/jwt/JWTValidator.java",
+        "common-utils/src/main/java/com/total/corp/common/utils/ResponseUtil.java",
+        "common-utils/src/main/java/com/total/corp/common/validation/Validator.java",
+        "common-utils/src/main/java/com/total/corp/common/web/rest/advice/CustomExceptionTranslator.java",
+        "common-utils/src/main/java/com/total/corp/common/web/rest/advice/ExceptionTranslator.java",
+        "common-utils/src/main/java/com/total/corp/common/web/rest/util/FunctionalMessageHelper.java",
+        "common-utils/src/test/java/com/total/corp/common/translator/TranslatorAdapterTest.java",
+        "common-utils/src/test/java/com/total/corp/mvc/AbstractMVCIntegrationTest.java",
+        "common-utils/src/test/java/com/total/corp/mvc/AbstractMVCTest.java"
+      ]
+    },
+    "juneau_restclient_api": {
+      "detected": true,
+      "legacy_markers": [
+        "org.apache.juneau.rest.client.RestClient",
+        "RestClient.create("
+      ],
+      "reference_markers": [
+        "org.apache.juneau.rest.client.RestClient",
+        ".rootUrl(",
+        "RestClient.create("
+      ],
+      "legacy_dependencies": [
+        "org.apache.juneau:juneau-all",
+        "org.apache.juneau:juneau-marshall-rdf",
+        "org.apache.juneau:juneau-microservice-core",
+        "org.apache.juneau:juneau-rest-client"
+      ],
+      "reference_dependencies": [
+        "org.apache.juneau:juneau-all",
+        "org.apache.juneau:juneau-marshall",
+        "org.apache.juneau:juneau-marshall-rdf",
+        "org.apache.juneau:juneau-microservice-core",
+        "org.apache.juneau:juneau-rest-client"
+      ],
+      "evidence_files": [
+        "common-utils/src/main/java/com/total/corp/common/rpc/MsaRpcClientFactory.java"
+      ]
+    },
+    "azure_sdk": {
+      "detected": true,
+      "legacy_markers": [
+        "com.microsoft.azure",
+        "com.microsoft.azure.servicebus"
+      ],
+      "reference_markers": [
+        "com.azure",
+        "com.azure.messaging.servicebus"
+      ],
+      "legacy_dependencies": [
+        "com.microsoft.azure:azure-servicebus-spring-boot-starter",
+        "com.microsoft.azure:azure-storage",
+        "com.microsoft.azure:azure-storage-blob"
+      ],
+      "reference_dependencies": [
+        "com.azure:azure-messaging-servicebus",
+        "com.azure:azure-storage-blob",
+        "com.microsoft.azure:azure-servicebus-spring-boot-starter"
+      ],
+      "evidence_files": [
+        "common-utils/pom copy.xml",
+        "common-utils/pom.xml",
+        "common-utils/src/main/java/com/total/corp/azure/bus/MsaBlobClient.java",
+        "common-utils/src/main/java/com/total/corp/azure/bus/ServiceBusQueue.java",
+        "common-utils/src/main/java/com/total/corp/azure/bus/ServiceBusSubscription.java",
+        "common-utils/src/main/java/com/total/corp/azure/bus/ServiceBusTopic.java",
+        "common-utils/src/test/java/com/total/corp/bus/AzureBusTopicTest.java"
+      ]
+    },
+    "spring_security_5_to_6": {
+      "detected": true,
+      "legacy_markers": [
+        "authorizeRequests(",
+        "antMatchers("
+      ],
+      "reference_markers": [
+        "SecurityFilterChain",
+        "authorizeHttpRequests(",
+        "requestMatchers("
+      ],
+      "legacy_dependencies": [
+        "org.springframework.security:spring-security-test"
+      ],
+      "reference_dependencies": [
+        "org.springframework.security:spring-security-test"
+      ],
+      "evidence_files": [
+        "common-utils/src/main/java/com/total/corp/common/security/SecurityUtils.java",
+        "common-utils/src/main/java/com/total/corp/common/security/jwt/JWTConfigurer.java"
+      ]
+    },
+    "thymeleaf_spring_compatibility": {
+      "detected": true,
+      "legacy_dependencies": [
+        "org.thymeleaf:thymeleaf-spring5"
+      ],
+      "reference_dependencies": [
+        "org.thymeleaf:thymeleaf-spring5"
+      ],
+      "evidence_files": []
+    }
+  },
+  "suspicious_artifacts": [
+    {
+      "type": "duplicate_pom",
+      "path": "common-utils/pom copy.xml",
+      "reason": "pom copy.xml"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/pom.xml.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/azure/bus/MsaBlobClient.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/azure/bus/notification/NotifyBus.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/config/MsaLocaleResolver.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/dto/DTOHelpers.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/jpa/utils/MSASpecification.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/logging/interceptor/CustomRequestBodyAdviceAdapter.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/logging/interceptor/LogInterceptor.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/logging/service/LoggingService.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/logging/service/LoggingServiceImpl.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "temporary_migration_remnant",
+      "path": "common-utils/src/main/java/com/total/corp/common/mail/service/TemplateEmailConstants.java",
+      "reason": "temporary migration artifact"
+    },
+    {
+      "type": "temporary_migration_remnant",
+      "path": "common-utils/src/main/java/com/total/corp/common/mail/utils/ThymeleafTemplateConfig.java",
+      "reason": "temporary migration artifact"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/rpc/MsaRpcClientFactory.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/rpc/ReferentialInternalGatewayService.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/security/jwt/JWTFilter.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/security/jwt/JWTProvider.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/security/jwt/JWTValidator.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/security/jwt/JWTValidator.java.bak.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/security/jwt/SystemJWTProvider.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/security/origin/OriginValidationFilter.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/security/SecurityUtils.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/service/base/MsaService.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/service/base/SearchService.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/specification/QuerySpecification.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/swap/InstantSwap.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "temporary_migration_remnant",
+      "path": "common-utils/src/main/java/com/total/corp/common/validation/field/NotEmptyFieldValidator.java",
+      "reason": "temporary migration artifact"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/validation/field/NotEmptyFieldValidator.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/validation/ValidationResult.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/web/rest/advice/CustomExceptionTranslator.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/web/rest/errors/BadRequestException.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/web/rest/errors/BadRequestListException.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/web/rest/errors/InternalServerException.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/web/rest/errors/NotFoundException.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/main/java/com/total/corp/common/web/rest/errors/UnProcessableEntityException.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/test/java/com/total/corp/advice/App.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/test/java/com/total/corp/advice/CustomExceptionTranslatorTest.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/test/java/com/total/corp/bus/AzureBusTest.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/test/java/com/total/corp/common/cache/test/ReferentialChachePostLoadTest.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/test/java/com/total/corp/common/cache/test/ReferentialChachePreloadTest.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/test/java/com/total/corp/common/cache/test/ReferentialChacheTest.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/test/java/com/total/corp/common/translator/TranslatorAdapterTest.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/test/java/com/total/corp/mvc/AbstractMVCIntegrationTest.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "backup_file",
+      "path": "common-utils/src/test/java/com/total/corp/mvc/AbstractMVCTest.java.bak",
+      "reason": ".bak file"
+    },
+    {
+      "type": "duplicate_pom_like_file",
+      "path": "common-utils/pom copy.xml",
+      "reason": "multiple pom-like files in directory"
+    },
+    {
+      "type": "duplicate_pom_like_file",
+      "path": "common-utils/pom.xml",
+      "reason": "multiple pom-like files in directory"
+    }
+  ],
+  "recommended_capability_packs": [
+    "internal-dependency-graph",
+    "javax-to-jakarta",
+    "jjwt-modernization",
+    "juneau-modernization",
+    "maven-build-environment",
+    "runtime-environment-contract",
+    "spring-boot-2-to-3",
+    "spring-security-5-to-6",
+    "test-modernization"
+  ]
+}

@@ -1,0 +1,659 @@
+{
+  "schema_version": "1.0.0",
+  "legacy": {
+    "root_path": "C:\\Users\\ilyas.abarbach\\AppData\\Local\\Temp\\reference-delta-077245d514334df798948876fd1222f5\\msa-dto-legacy",
+    "primary_pom": "msa-dto/pom.xml",
+    "discovered_poms": [
+      "msa-dto/pom.xml"
+    ],
+    "coordinates": {
+      "group_id": "com.total.corp",
+      "artifact_id": "msa-dto",
+      "version": "3.3.24-SNAPSHOT"
+    },
+    "parent": {
+      "group_id": "",
+      "artifact_id": "",
+      "version": ""
+    },
+    "java_version": "11",
+    "spring_boot_version": "2.1.6.RELEASE",
+    "plugin_versions": {
+      "org.apache.maven.plugins:maven-clean-plugin": "3.1.0",
+      "org.apache.maven.plugins:maven-resources-plugin": "3.1.0",
+      "org.apache.maven.plugins:maven-compiler-plugin": "3.8.1",
+      "org.apache.maven.plugins:maven-surefire-plugin": "3.0.0-M3",
+      "org.apache.maven.plugins:maven-jar-plugin": "3.0.2",
+      "org.apache.maven.plugins:maven-install-plugin": "2.5.2",
+      "org.apache.maven.plugins:maven-deploy-plugin": "2.8.2",
+      "org.apache.maven.plugins:maven-site-plugin": "3.7.1",
+      "org.apache.maven.plugins:maven-project-info-reports-plugin": "3.0.0",
+      "org.jacoco:jacoco-maven-plugin": "",
+      "org.sonarsource.scanner.maven:sonar-maven-plugin": "3.6.0.1398"
+    },
+    "dependency_coordinates": [
+      "com.google.code.gson:gson",
+      "com.microsoft.azure:azure-servicebus-spring-boot-starter",
+      "io.jsonwebtoken:jjwt-api",
+      "io.jsonwebtoken:jjwt-impl",
+      "io.jsonwebtoken:jjwt-jackson",
+      "javax.annotation:javax.annotation-api",
+      "javax.persistence:javax.persistence-api",
+      "javax.servlet:servlet-api",
+      "javax.xml.bind:jaxb-api",
+      "junit:junit",
+      "org.apache.juneau:juneau-all",
+      "org.apache.juneau:juneau-marshall-rdf",
+      "org.apache.juneau:juneau-microservice-core",
+      "org.apache.juneau:juneau-rest-client",
+      "org.assertj:assertj-core",
+      "org.modelmapper:modelmapper",
+      "org.projectlombok:lombok",
+      "org.slf4j:slf4j-api",
+      "org.springframework.boot:spring-boot",
+      "org.springframework.boot:spring-boot-starter-data-jpa",
+      "org.springframework.boot:spring-boot-starter-security",
+      "org.springframework.boot:spring-boot-starter-test",
+      "org.springframework.boot:spring-boot-starter-web",
+      "org.springframework:spring-aspects",
+      "org.zalando:problem-spring-web"
+    ],
+    "dependency_management_coordinates": [],
+    "source_file_count": 346,
+    "import_count": 293
+  },
+  "reference": {
+    "root_path": "C:\\Users\\ilyas.abarbach\\AppData\\Local\\Temp\\reference-delta-077245d514334df798948876fd1222f5\\msa-dto",
+    "primary_pom": "msa-dto/pom.xml",
+    "discovered_poms": [
+      "msa-dto/pom.xml"
+    ],
+    "coordinates": {
+      "group_id": "com.total.corp",
+      "artifact_id": "msa-dto",
+      "version": "3.3.23-SNAPSHOT"
+    },
+    "parent": {
+      "group_id": "",
+      "artifact_id": "",
+      "version": ""
+    },
+    "java_version": "21",
+    "spring_boot_version": "3.5.6.RELEASE",
+    "plugin_versions": {
+      "org.apache.maven.plugins:maven-clean-plugin": "3.1.0",
+      "org.apache.maven.plugins:maven-resources-plugin": "3.1.0",
+      "org.apache.maven.plugins:maven-compiler-plugin": "3.11.0",
+      "org.apache.maven.plugins:maven-surefire-plugin": "3.0.0-M3",
+      "org.apache.maven.plugins:maven-jar-plugin": "3.0.2",
+      "org.apache.maven.plugins:maven-install-plugin": "2.5.2",
+      "org.apache.maven.plugins:maven-deploy-plugin": "2.8.2",
+      "org.apache.maven.plugins:maven-site-plugin": "3.7.1",
+      "org.apache.maven.plugins:maven-project-info-reports-plugin": "3.0.0",
+      "org.jacoco:jacoco-maven-plugin": "",
+      "org.sonarsource.scanner.maven:sonar-maven-plugin": "3.6.0.1398"
+    },
+    "dependency_coordinates": [
+      "com.google.code.gson:gson",
+      "com.microsoft.azure:azure-servicebus-spring-boot-starter",
+      "io.jsonwebtoken:jjwt-api",
+      "io.jsonwebtoken:jjwt-impl",
+      "io.jsonwebtoken:jjwt-jackson",
+      "jakarta.xml.bind:jakarta.xml.bind-api",
+      "javax.annotation:javax.annotation-api",
+      "javax.persistence:javax.persistence-api",
+      "javax.servlet:javax.servlet-api",
+      "org.apache.juneau:juneau-all",
+      "org.apache.juneau:juneau-marshall",
+      "org.apache.juneau:juneau-marshall-rdf",
+      "org.apache.juneau:juneau-microservice-core",
+      "org.apache.juneau:juneau-rest-client",
+      "org.apache.juneau:juneau-rest-server",
+      "org.assertj:assertj-core",
+      "org.junit.jupiter:junit-jupiter-api",
+      "org.modelmapper:modelmapper",
+      "org.projectlombok:lombok",
+      "org.slf4j:slf4j-api",
+      "org.springframework.boot:spring-boot",
+      "org.springframework.boot:spring-boot-starter-data-jpa",
+      "org.springframework.boot:spring-boot-starter-security",
+      "org.springframework.boot:spring-boot-starter-test",
+      "org.springframework.boot:spring-boot-starter-web",
+      "org.springframework:spring-aspects",
+      "org.zalando:problem-spring-web"
+    ],
+    "dependency_management_coordinates": [],
+    "source_file_count": 347,
+    "import_count": 331
+  },
+  "pom_delta": {
+    "project_coordinate_change": {
+      "legacy": {
+        "group_id": "com.total.corp",
+        "artifact_id": "msa-dto",
+        "version": "3.3.24-SNAPSHOT"
+      },
+      "reference": {
+        "group_id": "com.total.corp",
+        "artifact_id": "msa-dto",
+        "version": "3.3.23-SNAPSHOT"
+      }
+    },
+    "java_version_change": {
+      "legacy": "11",
+      "reference": "21"
+    },
+    "spring_boot_version_change": {
+      "legacy": "2.1.6.RELEASE",
+      "reference": "3.5.6.RELEASE"
+    },
+    "parent_pom_change": {
+      "legacy": {
+        "group_id": "",
+        "artifact_id": "",
+        "version": ""
+      },
+      "reference": {
+        "group_id": "",
+        "artifact_id": "",
+        "version": ""
+      }
+    },
+    "maven_plugin_version_changes": [
+      {
+        "coordinate": "org.apache.maven.plugins:maven-compiler-plugin",
+        "legacy_version": "3.8.1",
+        "reference_version": "3.11.0"
+      }
+    ],
+    "dependency_management_changes": {
+      "added": [],
+      "removed": [],
+      "version_changed": []
+    }
+  },
+  "dependency_delta": {
+    "added": [
+      {
+        "coordinate": "jakarta.xml.bind:jakarta.xml.bind-api",
+        "version": "4.0.2",
+        "scope": ""
+      },
+      {
+        "coordinate": "javax.servlet:javax.servlet-api",
+        "version": "4.0.1",
+        "scope": "provided"
+      },
+      {
+        "coordinate": "org.apache.juneau:juneau-marshall",
+        "version": "8.2.0",
+        "scope": ""
+      },
+      {
+        "coordinate": "org.apache.juneau:juneau-rest-server",
+        "version": "8.2.0",
+        "scope": ""
+      },
+      {
+        "coordinate": "org.junit.jupiter:junit-jupiter-api",
+        "version": "6.0.0",
+        "scope": "test"
+      }
+    ],
+    "removed": [
+      {
+        "coordinate": "javax.servlet:servlet-api",
+        "version": "2.5",
+        "scope": "provided"
+      },
+      {
+        "coordinate": "javax.xml.bind:jaxb-api",
+        "version": "2.3.0",
+        "scope": ""
+      },
+      {
+        "coordinate": "junit:junit",
+        "version": "4.12",
+        "scope": "test"
+      }
+    ],
+    "version_changed": [
+      {
+        "coordinate": "com.google.code.gson:gson",
+        "legacy_version": "2.10.1",
+        "reference_version": "2.13.2",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "com.microsoft.azure:azure-servicebus-spring-boot-starter",
+        "legacy_version": "2.1.6",
+        "reference_version": "2.2.5",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "io.jsonwebtoken:jjwt-api",
+        "legacy_version": "0.10.5",
+        "reference_version": "0.13.0",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "io.jsonwebtoken:jjwt-impl",
+        "legacy_version": "0.10.5",
+        "reference_version": "0.13.0",
+        "legacy_scope": "runtime",
+        "reference_scope": "runtime"
+      },
+      {
+        "coordinate": "io.jsonwebtoken:jjwt-jackson",
+        "legacy_version": "0.10.5",
+        "reference_version": "0.13.0",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.apache.juneau:juneau-all",
+        "legacy_version": "8.1.1",
+        "reference_version": "9.1.0",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.apache.juneau:juneau-marshall-rdf",
+        "legacy_version": "8.1.1",
+        "reference_version": "8.2.0",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.apache.juneau:juneau-microservice-core",
+        "legacy_version": "8.1.1",
+        "reference_version": "9.1.0",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.apache.juneau:juneau-rest-client",
+        "legacy_version": "8.1.1",
+        "reference_version": "9.1.0",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.assertj:assertj-core",
+        "legacy_version": "3.13.2",
+        "reference_version": "3.27.6",
+        "legacy_scope": "test",
+        "reference_scope": "test"
+      },
+      {
+        "coordinate": "org.projectlombok:lombok",
+        "legacy_version": "1.18.34",
+        "reference_version": "1.18.42",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.slf4j:slf4j-api",
+        "legacy_version": "1.7.25",
+        "reference_version": "2.0.17",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.springframework.boot:spring-boot",
+        "legacy_version": "2.1.0.RELEASE",
+        "reference_version": "3.5.6",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.springframework.boot:spring-boot-starter-data-jpa",
+        "legacy_version": "2.1.0.RELEASE",
+        "reference_version": "3.5.6",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.springframework.boot:spring-boot-starter-security",
+        "legacy_version": "2.1.0.RELEASE",
+        "reference_version": "3.5.6",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.springframework.boot:spring-boot-starter-test",
+        "legacy_version": "2.1.6.RELEASE",
+        "reference_version": "3.5.6",
+        "legacy_scope": "test",
+        "reference_scope": "test"
+      },
+      {
+        "coordinate": "org.springframework.boot:spring-boot-starter-web",
+        "legacy_version": "2.1.0.RELEASE",
+        "reference_version": "3.5.6",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.springframework:spring-aspects",
+        "legacy_version": "5.1.8.RELEASE",
+        "reference_version": "6.2.11",
+        "legacy_scope": "",
+        "reference_scope": ""
+      },
+      {
+        "coordinate": "org.zalando:problem-spring-web",
+        "legacy_version": "0.24.0-RC.0",
+        "reference_version": "0.29.1",
+        "legacy_scope": "",
+        "reference_scope": ""
+      }
+    ]
+  },
+  "source_delta": {
+    "added_imports": [
+      "com.total.corp.common.csv.utils.HttpCsvHelpers",
+      "com.total.corp.common.query.HttpHelpers",
+      "com.total.corp.common.security.jwt.RoleUtils",
+      "com.total.corp.common.utils.IDConverterUtils",
+      "com.total.corp.common.web.SpringHelpers",
+      "com.total.corp.core.coredto.CriterionDTO",
+      "com.total.corp.core.coredto.CriterionValueDTO",
+      "com.total.corp.referential.controller.FuelRebateDelegationController",
+      "com.total.corp.referential.controller.NetworkCountryResultController",
+      "com.total.corp.referential.controller.PaymentConditionDelegationController",
+      "com.total.corp.referential.controller.ServiceFeeDelegationController",
+      "com.total.corp.referential.importer.processor.CSVSplitter",
+      "com.total.corp.referential.referentialdto.MetaDataStatsMsaDTO",
+      "com.total.corp.referential.referentialdto.StatsMsaDTO",
+      "com.total.corp.referential.service.AffiliateService",
+      "com.total.corp.referential.service.BusinessOrganisationService",
+      "com.total.corp.referential.service.DepartmentService",
+      "com.total.corp.referential.service.DiscountService",
+      "com.total.corp.referential.service.PcomService",
+      "com.total.corp.referential.service.PconService",
+      "com.total.corp.referential.service.PriceListCOMService",
+      "com.total.corp.referential.service.PriceListServiceLevelService",
+      "com.total.corp.referential.service.PricingValorizationModeService",
+      "com.total.corp.referential.service.RFAService",
+      "com.total.corp.referential.service.RebateService",
+      "com.total.corp.referential.service.ScomService",
+      "com.total.corp.referential.service.ServiceLevelService",
+      "com.total.corp.referential.service.SiteGroupService",
+      "com.total.corp.referential.service.StationService",
+      "com.total.corp.referential.service.StatsMsaService",
+      "com.total.corp.referential.service.ZoneGeoService",
+      "com.total.corp.services.spring.ReferentialInternalFacade",
+      "jakarta.servlet.http.HttpServletRequest",
+      "jakarta.xml.bind.annotation.XmlAccessType",
+      "jakarta.xml.bind.annotation.XmlAccessorType",
+      "jakarta.xml.bind.annotation.XmlElement",
+      "jakarta.xml.bind.annotation.XmlEnum",
+      "jakarta.xml.bind.annotation.XmlSchemaType",
+      "jakarta.xml.bind.annotation.XmlType",
+      "jakarta.xml.bind.annotation.adapters.XmlAdapter",
+      "java.util.stream.Collectors",
+      "org.slf4j.Logger",
+      "org.slf4j.LoggerFactory",
+      "org.springframework.beans.factory.annotation.Autowired",
+      "org.springframework.core.env.Environment",
+      "org.springframework.http.HttpStatus",
+      "org.springframework.stereotype.Component",
+      "org.springframework.util.MultiValueMap"
+    ],
+    "removed_imports": [
+      "javax.servlet.http.HttpServletRequest",
+      "javax.xml.bind.annotation.XmlAccessType",
+      "javax.xml.bind.annotation.XmlAccessorType",
+      "javax.xml.bind.annotation.XmlElement",
+      "javax.xml.bind.annotation.XmlEnum",
+      "javax.xml.bind.annotation.XmlSchemaType",
+      "javax.xml.bind.annotation.XmlType",
+      "javax.xml.bind.annotation.adapters.XmlAdapter",
+      "org.apache.juneau.rest.annotation.RestMethod",
+      "org.apache.juneau.rest.annotation.RestResource"
+    ],
+    "changed_import_families": [
+      {
+        "family": "javax.",
+        "legacy": [
+          "javax.persistence.EnumType",
+          "javax.persistence.Enumerated",
+          "javax.servlet.http.HttpServletRequest",
+          "javax.xml.bind.annotation.XmlAccessType",
+          "javax.xml.bind.annotation.XmlAccessorType",
+          "javax.xml.bind.annotation.XmlElement",
+          "javax.xml.bind.annotation.XmlEnum",
+          "javax.xml.bind.annotation.XmlSchemaType",
+          "javax.xml.bind.annotation.XmlType",
+          "javax.xml.bind.annotation.adapters.XmlAdapter"
+        ],
+        "reference": [
+          "javax.persistence.EnumType",
+          "javax.persistence.Enumerated"
+        ]
+      },
+      {
+        "family": "jakarta.",
+        "legacy": [],
+        "reference": [
+          "jakarta.servlet.http.HttpServletRequest",
+          "jakarta.xml.bind.annotation.XmlAccessType",
+          "jakarta.xml.bind.annotation.XmlAccessorType",
+          "jakarta.xml.bind.annotation.XmlElement",
+          "jakarta.xml.bind.annotation.XmlEnum",
+          "jakarta.xml.bind.annotation.XmlSchemaType",
+          "jakarta.xml.bind.annotation.XmlType",
+          "jakarta.xml.bind.annotation.adapters.XmlAdapter"
+        ]
+      },
+      {
+        "family": "org.apache.juneau.",
+        "legacy": [
+          "org.apache.juneau.annotation.BeanProperty",
+          "org.apache.juneau.http.annotation.Body",
+          "org.apache.juneau.http.annotation.Header",
+          "org.apache.juneau.http.annotation.Path",
+          "org.apache.juneau.http.annotation.Query",
+          "org.apache.juneau.http.exception.InternalServerError",
+          "org.apache.juneau.http.remote.RemoteMethod",
+          "org.apache.juneau.http.remote.RemoteResource",
+          "org.apache.juneau.rest.annotation.RestMethod",
+          "org.apache.juneau.rest.annotation.RestResource"
+        ],
+        "reference": [
+          "org.apache.juneau.annotation.BeanProperty",
+          "org.apache.juneau.http.annotation.Body",
+          "org.apache.juneau.http.annotation.Header",
+          "org.apache.juneau.http.annotation.Path",
+          "org.apache.juneau.http.annotation.Query",
+          "org.apache.juneau.http.exception.InternalServerError",
+          "org.apache.juneau.http.remote.RemoteMethod",
+          "org.apache.juneau.http.remote.RemoteResource"
+        ]
+      }
+    ],
+    "javax_to_jakarta_imports": [
+      {
+        "legacy_prefix": "javax.xml.bind.",
+        "reference_prefix": "jakarta.xml.bind.",
+        "legacy_matches": [
+          "javax.xml.bind.annotation.XmlAccessType",
+          "javax.xml.bind.annotation.XmlAccessorType",
+          "javax.xml.bind.annotation.XmlElement",
+          "javax.xml.bind.annotation.XmlEnum",
+          "javax.xml.bind.annotation.XmlSchemaType",
+          "javax.xml.bind.annotation.XmlType",
+          "javax.xml.bind.annotation.adapters.XmlAdapter"
+        ],
+        "reference_matches": [
+          "jakarta.xml.bind.annotation.XmlAccessType",
+          "jakarta.xml.bind.annotation.XmlAccessorType",
+          "jakarta.xml.bind.annotation.XmlElement",
+          "jakarta.xml.bind.annotation.XmlEnum",
+          "jakarta.xml.bind.annotation.XmlSchemaType",
+          "jakarta.xml.bind.annotation.XmlType",
+          "jakarta.xml.bind.annotation.adapters.XmlAdapter"
+        ]
+      },
+      {
+        "legacy_prefix": "javax.servlet.",
+        "reference_prefix": "jakarta.servlet.",
+        "legacy_matches": [
+          "javax.servlet.http.HttpServletRequest"
+        ],
+        "reference_matches": [
+          "jakarta.servlet.http.HttpServletRequest"
+        ]
+      },
+      {
+        "legacy_prefix": "javax.persistence.",
+        "reference_prefix": "jakarta.persistence.",
+        "legacy_matches": [
+          "javax.persistence.EnumType",
+          "javax.persistence.Enumerated"
+        ],
+        "reference_matches": []
+      }
+    ]
+  },
+  "runtime_environment": {
+    "workflow_files": [
+      ".github/workflows/GitGuardian-all-commits.yml",
+      ".github/workflows/main-artifact.yml",
+      ".github/workflows/sonarqube.yml"
+    ],
+    "detected_indicators": [
+      "aws-secrets",
+      "codeartifact",
+      "github-workflows",
+      "jdk-path-assumptions",
+      "maven-path-assumptions",
+      "maven-settings-injection"
+    ],
+    "environment_variables": [
+      "AWS_ACCESS_KEY_ID",
+      "AWS_ACOUNT_ID",
+      "AWS_REGION",
+      "AWS_ROLE_GITHUB",
+      "AWS_ROLE_TO_ASSUME",
+      "AWS_SECRET_ACCESS_KEY",
+      "CODEARTIFACT_AUTH_TOKEN",
+      "CODEARTIFACT_DOMAINE",
+      "GITHUB_ENV",
+      "JAVA_HOME"
+    ],
+    "config_files": [
+      ".github/workflows/GitGuardian-all-commits.yml",
+      ".github/workflows/main-artifact.yml",
+      ".github/workflows/sonarqube.yml"
+    ],
+    "resource_config_usage": [
+      "Environment"
+    ],
+    "keystore_files": [],
+    "yaml_or_properties_files": [
+      ".github/workflows/GitGuardian-all-commits.yml",
+      ".github/workflows/main-artifact.yml",
+      ".github/workflows/sonarqube.yml"
+    ]
+  },
+  "api_migration_indicators": {
+    "jjwt_parser_api": {
+      "detected": true,
+      "legacy_markers": [],
+      "reference_markers": [],
+      "legacy_dependencies": [
+        "io.jsonwebtoken:jjwt-api",
+        "io.jsonwebtoken:jjwt-impl",
+        "io.jsonwebtoken:jjwt-jackson"
+      ],
+      "reference_dependencies": [
+        "io.jsonwebtoken:jjwt-api",
+        "io.jsonwebtoken:jjwt-impl",
+        "io.jsonwebtoken:jjwt-jackson"
+      ],
+      "evidence_files": []
+    },
+    "juneau_restclient_api": {
+      "detected": true,
+      "legacy_markers": [],
+      "reference_markers": [],
+      "legacy_dependencies": [
+        "org.apache.juneau:juneau-all",
+        "org.apache.juneau:juneau-marshall-rdf",
+        "org.apache.juneau:juneau-microservice-core",
+        "org.apache.juneau:juneau-rest-client"
+      ],
+      "reference_dependencies": [
+        "org.apache.juneau:juneau-all",
+        "org.apache.juneau:juneau-marshall",
+        "org.apache.juneau:juneau-marshall-rdf",
+        "org.apache.juneau:juneau-microservice-core",
+        "org.apache.juneau:juneau-rest-client",
+        "org.apache.juneau:juneau-rest-server"
+      ],
+      "evidence_files": []
+    },
+    "azure_sdk": {
+      "detected": true,
+      "legacy_markers": [
+        "com.microsoft.azure"
+      ],
+      "reference_markers": [],
+      "legacy_dependencies": [
+        "com.microsoft.azure:azure-servicebus-spring-boot-starter"
+      ],
+      "reference_dependencies": [
+        "com.microsoft.azure:azure-servicebus-spring-boot-starter"
+      ],
+      "evidence_files": [
+        "msa-dto/pom copy.xml",
+        "msa-dto/pom.xml"
+      ]
+    },
+    "spring_security_5_to_6": {
+      "detected": false,
+      "legacy_markers": [],
+      "reference_markers": [],
+      "legacy_dependencies": [],
+      "reference_dependencies": [],
+      "evidence_files": []
+    },
+    "thymeleaf_spring_compatibility": {
+      "detected": false,
+      "legacy_dependencies": [],
+      "reference_dependencies": [],
+      "evidence_files": []
+    }
+  },
+  "suspicious_artifacts": [
+    {
+      "type": "duplicate_pom",
+      "path": "msa-dto/pom copy.xml",
+      "reason": "pom copy.xml"
+    },
+    {
+      "type": "duplicate_pom_like_file",
+      "path": "msa-dto/pom copy.xml",
+      "reason": "multiple pom-like files in directory"
+    },
+    {
+      "type": "duplicate_pom_like_file",
+      "path": "msa-dto/pom.xml",
+      "reason": "multiple pom-like files in directory"
+    }
+  ],
+  "recommended_capability_packs": [
+    "internal-dependency-graph",
+    "javax-to-jakarta",
+    "jjwt-modernization",
+    "juneau-modernization",
+    "maven-build-environment",
+    "runtime-environment-contract",
+    "spring-boot-2-to-3"
+  ]
+}
