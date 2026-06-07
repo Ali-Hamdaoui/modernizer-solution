@@ -1,7 +1,9 @@
 {
   "schema_version": "1.0.0",
   "legacy": {
-    "root_path": "C:\\Users\\ilyas.abarbach\\AppData\\Local\\Temp\\reference-delta-077245d514334df798948876fd1222f5\\msa-dto-legacy",
+    "root_label": "msa-dto-legacy",
+    "root_basename": "msa-dto-legacy",
+    "input_name": "msa-dto-legacy",
     "primary_pom": "msa-dto/pom.xml",
     "discovered_poms": [
       "msa-dto/pom.xml"
@@ -63,7 +65,9 @@
     "import_count": 293
   },
   "reference": {
-    "root_path": "C:\\Users\\ilyas.abarbach\\AppData\\Local\\Temp\\reference-delta-077245d514334df798948876fd1222f5\\msa-dto",
+    "root_label": "msa-dto",
+    "root_basename": "msa-dto",
+    "input_name": "msa-dto",
     "primary_pom": "msa-dto/pom.xml",
     "discovered_poms": [
       "msa-dto/pom.xml"

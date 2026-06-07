@@ -214,6 +214,9 @@ def test_reference_delta_analyzer_detects_nested_poms_and_core_deltas(tmp_path: 
 
     payload = result.payload
     assert output.is_file()
+    assert "root_path" not in payload["legacy"]
+    assert payload["legacy"]["root_basename"] == "legacy"
+    assert payload["reference"]["root_basename"] == "reference"
     assert payload["legacy"]["primary_pom"] == "service/pom.xml"
     assert payload["reference"]["primary_pom"] == "service/pom.xml"
     assert payload["legacy"]["discovered_poms"] == ["pom.xml", "service/pom.xml"]
@@ -265,6 +268,14 @@ def test_reference_delta_analyzer_detects_import_api_runtime_and_suspicious_indi
     assert "jdk-path-assumptions" in payload["runtime_environment"]["detected_indicators"]
     suspicious_types = {item["type"] for item in payload["suspicious_artifacts"]}
     assert {"backup_file", "duplicate_pom", "copied_java_file", "duplicate_pom_like_file"} <= suspicious_types
+    suspicious_paths = {item["path"] for item in payload["suspicious_artifacts"]}
+    assert "service/TemplateEmailConstants.java" not in suspicious_paths
+    assert "service/ThymeleafTemplateConfig.java" not in suspicious_paths
+    assert "service/some-temp-file.java" in suspicious_paths
+    assert "service/OldSecurityConfig.java" in suspicious_paths
+    assert "service/pom copy.xml" in suspicious_paths
+    assert "service/pom.backup" in suspicious_paths
+    assert "service/notes.bak" in suspicious_paths
 
 
 def test_reference_delta_analyzer_generates_generic_capability_packs_and_writes_json(tmp_path: Path) -> None:
@@ -352,3 +363,7 @@ jobs:
         (root / "service" / "pom.backup").write_text("<project />\n", encoding="utf-8")
         (root / "service" / "notes.bak").write_text("old\n", encoding="utf-8")
         (root / "service" / "DemoService copy.java").write_text("class Copy {}\n", encoding="utf-8")
+        (root / "service" / "TemplateEmailConstants.java").write_text("class TemplateEmailConstants {}\n", encoding="utf-8")
+        (root / "service" / "ThymeleafTemplateConfig.java").write_text("class ThymeleafTemplateConfig {}\n", encoding="utf-8")
+        (root / "service" / "some-temp-file.java").write_text("class TempFile {}\n", encoding="utf-8")
+        (root / "service" / "OldSecurityConfig.java").write_text("class OldSecurityConfig {}\n", encoding="utf-8")

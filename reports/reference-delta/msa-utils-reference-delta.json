@@ -1,7 +1,9 @@
 {
   "schema_version": "1.0.0",
   "legacy": {
-    "root_path": "C:\\Users\\ilyas.abarbach\\AppData\\Local\\Temp\\reference-delta-077245d514334df798948876fd1222f5\\msa-utils-legacy",
+    "root_label": "msa-utils-legacy",
+    "root_basename": "msa-utils-legacy",
+    "input_name": "msa-utils-legacy",
     "primary_pom": "common-utils/pom.xml",
     "discovered_poms": [
       "common-utils/pom.xml"
@@ -79,7 +81,9 @@
     "import_count": 458
   },
   "reference": {
-    "root_path": "C:\\Users\\ilyas.abarbach\\AppData\\Local\\Temp\\reference-delta-077245d514334df798948876fd1222f5\\msa-utils",
+    "root_label": "msa-utils",
+    "root_basename": "msa-utils",
+    "input_name": "msa-utils",
     "primary_pom": "common-utils/pom.xml",
     "discovered_poms": [
       "common-utils/pom.xml"
@@ -1160,16 +1164,6 @@
       "reason": ".bak file"
     },
     {
-      "type": "temporary_migration_remnant",
-      "path": "common-utils/src/main/java/com/total/corp/common/mail/service/TemplateEmailConstants.java",
-      "reason": "temporary migration artifact"
-    },
-    {
-      "type": "temporary_migration_remnant",
-      "path": "common-utils/src/main/java/com/total/corp/common/mail/utils/ThymeleafTemplateConfig.java",
-      "reason": "temporary migration artifact"
-    },
-    {
       "type": "backup_file",
       "path": "common-utils/src/main/java/com/total/corp/common/rpc/MsaRpcClientFactory.java.bak",
       "reason": ".bak file"
@@ -1233,11 +1227,6 @@
       "type": "backup_file",
       "path": "common-utils/src/main/java/com/total/corp/common/swap/InstantSwap.java.bak",
       "reason": ".bak file"
-    },
-    {
-      "type": "temporary_migration_remnant",
-      "path": "common-utils/src/main/java/com/total/corp/common/validation/field/NotEmptyFieldValidator.java",
-      "reason": "temporary migration artifact"
     },
     {
       "type": "backup_file",

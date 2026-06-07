@@ -69,6 +69,11 @@ Top-level report sections:
 * `suspicious_artifacts`
 * `recommended_capability_packs`
 
+Path hygiene:
+
+* report keeps evidence paths project-relative
+* report does not store absolute local machine root paths
+
 ## How To Read Report
 
 Start with:

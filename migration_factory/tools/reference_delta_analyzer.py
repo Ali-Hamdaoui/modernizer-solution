@@ -33,6 +33,7 @@ TEXT_SUFFIXES = {
 ENV_VAR_PATTERN = re.compile(r"\b([A-Z][A-Z0-9_]{2,})\b")
 IMPORT_PATTERN = re.compile(r"^\s*import\s+([a-zA-Z0-9_.*]+)\s*;", re.MULTILINE)
 METHOD_PATTERN = re.compile(r"\b(public|protected|private)\s+[\w<>\[\], ?]+\s+(\w+\s*\([^)]*\))")
+SUSPICIOUS_NAME_PATTERN = re.compile(r"(^|[-_. ])(tmp|temp|old|backup)($|[-_. ])", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -284,7 +285,9 @@ def build_project_summary(
 ) -> dict[str, Any]:
     imports = collect_imports(snapshot)
     return {
-        "root_path": str(root),
+        "root_label": root.name.lower(),
+        "root_basename": root.name,
+        "input_name": root.name,
         "primary_pom": primary_pom.relative_to(root).as_posix(),
         "discovered_poms": [path.relative_to(root).as_posix() for path in pom_files],
         "coordinates": dict(pom_data["coordinates"]),
@@ -651,7 +654,7 @@ def detect_suspicious_artifacts(root: Path, snapshot: dict[str, str]) -> list[di
             findings.append({"type": "duplicate_pom", "path": rel, "reason": "pom copy.xml"})
         elif lower.endswith(" copy.java") or "(copy)" in lower or lower.endswith("_copy.java"):
             findings.append({"type": "copied_java_file", "path": rel, "reason": "copied Java source"})
-        elif any(token in lower for token in ("tmp", "temp", "migration-old", "old", "backup")) and path.suffix.lower() in {".java", ".xml", ".properties", ".yml", ".yaml"}:
+        elif is_suspicious_temporary_name(path) and path.suffix.lower() in {".java", ".xml", ".properties", ".yml", ".yaml"}:
             findings.append({"type": "temporary_migration_remnant", "path": rel, "reason": "temporary migration artifact"})
     for items in pom_like_by_dir.values():
         if len(items) > 1:
@@ -702,6 +705,20 @@ def dedupe_findings(findings: list[dict[str, str]]) -> list[dict[str, str]]:
         seen.add(key)
         result.append(item)
     return result
+
+
+def is_suspicious_temporary_name(path: Path) -> bool:
+    stem = path.stem
+    lowered = stem.lower()
+    if "migration-old" in lowered:
+        return True
+    normalized = normalize_name_for_tokens(stem)
+    return bool(SUSPICIOUS_NAME_PATTERN.search(normalized))
+
+
+def normalize_name_for_tokens(name: str) -> str:
+    with_boundaries = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name)
+    return with_boundaries.replace("_", " ").replace("-", " ").replace(".", " ")
 
 
 def should_skip_relative_parts(parts: tuple[str, ...]) -> bool:
