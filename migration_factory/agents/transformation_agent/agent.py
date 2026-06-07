@@ -7,6 +7,7 @@ import os
 import time
 from typing import Any
 
+from migration_factory.agents.build_agent.detection import JavaProjectDetectionError, detect_java_project
 from migration_factory.contracts.migration import (
     BuildValidationStatus,
     LedgerError,
@@ -185,7 +186,7 @@ def _run_unit(
                 continue
             result = run_command(
                 command,
-                cwd=plan.target_path,
+                cwd=_rewrite_working_directory(plan.target_path),
                 stream_output=stream_output,
                 env=_unit_java_env(unit),
             )
@@ -864,3 +865,11 @@ def _result_from_ledger(ledger_file: Path, ledger: dict[str, Any]) -> Transforma
         completed_units=[str(item) for item in ledger.get("completed_units", [])],
         blocked_unit=ledger.get("blocked_unit"),
     )
+
+
+def _rewrite_working_directory(target_path: Path) -> Path:
+    try:
+        project = detect_java_project(target_path)
+    except JavaProjectDetectionError:
+        return target_path
+    return project.path

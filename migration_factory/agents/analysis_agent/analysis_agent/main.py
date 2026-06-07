@@ -1,6 +1,7 @@
 import argparse
 import inspect
 import json
+from pathlib import Path
 import sys
 from dataclasses import dataclass
 from typing import Dict, List
@@ -10,7 +11,7 @@ from context_manager import MigrationContext
 from copilot_enricher import enrich_with_ai
 from dependency_adapter import run_dependency_tree
 from import_scanner import scan_java_imports
-from maven_scanner import load_profile_target_stack, scan_root_pom
+from maven_scanner import load_profile_target_stack, resolve_project_pom_path, scan_root_pom
 from openrewrite_adapter import run_openrewrite_dryrun
 from readonly_verifier import snapshot_tree, write_read_only_verification
 from report_assembler import assemble_report
@@ -34,7 +35,8 @@ def run_analysis_agent(context: MigrationContext) -> AnalysisResult:
     errors: List[str] = []
 
     legacy_root = context.validate_read_path(context.legacy_app_path)
-    legacy_pom = context.validate_read_path(f"{legacy_root}/pom.xml")
+    legacy_pom = str(resolve_project_pom_path(legacy_root))
+    context.project_root_path = str(Path(legacy_pom).parent)
     modernized_root = context.validate_read_path(context.modernized_app_path)
     before_legacy = snapshot_tree(legacy_root)
     before_modernized = snapshot_tree(modernized_root)

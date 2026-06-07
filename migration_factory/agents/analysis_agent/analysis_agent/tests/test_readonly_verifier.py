@@ -73,3 +73,19 @@ def test_readonly_verification_ignores_build_and_cache_paths(tmp_path):
 
     assert verification["status"] == "PASS"
     assert verification["violations"] == []
+
+
+def test_readonly_verification_allows_other_migration_run_artifacts(tmp_path):
+    legacy, modernized, output = _roots(tmp_path)
+    before_legacy = snapshot_tree(legacy)
+    before_modernized = snapshot_tree(modernized)
+
+    prior_run = modernized / ".migration" / "runs" / "run-0" / "analysis"
+    prior_run.mkdir(parents=True, exist_ok=True)
+    (prior_run / "analysis_report.json").write_text("{}\n", encoding="utf-8")
+
+    verification = _verify(legacy, modernized, output, before_legacy, before_modernized)
+
+    assert verification["status"] == "PASS"
+    assert verification["source_modified"] is False
+    assert verification["violations"] == []

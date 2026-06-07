@@ -579,6 +579,15 @@ units:
                 transformations[1]["operations"][0],
                 {"op": "align_jackson_dependency_management", "version": "2.13.5"},
             )
+            self.assertEqual(
+                transformations[1]["operations"][1],
+                {
+                    "op": "remove_dependency_if_version_matches",
+                    "group_id": "org.mockito",
+                    "artifact_id": "mockito-inline",
+                    "version_pattern": r"^[0-9]+(?:\.[0-9]+)*\.x$",
+                },
+            )
 
     def test_execution_plan_adapter_passes_optional_jackson_artifacts_from_dependency_graph(self) -> None:
         with workspace_temp_dir() as tmp:
@@ -2071,6 +2080,53 @@ migration_units:
             self.assertEqual(transformation["status"], "applied")
             self.assertEqual(transformation["patches"][0]["file"], "src\\test\\java\\demo\\DemoTest.java")
 
+    def test_openrewrite_runs_from_nested_maven_project_root(self) -> None:
+        with workspace_temp_dir() as tmp:
+            sandbox = tmp / "sandbox"
+            module = sandbox / "common-utils"
+            module.mkdir(parents=True)
+            (module / "pom.xml").write_text("<project />", encoding="utf-8")
+            plugin = tmp / "plugin.xml"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+            plan_path = tmp / "plan.yaml"
+            plan_path.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: "run-1"
+  name: "Test"
+workspaces:
+  target:
+    path: "."
+    migration_dir: ".migration"
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: "spring-boot-2-7-stabilization"
+    title: "Stabilize"
+    expected_files: ["target/classes"]
+    transformations:
+      - type: openrewrite
+        active_recipes:
+          - org.openrewrite.java.spring.boot2.UpgradeSpringBoot_2_7
+        recipe_artifacts:
+          - org.openrewrite.recipe:rewrite-spring:6.30.4
+    checks:
+      - id: validation
+        command: mvn clean test
+        required: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            with mock.patch(
+                "migration_factory.agents.transformation_agent.agent.run_command",
+                return_value=CommandResult("mvn rewrite", 0, ["ok"], [], 0.1),
+            ) as run_command_mock:
+                result = run_transformation_agent(sandbox, plugin, plan_path, wait_for_continue=False)
+
+            self.assertEqual(result.status, LedgerStatus.AWAITING_BUILD_AGENT)
+            self.assertEqual(run_command_mock.call_args.kwargs["cwd"], module)
+
     def test_test_javax_servlet_import_records_changed_test_file_in_ledger(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"
@@ -3159,6 +3215,38 @@ migration_units:
                 self.assertEqual(patches[0].new_range, "[21,)")
                 self.assertIn("<version>[21,)</version>", (app / "pom.xml").read_text(encoding="utf-8"))
 
+    def test_maven_enforcer_java_range_patch_falls_back_to_nested_single_module_pom(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            module = app / "common-utils"
+            module.mkdir(parents=True)
+            (module / "pom.xml").write_text(
+                """<project>
+  <build>
+    <plugins>
+      <plugin>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <configuration>
+          <rules>
+            <requireJavaVersion>
+              <version>[1.8,1.9)</version>
+            </requireJavaVersion>
+          </rules>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_maven_enforcer_java_version(app, unit_id="java-21")
+
+            self.assertEqual(len(patches), 1)
+            self.assertEqual(patches[0].file, "common-utils/pom.xml")
+            self.assertIn("<version>[21,)</version>", (module / "pom.xml").read_text(encoding="utf-8"))
+
     def test_pom_property_patch_updates_archunit_java21_version(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"
@@ -3188,6 +3276,36 @@ migration_units:
             self.assertIn(
                 "<archunit.version>1.4.1</archunit.version>",
                 (app / "pom.xml").read_text(encoding="utf-8"),
+            )
+
+    def test_pom_property_patch_falls_back_to_nested_single_module_pom(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            module = app / "common-utils"
+            module.mkdir(parents=True)
+            (module / "pom.xml").write_text(
+                """<project>
+  <properties>
+    <archunit.version>0.23.1</archunit.version>
+  </properties>
+</project>
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_pom_property(
+                app,
+                unit_id="java-21",
+                property_name="archunit.version",
+                old_value="0.23.1",
+                new_value="1.4.1",
+            )
+
+            self.assertEqual(len(patches), 1)
+            self.assertEqual(patches[0].file, "common-utils/pom.xml")
+            self.assertIn(
+                "<archunit.version>1.4.1</archunit.version>",
+                (module / "pom.xml").read_text(encoding="utf-8"),
             )
 
     def test_boot4_source_patches_update_security_and_batch_config(self) -> None:
@@ -4839,6 +4957,94 @@ migration_units:
             )
             for call_args in run_build.call_args_list:
                 self.assertNotIn("enforcer.skip", str(call_args.kwargs.get("validation_command")))
+
+    def test_transform_v1_after_approval_defaults_openrewrite_apply_goal_from_sandbox_policy(self) -> None:
+        with workspace_temp_dir() as tmp:
+            legacy = tmp / "legacy-app"
+            modernized = tmp / "modernized-app"
+            ai_hub = tmp / "ai-hub"
+            run_id = "run-1"
+            run_dir = _run_dir(modernized, run_id)
+            legacy.mkdir()
+            modernized.mkdir()
+            (legacy / "pom.xml").write_text("<project />", encoding="utf-8")
+            _write_ai_hub_profile(ai_hub)
+            (ai_hub / "policies").mkdir(parents=True, exist_ok=True)
+            (ai_hub / "policies" / "transformation.yaml").write_text(
+                """
+id: transformation
+openrewrite:
+  preview_allowed: true
+  apply_allowed: false
+  sandbox_apply_allowed: true
+  allowed_preview_goals:
+    - dryRun
+    - dryRunNoFork
+    - discover
+  allowed_sandbox_apply_goals:
+    - run
+    - runNoFork
+    - rewrite:run
+    - rewrite:runNoFork
+  forbidden_apply_goals:
+    - run
+    - runNoFork
+    - rewrite:run
+    - rewrite:runNoFork
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            _write_approved_run_artifacts(modernized, run_id, include_rewrite_plan=True)
+            ledger_file = run_dir / "workspaces" / "sandbox" / ".migration" / "ledger.json"
+
+            def run_agent_side_effect(*args: object, **kwargs: object) -> TransformationRunResult:
+                unit_id = str(kwargs.get("start_unit") or "baseline")
+                _write_awaiting_build_ledger(ledger_file, unit_id)
+                return TransformationRunResult(
+                    ledger_file=ledger_file,
+                    status=LedgerStatus.AWAITING_BUILD_AGENT,
+                    completed_units=[],
+                )
+
+            with mock.patch(
+                "migration_factory.transform_v1_after_approval.run_transformation_agent",
+                side_effect=run_agent_side_effect,
+            ):
+                with mock.patch(
+                    "migration_factory.transform_v1_after_approval.run_build_agent",
+                    side_effect=lambda **kwargs: BuildRunResult(
+                        succeeded=True,
+                        result_kind="success",
+                        message="Application started successfully",
+                    ),
+                ):
+                    with mock.patch(
+                        "migration_factory.transform_v1_after_approval.run_test_agent",
+                        return_value=_passed_test_result(run_dir),
+                    ):
+                        result = transform_v1_after_approval_main(
+                            [
+                                "--run-dir",
+                                str(run_dir),
+                                "--legacy-app",
+                                str(legacy),
+                                "--modernized-app",
+                                str(modernized),
+                                "--ai-hub",
+                                str(ai_hub),
+                                "--profile",
+                                "java17",
+                                "--approved-by",
+                                "human",
+                            ]
+                        )
+
+            self.assertEqual(result, 0)
+            plan_payload = yaml.safe_load(
+                (run_dir / "transformation" / "transformation_execution_plan.yaml").read_text(encoding="utf-8")
+            )
+            self.assertEqual(plan_payload["migration_units"][1]["transformations"][0]["apply_goal"], "runNoFork")
 
     def test_transform_v1_java21_validation_sees_patched_sandbox_pom(self) -> None:
         with workspace_temp_dir() as tmp:

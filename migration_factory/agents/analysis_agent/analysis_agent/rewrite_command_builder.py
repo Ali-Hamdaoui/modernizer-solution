@@ -1,6 +1,6 @@
 import shutil
 
-_ALLOWED_GOALS = {"dryRun"}
+_ALLOWED_GOALS = {"dryRun", "dryRunNoFork", "discover"}
 _FORBIDDEN_GOALS = {"run", "runNoFork"}
 
 

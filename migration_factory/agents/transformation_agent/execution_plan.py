@@ -487,7 +487,15 @@ def _deterministic_source_transformations(
             {"type": "spring_data_sort_by_factory_method"},
             {
                 "type": "maven_pom_patch",
-                "operations": [jackson_operation],
+                "operations": [
+                    jackson_operation,
+                    {
+                        "op": "remove_dependency_if_version_matches",
+                        "group_id": "org.mockito",
+                        "artifact_id": "mockito-inline",
+                        "version_pattern": r"^[0-9]+(?:\.[0-9]+)*\.x$",
+                    },
+                ],
             },
         ]
     if unit_id == "java-17":

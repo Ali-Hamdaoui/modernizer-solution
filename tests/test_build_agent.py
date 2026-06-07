@@ -230,6 +230,18 @@ public class Application {
             self.assertEqual(info.requested_path, project / "shoppoc-app")
             self.assertEqual(info.maven_modules, ("shoppoc-user", "shoppoc-app"))
 
+    def test_detects_nested_single_module_maven_project_from_repo_root(self) -> None:
+        with workspace_temp_dir() as project:
+            module = project / "common-utils"
+            module.mkdir(parents=True)
+            (module / "pom.xml").write_text("<project />", encoding="utf-8")
+
+            info = detect_java_project(project)
+
+            self.assertEqual(info.path, module)
+            self.assertEqual(info.requested_path, project)
+            self.assertEqual(info.build_tool, BuildTool.MAVEN)
+
     def test_baseline_multi_module_startup_validation_uses_app_pom_from_reactor_root(self) -> None:
         with workspace_temp_dir() as project:
             _write_multi_module_project(project)
@@ -423,6 +435,91 @@ public class Application {
             self.assertEqual(payload["java_home_env"], "BROKEN_JAVA_HOME")
             self.assertEqual(payload["java_home"], str(project / "missing-jdk"))
             self.assertIn("invalid JAVA_HOME", payload["message"])
+
+    def test_profile_mapped_unit_java_home_env_falls_back_to_compatible_java_home(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_multi_module_project(project)
+            current_java_home = project / "jdk17"
+            (current_java_home / "bin").mkdir(parents=True)
+            (current_java_home / "bin" / ("java.exe" if os.name == "nt" else "java")).write_text("", encoding="utf-8")
+            process_result = ProcessRunResult(
+                classification=BuildClassification(BuildResultKind.SUCCESS, "Build completed successfully"),
+                exit_code=0,
+            )
+
+            def _version_side_effect(command, env=None):
+                return ProcessRunResult(
+                    classification=BuildClassification(BuildResultKind.SUCCESS, "version checked"),
+                    exit_code=0,
+                    stderr=['openjdk version "17.0.19"'],
+                )
+
+            with patch.dict(os.environ, {"JAVA_HOME": str(current_java_home) + os.sep}, clear=False):
+                with patch(
+                    "migration_factory.agents.build_agent.agent._run_version_command",
+                    side_effect=_version_side_effect,
+                ):
+                    with patch(
+                        "migration_factory.agents.build_agent.agent.run_until_exit",
+                        return_value=process_result,
+                    ) as run_process:
+                        result = run_build_agent(
+                            project / "shoppoc-app",
+                            stream_output=False,
+                            validation_unit_id="baseline",
+                            validation_command="mvn clean test",
+                            java_home_env="JAVA_HOME_11",
+                            source_jdk_home_env="JAVA_HOME_11",
+                        )
+
+            self.assertTrue(result.succeeded)
+            env = run_process.call_args.kwargs["env"]
+            self.assertEqual(env["JAVA_HOME"], str(current_java_home))
+            self.assertIn("--add-exports=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED", env["MAVEN_OPTS"])
+            self.assertEqual(
+                run_process.call_args.kwargs["command"],
+                [run_process.call_args.kwargs["command"][0], "-DskipTests", "clean", "test"],
+            )
+            self.assertTrue(any("Maven test execution skipped" in warning for warning in result.warnings))
+
+    def test_missing_source_jdk_env_falls_back_to_compatible_java_home(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_multi_module_project(project)
+            current_java_home = project / "jdk17"
+            (current_java_home / "bin").mkdir(parents=True)
+            (current_java_home / "bin" / ("java.exe" if os.name == "nt" else "java")).write_text("", encoding="utf-8")
+            process_result = ProcessRunResult(
+                classification=BuildClassification(BuildResultKind.SUCCESS, "Build completed successfully"),
+                exit_code=0,
+            )
+
+            def _version_side_effect(command, env=None):
+                return ProcessRunResult(
+                    classification=BuildClassification(BuildResultKind.SUCCESS, "version checked"),
+                    exit_code=0,
+                    stderr=['openjdk version "17.0.12"'],
+                )
+
+            with patch.dict(os.environ, {"JAVA_HOME": str(current_java_home)}, clear=False):
+                with patch(
+                    "migration_factory.agents.build_agent.agent._run_version_command",
+                    side_effect=_version_side_effect,
+                ):
+                    with patch(
+                        "migration_factory.agents.build_agent.agent.run_until_exit",
+                        return_value=process_result,
+                    ) as run_process:
+                        result = run_build_agent(
+                            project / "shoppoc-app",
+                            stream_output=False,
+                            validation_unit_id="baseline",
+                            validation_command="mvn clean test",
+                            source_jdk_home_env="JAVA_HOME_11",
+                        )
+
+            self.assertTrue(result.succeeded)
+            env = run_process.call_args.kwargs["env"]
+            self.assertEqual(env["JAVA_HOME"], str(current_java_home))
 
     def test_failure_classifier_detects_jakarta_validation_handler_mismatch(self) -> None:
         with workspace_temp_dir() as project:

@@ -49,6 +49,30 @@ def test_scan_root_pom_extracts_correct_versions(tmp_path):
     assert "warnings" in result
 
 
+def test_scan_root_pom_resolves_nested_primary_pom_from_project_root(tmp_path):
+    module_root = tmp_path / "common-utils"
+    module_root.mkdir(parents=True)
+    _write_java_source(module_root, "com/example/NestedLibrary.java", "package com.example;\nclass NestedLibrary {}\n")
+    (module_root / "pom.xml").write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+    <project xmlns="http://maven.apache.org/POM/4.0.0">
+        <properties>
+            <java.version>11</java.version>
+            <spring-boot.version>2.1.6.RELEASE</spring-boot.version>
+        </properties>
+    </project>
+    """,
+        encoding="utf-8",
+    )
+
+    result = scan_root_pom(str(tmp_path))
+
+    assert result["source_stack"]["java"] == "11"
+    assert result["source_stack"]["spring_boot"] == "2.1.6.RELEASE"
+    assert result["source_stack"]["build_tool"] == "maven"
+    assert any("Resolved primary Maven project POM" in warning for warning in result["warnings"])
+
+
 def test_scan_root_pom_prefers_parent_boot_version(tmp_path):
     fake_pom = tmp_path / "pom.xml"
     _write_java_source(tmp_path, "com/example/App.java", "package com.example;\nclass App {}\n")

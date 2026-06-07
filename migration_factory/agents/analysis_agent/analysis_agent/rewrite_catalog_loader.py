@@ -11,7 +11,11 @@ _REQUIRED_KEYS = (
     "openrewrite.dry_run",
 )
 
-_ONLY_ANALYSIS_GOAL = "rewrite:dryRun"
+_PREFERRED_ANALYSIS_GOALS = (
+    "rewrite:dryRunNoFork",
+    "rewrite:dryRun",
+    "rewrite:discover",
+)
 
 
 def _catalog_candidates(context):
@@ -61,6 +65,14 @@ def _dedupe(values):
 
 def _is_apply_goal(goal):
     return _as_rewrite_goal(goal) in {"rewrite:run", "rewrite:runNoFork"}
+
+
+def _select_analysis_goal(preview_goals):
+    normalized = [_as_rewrite_goal(goal) for goal in preview_goals]
+    for preferred in _PREFERRED_ANALYSIS_GOALS:
+        if preferred in normalized:
+            return preferred
+    return None
 
 
 def _load_yaml(path):
@@ -139,11 +151,14 @@ def _load_ai_hub_catalog(context):
                 "catalog_id": catalog.get("id"),
                 "preview_goals": preview_goals,
             }
-        selected_goal = _ONLY_ANALYSIS_GOAL
-        if selected_goal not in preview_goals:
+        selected_goal = _select_analysis_goal(preview_goals)
+        if selected_goal is None:
             return {
                 "status": "FAILED",
-                "errors": [f"Catalog does not allow required Analysis goal: {selected_goal}"],
+                "errors": [
+                    "Catalog does not allow a supported Analysis preview goal: "
+                    + ", ".join(_PREFERRED_ANALYSIS_GOALS)
+                ],
                 "path": str(catalog_path),
                 "profile_id": profile_id,
                 "catalog_id": catalog.get("id"),
@@ -214,7 +229,7 @@ def load_rewrite_catalog(context):
                 "catalog_id": None,
                 "preview_goals": [_as_rewrite_goal(dry_run_goal)],
             }
-        if _as_rewrite_goal(dry_run_goal) != _ONLY_ANALYSIS_GOAL:
+        if _as_rewrite_goal(dry_run_goal) not in _PREFERRED_ANALYSIS_GOALS:
             return {
                 "status": "FAILED",
                 "errors": [f"Unsupported OpenRewrite goal: {_as_rewrite_goal(dry_run_goal)}"],

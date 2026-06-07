@@ -328,3 +328,34 @@ def test_invalid_source_jdk_env_gives_structured_diagnostic(monkeypatch, tmp_pat
     impact = json.loads((output / "rewrite_impact_summary.json").read_text(encoding="utf-8"))
     assert impact["failure_category"] == "rewrite_preview_failed"
     assert impact["jdk_diagnostic"]["status"] == "INVALID_SOURCE_JDK_ENV"
+
+
+def test_missing_requested_source_jdk_env_uses_compatible_java_home(monkeypatch, tmp_path):
+    legacy = tmp_path / "legacy"
+    output = tmp_path / "out"
+    modernized = tmp_path / "modernized"
+    java_home = tmp_path / "current-jdk"
+    (java_home / "bin").mkdir(parents=True)
+    (java_home / "bin" / "java.exe").write_text("", encoding="utf-8")
+    legacy.mkdir()
+    output.mkdir()
+    modernized.mkdir()
+    _write_catalog(modernized, source_jdk_home_env="JAVA_HOME_11")
+    monkeypatch.setenv("JAVA_HOME", str(java_home))
+    monkeypatch.delenv("JAVA_HOME_11", raising=False)
+
+    def _run(cmd, *args, **kwargs):
+        if str(cmd[0]).endswith("java.exe") and len(cmd) > 1 and cmd[1] == "-version":
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr='openjdk version "17.0.19"\n')
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("subprocess.run", _run)
+
+    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized))
+
+    assert result["status"] == "USED"
+    assert result["java_home_env_used"] == "JAVA_HOME"
+    assert result["java_home_used"] == str(java_home)
+    assert result["java_version_used"] == "17.0.19"
+    assert result["jdk_diagnostic"]["status"] == "FALLBACK_COMPATIBLE_CURRENT_PROCESS"
+    assert any("using compatible current process Java runtime" in warning for warning in result["warnings"])

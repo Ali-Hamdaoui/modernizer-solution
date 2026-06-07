@@ -1167,6 +1167,8 @@ def _load_openrewrite_apply_settings(ai_hub: str, profile: str) -> dict[str, Any
 
     settings: dict[str, Any] = {}
     apply_goal = profile_openrewrite.get("apply_goal") or catalog.get("apply_goal")
+    if not apply_goal:
+        apply_goal = _default_sandbox_apply_goal(hub_path)
     if apply_goal:
         settings["apply_goal"] = str(apply_goal)
     apply_maven_args = profile_openrewrite.get("apply_maven_args")
@@ -1186,6 +1188,26 @@ def _load_openrewrite_apply_settings(ai_hub: str, profile: str) -> dict[str, Any
     if patches:
         settings["post_openrewrite_patches"] = patches
     return settings
+
+
+def _default_sandbox_apply_goal(hub_path: Path) -> str | None:
+    policy_path = hub_path / "policies" / "transformation.yaml"
+    if not policy_path.is_file():
+        return None
+    payload = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(payload, dict):
+        return None
+    openrewrite = payload.get("openrewrite")
+    if not isinstance(openrewrite, dict):
+        return None
+    if not bool(openrewrite.get("sandbox_apply_allowed")):
+        return None
+    allowed = [str(item) for item in _as_list(openrewrite.get("allowed_sandbox_apply_goals")) if str(item).strip()]
+    preferred = ("runNoFork", "run", "rewrite:runNoFork", "rewrite:run")
+    for goal in preferred:
+        if goal in allowed:
+            return goal
+    return None
 
 
 def _write_openrewrite_plugin_xml(run_dir: Path, ai_hub: str, profile: str) -> Path:

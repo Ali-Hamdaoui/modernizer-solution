@@ -10,6 +10,7 @@ DEFAULT_TARGET_STACK = {
 }
 
 DEFAULT_INTERNAL_GROUP_PREFIXES = ("com.total.corp",)
+SKIP_DIR_NAMES = {".git", ".migration", "target", "build", "node_modules", "__pycache__", ".idea", ".venv"}
 
 SPRING_BOOT_PROPERTY_NAMES = (
     "spring-boot.version",
@@ -76,10 +77,14 @@ def scan_root_pom(file_path, target_stack=None):
 def scan_root_pom_with_prefixes(file_path, target_stack=None, internal_group_prefixes=DEFAULT_INTERNAL_GROUP_PREFIXES):
     ns = {"mvn": "http://maven.apache.org/POM/4.0.0"}
     target = dict(target_stack or DEFAULT_TARGET_STACK)
-    pom_path = Path(file_path)
+    original_path = Path(file_path)
+    pom_path = resolve_project_pom_path(original_path)
+    warnings: list[str] = []
+    if pom_path != original_path:
+        warnings.append(f"Resolved primary Maven project POM: {pom_path}")
 
     try:
-        tree = ET.parse(file_path)
+        tree = ET.parse(pom_path)
         root = tree.getroot()
 
         parent_group = root.find(".//mvn:parent/mvn:groupId", ns)
@@ -117,7 +122,7 @@ def scan_root_pom_with_prefixes(file_path, target_stack=None, internal_group_pre
             "source_stack": {
                 "java": java_version,
                 "spring_boot": spring_boot,
-                "build_tool": "maven" if pom_path.name == "pom.xml" else "unknown",
+                "build_tool": "maven",
             },
             "project_kind": classification["project_kind"],
             "has_spring_boot_main": classification["has_spring_boot_main"],
@@ -131,13 +136,68 @@ def scan_root_pom_with_prefixes(file_path, target_stack=None, internal_group_pre
                 "module_count": len(modules),
             },
             "target_stack": target_stack_payload,
-            "warnings": _target_warnings(target, java_version, spring_boot),
+            "warnings": [*warnings, *_target_warnings(target, java_version, spring_boot)],
         }
     except Exception as e:
         result = _default_scan_result(target, f"Unable to parse root pom.xml: {e}")
+        if warnings:
+            result["warnings"] = [*warnings, *result["warnings"]]
         if pom_path.name == "pom.xml" and pom_path.exists():
             result["source_stack"]["build_tool"] = "maven"
         return result
+
+
+def resolve_project_pom_path(file_path):
+    path = Path(file_path)
+    if path.is_dir():
+        root = path
+        direct = root / "pom.xml"
+        if direct.is_file():
+            return direct
+    else:
+        if path.is_file():
+            return path
+        root = path.parent
+
+    pom_candidates = _discover_nested_poms(root)
+    if not pom_candidates:
+        return path if not path.is_dir() else (path / "pom.xml")
+    return _select_primary_pom(pom_candidates)
+
+
+def _discover_nested_poms(root):
+    if not root.exists() or not root.is_dir():
+        return []
+    pom_files = []
+    for candidate in root.rglob("pom.xml"):
+        if not candidate.is_file():
+            continue
+        if any(part in SKIP_DIR_NAMES for part in candidate.relative_to(root).parts):
+            continue
+        pom_files.append(candidate)
+    pom_files.sort(key=lambda item: (len(item.relative_to(root).parts), item.relative_to(root).as_posix().lower()))
+    return pom_files
+
+
+def _select_primary_pom(pom_files):
+    candidates = []
+    for pom_path in pom_files:
+        packaging = _quick_packaging(pom_path)
+        score = 0
+        if packaging != "pom":
+            score -= 5
+        candidates.append((score, len(pom_path.parts), str(pom_path).lower(), pom_path))
+    candidates.sort(key=lambda item: item[:3])
+    return candidates[0][3]
+
+
+def _quick_packaging(pom_path):
+    try:
+        root = ET.parse(pom_path).getroot()
+    except ET.ParseError:
+        return ""
+    packaging = _find_text(root, ".//mvn:packaging", {"mvn": "http://maven.apache.org/POM/4.0.0"})
+    return packaging or "jar"
 
 
 def _detect_spring_boot_version(root, ns, parent_is_boot, parent_group, parent_artifact, parent_version):

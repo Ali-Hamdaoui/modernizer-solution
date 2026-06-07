@@ -17,7 +17,7 @@ def build_rewrite_plugin_plan(context, catalog):
         "apply_goals_forbidden": True,
         "transformer_guidance": (
             "Transformer Agent may add OpenRewrite plugin/config in migration workspace only. "
-            "Analysis may only execute rewrite:dryRun."
+            "Analysis may only execute policy-approved preview goals."
         ),
         "openrewrite": openrewrite,
         "artifact_refs": {"self": "rewrite_plugin_plan.json"},

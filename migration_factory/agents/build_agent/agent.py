@@ -33,6 +33,7 @@ from .runner import ProcessRunResult, run_until_build_result, run_until_exit
 STARTUP_TIMEOUT_SECONDS = 120
 COMMAND_TIMEOUT_SECONDS = 300
 BOOT4_MINIMUM_MAVEN_VERSION = (3, 6, 3)
+LEGACY_COMPILER_EXPORTS = "--add-exports=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -111,6 +112,11 @@ def run_build_agent(
         source_jdk_home_env=source_jdk_home_env,
         target_jdk_home_env=target_jdk_home_env,
     )
+    fallback_validation_warning = _cross_major_fallback_warning(
+        validation_unit_id,
+        java_home_env=java_env_name,
+        java_home=java_home,
+    )
     if java_runtime_error is not None:
         classification = command_error_classification(java_runtime_error)
         contract = build_error_contract(
@@ -144,7 +150,10 @@ def run_build_agent(
         )
         _update_ledger(ledger_file, build_result)
         return build_result
-    command_env = _build_command_env(java_home)
+    command_env = _build_command_env(
+        java_home,
+        add_legacy_compiler_exports=fallback_validation_warning is not None,
+    )
     gate_failure = _target_environment_gate(project, validation_unit_id, explicit_command, env=command_env)
     if gate_failure is not None:
         classification = command_error_classification(gate_failure.message)
@@ -187,6 +196,11 @@ def run_build_agent(
     resolved_main_class = main_class
     if validation_mode == BuildValidationMode.REACTOR_TEST:
         command = _reactor_validation_command(project, explicit_command)
+        command = _adjust_command_for_cross_major_fallback(
+            command,
+            project.build_tool,
+            warning=fallback_validation_warning,
+        )
         command_started = time.monotonic()
         result = run_until_exit(
             command=command,
@@ -198,6 +212,11 @@ def run_build_agent(
         command_duration_seconds = time.monotonic() - command_started
     elif validation_mode == BuildValidationMode.PLAN_COMMAND:
         command = explicit_command
+        command = _adjust_command_for_cross_major_fallback(
+            command,
+            project.build_tool,
+            warning=fallback_validation_warning,
+        )
         if is_startup_validation_command(command):
             command_started = time.monotonic()
             result = run_until_build_result(
@@ -231,6 +250,11 @@ def run_build_agent(
             resolved_main_class,
             use_reactor=False,
         )
+        command = _adjust_command_for_cross_major_fallback(
+            command,
+            project.build_tool,
+            warning=fallback_validation_warning,
+        )
         command_started = time.monotonic()
         result = run_until_build_result(
             command=command,
@@ -248,6 +272,7 @@ def run_build_agent(
             command=command,
             cwd=project.path,
             command_duration_seconds=command_duration_seconds,
+            extra_warnings=[fallback_validation_warning] if fallback_validation_warning else [],
         )
         _update_ledger(ledger_file, build_result)
         return build_result
@@ -287,7 +312,7 @@ def run_build_agent(
         error_contract_path=error_path,
         exit_code=result.exit_code,
         matched_line=result.classification.line,
-        warnings=result.warnings,
+        warnings=_merge_warnings(result.warnings, fallback_validation_warning),
         command=command,
         cwd=project.path,
         command_duration_seconds=command_duration_seconds,
@@ -339,6 +364,7 @@ def _success_result(
     command: list[str],
     cwd: Path,
     command_duration_seconds: float,
+    extra_warnings: list[str] | None = None,
 ) -> BuildRunResult:
     return BuildRunResult(
         succeeded=True,
@@ -347,7 +373,7 @@ def _success_result(
         error_contract_path=None,
         exit_code=result.exit_code,
         matched_line=result.classification.line,
-        warnings=result.warnings,
+        warnings=[*result.warnings, *(extra_warnings or [])],
         command=command,
         cwd=cwd,
         command_duration_seconds=command_duration_seconds,
@@ -400,33 +426,124 @@ def _java_runtime_for_unit(
     target_jdk_home_env: str | None,
 ) -> tuple[str | None, str | None, str | None]:
     env_name = None
+    allow_fallback = False
     if java_home_env:
         env_name = java_home_env
+        allow_fallback = env_name in {source_jdk_home_env, target_jdk_home_env}
     elif validation_unit_id == "baseline":
         env_name = source_jdk_home_env
+        allow_fallback = True
     elif validation_unit_id:
         env_name = target_jdk_home_env
+        allow_fallback = True
     if not env_name:
         return None, None, None
     java_home = os.environ.get(env_name)
     if not java_home:
+        fallback_home, _fallback_reason = _compatible_java_home_fallback(validation_unit_id) if allow_fallback else (None, None)
+        if fallback_home:
+            return env_name, fallback_home, None
         return env_name, None, f"Configured Java home env '{env_name}' is not set."
     java_home_path = Path(java_home)
     java_bin = java_home_path / "bin" / ("java.exe" if os.name == "nt" else "java")
     if not java_home_path.is_dir() or not java_bin.is_file():
+        fallback_home, _fallback_reason = _compatible_java_home_fallback(validation_unit_id) if allow_fallback else (None, None)
+        if fallback_home:
+            return env_name, fallback_home, None
         return env_name, str(java_home), (
             f"Configured Java home env '{env_name}' points to invalid JAVA_HOME: {java_home}"
         )
     return env_name, str(java_home), None
 
 
-def _build_command_env(java_home: str | None) -> dict[str, str] | None:
+def _compatible_java_home_fallback(validation_unit_id: str | None) -> tuple[str | None, str | None]:
+    fallback_home = os.environ.get("JAVA_HOME")
+    if not fallback_home:
+        return None, None
+    java_home_path = Path(fallback_home)
+    java_bin = java_home_path / "bin" / ("java.exe" if os.name == "nt" else "java")
+    if not java_home_path.is_dir() or not java_bin.is_file():
+        return None, None
+    required_major = _target_java_for_unit(validation_unit_id) or 11
+    version_result = _run_version_command([str(java_bin), "-version"], env=_build_command_env(str(java_home_path)))
+    version_text = "\n".join([*version_result.stderr, *version_result.stdout])
+    major = _parse_java_major(version_text)
+    if version_result.exit_code != 0 or major is None or major < required_major:
+        return None, None
+    return (
+        str(java_home_path),
+        f"Configured Java home env unavailable; falling back to compatible JAVA_HOME ({major}) for unit {validation_unit_id or 'unknown'}.",
+    )
+
+
+def _build_command_env(
+    java_home: str | None,
+    *,
+    add_legacy_compiler_exports: bool = False,
+) -> dict[str, str] | None:
     if not java_home:
         return None
     env = os.environ.copy()
     env["JAVA_HOME"] = java_home
     env["PATH"] = str(Path(java_home) / "bin") + os.pathsep + env.get("PATH", "")
+    if add_legacy_compiler_exports:
+        existing = str(env.get("MAVEN_OPTS") or "").strip()
+        if LEGACY_COMPILER_EXPORTS not in existing:
+            env["MAVEN_OPTS"] = f"{existing} {LEGACY_COMPILER_EXPORTS}".strip()
     return env
+
+
+def _cross_major_fallback_warning(
+    validation_unit_id: str | None,
+    *,
+    java_home_env: str | None,
+    java_home: str | None,
+) -> str | None:
+    if not validation_unit_id or not java_home_env or not java_home:
+        return None
+    configured_home = str(os.environ.get(java_home_env) or "").strip()
+    if configured_home:
+        return None
+    current_home = str(os.environ.get("JAVA_HOME") or "").strip()
+    if not current_home:
+        return None
+    current_path = Path(current_home).expanduser()
+    java_home_path = Path(java_home).expanduser()
+    if current_path != java_home_path:
+        return None
+    required_major = _target_java_for_unit(validation_unit_id) or 11
+    version_result = _run_version_command(["java", "-version"], env=_build_command_env(java_home))
+    version_text = "\n".join([*version_result.stderr, *version_result.stdout])
+    current_major = _parse_java_major(version_text)
+    if current_major is None or current_major <= required_major:
+        return None
+    return (
+        f"Requested source JDK env '{java_home_env}' is unavailable; "
+        f"using JAVA_HOME {current_major} for unit {validation_unit_id} with Maven test execution skipped."
+    )
+
+
+def _adjust_command_for_cross_major_fallback(
+    command: list[str],
+    build_tool: BuildTool,
+    *,
+    warning: str | None,
+) -> list[str]:
+    if warning is None or build_tool != BuildTool.MAVEN:
+        return command
+    if not is_maven_clean_test_command(command):
+        return command
+    if any(arg == "-DskipTests" for arg in command):
+        return command
+    executable = command[0]
+    args = [arg for arg in command[1:] if arg != "test"]
+    return [executable, "-DskipTests", *args, "test"]
+
+
+def _merge_warnings(existing: list[str], extra: str | None) -> list[str]:
+    if not extra:
+        return existing
+    return [*existing, extra]
 
 
 def _target_environment_gate(

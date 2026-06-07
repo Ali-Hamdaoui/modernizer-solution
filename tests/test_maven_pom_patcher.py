@@ -65,6 +65,23 @@ class MavenPomPatcherTests(unittest.TestCase):
             self.assertEqual(result.operations_applied[0]["status"], "added")
             self.assertIn("<java.version>17</java.version>", _pom_text(project))
 
+    def test_apply_patch_falls_back_to_nested_single_module_pom_from_repo_root(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = tmp / "repo"
+            module = project / "common-utils"
+            module.mkdir(parents=True)
+            (module / "pom.xml").write_text(POM_TEMPLATE, encoding="utf-8")
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="java-17",
+                operations=[{"op": "update_property", "name": "java.version", "value": "17"}],
+            )
+
+            self.assertEqual(result.status, "applied")
+            self.assertEqual(result.pom_file, "common-utils/pom.xml")
+            self.assertIn("<java.version>17</java.version>", (module / "pom.xml").read_text(encoding="utf-8"))
+
     def test_update_dependency_version(self) -> None:
         with workspace_temp_dir() as tmp:
             project = _write_project(tmp, POM_TEMPLATE)
@@ -85,6 +102,47 @@ class MavenPomPatcherTests(unittest.TestCase):
             self.assertEqual(result.operations_applied[0]["updated_dependencies"], 1)
             self.assertIn("<artifactId>demo-lib</artifactId>", _pom_text(project))
             self.assertIn("<version>2.0.0</version>", _pom_text(project))
+
+    def test_remove_dependency_if_version_matches_removes_placeholder_version(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(
+                tmp,
+                """<project>
+  <dependencies>
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-inline</artifactId>
+      <version>3.x</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-core</artifactId>
+      <version>3.12.4</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>""",
+            )
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="spring-boot-2-7-stabilization",
+                operations=[
+                    {
+                        "op": "remove_dependency_if_version_matches",
+                        "group_id": "org.mockito",
+                        "artifact_id": "mockito-inline",
+                        "version_pattern": r"^[0-9]+(?:\.[0-9]+)*\.x$",
+                    }
+                ],
+            )
+
+            self.assertEqual(result.operations_applied[0]["status"], "removed")
+            self.assertEqual(result.operations_applied[0]["removed_dependencies"], 1)
+            pom_text = _pom_text(project)
+            self.assertNotIn("<artifactId>mockito-inline</artifactId>", pom_text)
+            self.assertIn("<artifactId>mockito-core</artifactId>", pom_text)
 
     def test_replace_dependency_jaxb_to_jakarta(self) -> None:
         with workspace_temp_dir() as tmp:

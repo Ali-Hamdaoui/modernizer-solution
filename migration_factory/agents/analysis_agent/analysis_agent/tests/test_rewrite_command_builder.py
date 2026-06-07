@@ -15,9 +15,10 @@ def _catalog(goal):
 def test_allows_only_dryrun_like_goals():
     assert build_rewrite_maven_command(_catalog("dryRun"))[1].endswith(":dryRun")
     assert build_rewrite_maven_command(_catalog("rewrite:dryRun"))[1].endswith(":dryRun")
-    for goal in ["dryRunNoFork", "rewrite:dryRunNoFork", "discover", "rewrite:discover"]:
-        with pytest.raises(ValueError, match="Unsupported OpenRewrite goal"):
-            build_rewrite_maven_command(_catalog(goal))
+    assert build_rewrite_maven_command(_catalog("dryRunNoFork"))[1].endswith(":dryRunNoFork")
+    assert build_rewrite_maven_command(_catalog("rewrite:dryRunNoFork"))[1].endswith(":dryRunNoFork")
+    assert build_rewrite_maven_command(_catalog("discover"))[1].endswith(":discover")
+    assert build_rewrite_maven_command(_catalog("rewrite:discover"))[1].endswith(":discover")
 
 
 def test_rejects_apply_goals_and_aliases():

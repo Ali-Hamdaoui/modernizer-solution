@@ -5,6 +5,8 @@ from pathlib import Path
 import re
 import xml.etree.ElementTree as ET
 
+from migration_factory.agents.build_agent.detection import JavaProjectDetectionError, detect_java_project
+
 
 LEGACY_JAVA8_ENFORCER_RANGES = {"[1.8,1.9)", "[8,9)", "1.8", "8"}
 SPRING_DATA_SORT_IMPORT = "import org.springframework.data.domain.Sort;"
@@ -73,7 +75,8 @@ def patch_maven_enforcer_java_version(
     unit_id: str,
     target_range: str = "[21,)",
 ) -> list[MavenEnforcerJavaVersionPatch]:
-    pom_path = project_path / "pom.xml"
+    root_path = Path(project_path).expanduser().resolve()
+    pom_path = _resolve_project_pom(root_path)
     if not pom_path.is_file():
         return []
 
@@ -94,7 +97,7 @@ def patch_maven_enforcer_java_version(
         version.text = target_range
         patches.append(
             MavenEnforcerJavaVersionPatch(
-                file="pom.xml",
+                file=str(pom_path.relative_to(root_path).as_posix()),
                 old_range=old_range,
                 new_range=target_range,
                 unit=unit_id,
@@ -114,7 +117,8 @@ def patch_pom_property(
     old_value: str,
     new_value: str,
 ) -> list[PomPropertyPatch]:
-    pom_path = project_path / "pom.xml"
+    root_path = Path(project_path).expanduser().resolve()
+    pom_path = _resolve_project_pom(root_path)
     if not pom_path.is_file():
         return []
 
@@ -139,13 +143,28 @@ def patch_pom_property(
     tree.write(pom_path, encoding="utf-8", xml_declaration=True)
     return [
         PomPropertyPatch(
-            file="pom.xml",
+            file=str(pom_path.relative_to(root_path).as_posix()),
             property=property_name,
             old_value=current_value,
             new_value=new_value,
             unit=unit_id,
         )
     ]
+
+
+def _resolve_project_pom(project_path: Path) -> Path:
+    root_path = Path(project_path).expanduser().resolve()
+    direct_pom = root_path / "pom.xml"
+    if direct_pom.is_file():
+        return direct_pom
+    try:
+        detected = detect_java_project(root_path)
+    except JavaProjectDetectionError:
+        return direct_pom
+    candidate = detected.path / "pom.xml"
+    if candidate.is_file():
+        return candidate
+    return direct_pom
 
 
 def patch_security_config_authorize_http_requests(

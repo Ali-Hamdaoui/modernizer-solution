@@ -60,9 +60,9 @@ def build_read_only_verification(
 ) -> dict:
     legacy_after = snapshot_tree(legacy_root)
     modernized_after = snapshot_tree(modernized_root)
-    allowed_write_roots = [
-        Path(output_dir).resolve().relative_to(Path(modernized_root).resolve()).as_posix()
-    ]
+    modernized_base = Path(modernized_root).resolve()
+    output_rel = Path(output_dir).resolve().relative_to(modernized_base).as_posix()
+    allowed_write_roots = sorted({".migration", output_rel})
 
     legacy_changes = _diff(before_legacy, legacy_after)
     modernized_changes = _diff(before_modernized, modernized_after)
@@ -82,7 +82,7 @@ def build_read_only_verification(
         "status": "FAIL" if source_modified else "PASS",
         "paths": {
             "legacy_root": str(Path(legacy_root).resolve()),
-            "modernized_root": str(Path(modernized_root).resolve()),
+            "modernized_root": str(modernized_base),
             "artifact": artifact_rel,
         },
         "allowed_write_roots": allowed_write_roots,

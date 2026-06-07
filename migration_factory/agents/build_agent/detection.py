@@ -8,6 +8,7 @@ import shlex
 import shutil
 import xml.etree.ElementTree as ET
 
+SKIP_DIR_NAMES = {".git", ".migration", "target", "build", "node_modules", "__pycache__", ".idea", ".venv"}
 
 class BuildTool(str, Enum):
     MAVEN = "maven"
@@ -50,6 +51,18 @@ def detect_java_project(project_path: str | Path) -> JavaProjectInfo:
 
     if (path / "pom.xml").is_file():
         return _maven_project(path)
+
+    nested_maven_root = _discover_primary_nested_maven_root(path)
+    if nested_maven_root is not None:
+        project = _maven_project(nested_maven_root)
+        return JavaProjectInfo(
+            project.path,
+            project.build_tool,
+            project.base_command,
+            project.uses_wrapper,
+            project.maven_modules,
+            path,
+        )
 
     if any((path / filename).is_file() for filename in _gradle_markers()):
         return _gradle_project(path)
@@ -315,3 +328,38 @@ def _local_name(tag: str) -> str:
     if tag.startswith("{") and "}" in tag:
         return tag.split("}", 1)[1]
     return tag
+
+
+def _discover_primary_nested_maven_root(path: Path) -> Path | None:
+    if not path.is_dir():
+        return None
+    pom_files = []
+    for candidate in path.rglob("pom.xml"):
+        if not candidate.is_file():
+            continue
+        if any(part in SKIP_DIR_NAMES for part in candidate.relative_to(path).parts):
+            continue
+        pom_files.append(candidate)
+    if not pom_files:
+        return None
+    pom_files.sort(key=lambda item: (len(item.relative_to(path).parts), item.relative_to(path).as_posix().lower()))
+    scored = []
+    for pom_path in pom_files:
+        packaging = _read_packaging(pom_path)
+        score = 0
+        if packaging != "pom":
+            score -= 5
+        scored.append((score, len(pom_path.relative_to(path).parts), pom_path.relative_to(path).as_posix().lower(), pom_path))
+    scored.sort(key=lambda item: item[:3])
+    return scored[0][3].parent
+
+
+def _read_packaging(pom_path: Path) -> str:
+    try:
+        root = ET.parse(pom_path).getroot()
+    except ET.ParseError:
+        return ""
+    packaging_node = _find_child(root, "packaging")
+    if packaging_node is not None and packaging_node.text and packaging_node.text.strip():
+        return packaging_node.text.strip()
+    return "jar"

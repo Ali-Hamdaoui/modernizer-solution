@@ -39,7 +39,18 @@
       ]
     },
     "preview_goals": {"type": "array", "items": {"type": "string"}},
-    "selected_preview_goal": {"type": ["string", "null"], "enum": ["rewrite:dryRun", "dryRun", null]},
+    "selected_preview_goal": {
+      "type": ["string", "null"],
+      "enum": [
+        "rewrite:dryRun",
+        "dryRun",
+        "rewrite:dryRunNoFork",
+        "dryRunNoFork",
+        "rewrite:discover",
+        "discover",
+        null
+      ]
+    },
     "apply_goals_forbidden": {"type": "boolean", "const": true},
     "artifact_refs": {
       "type": "object",

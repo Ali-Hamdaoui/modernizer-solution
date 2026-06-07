@@ -131,6 +131,9 @@ def _resolve_preview_java_runtime(catalog):
 
     java_home = os.environ.get(requested_env)
     if not java_home:
+        compatible = _compatible_current_java_fallback(requested_env, fallback_java_home)
+        if compatible is not None:
+            return compatible
         return {
             "status": "INVALID_SOURCE_JDK_ENV",
             "java_home_env_used": requested_env,
@@ -169,6 +172,54 @@ def _resolve_preview_java_runtime(catalog):
         "requested_java_home_env": requested_env,
         "env": _build_java_env(java_home),
     }
+
+
+def _compatible_current_java_fallback(requested_env: str, fallback_java_home: str | None):
+    if not fallback_java_home:
+        return None
+    java_version = _detect_java_version(fallback_java_home)
+    required_major = _requested_env_java_major(requested_env)
+    current_major = _java_major_from_text(java_version)
+    if required_major is not None and current_major is not None and current_major < required_major:
+        return None
+    return {
+        "status": "FALLBACK_COMPATIBLE_CURRENT_PROCESS",
+        "java_home_env_used": "JAVA_HOME" if fallback_java_home else None,
+        "java_home_used": fallback_java_home,
+        "java_version_used": java_version,
+        "warning": (
+            f"OpenRewrite preview source JDK env '{requested_env}' is unavailable; "
+            "using compatible current process Java runtime."
+        ),
+        "error": None,
+        "requested_java_home_env": requested_env,
+        "env": _build_java_env(fallback_java_home),
+    }
+
+
+def _requested_env_java_major(requested_env: str | None):
+    if not requested_env:
+        return None
+    digits = "".join(ch for ch in str(requested_env) if ch.isdigit())
+    if not digits:
+        return None
+    try:
+        return int(digits)
+    except ValueError:
+        return None
+
+
+def _java_major_from_text(version: str | None):
+    if not version:
+        return None
+    token = str(version).strip()
+    if token.startswith("1.8"):
+        return 8
+    digits = token.split(".", 1)[0]
+    try:
+        return int(digits)
+    except ValueError:
+        return None
 
 
 def _impact_summary(
@@ -252,7 +303,7 @@ def run_openrewrite_dryrun(context, analysis_facts=None):
             "error": None,
         },
     }
-    project_dir = Path(context.legacy_app_path)
+    project_dir = Path(getattr(context, "project_root_path", context.legacy_app_path))
     preview_path = context.get_output_path("rewrite_preview.json")
     plan_path = context.get_output_path("rewrite_plugin_plan.json")
     impact_path = context.get_output_path("rewrite_impact_summary.json")

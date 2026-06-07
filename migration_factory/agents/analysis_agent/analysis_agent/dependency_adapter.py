@@ -110,6 +110,7 @@ def _write_graph(context, graph: Dict[str, Any]) -> None:
 
 
 def run_dependency_tree(context):
+    project_dir = getattr(context, "project_root_path", context.legacy_app_path)
     maven_executable = shutil.which("mvn") or shutil.which("mvn.cmd") or "mvn"
     json_cmd = [maven_executable, "dependency:tree", "-DoutputType=json"]
     text_cmd = [maven_executable, "dependency:tree", "-DoutputType=text"]
@@ -117,7 +118,7 @@ def run_dependency_tree(context):
     try:
         result = subprocess.run(
             json_cmd,
-            cwd=context.legacy_app_path,
+            cwd=project_dir,
             capture_output=True,
             text=True,
             check=True,
@@ -133,7 +134,7 @@ def run_dependency_tree(context):
         try:
             result = subprocess.run(
                 text_cmd,
-                cwd=context.legacy_app_path,
+                cwd=project_dir,
                 capture_output=True,
                 text=True,
                 check=True,

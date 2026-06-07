@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 from typing import Any, Mapping, Sequence
 import xml.etree.ElementTree as ET
+
+from migration_factory.agents.build_agent.detection import JavaProjectDetectionError, detect_java_project
 
 JACKSON_MANDATORY_MANAGED_ARTIFACTS: tuple[tuple[str, str], ...] = (
     ("com.fasterxml.jackson.core", "jackson-databind"),
@@ -149,7 +152,7 @@ def apply_maven_pom_patch(
     pom_path: str = "pom.xml",
 ) -> MavenPomPatchResult:
     root_path = Path(project_path).expanduser().resolve()
-    resolved_pom = _resolve_sandbox_path(root_path, pom_path)
+    resolved_pom = _resolve_pom_path(root_path, pom_path)
     relative_pom = resolved_pom.relative_to(root_path).as_posix()
 
     if not resolved_pom.is_file():
@@ -233,6 +236,7 @@ def _apply_operation(
         "add_property_if_missing": _add_property_if_missing,
         "update_dependency_version": _update_dependency_version,
         "replace_dependency": _replace_dependency,
+        "remove_dependency_if_version_matches": _remove_dependency_if_version_matches,
         "remove_duplicate_dependencies": _remove_duplicate_dependencies,
         "add_dependency_management_bom": _add_dependency_management_bom,
         "align_jackson_dependency_management": _align_jackson_dependency_management,
@@ -440,6 +444,52 @@ def _remove_duplicate_dependencies(
         op="remove_duplicate_dependencies",
         status="removed" if removed else "no_change",
         details={"removed_dependencies": removed},
+    )
+
+
+def _remove_dependency_if_version_matches(
+    root: ET.Element,
+    namespace: str,
+    operation: Mapping[str, Any],
+) -> MavenPomPatchOperationResult:
+    group_id = _required_text(operation, "group_id")
+    artifact_id = _required_text(operation, "artifact_id")
+    version_pattern = _required_text(operation, "version_pattern")
+    try:
+        version_regex = re.compile(version_pattern)
+    except re.error as exc:
+        raise MavenPomPatchError(
+            "INVALID_OPERATION",
+            f"Invalid version_pattern regex: {version_pattern}",
+            pom_file="pom.xml",
+        ) from exc
+
+    removed = 0
+    matched_versions: list[str] = []
+    for dependencies in _dependency_lists(root, namespace):
+        for dependency in list(dependencies.findall(_tag(namespace, "dependency"))):
+            if (
+                _child_text(dependency, namespace, "groupId") != group_id
+                or _child_text(dependency, namespace, "artifactId") != artifact_id
+            ):
+                continue
+            version = _child_text(dependency, namespace, "version")
+            if not version_regex.fullmatch(version):
+                continue
+            matched_versions.append(version)
+            dependencies.remove(dependency)
+            removed += 1
+
+    return MavenPomPatchOperationResult(
+        op="remove_dependency_if_version_matches",
+        status="removed" if removed else "no_change",
+        details={
+            "group_id": group_id,
+            "artifact_id": artifact_id,
+            "version_pattern": version_pattern,
+            "matched_versions": matched_versions,
+            "removed_dependencies": removed,
+        },
     )
 
 
@@ -1451,6 +1501,22 @@ def _resolve_sandbox_path(project_path: Path, pom_path: str) -> Path:
             f"POM patch path escapes sandbox: {pom_path}",
             pom_file=str(Path(pom_path).as_posix()),
         ) from exc
+    return candidate
+
+
+def _resolve_pom_path(project_path: Path, pom_path: str) -> Path:
+    candidate = _resolve_sandbox_path(project_path, pom_path)
+    if candidate.is_file():
+        return candidate
+    if Path(pom_path).as_posix() != "pom.xml":
+        return candidate
+    try:
+        detected = detect_java_project(project_path)
+    except JavaProjectDetectionError:
+        return candidate
+    fallback = _resolve_sandbox_path(project_path, str(detected.path.resolve().relative_to(project_path) / "pom.xml"))
+    if fallback.is_file():
+        return fallback
     return candidate
 
 

@@ -99,7 +99,7 @@ def test_ai_hub_yaml_profile_resolves_catalog_and_selects_dryrun(tmp_path):
     assert result["profile_id"] == "java17"
     assert result["catalog_id"] == "springboot-3.5-java17"
     assert result["path"] == str((hub / "catalogs/openrewrite/java17.yaml").resolve())
-    assert result["openrewrite"]["dry_run"] == "rewrite:dryRun"
+    assert result["openrewrite"]["dry_run"] == "rewrite:dryRunNoFork"
     assert result["openrewrite"]["plugin"] == "org.openrewrite.maven:rewrite-maven-plugin:6.39.0"
     assert result["openrewrite"]["recipe_artifacts"] == ["org.openrewrite.recipe:rewrite-spring:6.30.4"]
     assert result["openrewrite"]["active_recipes"] == [
@@ -145,12 +145,12 @@ def test_ai_hub_catalog_without_dryrun_is_blocked(tmp_path):
     hub = tmp_path / "hub"
     legacy.mkdir()
     modernized.mkdir()
-    _write_ai_hub(hub, preview_goals=["discover"])
+    _write_ai_hub(hub, preview_goals=["rewrite:run"])
 
     result = load_rewrite_catalog(DummyContext(legacy, modernized, hub, "java17"))
 
     assert result["status"] == "FAILED"
-    assert "rewrite:dryRun" in result["errors"][0]
+    assert "Forbidden OpenRewrite goal" in result["errors"][0]
 
 
 def test_real_boot4_java21_catalog_loads_multiple_artifacts_and_recipes(tmp_path):
@@ -193,4 +193,4 @@ def test_real_java17_profile_preview_command_unchanged(tmp_path):
     assert result["openrewrite"].get("analysis_preview_maven_args") == []
     cmd = build_rewrite_maven_command(result["openrewrite"])
     assert "-Denforcer.skip=true" not in cmd
-    assert cmd[1].endswith(":dryRun")
+    assert cmd[1].endswith(":dryRunNoFork")
