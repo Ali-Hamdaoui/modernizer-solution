@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import redirect_stderr, redirect_stdout
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import sys
 from pathlib import Path
@@ -45,6 +45,7 @@ from migration_factory.approval import (
 )
 from migration_factory.contracts.migration import LedgerError, LedgerStatus, load_ledger, save_ledger
 from migration_factory.orchestrator.timing import record_command_duration, record_phase_duration, write_timing_artifacts
+from migration_factory.remediation import execute_auto_remediation_loop, load_llm_policy
 
 
 STATUS_APPROVED = "APPROVED_FOR_TRANSFORM"
@@ -92,6 +93,12 @@ class TransformSandboxResult:
     test_summary_path: Path | None = None
     test_log_path: Path | None = None
     test_phase: str | None = None
+    remediation_plan_path: Path | None = None
+    remediation_attempts_path: Path | None = None
+    jjwt_api_migration_review_path: Path | None = None
+    powermock_review_path: Path | None = None
+    jakarta_hybrid_strategy_path: Path | None = None
+    azure_sdk_migration_review_path: Path | None = None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -169,13 +176,15 @@ def apply_approved_sandbox_transform(
         emit(STATUS_SANDBOX)
 
         plan = load_migration_plan(generated_plan, sandbox.path)
-        return _run_transformer_with_build_validation(
+        result = _run_transformer_with_build_validation(
             sandbox_path=sandbox.path,
             plugin_xml=plugin_xml,
             generated_plan=generated_plan,
             plan=plan,
             run_id=run_id,
             run_dir=run_dir,
+            ai_hub=ai_hub,
+            profile=profile,
             log_file=resolved_log_file,
             build_timeout_seconds=build_timeout_seconds,
             verbose=verbose,
@@ -183,6 +192,7 @@ def apply_approved_sandbox_transform(
             error_writer=error_writer,
             jdk_env=jdk_env,
         )
+        return _attach_review_gate_metadata(result)
     except ApprovalArtifactError as exc:
         emit(STATUS_APPROVAL_FAILED)
         _print_failure_details(exc, resolved_log_file, error_writer=error_writer)
@@ -243,6 +253,8 @@ def _run_transformer_with_build_validation(
     plan: MigrationPlan,
     run_id: str,
     run_dir: Path,
+    ai_hub: str,
+    profile: str,
     log_file: Path,
     build_timeout_seconds: int | None,
     verbose: bool,
@@ -256,6 +268,8 @@ def _run_transformer_with_build_validation(
     source_unit_ids = _source_changing_unit_ids(plan)
     max_transformer_runs = len(plan.units) + 1
     build_status: str | None = None
+    remediation_plan_path: Path | None = None
+    remediation_attempts_path: Path | None = None
 
     for _ in range(max_transformer_runs):
         status_writer(STATUS_RUNNING)
@@ -321,6 +335,48 @@ def _run_transformer_with_build_validation(
                     cwd=str(build_result.cwd) if build_result.cwd is not None else None,
                 )
             if not build_result.succeeded:
+                remediation_result = _attempt_auto_remediation_for_build_failure(
+                    run_id=run_id,
+                    run_dir=run_dir,
+                    ai_hub=ai_hub,
+                    profile=profile,
+                    sandbox_path=sandbox_path,
+                    ledger_file=result.ledger_file,
+                    build_result=build_result,
+                    validation_unit_id=unit_id,
+                    rerun_validation=lambda: _run_with_logged_output(
+                        lambda: run_build_agent(**build_kwargs),
+                        log_file=log_file,
+                        verbose=verbose,
+                    ),
+                )
+                remediation_plan_path = remediation_result.remediation_plan_path
+                remediation_attempts_path = remediation_result.remediation_attempts_path
+                if remediation_result.continued and remediation_result.rerun_result is not None:
+                    build_result = remediation_result.rerun_result
+                if build_result.succeeded:
+                    build_status = STATUS_BUILD_PASSED
+                    status_writer(STATUS_BUILD_PASSED)
+                    if verbose:
+                        status_writer(f"Build validated unit after remediation: {unit_id}")
+                    if unit_id in source_unit_ids:
+                        source_units_completed.add(unit_id)
+                    next_unit = _next_unit_after(plan, unit_id)
+                    if next_unit is None:
+                        return _finalize_with_test_validation(
+                            sandbox_path=sandbox_path,
+                            run_dir=run_dir,
+                            run_id=run_id,
+                            log_file=log_file,
+                            generated_plan=generated_plan,
+                            plugin_xml=plugin_xml,
+                            ledger_file=result.ledger_file,
+                            build_status=build_status,
+                            status_writer=status_writer,
+                            remediation_plan_path=remediation_plan_path,
+                            remediation_attempts_path=remediation_attempts_path,
+                        )
+                    continue
                 build_status = STATUS_BUILD_FAILED
                 status_writer(STATUS_BUILD_FAILED)
                 message = _build_failure_message(build_result)
@@ -340,6 +396,8 @@ def _run_transformer_with_build_validation(
                     plugin_xml=plugin_xml,
                     ledger_file=result.ledger_file,
                     build_status=build_status,
+                    remediation_plan_path=remediation_plan_path,
+                    remediation_attempts_path=remediation_attempts_path,
                 )
 
             build_status = STATUS_BUILD_PASSED
@@ -361,6 +419,8 @@ def _run_transformer_with_build_validation(
                     ledger_file=result.ledger_file,
                     build_status=build_status,
                     status_writer=status_writer,
+                    remediation_plan_path=remediation_plan_path,
+                    remediation_attempts_path=remediation_attempts_path,
                 )
             continue
 
@@ -391,6 +451,8 @@ def _run_transformer_with_build_validation(
                 plugin_xml=plugin_xml,
                 ledger_file=result.ledger_file,
                 build_status=build_status,
+                remediation_plan_path=remediation_plan_path,
+                remediation_attempts_path=remediation_attempts_path,
             )
 
         if result.status == LedgerStatus.COMPLETED:
@@ -404,6 +466,8 @@ def _run_transformer_with_build_validation(
                 ledger_file=result.ledger_file,
                 build_status=build_status,
                 status_writer=status_writer,
+                remediation_plan_path=remediation_plan_path,
+                remediation_attempts_path=remediation_attempts_path,
             )
 
         raise TransformV1AfterApprovalError(f"Unexpected Transformer status: {result.status}")
@@ -503,6 +567,8 @@ def _finalize_with_test_validation(
     ledger_file: Path,
     build_status: str | None,
     status_writer: Callable[[str], None],
+    remediation_plan_path: Path | None,
+    remediation_attempts_path: Path | None,
 ) -> TransformSandboxResult:
     command, cwd = _build_command_and_cwd(ledger_file)
     test_result = run_test_agent(
@@ -551,6 +617,8 @@ def _finalize_with_test_validation(
             test_summary_path=test_result.summary_path,
             test_log_path=test_result.log_path,
             test_phase="post_transform",
+            remediation_plan_path=remediation_plan_path,
+            remediation_attempts_path=remediation_attempts_path,
         )
 
     if test_result.test_status in SUCCESSFUL_TEST_WARNING_STATUSES:
@@ -575,6 +643,8 @@ def _finalize_with_test_validation(
             test_summary_path=test_result.summary_path,
             test_log_path=test_result.log_path,
             test_phase="post_transform",
+            remediation_plan_path=remediation_plan_path,
+            remediation_attempts_path=remediation_attempts_path,
         )
 
     status_writer(test_result.test_status)
@@ -597,6 +667,52 @@ def _finalize_with_test_validation(
         test_summary_path=test_result.summary_path,
         test_log_path=test_result.log_path,
         test_phase="post_transform",
+        remediation_plan_path=remediation_plan_path,
+        remediation_attempts_path=remediation_attempts_path,
+    )
+
+
+def _attempt_auto_remediation_for_build_failure(
+    *,
+    run_id: str,
+    run_dir: Path,
+    ai_hub: str,
+    profile: str,
+    sandbox_path: Path,
+    ledger_file: Path,
+    build_result: Any,
+    validation_unit_id: str,
+    rerun_validation: Callable[[], Any],
+) -> Any:
+    llm_policy = load_llm_policy(ai_hub, profile)
+    build_error_contract = _read_optional_json(build_result.error_contract_path)
+    failure_classification = _read_optional_json(
+        (build_error_contract or {}).get("failure_classification_path")
+    )
+    state = {
+        "run_id": run_id,
+        "run_dir": str(run_dir),
+        "ai_hub_path": ai_hub,
+        "profile_id": profile,
+        "current_unit": validation_unit_id,
+        "final_status": STATUS_BUILD_FAILED,
+        "build_status": STATUS_BUILD_FAILED,
+        "test_status": "",
+        "artifact_refs": {
+            "build_error_contract": str(build_result.error_contract_path or ""),
+            "migration_ledger": str(ledger_file),
+            "migration_plan": str(run_dir / "planning" / "migration_plan.yaml"),
+        },
+    }
+    return execute_auto_remediation_loop(
+        state=state,
+        run_dir=run_dir,
+        sandbox_path=sandbox_path,
+        ledger_file=ledger_file,
+        llm_policy=llm_policy,
+        build_error_contract=build_error_contract,
+        failure_classification=failure_classification,
+        rerun_validation=rerun_validation,
     )
 
 
@@ -609,6 +725,154 @@ def _build_command_and_cwd(ledger_file: Path) -> tuple[list[str], str | None]:
     command = validation.get("command")
     cwd = validation.get("cwd")
     return (list(command) if isinstance(command, list) else []), str(cwd) if cwd else None
+
+
+def _read_optional_json(path_like: Any) -> dict[str, Any] | None:
+    path_text = str(path_like or "").strip()
+    if not path_text:
+        return None
+    path = Path(path_text).expanduser()
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _attach_review_gate_metadata(result: TransformSandboxResult) -> TransformSandboxResult:
+    if result.ledger_file is None:
+        return result
+    jjwt_artifact_path, jjwt_warnings = _jjwt_api_review_metadata(result.ledger_file)
+    powermock_artifact_path, powermock_warnings = _powermock_review_metadata(result.ledger_file)
+    jakarta_artifact_path, jakarta_warnings = _jakarta_hybrid_review_metadata(result.ledger_file)
+    azure_artifact_path, azure_warnings = _azure_sdk_review_metadata(result.ledger_file)
+    return replace(
+        result,
+        warnings=_dedupe_preserve_order(
+            [*list(result.warnings or []), *jjwt_warnings, *powermock_warnings, *jakarta_warnings, *azure_warnings]
+        ),
+        jjwt_api_migration_review_path=jjwt_artifact_path,
+        powermock_review_path=powermock_artifact_path,
+        jakarta_hybrid_strategy_path=jakarta_artifact_path,
+        azure_sdk_migration_review_path=azure_artifact_path,
+    )
+
+
+def _jjwt_api_review_metadata(ledger_file: Path) -> tuple[Path | None, list[str]]:
+    try:
+        ledger = load_ledger(ledger_file)
+    except LedgerError:
+        return None, []
+    artifact_path: Path | None = None
+    warnings: list[str] = []
+    for unit in dict(ledger.get("units", {}) or {}).values():
+        if not isinstance(unit, dict):
+            continue
+        for transformation in list(unit.get("transformations", []) or []):
+            if not isinstance(transformation, dict):
+                continue
+            if transformation.get("type") != "jjwt_api_compatibility_migration":
+                continue
+            candidate = str(transformation.get("artifact_path") or "").strip()
+            if candidate and artifact_path is None:
+                artifact_path = Path(candidate)
+            warnings.extend([str(item) for item in list(transformation.get("warnings", []) or []) if str(item).strip()])
+            if transformation.get("human_review_required"):
+                warning = str(transformation.get("warning_message") or "").strip()
+                if warning:
+                    warnings.append(warning)
+    return artifact_path, _dedupe_preserve_order(warnings)
+
+
+def _powermock_review_metadata(ledger_file: Path) -> tuple[Path | None, list[str]]:
+    try:
+        ledger = load_ledger(ledger_file)
+    except LedgerError:
+        return None, []
+    artifact_path: Path | None = None
+    warnings: list[str] = []
+    for unit in dict(ledger.get("units", {}) or {}).values():
+        if not isinstance(unit, dict):
+            continue
+        for transformation in list(unit.get("transformations", []) or []):
+            if not isinstance(transformation, dict):
+                continue
+            if transformation.get("type") != "powermock_legacy_test_strategy_gate":
+                continue
+            candidate = str(transformation.get("artifact_path") or "").strip()
+            if candidate and artifact_path is None:
+                artifact_path = Path(candidate)
+            if transformation.get("detected"):
+                warning = str(transformation.get("warning_message") or "").strip()
+                if warning:
+                    warnings.append(warning)
+    return artifact_path, _dedupe_preserve_order(warnings)
+
+
+def _jakarta_hybrid_review_metadata(ledger_file: Path) -> tuple[Path | None, list[str]]:
+    try:
+        ledger = load_ledger(ledger_file)
+    except LedgerError:
+        return None, []
+    artifact_path: Path | None = None
+    warnings: list[str] = []
+    for unit in dict(ledger.get("units", {}) or {}).values():
+        if not isinstance(unit, dict):
+            continue
+        for transformation in list(unit.get("transformations", []) or []):
+            if not isinstance(transformation, dict):
+                continue
+            if transformation.get("type") != "jakarta_hybrid_strategy_gate":
+                continue
+            candidate = str(transformation.get("artifact_path") or "").strip()
+            if candidate and artifact_path is None:
+                artifact_path = Path(candidate)
+            warnings.extend([str(item) for item in list(transformation.get("warnings", []) or []) if str(item).strip()])
+            if transformation.get("human_review_required"):
+                warning = str(transformation.get("warning_message") or "").strip()
+                if warning:
+                    warnings.append(warning)
+    return artifact_path, _dedupe_preserve_order(warnings)
+
+
+def _azure_sdk_review_metadata(ledger_file: Path) -> tuple[Path | None, list[str]]:
+    try:
+        ledger = load_ledger(ledger_file)
+    except LedgerError:
+        return None, []
+    artifact_path: Path | None = None
+    warnings: list[str] = []
+    for unit in dict(ledger.get("units", {}) or {}).values():
+        if not isinstance(unit, dict):
+            continue
+        for transformation in list(unit.get("transformations", []) or []):
+            if not isinstance(transformation, dict):
+                continue
+            if transformation.get("type") != "azure_sdk_migration_playbook_gate":
+                continue
+            candidate = str(transformation.get("artifact_path") or "").strip()
+            if candidate and artifact_path is None:
+                artifact_path = Path(candidate)
+            warnings.extend([str(item) for item in list(transformation.get("warnings", []) or []) if str(item).strip()])
+            if transformation.get("human_review_required"):
+                warning = str(transformation.get("warning_message") or "").strip()
+                if warning:
+                    warnings.append(warning)
+    return artifact_path, _dedupe_preserve_order(warnings)
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        deduped.append(text)
+    return deduped
 
 
 def _record_ledger_test_validation(

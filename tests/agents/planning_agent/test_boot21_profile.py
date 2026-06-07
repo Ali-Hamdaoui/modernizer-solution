@@ -68,6 +68,7 @@ def test_boot21_profile_loads_successfully() -> None:
     assert loaded.profile["tooling_versions"]["maven_compiler_plugin"] == "3.14.1"
     assert loaded.profile["framework_versions"]["jackson"] == "2.21.2"
     assert loaded.profile["framework_versions"]["jackson_annotations"] == "2.21"
+    assert loaded.profile["framework_versions"]["jjwt"] == "0.13.0"
     assert loaded.profile["framework_versions"]["thymeleaf"] == "3.1.3.RELEASE"
     assert loaded.profile["framework_versions"]["jakarta_validation_api"] == "3.0.2"
     assert loaded.profile["framework_versions"]["slf4j_api"] == "2.0.17"
@@ -133,6 +134,7 @@ def test_boot21_profile_planning_includes_selected_route_and_warning(tmp_path: P
     assert plan_payload["framework_versions"] == {
         "jackson": "2.21.2",
         "jackson_annotations": "2.21",
+        "jjwt": "0.13.0",
         "thymeleaf": "3.1.3.RELEASE",
         "jakarta_validation_api": "3.0.2",
         "slf4j_api": "2.0.17",

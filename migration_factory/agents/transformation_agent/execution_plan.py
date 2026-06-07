@@ -307,6 +307,8 @@ def _deterministic_source_transformations(
     if unit_id == "spring-boot-3-5-14":
         jackson_version = framework_versions.get("jackson")
         jackson_annotations_version = framework_versions.get("jackson_annotations")
+        jjwt_version = framework_versions.get("jjwt")
+        juneau_version = framework_versions.get("juneau")
         thymeleaf_version = framework_versions.get("thymeleaf")
         compiler_plugin_version = tooling_versions.get("maven_compiler_plugin")
         operations: list[dict[str, Any]] = []
@@ -323,6 +325,17 @@ def _deterministic_source_transformations(
             if present_artifacts:
                 jackson_operation["present_artifacts"] = present_artifacts
             operations.append(jackson_operation)
+        if jjwt_version:
+            operations.append(
+                {
+                    "op": "align_jjwt_version",
+                    "version": jjwt_version,
+                }
+            )
+        juneau_operation: dict[str, Any] = {"op": "align_juneau_version"}
+        if juneau_version:
+            juneau_operation["version"] = juneau_version
+        operations.append(juneau_operation)
         thymeleaf_operation: dict[str, Any] = {
             "op": "align_thymeleaf_dependencies",
             "prefer_bom_managed": True,
@@ -366,11 +379,19 @@ def _deterministic_source_transformations(
             compiler_operation["plugin_version"] = compiler_plugin_version
         operations.append(compiler_operation)
         return [
-            {"type": "spring6_exception_handler_override_alignment"},
             {
                 "type": "maven_pom_patch",
                 "operations": operations,
-            }
+            },
+            {"type": "jjwt_api_compatibility_migration"},
+            {"type": "spring6_exception_handler_override_alignment"},
+            {"type": "spring_boot_test_mockbean_to_mockitobean"},
+            {"type": "mockito_initmocks_to_openmocks"},
+            {"type": "test_javax_servlet_imports_to_jakarta"},
+            {"type": "junit_assertthat_to_hamcrest_matcherassert"},
+            {"type": "jakarta_hybrid_strategy_gate"},
+            {"type": "powermock_legacy_test_strategy_gate"},
+            {"type": "azure_sdk_migration_playbook_gate"},
         ]
     return []
 

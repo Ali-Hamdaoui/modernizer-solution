@@ -1,0 +1,305 @@
+{
+  "project_id": "msa-dto",
+  "legacy_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\golden-references\\repos\\msa-dto-legacy",
+  "migrated_reference_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\golden-references\\repos\\msa-dto-reference",
+  "factory_sandbox_path": "",
+  "detected_build_files_changed": [
+    "msa-dto/pom.xml"
+  ],
+  "dependency_version_changes": [
+    {
+      "coordinate": "com.google.code.gson:gson",
+      "legacy_version": "2.10.1",
+      "reference_version": "2.13.2"
+    },
+    {
+      "coordinate": "com.microsoft.azure:azure-servicebus-spring-boot-starter",
+      "legacy_version": "2.1.6",
+      "reference_version": "2.2.5"
+    },
+    {
+      "coordinate": "io.jsonwebtoken:jjwt-api",
+      "legacy_version": "0.10.5",
+      "reference_version": "0.13.0"
+    },
+    {
+      "coordinate": "io.jsonwebtoken:jjwt-impl",
+      "legacy_version": "0.10.5",
+      "reference_version": "0.13.0"
+    },
+    {
+      "coordinate": "io.jsonwebtoken:jjwt-jackson",
+      "legacy_version": "0.10.5",
+      "reference_version": "0.13.0"
+    },
+    {
+      "coordinate": "jakarta.xml.bind:jakarta.xml.bind-api",
+      "legacy_version": "",
+      "reference_version": "4.0.2"
+    },
+    {
+      "coordinate": "javax.servlet:javax.servlet-api",
+      "legacy_version": "",
+      "reference_version": "4.0.1"
+    },
+    {
+      "coordinate": "javax.servlet:servlet-api",
+      "legacy_version": "2.5",
+      "reference_version": ""
+    },
+    {
+      "coordinate": "javax.xml.bind:jaxb-api",
+      "legacy_version": "2.3.0",
+      "reference_version": ""
+    },
+    {
+      "coordinate": "junit:junit",
+      "legacy_version": "4.12",
+      "reference_version": ""
+    },
+    {
+      "coordinate": "org.apache.juneau:juneau-all",
+      "legacy_version": "8.1.1",
+      "reference_version": "9.1.0"
+    },
+    {
+      "coordinate": "org.apache.juneau:juneau-marshall",
+      "legacy_version": "",
+      "reference_version": "8.2.0"
+    },
+    {
+      "coordinate": "org.apache.juneau:juneau-marshall-rdf",
+      "legacy_version": "8.1.1",
+      "reference_version": "8.2.0"
+    },
+    {
+      "coordinate": "org.apache.juneau:juneau-microservice-core",
+      "legacy_version": "8.1.1",
+      "reference_version": "9.1.0"
+    },
+    {
+      "coordinate": "org.apache.juneau:juneau-rest-client",
+      "legacy_version": "8.1.1",
+      "reference_version": "9.1.0"
+    },
+    {
+      "coordinate": "org.apache.juneau:juneau-rest-server",
+      "legacy_version": "",
+      "reference_version": "8.2.0"
+    },
+    {
+      "coordinate": "org.assertj:assertj-core",
+      "legacy_version": "3.13.2",
+      "reference_version": "3.27.6"
+    },
+    {
+      "coordinate": "org.junit.jupiter:junit-jupiter-api",
+      "legacy_version": "",
+      "reference_version": "6.0.0"
+    },
+    {
+      "coordinate": "org.projectlombok:lombok",
+      "legacy_version": "1.18.34",
+      "reference_version": "1.18.42"
+    },
+    {
+      "coordinate": "org.slf4j:slf4j-api",
+      "legacy_version": "1.7.25",
+      "reference_version": "2.0.17"
+    },
+    {
+      "coordinate": "org.springframework.boot:spring-boot",
+      "legacy_version": "2.1.0.RELEASE",
+      "reference_version": "3.5.6"
+    },
+    {
+      "coordinate": "org.springframework.boot:spring-boot-starter-data-jpa",
+      "legacy_version": "2.1.0.RELEASE",
+      "reference_version": "3.5.6"
+    },
+    {
+      "coordinate": "org.springframework.boot:spring-boot-starter-security",
+      "legacy_version": "2.1.0.RELEASE",
+      "reference_version": "3.5.6"
+    },
+    {
+      "coordinate": "org.springframework.boot:spring-boot-starter-test",
+      "legacy_version": "2.1.6.RELEASE",
+      "reference_version": "3.5.6"
+    },
+    {
+      "coordinate": "org.springframework.boot:spring-boot-starter-web",
+      "legacy_version": "2.1.0.RELEASE",
+      "reference_version": "3.5.6"
+    },
+    {
+      "coordinate": "org.springframework:spring-aspects",
+      "legacy_version": "5.1.8.RELEASE",
+      "reference_version": "6.2.11"
+    },
+    {
+      "coordinate": "org.zalando:problem-spring-web",
+      "legacy_version": "0.24.0-RC.0",
+      "reference_version": "0.29.1"
+    }
+  ],
+  "plugin_tooling_changes": [
+    {
+      "coordinate": "org.apache.maven.plugins:maven-compiler-plugin",
+      "legacy_version": "3.8.1",
+      "reference_version": "3.11.0"
+    }
+  ],
+  "java_version_change": {
+    "legacy": "11",
+    "reference": "21"
+  },
+  "spring_boot_version_change": {
+    "legacy": "2.1.6.RELEASE",
+    "reference": "3.5.6.RELEASE"
+  },
+  "javax_to_jakarta_import_changes": [
+    {
+      "rule_id": "IMPORT_JAVAX_XML_BIND_TO_JAKARTA",
+      "legacy_import": "javax.xml.bind.",
+      "reference_import": "jakarta.xml.bind.",
+      "legacy_count": 406,
+      "reference_count": 406
+    },
+    {
+      "rule_id": "IMPORT_JAVAX_SERVLET_TO_JAKARTA",
+      "legacy_import": "javax.servlet.",
+      "reference_import": "jakarta.servlet.",
+      "legacy_count": 1,
+      "reference_count": 1
+    }
+  ],
+  "framework_library_signals": [
+    {
+      "signal_id": "JJWT",
+      "legacy_coordinates": [
+        "io.jsonwebtoken:jjwt-api",
+        "io.jsonwebtoken:jjwt-impl",
+        "io.jsonwebtoken:jjwt-jackson"
+      ],
+      "reference_coordinates": [
+        "io.jsonwebtoken:jjwt-api",
+        "io.jsonwebtoken:jjwt-impl",
+        "io.jsonwebtoken:jjwt-jackson"
+      ]
+    },
+    {
+      "signal_id": "JUNEAU",
+      "legacy_coordinates": [
+        "org.apache.juneau:juneau-all",
+        "org.apache.juneau:juneau-marshall-rdf",
+        "org.apache.juneau:juneau-microservice-core",
+        "org.apache.juneau:juneau-rest-client"
+      ],
+      "reference_coordinates": [
+        "org.apache.juneau:juneau-all",
+        "org.apache.juneau:juneau-marshall",
+        "org.apache.juneau:juneau-marshall-rdf",
+        "org.apache.juneau:juneau-microservice-core",
+        "org.apache.juneau:juneau-rest-client",
+        "org.apache.juneau:juneau-rest-server"
+      ]
+    },
+    {
+      "signal_id": "AZURE_OLD_SDK",
+      "legacy_coordinates": [
+        "com.microsoft.azure:azure-servicebus-spring-boot-starter"
+      ],
+      "reference_coordinates": [
+        "com.microsoft.azure:azure-servicebus-spring-boot-starter"
+      ]
+    }
+  ],
+  "test_modernization_patterns": [],
+  "source_code_transformation_patterns": [],
+  "files_added": [
+    ".github/workflows/sonarqube.yml",
+    "msa-dto/src/main/java/com/total/corp/services/spring/ReferentialFacadeInternalImpl.java"
+  ],
+  "files_removed": [
+    ".github/main.yml",
+    ".idea/.gitignore",
+    ".idea/MSA-msa-dto-msa-test-1.34.iml",
+    ".idea/compiler.xml",
+    ".idea/encodings.xml",
+    ".idea/jarRepositories.xml",
+    ".idea/misc.xml",
+    ".idea/modules.xml"
+  ],
+  "files_renamed_if_detectable": [],
+  "candidate_deterministic_rules": [
+    {
+      "rule_id": "JAVA_VERSION_ALIGNMENT",
+      "recommended_action": "Update Java version/tooling metadata.",
+      "safe_to_auto_apply": true,
+      "requires_human_review": false
+    },
+    {
+      "rule_id": "SPRING_BOOT_VERSION_ALIGNMENT",
+      "recommended_action": "Align Spring Boot target version.",
+      "safe_to_auto_apply": true,
+      "requires_human_review": false
+    },
+    {
+      "rule_id": "JJWT_VERSION_ALIGNMENT",
+      "recommended_action": "Align io.jsonwebtoken:jjwt-api version.",
+      "safe_to_auto_apply": true,
+      "requires_human_review": false
+    },
+    {
+      "rule_id": "LOMBOK_VERSION_ALIGNMENT",
+      "recommended_action": "Align org.projectlombok:lombok version.",
+      "safe_to_auto_apply": true,
+      "requires_human_review": false
+    },
+    {
+      "rule_id": "SLF4J_VERSION_ALIGNMENT",
+      "recommended_action": "Align org.slf4j:slf4j-api version.",
+      "safe_to_auto_apply": true,
+      "requires_human_review": false
+    },
+    {
+      "rule_id": "IMPORT_JAVAX_XML_BIND_TO_JAKARTA",
+      "recommended_action": "Migrate import namespace javax.xml.bind. to jakarta.xml.bind..",
+      "safe_to_auto_apply": true,
+      "requires_human_review": false
+    },
+    {
+      "rule_id": "IMPORT_JAVAX_SERVLET_TO_JAKARTA",
+      "recommended_action": "Migrate import namespace javax.servlet. to jakarta.servlet..",
+      "safe_to_auto_apply": true,
+      "requires_human_review": false
+    }
+  ],
+  "candidate_human_review_items": [
+    {
+      "rule_id": "AZURE_SDK_API_MIGRATION",
+      "recommended_action": "Review Azure SDK coordinate and API migration.",
+      "safe_to_auto_apply": false,
+      "requires_human_review": true
+    },
+    {
+      "rule_id": "PUBLIC_API_SIGNATURE_CHANGE",
+      "recommended_action": "Review public API signature changes against consumers.",
+      "safe_to_auto_apply": false,
+      "requires_human_review": true
+    }
+  ],
+  "candidate_llm_remediation_items": [
+    {
+      "rule_id": "UNMAPPED_SOURCE_TRANSFORMATION",
+      "recommended_action": "Review localized code/test changes not covered by deterministic rules.",
+      "safe_to_auto_apply": false,
+      "requires_human_review": true
+    }
+  ],
+  "anti_pattern_warnings": [
+    "Migrated reference keeps many explicit versions; consider BOM-managed simplification."
+  ],
+  "factory_gap_analysis": {}
+}

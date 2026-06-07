@@ -1,0 +1,21 @@
+{
+  "consumers": [
+    {
+      "consumer_project_id": "consumer",
+      "consumer_project_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\intake-cli-sample\\consumer",
+      "suggested_command": "mvn clean test",
+      "validation_reason": "Internal dependency on migrated project producer."
+    }
+  ],
+  "human_review_required": false,
+  "migrated_coordinates": {
+    "artifactId": "producer-lib",
+    "groupId": "com.example",
+    "packaging": "jar",
+    "version": "1.0.0"
+  },
+  "migrated_project_id": "producer",
+  "migrated_project_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\intake-cli-sample\\producer",
+  "status": "READY",
+  "warnings": []
+}

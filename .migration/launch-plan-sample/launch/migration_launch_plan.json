@@ -1,0 +1,35 @@
+{
+  "ai_hub_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\launch-plan-sample\\ai-hub",
+  "commands": {
+    "approval_template": "python -m migration_factory.approval.approve_run --run-dir \"C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\launch-plan-sample\\modernized\\.migration\\runs\\candidate-$(Get-Date -Format 'yyyyMMdd-HHmmss')\" --run-id \"candidate-$(Get-Date -Format 'yyyyMMdd-HHmmss')\" --approved-by \"ada\" --decision approved --comments \"Approved for sandbox-only migration after readiness review. No production promotion approved. Sandbox-only migration. No production promotion approved.\"",
+    "resume_template": "python -m migration_factory.orchestrator.resume --run-id \"candidate-$(Get-Date -Format 'yyyyMMdd-HHmmss')\" --run-dir \"C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\launch-plan-sample\\modernized\\.migration\\runs\\candidate-$(Get-Date -Format 'yyyyMMdd-HHmmss')\" --decision approved --approved-by \"ada\" --comments \"Approved for sandbox-only migration after readiness review. No production promotion approved. Sandbox-only migration. No production promotion approved.\"",
+    "runner": "python -m migration_factory.orchestrator.runner --run-id \"candidate-$(Get-Date -Format 'yyyyMMdd-HHmmss')\" --legacy \"C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\launch-plan-sample\\candidate\" --modernized \"C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\launch-plan-sample\\modernized\" --ai-hub \"C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\launch-plan-sample\\ai-hub\" --profile springboot-2.1-to-3.5-java17 --mode read_only_assessment"
+  },
+  "consumer_validation_config_path": "",
+  "environment": {
+    "JAVA_HOME_11": "C:\\jdks\\11",
+    "JAVA_HOME_17": "C:\\jdks\\17",
+    "MAVEN_OPTS": "demo-opts"
+  },
+  "governance": {
+    "human_approval_required": true,
+    "production_promotion_allowed": false,
+    "sandbox_only": true
+  },
+  "human_review_required_before_launch": false,
+  "launch_status": "READY_FOR_REVIEW",
+  "legacy_app_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\launch-plan-sample\\candidate",
+  "modernized_output_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\launch-plan-sample\\modernized",
+  "profile_id": "springboot-2.1-to-3.5-java17",
+  "project_id": "candidate",
+  "readiness_status": "READY_WITH_WARNINGS",
+  "recommended_next_actions": [
+    "Review generated commands, then run read-only assessment and approval flow when ready."
+  ],
+  "run_dir_expression": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\launch-plan-sample\\modernized\\.migration\\runs\\candidate-$(Get-Date -Format 'yyyyMMdd-HHmmss')",
+  "run_id_example": "candidate-$(Get-Date -Format 'yyyyMMdd-HHmmss')",
+  "run_id_prefix": "candidate",
+  "source_artifact_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\launch-plan-sample\\intake\\candidate\\readiness_pack.json",
+  "source_artifact_type": "readiness_pack",
+  "warnings": []
+}

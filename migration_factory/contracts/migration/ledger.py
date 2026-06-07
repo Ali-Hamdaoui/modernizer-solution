@@ -224,6 +224,30 @@ def mark_build_failed(
     return ledger
 
 
+def record_remediation_attempt(
+    ledger_file: str | Path,
+    *,
+    unit_id: str,
+    attempt: dict[str, Any],
+) -> dict[str, Any]:
+    ledger = load_ledger(ledger_file)
+    attempts = ledger.setdefault("remediation_attempts", [])
+    if not isinstance(attempts, list):
+        attempts = []
+        ledger["remediation_attempts"] = attempts
+    attempts.append(dict(attempt))
+
+    unit = _unit_entry(ledger, unit_id)
+    unit_attempts = unit.setdefault("remediation_attempts", [])
+    if not isinstance(unit_attempts, list):
+        unit_attempts = []
+        unit["remediation_attempts"] = unit_attempts
+    unit_attempts.append(dict(attempt))
+    ledger["last_remediation_attempt"] = dict(attempt)
+    save_ledger(ledger_file, ledger)
+    return ledger
+
+
 def _unit_entry(ledger: dict[str, Any], unit_id: str) -> dict[str, Any]:
     units = ledger.setdefault("units", {})
     unit = units.setdefault(unit_id, {})

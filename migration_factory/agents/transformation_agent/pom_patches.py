@@ -12,6 +12,19 @@ SPRING_DATA_SORT_CONSTRUCTOR_PATTERN = re.compile(
     r"new\s+(?P<qualifier>(?:org\.springframework\.data\.domain\.)?Sort)\s*"
     r"\(\s*(?P<direction>[^,\n]+?)\s*,\s*(?P<property>[^)\n]+?)\s*\)"
 )
+SPRING_BOOT_TEST_MOCKBEAN_IMPORT = "import org.springframework.boot.test.mock.mockito.MockBean;"
+SPRING_BOOT_TEST_MOCKITOBEAN_IMPORT = "import org.springframework.test.context.bean.override.mockito.MockitoBean;"
+SPRING_BOOT_TEST_MOCKBEAN_ANNOTATION_PATTERN = re.compile(r"@MockBean\b")
+MOCKITO_INITMOCKS_PATTERN = re.compile(
+    r"MockitoAnnotations\.initMocks\(\s*(?P<target>[^)]+?)\s*\);"
+)
+TEST_JAVAX_SERVLET_IMPORT_PATTERN = re.compile(
+    r"^import\s+javax\.servlet(?P<suffix>(?:\.[A-Za-z0-9_*]+)+)\s*;\s*$",
+    re.MULTILINE,
+)
+JUNIT_ASSERTTHAT_STATIC_IMPORT = "import static org.junit.Assert.assertThat;"
+HAMCREST_ASSERTTHAT_STATIC_IMPORT = "import static org.hamcrest.MatcherAssert.assertThat;"
+JUNIT_ASSERTTHAT_FQCN_PATTERN = re.compile(r"\borg\.junit\.Assert\.assertThat\s*\(")
 
 
 @dataclass(frozen=True)
@@ -352,6 +365,145 @@ def patch_spring6_exception_handler_override_signatures(
     return patches
 
 
+def patch_spring_boot_test_mockbean_to_mockitobean(
+    project_path: Path,
+    *,
+    unit_id: str,
+) -> list[SourcePatch]:
+    patches: list[SourcePatch] = []
+    for path in _iter_test_java_files(project_path):
+        relative_path = path.relative_to(project_path)
+        text = path.read_text(encoding="utf-8")
+        if SPRING_BOOT_TEST_MOCKBEAN_IMPORT not in text and "@MockBean" not in text:
+            continue
+        updated = text.replace(
+            SPRING_BOOT_TEST_MOCKBEAN_IMPORT,
+            SPRING_BOOT_TEST_MOCKITOBEAN_IMPORT,
+        )
+        updated = SPRING_BOOT_TEST_MOCKBEAN_ANNOTATION_PATTERN.sub("@MockitoBean", updated)
+        if updated == text:
+            continue
+        path.write_text(updated, encoding="utf-8")
+        patches.append(
+            SourcePatch(
+                file=str(relative_path),
+                patch="spring_boot_test_mockbean_to_mockitobean",
+                unit=unit_id,
+            )
+        )
+    return patches
+
+
+def patch_mockito_initmocks_to_openmocks(
+    project_path: Path,
+    *,
+    unit_id: str,
+) -> list[SourcePatch]:
+    patches: list[SourcePatch] = []
+    for path in _iter_test_java_files(project_path):
+        relative_path = path.relative_to(project_path)
+        text = path.read_text(encoding="utf-8")
+        if "MockitoAnnotations.initMocks(" not in text:
+            continue
+        updated = MOCKITO_INITMOCKS_PATTERN.sub(
+            lambda match: f"MockitoAnnotations.openMocks({match.group('target').strip()});",
+            text,
+        )
+        if updated == text:
+            continue
+        path.write_text(updated, encoding="utf-8")
+        patches.append(
+            SourcePatch(
+                file=str(relative_path),
+                patch="mockito_initmocks_to_openmocks",
+                unit=unit_id,
+            )
+        )
+    return patches
+
+
+def patch_test_javax_servlet_imports_to_jakarta(
+    project_path: Path,
+    *,
+    unit_id: str,
+) -> list[SourcePatch]:
+    patches: list[SourcePatch] = []
+    for path in _iter_test_java_files(project_path):
+        relative_path = path.relative_to(project_path)
+        text = path.read_text(encoding="utf-8")
+        if "import javax.servlet" not in text:
+            continue
+        updated = TEST_JAVAX_SERVLET_IMPORT_PATTERN.sub(
+            lambda match: f"import jakarta.servlet{match.group('suffix')};",
+            text,
+        )
+        if updated == text:
+            continue
+        path.write_text(updated, encoding="utf-8")
+        patches.append(
+            SourcePatch(
+                file=str(relative_path),
+                patch="test_javax_servlet_imports_to_jakarta",
+                unit=unit_id,
+            )
+        )
+    return patches
+
+
+def patch_junit_assertthat_to_hamcrest_matcherassert(
+    project_path: Path,
+    *,
+    unit_id: str,
+) -> list[SourcePatch]:
+    patches: list[SourcePatch] = []
+    for path in _iter_test_java_files(project_path):
+        relative_path = path.relative_to(project_path)
+        text = path.read_text(encoding="utf-8")
+        if JUNIT_ASSERTTHAT_STATIC_IMPORT not in text and "org.junit.Assert.assertThat(" not in text:
+            continue
+        updated = text.replace(JUNIT_ASSERTTHAT_STATIC_IMPORT, HAMCREST_ASSERTTHAT_STATIC_IMPORT)
+        updated = JUNIT_ASSERTTHAT_FQCN_PATTERN.sub("org.hamcrest.MatcherAssert.assertThat(", updated)
+        if updated == text:
+            continue
+        path.write_text(updated, encoding="utf-8")
+        patches.append(
+            SourcePatch(
+                file=str(relative_path),
+                patch="junit_assertthat_to_hamcrest_matcherassert",
+                unit=unit_id,
+            )
+        )
+    return patches
+
+
+def patch_jjwt_api_parser_builder_compatibility(
+    project_path: Path,
+    *,
+    unit_id: str,
+) -> list[SourcePatch]:
+    patches: list[SourcePatch] = []
+    source_root = project_path / "src" / "main" / "java"
+    if not source_root.is_dir():
+        return patches
+    for path in sorted(source_root.rglob("*.java")):
+        relative_path = path.relative_to(project_path)
+        text = path.read_text(encoding="utf-8")
+        if "Jwts.parser()" not in text or "JwtParser" not in text:
+            continue
+        updated = _patch_jjwt_parser_assignments(text)
+        if updated == text:
+            continue
+        path.write_text(updated, encoding="utf-8")
+        patches.append(
+            SourcePatch(
+                file=str(relative_path),
+                patch="jjwt_api_parser_builder_compatibility",
+                unit=unit_id,
+            )
+        )
+    return patches
+
+
 def _find_source_file(project_path: Path, filename: str) -> Path:
     source_root = project_path / "src" / "main" / "java"
     if not source_root.is_dir():
@@ -370,6 +522,25 @@ def _find_any_file(project_path: Path, preferred_relative_path: Path, filename: 
     if matches:
         return matches[0]
     return preferred
+
+
+def _iter_test_java_files(project_path: Path) -> list[Path]:
+    src_root = project_path / "src"
+    if not src_root.is_dir():
+        return []
+    matches: list[Path] = []
+    for path in sorted(src_root.rglob("*.java")):
+        try:
+            relative_path = path.relative_to(project_path)
+        except ValueError:
+            continue
+        parts = [part.lower() for part in relative_path.parts[:-1]]
+        if "main" in parts:
+            continue
+        if not any("test" in part for part in parts):
+            continue
+        matches.append(path)
+    return matches
 
 
 def _namespace(tag: str) -> str:
@@ -397,6 +568,166 @@ def _replace_spring_data_sort_constructor_usage(text: str) -> str:
         return f"{factory_target}.by({direction}, {property_value})"
 
     return SPRING_DATA_SORT_CONSTRUCTOR_PATTERN.sub(_replacement, text)
+
+
+def _patch_jjwt_parser_assignments(text: str) -> str:
+    candidates = collect_jjwt_parser_compatibility_candidates(text)
+    if not candidates:
+        return text
+    updated = text
+    for candidate in reversed(candidates):
+        expression = candidate["expression"]
+        if ".build(" in expression or ".build()" in expression:
+            continue
+        if not _is_safe_jjwt_parser_builder_expression(expression):
+            continue
+        updated = (
+            updated[: candidate["expression_start"]]
+            + expression
+            + ".build()"
+            + updated[candidate["expression_end"] :]
+        )
+    return updated
+
+
+def collect_jjwt_parser_compatibility_candidates(text: str) -> list[dict[str, int | str | bool]]:
+    candidates: list[dict[str, int | str | bool]] = []
+    search_from = 0
+    while True:
+        expression_start = text.find("Jwts.parser()", search_from)
+        if expression_start == -1:
+            break
+        expression_end = _find_statement_end(text, expression_start)
+        if expression_end == -1:
+            break
+        statement_start = _find_statement_start(text, expression_start)
+        prefix = text[statement_start:expression_start]
+        mode = _jjwt_candidate_mode(prefix)
+        expression = text[expression_start:expression_end]
+        if mode is not None:
+            candidates.append(
+                {
+                    "statement_start": statement_start,
+                    "expression_start": expression_start,
+                    "expression_end": expression_end,
+                    "mode": mode,
+                    "expression": expression,
+                    "already_built": ".build()" in expression,
+                    "safe_to_auto_apply": _is_safe_jjwt_parser_builder_expression(expression),
+                }
+            )
+        search_from = expression_end + 1
+    return candidates
+
+
+def _find_statement_start(text: str, expression_start: int) -> int:
+    anchors = [
+        text.rfind(";", 0, expression_start),
+        text.rfind("{", 0, expression_start),
+        text.rfind("\n", 0, expression_start),
+    ]
+    return max(anchors) + 1
+
+
+def _find_statement_end(text: str, expression_start: int) -> int:
+    paren_depth = 0
+    brace_depth = 0
+    in_string = False
+    string_quote = ""
+    escaped = False
+    for index in range(expression_start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char == string_quote:
+                in_string = False
+            continue
+        if char in {'"', "'"}:
+            in_string = True
+            string_quote = char
+            continue
+        if char == "(":
+            paren_depth += 1
+            continue
+        if char == ")":
+            paren_depth = max(0, paren_depth - 1)
+            continue
+        if char == "{":
+            brace_depth += 1
+            continue
+        if char == "}":
+            brace_depth = max(0, brace_depth - 1)
+            continue
+        if char == ";" and paren_depth == 0 and brace_depth == 0:
+            return index
+    return -1
+
+
+def _jjwt_candidate_mode(prefix: str) -> str | None:
+    if re.search(r"\breturn\s*$", prefix):
+        return "return"
+    if re.search(r"\bJwtParser\s+\w+\s*=\s*$", prefix):
+        return "assignment"
+    return None
+
+
+def _is_safe_jjwt_parser_builder_expression(expression: str) -> bool:
+    compact = "".join(expression.split())
+    if not compact.startswith("Jwts.parser()"):
+        return False
+    if ".build()" in compact:
+        return False
+    tail = compact[len("Jwts.parser()") :]
+    if not tail:
+        return True
+    index = 0
+    while index < len(tail):
+        if tail[index] != ".":
+            return False
+        next_paren = tail.find("(", index)
+        if next_paren == -1:
+            return False
+        method_name = tail[index + 1 : next_paren]
+        if method_name not in {
+            "setSigningKey",
+            "setSigningKeyResolver",
+            "deserializeJsonWith",
+            "base64UrlDecodeWith",
+            "clockSkewSeconds",
+            "require",
+            "requireAudience",
+            "requireExpiration",
+            "requireId",
+            "requireIssuedAt",
+            "requireIssuer",
+            "requireNotBefore",
+            "requireSubject",
+            "verifyWith",
+        }:
+            return False
+        depth = 1
+        brace_depth = 0
+        cursor = next_paren + 1
+        while cursor < len(tail) and depth > 0:
+            char = tail[cursor]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+            elif char == "{":
+                brace_depth += 1
+            elif char == "}":
+                brace_depth = max(0, brace_depth - 1)
+            cursor += 1
+        if depth != 0 or brace_depth != 0:
+            return False
+        index = cursor
+    return True
 
 
 def _patch_constraint_violation_override(

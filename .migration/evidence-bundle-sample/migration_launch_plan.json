@@ -1,0 +1,5 @@
+{
+  "launch_status": "READY_FOR_REVIEW",
+  "governance": {"production_promotion_allowed": false},
+  "warnings": ["Human review before launch."]
+}

@@ -1,0 +1,77 @@
+{
+  "consumer_validation_plan": [
+    {
+      "consumers": [],
+      "migrated_project": "svc-a",
+      "suggested_command": "mvn clean test"
+    },
+    {
+      "consumers": [
+        "svc-a"
+      ],
+      "migrated_project": "lib-b",
+      "suggested_command": "mvn clean test"
+    }
+  ],
+  "cycles": [],
+  "detected_coordinates": {
+    "lib-b": {
+      "artifactId": "lib-b",
+      "groupId": "com.example",
+      "packaging": "jar",
+      "version": "1.0.0"
+    },
+    "svc-a": {
+      "artifactId": "svc-a",
+      "groupId": "com.example",
+      "packaging": "jar",
+      "version": "1.0.0"
+    }
+  },
+  "human_review_required": false,
+  "internal_dependency_edges": [
+    {
+      "consumer_project_id": "svc-a",
+      "producer_project_id": "lib-b",
+      "scope": "compile",
+      "version": "1.0.0"
+    }
+  ],
+  "migration_waves": [
+    [
+      "lib-b"
+    ],
+    [
+      "svc-a"
+    ]
+  ],
+  "missing_or_ambiguous_coordinates": [],
+  "projects": [
+    {
+      "coordinates": {
+        "artifactId": "svc-a",
+        "groupId": "com.example",
+        "packaging": "jar",
+        "version": "1.0.0"
+      },
+      "packaging": "jar",
+      "project_id": "svc-a",
+      "project_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\wave-planner-sample\\svc-a"
+    },
+    {
+      "coordinates": {
+        "artifactId": "lib-b",
+        "groupId": "com.example",
+        "packaging": "jar",
+        "version": "1.0.0"
+      },
+      "packaging": "jar",
+      "project_id": "lib-b",
+      "project_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\wave-planner-sample\\lib-b"
+    }
+  ],
+  "recommended_next_actions": [
+    "Feed consumer_validation_plan into consumer compatibility validation after each migrated producer/library."
+  ],
+  "warnings": []
+}

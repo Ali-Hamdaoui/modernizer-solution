@@ -543,7 +543,11 @@ def test_failed_sandbox_with_classification_generates_final_failure_report(tmp_p
     assert payload["artifact_refs"]["post_transform_failure_classification"].endswith(
         "post_transform_failure_classification.json"
     )
+    assert payload["artifact_refs"]["remediation_plan"].endswith("remediation_plan.yaml")
+    assert payload["artifact_refs"]["api_contract_review"].endswith("api_contract_review.json")
     assert summary.count("HTTP_STATUS_CONTRACT_DRIFT: 1") == 1
+    assert "Remediation Plan:" in summary
+    assert "API Contract Review:" in summary
     assert "Sandbox migration failed with classified post-transform test failures." in summary
     assert result["orchestration_artifacts_valid"] is False
 
@@ -627,6 +631,53 @@ migration_units:
     assert any("Servlet 6.1" in warning for warning in payload["boot4_warnings"])
     assert "No deployment performed." in payload["limitations"]
     assert "No automatic merge performed." in payload["limitations"]
+
+
+def test_successful_final_report_includes_consumer_compatibility_refs(tmp_path: Path, monkeypatch) -> None:
+    state = _successful_state(tmp_path)
+
+    def fake_validation(**kwargs):
+        output_dir = Path(kwargs["output_dir"])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        report = output_dir / "consumer_compatibility_report.json"
+        summary = output_dir / "consumer_compatibility_summary.md"
+        report.write_text(
+            json.dumps(
+                {
+                    "gate_id": "CONSUMER_COMPATIBILITY_VALIDATION",
+                    "status": "PASSED",
+                    "production_allowed": True,
+                    "human_review_required": False,
+                    "consumer_results": [{"consumer_project_path": "c:/tmp/consumer", "status": "PASSED"}],
+                    "warnings": [],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        summary.write_text("# Consumer Compatibility Summary\n", encoding="utf-8")
+        from migration_factory.orchestrator.consumer_compatibility import ConsumerCompatibilityResult
+
+        return ConsumerCompatibilityResult(
+            report_path=report,
+            summary_path=summary,
+            status="PASSED",
+            warnings=[],
+            human_review_required=False,
+            production_allowed=True,
+        )
+
+    monkeypatch.setattr(summary_module, "run_consumer_compatibility_validation", fake_validation)
+
+    result = finalize_orchestration_state(state)
+
+    payload = json.loads(Path(result["artifact_refs"]["final_migration_report"]).read_text(encoding="utf-8"))
+    summary = Path(result["artifact_refs"]["final_migration_summary"]).read_text(encoding="utf-8")
+    assert payload["consumer_compatibility_status"] == "PASSED"
+    assert payload["artifact_refs"]["consumer_compatibility_report"].endswith("consumer_compatibility_report.json")
+    assert payload["artifact_refs"]["consumer_compatibility_summary"].endswith("consumer_compatibility_summary.md")
+    assert "## Consumer Compatibility Validation" in summary
+    assert "consumer_compatibility_report.json" in summary
 
 
 def _successful_state(tmp_path: Path) -> dict:

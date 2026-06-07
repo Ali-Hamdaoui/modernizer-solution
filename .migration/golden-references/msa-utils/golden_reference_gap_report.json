@@ -1,0 +1,555 @@
+{
+  "project_id": "msa-utils",
+  "legacy_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\golden-references\\repos\\msa-utils-legacy",
+  "migrated_reference_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\golden-references\\repos\\msa-utils-reference",
+  "factory_sandbox_path": "",
+  "detected_build_files_changed": [
+    "common-utils/pom.xml"
+  ],
+  "dependency_version_changes": [
+    {
+      "coordinate": "com.azure:azure-messaging-servicebus",
+      "legacy_version": "",
+      "reference_version": "7.17.16"
+    },
+    {
+      "coordinate": "com.azure:azure-storage-blob",
+      "legacy_version": "",
+      "reference_version": "12.31.3"
+    },
+    {
+      "coordinate": "com.fasterxml.jackson.dataformat:jackson-dataformat-csv",
+      "legacy_version": "2.10.0",
+      "reference_version": "2.20.0"
+    },
+    {
+      "coordinate": "com.github.ben-manes.caffeine:caffeine",
+      "legacy_version": "2.8.5",
+      "reference_version": "3.2.2"
+    },
+    {
+      "coordinate": "com.google.code.gson:gson",
+      "legacy_version": "2.10.1",
+      "reference_version": "2.13.2"
+    },
+    {
+      "coordinate": "com.google.guava:guava-testlib",
+      "legacy_version": "20.0",
+      "reference_version": "33.5.0-jre"
+    },
+    {
+      "coordinate": "com.h2database:h2",
+      "legacy_version": "1.4.199",
+      "reference_version": "2.4.240"
+    },
+    {
+      "coordinate": "com.microsoft.azure:azure-servicebus-spring-boot-starter",
+      "legacy_version": "2.2.0",
+      "reference_version": "2.2.5"
+    },
+    {
+      "coordinate": "com.microsoft.azure:azure-storage",
+      "legacy_version": "8.3.0",
+      "reference_version": ""
+    },
+    {
+      "coordinate": "com.microsoft.azure:azure-storage-blob",
+      "legacy_version": "11.0.0",
+      "reference_version": ""
+    },
+    {
+      "coordinate": "commons-io:commons-io",
+      "legacy_version": "2.6",
+      "reference_version": "2.20.0"
+    },
+    {
+      "coordinate": "io.jsonwebtoken:jjwt-api",
+      "legacy_version": "0.10.5",
+      "reference_version": "0.12.5"
+    },
+    {
+      "coordinate": "io.jsonwebtoken:jjwt-impl",
+      "legacy_version": "0.10.5",
+      "reference_version": "0.12.5"
+    },
+    {
+      "coordinate": "io.jsonwebtoken:jjwt-jackson",
+      "legacy_version": "0.10.5",
+      "reference_version": "0.12.5"
+    },
+    {
+      "coordinate": "jakarta.annotation:jakarta.annotation-api",
+      "legacy_version": "",
+      "reference_version": "2.1.1"
+    },
+    {
+      "coordinate": "jakarta.mail:jakarta.mail-api",
+      "legacy_version": "",
+      "reference_version": "2.1.2"
+    },
+    {
+      "coordinate": "jakarta.servlet:jakarta.servlet-api",
+      "legacy_version": "",
+      "reference_version": "6.0.0"
+    },
+    {
+      "coordinate": "jakarta.validation:jakarta.validation-api",
+      "legacy_version": "",
+      "reference_version": "3.1.1"
+    },
+    {
+      "coordinate": "jakarta.xml.bind:jakarta.xml.bind-api",
+      "legacy_version": "",
+      "reference_version": "4.0.4"
+    },
+    {
+      "coordinate": "javax.servlet:servlet-api",
+      "legacy_version": "2.5",
+      "reference_version": ""
+    },
+    {
+      "coordinate": "javax.xml.bind:jaxb-api",
+      "legacy_version": "2.3.0",
+      "reference_version": ""
+    },
+    {
+      "coordinate": "junit:junit",
+      "legacy_version": "4.12",
+      "reference_version": "4.13.2"
+    },
+    {
+      "coordinate": "nz.net.ultraq.thymeleaf:thymeleaf-layout-dialect",
+      "legacy_version": "2.3.0",
+      "reference_version": "3.4.0"
+    },
+    {
+      "coordinate": "org.apache.commons:commons-collections4",
+      "legacy_version": "",
+      "reference_version": "4.5.0"
+    },
+    {
+      "coordinate": "org.apache.commons:commons-lang3",
+      "legacy_version": "3.9",
+      "reference_version": "3.19.0"
+    },
+    {
+      "coordinate": "org.apache.juneau:juneau-all",
+      "legacy_version": "8.1.1",
+      "reference_version": "9.1.0"
+    },
+    {
+      "coordinate": "org.apache.juneau:juneau-marshall",
+      "legacy_version": "",
+      "reference_version": "9.1.0"
+    },
+    {
+      "coordinate": "org.apache.juneau:juneau-marshall-rdf",
+      "legacy_version": "8.1.1",
+      "reference_version": "8.2.0"
+    },
+    {
+      "coordinate": "org.apache.juneau:juneau-microservice-core",
+      "legacy_version": "8.1.1",
+      "reference_version": "9.1.0"
+    },
+    {
+      "coordinate": "org.apache.juneau:juneau-rest-client",
+      "legacy_version": "8.1.1",
+      "reference_version": "9.1.0"
+    },
+    {
+      "coordinate": "org.apache.maven.surefire:surefire-junit47",
+      "legacy_version": "",
+      "reference_version": "3.5.4"
+    },
+    {
+      "coordinate": "org.assertj:assertj-core",
+      "legacy_version": "3.13.2",
+      "reference_version": "3.27.6"
+    },
+    {
+      "coordinate": "org.json:json",
+      "legacy_version": "20201115",
+      "reference_version": "20250517"
+    },
+    {
+      "coordinate": "org.powermock:powermock-api-mockito2",
+      "legacy_version": "2.0.2",
+      "reference_version": "2.0.9"
+    },
+    {
+      "coordinate": "org.powermock:powermock-module-junit4",
+      "legacy_version": "2.0.2",
+      "reference_version": "2.0.9"
+    },
+    {
+      "coordinate": "org.projectlombok:lombok",
+      "legacy_version": "0.11.8",
+      "reference_version": "1.18.42"
+    },
+    {
+      "coordinate": "org.slf4j:slf4j-api",
+      "legacy_version": "1.7.25",
+      "reference_version": "2.0.17"
+    },
+    {
+      "coordinate": "org.springframework.boot:spring-boot",
+      "legacy_version": "2.1.6.RELEASE",
+      "reference_version": "3.5.6"
+    },
+    {
+      "coordinate": "org.springframework.boot:spring-boot-actuator",
+      "legacy_version": "2.1.6.RELEASE",
+      "reference_version": "3.5.6"
+    },
+    {
+      "coordinate": "org.springframework.boot:spring-boot-starter-actuator",
+      "legacy_version": "2.1.6.RELEASE",
+      "reference_version": "3.5.6"
+    },
+    {
+      "coordinate": "org.springframework.boot:spring-boot-starter-cache",
+      "legacy_version": "2.1.6.RELEASE",
+      "reference_version": "3.5.6"
+    },
+    {
+      "coordinate": "org.springframework.boot:spring-boot-starter-data-jpa",
+      "legacy_version": "2.1.6.RELEASE",
+      "reference_version": "3.5.6"
+    },
+    {
+      "coordinate": "org.springframework.boot:spring-boot-starter-mail",
+      "legacy_version": "2.1.6.RELEASE",
+      "reference_version": "3.5.6"
+    },
+    {
+      "coordinate": "org.springframework.boot:spring-boot-starter-security",
+      "legacy_version": "2.1.6.RELEASE",
+      "reference_version": "3.5.6"
+    },
+    {
+      "coordinate": "org.springframework.boot:spring-boot-starter-test",
+      "legacy_version": "2.1.6.RELEASE",
+      "reference_version": "3.5.6"
+    },
+    {
+      "coordinate": "org.springframework.boot:spring-boot-starter-web",
+      "legacy_version": "2.1.6.RELEASE",
+      "reference_version": "3.5.6"
+    },
+    {
+      "coordinate": "org.springframework.security:spring-security-test",
+      "legacy_version": "5.1.4.RELEASE",
+      "reference_version": "6.5.5"
+    },
+    {
+      "coordinate": "org.springframework:spring-aspects",
+      "legacy_version": "5.1.8.RELEASE",
+      "reference_version": "6.2.11"
+    },
+    {
+      "coordinate": "org.thymeleaf:thymeleaf-spring5",
+      "legacy_version": "3.0.11.RELEASE",
+      "reference_version": "3.1.3.RELEASE"
+    },
+    {
+      "coordinate": "org.zalando:problem-spring-web",
+      "legacy_version": "0.24.0-RC.0",
+      "reference_version": "0.29.1"
+    }
+  ],
+  "plugin_tooling_changes": [
+    {
+      "coordinate": "org.apache.maven.plugins:maven-compiler-plugin",
+      "legacy_version": "3.8.1",
+      "reference_version": "3.11.0"
+    }
+  ],
+  "java_version_change": {
+    "legacy": "11",
+    "reference": "21"
+  },
+  "spring_boot_version_change": {
+    "legacy": "2.1.6.RELEASE",
+    "reference": "3.5.6"
+  },
+  "javax_to_jakarta_import_changes": [
+    {
+      "rule_id": "IMPORT_JAVAX_VALIDATION_TO_JAKARTA",
+      "legacy_import": "javax.validation.",
+      "reference_import": "jakarta.validation.",
+      "legacy_count": 4,
+      "reference_count": 4
+    },
+    {
+      "rule_id": "IMPORT_JAVAX_SERVLET_TO_JAKARTA",
+      "legacy_import": "javax.servlet.",
+      "reference_import": "jakarta.servlet.",
+      "legacy_count": 27,
+      "reference_count": 27
+    }
+  ],
+  "framework_library_signals": [
+    {
+      "signal_id": "JJWT",
+      "legacy_coordinates": [
+        "io.jsonwebtoken:jjwt-api",
+        "io.jsonwebtoken:jjwt-impl",
+        "io.jsonwebtoken:jjwt-jackson"
+      ],
+      "reference_coordinates": [
+        "io.jsonwebtoken:jjwt-api",
+        "io.jsonwebtoken:jjwt-impl",
+        "io.jsonwebtoken:jjwt-jackson"
+      ]
+    },
+    {
+      "signal_id": "JUNEAU",
+      "legacy_coordinates": [
+        "org.apache.juneau:juneau-all",
+        "org.apache.juneau:juneau-marshall-rdf",
+        "org.apache.juneau:juneau-microservice-core",
+        "org.apache.juneau:juneau-rest-client"
+      ],
+      "reference_coordinates": [
+        "org.apache.juneau:juneau-all",
+        "org.apache.juneau:juneau-marshall",
+        "org.apache.juneau:juneau-marshall-rdf",
+        "org.apache.juneau:juneau-microservice-core",
+        "org.apache.juneau:juneau-rest-client"
+      ]
+    },
+    {
+      "signal_id": "POWERMOCK",
+      "legacy_coordinates": [
+        "org.powermock:powermock-api-mockito2",
+        "org.powermock:powermock-module-junit4"
+      ],
+      "reference_coordinates": [
+        "org.powermock:powermock-api-mockito2",
+        "org.powermock:powermock-module-junit4"
+      ]
+    },
+    {
+      "signal_id": "AZURE_OLD_SDK",
+      "legacy_coordinates": [
+        "com.microsoft.azure:azure-servicebus-spring-boot-starter",
+        "com.microsoft.azure:azure-storage",
+        "com.microsoft.azure:azure-storage-blob"
+      ],
+      "reference_coordinates": [
+        "com.microsoft.azure:azure-servicebus-spring-boot-starter"
+      ]
+    },
+    {
+      "signal_id": "AZURE_NEW_SDK",
+      "legacy_coordinates": [],
+      "reference_coordinates": [
+        "com.azure:azure-messaging-servicebus",
+        "com.azure:azure-storage-blob"
+      ]
+    }
+  ],
+  "test_modernization_patterns": [
+    {
+      "rule_id": "MOCKBEAN_TO_MOCKITOBEAN",
+      "before": [
+        "@MockBean",
+        "MockBean"
+      ],
+      "after": [
+        "@MockitoBean",
+        "MockitoBean"
+      ],
+      "scope": "test",
+      "files": [
+        "common-utils/src/test/java/com/total/corp/advice/App.java",
+        "common-utils/src/test/java/com/total/corp/advice/CustomExceptionTranslatorTest.java",
+        "common-utils/src/test/java/com/total/corp/common/cache/test/ReferentialChachePostLoadTest.java",
+        "common-utils/src/test/java/com/total/corp/common/cache/test/ReferentialChachePreloadTest.java",
+        "common-utils/src/test/java/com/total/corp/common/cache/test/ReferentialChacheTest.java",
+        "common-utils/src/test/java/com/total/corp/common/translator/TranslatorAdapterTest.java"
+      ]
+    },
+    {
+      "rule_id": "INITMOCKS_TO_OPENMOCKS",
+      "before": [
+        "MockitoAnnotations.initMocks"
+      ],
+      "after": [
+        "MockitoAnnotations.openMocks"
+      ],
+      "scope": "test",
+      "files": [
+        "common-utils/src/test/java/com/total/corp/advice/CustomExceptionTranslatorTest.java",
+        "common-utils/src/test/java/com/total/corp/mvc/AbstractMVCIntegrationTest.java",
+        "common-utils/src/test/java/com/total/corp/mvc/AbstractMVCTest.java"
+      ]
+    }
+  ],
+  "source_code_transformation_patterns": [
+    {
+      "rule_id": "SPRING_DATA_SORT_BY_MIGRATION",
+      "before": [
+        "new Sort("
+      ],
+      "after": [
+        "Sort.by("
+      ],
+      "scope": "source",
+      "files": [
+        "common-utils/src/main/java/com/total/corp/common/dto/DTOHelpers.java",
+        "common-utils/src/main/java/com/total/corp/common/service/base/SearchService.java"
+      ]
+    }
+  ],
+  "files_added": [
+    ".github/workflows/sonarqube.yml",
+    ".vscode/settings.json",
+    "common-utils/pom.xml.bak",
+    "common-utils/src/main/java/com/total/corp/azure/bus/MsaBlobClient.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/azure/bus/notification/NotifyBus.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/config/MsaLocaleResolver.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/dto/DTOHelpers.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/jpa/utils/MSASpecification.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/logging/interceptor/CustomRequestBodyAdviceAdapter.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/logging/interceptor/LogInterceptor.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/logging/service/LoggingService.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/logging/service/LoggingServiceImpl.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/rpc/MsaRpcClientFactory.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/rpc/ReferentialInternalGatewayService.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/security/SecurityUtils.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/security/jwt/JWTFilter.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/security/jwt/JWTProvider.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/security/jwt/JWTValidator.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/security/jwt/JWTValidator.java.bak.bak",
+    "common-utils/src/main/java/com/total/corp/common/security/jwt/SystemJWTProvider.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/security/origin/OriginValidationFilter.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/service/base/MsaService.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/service/base/SearchService.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/specification/QuerySpecification.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/swap/InstantSwap.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/validation/ValidationResult.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/validation/field/NotEmptyFieldValidator.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/web/rest/advice/CustomExceptionTranslator.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/web/rest/errors/BadRequestException.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/web/rest/errors/BadRequestListException.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/web/rest/errors/InternalServerException.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/web/rest/errors/NotFoundException.java.bak",
+    "common-utils/src/main/java/com/total/corp/common/web/rest/errors/UnProcessableEntityException.java.bak",
+    "common-utils/src/test/java/com/total/corp/advice/App.java.bak",
+    "common-utils/src/test/java/com/total/corp/advice/CustomExceptionTranslatorTest.java.bak",
+    "common-utils/src/test/java/com/total/corp/bus/AzureBusTest.java.bak",
+    "common-utils/src/test/java/com/total/corp/common/cache/test/ReferentialChachePostLoadTest.java.bak",
+    "common-utils/src/test/java/com/total/corp/common/cache/test/ReferentialChachePreloadTest.java.bak",
+    "common-utils/src/test/java/com/total/corp/common/cache/test/ReferentialChacheTest.java.bak",
+    "common-utils/src/test/java/com/total/corp/common/translator/TranslatorAdapterTest.java.bak",
+    "common-utils/src/test/java/com/total/corp/mvc/AbstractMVCIntegrationTest.java.bak",
+    "common-utils/src/test/java/com/total/corp/mvc/AbstractMVCTest.java.bak"
+  ],
+  "files_removed": [
+    "common-utils/src/main/resources/keys/total.msa.identitystore.1.3.jks",
+    "common-utils/src/main/resources/keys/total.msa.truststore.1.8.jks"
+  ],
+  "files_renamed_if_detectable": [],
+  "candidate_deterministic_rules": [
+    {
+      "rule_id": "JAVA_VERSION_ALIGNMENT",
+      "recommended_action": "Update Java version/tooling metadata.",
+      "safe_to_auto_apply": true,
+      "requires_human_review": false
+    },
+    {
+      "rule_id": "SPRING_BOOT_VERSION_ALIGNMENT",
+      "recommended_action": "Align Spring Boot target version.",
+      "safe_to_auto_apply": true,
+      "requires_human_review": false
+    },
+    {
+      "rule_id": "JJWT_VERSION_ALIGNMENT",
+      "recommended_action": "Align io.jsonwebtoken:jjwt-api version.",
+      "safe_to_auto_apply": true,
+      "requires_human_review": false
+    },
+    {
+      "rule_id": "JAKARTA_DEPENDENCY_ADDITION",
+      "recommended_action": "Add Boot 3/Jakarta validation dependency.",
+      "safe_to_auto_apply": true,
+      "requires_human_review": false
+    },
+    {
+      "rule_id": "LOMBOK_VERSION_ALIGNMENT",
+      "recommended_action": "Align org.projectlombok:lombok version.",
+      "safe_to_auto_apply": true,
+      "requires_human_review": false
+    },
+    {
+      "rule_id": "SLF4J_VERSION_ALIGNMENT",
+      "recommended_action": "Align org.slf4j:slf4j-api version.",
+      "safe_to_auto_apply": true,
+      "requires_human_review": false
+    },
+    {
+      "rule_id": "IMPORT_JAVAX_VALIDATION_TO_JAKARTA",
+      "recommended_action": "Migrate import namespace javax.validation. to jakarta.validation..",
+      "safe_to_auto_apply": true,
+      "requires_human_review": false
+    },
+    {
+      "rule_id": "IMPORT_JAVAX_SERVLET_TO_JAKARTA",
+      "recommended_action": "Migrate import namespace javax.servlet. to jakarta.servlet..",
+      "safe_to_auto_apply": true,
+      "requires_human_review": false
+    },
+    {
+      "rule_id": "SPRING_DATA_SORT_BY_MIGRATION",
+      "recommended_action": "Apply deterministic pattern SPRING_DATA_SORT_BY_MIGRATION.",
+      "safe_to_auto_apply": true,
+      "requires_human_review": false
+    },
+    {
+      "rule_id": "MOCKBEAN_TO_MOCKITOBEAN",
+      "recommended_action": "Apply deterministic pattern MOCKBEAN_TO_MOCKITOBEAN.",
+      "safe_to_auto_apply": true,
+      "requires_human_review": false
+    },
+    {
+      "rule_id": "INITMOCKS_TO_OPENMOCKS",
+      "recommended_action": "Apply deterministic pattern INITMOCKS_TO_OPENMOCKS.",
+      "safe_to_auto_apply": true,
+      "requires_human_review": false
+    }
+  ],
+  "candidate_human_review_items": [
+    {
+      "rule_id": "SPRING_SECURITY_BEHAVIOR_REVIEW",
+      "recommended_action": "Review Spring Security runtime behavior under Boot 3.",
+      "safe_to_auto_apply": false,
+      "requires_human_review": true
+    },
+    {
+      "rule_id": "AZURE_SDK_API_MIGRATION",
+      "recommended_action": "Review Azure SDK coordinate and API migration.",
+      "safe_to_auto_apply": false,
+      "requires_human_review": true
+    },
+    {
+      "rule_id": "PUBLIC_API_SIGNATURE_CHANGE",
+      "recommended_action": "Review public API signature changes against consumers.",
+      "safe_to_auto_apply": false,
+      "requires_human_review": true
+    }
+  ],
+  "candidate_llm_remediation_items": [
+    {
+      "rule_id": "UNMAPPED_SOURCE_TRANSFORMATION",
+      "recommended_action": "Review localized code/test changes not covered by deterministic rules.",
+      "safe_to_auto_apply": false,
+      "requires_human_review": true
+    }
+  ],
+  "anti_pattern_warnings": [
+    "Migrated reference keeps many explicit versions; consider BOM-managed simplification."
+  ],
+  "factory_gap_analysis": {}
+}

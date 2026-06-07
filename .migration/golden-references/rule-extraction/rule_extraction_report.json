@@ -1,0 +1,382 @@
+{
+  "source_report_paths": [
+    "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\golden-references\\msa-dto\\golden_reference_gap_report.json",
+    "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\golden-references\\msa-utils\\golden_reference_gap_report.json"
+  ],
+  "factory_capabilities": {
+    "already_covered_rule_ids": [
+      "FAILED_SANDBOX_REPORTING",
+      "FAILURE_CLASSIFICATION",
+      "JACKSON_VERSION_ALIGNMENT",
+      "JACOCO_VERSION_ALIGNMENT",
+      "JAKARTA_VALIDATION_DEPENDENCY_ALIGNMENT",
+      "LLM_POLICY_GATE",
+      "LOMBOK_VERSION_ALIGNMENT",
+      "MAVEN_COMPILER_PARAMETERS_ALIGNMENT",
+      "REMEDIATION_PLAN",
+      "SLF4J_VERSION_ALIGNMENT",
+      "SPRING_DATA_SORT_BY_MIGRATION",
+      "SPRING_SECURITY_VERSION_ALIGNMENT"
+    ]
+  },
+  "already_covered_by_factory": [
+    {
+      "rule_id": "JAKARTA_VALIDATION_DEPENDENCY_ALIGNMENT",
+      "category": "already_covered_by_factory",
+      "source_projects": [
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Add Boot 3/Jakarta validation dependency."
+      ],
+      "safe_to_auto_apply": true,
+      "requires_human_approval": false,
+      "llm_candidate": false,
+      "suggested_priority": "LOW",
+      "suggested_next_ticket": "Backlog JAKARTA_VALIDATION_DEPENDENCY_ALIGNMENT for industrialized migration support."
+    },
+    {
+      "rule_id": "LOMBOK_VERSION_ALIGNMENT",
+      "category": "already_covered_by_factory",
+      "source_projects": [
+        "msa-dto",
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Align org.projectlombok:lombok version."
+      ],
+      "safe_to_auto_apply": true,
+      "requires_human_approval": false,
+      "llm_candidate": false,
+      "suggested_priority": "HIGH",
+      "suggested_next_ticket": "Backlog LOMBOK_VERSION_ALIGNMENT for industrialized migration support."
+    },
+    {
+      "rule_id": "SLF4J_VERSION_ALIGNMENT",
+      "category": "already_covered_by_factory",
+      "source_projects": [
+        "msa-dto",
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Align org.slf4j:slf4j-api version."
+      ],
+      "safe_to_auto_apply": true,
+      "requires_human_approval": false,
+      "llm_candidate": false,
+      "suggested_priority": "HIGH",
+      "suggested_next_ticket": "Backlog SLF4J_VERSION_ALIGNMENT for industrialized migration support."
+    },
+    {
+      "rule_id": "SPRING_DATA_SORT_BY_MIGRATION",
+      "category": "already_covered_by_factory",
+      "source_projects": [
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Apply deterministic pattern SPRING_DATA_SORT_BY_MIGRATION."
+      ],
+      "safe_to_auto_apply": true,
+      "requires_human_approval": false,
+      "llm_candidate": false,
+      "suggested_priority": "LOW",
+      "suggested_next_ticket": "Backlog SPRING_DATA_SORT_BY_MIGRATION for industrialized migration support."
+    }
+  ],
+  "missing_deterministic_rules": [
+    {
+      "rule_id": "IMPORT_JAVAX_SERVLET_TO_JAKARTA",
+      "category": "missing_deterministic_rules",
+      "source_projects": [
+        "msa-dto",
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Migrate import namespace javax.servlet. to jakarta.servlet.."
+      ],
+      "safe_to_auto_apply": true,
+      "requires_human_approval": false,
+      "llm_candidate": false,
+      "suggested_priority": "HIGH",
+      "suggested_next_ticket": "Backlog IMPORT_JAVAX_SERVLET_TO_JAKARTA for industrialized migration support."
+    },
+    {
+      "rule_id": "IMPORT_JAVAX_VALIDATION_TO_JAKARTA",
+      "category": "missing_deterministic_rules",
+      "source_projects": [
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Migrate import namespace javax.validation. to jakarta.validation.."
+      ],
+      "safe_to_auto_apply": true,
+      "requires_human_approval": false,
+      "llm_candidate": false,
+      "suggested_priority": "LOW",
+      "suggested_next_ticket": "Backlog IMPORT_JAVAX_VALIDATION_TO_JAKARTA for industrialized migration support."
+    },
+    {
+      "rule_id": "IMPORT_JAVAX_XML_BIND_TO_JAKARTA",
+      "category": "missing_deterministic_rules",
+      "source_projects": [
+        "msa-dto"
+      ],
+      "evidence_summary": [
+        "Migrate import namespace javax.xml.bind. to jakarta.xml.bind.."
+      ],
+      "safe_to_auto_apply": true,
+      "requires_human_approval": false,
+      "llm_candidate": false,
+      "suggested_priority": "LOW",
+      "suggested_next_ticket": "Backlog IMPORT_JAVAX_XML_BIND_TO_JAKARTA for industrialized migration support."
+    },
+    {
+      "rule_id": "JAVA_VERSION_ALIGNMENT",
+      "category": "missing_deterministic_rules",
+      "source_projects": [
+        "msa-dto",
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Update Java version/tooling metadata."
+      ],
+      "safe_to_auto_apply": true,
+      "requires_human_approval": false,
+      "llm_candidate": false,
+      "suggested_priority": "HIGH",
+      "suggested_next_ticket": "Backlog JAVA_VERSION_ALIGNMENT for industrialized migration support."
+    },
+    {
+      "rule_id": "JJWT_VERSION_ALIGNMENT",
+      "category": "missing_deterministic_rules",
+      "source_projects": [
+        "msa-dto",
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Align io.jsonwebtoken:jjwt-api version.",
+        "Align JJWT versions during framework hops."
+      ],
+      "safe_to_auto_apply": true,
+      "requires_human_approval": false,
+      "llm_candidate": false,
+      "suggested_priority": "HIGH",
+      "suggested_next_ticket": "Add deterministic JJWT alignment rule."
+    },
+    {
+      "rule_id": "JUNEAU_VERSION_ALIGNMENT_OR_REVIEW",
+      "category": "missing_deterministic_rules",
+      "source_projects": [
+        "msa-dto",
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Review or align Juneau stack for Boot 3 migration."
+      ],
+      "safe_to_auto_apply": true,
+      "requires_human_approval": false,
+      "llm_candidate": false,
+      "suggested_priority": "HIGH",
+      "suggested_next_ticket": "Add Juneau alignment/review gate."
+    },
+    {
+      "rule_id": "SPRING_BOOT_VERSION_ALIGNMENT",
+      "category": "missing_deterministic_rules",
+      "source_projects": [
+        "msa-dto",
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Align Spring Boot target version."
+      ],
+      "safe_to_auto_apply": true,
+      "requires_human_approval": false,
+      "llm_candidate": false,
+      "suggested_priority": "HIGH",
+      "suggested_next_ticket": "Backlog SPRING_BOOT_VERSION_ALIGNMENT for industrialized migration support."
+    }
+  ],
+  "missing_test_modernization_rules": [
+    {
+      "rule_id": "INITMOCKS_TO_OPENMOCKS",
+      "category": "missing_test_modernization_rules",
+      "source_projects": [
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Apply deterministic pattern INITMOCKS_TO_OPENMOCKS."
+      ],
+      "safe_to_auto_apply": true,
+      "requires_human_approval": false,
+      "llm_candidate": false,
+      "suggested_priority": "HIGH",
+      "suggested_next_ticket": "Add deterministic Mockito initMocks to openMocks modernization."
+    },
+    {
+      "rule_id": "MOCKBEAN_TO_MOCKITOBEAN",
+      "category": "missing_test_modernization_rules",
+      "source_projects": [
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Apply deterministic pattern MOCKBEAN_TO_MOCKITOBEAN."
+      ],
+      "safe_to_auto_apply": true,
+      "requires_human_approval": false,
+      "llm_candidate": false,
+      "suggested_priority": "HIGH",
+      "suggested_next_ticket": "Add deterministic Spring Boot test annotation modernization."
+    },
+    {
+      "rule_id": "POWERMOCK_LEGACY_TEST_STRATEGY",
+      "category": "missing_test_modernization_rules",
+      "source_projects": [
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Create legacy PowerMock migration or containment strategy."
+      ],
+      "safe_to_auto_apply": false,
+      "requires_human_approval": true,
+      "llm_candidate": false,
+      "suggested_priority": "HIGH",
+      "suggested_next_ticket": "Define PowerMock legacy test containment or migration playbook."
+    }
+  ],
+  "human_review_gates": [
+    {
+      "rule_id": "API_CONTRACT_REVIEW_GATE",
+      "category": "human_review_gates",
+      "source_projects": [
+        "msa-dto",
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Review public API signature changes against consumers.",
+        "Reference migration changed public API signatures."
+      ],
+      "safe_to_auto_apply": false,
+      "requires_human_approval": true,
+      "llm_candidate": false,
+      "suggested_priority": "HIGH",
+      "suggested_next_ticket": "Add API contract review gate to approval flow."
+    },
+    {
+      "rule_id": "AZURE_SDK_API_MIGRATION",
+      "category": "human_review_gates",
+      "source_projects": [
+        "msa-dto",
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Review Azure SDK coordinate and API migration."
+      ],
+      "safe_to_auto_apply": false,
+      "requires_human_approval": true,
+      "llm_candidate": false,
+      "suggested_priority": "HIGH",
+      "suggested_next_ticket": "Backlog AZURE_SDK_API_MIGRATION for industrialized migration support."
+    },
+    {
+      "rule_id": "SPRING_SECURITY_BEHAVIOR_REVIEW",
+      "category": "human_review_gates",
+      "source_projects": [
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Review Spring Security runtime behavior under Boot 3."
+      ],
+      "safe_to_auto_apply": false,
+      "requires_human_approval": true,
+      "llm_candidate": false,
+      "suggested_priority": "MEDIUM",
+      "suggested_next_ticket": "Backlog SPRING_SECURITY_BEHAVIOR_REVIEW for industrialized migration support."
+    }
+  ],
+  "llm_remediation_candidates": [
+    {
+      "rule_id": "UNMAPPED_SOURCE_TRANSFORMATION",
+      "category": "llm_remediation_candidates",
+      "source_projects": [
+        "msa-dto",
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Review localized code/test changes not covered by deterministic rules."
+      ],
+      "safe_to_auto_apply": false,
+      "requires_human_approval": true,
+      "llm_candidate": true,
+      "suggested_priority": "HIGH",
+      "suggested_next_ticket": "Backlog UNMAPPED_SOURCE_TRANSFORMATION for industrialized migration support."
+    }
+  ],
+  "migration_playbooks_needed": [
+    {
+      "rule_id": "AZURE_SDK_MIGRATION_PLAYBOOK",
+      "category": "migration_playbooks_needed",
+      "source_projects": [
+        "msa-dto",
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Reference migration shows Azure SDK coordinate or API transition."
+      ],
+      "safe_to_auto_apply": false,
+      "requires_human_approval": true,
+      "llm_candidate": false,
+      "suggested_priority": "HIGH",
+      "suggested_next_ticket": "Create Azure SDK migration playbook and review gate."
+    },
+    {
+      "rule_id": "CONSUMER_COMPATIBILITY_VALIDATION",
+      "category": "migration_playbooks_needed",
+      "source_projects": [
+        "msa-dto",
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Public API changes imply downstream consumer compatibility validation."
+      ],
+      "safe_to_auto_apply": false,
+      "requires_human_approval": true,
+      "llm_candidate": false,
+      "suggested_priority": "HIGH",
+      "suggested_next_ticket": "Add consumer compatibility validation evidence gate."
+    },
+    {
+      "rule_id": "JAKARTA_HYBRID_STRATEGY",
+      "category": "migration_playbooks_needed",
+      "source_projects": [
+        "msa-dto",
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Multiple Jakarta namespace migrations detected across the same reference project."
+      ],
+      "safe_to_auto_apply": false,
+      "requires_human_approval": true,
+      "llm_candidate": false,
+      "suggested_priority": "HIGH",
+      "suggested_next_ticket": "Define Jakarta hybrid migration playbook for mixed namespaces."
+    }
+  ],
+  "anti_pattern_warnings": [
+    {
+      "rule_id": "ANTI_PATTERN_WARNING",
+      "category": "anti_pattern_warnings",
+      "source_projects": [
+        "msa-dto",
+        "msa-utils"
+      ],
+      "evidence_summary": [
+        "Migrated reference keeps many explicit versions; consider BOM-managed simplification."
+      ],
+      "safe_to_auto_apply": false,
+      "requires_human_approval": true,
+      "llm_candidate": false,
+      "suggested_priority": "HIGH",
+      "suggested_next_ticket": "Backlog ANTI_PATTERN_WARNING for industrialized migration support."
+    }
+  ]
+}

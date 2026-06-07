@@ -1,0 +1,6 @@
+{
+  "final_status": "BUILD_FAILED_IN_SANDBOX",
+  "human_review_required": true,
+  "production_allowed": false,
+  "warnings": ["Post-transform tests failed."]
+}

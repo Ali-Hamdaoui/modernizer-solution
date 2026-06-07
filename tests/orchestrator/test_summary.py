@@ -549,6 +549,7 @@ def test_finalize_failed_sandbox_writes_failure_report_and_classification_refs(t
     assert summary["artifact_refs"]["post_transform_failure_classification"].endswith(
         "post_transform_failure_classification.json"
     )
+    assert summary["artifact_refs"]["remediation_plan"].endswith("remediation_plan.yaml")
     assert _as_posix(summary["artifact_refs"]["final_migration_summary"]).endswith("final/migration_summary.md")
 
 

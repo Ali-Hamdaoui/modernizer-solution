@@ -27,12 +27,23 @@ from migration_factory.agents.transformation_agent.plan import load_migration_pl
 from migration_factory.agents.transformation_agent.pom_patches import (
     patch_forbidden_source_patterns_allow_jakarta,
     patch_batch_config_flat_file_item_reader_constructor,
+    patch_jjwt_api_parser_builder_compatibility,
+    patch_junit_assertthat_to_hamcrest_matcherassert,
     patch_maven_enforcer_java_version,
+    patch_mockito_initmocks_to_openmocks,
     patch_pom_property,
     patch_quality_rules_allow_jakarta,
     patch_security_config_authorize_http_requests,
+    patch_spring_boot_test_mockbean_to_mockitobean,
     patch_spring_data_sort_constructor_usage,
     patch_spring6_exception_handler_override_signatures,
+    patch_test_javax_servlet_imports_to_jakarta,
+)
+from migration_factory.agents.transformation_agent.review_gates import (
+    review_azure_sdk_migration_playbook,
+    review_jjwt_api_migration,
+    review_jakarta_hybrid_strategy,
+    review_powermock_legacy_test_strategy,
 )
 from migration_factory.approval import write_approval_decision, write_approved_plan_lock
 from migration_factory.agents.transformation_agent import run_transformation_agent
@@ -430,6 +441,8 @@ units:
                 framework_versions_payload={
                     "jackson": "2.21.2",
                     "jackson_annotations": "2.21",
+                    "jjwt": "0.13.0",
+                    "juneau": "9.0.0",
                     "thymeleaf": "3.1.3.RELEASE",
                     "slf4j_api": "2.0.17",
                     "spring_security": "6.5.10",
@@ -476,6 +489,8 @@ units:
                 framework_versions_payload={
                     "jackson": "2.21.2",
                     "jackson_annotations": "2.21",
+                    "jjwt": "0.13.0",
+                    "juneau": "9.0.0",
                     "thymeleaf": "3.1.3.RELEASE",
                     "slf4j_api": "2.0.17",
                     "spring_security": "6.5.10",
@@ -493,10 +508,18 @@ units:
             payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
             transformations = payload["migration_units"][0]["transformations"]
 
-            self.assertEqual(transformations[0]["type"], "spring6_exception_handler_override_alignment")
-            self.assertEqual(transformations[1]["type"], "maven_pom_patch")
+            self.assertEqual(transformations[0]["type"], "maven_pom_patch")
+            self.assertEqual(transformations[1]["type"], "jjwt_api_compatibility_migration")
+            self.assertEqual(transformations[2]["type"], "spring6_exception_handler_override_alignment")
+            self.assertEqual(transformations[3]["type"], "spring_boot_test_mockbean_to_mockitobean")
+            self.assertEqual(transformations[4]["type"], "mockito_initmocks_to_openmocks")
+            self.assertEqual(transformations[5]["type"], "test_javax_servlet_imports_to_jakarta")
+            self.assertEqual(transformations[6]["type"], "junit_assertthat_to_hamcrest_matcherassert")
+            self.assertEqual(transformations[7]["type"], "jakarta_hybrid_strategy_gate")
+            self.assertEqual(transformations[8]["type"], "powermock_legacy_test_strategy_gate")
+            self.assertEqual(transformations[9]["type"], "azure_sdk_migration_playbook_gate")
             self.assertEqual(
-                transformations[1]["operations"][0],
+                transformations[0]["operations"][0],
                 {
                     "op": "align_jackson_dependency_management",
                     "version": "2.21.2",
@@ -506,19 +529,33 @@ units:
                 },
             )
             self.assertEqual(
-                transformations[1]["operations"][1],
+                transformations[0]["operations"][1],
+                {
+                    "op": "align_jjwt_version",
+                    "version": "0.13.0",
+                },
+            )
+            self.assertEqual(
+                transformations[0]["operations"][2],
+                {
+                    "op": "align_juneau_version",
+                    "version": "9.0.0",
+                },
+            )
+            self.assertEqual(
+                transformations[0]["operations"][3],
                 {
                     "op": "align_thymeleaf_dependencies",
                     "version": "3.1.3.RELEASE",
                     "prefer_bom_managed": True,
                 },
             )
-            self.assertEqual(transformations[1]["operations"][2]["op"], "align_validation_dependencies")
-            self.assertEqual(transformations[1]["operations"][2]["prefer_boot_starter"], True)
-            self.assertIn("javax.validation.Valid", transformations[1]["operations"][2]["detected_validation_usage"])
-            self.assertEqual(transformations[1]["operations"][3], {"op": "align_slf4j_logging", "slf4j_api_version": "2.0.17"})
+            self.assertEqual(transformations[0]["operations"][4]["op"], "align_validation_dependencies")
+            self.assertEqual(transformations[0]["operations"][4]["prefer_boot_starter"], True)
+            self.assertIn("javax.validation.Valid", transformations[0]["operations"][4]["detected_validation_usage"])
+            self.assertEqual(transformations[0]["operations"][5], {"op": "align_slf4j_logging", "slf4j_api_version": "2.0.17"})
             self.assertEqual(
-                transformations[1]["operations"][4],
+                transformations[0]["operations"][6],
                 {
                     "op": "align_spring_security_dependencies",
                     "present_artifacts": [],
@@ -526,7 +563,7 @@ units:
                 },
             )
             self.assertEqual(
-                transformations[1]["operations"][5],
+                transformations[0]["operations"][7],
                 {
                     "op": "align_maven_compiler_parameters",
                     "plugin_version": "3.14.1",
@@ -647,6 +684,851 @@ public class Advice extends ResponseEntityExceptionHandler {
 
             patches = patch_spring6_exception_handler_override_signatures(app, unit_id="spring-boot-3-5-14")
             self.assertEqual(patches, [])
+
+    def test_patch_mockbean_import_updates_to_mockitobean_import(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "ExampleTest.java"
+            java_file.write_text(
+                """package com.example;
+
+import org.springframework.boot.test.mock.mockito.MockBean;
+
+class ExampleTest {
+    @MockBean
+    private Object dependency;
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_spring_boot_test_mockbean_to_mockitobean(app, unit_id="spring-boot-3-5-14")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn(
+                "import org.springframework.test.context.bean.override.mockito.MockitoBean;",
+                after,
+            )
+            self.assertNotIn(
+                "import org.springframework.boot.test.mock.mockito.MockBean;",
+                after,
+            )
+
+    def test_patch_mockbean_annotation_updates_to_mockitobean_and_preserves_parameters(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "integrationTest" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "ExampleIT.java"
+            java_file.write_text(
+                """package com.example;
+
+import org.springframework.boot.test.mock.mockito.MockBean;
+
+class ExampleIT {
+    @MockBean(name = "x")
+    private Object dependency;
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_spring_boot_test_mockbean_to_mockitobean(app, unit_id="spring-boot-3-5-14")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("@MockitoBean(name = \"x\")", after)
+
+    def test_patch_mockbean_is_noop_when_already_mockitobean(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "ExampleTest.java"
+            original = """package com.example;
+
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+
+class ExampleTest {
+    @MockitoBean
+    private Object dependency;
+}
+"""
+            java_file.write_text(original, encoding="utf-8")
+
+            patches = patch_spring_boot_test_mockbean_to_mockitobean(app, unit_id="spring-boot-3-5-14")
+
+            self.assertEqual(patches, [])
+            self.assertEqual(java_file.read_text(encoding="utf-8"), original)
+
+    def test_patch_mockbean_skips_file_without_mockbean(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "ExampleTest.java"
+            original = """package com.example;
+
+class ExampleTest {}
+"""
+            java_file.write_text(original, encoding="utf-8")
+
+            patches = patch_spring_boot_test_mockbean_to_mockitobean(app, unit_id="spring-boot-3-5-14")
+
+            self.assertEqual(patches, [])
+            self.assertEqual(java_file.read_text(encoding="utf-8"), original)
+
+    def test_patch_initmocks_updates_this_to_openmocks(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "ExampleTest.java"
+            java_file.write_text(
+                """package com.example;
+
+import org.mockito.MockitoAnnotations;
+
+class ExampleTest {
+    void setUp() {
+        MockitoAnnotations.initMocks(this);
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_mockito_initmocks_to_openmocks(app, unit_id="spring-boot-3-5-14")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("MockitoAnnotations.openMocks(this);", after)
+            self.assertNotIn("MockitoAnnotations.initMocks(this);", after)
+
+    def test_patch_initmocks_updates_target_to_openmocks(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "ExampleTest.java"
+            java_file.write_text(
+                """package com.example;
+
+import org.mockito.MockitoAnnotations;
+
+class ExampleTest {
+    void setUp(Object target) {
+        MockitoAnnotations.initMocks(target);
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_mockito_initmocks_to_openmocks(app, unit_id="spring-boot-3-5-14")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("MockitoAnnotations.openMocks(target);", after)
+
+    def test_patch_initmocks_is_noop_when_already_openmocks(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "ExampleTest.java"
+            original = """package com.example;
+
+import org.mockito.MockitoAnnotations;
+
+class ExampleTest {
+    void setUp() {
+        MockitoAnnotations.openMocks(this);
+    }
+}
+"""
+            java_file.write_text(original, encoding="utf-8")
+
+            patches = patch_mockito_initmocks_to_openmocks(app, unit_id="spring-boot-3-5-14")
+
+            self.assertEqual(patches, [])
+            self.assertEqual(java_file.read_text(encoding="utf-8"), original)
+
+    def test_patch_test_javax_servlet_import_updates_to_jakarta(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "ServletTest.java"
+            java_file.write_text(
+                """package com.example;
+
+import javax.servlet.ServletRequest;
+
+class ServletTest {}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_test_javax_servlet_imports_to_jakarta(app, unit_id="spring-boot-3-5-14")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("import jakarta.servlet.ServletRequest;", after)
+            self.assertNotIn("import javax.servlet.ServletRequest;", after)
+
+    def test_patch_test_javax_servlet_http_import_updates_in_test_helper(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "testHelpers" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "ServletHelper.java"
+            java_file.write_text(
+                """package com.example;
+
+import javax.servlet.http.HttpServletRequest;
+
+class ServletHelper {}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_test_javax_servlet_imports_to_jakarta(app, unit_id="spring-boot-3-5-14")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("import jakarta.servlet.http.HttpServletRequest;", after)
+            self.assertNotIn("import javax.servlet.http.HttpServletRequest;", after)
+
+    def test_patch_junit_assertthat_static_import_updates_to_matcherassert(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "AssertTest.java"
+            java_file.write_text(
+                """package com.example;
+
+import static org.junit.Assert.assertThat;
+
+class AssertTest {}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_junit_assertthat_to_hamcrest_matcherassert(app, unit_id="spring-boot-3-5-14")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("import static org.hamcrest.MatcherAssert.assertThat;", after)
+            self.assertNotIn("import static org.junit.Assert.assertThat;", after)
+
+    def test_patch_junit_assertthat_fqcn_updates_to_matcherassert(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "AssertTest.java"
+            java_file.write_text(
+                """package com.example;
+
+class AssertTest {
+    void check(Object actual, Object matcher) {
+        org.junit.Assert.assertThat(actual, matcher);
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_junit_assertthat_to_hamcrest_matcherassert(app, unit_id="spring-boot-3-5-14")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("org.hamcrest.MatcherAssert.assertThat(actual, matcher);", after)
+            self.assertNotIn("org.junit.Assert.assertThat(actual, matcher);", after)
+
+    def test_patch_junit_assertthat_leaves_unrelated_assert_methods_unchanged(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "AssertTest.java"
+            original = """package com.example;
+
+import static org.junit.Assert.assertEquals;
+
+class AssertTest {
+    void check() {
+        org.junit.Assert.assertEquals(1, 1);
+    }
+}
+"""
+            java_file.write_text(original, encoding="utf-8")
+
+            patches = patch_junit_assertthat_to_hamcrest_matcherassert(app, unit_id="spring-boot-3-5-14")
+
+            self.assertEqual(patches, [])
+            self.assertEqual(java_file.read_text(encoding="utf-8"), original)
+
+    def test_patch_jjwt_parser_assignment_adds_build_for_simple_parser_usage(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "JwtSupport.java"
+            java_file.write_text(
+                """package com.example;
+
+import io.jsonwebtoken.JwtParser;
+import io.jsonwebtoken.Jwts;
+
+class JwtSupport {
+    JwtParser parser() {
+        JwtParser parser = Jwts.parser();
+        return parser;
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_jjwt_api_parser_builder_compatibility(app, unit_id="spring-boot-3-5-14")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("JwtParser parser = Jwts.parser().build();", after)
+            self.assertIn("import io.jsonwebtoken.JwtParser;", after)
+            self.assertIn("import io.jsonwebtoken.Jwts;", after)
+
+    def test_patch_jjwt_parser_return_adds_build_for_safe_builder_chain(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "JwtSupport.java"
+            java_file.write_text(
+                """package com.example;
+
+import io.jsonwebtoken.JwtParser;
+import io.jsonwebtoken.Jwts;
+
+class JwtSupport {
+    JwtParser parser() {
+        return Jwts.parser().setSigningKeyResolver(new Object());
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_jjwt_api_parser_builder_compatibility(app, unit_id="spring-boot-3-5-14")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("return Jwts.parser().setSigningKeyResolver(new Object()).build();", after)
+
+    def test_patch_jjwt_parser_is_noop_when_already_compatible(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "JwtSupport.java"
+            original = """package com.example;
+
+import io.jsonwebtoken.JwtParser;
+import io.jsonwebtoken.Jwts;
+
+class JwtSupport {
+    JwtParser parser() {
+        return Jwts.parser().build();
+    }
+}
+"""
+            java_file.write_text(original, encoding="utf-8")
+
+            patches = patch_jjwt_api_parser_builder_compatibility(app, unit_id="spring-boot-3-5-14")
+
+            self.assertEqual(patches, [])
+            self.assertEqual(java_file.read_text(encoding="utf-8"), original)
+
+    def test_review_jjwt_api_migration_writes_artifact_for_unresolved_usage(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "JwtSupport.java"
+            java_file.write_text(
+                """package com.example;
+
+import io.jsonwebtoken.JwtParser;
+import io.jsonwebtoken.Jwts;
+
+class JwtSupport {
+    JwtParser parser(Object value) {
+        return Jwts.parser().unsupportedCustomizer(value);
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_jjwt_api_parser_builder_compatibility(app, unit_id="spring-boot-3-5-14")
+            review = review_jjwt_api_migration(app, unit_id="spring-boot-3-5-14", run_id="run-1")
+            payload = json.loads(review.artifact_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(patches, [])
+            self.assertTrue(review.detected)
+            self.assertTrue(payload["human_review_required"])
+            self.assertEqual(payload["gate_id"], "JJWT_API_MIGRATION_REVIEW")
+            self.assertIn("JWT_PARSER_RETURN", payload["usage_patterns"])
+
+    def test_test_modernization_does_not_modify_production_source(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "ExampleService.java"
+            original = """package com.example;
+
+import org.mockito.MockitoAnnotations;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import javax.servlet.http.HttpServletRequest;
+
+class ExampleService {
+    void setUp() {
+        MockitoAnnotations.initMocks(this);
+        org.junit.Assert.assertThat("x", "x");
+    }
+
+    @MockBean
+    private Object dependency;
+
+    HttpServletRequest request;
+}
+"""
+            java_file.write_text(original, encoding="utf-8")
+
+            mockbean_patches = patch_spring_boot_test_mockbean_to_mockitobean(app, unit_id="spring-boot-3-5-14")
+            initmocks_patches = patch_mockito_initmocks_to_openmocks(app, unit_id="spring-boot-3-5-14")
+            servlet_patches = patch_test_javax_servlet_imports_to_jakarta(app, unit_id="spring-boot-3-5-14")
+            assertthat_patches = patch_junit_assertthat_to_hamcrest_matcherassert(app, unit_id="spring-boot-3-5-14")
+
+            self.assertEqual(mockbean_patches, [])
+            self.assertEqual(initmocks_patches, [])
+            self.assertEqual(servlet_patches, [])
+            self.assertEqual(assertthat_patches, [])
+            self.assertEqual(java_file.read_text(encoding="utf-8"), original)
+
+    def test_powermock_review_detects_dependencies_in_pom(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencies>
+    <dependency>
+      <groupId>org.powermock</groupId>
+      <artifactId>powermock-module-junit4</artifactId>
+      <version>2.0.9</version>
+    </dependency>
+  </dependencies>
+</project>
+""",
+                encoding="utf-8",
+            )
+
+            review = review_powermock_legacy_test_strategy(app, unit_id="spring-boot-3-5-14", run_id="run-1")
+            payload = json.loads(review.artifact_path.read_text(encoding="utf-8"))
+
+            self.assertTrue(review.detected)
+            self.assertEqual(review.dependencies, ["org.powermock:powermock-module-junit4"])
+            self.assertTrue(payload["human_review_required"])
+
+    def test_powermock_review_detects_runner_and_prepare_for_test(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+            (source / "ExampleTest.java").write_text(
+                """package com.example;
+
+import org.junit.runner.RunWith;
+import org.powermock.modules.junit4.PowerMockRunner;
+import org.powermock.core.classloader.annotations.PrepareForTest;
+
+@RunWith(PowerMockRunner.class)
+@PrepareForTest({Example.class})
+class ExampleTest {}
+""",
+                encoding="utf-8",
+            )
+
+            review = review_powermock_legacy_test_strategy(app, unit_id="spring-boot-3-5-14")
+
+            self.assertTrue(review.detected)
+            self.assertIn("POWERMOCK_RUNNER", review.usage_patterns)
+            self.assertIn("POWERMOCK_PREPARE_FOR_TEST", review.usage_patterns)
+
+    def test_powermock_review_detects_static_mocking(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+            (source / "ExampleTest.java").write_text(
+                """package com.example;
+
+import org.powermock.api.mockito.PowerMockito;
+
+class ExampleTest {
+    void test() {
+        PowerMockito.mockStatic(Example.class);
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            review = review_powermock_legacy_test_strategy(app, unit_id="spring-boot-3-5-14")
+
+            self.assertIn("POWERMOCK_API", review.usage_patterns)
+            self.assertIn("POWERMOCK_STATIC_MOCKING", review.usage_patterns)
+
+    def test_powermock_review_detects_whennew(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+            (source / "ExampleTest.java").write_text(
+                """package com.example;
+
+class ExampleTest {
+    void test() {
+        whenNew(Example.class);
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            review = review_powermock_legacy_test_strategy(app, unit_id="spring-boot-3-5-14")
+
+            self.assertIn("POWERMOCK_CONSTRUCTOR_MOCKING", review.usage_patterns)
+
+    def test_powermock_review_detects_whitebox(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+            (source / "ExampleTest.java").write_text(
+                """package com.example;
+
+class ExampleTest {
+    void test() {
+        Whitebox.setInternalState(this, "x", 1);
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            review = review_powermock_legacy_test_strategy(app, unit_id="spring-boot-3-5-14")
+
+            self.assertIn("POWERMOCK_WHITEBOX", review.usage_patterns)
+
+    def test_powermock_review_dependency_present_without_usage_recommends_cleanup(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencies>
+    <dependency>
+      <groupId>org.powermock</groupId>
+      <artifactId>powermock-api-mockito2</artifactId>
+      <version>2.0.9</version>
+    </dependency>
+  </dependencies>
+</project>
+""",
+                encoding="utf-8",
+            )
+
+            review = review_powermock_legacy_test_strategy(app, unit_id="spring-boot-3-5-14")
+
+            self.assertTrue(any("dependency cleanup" in item.lower() for item in review.recommended_next_actions))
+
+    def test_powermock_review_no_usage_returns_detected_false(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+
+            review = review_powermock_legacy_test_strategy(app, unit_id="spring-boot-3-5-14")
+            payload = json.loads(review.artifact_path.read_text(encoding="utf-8"))
+
+            self.assertFalse(review.detected)
+            self.assertFalse(payload["human_review_required"])
+
+    def test_jakarta_hybrid_strategy_detects_xml_bind_as_deterministic_candidate(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            (source / "Example.java").write_text(
+                "import javax.xml.bind.JAXBContext;\nclass Example {}\n",
+                encoding="utf-8",
+            )
+
+            review = review_jakarta_hybrid_strategy(app, unit_id="spring-boot-3-5-14")
+            payload = json.loads(review.artifact_path.read_text(encoding="utf-8"))
+
+            assert payload["namespaces"]["javax.xml.bind"]["classification"] == "DETERMINISTIC_SAFE_MIGRATION_CANDIDATE"
+            assert payload["namespaces"]["javax.xml.bind"]["safe_to_auto_apply"] is True
+
+    def test_jakarta_hybrid_strategy_detects_validation_as_dependency_candidate(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            (source / "Example.java").write_text(
+                "import javax.validation.Valid;\nclass Example {}\n",
+                encoding="utf-8",
+            )
+
+            payload = json.loads(
+                review_jakarta_hybrid_strategy(app, unit_id="spring-boot-3-5-14").artifact_path.read_text(encoding="utf-8")
+            )
+
+            assert payload["namespaces"]["javax.validation"]["classification"] == "DETERMINISTIC_PLUS_DEPENDENCY_ALIGNMENT"
+            assert payload["namespaces"]["javax.validation"]["dependency_recommendations"]
+
+    def test_jakarta_hybrid_strategy_detects_servlet_as_dependency_candidate(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            (source / "Example.java").write_text(
+                "import javax.servlet.http.HttpServletRequest;\nclass Example {}\n",
+                encoding="utf-8",
+            )
+
+            payload = json.loads(
+                review_jakarta_hybrid_strategy(app, unit_id="spring-boot-3-5-14").artifact_path.read_text(encoding="utf-8")
+            )
+
+            assert payload["namespaces"]["javax.servlet"]["classification"] == "DETERMINISTIC_PLUS_DEPENDENCY_ALIGNMENT"
+
+    def test_jakarta_hybrid_strategy_detects_persistence_as_human_review(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            (source / "Entity.java").write_text(
+                "import javax.persistence.Entity;\n@Entity class EntityType {}\n",
+                encoding="utf-8",
+            )
+
+            payload = json.loads(
+                review_jakarta_hybrid_strategy(app, unit_id="spring-boot-3-5-14").artifact_path.read_text(encoding="utf-8")
+            )
+
+            assert payload["namespaces"]["javax.persistence"]["requires_human_approval"] is True
+            assert payload["human_review_required"] is True
+
+    def test_jakarta_hybrid_strategy_detects_unknown_namespace_as_human_review(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            (source / "Example.java").write_text(
+                "import javax.mail.Message;\nclass Example {}\n",
+                encoding="utf-8",
+            )
+
+            payload = json.loads(
+                review_jakarta_hybrid_strategy(app, unit_id="spring-boot-3-5-14").artifact_path.read_text(encoding="utf-8")
+            )
+
+            assert payload["detected"] is True
+            assert payload["namespaces"]["javax.mail.Message"]["requires_human_approval"] is True
+
+    def test_jakarta_hybrid_strategy_detects_public_api_dto_consumer_warning(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example" / "dto"
+            source.mkdir(parents=True)
+            (source / "CustomerDto.java").write_text(
+                "import javax.validation.Valid;\nclass CustomerDto {}\n",
+                encoding="utf-8",
+            )
+
+            payload = json.loads(
+                review_jakarta_hybrid_strategy(app, unit_id="spring-boot-3-5-14").artifact_path.read_text(encoding="utf-8")
+            )
+
+            assert payload["consumer_compatibility_warning"] is True
+            assert any("consumer compatibility review required" in warning.lower() for warning in payload["warnings"])
+
+    def test_jakarta_hybrid_strategy_no_usage_returns_detected_false(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+
+            payload = json.loads(
+                review_jakarta_hybrid_strategy(app, unit_id="spring-boot-3-5-14").artifact_path.read_text(encoding="utf-8")
+            )
+
+            assert payload["detected"] is False
+            assert payload["human_review_required"] is False
+
+    def test_azure_sdk_review_detects_old_dependencies_in_pom(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencies>
+    <dependency>
+      <groupId>com.microsoft.azure</groupId>
+      <artifactId>azure-servicebus</artifactId>
+      <version>3.6.7</version>
+    </dependency>
+  </dependencies>
+</project>
+""",
+                encoding="utf-8",
+            )
+
+            review = review_azure_sdk_migration_playbook(app, unit_id="spring-boot-3-5-14")
+            payload = json.loads(review.artifact_path.read_text(encoding="utf-8"))
+
+            self.assertTrue(review.detected)
+            self.assertEqual(payload["migration_mode"], "OLD_SDK_ONLY")
+            self.assertEqual(payload["risk_level"], "HIGH")
+            self.assertTrue(payload["human_review_required"])
+            self.assertFalse(payload["safe_to_auto_apply"])
+
+    def test_azure_sdk_review_detects_new_dependencies_in_pom(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencies>
+    <dependency>
+      <groupId>com.azure</groupId>
+      <artifactId>azure-storage-blob</artifactId>
+      <version>12.25.3</version>
+    </dependency>
+  </dependencies>
+</project>
+""",
+                encoding="utf-8",
+            )
+
+            payload = json.loads(
+                review_azure_sdk_migration_playbook(app, unit_id="spring-boot-3-5-14").artifact_path.read_text(encoding="utf-8")
+            )
+
+            self.assertEqual(payload["migration_mode"], "NEW_SDK_ONLY")
+            self.assertEqual(payload["risk_level"], "INFO")
+            self.assertFalse(payload["human_review_required"])
+
+    def test_azure_sdk_review_detects_mixed_old_and_new_dependencies(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencies>
+    <dependency>
+      <groupId>com.microsoft.azure</groupId>
+      <artifactId>azure-servicebus</artifactId>
+      <version>3.6.7</version>
+    </dependency>
+    <dependency>
+      <groupId>com.azure</groupId>
+      <artifactId>azure-messaging-servicebus</artifactId>
+      <version>7.17.9</version>
+    </dependency>
+  </dependencies>
+</project>
+""",
+                encoding="utf-8",
+            )
+
+            payload = json.loads(
+                review_azure_sdk_migration_playbook(app, unit_id="spring-boot-3-5-14").artifact_path.read_text(encoding="utf-8")
+            )
+
+            self.assertEqual(payload["migration_mode"], "MIXED_OLD_AND_NEW")
+            self.assertTrue(payload["human_review_required"])
+            self.assertTrue(any("mixed old and new azure sdk" in warning.lower() for warning in payload["warnings"]))
+
+    def test_azure_sdk_review_detects_old_imports_and_service_bus_usage(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "demo"
+            source.mkdir(parents=True)
+            (source / "BusClient.java").write_text(
+                """package demo;
+import com.microsoft.azure.servicebus.QueueClient;
+class BusClient {
+    QueueClient client;
+}
+""",
+                encoding="utf-8",
+            )
+
+            review = review_azure_sdk_migration_playbook(app, unit_id="spring-boot-3-5-14")
+
+            self.assertIn("AZURE_OLD_IMPORT", review.usage_patterns)
+            self.assertIn("SERVICE_BUS_USAGE", review.usage_patterns)
+
+    def test_azure_sdk_review_detects_modern_imports_and_blob_usage(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "demo"
+            source.mkdir(parents=True)
+            (source / "BlobClient.java").write_text(
+                """package demo;
+import com.azure.storage.blob.BlobContainerClient;
+class BlobClient {
+    BlobContainerClient client;
+}
+""",
+                encoding="utf-8",
+            )
+
+            review = review_azure_sdk_migration_playbook(app, unit_id="spring-boot-3-5-14")
+
+            self.assertIn("AZURE_NEW_IMPORT", review.usage_patterns)
+            self.assertIn("BLOB_STORAGE_USAGE", review.usage_patterns)
+
+    def test_azure_sdk_review_no_usage_returns_detected_false(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+
+            payload = json.loads(
+                review_azure_sdk_migration_playbook(app, unit_id="spring-boot-3-5-14").artifact_path.read_text(encoding="utf-8")
+            )
+
+            self.assertFalse(payload["detected"])
+            self.assertEqual(payload["migration_mode"], "NOT_DETECTED")
 
     def test_openrewrite_transformation_uses_unit_level_java_home_env(self) -> None:
         with workspace_temp_dir() as tmp:
@@ -847,6 +1729,510 @@ migration_units:
             self.assertEqual(transformation["type"], "spring_data_sort_by_factory_method")
             self.assertEqual(transformation["status"], "applied")
             self.assertEqual(transformation["patches"][0]["file"], "src\\main\\java\\demo\\Demo.java")
+
+    def test_mockbean_to_mockitobean_records_changed_test_file_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+            source = app / "src" / "test" / "java" / "demo"
+            source.mkdir(parents=True)
+            (source / "DemoTest.java").write_text(
+                """package demo;
+
+import org.springframework.boot.test.mock.mockito.MockBean;
+
+class DemoTest {
+    @MockBean
+    Object dependency;
+}
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "plugin.xml"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+            plan_path = tmp / "plan.yaml"
+            plan_path.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: "run-1"
+  name: "Test"
+workspaces:
+  target:
+    path: "."
+    migration_dir: ".migration"
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: "spring-boot-3-5-14"
+    title: "Upgrade"
+    expected_files: ["target/test-classes"]
+    transformations:
+      - type: spring_boot_test_mockbean_to_mockitobean
+    checks:
+      - id: validation
+        command: mvn clean test
+        required: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            with mock.patch("builtins.input", return_value=""):
+                result = run_transformation_agent(app, plugin, plan_path, wait_for_continue=False)
+
+            self.assertEqual(result.status, LedgerStatus.AWAITING_BUILD_AGENT)
+            ledger = load_ledger(app / ".migration" / "ledger.json")
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            self.assertEqual(transformation["type"], "spring_boot_test_mockbean_to_mockitobean")
+            self.assertEqual(transformation["status"], "applied")
+            self.assertEqual(transformation["patches"][0]["file"], "src\\test\\java\\demo\\DemoTest.java")
+
+    def test_initmocks_to_openmocks_records_changed_test_file_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+            source = app / "src" / "test" / "java" / "demo"
+            source.mkdir(parents=True)
+            (source / "DemoTest.java").write_text(
+                """package demo;
+
+import org.mockito.MockitoAnnotations;
+
+class DemoTest {
+    void setUp() {
+        MockitoAnnotations.initMocks(this);
+    }
+}
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "plugin.xml"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+            plan_path = tmp / "plan.yaml"
+            plan_path.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: "run-1"
+  name: "Test"
+workspaces:
+  target:
+    path: "."
+    migration_dir: ".migration"
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: "spring-boot-3-5-14"
+    title: "Upgrade"
+    expected_files: ["target/test-classes"]
+    transformations:
+      - type: mockito_initmocks_to_openmocks
+    checks:
+      - id: validation
+        command: mvn clean test
+        required: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            with mock.patch("builtins.input", return_value=""):
+                result = run_transformation_agent(app, plugin, plan_path, wait_for_continue=False)
+
+            self.assertEqual(result.status, LedgerStatus.AWAITING_BUILD_AGENT)
+            ledger = load_ledger(app / ".migration" / "ledger.json")
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            self.assertEqual(transformation["type"], "mockito_initmocks_to_openmocks")
+            self.assertEqual(transformation["status"], "applied")
+            self.assertEqual(transformation["patches"][0]["file"], "src\\test\\java\\demo\\DemoTest.java")
+
+    def test_test_javax_servlet_import_records_changed_test_file_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+            source = app / "src" / "test" / "java" / "demo"
+            source.mkdir(parents=True)
+            (source / "DemoTest.java").write_text(
+                """package demo;
+
+import javax.servlet.http.HttpServletRequest;
+
+class DemoTest {
+    HttpServletRequest request;
+}
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "plugin.xml"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+            plan_path = tmp / "plan.yaml"
+            plan_path.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: "run-1"
+  name: "Test"
+workspaces:
+  target:
+    path: "."
+    migration_dir: ".migration"
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: "spring-boot-3-5-14"
+    title: "Upgrade"
+    expected_files: ["target/test-classes"]
+    transformations:
+      - type: test_javax_servlet_imports_to_jakarta
+    checks:
+      - id: validation
+        command: mvn clean test
+        required: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            with mock.patch("builtins.input", return_value=""):
+                result = run_transformation_agent(app, plugin, plan_path, wait_for_continue=False)
+
+            self.assertEqual(result.status, LedgerStatus.AWAITING_BUILD_AGENT)
+            ledger = load_ledger(app / ".migration" / "ledger.json")
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            self.assertEqual(transformation["type"], "test_javax_servlet_imports_to_jakarta")
+            self.assertEqual(transformation["status"], "applied")
+            self.assertEqual(transformation["patches"][0]["file"], "src\\test\\java\\demo\\DemoTest.java")
+
+    def test_junit_assertthat_records_changed_test_file_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+            source = app / "src" / "test" / "java" / "demo"
+            source.mkdir(parents=True)
+            (source / "DemoTest.java").write_text(
+                """package demo;
+
+import static org.junit.Assert.assertThat;
+
+class DemoTest {}
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "plugin.xml"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+            plan_path = tmp / "plan.yaml"
+            plan_path.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: "run-1"
+  name: "Test"
+workspaces:
+  target:
+    path: "."
+    migration_dir: ".migration"
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: "spring-boot-3-5-14"
+    title: "Upgrade"
+    expected_files: ["target/test-classes"]
+    transformations:
+      - type: junit_assertthat_to_hamcrest_matcherassert
+    checks:
+      - id: validation
+        command: mvn clean test
+        required: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            with mock.patch("builtins.input", return_value=""):
+                result = run_transformation_agent(app, plugin, plan_path, wait_for_continue=False)
+
+            self.assertEqual(result.status, LedgerStatus.AWAITING_BUILD_AGENT)
+            ledger = load_ledger(app / ".migration" / "ledger.json")
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            self.assertEqual(transformation["type"], "junit_assertthat_to_hamcrest_matcherassert")
+            self.assertEqual(transformation["status"], "applied")
+            self.assertEqual(transformation["patches"][0]["file"], "src\\test\\java\\demo\\DemoTest.java")
+
+    def test_jjwt_api_compatibility_records_patch_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+            source = app / "src" / "main" / "java" / "demo"
+            source.mkdir(parents=True)
+            (source / "JwtSupport.java").write_text(
+                """package demo;
+
+import io.jsonwebtoken.JwtParser;
+import io.jsonwebtoken.Jwts;
+
+class JwtSupport {
+    JwtParser parser() {
+        return Jwts.parser();
+    }
+}
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "plugin.xml"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+            plan_path = tmp / "plan.yaml"
+            plan_path.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: "run-1"
+  name: "Test"
+workspaces:
+  target:
+    path: "."
+    migration_dir: ".migration"
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: "spring-boot-3-5-14"
+    title: "Upgrade"
+    transformations:
+      - type: jjwt_api_compatibility_migration
+    checks: []
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            with mock.patch("builtins.input", return_value=""):
+                result = run_transformation_agent(app, plugin, plan_path, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            self.assertEqual(transformation["type"], "jjwt_api_compatibility_migration")
+            self.assertEqual(transformation["status"], "applied")
+            self.assertEqual(transformation["patches"][0]["file"], "src\\main\\java\\demo\\JwtSupport.java")
+            self.assertFalse(transformation["human_review_required"])
+
+    def test_jjwt_api_compatibility_records_review_artifact_for_unsafe_usage(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+            source = app / "src" / "main" / "java" / "demo"
+            source.mkdir(parents=True)
+            (source / "JwtSupport.java").write_text(
+                """package demo;
+
+import io.jsonwebtoken.JwtParser;
+import io.jsonwebtoken.Jwts;
+
+class JwtSupport {
+    JwtParser parser(Object value) {
+        return Jwts.parser().unsupportedCustomizer(value);
+    }
+}
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "plugin.xml"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+            plan_path = tmp / "plan.yaml"
+            plan_path.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: "run-1"
+  name: "Test"
+workspaces:
+  target:
+    path: "."
+    migration_dir: ".migration"
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: "spring-boot-3-5-14"
+    title: "Upgrade"
+    transformations:
+      - type: jjwt_api_compatibility_migration
+    checks: []
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            with mock.patch("builtins.input", return_value=""):
+                result = run_transformation_agent(app, plugin, plan_path, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            self.assertEqual(transformation["type"], "jjwt_api_compatibility_migration")
+            self.assertEqual(transformation["status"], "review_only")
+            self.assertTrue(transformation["human_review_required"])
+            self.assertTrue(Path(transformation["artifact_path"]).is_file())
+
+    def test_powermock_gate_records_review_artifact_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencies>
+    <dependency>
+      <groupId>org.powermock</groupId>
+      <artifactId>powermock-module-junit4</artifactId>
+      <version>2.0.9</version>
+    </dependency>
+  </dependencies>
+</project>
+""",
+                encoding="utf-8",
+            )
+            source = app / "src" / "test" / "java" / "demo"
+            source.mkdir(parents=True)
+            (source / "DemoTest.java").write_text(
+                """package demo;
+
+import org.junit.runner.RunWith;
+import org.powermock.modules.junit4.PowerMockRunner;
+
+@RunWith(PowerMockRunner.class)
+class DemoTest {}
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "plugin.xml"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+            plan_path = tmp / "plan.yaml"
+            plan_path.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: "run-1"
+  name: "Test"
+workspaces:
+  target:
+    path: "."
+    migration_dir: ".migration"
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: "spring-boot-3-5-14"
+    title: "Upgrade"
+    transformations:
+      - type: powermock_legacy_test_strategy_gate
+    checks: []
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            with mock.patch("builtins.input", return_value=""):
+                result = run_transformation_agent(app, plugin, plan_path, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            self.assertEqual(transformation["type"], "powermock_legacy_test_strategy_gate")
+            self.assertEqual(transformation["status"], "review_only")
+            self.assertTrue(transformation["human_review_required"])
+            self.assertTrue(Path(transformation["artifact_path"]).is_file())
+
+    def test_jakarta_hybrid_gate_records_review_artifact_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text("<project />", encoding="utf-8")
+            source = app / "src" / "main" / "java" / "demo" / "dto"
+            source.mkdir(parents=True)
+            (source / "DemoDto.java").write_text(
+                "import javax.persistence.Entity;\nclass DemoDto {}\n",
+                encoding="utf-8",
+            )
+            plugin = tmp / "plugin.xml"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+            plan_path = tmp / "plan.yaml"
+            plan_path.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: "run-1"
+  name: "Test"
+workspaces:
+  target:
+    path: "."
+    migration_dir: ".migration"
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: "spring-boot-3-5-14"
+    title: "Upgrade"
+    transformations:
+      - type: jakarta_hybrid_strategy_gate
+    checks: []
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            with mock.patch("builtins.input", return_value=""):
+                result = run_transformation_agent(app, plugin, plan_path, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            self.assertEqual(transformation["type"], "jakarta_hybrid_strategy_gate")
+            self.assertEqual(transformation["status"], "review_only")
+            self.assertTrue(transformation["human_review_required"])
+            self.assertTrue(Path(transformation["artifact_path"]).is_file())
+
+    def test_azure_sdk_gate_records_review_artifact_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencies>
+    <dependency>
+      <groupId>com.microsoft.azure</groupId>
+      <artifactId>azure-storage</artifactId>
+      <version>8.6.6</version>
+    </dependency>
+  </dependencies>
+</project>
+""",
+                encoding="utf-8",
+            )
+            source = app / "src" / "main" / "java" / "demo"
+            source.mkdir(parents=True)
+            (source / "StorageClient.java").write_text(
+                "import com.microsoft.azure.storage.CloudStorageAccount;\nclass StorageClient {}\n",
+                encoding="utf-8",
+            )
+            plugin = tmp / "plugin.xml"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+            plan_path = tmp / "plan.yaml"
+            plan_path.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: "run-1"
+  name: "Test"
+workspaces:
+  target:
+    path: "."
+    migration_dir: ".migration"
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: "spring-boot-3-5-14"
+    title: "Upgrade"
+    transformations:
+      - type: azure_sdk_migration_playbook_gate
+    checks: []
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            with mock.patch("builtins.input", return_value=""):
+                result = run_transformation_agent(app, plugin, plan_path, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            self.assertEqual(transformation["type"], "azure_sdk_migration_playbook_gate")
+            self.assertEqual(transformation["status"], "review_only")
+            self.assertEqual(transformation["migration_mode"], "OLD_SDK_ONLY")
+            self.assertTrue(transformation["human_review_required"])
+            self.assertTrue(Path(transformation["artifact_path"]).is_file())
 
     def test_execution_plan_adapter_units_without_openrewrite_do_not_receive_openrewrite_transformation(self) -> None:
         with workspace_temp_dir() as tmp:
@@ -1974,6 +3360,176 @@ migration_units:
             self.assertEqual(operation["status"], "updated")
             self.assertEqual(operation["old_versions"], ["5.8.16"])
             self.assertEqual(operation["new_versions"], ["6.5.10"])
+
+    def test_maven_pom_patch_records_jjwt_alignment_operations_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <properties>
+    <jjwt.version>0.10.5</jjwt.version>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-jackson</artifactId>
+      <version>${jjwt.version}</version>
+    </dependency>
+  </dependencies>
+</project>
+""",
+                encoding="utf-8",
+            )
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: spring-boot-3-5-14
+    title: Spring Boot 3.5.14
+    transformations:
+      - type: maven_pom_patch
+        operations:
+          - op: align_jjwt_version
+            version: "0.13.0"
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            result = run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            operation = transformation["operations_applied"][0]
+            self.assertEqual(transformation["type"], "maven_pom_patch")
+            self.assertEqual(operation["op"], "align_jjwt_version")
+            self.assertEqual(operation["status"], "updated")
+            self.assertEqual(operation["old_versions"], ["0.10.5"])
+            self.assertEqual(operation["new_version"], "0.13.0")
+            self.assertEqual(operation["updated_properties"], ["jjwt.version"])
+            self.assertEqual(operation["updated_dependencies"], ["io.jsonwebtoken:jjwt-jackson"])
+
+    def test_maven_pom_patch_records_juneau_review_only_operations_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.juneau</groupId>
+      <artifactId>juneau-marshall</artifactId>
+      <version>8.2.0</version>
+    </dependency>
+  </dependencies>
+</project>
+""",
+                encoding="utf-8",
+            )
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: spring-boot-3-5-14
+    title: Spring Boot 3.5.14
+    transformations:
+      - type: maven_pom_patch
+        operations:
+          - op: align_juneau_version
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            result = run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            operation = transformation["operations_applied"][0]
+            self.assertEqual(transformation["type"], "maven_pom_patch")
+            self.assertEqual(transformation["status"], "no_change")
+            self.assertEqual(operation["op"], "align_juneau_version")
+            self.assertEqual(operation["status"], "review_only")
+            self.assertEqual(operation["action_taken"], "REVIEW_ONLY")
+            self.assertTrue(operation["human_review_required"])
+
+    def test_maven_pom_patch_records_juneau_update_operations_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.juneau</groupId>
+      <artifactId>juneau-marshall</artifactId>
+      <version>8.2.0</version>
+    </dependency>
+  </dependencies>
+</project>
+""",
+                encoding="utf-8",
+            )
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: spring-boot-3-5-14
+    title: Spring Boot 3.5.14
+    transformations:
+      - type: maven_pom_patch
+        operations:
+          - op: align_juneau_version
+            version: "9.0.0"
+    checks: []
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            result = run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformation = ledger["units"]["spring-boot-3-5-14"]["transformations"][0]
+            operation = transformation["operations_applied"][0]
+            self.assertEqual(transformation["type"], "maven_pom_patch")
+            self.assertEqual(operation["op"], "align_juneau_version")
+            self.assertEqual(operation["status"], "updated")
+            self.assertEqual(operation["new_version"], "9.0.0")
+            self.assertEqual(operation["updated_dependencies"], ["org.apache.juneau:juneau-marshall"])
 
     def test_maven_pom_patch_records_maven_compiler_parameters_alignment_operations_in_ledger(self) -> None:
         with workspace_temp_dir() as tmp:

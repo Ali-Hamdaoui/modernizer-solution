@@ -16,6 +16,31 @@ from migration_factory.final_report import (
 from migration_factory.agents.copilot_doc_agent import (
     generate_copilot_documentation_package,
 )
+from migration_factory.remediation import build_remediation_plan, load_llm_policy
+from migration_factory.remediation.behavioral_context import (
+    generate_behavioral_failure_context_pack,
+    should_generate_behavioral_context,
+)
+from migration_factory.remediation.legacy_equivalence import (
+    generate_legacy_behavior_equivalence_report,
+)
+from migration_factory.remediation.legacy_guided_patch_proposal import (
+    generate_legacy_guided_patch_proposal,
+)
+from migration_factory.remediation.mockito_bean_placement import (
+    generate_mockito_bean_placement_report,
+)
+from migration_factory.remediation.strategy_router import (
+    generate_behavioral_remediation_strategy,
+)
+from migration_factory.remediation.test_context_repair import (
+    generate_test_context_repair_proposal,
+)
+from migration_factory.orchestrator.api_contract_review import build_api_contract_review
+from migration_factory.orchestrator.consumer_compatibility import (
+    LIBRARY_PROJECT_KINDS,
+    run_consumer_compatibility_validation,
+)
 from migration_factory.orchestrator.artifact_validation import (
     validate_successful_full_sandbox_orchestration,
 )
@@ -105,6 +130,14 @@ def finalize_orchestration_state(
     if not _is_successful_full_sandbox_migration(result):  # type: ignore[arg-type]
         result["orchestration_artifacts_valid"] = False
         if _is_reportable_failed_sandbox_migration(result):  # type: ignore[arg-type]
+            result = _generate_remediation_plan_for_failure(result)  # type: ignore[assignment]
+            result = _generate_api_contract_review_for_failure(result)  # type: ignore[assignment]
+            result = _generate_behavioral_context_pack_for_failure(result)  # type: ignore[assignment]
+            result = _generate_legacy_equivalence_report_for_failure(result)  # type: ignore[assignment]
+            result = _generate_test_context_repair_proposal_for_failure(result)  # type: ignore[assignment]
+            result = _generate_legacy_guided_patch_proposal_for_failure(result)  # type: ignore[assignment]
+            result = _generate_mockito_bean_placement_report_for_failure(result)  # type: ignore[assignment]
+            result = _generate_behavioral_remediation_strategy_for_failure(result)  # type: ignore[assignment]
             summary_writer(result)  # type: ignore[arg-type]
             final_report_started = time.monotonic()
             final_report = generate_final_migration_report(result)
@@ -133,6 +166,7 @@ def finalize_orchestration_state(
         return result  # type: ignore[return-value]
 
     summary_writer(result)  # type: ignore[arg-type]
+    result = _run_consumer_compatibility_validation_if_applicable(result)  # type: ignore[assignment]
     final_report_started = time.monotonic()
     final_report = generate_final_migration_report(result)
     record_phase_duration(result, phase="final_report", duration_seconds=time.monotonic() - final_report_started)
@@ -385,6 +419,325 @@ def _enrich_failure_artifact_refs(state: MigrationState) -> MigrationState:
     return result  # type: ignore[return-value]
 
 
+def _generate_remediation_plan_for_failure(state: MigrationState) -> MigrationState:
+    result = _enrich_failure_artifact_refs(state)
+    llm_policy = load_llm_policy(result.get("ai_hub_path"), result.get("profile_id"))
+    artifact_refs = dict(result.get("artifact_refs", {}) or {})
+    existing_plan = Path(str(artifact_refs.get("remediation_plan") or "")).expanduser()
+    if str(artifact_refs.get("remediation_plan") or "").strip() and existing_plan.is_file():
+        result["artifact_refs"] = artifact_refs
+        return result  # type: ignore[return-value]
+    build_error_contract = _read_optional_json(artifact_refs.get("build_error_contract"))
+    failure_classification = _read_optional_json(artifact_refs.get("post_transform_failure_classification"))
+    remediation_path = build_remediation_plan(
+        state=result,
+        output_dir=Path(str(result.get("run_dir") or "")) / "remediation",
+        llm_policy=llm_policy,
+        build_error_contract=build_error_contract,
+        failure_classification=failure_classification,
+    )
+    artifact_refs["remediation_plan"] = str(remediation_path)
+    result["artifact_refs"] = artifact_refs
+    return result  # type: ignore[return-value]
+
+
+def _generate_api_contract_review_for_failure(state: MigrationState) -> MigrationState:
+    result = _enrich_failure_artifact_refs(state)
+    artifact_refs = dict(result.get("artifact_refs", {}) or {})
+    existing_review = Path(str(artifact_refs.get("api_contract_review") or "")).expanduser()
+    if str(artifact_refs.get("api_contract_review") or "").strip() and existing_review.is_file():
+        return result  # type: ignore[return-value]
+    run_dir = Path(str(result.get("run_dir") or ""))
+    if not run_dir:
+        return result  # type: ignore[return-value]
+    review = build_api_contract_review(
+        run_dir=run_dir,
+        sandbox_path=Path(str(result.get("sandbox_path") or "")) if str(result.get("sandbox_path") or "").strip() else None,
+        build_error_contract=_read_optional_json(artifact_refs.get("build_error_contract")),
+        failure_classification=_read_optional_json(artifact_refs.get("post_transform_failure_classification")),
+        orchestration_summary=build_orchestration_summary(result),
+    )
+    artifact_refs["api_contract_review"] = str(review.artifact_path)
+    result["artifact_refs"] = artifact_refs
+    if review.detected and review.warning:
+        result["warnings"] = [
+            *list(result.get("warnings", []) or []),
+            review.warning,
+        ]
+    return result  # type: ignore[return-value]
+
+
+def _generate_behavioral_context_pack_for_failure(state: MigrationState) -> MigrationState:
+    result = _enrich_failure_artifact_refs(state)
+    artifact_refs = dict(result.get("artifact_refs", {}) or {})
+    existing_context = Path(str(artifact_refs.get("behavioral_failure_context_pack") or "")).expanduser()
+    existing_gate = Path(str(artifact_refs.get("llm_proposal_gate") or "")).expanduser()
+    if (
+        str(artifact_refs.get("behavioral_failure_context_pack") or "").strip()
+        and existing_context.is_file()
+        and str(artifact_refs.get("llm_proposal_gate") or "").strip()
+        and existing_gate.is_file()
+    ):
+        return result  # type: ignore[return-value]
+    build_error_contract = _read_optional_json(artifact_refs.get("build_error_contract"))
+    failure_classification = _read_optional_json(artifact_refs.get("post_transform_failure_classification"))
+    if not should_generate_behavioral_context(
+        build_error_contract=build_error_contract,
+        failure_classification=failure_classification,
+    ):
+        return result  # type: ignore[return-value]
+    llm_policy = load_llm_policy(result.get("ai_hub_path"), result.get("profile_id"))
+    context = generate_behavioral_failure_context_pack(
+        run_dir=Path(str(result.get("run_dir") or "")),
+        failed_unit=str(result.get("current_unit") or result.get("current_phase") or ""),
+        build_error_contract=build_error_contract,
+        failure_classification=failure_classification,
+        sandbox_project_path=result.get("sandbox_path"),
+        llm_policy=llm_policy,
+        orchestration_summary=build_orchestration_summary(result),
+    )
+    artifact_refs["behavioral_failure_context_pack"] = str(context.context_pack_path)
+    artifact_refs["behavioral_failure_context_summary"] = str(context.summary_path)
+    artifact_refs["llm_proposal_gate"] = str(context.llm_gate_path)
+    result["artifact_refs"] = artifact_refs
+    if context.warning:
+        result["warnings"] = [
+            *list(result.get("warnings", []) or []),
+            context.warning,
+        ]
+    return result  # type: ignore[return-value]
+
+
+def _generate_legacy_equivalence_report_for_failure(state: MigrationState) -> MigrationState:
+    result = _enrich_failure_artifact_refs(state)
+    artifact_refs = dict(result.get("artifact_refs", {}) or {})
+    existing_report = Path(str(artifact_refs.get("legacy_behavior_equivalence_report") or "")).expanduser()
+    if str(artifact_refs.get("legacy_behavior_equivalence_report") or "").strip() and existing_report.is_file():
+        return result  # type: ignore[return-value]
+    run_dir = Path(str(result.get("run_dir") or ""))
+    legacy_path = str(result.get("legacy_app_path") or "").strip()
+    sandbox_path = str(result.get("sandbox_path") or "").strip()
+    if not run_dir or not legacy_path or not sandbox_path:
+        return result  # type: ignore[return-value]
+    build_error_contract = _read_optional_json(artifact_refs.get("build_error_contract"))
+    behavioral_context = _read_optional_json(artifact_refs.get("behavioral_failure_context_pack"))
+    has_missing_bean = bool((behavioral_context or {}).get("missing_bean_type_errors"))
+    if not has_missing_bean:
+        message = " ".join(
+            str((build_error_contract or {}).get(key) or "")
+            for key in ("matched_line", "message")
+        )
+        has_missing_bean = "No qualifying bean of type" in message or "NoSuchBeanDefinitionException" in message
+    if not has_missing_bean:
+        return result  # type: ignore[return-value]
+    equivalence = generate_legacy_behavior_equivalence_report(
+        run_dir=run_dir,
+        legacy_project_path=legacy_path,
+        sandbox_project_path=sandbox_path,
+        behavioral_context_pack=behavioral_context,
+        build_error_contract=build_error_contract,
+        orchestration_summary=build_orchestration_summary(result),
+    )
+    artifact_refs["legacy_behavior_equivalence_report"] = str(equivalence.report_path)
+    artifact_refs["legacy_behavior_equivalence_summary"] = str(equivalence.summary_path)
+    result["artifact_refs"] = artifact_refs
+    if equivalence.warning:
+        result["warnings"] = [
+            *list(result.get("warnings", []) or []),
+            equivalence.warning,
+        ]
+    return result  # type: ignore[return-value]
+
+
+def _generate_test_context_repair_proposal_for_failure(state: MigrationState) -> MigrationState:
+    result = _enrich_failure_artifact_refs(state)
+    artifact_refs = dict(result.get("artifact_refs", {}) or {})
+    existing_report = Path(str(artifact_refs.get("test_context_repair_proposal") or "")).expanduser()
+    if str(artifact_refs.get("test_context_repair_proposal") or "").strip() and existing_report.is_file():
+        return result  # type: ignore[return-value]
+    legacy_equivalence_ref = str(artifact_refs.get("legacy_behavior_equivalence_report") or "").strip()
+    behavioral_context_ref = str(artifact_refs.get("behavioral_failure_context_pack") or "").strip()
+    sandbox_path = str(result.get("sandbox_path") or "").strip()
+    run_dir = Path(str(result.get("run_dir") or ""))
+    if not legacy_equivalence_ref or not behavioral_context_ref or not sandbox_path or not run_dir:
+        return result  # type: ignore[return-value]
+    proposal = generate_test_context_repair_proposal(
+        run_dir=run_dir,
+        legacy_behavior_equivalence_report_path=legacy_equivalence_ref,
+        behavioral_failure_context_pack_path=behavioral_context_ref,
+        sandbox_project_path=sandbox_path,
+    )
+    artifact_refs["test_context_repair_proposal"] = str(proposal.report_path)
+    artifact_refs["test_context_repair_proposal_summary"] = str(proposal.summary_path)
+    if proposal.patch_path:
+        artifact_refs["test_context_repair_proposal_patch"] = str(proposal.patch_path)
+    result["artifact_refs"] = artifact_refs
+    if proposal.warning:
+        result["warnings"] = [
+            *list(result.get("warnings", []) or []),
+            proposal.warning,
+        ]
+    return result  # type: ignore[return-value]
+
+
+def _generate_legacy_guided_patch_proposal_for_failure(state: MigrationState) -> MigrationState:
+    result = _enrich_failure_artifact_refs(state)
+    artifact_refs = dict(result.get("artifact_refs", {}) or {})
+    existing_report = Path(str(artifact_refs.get("legacy_guided_patch_proposal") or "")).expanduser()
+    if str(artifact_refs.get("legacy_guided_patch_proposal") or "").strip() and existing_report.is_file():
+        return result  # type: ignore[return-value]
+    run_dir = Path(str(result.get("run_dir") or ""))
+    sandbox_path = str(result.get("sandbox_path") or "").strip()
+    legacy_path = str(result.get("legacy_app_path") or "").strip()
+    equivalence_ref = str(artifact_refs.get("legacy_behavior_equivalence_report") or "").strip()
+    repair_ref = str(artifact_refs.get("test_context_repair_proposal") or "").strip()
+    behavioral_ref = str(artifact_refs.get("behavioral_failure_context_pack") or "").strip()
+    if not run_dir or not sandbox_path or not legacy_path or not equivalence_ref or not repair_ref or not behavioral_ref:
+        return result  # type: ignore[return-value]
+    proposal = generate_legacy_guided_patch_proposal(
+        run_dir=run_dir,
+        sandbox_project_path=sandbox_path,
+        legacy_project_path=legacy_path,
+        legacy_behavior_equivalence_report_path=equivalence_ref,
+        test_context_repair_proposal_path=repair_ref,
+        behavioral_failure_context_pack_path=behavioral_ref,
+    )
+    artifact_refs["legacy_guided_patch_proposal"] = str(proposal.report_path)
+    artifact_refs["legacy_guided_patch_proposal_summary"] = str(proposal.summary_path)
+    if proposal.patch_path:
+        artifact_refs["legacy_guided_patch_proposal_patch"] = str(proposal.patch_path)
+    result["artifact_refs"] = artifact_refs
+    if proposal.warning:
+        result["warnings"] = [
+            *list(result.get("warnings", []) or []),
+            proposal.warning,
+        ]
+    return result  # type: ignore[return-value]
+
+
+def _generate_mockito_bean_placement_report_for_failure(state: MigrationState) -> MigrationState:
+    result = _enrich_failure_artifact_refs(state)
+    artifact_refs = dict(result.get("artifact_refs", {}) or {})
+    existing_report = Path(str(artifact_refs.get("mockito_bean_placement_report") or "")).expanduser()
+    if str(artifact_refs.get("mockito_bean_placement_report") or "").strip() and existing_report.is_file():
+        return result  # type: ignore[return-value]
+    run_dir = Path(str(result.get("run_dir") or ""))
+    sandbox_path = str(result.get("sandbox_path") or "").strip()
+    legacy_path = str(result.get("legacy_app_path") or "").strip()
+    equivalence_ref = str(artifact_refs.get("legacy_behavior_equivalence_report") or "").strip()
+    repair_ref = str(artifact_refs.get("test_context_repair_proposal") or "").strip()
+    guided_ref = str(artifact_refs.get("legacy_guided_patch_proposal") or "").strip()
+    behavioral_ref = str(artifact_refs.get("behavioral_failure_context_pack") or "").strip()
+    if not run_dir or not sandbox_path or not legacy_path or not equivalence_ref or not repair_ref or not guided_ref or not behavioral_ref:
+        return result  # type: ignore[return-value]
+    report = generate_mockito_bean_placement_report(
+        run_dir=run_dir,
+        sandbox_project_path=sandbox_path,
+        legacy_project_path=legacy_path,
+        legacy_behavior_equivalence_report_path=equivalence_ref,
+        test_context_repair_proposal_path=repair_ref,
+        legacy_guided_patch_proposal_path=guided_ref,
+        behavioral_failure_context_pack_path=behavioral_ref,
+    )
+    artifact_refs["mockito_bean_placement_report"] = str(report.report_path)
+    artifact_refs["mockito_bean_placement_summary"] = str(report.summary_path)
+    if report.patch_path:
+        artifact_refs["mockito_bean_placement_patch_proposal"] = str(report.patch_path)
+    result["artifact_refs"] = artifact_refs
+    if report.warning:
+        result["warnings"] = [
+            *list(result.get("warnings", []) or []),
+            report.warning,
+        ]
+    return result  # type: ignore[return-value]
+
+
+def _generate_behavioral_remediation_strategy_for_failure(state: MigrationState) -> MigrationState:
+    result = _enrich_failure_artifact_refs(state)
+    artifact_refs = dict(result.get("artifact_refs", {}) or {})
+    existing_report = Path(str(artifact_refs.get("behavioral_remediation_strategy") or "")).expanduser()
+    if str(artifact_refs.get("behavioral_remediation_strategy") or "").strip() and existing_report.is_file():
+        return result  # type: ignore[return-value]
+    run_dir = Path(str(result.get("run_dir") or ""))
+    behavioral_ref = str(artifact_refs.get("behavioral_failure_context_pack") or "").strip()
+    equivalence_ref = str(artifact_refs.get("legacy_behavior_equivalence_report") or "").strip()
+    repair_ref = str(artifact_refs.get("test_context_repair_proposal") or "").strip()
+    guided_ref = str(artifact_refs.get("legacy_guided_patch_proposal") or "").strip()
+    mockito_ref = str(artifact_refs.get("mockito_bean_placement_report") or "").strip()
+    if not run_dir or not behavioral_ref or not equivalence_ref or not repair_ref or not guided_ref or not mockito_ref:
+        return result  # type: ignore[return-value]
+    strategy = generate_behavioral_remediation_strategy(
+        run_dir=run_dir,
+        behavioral_failure_context_pack_path=behavioral_ref,
+        legacy_behavior_equivalence_report_path=equivalence_ref,
+        test_context_repair_proposal_path=repair_ref,
+        legacy_guided_patch_proposal_path=guided_ref,
+        mockito_bean_placement_report_path=mockito_ref,
+        approved_patch_apply_result_path=artifact_refs.get("approved_patch_apply_result"),
+        remediation_attempts_path=artifact_refs.get("remediation_attempts"),
+        orchestration_summary=build_orchestration_summary(result),
+        llm_policy=load_llm_policy(result.get("ai_hub_path"), result.get("profile_id")),
+    )
+    artifact_refs["behavioral_remediation_strategy"] = str(strategy.report_path)
+    artifact_refs["behavioral_remediation_strategy_summary"] = str(strategy.summary_path)
+    result["artifact_refs"] = artifact_refs
+    if strategy.warning:
+        result["warnings"] = [
+            *list(result.get("warnings", []) or []),
+            strategy.warning,
+        ]
+    return result  # type: ignore[return-value]
+
+
+def _run_consumer_compatibility_validation_if_applicable(state: MigrationState) -> MigrationState:
+    result = dict(state)
+    artifact_refs = dict(result.get("artifact_refs", {}) or {})
+    existing_report = Path(str(artifact_refs.get("consumer_compatibility_report") or "")).expanduser()
+    if str(artifact_refs.get("consumer_compatibility_report") or "").strip() and existing_report.is_file():
+        return result  # type: ignore[return-value]
+    sandbox_path = str(result.get("sandbox_path") or "").strip()
+    run_dir = str(result.get("run_dir") or "").strip()
+    if not sandbox_path or not run_dir:
+        return result  # type: ignore[return-value]
+    assessment_report = _read_optional_json(artifact_refs.get("assessment_report")) or _read_optional_json(
+        Path(str(result.get("assessment_dir") or "")) / "assessment_report.json"
+    )
+    analysis_report = _read_optional_json(artifact_refs.get("analysis_report")) or _read_optional_json(
+        Path(str(result.get("analysis_dir") or "")) / "analysis_report.json"
+    )
+    project_kind = str(
+        (assessment_report or {}).get("project_kind")
+        or (analysis_report or {}).get("project_kind")
+        or ""
+    )
+    validation = run_consumer_compatibility_validation(
+        run_id=str(result.get("run_id") or ""),
+        migrated_project_path=Path(sandbox_path),
+        output_dir=Path(run_dir) / "validation",
+        config=dict(result.get("consumer_validation") or {}),
+        project_kind=project_kind or None,
+    )
+    artifact_refs["consumer_compatibility_report"] = str(validation.report_path)
+    artifact_refs["consumer_compatibility_summary"] = str(validation.summary_path)
+    result["artifact_refs"] = artifact_refs
+    if validation.warnings:
+        result["warnings"] = [
+            *list(result.get("warnings", []) or []),
+            *validation.warnings,
+        ]
+    if validation.status == "FAILED":
+        result["warnings"] = [
+            *list(result.get("warnings", []) or []),
+            "Consumer compatibility validation failed; downstream review required before production promotion.",
+        ]
+    elif validation.status == "NOT_CONFIGURED" and project_kind in LIBRARY_PROJECT_KINDS:
+        result["warnings"] = [
+            *list(result.get("warnings", []) or []),
+            "Consumer compatibility validation not configured for library migration; downstream confidence remains limited.",
+        ]
+    return result  # type: ignore[return-value]
+
+
 def _latest_build_error_contract(build_dir: Path) -> Path | None:
     candidates = sorted(build_dir.glob("build-error-*.json"))
     if not candidates:
@@ -403,6 +756,17 @@ def _failure_classification_ref(build_error_contract: Path) -> str:
     if not ref:
         return ""
     return ref
+
+
+def _read_optional_json(path_like: Any) -> dict[str, Any] | None:
+    path_text = str(path_like or "").strip()
+    if not path_text:
+        return None
+    try:
+        payload = json.loads(Path(path_text).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _normalize_completed_sandbox_state(state: MigrationState) -> MigrationState:

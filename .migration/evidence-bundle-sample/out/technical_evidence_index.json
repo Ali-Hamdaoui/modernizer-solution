@@ -1,0 +1,21 @@
+{
+  "artifacts": [
+    {
+      "artifact_type": "readiness_pack",
+      "path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\evidence-bundle-sample\\readiness_pack.json"
+    },
+    {
+      "artifact_type": "migration_launch_plan",
+      "path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\evidence-bundle-sample\\migration_launch_plan.json"
+    },
+    {
+      "artifact_type": "factory_capability_inventory",
+      "path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\evidence-bundle-sample\\factory_capability_inventory.json"
+    },
+    {
+      "artifact_type": "migration_report",
+      "path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\evidence-bundle-sample\\migration_report.json"
+    }
+  ],
+  "project_id": "candidate"
+}

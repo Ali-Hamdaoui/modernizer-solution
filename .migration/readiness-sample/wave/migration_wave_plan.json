@@ -1,0 +1,77 @@
+{
+  "consumer_validation_plan": [
+    {
+      "consumers": [
+        "consumer"
+      ],
+      "migrated_project": "candidate",
+      "suggested_command": "mvn clean test"
+    },
+    {
+      "consumers": [],
+      "migrated_project": "consumer",
+      "suggested_command": "mvn clean test"
+    }
+  ],
+  "cycles": [],
+  "detected_coordinates": {
+    "candidate": {
+      "artifactId": "candidate-lib",
+      "groupId": "com.example",
+      "packaging": "jar",
+      "version": "1.0.0"
+    },
+    "consumer": {
+      "artifactId": "consumer-app",
+      "groupId": "com.example",
+      "packaging": "jar",
+      "version": "1.0.0"
+    }
+  },
+  "human_review_required": false,
+  "internal_dependency_edges": [
+    {
+      "consumer_project_id": "consumer",
+      "producer_project_id": "candidate",
+      "scope": "compile",
+      "version": "1.0.0"
+    }
+  ],
+  "migration_waves": [
+    [
+      "candidate"
+    ],
+    [
+      "consumer"
+    ]
+  ],
+  "missing_or_ambiguous_coordinates": [],
+  "projects": [
+    {
+      "coordinates": {
+        "artifactId": "candidate-lib",
+        "groupId": "com.example",
+        "packaging": "jar",
+        "version": "1.0.0"
+      },
+      "packaging": "jar",
+      "project_id": "candidate",
+      "project_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\readiness-sample\\candidate"
+    },
+    {
+      "coordinates": {
+        "artifactId": "consumer-app",
+        "groupId": "com.example",
+        "packaging": "jar",
+        "version": "1.0.0"
+      },
+      "packaging": "jar",
+      "project_id": "consumer",
+      "project_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\readiness-sample\\consumer"
+    }
+  ],
+  "recommended_next_actions": [
+    "Feed consumer_validation_plan into consumer compatibility validation after each migrated producer/library."
+  ],
+  "warnings": []
+}

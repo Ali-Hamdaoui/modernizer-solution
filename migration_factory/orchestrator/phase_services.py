@@ -158,6 +158,18 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         artifact_refs["post_transform_test_summary"] = str(result.test_summary_path)
     if result.test_log_path is not None:
         artifact_refs["post_transform_test_log"] = str(result.test_log_path)
+    if result.remediation_plan_path is not None:
+        artifact_refs["remediation_plan"] = str(result.remediation_plan_path)
+    if result.remediation_attempts_path is not None:
+        artifact_refs["remediation_attempts"] = str(result.remediation_attempts_path)
+    if result.jjwt_api_migration_review_path is not None:
+        artifact_refs["jjwt_api_migration_review"] = str(result.jjwt_api_migration_review_path)
+    if result.powermock_review_path is not None:
+        artifact_refs["powermock_review"] = str(result.powermock_review_path)
+    if result.jakarta_hybrid_strategy_path is not None:
+        artifact_refs["jakarta_hybrid_strategy"] = str(result.jakarta_hybrid_strategy_path)
+    if result.azure_sdk_migration_review_path is not None:
+        artifact_refs["azure_sdk_migration_review"] = str(result.azure_sdk_migration_review_path)
 
     warnings = [*list(state.get("warnings", []) or []), *list(result.warnings or [])]
 

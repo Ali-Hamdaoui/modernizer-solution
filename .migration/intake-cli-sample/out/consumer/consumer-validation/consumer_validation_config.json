@@ -1,0 +1,14 @@
+{
+  "consumers": [],
+  "human_review_required": false,
+  "migrated_coordinates": {
+    "artifactId": "consumer-app",
+    "groupId": "com.example",
+    "packaging": "jar",
+    "version": "1.0.0"
+  },
+  "migrated_project_id": "consumer",
+  "migrated_project_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\intake-cli-sample\\consumer",
+  "status": "NO_CONSUMERS_FOUND",
+  "warnings": []
+}

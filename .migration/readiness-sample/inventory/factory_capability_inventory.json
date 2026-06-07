@@ -1,0 +1,574 @@
+{
+  "capabilities": [
+    {
+      "capability_id": "JAVA_VERSION_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "route_alignment",
+      "evidence_artifacts": [
+        "migration_plan.yaml",
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "Factory aligns Java target across planned migration hops and Java-specific validation units.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "supported_units": [
+        "java-17"
+      ]
+    },
+    {
+      "capability_id": "SPRING_BOOT_VERSION_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "route_alignment",
+      "evidence_artifacts": [
+        "migration_plan.yaml",
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "Factory performs staged Spring Boot target alignment across intermediate and final hops.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "supported_units": [
+        "spring-boot-2-7-stabilization",
+        "spring-boot-3-5-14"
+      ]
+    },
+    {
+      "capability_id": "SPRING_BOOT_MULTI_HOP_ROUTE",
+      "capability_type": "DETECT",
+      "category": "planning",
+      "evidence_artifacts": [
+        "migration_plan.yaml",
+        "approval_request.json"
+      ],
+      "lifecycle_phase": "planning",
+      "llm_candidate": false,
+      "notes": "Planner can select governed multi-hop Boot migration routes when direct jump is high risk.",
+      "requires_human_approval": true,
+      "safe_to_auto_apply": false,
+      "supported_units": []
+    },
+    {
+      "capability_id": "JDK_AWARE_ANALYSIS_PREVIEW",
+      "capability_type": "DETECT",
+      "category": "analysis",
+      "evidence_artifacts": [
+        "analysis_facts.json",
+        "migration_plan.yaml"
+      ],
+      "lifecycle_phase": "analysis",
+      "llm_candidate": false,
+      "notes": "Analysis and planning preserve JDK-aware route metadata before transformation begins.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": false,
+      "supported_units": []
+    },
+    {
+      "capability_id": "JDK_AWARE_TRANSFORMATION_UNITS",
+      "capability_type": "DETECT",
+      "category": "analysis",
+      "evidence_artifacts": [
+        "migration_plan.yaml",
+        "ledger.json"
+      ],
+      "lifecycle_phase": "planning",
+      "llm_candidate": false,
+      "notes": "Transformation plan carries per-unit JDK/hop metadata so sandbox execution follows correct runtime.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": false,
+      "supported_units": [
+        "java-17",
+        "jaxb-jakarta",
+        "spring-boot-3-5-14"
+      ]
+    },
+    {
+      "capability_id": "IMPORT_JAVAX_VALIDATION_TO_JAKARTA",
+      "capability_type": "TRANSFORM",
+      "category": "namespace_migration",
+      "evidence_artifacts": [
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "Framework migration path covers validation namespace import modernization to Jakarta.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "supported_units": [
+        "spring-boot-3-5-14"
+      ]
+    },
+    {
+      "capability_id": "IMPORT_JAVAX_XML_BIND_TO_JAKARTA",
+      "capability_type": "TRANSFORM",
+      "category": "namespace_migration",
+      "evidence_artifacts": [
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "Factory covers JAXB namespace migration through dedicated Jakarta XML Bind unit and Boot 3 modernization flow.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "supported_units": [
+        "jaxb-jakarta",
+        "spring-boot-3-5-14"
+      ]
+    },
+    {
+      "capability_id": "IMPORT_JAVAX_SERVLET_TO_JAKARTA",
+      "capability_type": "TRANSFORM",
+      "category": "namespace_migration",
+      "evidence_artifacts": [
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "Framework migration path covers servlet namespace import modernization to Jakarta.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "supported_units": [
+        "spring-boot-3-5-14"
+      ]
+    },
+    {
+      "capability_id": "JAKARTA_XML_BIND_DEPENDENCY_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "maven_alignment",
+      "evidence_artifacts": [
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "Dedicated JAXB Jakarta unit aligns javax.xml.bind dependencies to jakarta.xml.bind-api without touching legacy repo.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "supported_units": [
+        "jaxb-jakarta"
+      ]
+    },
+    {
+      "capability_id": "LOMBOK_VERSION_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "maven_alignment",
+      "evidence_artifacts": [
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "Deterministic Lombok version alignment before Java 17 validation.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "supported_units": [
+        "java-17"
+      ]
+    },
+    {
+      "capability_id": "JACOCO_VERSION_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "maven_alignment",
+      "evidence_artifacts": [
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "Deterministic JaCoCo version alignment before Java 17 validation.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "supported_units": [
+        "java-17"
+      ]
+    },
+    {
+      "capability_id": "SLF4J_VERSION_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "maven_alignment",
+      "evidence_artifacts": [
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "Deterministic SLF4J/logging alignment for Boot 3 routes.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "supported_units": [
+        "spring-boot-3-5-14"
+      ]
+    },
+    {
+      "capability_id": "JACKSON_VERSION_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "maven_alignment",
+      "evidence_artifacts": [
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "Hop-aware Jackson dependency management alignment.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "supported_units": [
+        "spring-boot-2-7-stabilization",
+        "spring-boot-3-5-14"
+      ]
+    },
+    {
+      "capability_id": "SPRING_SECURITY_VERSION_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "maven_alignment",
+      "evidence_artifacts": [
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "Deterministic Spring Security dependency alignment for Boot 3.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "supported_units": [
+        "spring-boot-3-5-14"
+      ]
+    },
+    {
+      "capability_id": "JJWT_VERSION_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "maven_alignment",
+      "evidence_artifacts": [
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "Deterministic JJWT version alignment for direct, property, and dependencyManagement forms.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "supported_units": [
+        "spring-boot-3-5-14"
+      ]
+    },
+    {
+      "capability_id": "JAKARTA_VALIDATION_DEPENDENCY_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "maven_alignment",
+      "evidence_artifacts": [
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "Adds validation dependency support for Boot 3 when usage detected.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "supported_units": [
+        "spring-boot-3-5-14"
+      ]
+    },
+    {
+      "capability_id": "SPRING_DATA_SORT_BY_MIGRATION",
+      "capability_type": "TRANSFORM",
+      "category": "source_patch",
+      "evidence_artifacts": [
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "Deterministic Spring Data Sort constructor modernization.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "supported_units": [
+        "spring-boot-3-5-14"
+      ]
+    },
+    {
+      "capability_id": "MOCKBEAN_TO_MOCKITOBEAN",
+      "capability_type": "TRANSFORM",
+      "category": "test_modernization",
+      "evidence_artifacts": [
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "Deterministic Spring Boot test annotation modernization for Boot 3.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "supported_units": [
+        "spring-boot-3-5-14"
+      ]
+    },
+    {
+      "capability_id": "INITMOCKS_TO_OPENMOCKS",
+      "capability_type": "TRANSFORM",
+      "category": "test_modernization",
+      "evidence_artifacts": [
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "Deterministic Mockito initMocks to openMocks test modernization.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "supported_units": [
+        "spring-boot-3-5-14"
+      ]
+    },
+    {
+      "capability_id": "JUNEAU_VERSION_ALIGNMENT_OR_REVIEW",
+      "capability_type": "REVIEW_GATE",
+      "category": "review_gate",
+      "evidence_artifacts": [
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "Review-only by default; deterministic version alignment only when profile explicitly configures Juneau target.",
+      "requires_human_approval": true,
+      "safe_to_auto_apply": false,
+      "supported_units": [
+        "spring-boot-3-5-14"
+      ]
+    },
+    {
+      "capability_id": "POWERMOCK_LEGACY_TEST_STRATEGY",
+      "capability_type": "REVIEW_GATE",
+      "category": "review_gate",
+      "evidence_artifacts": [
+        "powermock_review.json",
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "PowerMock dependency and usage gate for legacy test modernization risk.",
+      "requires_human_approval": true,
+      "safe_to_auto_apply": false,
+      "supported_units": [
+        "spring-boot-3-5-14"
+      ]
+    },
+    {
+      "capability_id": "JAKARTA_HYBRID_STRATEGY",
+      "capability_type": "REVIEW_GATE",
+      "category": "review_gate",
+      "evidence_artifacts": [
+        "jakarta_hybrid_strategy.json",
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": false,
+      "notes": "Classifies javax usage into deterministic, dependency, and human-review paths.",
+      "requires_human_approval": true,
+      "safe_to_auto_apply": false,
+      "supported_units": [
+        "spring-boot-3-5-14"
+      ]
+    },
+    {
+      "capability_id": "API_CONTRACT_REVIEW_GATE",
+      "capability_type": "REVIEW_GATE",
+      "category": "review_gate",
+      "evidence_artifacts": [
+        "api_contract_review.json"
+      ],
+      "lifecycle_phase": "finalization",
+      "llm_candidate": false,
+      "notes": "Detects likely HTTP status, advice, validation, and Problem payload drift from failed tests.",
+      "requires_human_approval": true,
+      "safe_to_auto_apply": false,
+      "supported_units": [
+        "spring-boot-3-5-14"
+      ]
+    },
+    {
+      "capability_id": "AZURE_SDK_MIGRATION_PLAYBOOK",
+      "capability_type": "REVIEW_GATE",
+      "category": "review_gate",
+      "evidence_artifacts": [
+        "azure_sdk_migration_review.json",
+        "ledger.json"
+      ],
+      "lifecycle_phase": "transform",
+      "llm_candidate": true,
+      "notes": "Detects old/new Azure SDK coexistence and source usage hints without rewriting Azure APIs.",
+      "requires_human_approval": true,
+      "safe_to_auto_apply": false,
+      "supported_units": [
+        "spring-boot-3-5-14"
+      ]
+    },
+    {
+      "capability_id": "CONSUMER_COMPATIBILITY_VALIDATION",
+      "capability_type": "CONSUMER_VALIDATION",
+      "category": "validation_gate",
+      "evidence_artifacts": [
+        "consumer_compatibility_report.json",
+        "consumer_compatibility_summary.md"
+      ],
+      "lifecycle_phase": "post_validation",
+      "llm_candidate": false,
+      "notes": "Optional downstream consumer validation gate for migrated libraries and shared artifacts.",
+      "requires_human_approval": true,
+      "safe_to_auto_apply": false,
+      "supported_units": []
+    },
+    {
+      "capability_id": "MIGRATION_WAVE_PLANNER",
+      "capability_type": "WAVE_PLANNING",
+      "category": "wave_planning",
+      "evidence_artifacts": [
+        "migration_wave_plan.json",
+        "migration_wave_summary.md"
+      ],
+      "lifecycle_phase": "planning",
+      "llm_candidate": false,
+      "notes": "Generic internal dependency wave planner for local Maven project sets.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": false,
+      "supported_units": []
+    },
+    {
+      "capability_id": "WAVE_TO_CONSUMER_VALIDATION_CONFIG",
+      "capability_type": "WAVE_PLANNING",
+      "category": "wave_planning",
+      "evidence_artifacts": [
+        "consumer_validation_config.json",
+        "consumer_validation_config_summary.md"
+      ],
+      "lifecycle_phase": "planning",
+      "llm_candidate": false,
+      "notes": "Bridges migration wave plan output into consumer validation gate configuration.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": false,
+      "supported_units": []
+    },
+    {
+      "capability_id": "FAILURE_CLASSIFICATION",
+      "capability_type": "REPORT",
+      "category": "reporting",
+      "evidence_artifacts": [
+        "post_transform_failure_classification.json"
+      ],
+      "lifecycle_phase": "build_failure",
+      "llm_candidate": false,
+      "notes": "Classifies failed post-transform tests into migration-relevant categories.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": false,
+      "supported_units": []
+    },
+    {
+      "capability_id": "FAILED_SANDBOX_REPORTING",
+      "capability_type": "REPORT",
+      "category": "reporting",
+      "evidence_artifacts": [
+        "migration_report.json",
+        "migration_summary.md"
+      ],
+      "lifecycle_phase": "finalization",
+      "llm_candidate": false,
+      "notes": "Writes final-style failure report for failed sandbox migrations with governance metadata.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": false,
+      "supported_units": []
+    },
+    {
+      "capability_id": "LLM_POLICY_GATE",
+      "capability_type": "REMEDIATION_PLAN",
+      "category": "remediation_policy",
+      "evidence_artifacts": [
+        "remediation_plan.yaml"
+      ],
+      "lifecycle_phase": "remediation",
+      "llm_candidate": false,
+      "notes": "Default-disabled LLM policy gate with explicit provider and budget guardrails.",
+      "requires_human_approval": true,
+      "safe_to_auto_apply": false,
+      "supported_units": []
+    },
+    {
+      "capability_id": "REMEDIATION_PLAN",
+      "capability_type": "REMEDIATION_PLAN",
+      "category": "remediation",
+      "evidence_artifacts": [
+        "remediation_plan.yaml"
+      ],
+      "lifecycle_phase": "remediation",
+      "llm_candidate": true,
+      "notes": "Plan-only remediation agent that analyzes failures and emits structured candidates.",
+      "requires_human_approval": true,
+      "safe_to_auto_apply": false,
+      "supported_units": []
+    },
+    {
+      "capability_id": "DETERMINISTIC_AUTO_REMEDIATION_LOOP",
+      "capability_type": "AUTO_REMEDIATION",
+      "category": "remediation",
+      "evidence_artifacts": [
+        "remediation_plan.yaml",
+        "remediation_attempts.json",
+        "ledger.json"
+      ],
+      "lifecycle_phase": "remediation",
+      "llm_candidate": false,
+      "notes": "Sandbox-only auto-remediation loop for safelisted deterministic candidates with rerun limits.",
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "supported_units": []
+    }
+  ],
+  "capability_ids": [
+    "JAVA_VERSION_ALIGNMENT",
+    "SPRING_BOOT_VERSION_ALIGNMENT",
+    "SPRING_BOOT_MULTI_HOP_ROUTE",
+    "JDK_AWARE_ANALYSIS_PREVIEW",
+    "JDK_AWARE_TRANSFORMATION_UNITS",
+    "IMPORT_JAVAX_VALIDATION_TO_JAKARTA",
+    "IMPORT_JAVAX_XML_BIND_TO_JAKARTA",
+    "IMPORT_JAVAX_SERVLET_TO_JAKARTA",
+    "JAKARTA_XML_BIND_DEPENDENCY_ALIGNMENT",
+    "LOMBOK_VERSION_ALIGNMENT",
+    "JACOCO_VERSION_ALIGNMENT",
+    "SLF4J_VERSION_ALIGNMENT",
+    "JACKSON_VERSION_ALIGNMENT",
+    "SPRING_SECURITY_VERSION_ALIGNMENT",
+    "JJWT_VERSION_ALIGNMENT",
+    "JAKARTA_VALIDATION_DEPENDENCY_ALIGNMENT",
+    "SPRING_DATA_SORT_BY_MIGRATION",
+    "MOCKBEAN_TO_MOCKITOBEAN",
+    "INITMOCKS_TO_OPENMOCKS",
+    "JUNEAU_VERSION_ALIGNMENT_OR_REVIEW",
+    "POWERMOCK_LEGACY_TEST_STRATEGY",
+    "JAKARTA_HYBRID_STRATEGY",
+    "API_CONTRACT_REVIEW_GATE",
+    "AZURE_SDK_MIGRATION_PLAYBOOK",
+    "CONSUMER_COMPATIBILITY_VALIDATION",
+    "MIGRATION_WAVE_PLANNER",
+    "WAVE_TO_CONSUMER_VALIDATION_CONFIG",
+    "FAILURE_CLASSIFICATION",
+    "FAILED_SANDBOX_REPORTING",
+    "LLM_POLICY_GATE",
+    "REMEDIATION_PLAN",
+    "DETERMINISTIC_AUTO_REMEDIATION_LOOP"
+  ],
+  "capability_types": [
+    "AUTO_REMEDIATION",
+    "CONSUMER_VALIDATION",
+    "DETECT",
+    "REMEDIATION_PLAN",
+    "REPORT",
+    "REVIEW_GATE",
+    "TRANSFORM",
+    "WAVE_PLANNING"
+  ],
+  "categories": [
+    "analysis",
+    "maven_alignment",
+    "namespace_migration",
+    "planning",
+    "remediation",
+    "remediation_policy",
+    "reporting",
+    "review_gate",
+    "route_alignment",
+    "source_patch",
+    "test_modernization",
+    "validation_gate",
+    "wave_planning"
+  ]
+}

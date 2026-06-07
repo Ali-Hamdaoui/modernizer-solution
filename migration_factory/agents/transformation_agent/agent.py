@@ -23,13 +23,22 @@ from .plan import MigrationPlan, MigrationUnit, load_migration_plan
 from .pom_patches import (
     patch_forbidden_source_patterns_allow_jakarta,
     patch_batch_config_flat_file_item_reader_constructor,
+    patch_jjwt_api_parser_builder_compatibility,
     patch_maven_enforcer_java_version,
+    patch_mockito_initmocks_to_openmocks,
+    patch_test_javax_servlet_imports_to_jakarta,
+    patch_junit_assertthat_to_hamcrest_matcherassert,
     patch_pom_property,
     patch_quality_rules_allow_jakarta,
     patch_security_config_authorize_http_requests,
+    patch_spring_boot_test_mockbean_to_mockitobean,
     patch_spring_data_sort_constructor_usage,
     patch_spring6_exception_handler_override_signatures,
 )
+from .review_gates import review_powermock_legacy_test_strategy
+from .review_gates import review_jakarta_hybrid_strategy
+from .review_gates import review_azure_sdk_migration_playbook
+from .review_gates import review_jjwt_api_migration
 from .rewrite import build_rewrite_run_command, rewrite_plugin_version_from_xml
 
 
@@ -424,6 +433,217 @@ def _run_unit(
                         }
                         for patch in patches
                     ],
+                }
+            )
+            continue
+
+        if transformation_type == "spring_boot_test_mockbean_to_mockitobean":
+            patches = [] if dry_run else patch_spring_boot_test_mockbean_to_mockitobean(
+                plan.target_path,
+                unit_id=unit.id,
+            )
+            for patch in patches:
+                print(f"unit={patch.unit} patch={patch.patch} file={patch.file}")
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "applied" if patches else "not_applicable",
+                    "patches": [
+                        {"file": patch.file, "patch": patch.patch, "unit": patch.unit}
+                        for patch in patches
+                    ],
+                }
+            )
+            continue
+
+        if transformation_type == "mockito_initmocks_to_openmocks":
+            patches = [] if dry_run else patch_mockito_initmocks_to_openmocks(
+                plan.target_path,
+                unit_id=unit.id,
+            )
+            for patch in patches:
+                print(f"unit={patch.unit} patch={patch.patch} file={patch.file}")
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "applied" if patches else "not_applicable",
+                    "patches": [
+                        {"file": patch.file, "patch": patch.patch, "unit": patch.unit}
+                        for patch in patches
+                    ],
+                }
+            )
+            continue
+
+        if transformation_type == "test_javax_servlet_imports_to_jakarta":
+            patches = [] if dry_run else patch_test_javax_servlet_imports_to_jakarta(
+                plan.target_path,
+                unit_id=unit.id,
+            )
+            for patch in patches:
+                print(f"unit={patch.unit} patch={patch.patch} file={patch.file}")
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "applied" if patches else "not_applicable",
+                    "patches": [
+                        {"file": patch.file, "patch": patch.patch, "unit": patch.unit}
+                        for patch in patches
+                    ],
+                }
+            )
+            continue
+
+        if transformation_type == "junit_assertthat_to_hamcrest_matcherassert":
+            patches = [] if dry_run else patch_junit_assertthat_to_hamcrest_matcherassert(
+                plan.target_path,
+                unit_id=unit.id,
+            )
+            for patch in patches:
+                print(f"unit={patch.unit} patch={patch.patch} file={patch.file}")
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "applied" if patches else "not_applicable",
+                    "patches": [
+                        {"file": patch.file, "patch": patch.patch, "unit": patch.unit}
+                        for patch in patches
+                    ],
+                }
+            )
+            continue
+
+        if transformation_type == "jjwt_api_compatibility_migration":
+            patches = [] if dry_run else patch_jjwt_api_parser_builder_compatibility(
+                plan.target_path,
+                unit_id=unit.id,
+            )
+            review = (
+                None
+                if dry_run
+                else review_jjwt_api_migration(
+                    plan.target_path,
+                    unit_id=unit.id,
+                    run_id=plan.migration_id,
+                )
+            )
+            for patch in patches:
+                print(f"unit={patch.unit} patch={patch.patch} file={patch.file}")
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": (
+                        "review_only"
+                        if review is not None and review.detected and not patches
+                        else ("applied" if patches else "not_applicable")
+                    ),
+                    "patches": [
+                        {"file": patch.file, "patch": patch.patch, "unit": patch.unit}
+                        for patch in patches
+                    ],
+                    "artifact_path": str(review.artifact_path) if review is not None else "",
+                    "detected": bool(review.detected) if review is not None else False,
+                    "source_usage_files": list(review.source_usage_files) if review is not None else [],
+                    "usage_patterns": list(review.usage_patterns) if review is not None else [],
+                    "human_review_required": bool(review.human_review_required) if review is not None else False,
+                    "warnings": list(review.warnings) if review is not None else [],
+                    "warning_message": (
+                        "Legacy JJWT parser API usage remains after version alignment; manual review required before trusting Boot 3 compatibility."
+                        if review is not None and review.detected
+                        else ""
+                    ),
+                }
+            )
+            continue
+
+        if transformation_type == "powermock_legacy_test_strategy_gate":
+            review = (
+                None
+                if dry_run
+                else review_powermock_legacy_test_strategy(
+                    plan.target_path,
+                    unit_id=unit.id,
+                    run_id=plan.migration_id,
+                )
+            )
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "review_only" if review is not None and review.detected else "not_applicable",
+                    "artifact_path": str(review.artifact_path) if review is not None else "",
+                    "detected": bool(review.detected) if review is not None else False,
+                    "dependencies": list(review.dependencies) if review is not None else [],
+                    "usage_files": list(review.usage_files) if review is not None else [],
+                    "usage_patterns": list(review.usage_patterns) if review is not None else [],
+                    "risk_level": review.risk_level if review is not None else "NONE",
+                    "human_review_required": bool(review.human_review_required) if review is not None else False,
+                    "warning_message": (
+                        "PowerMock legacy test strategy detected; manual review required before trusting Boot 3 test behavior."
+                        if review is not None and review.detected
+                        else ""
+                    ),
+                }
+            )
+            continue
+
+        if transformation_type == "jakarta_hybrid_strategy_gate":
+            review = (
+                None
+                if dry_run
+                else review_jakarta_hybrid_strategy(
+                    plan.target_path,
+                    unit_id=unit.id,
+                    run_id=plan.migration_id,
+                )
+            )
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "review_only" if review is not None and review.detected else "not_applicable",
+                    "artifact_path": str(review.artifact_path) if review is not None else "",
+                    "detected": bool(review.detected) if review is not None else False,
+                    "detected_namespaces": list(review.detected_namespaces) if review is not None else [],
+                    "human_review_required": bool(review.human_review_required) if review is not None else False,
+                    "consumer_compatibility_warning": bool(review.consumer_compatibility_warning) if review is not None else False,
+                    "warnings": list(review.warnings) if review is not None else [],
+                    "warning_message": (
+                        "Jakarta hybrid strategy detected high-risk javax.* usage; manual review required before blind namespace migration."
+                        if review is not None and review.human_review_required
+                        else ""
+                    ),
+                }
+            )
+            continue
+
+        if transformation_type == "azure_sdk_migration_playbook_gate":
+            review = (
+                None
+                if dry_run
+                else review_azure_sdk_migration_playbook(
+                    plan.target_path,
+                    unit_id=unit.id,
+                    run_id=plan.migration_id,
+                )
+            )
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "review_only" if review is not None and review.detected else "not_applicable",
+                    "artifact_path": str(review.artifact_path) if review is not None else "",
+                    "detected": bool(review.detected) if review is not None else False,
+                    "migration_mode": review.migration_mode if review is not None else "NOT_DETECTED",
+                    "old_azure_dependencies": list(review.old_azure_dependencies) if review is not None else [],
+                    "new_azure_dependencies": list(review.new_azure_dependencies) if review is not None else [],
+                    "source_usage_files": list(review.source_usage_files) if review is not None else [],
+                    "usage_patterns": list(review.usage_patterns) if review is not None else [],
+                    "risk_level": review.risk_level if review is not None else "NONE",
+                    "human_review_required": bool(review.human_review_required) if review is not None else False,
+                    "warnings": list(review.warnings) if review is not None else [],
+                    "warning_message": (
+                        "Azure SDK migration review detected legacy or mixed Azure SDK usage; manual review required before changing client/runtime behavior."
+                        if review is not None and review.migration_mode in {"OLD_SDK_ONLY", "MIXED_OLD_AND_NEW"}
+                        else ""
+                    ),
                 }
             )
             continue

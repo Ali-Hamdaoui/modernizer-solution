@@ -1,0 +1,43 @@
+{
+  "artifact_paths": {
+    "factory_capability_inventory": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\intake-cli-sample\\out\\factory-capabilities\\factory_capability_inventory.json",
+    "factory_capability_summary": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\intake-cli-sample\\out\\factory-capabilities\\factory_capability_summary.md",
+    "migration_wave_plan": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\intake-cli-sample\\out\\wave\\migration_wave_plan.json",
+    "migration_wave_summary": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\intake-cli-sample\\out\\wave\\migration_wave_summary.md"
+  },
+  "consumer_validation_config_paths": {
+    "consumer": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\intake-cli-sample\\out\\consumer\\consumer-validation\\consumer_validation_config.json",
+    "producer": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\intake-cli-sample\\out\\producer\\consumer-validation\\consumer_validation_config.json"
+  },
+  "projects_analyzed": [
+    {
+      "project_id": "producer",
+      "project_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\intake-cli-sample\\producer",
+      "readiness_pack_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\intake-cli-sample\\out\\producer\\readiness_pack.json",
+      "readiness_status": "READY_WITH_WARNINGS",
+      "readiness_summary_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\intake-cli-sample\\out\\producer\\readiness_pack_summary.md",
+      "warnings": []
+    },
+    {
+      "project_id": "consumer",
+      "project_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\intake-cli-sample\\consumer",
+      "readiness_pack_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\intake-cli-sample\\out\\consumer\\readiness_pack.json",
+      "readiness_status": "READY_WITH_WARNINGS",
+      "readiness_summary_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\intake-cli-sample\\out\\consumer\\readiness_pack_summary.md",
+      "warnings": []
+    }
+  ],
+  "recommended_next_actions": [
+    "Review migration wave order before starting sandbox migrations.",
+    "Use generated consumer validation configs after successful producer/library migrations."
+  ],
+  "warnings": [],
+  "wave_order": [
+    [
+      "producer"
+    ],
+    [
+      "consumer"
+    ]
+  ]
+}

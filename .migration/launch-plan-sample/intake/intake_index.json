@@ -1,0 +1,24 @@
+{
+  "artifact_paths": {
+    "factory_capability_inventory": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\launch-plan-sample\\intake\\factory-capabilities\\factory_capability_inventory.json",
+    "factory_capability_summary": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\launch-plan-sample\\intake\\factory-capabilities\\factory_capability_summary.md",
+    "migration_wave_plan": "",
+    "migration_wave_summary": ""
+  },
+  "consumer_validation_config_paths": {},
+  "projects_analyzed": [
+    {
+      "project_id": "candidate",
+      "project_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\launch-plan-sample\\candidate",
+      "readiness_pack_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\launch-plan-sample\\intake\\candidate\\readiness_pack.json",
+      "readiness_status": "READY_WITH_WARNINGS",
+      "readiness_summary_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\launch-plan-sample\\intake\\candidate\\readiness_pack_summary.md",
+      "warnings": []
+    }
+  ],
+  "recommended_next_actions": [
+    "Readiness pack complete; candidate projects are ready for read-only assessment."
+  ],
+  "warnings": [],
+  "wave_order": []
+}

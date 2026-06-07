@@ -1,0 +1,61 @@
+{
+  "artifact_index": [
+    {
+      "artifact_type": "readiness_pack",
+      "path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\evidence-bundle-sample\\readiness_pack.json"
+    },
+    {
+      "artifact_type": "migration_launch_plan",
+      "path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\evidence-bundle-sample\\migration_launch_plan.json"
+    },
+    {
+      "artifact_type": "factory_capability_inventory",
+      "path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\evidence-bundle-sample\\factory_capability_inventory.json"
+    },
+    {
+      "artifact_type": "migration_report",
+      "path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\evidence-bundle-sample\\migration_report.json"
+    }
+  ],
+  "consumer_validation_status": "SUGGESTED",
+  "deterministic_transformations_covered": [
+    "JAVA_VERSION_ALIGNMENT"
+  ],
+  "executive_summary": "Migration status is BUILD_FAILED_IN_SANDBOX. Human review remains required. Production promotion is not allowed from this bundle.",
+  "factory_capability_summary": {
+    "capability_count": 2,
+    "reporting_capability_count": 0,
+    "review_gate_count": 1,
+    "transform_capability_count": 1
+  },
+  "human_review_required": true,
+  "key_warnings": [
+    "Legacy SDK detected.",
+    "Human review before launch.",
+    "Post-transform tests failed."
+  ],
+  "launch_plan_available": true,
+  "limitations": [
+    "Intake index not provided.",
+    "Migration wave plan not provided."
+  ],
+  "migration_status": "BUILD_FAILED_IN_SANDBOX",
+  "migration_wave_summary": {
+    "cycle_count": 0,
+    "human_review_required": false,
+    "waves": []
+  },
+  "production_promotion_allowed": false,
+  "project_id": "candidate",
+  "readiness_status": "READY_WITH_WARNINGS",
+  "recommended_next_actions": [
+    "Review readiness warnings and gates before starting or approving migration.",
+    "Review migration blockers and evidence before any next execution step.",
+    "Ensure accountable human approver reviews automated outputs and review-gate findings.",
+    "Plan downstream consumer validation before trusting shared-library migration results.",
+    "Treat this bundle as sandbox/intake evidence only; production promotion remains blocked unless explicitly approved."
+  ],
+  "review_gates_detected": [
+    "AZURE_SDK_MIGRATION_PLAYBOOK"
+  ]
+}

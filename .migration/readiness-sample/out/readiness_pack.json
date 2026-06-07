@@ -1,0 +1,321 @@
+{
+  "candidate_project_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\readiness-sample\\candidate",
+  "consumer_validation_suggestions": [
+    {
+      "consumers": [
+        {
+          "consumer_project_id": "consumer",
+          "consumer_project_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\readiness-sample\\consumer",
+          "suggested_command": "mvn clean test"
+        }
+      ],
+      "human_review_required": false,
+      "migrated_project": "candidate",
+      "warnings": []
+    }
+  ],
+  "detected_internal_dependencies": [
+    {
+      "artifactId": "shared-contract",
+      "groupId": "com.example",
+      "scope": "compile",
+      "version": "1.0.0"
+    }
+  ],
+  "detected_java_version": "11",
+  "detected_maven_coordinates": {
+    "artifactId": "candidate-lib",
+    "groupId": "com.example",
+    "packaging": "jar",
+    "version": "1.0.0"
+  },
+  "detected_packaging": "jar",
+  "detected_risk_signals": [
+    {
+      "files": [],
+      "severity": "LOW",
+      "signal_id": "JAVA_VERSION_ALIGNMENT",
+      "summary": "Detected Java version 11."
+    },
+    {
+      "files": [],
+      "severity": "LOW",
+      "signal_id": "SPRING_BOOT_VERSION_ALIGNMENT",
+      "summary": "Detected Spring Boot version 2.1.6.RELEASE."
+    },
+    {
+      "files": [],
+      "severity": "MEDIUM",
+      "signal_id": "SPRING_BOOT_MULTI_HOP_ROUTE",
+      "summary": "Boot 2.x candidate with Boot 3 target suggests multi-hop route."
+    },
+    {
+      "files": [],
+      "severity": "LOW",
+      "signal_id": "JDK_AWARE_ANALYSIS_PREVIEW",
+      "summary": "Route likely needs JDK-aware analysis preview."
+    },
+    {
+      "files": [],
+      "severity": "LOW",
+      "signal_id": "JDK_AWARE_TRANSFORMATION_UNITS",
+      "summary": "Route likely needs JDK-aware transformation units."
+    },
+    {
+      "files": [],
+      "severity": "MEDIUM",
+      "signal_id": "JJWT_VERSION_ALIGNMENT",
+      "summary": "Detected io.jsonwebtoken:jjwt."
+    },
+    {
+      "files": [],
+      "severity": "HIGH",
+      "signal_id": "AZURE_SDK_MIGRATION_PLAYBOOK",
+      "summary": "Detected legacy Azure SDK com.microsoft.azure:azure-servicebus."
+    },
+    {
+      "files": [
+        "src\\main\\java\\com\\example\\dto\\SampleDto.java"
+      ],
+      "severity": "MEDIUM",
+      "signal_id": "IMPORT_JAVAX_VALIDATION_TO_JAKARTA",
+      "summary": "Detected javax.validation usage in source."
+    },
+    {
+      "files": [
+        "src\\main\\java\\com\\example\\dto\\SampleDto.java"
+      ],
+      "severity": "MEDIUM",
+      "signal_id": "IMPORT_JAVAX_XML_BIND_TO_JAKARTA",
+      "summary": "Detected javax.xml.bind usage in source."
+    },
+    {
+      "files": [
+        "src\\main\\java\\com\\example\\dto\\SampleDto.java"
+      ],
+      "severity": "MEDIUM",
+      "signal_id": "IMPORT_JAVAX_SERVLET_TO_JAKARTA",
+      "summary": "Detected javax.servlet usage in source."
+    },
+    {
+      "files": [
+        "src\\test\\java\\com\\example\\SampleTest.java"
+      ],
+      "severity": "LOW",
+      "signal_id": "INITMOCKS_TO_OPENMOCKS",
+      "summary": "Detected INITMOCKS_TO_OPENMOCKS hint."
+    },
+    {
+      "files": [
+        "src\\main\\java\\com\\example\\dto\\SampleDto.java"
+      ],
+      "severity": "MEDIUM",
+      "signal_id": "CONSUMER_COMPATIBILITY_VALIDATION",
+      "summary": "Detected public API / DTO package hints."
+    }
+  ],
+  "detected_spring_boot_version": "2.1.6.RELEASE",
+  "deterministic_transformations_likely_applicable": [
+    {
+      "capability_id": "JAVA_VERSION_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "route_alignment",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "signal_id": "JAVA_VERSION_ALIGNMENT"
+    },
+    {
+      "capability_id": "SPRING_BOOT_VERSION_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "route_alignment",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "signal_id": "SPRING_BOOT_VERSION_ALIGNMENT"
+    },
+    {
+      "capability_id": "JJWT_VERSION_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "maven_alignment",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "signal_id": "JJWT_VERSION_ALIGNMENT"
+    },
+    {
+      "capability_id": "IMPORT_JAVAX_VALIDATION_TO_JAKARTA",
+      "capability_type": "TRANSFORM",
+      "category": "namespace_migration",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "signal_id": "IMPORT_JAVAX_VALIDATION_TO_JAKARTA"
+    },
+    {
+      "capability_id": "IMPORT_JAVAX_XML_BIND_TO_JAKARTA",
+      "capability_type": "TRANSFORM",
+      "category": "namespace_migration",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "signal_id": "IMPORT_JAVAX_XML_BIND_TO_JAKARTA"
+    },
+    {
+      "capability_id": "IMPORT_JAVAX_SERVLET_TO_JAKARTA",
+      "capability_type": "TRANSFORM",
+      "category": "namespace_migration",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "signal_id": "IMPORT_JAVAX_SERVLET_TO_JAKARTA"
+    },
+    {
+      "capability_id": "INITMOCKS_TO_OPENMOCKS",
+      "capability_type": "TRANSFORM",
+      "category": "test_modernization",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "signal_id": "INITMOCKS_TO_OPENMOCKS"
+    }
+  ],
+  "human_review_required": true,
+  "llm_candidate_areas": [
+    {
+      "reason": "Detected legacy Azure SDK com.microsoft.azure:azure-servicebus.",
+      "signal_id": "AZURE_SDK_MIGRATION_PLAYBOOK"
+    }
+  ],
+  "matching_factory_capabilities": [
+    {
+      "capability_id": "JAVA_VERSION_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "route_alignment",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "signal_id": "JAVA_VERSION_ALIGNMENT"
+    },
+    {
+      "capability_id": "SPRING_BOOT_VERSION_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "route_alignment",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "signal_id": "SPRING_BOOT_VERSION_ALIGNMENT"
+    },
+    {
+      "capability_id": "SPRING_BOOT_MULTI_HOP_ROUTE",
+      "capability_type": "DETECT",
+      "category": "planning",
+      "llm_candidate": false,
+      "requires_human_approval": true,
+      "safe_to_auto_apply": false,
+      "signal_id": "SPRING_BOOT_MULTI_HOP_ROUTE"
+    },
+    {
+      "capability_id": "JDK_AWARE_ANALYSIS_PREVIEW",
+      "capability_type": "DETECT",
+      "category": "analysis",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": false,
+      "signal_id": "JDK_AWARE_ANALYSIS_PREVIEW"
+    },
+    {
+      "capability_id": "JDK_AWARE_TRANSFORMATION_UNITS",
+      "capability_type": "DETECT",
+      "category": "analysis",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": false,
+      "signal_id": "JDK_AWARE_TRANSFORMATION_UNITS"
+    },
+    {
+      "capability_id": "JJWT_VERSION_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "maven_alignment",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "signal_id": "JJWT_VERSION_ALIGNMENT"
+    },
+    {
+      "capability_id": "AZURE_SDK_MIGRATION_PLAYBOOK",
+      "capability_type": "REVIEW_GATE",
+      "category": "review_gate",
+      "llm_candidate": true,
+      "requires_human_approval": true,
+      "safe_to_auto_apply": false,
+      "signal_id": "AZURE_SDK_MIGRATION_PLAYBOOK"
+    },
+    {
+      "capability_id": "IMPORT_JAVAX_VALIDATION_TO_JAKARTA",
+      "capability_type": "TRANSFORM",
+      "category": "namespace_migration",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "signal_id": "IMPORT_JAVAX_VALIDATION_TO_JAKARTA"
+    },
+    {
+      "capability_id": "IMPORT_JAVAX_XML_BIND_TO_JAKARTA",
+      "capability_type": "TRANSFORM",
+      "category": "namespace_migration",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "signal_id": "IMPORT_JAVAX_XML_BIND_TO_JAKARTA"
+    },
+    {
+      "capability_id": "IMPORT_JAVAX_SERVLET_TO_JAKARTA",
+      "capability_type": "TRANSFORM",
+      "category": "namespace_migration",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "signal_id": "IMPORT_JAVAX_SERVLET_TO_JAKARTA"
+    },
+    {
+      "capability_id": "INITMOCKS_TO_OPENMOCKS",
+      "capability_type": "TRANSFORM",
+      "category": "test_modernization",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "signal_id": "INITMOCKS_TO_OPENMOCKS"
+    },
+    {
+      "capability_id": "CONSUMER_COMPATIBILITY_VALIDATION",
+      "capability_type": "CONSUMER_VALIDATION",
+      "category": "validation_gate",
+      "llm_candidate": false,
+      "requires_human_approval": true,
+      "safe_to_auto_apply": false,
+      "signal_id": "CONSUMER_COMPATIBILITY_VALIDATION"
+    }
+  ],
+  "project_id": "candidate",
+  "readiness_status": "NEEDS_HUMAN_REVIEW_BEFORE_MIGRATION",
+  "recommended_next_actions": [
+    "Run read-only assessment with target profile springboot-2.1-to-3.5-java17.",
+    "Expect review gates during Boot 3 sandbox migration; prepare human approver coverage.",
+    "Prepare downstream consumer validation for internal dependents after successful sandbox migration."
+  ],
+  "review_gates_expected": [
+    {
+      "capability_id": "AZURE_SDK_MIGRATION_PLAYBOOK",
+      "capability_type": "REVIEW_GATE",
+      "category": "review_gate",
+      "llm_candidate": true,
+      "requires_human_approval": true,
+      "safe_to_auto_apply": false,
+      "signal_id": "AZURE_SDK_MIGRATION_PLAYBOOK"
+    }
+  ],
+  "target_profile_id": "springboot-2.1-to-3.5-java17",
+  "uncovered_risk_signals": [],
+  "warnings": []
+}

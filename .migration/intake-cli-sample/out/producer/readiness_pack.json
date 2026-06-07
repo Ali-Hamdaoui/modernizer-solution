@@ -1,0 +1,138 @@
+{
+  "candidate_project_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\intake-cli-sample\\producer",
+  "consumer_validation_suggestions": [
+    {
+      "consumers": [
+        {
+          "consumer_project_id": "consumer",
+          "consumer_project_path": "C:\\Users\\ilyas.abarbach\\Documents\\modernizer-solution\\.migration\\intake-cli-sample\\consumer",
+          "suggested_command": "mvn clean test"
+        }
+      ],
+      "human_review_required": false,
+      "migrated_project": "producer",
+      "warnings": []
+    }
+  ],
+  "detected_internal_dependencies": [],
+  "detected_java_version": "11",
+  "detected_maven_coordinates": {
+    "artifactId": "producer-lib",
+    "groupId": "com.example",
+    "packaging": "jar",
+    "version": "1.0.0"
+  },
+  "detected_packaging": "jar",
+  "detected_risk_signals": [
+    {
+      "files": [],
+      "severity": "LOW",
+      "signal_id": "JAVA_VERSION_ALIGNMENT",
+      "summary": "Detected Java version 11."
+    },
+    {
+      "files": [],
+      "severity": "LOW",
+      "signal_id": "SPRING_BOOT_VERSION_ALIGNMENT",
+      "summary": "Detected Spring Boot version 2.1.6.RELEASE."
+    },
+    {
+      "files": [],
+      "severity": "MEDIUM",
+      "signal_id": "SPRING_BOOT_MULTI_HOP_ROUTE",
+      "summary": "Boot 2.x candidate with Boot 3 target suggests multi-hop route."
+    },
+    {
+      "files": [],
+      "severity": "LOW",
+      "signal_id": "JDK_AWARE_ANALYSIS_PREVIEW",
+      "summary": "Route likely needs JDK-aware analysis preview."
+    },
+    {
+      "files": [],
+      "severity": "LOW",
+      "signal_id": "JDK_AWARE_TRANSFORMATION_UNITS",
+      "summary": "Route likely needs JDK-aware transformation units."
+    }
+  ],
+  "detected_spring_boot_version": "2.1.6.RELEASE",
+  "deterministic_transformations_likely_applicable": [
+    {
+      "capability_id": "JAVA_VERSION_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "route_alignment",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "signal_id": "JAVA_VERSION_ALIGNMENT"
+    },
+    {
+      "capability_id": "SPRING_BOOT_VERSION_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "route_alignment",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "signal_id": "SPRING_BOOT_VERSION_ALIGNMENT"
+    }
+  ],
+  "human_review_required": false,
+  "llm_candidate_areas": [],
+  "matching_factory_capabilities": [
+    {
+      "capability_id": "JAVA_VERSION_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "route_alignment",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "signal_id": "JAVA_VERSION_ALIGNMENT"
+    },
+    {
+      "capability_id": "SPRING_BOOT_VERSION_ALIGNMENT",
+      "capability_type": "TRANSFORM",
+      "category": "route_alignment",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": true,
+      "signal_id": "SPRING_BOOT_VERSION_ALIGNMENT"
+    },
+    {
+      "capability_id": "SPRING_BOOT_MULTI_HOP_ROUTE",
+      "capability_type": "DETECT",
+      "category": "planning",
+      "llm_candidate": false,
+      "requires_human_approval": true,
+      "safe_to_auto_apply": false,
+      "signal_id": "SPRING_BOOT_MULTI_HOP_ROUTE"
+    },
+    {
+      "capability_id": "JDK_AWARE_ANALYSIS_PREVIEW",
+      "capability_type": "DETECT",
+      "category": "analysis",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": false,
+      "signal_id": "JDK_AWARE_ANALYSIS_PREVIEW"
+    },
+    {
+      "capability_id": "JDK_AWARE_TRANSFORMATION_UNITS",
+      "capability_type": "DETECT",
+      "category": "analysis",
+      "llm_candidate": false,
+      "requires_human_approval": false,
+      "safe_to_auto_apply": false,
+      "signal_id": "JDK_AWARE_TRANSFORMATION_UNITS"
+    }
+  ],
+  "project_id": "producer",
+  "readiness_status": "READY_WITH_WARNINGS",
+  "recommended_next_actions": [
+    "Run read-only assessment with target profile springboot-2.1-to-3.5-java17.",
+    "Prepare downstream consumer validation for internal dependents after successful sandbox migration."
+  ],
+  "review_gates_expected": [],
+  "target_profile_id": "springboot-2.1-to-3.5-java17",
+  "uncovered_risk_signals": [],
+  "warnings": []
+}

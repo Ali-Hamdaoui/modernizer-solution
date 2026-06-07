@@ -1,0 +1,9 @@
+{
+  "project_id": "candidate",
+  "readiness_status": "READY_WITH_WARNINGS",
+  "human_review_required": true,
+  "warnings": ["Legacy SDK detected."],
+  "deterministic_transformations_likely_applicable": [{"capability_id": "JAVA_VERSION_ALIGNMENT"}],
+  "review_gates_expected": [{"capability_id": "AZURE_SDK_MIGRATION_PLAYBOOK"}],
+  "consumer_validation_suggestions": [{"consumers": [{"consumer_project_id": "consumer-a"}]}]
+}

@@ -1468,6 +1468,402 @@ class MavenPomPatcherTests(unittest.TestCase):
             self.assertEqual(result.status, "no_change")
             self.assertEqual(result.operations_applied[0]["status"], "not_applicable")
 
+    def test_align_jjwt_version_updates_direct_dependency(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(
+                tmp,
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencies>
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-jackson</artifactId>
+      <version>0.10.5</version>
+    </dependency>
+  </dependencies>
+</project>""",
+            )
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="spring-boot-3-5-14",
+                operations=[{"op": "align_jjwt_version", "version": "0.13.0"}],
+            )
+
+            operation = result.operations_applied[0]
+            self.assertEqual(operation["status"], "updated")
+            self.assertEqual(operation["old_versions"], ["0.10.5"])
+            self.assertEqual(operation["new_version"], "0.13.0")
+            self.assertEqual(operation["updated_dependencies"], ["io.jsonwebtoken:jjwt-jackson"])
+            self.assertIn("<version>0.13.0</version>", _pom_text(project))
+
+    def test_align_jjwt_version_updates_property_based_version(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(
+                tmp,
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <properties>
+    <jjwt.version>0.10.5</jjwt.version>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-jackson</artifactId>
+      <version>${jjwt.version}</version>
+    </dependency>
+  </dependencies>
+</project>""",
+            )
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="spring-boot-3-5-14",
+                operations=[{"op": "align_jjwt_version", "version": "0.13.0"}],
+            )
+
+            operation = result.operations_applied[0]
+            self.assertEqual(operation["status"], "updated")
+            self.assertEqual(operation["updated_properties"], ["jjwt.version"])
+            self.assertIn("io.jsonwebtoken:jjwt-jackson", operation["updated_dependencies"])
+            self.assertIn("<jjwt.version>0.13.0</jjwt.version>", _pom_text(project))
+
+    def test_align_jjwt_version_aligns_split_modules_together(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(
+                tmp,
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencies>
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-api</artifactId>
+      <version>0.10.5</version>
+    </dependency>
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-impl</artifactId>
+      <version>0.10.5</version>
+    </dependency>
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-jackson</artifactId>
+      <version>0.10.5</version>
+    </dependency>
+  </dependencies>
+</project>""",
+            )
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="spring-boot-3-5-14",
+                operations=[{"op": "align_jjwt_version", "version": "0.13.0"}],
+            )
+
+            operation = result.operations_applied[0]
+            self.assertEqual(operation["status"], "updated")
+            self.assertEqual(
+                operation["updated_dependencies"],
+                [
+                    "io.jsonwebtoken:jjwt-api",
+                    "io.jsonwebtoken:jjwt-impl",
+                    "io.jsonwebtoken:jjwt-jackson",
+                ],
+            )
+            self.assertEqual(_pom_text(project).count("<version>0.13.0</version>"), 3)
+
+    def test_align_jjwt_version_updates_dependency_management_entries(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(
+                tmp,
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.jsonwebtoken</groupId>
+        <artifactId>jjwt-api</artifactId>
+        <version>0.10.5</version>
+      </dependency>
+      <dependency>
+        <groupId>io.jsonwebtoken</groupId>
+        <artifactId>jjwt-impl</artifactId>
+        <version>0.10.5</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>""",
+            )
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="spring-boot-3-5-14",
+                operations=[{"op": "align_jjwt_version", "version": "0.13.0"}],
+            )
+
+            operation = result.operations_applied[0]
+            self.assertEqual(operation["status"], "updated")
+            self.assertEqual(
+                operation["updated_managed_dependencies"],
+                [
+                    "io.jsonwebtoken:jjwt-api",
+                    "io.jsonwebtoken:jjwt-impl",
+                ],
+            )
+            self.assertEqual(_pom_text(project).count("<version>0.13.0</version>"), 2)
+
+    def test_align_jjwt_version_is_not_applicable_when_absent(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(tmp, POM_TEMPLATE)
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="spring-boot-3-5-14",
+                operations=[{"op": "align_jjwt_version", "version": "0.13.0"}],
+            )
+
+            self.assertEqual(result.status, "no_change")
+            self.assertEqual(result.operations_applied[0]["status"], "not_applicable")
+
+    def test_align_jjwt_version_is_noop_when_already_aligned(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(
+                tmp,
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencies>
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-jackson</artifactId>
+      <version>0.13.0</version>
+    </dependency>
+  </dependencies>
+</project>""",
+            )
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="spring-boot-3-5-14",
+                operations=[{"op": "align_jjwt_version", "version": "0.13.0"}],
+            )
+
+            self.assertEqual(result.status, "no_change")
+            self.assertEqual(result.operations_applied[0]["status"], "no_change")
+
+    def test_align_juneau_version_detects_direct_dependencies(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(
+                tmp,
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.juneau</groupId>
+      <artifactId>juneau-marshall</artifactId>
+      <version>8.2.0</version>
+    </dependency>
+  </dependencies>
+</project>""",
+            )
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="spring-boot-3-5-14",
+                operations=[{"op": "align_juneau_version"}],
+            )
+
+            operation = result.operations_applied[0]
+            self.assertEqual(result.status, "no_change")
+            self.assertEqual(operation["status"], "review_only")
+            self.assertEqual(operation["detected_juneau_dependencies"], ["org.apache.juneau:juneau-marshall"])
+            self.assertEqual(operation["action_taken"], "REVIEW_ONLY")
+            self.assertTrue(operation["human_review_required"])
+            self.assertIn("<version>8.2.0</version>", _pom_text(project))
+
+    def test_align_juneau_version_detects_property_based_versions(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(
+                tmp,
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <properties>
+    <juneau.version>8.2.0</juneau.version>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.juneau</groupId>
+      <artifactId>juneau-dto</artifactId>
+      <version>${juneau.version}</version>
+    </dependency>
+  </dependencies>
+</project>""",
+            )
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="spring-boot-3-5-14",
+                operations=[{"op": "align_juneau_version"}],
+            )
+
+            operation = result.operations_applied[0]
+            self.assertEqual(operation["status"], "review_only")
+            self.assertEqual(operation["old_versions"], ["8.2.0"])
+            self.assertEqual(operation["review_item"], "JUNEAU_VERSION_ALIGNMENT_OR_REVIEW")
+
+    def test_align_juneau_version_detects_dependency_management_entries(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(
+                tmp,
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.apache.juneau</groupId>
+        <artifactId>juneau-rest-client</artifactId>
+        <version>8.2.0</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>""",
+            )
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="spring-boot-3-5-14",
+                operations=[{"op": "align_juneau_version"}],
+            )
+
+            operation = result.operations_applied[0]
+            self.assertEqual(operation["status"], "review_only")
+            self.assertEqual(operation["detected_juneau_dependencies"], ["org.apache.juneau:juneau-rest-client"])
+
+    def test_align_juneau_version_updates_direct_dependency_when_target_configured(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(
+                tmp,
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.juneau</groupId>
+      <artifactId>juneau-marshall</artifactId>
+      <version>8.2.0</version>
+    </dependency>
+  </dependencies>
+</project>""",
+            )
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="spring-boot-3-5-14",
+                operations=[{"op": "align_juneau_version", "version": "9.0.0"}],
+            )
+
+            operation = result.operations_applied[0]
+            self.assertEqual(operation["status"], "updated")
+            self.assertEqual(operation["updated_dependencies"], ["org.apache.juneau:juneau-marshall"])
+            self.assertEqual(operation["new_version"], "9.0.0")
+            self.assertIn("<version>9.0.0</version>", _pom_text(project))
+
+    def test_align_juneau_version_updates_property_when_target_configured(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(
+                tmp,
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <properties>
+    <juneau.version>8.2.0</juneau.version>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.juneau</groupId>
+      <artifactId>juneau-dto</artifactId>
+      <version>${juneau.version}</version>
+    </dependency>
+  </dependencies>
+</project>""",
+            )
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="spring-boot-3-5-14",
+                operations=[{"op": "align_juneau_version", "version": "9.0.0"}],
+            )
+
+            operation = result.operations_applied[0]
+            self.assertEqual(operation["status"], "updated")
+            self.assertEqual(operation["updated_properties"], ["juneau.version"])
+            self.assertEqual(operation["updated_dependencies"], ["org.apache.juneau:juneau-dto"])
+            self.assertIn("<juneau.version>9.0.0</juneau.version>", _pom_text(project))
+
+    def test_align_juneau_version_updates_dependency_management_when_target_configured(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(
+                tmp,
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.apache.juneau</groupId>
+        <artifactId>juneau-core</artifactId>
+        <version>8.2.0</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>""",
+            )
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="spring-boot-3-5-14",
+                operations=[{"op": "align_juneau_version", "version": "9.0.0"}],
+            )
+
+            operation = result.operations_applied[0]
+            self.assertEqual(operation["status"], "updated")
+            self.assertEqual(operation["updated_managed_dependencies"], ["org.apache.juneau:juneau-core"])
+            self.assertIn("<version>9.0.0</version>", _pom_text(project))
+
+    def test_align_juneau_version_is_not_applicable_when_absent(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(tmp, POM_TEMPLATE)
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="spring-boot-3-5-14",
+                operations=[{"op": "align_juneau_version"}],
+            )
+
+            self.assertEqual(result.status, "no_change")
+            self.assertEqual(result.operations_applied[0]["status"], "not_applicable")
+
+    def test_align_juneau_version_is_noop_when_already_aligned(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(
+                tmp,
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.juneau</groupId>
+      <artifactId>juneau-all</artifactId>
+      <version>9.0.0</version>
+    </dependency>
+  </dependencies>
+</project>""",
+            )
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="spring-boot-3-5-14",
+                operations=[{"op": "align_juneau_version", "version": "9.0.0"}],
+            )
+
+            self.assertEqual(result.status, "no_change")
+            self.assertEqual(result.operations_applied[0]["status"], "no_change")
+
     def test_idempotency_where_applicable(self) -> None:
         with workspace_temp_dir() as tmp:
             project = _write_project(tmp, POM_TEMPLATE)

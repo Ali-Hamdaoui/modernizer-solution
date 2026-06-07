@@ -122,6 +122,7 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
         failure_classification_path if failure_classification_path and Path(failure_classification_path).is_file() else ""
     )
     build_error_ref = str(artifact_refs.get("build_error_contract") or "")
+    consumer_compatibility = _read_optional_json(artifact_refs.get("consumer_compatibility_report"), warnings)
 
     report_payload = {
         "run_id": state.get("run_id", ""),
@@ -162,6 +163,8 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
         "test_totals": totals,
         "build_error_contract_path": build_error_ref,
         "post_transform_failure_classification_path": classification_ref,
+        "consumer_compatibility_status": str((consumer_compatibility or {}).get("status") or ""),
+        "consumer_compatibility_report_path": str(artifact_refs.get("consumer_compatibility_report") or ""),
         "category_counts": failure_category_counts,
         "top_affected_tests": top_failed_tests,
         "recipes": recipes,
@@ -279,6 +282,47 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
                 "- Post-transform Failure Classification: "
                 f"{payload.get('post_transform_failure_classification_path', '')}"
             )
+        remediation_ref = dict(payload.get("artifact_refs", {}) or {}).get("remediation_plan", "")
+        if remediation_ref:
+            lines.append(f"- Remediation Plan: {remediation_ref}")
+        behavioral_context_ref = dict(payload.get("artifact_refs", {}) or {}).get("behavioral_failure_context_pack", "")
+        if behavioral_context_ref:
+            lines.append(f"- Behavioral Failure Context Pack: {behavioral_context_ref}")
+        llm_gate_ref = dict(payload.get("artifact_refs", {}) or {}).get("llm_proposal_gate", "")
+        if llm_gate_ref:
+            lines.append(f"- LLM Proposal Gate: {llm_gate_ref}")
+        api_contract_ref = dict(payload.get("artifact_refs", {}) or {}).get("api_contract_review", "")
+        if api_contract_ref:
+            lines.append(f"- API Contract Review: {api_contract_ref}")
+        legacy_equivalence_ref = dict(payload.get("artifact_refs", {}) or {}).get("legacy_behavior_equivalence_report", "")
+        if legacy_equivalence_ref:
+            lines.append(f"- Legacy Behavior Equivalence: {legacy_equivalence_ref}")
+        test_context_ref = dict(payload.get("artifact_refs", {}) or {}).get("test_context_repair_proposal", "")
+        if test_context_ref:
+            lines.append(f"- Test Context Repair Proposal: {test_context_ref}")
+        legacy_guided_ref = dict(payload.get("artifact_refs", {}) or {}).get("legacy_guided_patch_proposal", "")
+        if legacy_guided_ref:
+            lines.append(f"- Legacy Guided Patch Proposal: {legacy_guided_ref}")
+        mockito_placement_ref = dict(payload.get("artifact_refs", {}) or {}).get("mockito_bean_placement_report", "")
+        if mockito_placement_ref:
+            lines.append(f"- MockitoBean Placement Report: {mockito_placement_ref}")
+        strategy_ref = dict(payload.get("artifact_refs", {}) or {}).get("behavioral_remediation_strategy", "")
+        if strategy_ref:
+            lines.append(f"- Behavioral Remediation Strategy: {strategy_ref}")
+        approved_patch_ref = dict(payload.get("artifact_refs", {}) or {}).get("approved_patch_apply_result", "")
+        if approved_patch_ref:
+            lines.append(f"- Approved Patch Apply: {approved_patch_ref}")
+    consumer_report_ref = dict(payload.get("artifact_refs", {}) or {}).get("consumer_compatibility_report", "")
+    consumer_summary_ref = dict(payload.get("artifact_refs", {}) or {}).get("consumer_compatibility_summary", "")
+    consumer_status = str(payload.get("consumer_compatibility_status") or "")
+    if consumer_report_ref or consumer_summary_ref or consumer_status:
+        lines.extend(["", "## Consumer Compatibility Validation", ""])
+        if consumer_status:
+            lines.append(f"- Status: {consumer_status}")
+        if consumer_report_ref:
+            lines.append(f"- Report: {consumer_report_ref}")
+        if consumer_summary_ref:
+            lines.append(f"- Summary: {consumer_summary_ref}")
     category_counts = dict(payload.get("category_counts", {}) or {})
     if category_counts:
         lines.extend(["", "## Failure Categories", ""])

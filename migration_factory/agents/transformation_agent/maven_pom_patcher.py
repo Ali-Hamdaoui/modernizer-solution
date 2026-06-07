@@ -75,6 +75,23 @@ SPRING_SECURITY_GROUP_ID = "org.springframework.security"
 SPRING_SECURITY_VERSION_PROPERTY_NAMES: tuple[str, ...] = (
     "spring-security.version",
 )
+JJWT_TRACKED_COORDINATES: tuple[tuple[str, str], ...] = (
+    ("io.jsonwebtoken", "jjwt"),
+    ("io.jsonwebtoken", "jjwt-api"),
+    ("io.jsonwebtoken", "jjwt-impl"),
+    ("io.jsonwebtoken", "jjwt-jackson"),
+    ("io.jsonwebtoken", "jjwt-gson"),
+    ("io.jsonwebtoken", "jjwt-orgjson"),
+)
+JJWT_VERSION_PROPERTY_NAMES: tuple[str, ...] = (
+    "jjwt.version",
+    "io.jsonwebtoken.version",
+)
+JUNEAU_GROUP_PREFIX = "org.apache.juneau"
+JUNEAU_VERSION_PROPERTY_NAMES: tuple[str, ...] = (
+    "juneau.version",
+    "org.apache.juneau.version",
+)
 
 
 @dataclass(frozen=True)
@@ -182,7 +199,7 @@ def apply_maven_pom_patch(
 
         record = {"op": result.op, "status": result.status, **result.details}
         applied.append(record)
-        if result.status not in {"no_change", "not_applicable"}:
+        if result.status not in {"no_change", "not_applicable", "review_only"}:
             changed = True
 
     if changed:
@@ -225,6 +242,8 @@ def _apply_operation(
         "align_validation_dependencies": _align_validation_dependencies,
         "align_slf4j_logging": _align_slf4j_logging,
         "align_spring_security_dependencies": _align_spring_security_dependencies,
+        "align_jjwt_version": _align_jjwt_version,
+        "align_juneau_version": _align_juneau_version,
         "align_maven_compiler_parameters": _align_maven_compiler_parameters,
     }
     handler = handlers.get(op)
@@ -1130,6 +1149,206 @@ def _align_spring_security_dependencies(
     )
 
 
+def _align_jjwt_version(
+    root: ET.Element,
+    namespace: str,
+    operation: Mapping[str, Any],
+) -> MavenPomPatchOperationResult:
+    target_version = _required_text(operation, "version")
+    direct_matches: list[ET.Element] = []
+    managed_matches: list[ET.Element] = []
+    seen: set[int] = set()
+    direct_dependencies = root.find(_tag(namespace, "dependencies"))
+
+    for group_id, artifact_id in JJWT_TRACKED_COORDINATES:
+        if direct_dependencies is not None:
+            dependency = _find_dependency_in_parent(direct_dependencies, namespace, group_id, artifact_id)
+            if dependency is not None:
+                marker = id(dependency)
+                if marker not in seen:
+                    seen.add(marker)
+                    direct_matches.append(dependency)
+        for dependency in _find_managed_dependencies(root, namespace, group_id, artifact_id):
+            marker = id(dependency)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            managed_matches.append(dependency)
+
+    matches = [*direct_matches, *managed_matches]
+    if not matches:
+        return MavenPomPatchOperationResult(
+            op="align_jjwt_version",
+            status="not_applicable",
+            details={"target_version": target_version},
+        )
+
+    direct_markers = {id(item) for item in direct_matches}
+    property_versions: dict[str, str] = {}
+    old_versions: list[str] = []
+    updated_properties: list[str] = []
+    updated_dependencies: list[str] = []
+    updated_managed_dependencies: list[str] = []
+
+    for dependency in matches:
+        group_id = _child_text(dependency, namespace, "groupId")
+        artifact_id = _child_text(dependency, namespace, "artifactId")
+        coordinate = f"{group_id}:{artifact_id}"
+        version_node = dependency.find(_tag(namespace, "version"))
+        current_version = (version_node.text or "").strip() if version_node is not None and version_node.text else ""
+        if not current_version:
+            continue
+
+        property_name = _property_reference_name(current_version)
+        resolved_version = (
+            property_versions.setdefault(property_name, _property_value(root, namespace, property_name))
+            if property_name
+            else current_version
+        )
+        if resolved_version:
+            old_versions.append(resolved_version)
+
+        if property_name:
+            if _should_upgrade_version(resolved_version or current_version, target_version):
+                if _update_property_if_present(root, namespace, property_name, target_version):
+                    updated_properties.append(property_name)
+                if id(dependency) in direct_markers:
+                    updated_dependencies.append(coordinate)
+                else:
+                    updated_managed_dependencies.append(coordinate)
+            continue
+
+        if _should_upgrade_version(current_version, target_version):
+            version_node.text = target_version
+            if id(dependency) in direct_markers:
+                updated_dependencies.append(coordinate)
+            else:
+                updated_managed_dependencies.append(coordinate)
+
+    status = "updated" if updated_properties or updated_dependencies or updated_managed_dependencies else "no_change"
+    return MavenPomPatchOperationResult(
+        op="align_jjwt_version",
+        status=status,
+        details={
+            "group_id": "io.jsonwebtoken",
+            "target_version": target_version,
+            "old_versions": sorted({value for value in old_versions if value}),
+            "new_version": target_version,
+            "updated_properties": sorted(set(updated_properties)),
+            "updated_dependencies": sorted(set(updated_dependencies)),
+            "updated_managed_dependencies": sorted(set(updated_managed_dependencies)),
+        },
+    )
+
+
+def _align_juneau_version(
+    root: ET.Element,
+    namespace: str,
+    operation: Mapping[str, Any],
+) -> MavenPomPatchOperationResult:
+    target_version = str(operation.get("version") or "").strip()
+    direct_matches, managed_matches = _find_juneau_dependencies(root, namespace)
+    matches = [*direct_matches, *managed_matches]
+    detected_dependencies = [
+        f"{_child_text(dependency, namespace, 'groupId')}:{_child_text(dependency, namespace, 'artifactId')}"
+        for dependency in matches
+    ]
+    if not detected_dependencies:
+        return MavenPomPatchOperationResult(
+            op="align_juneau_version",
+            status="not_applicable",
+            details={
+                "detected_juneau_dependencies": [],
+                "target_version": target_version or None,
+                "action_taken": "NO_OP",
+                "human_review_required": False,
+            },
+        )
+
+    old_versions: list[str] = []
+    if not target_version:
+        for dependency in matches:
+            version = _child_text(dependency, namespace, "version")
+            if not version:
+                continue
+            property_name = _property_reference_name(version)
+            resolved = _property_value(root, namespace, property_name) if property_name else version
+            if resolved:
+                old_versions.append(resolved)
+        return MavenPomPatchOperationResult(
+            op="align_juneau_version",
+            status="review_only",
+            details={
+                "detected_juneau_dependencies": detected_dependencies,
+                "old_versions": sorted({value for value in old_versions if value}),
+                "target_version": None,
+                "action_taken": "REVIEW_ONLY",
+                "human_review_required": True,
+                "requires_human_approval": True,
+                "review_item": "JUNEAU_VERSION_ALIGNMENT_OR_REVIEW",
+                "safe_to_auto_apply": False,
+            },
+        )
+
+    direct_markers = {id(item) for item in direct_matches}
+    property_versions: dict[str, str] = {}
+    updated_properties: list[str] = []
+    updated_dependencies: list[str] = []
+    updated_managed_dependencies: list[str] = []
+
+    for dependency in matches:
+        group_id = _child_text(dependency, namespace, "groupId")
+        artifact_id = _child_text(dependency, namespace, "artifactId")
+        coordinate = f"{group_id}:{artifact_id}"
+        version_node = dependency.find(_tag(namespace, "version"))
+        current_version = (version_node.text or "").strip() if version_node is not None and version_node.text else ""
+        if not current_version:
+            continue
+
+        property_name = _property_reference_name(current_version)
+        resolved_version = (
+            property_versions.setdefault(property_name, _property_value(root, namespace, property_name))
+            if property_name
+            else current_version
+        )
+        if resolved_version:
+            old_versions.append(resolved_version)
+
+        if property_name:
+            if _should_upgrade_version(resolved_version or current_version, target_version):
+                if _update_property_if_present(root, namespace, property_name, target_version):
+                    updated_properties.append(property_name)
+                if id(dependency) in direct_markers:
+                    updated_dependencies.append(coordinate)
+                else:
+                    updated_managed_dependencies.append(coordinate)
+            continue
+
+        if _should_upgrade_version(current_version, target_version):
+            version_node.text = target_version
+            if id(dependency) in direct_markers:
+                updated_dependencies.append(coordinate)
+            else:
+                updated_managed_dependencies.append(coordinate)
+
+    status = "updated" if updated_properties or updated_dependencies or updated_managed_dependencies else "no_change"
+    return MavenPomPatchOperationResult(
+        op="align_juneau_version",
+        status=status,
+        details={
+            "detected_juneau_dependencies": detected_dependencies,
+            "old_versions": sorted({value for value in old_versions if value}),
+            "target_version": target_version,
+            "new_version": target_version,
+            "updated_properties": sorted(set(updated_properties)),
+            "updated_dependencies": sorted(set(updated_dependencies)),
+            "updated_managed_dependencies": sorted(set(updated_managed_dependencies)),
+            "action_taken": "UPDATED" if status == "updated" else "NO_OP",
+            "human_review_required": False,
+        },
+    )
+
+
 def _align_maven_compiler_parameters(
     root: ET.Element,
     namespace: str,
@@ -1392,6 +1611,35 @@ def _find_managed_dependencies(
         return []
     match = _find_dependency_in_parent(managed, namespace, group_id, artifact_id)
     return [match] if match is not None else []
+
+
+def _find_juneau_dependencies(
+    root: ET.Element,
+    namespace: str,
+) -> tuple[list[ET.Element], list[ET.Element]]:
+    direct: list[ET.Element] = []
+    managed: list[ET.Element] = []
+    direct_root = root.find(_tag(namespace, "dependencies"))
+    dependency_management = root.find(_tag(namespace, "dependencyManagement"))
+    managed_root = (
+        dependency_management.find(_tag(namespace, "dependencies"))
+        if dependency_management is not None
+        else None
+    )
+
+    if direct_root is not None:
+        for dependency in direct_root.findall(_tag(namespace, "dependency")):
+            group_id = _child_text(dependency, namespace, "groupId")
+            if group_id.startswith(JUNEAU_GROUP_PREFIX):
+                direct.append(dependency)
+
+    if managed_root is not None:
+        for dependency in managed_root.findall(_tag(namespace, "dependency")):
+            group_id = _child_text(dependency, namespace, "groupId")
+            if group_id.startswith(JUNEAU_GROUP_PREFIX):
+                managed.append(dependency)
+
+    return direct, managed
 
 
 def _has_parent(root: ET.Element, namespace: str, group_id: str, artifact_id: str) -> bool:

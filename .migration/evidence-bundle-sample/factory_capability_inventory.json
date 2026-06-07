@@ -1,0 +1,6 @@
+{
+  "capabilities": [
+    {"capability_id": "JAVA_VERSION_ALIGNMENT", "capability_type": "TRANSFORM"},
+    {"capability_id": "AZURE_SDK_MIGRATION_PLAYBOOK", "capability_type": "REVIEW_GATE"}
+  ]
+}
