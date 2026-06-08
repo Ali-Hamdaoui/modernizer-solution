@@ -492,7 +492,7 @@ def patch_duplicate_support_mockitobeans_into_spring_tests(
 ) -> list[SourcePatch]:
     root_path = Path(project_path).expanduser().resolve()
     test_files = _iter_test_java_files(root_path)
-    support_fields: dict[str, list[dict[str, str]]] = {}
+    support_entries: list[dict[str, object]] = []
     for path in test_files:
         text = path.read_text(encoding="utf-8")
         if "@MockitoBean" not in text:
@@ -502,22 +502,38 @@ def patch_duplicate_support_mockitobeans_into_spring_tests(
         fields = _extract_mockitobean_fields(text)
         if not fields:
             continue
-        support_fields[path.stem] = fields
+        support_entries.append(
+            {
+                "class_name": path.stem,
+                "package_name": _java_package_name(text),
+                "fields": fields,
+            }
+        )
 
-    if not support_fields:
+    if not support_entries:
         return []
 
     patches: list[SourcePatch] = []
     for path in test_files:
         text = path.read_text(encoding="utf-8")
+        if "@SpringBootTest" not in text:
+            continue
         referenced_classes = _spring_boot_test_class_refs(text)
         if not referenced_classes:
-            continue
+            candidate_entries = _same_package_support_entries(
+                support_entries,
+                package_name=_java_package_name(text),
+                exclude_class_name=path.stem,
+            )
+        else:
+            candidate_entries = _referenced_support_entries(
+                support_entries,
+                referenced_classes=referenced_classes,
+                exclude_class_name=path.stem,
+            )
         candidate_fields: list[dict[str, str]] = []
-        for class_name in sorted(referenced_classes):
-            if class_name == path.stem:
-                continue
-            candidate_fields.extend(support_fields.get(class_name, []))
+        for entry in candidate_entries:
+            candidate_fields.extend(entry.get("fields", []))  # type: ignore[arg-type]
         if not candidate_fields:
             continue
         updated = text
@@ -533,7 +549,7 @@ def patch_duplicate_support_mockitobeans_into_spring_tests(
         path.write_text(updated, encoding="utf-8")
         patches.append(
             SourcePatch(
-                file=str(path.relative_to(project_path)),
+                file=str(path.relative_to(root_path)),
                 patch="duplicate_support_mockitobeans_into_spring_tests",
                 unit=unit_id,
             )
@@ -1034,6 +1050,36 @@ def _spring_boot_test_class_refs(text: str) -> set[str]:
     for match in SPRING_BOOT_TEST_CLASSES_PATTERN.finditer(text):
         refs.update(SPRING_BOOT_TEST_CLASS_REFERENCE_PATTERN.findall(match.group("body")))
     return refs
+
+
+def _referenced_support_entries(
+    support_entries: list[dict[str, object]],
+    *,
+    referenced_classes: set[str],
+    exclude_class_name: str,
+) -> list[dict[str, object]]:
+    return [
+        entry
+        for entry in support_entries
+        if str(entry.get("class_name") or "") in referenced_classes
+        and str(entry.get("class_name") or "") != exclude_class_name
+    ]
+
+
+def _same_package_support_entries(
+    support_entries: list[dict[str, object]],
+    *,
+    package_name: str,
+    exclude_class_name: str,
+) -> list[dict[str, object]]:
+    if not package_name:
+        return []
+    return [
+        entry
+        for entry in support_entries
+        if str(entry.get("package_name") or "") == package_name
+        and str(entry.get("class_name") or "") != exclude_class_name
+    ]
 
 
 def _add_mockitobean_field_if_missing(text: str, field: dict[str, str]) -> str:

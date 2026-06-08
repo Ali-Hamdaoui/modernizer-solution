@@ -1371,6 +1371,57 @@ class TranslatorAdapterTest {
             self.assertEqual(patches, [])
             self.assertEqual(java_file.read_text(encoding="utf-8"), original)
 
+    def test_patch_duplicate_support_mockitobeans_into_spring_tests_uses_same_package_springboottest_fallback(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            (source / "App.java").write_text(
+                """package com.example;
+
+import com.example.support.FunctionalMessageHelper;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+
+@SpringBootApplication
+class App {
+    @MockitoBean
+    protected FunctionalMessageHelper functionalMessageHelper;
+}
+""",
+                encoding="utf-8",
+            )
+            java_file = source / "CustomExceptionTranslatorTest.java"
+            java_file.write_text(
+                """package com.example;
+
+import org.springframework.boot.test.context.SpringBootTest;
+
+@SpringBootTest
+class CustomExceptionTranslatorTest {
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_duplicate_support_mockitobeans_into_spring_tests(
+                app,
+                unit_id="spring-boot-3-5-14",
+            )
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertEqual(
+                patches[0].file.replace("\\", "/"),
+                "src/test/java/com/example/CustomExceptionTranslatorTest.java",
+            )
+            self.assertIn("import com.example.support.FunctionalMessageHelper;", after)
+            self.assertIn(
+                "import org.springframework.test.context.bean.override.mockito.MockitoBean;",
+                after,
+            )
+            self.assertIn("@MockitoBean\n    FunctionalMessageHelper functionalMessageHelper;", after)
+
     def test_patch_initmocks_updates_this_to_openmocks(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"
