@@ -10,6 +10,7 @@ from xml.sax.saxutils import escape
 
 from helpers import workspace_temp_dir
 from migration_factory.agents.build_agent import run_build_agent
+from migration_factory.agents.build_agent import agent as build_agent_module
 from migration_factory.agents.build_agent.classifier import BuildClassification, BuildResultKind, classify_line
 from migration_factory.agents.build_agent.failure_classifier import (
     APPLICATION_BEHAVIOR_REGRESSION,
@@ -40,6 +41,34 @@ from migration_factory.contracts.migration import (
 
 
 class BuildAgentTests(unittest.TestCase):
+    def test_build_command_env_adds_windows_root_truststore_opts(self) -> None:
+        with patch.object(build_agent_module.os, "name", "nt"):
+            with patch.dict(build_agent_module.os.environ, {"PATH": r"C:\tools\maven\bin"}, clear=True):
+                env = build_agent_module._build_command_env(r"C:\jdks\jdk-21")
+
+        self.assertIsNotNone(env)
+        assert env is not None
+        self.assertIn("-Djavax.net.ssl.trustStoreType=Windows-ROOT", env["MAVEN_OPTS"])
+        self.assertIn("-Djavax.net.ssl.trustStore=NUL", env["MAVEN_OPTS"])
+
+    def test_build_command_env_preserves_existing_maven_opts_when_adding_windows_root_truststore_opts(self) -> None:
+        with patch.object(build_agent_module.os, "name", "nt"):
+            with patch.dict(
+                build_agent_module.os.environ,
+                {
+                    "PATH": r"C:\tools\maven\bin",
+                    "MAVEN_OPTS": "--add-exports=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED",
+                },
+                clear=True,
+            ):
+                env = build_agent_module._build_command_env(r"C:\jdks\jdk-21")
+
+        self.assertIsNotNone(env)
+        assert env is not None
+        self.assertIn("--add-exports=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED", env["MAVEN_OPTS"])
+        self.assertIn("-Djavax.net.ssl.trustStoreType=Windows-ROOT", env["MAVEN_OPTS"])
+        self.assertIn("-Djavax.net.ssl.trustStore=NUL", env["MAVEN_OPTS"])
+
     def test_detects_maven_wrapper(self) -> None:
         with workspace_temp_dir() as project:
             (project / "pom.xml").write_text("<project />", encoding="utf-8")

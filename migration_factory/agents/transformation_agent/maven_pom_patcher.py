@@ -922,7 +922,8 @@ def _align_thymeleaf_dependencies(
     operation: Mapping[str, Any],
 ) -> MavenPomPatchOperationResult:
     target_version = str(operation.get("version") or "").strip()
-    prefer_bom_managed = bool(operation.get("prefer_bom_managed", False))
+    prefer_bom_managed = _operation_bool(operation, "prefer_bom_managed", default=False)
+    replace_spring_artifact = _operation_bool(operation, "replace_spring_artifact", default=True)
     thymeleaf_matches = _find_thymeleaf_dependencies(root, namespace)
     if not thymeleaf_matches:
         return MavenPomPatchOperationResult(
@@ -931,11 +932,13 @@ def _align_thymeleaf_dependencies(
             details={
                 "target_version": target_version or None,
                 "prefer_bom_managed": prefer_bom_managed,
+                "replace_spring_artifact": replace_spring_artifact,
             },
         )
 
     has_boot_bom = _has_dependency(root, namespace, *SPRING_BOOT_BOM_COORDINATE)
-    should_use_bom = prefer_bom_managed and has_boot_bom
+    has_boot_parent = _has_parent(root, namespace, *SPRING_BOOT_PARENT_COORDINATE)
+    should_use_bom = prefer_bom_managed and (has_boot_bom or has_boot_parent)
     replacements: list[dict[str, Any]] = []
     removed_versions: list[dict[str, Any]] = []
     updated_versions: list[dict[str, Any]] = []
@@ -945,7 +948,7 @@ def _align_thymeleaf_dependencies(
     for dependency in thymeleaf_matches:
         artifact_id = _child_text(dependency, namespace, "artifactId")
         current_artifact_id = artifact_id
-        if artifact_id in {"thymeleaf-spring4", "thymeleaf-spring5"}:
+        if replace_spring_artifact and artifact_id in {"thymeleaf-spring4", "thymeleaf-spring5"}:
             replacements.append(
                 {
                     "old_artifact_id": artifact_id,
@@ -1019,6 +1022,7 @@ def _align_thymeleaf_dependencies(
         details={
             "target_version": target_version or None,
             "prefer_bom_managed": prefer_bom_managed,
+            "replace_spring_artifact": replace_spring_artifact,
             "used_bom_management": should_use_bom,
             "old_versions": sorted({value for value in old_versions if value}),
             "replacements": replacements,
@@ -1912,6 +1916,15 @@ def _operation_string_list(operation: Mapping[str, Any], key: str) -> list[str]:
         return [str(item) for item in value]
     text = str(value).strip()
     return [text] if text else []
+
+
+def _operation_bool(operation: Mapping[str, Any], key: str, *, default: bool) -> bool:
+    value = operation.get(key)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _operation_version_overrides(operation: Mapping[str, Any]) -> dict[str, str]:

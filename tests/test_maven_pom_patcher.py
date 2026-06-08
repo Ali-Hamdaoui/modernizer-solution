@@ -961,6 +961,42 @@ class MavenPomPatcherTests(unittest.TestCase):
             self.assertIn("<artifactId>thymeleaf-spring6</artifactId>", pom_text)
             self.assertIn("<version>3.1.3.RELEASE</version>", pom_text)
 
+    def test_align_thymeleaf_dependencies_can_update_version_without_switching_spring_family(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(
+                tmp,
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencies>
+    <dependency>
+      <groupId>org.thymeleaf</groupId>
+      <artifactId>thymeleaf-spring5</artifactId>
+      <version>3.0.11.RELEASE</version>
+    </dependency>
+  </dependencies>
+</project>""",
+            )
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="java-21",
+                operations=[
+                    {
+                        "op": "align_thymeleaf_dependencies",
+                        "version": "3.1.3.RELEASE",
+                        "replace_spring_artifact": False,
+                    }
+                ],
+            )
+
+            operation = result.operations_applied[0]
+            self.assertEqual(operation["status"], "updated")
+            self.assertEqual(operation["replacements"], [])
+            pom_text = _pom_text(project)
+            self.assertIn("<artifactId>thymeleaf-spring5</artifactId>", pom_text)
+            self.assertIn("<version>3.1.3.RELEASE</version>", pom_text)
+            self.assertNotIn("<artifactId>thymeleaf-spring6</artifactId>", pom_text)
+
     def test_align_thymeleaf_dependencies_removes_invalid_explicit_version_when_bom_managed(self) -> None:
         with workspace_temp_dir() as tmp:
             project = _write_project(

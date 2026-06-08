@@ -23,6 +23,7 @@ from migration_factory.agents.transformation_agent.execution_plan import (
     write_transformation_execution_plan,
 )
 from migration_factory.agents.transformation_agent import execution_plan as execution_plan_module
+from migration_factory.agents.transformation_agent import executor as executor_module
 from migration_factory.agents.transformation_agent.executor import CommandResult
 from migration_factory.agents.transformation_agent.plan import load_migration_plan
 from migration_factory.agents.transformation_agent.rewrite import (
@@ -806,6 +807,61 @@ units:
                     "op": "ensure_property_contains_token",
                     "name": "argLine",
                     "token": "-Dnet.bytebuddy.experimental=true",
+                },
+                operations,
+            )
+
+    def test_execution_plan_adapter_prealigns_thymeleaf_version_before_boot3_java21_hop(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            _write_approved_run_artifacts(
+                app,
+                run_id,
+                include_rewrite_plan=False,
+                source_unit_id="java-21",
+                source_unit_goal="Upgrade Java.",
+                planning_units_yaml="""
+schema_version: "1.0.0"
+run_id: "run-1"
+status: "PASS"
+artifact_refs:
+  self: "migration_units.yaml"
+units:
+  - id: "java-21"
+    goal: "Upgrade Java."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: true
+    required: "yes"
+    java_home_env: "JAVA_HOME_21"
+    hop_id: "boot-2.7-to-3.5-java21"
+    expected_artifacts: ["target/classes"]
+""",
+                framework_versions_payload={
+                    "thymeleaf": "3.1.3.RELEASE",
+                },
+                tooling_versions_payload={
+                    "maven_compiler_plugin": "3.14.1",
+                },
+            )
+
+            output_path = write_transformation_execution_plan(app, run_id)
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+            operations = payload["migration_units"][0]["transformations"][0]["operations"]
+
+            self.assertIn(
+                {
+                    "op": "align_thymeleaf_dependencies",
+                    "version": "3.1.3.RELEASE",
+                    "replace_spring_artifact": False,
+                },
+                operations,
+            )
+            self.assertIn(
+                {
+                    "op": "align_maven_compiler_parameters",
+                    "plugin_version": "3.14.1",
                 },
                 operations,
             )
@@ -4036,6 +4092,77 @@ migration_units:
             )
 
             self.assertIn("rewrite-maven-plugin:6.23.0:runNoFork", command)
+
+    def test_executor_adds_windows_root_truststore_opts_for_maven_commands(self) -> None:
+        with workspace_temp_dir() as tmp:
+            env = {"JAVA_HOME": r"C:\jdks\jdk-21", "PATH": r"C:\jdks\jdk-21\bin"}
+            popen = mock.Mock()
+            popen.communicate.return_value = ("", "")
+            popen.returncode = 0
+
+            with mock.patch.object(executor_module, "_resolve_executable", return_value=["mvn.cmd", "clean", "test"]):
+                with mock.patch.object(executor_module.os, "name", "nt"):
+                    with mock.patch.object(executor_module.subprocess, "Popen", return_value=popen) as popen_mock:
+                        result = executor_module.run_command(
+                            "mvn clean test",
+                            cwd=tmp,
+                            stream_output=False,
+                            env=env,
+                        )
+
+            self.assertTrue(result.succeeded)
+            popen_env = popen_mock.call_args.kwargs["env"]
+            self.assertIn("-Djavax.net.ssl.trustStoreType=Windows-ROOT", popen_env["MAVEN_OPTS"])
+            self.assertIn("-Djavax.net.ssl.trustStore=NUL", popen_env["MAVEN_OPTS"])
+
+    def test_executor_adds_windows_root_truststore_opts_when_env_not_supplied(self) -> None:
+        with workspace_temp_dir() as tmp:
+            popen = mock.Mock()
+            popen.communicate.return_value = ("", "")
+            popen.returncode = 0
+
+            with mock.patch.object(executor_module, "_resolve_executable", return_value=["mvn.cmd", "clean", "test"]):
+                with mock.patch.object(executor_module.os, "name", "nt"):
+                    with mock.patch.dict(executor_module.os.environ, {"PATH": r"C:\tools\maven\bin"}, clear=True):
+                        with mock.patch.object(executor_module.subprocess, "Popen", return_value=popen) as popen_mock:
+                            result = executor_module.run_command(
+                                "mvn clean test",
+                                cwd=tmp,
+                                stream_output=False,
+                                env=None,
+                            )
+
+            self.assertTrue(result.succeeded)
+            popen_env = popen_mock.call_args.kwargs["env"]
+            self.assertIn("-Djavax.net.ssl.trustStoreType=Windows-ROOT", popen_env["MAVEN_OPTS"])
+            self.assertIn("-Djavax.net.ssl.trustStore=NUL", popen_env["MAVEN_OPTS"])
+
+    def test_executor_preserves_existing_maven_opts_when_adding_windows_root_truststore_opts(self) -> None:
+        with workspace_temp_dir() as tmp:
+            env = {
+                "JAVA_HOME": r"C:\jdks\jdk-21",
+                "PATH": r"C:\jdks\jdk-21\bin",
+                "MAVEN_OPTS": "--add-exports=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED",
+            }
+            popen = mock.Mock()
+            popen.communicate.return_value = ("", "")
+            popen.returncode = 0
+
+            with mock.patch.object(executor_module, "_resolve_executable", return_value=["mvn.cmd", "clean", "test"]):
+                with mock.patch.object(executor_module.os, "name", "nt"):
+                    with mock.patch.object(executor_module.subprocess, "Popen", return_value=popen) as popen_mock:
+                        result = executor_module.run_command(
+                            "mvn clean test",
+                            cwd=tmp,
+                            stream_output=False,
+                            env=env,
+                        )
+
+            self.assertTrue(result.succeeded)
+            popen_env = popen_mock.call_args.kwargs["env"]
+            self.assertIn("--add-exports=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED", popen_env["MAVEN_OPTS"])
+            self.assertIn("-Djavax.net.ssl.trustStoreType=Windows-ROOT", popen_env["MAVEN_OPTS"])
+            self.assertIn("-Djavax.net.ssl.trustStore=NUL", popen_env["MAVEN_OPTS"])
 
     def test_openrewrite_apply_goal_is_blocked_before_command_execution(self) -> None:
         with workspace_temp_dir() as tmp:

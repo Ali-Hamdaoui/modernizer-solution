@@ -8,6 +8,11 @@ import shutil
 import subprocess
 import time
 
+WINDOWS_MAVEN_TRUSTSTORE_OPTS = (
+    "-Djavax.net.ssl.trustStoreType=Windows-ROOT",
+    "-Djavax.net.ssl.trustStore=NUL",
+)
+
 
 @dataclass(frozen=True)
 class CommandResult:
@@ -31,6 +36,7 @@ def run_command(
     started = time.monotonic()
     args = _split_command(command)
     args = _resolve_executable(args)
+    runtime_env = _prepare_command_env(args, env)
 
     try:
         process = subprocess.Popen(
@@ -39,7 +45,7 @@ def run_command(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env=env,
+            env=runtime_env,
         )
     except FileNotFoundError as exc:
         return CommandResult(
@@ -97,3 +103,21 @@ def _resolve_executable(args: list[str]) -> list[str]:
             return [maven_cmd, *args[1:]]
 
     return args
+
+
+def _prepare_command_env(args: list[str], env: dict[str, str] | None) -> dict[str, str] | None:
+    if not args:
+        return env
+    if os.name != "nt":
+        return env
+    executable = Path(args[0]).name.lower()
+    if executable not in {"mvn", "mvn.cmd", "mvn.bat", "mvn.exe"}:
+        return env
+
+    updated_env = dict(os.environ if env is None else env)
+    existing = str(updated_env.get("MAVEN_OPTS") or "").strip()
+    missing_opts = [opt for opt in WINDOWS_MAVEN_TRUSTSTORE_OPTS if opt not in existing]
+    if not missing_opts:
+        return updated_env
+    updated_env["MAVEN_OPTS"] = " ".join([part for part in [existing, *missing_opts] if part]).strip()
+    return updated_env

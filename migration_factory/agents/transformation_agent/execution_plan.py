@@ -527,6 +527,7 @@ def _deterministic_source_transformations(
         lombok_version = tooling_versions.get("lombok")
         jacoco_version = tooling_versions.get("jacoco")
         compiler_plugin_version = tooling_versions.get("maven_compiler_plugin")
+        thymeleaf_version = framework_versions.get("thymeleaf")
         azure_servicebus_version = (
             framework_versions.get("azure_messaging_servicebus")
             or DEFAULT_AZURE_MESSAGING_SERVICEBUS_VERSION
@@ -544,6 +545,14 @@ def _deterministic_source_transformations(
                 {
                     "op": "align_jacoco_version",
                     "version": jacoco_version,
+                }
+            )
+        if thymeleaf_version:
+            operations.append(
+                {
+                    "op": "align_thymeleaf_dependencies",
+                    "version": thymeleaf_version,
+                    "replace_spring_artifact": False,
                 }
             )
         if unit_id == "java-21":

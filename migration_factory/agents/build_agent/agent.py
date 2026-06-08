@@ -34,6 +34,10 @@ STARTUP_TIMEOUT_SECONDS = 120
 COMMAND_TIMEOUT_SECONDS = 300
 BOOT4_MINIMUM_MAVEN_VERSION = (3, 6, 3)
 LEGACY_COMPILER_EXPORTS = "--add-exports=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED"
+WINDOWS_MAVEN_TRUSTSTORE_OPTS = (
+    "-Djavax.net.ssl.trustStoreType=Windows-ROOT",
+    "-Djavax.net.ssl.trustStore=NUL",
+)
 LOGGER = logging.getLogger(__name__)
 
 
@@ -490,6 +494,11 @@ def _build_command_env(
         existing = str(env.get("MAVEN_OPTS") or "").strip()
         if LEGACY_COMPILER_EXPORTS not in existing:
             env["MAVEN_OPTS"] = f"{existing} {LEGACY_COMPILER_EXPORTS}".strip()
+    if os.name == "nt":
+        existing = str(env.get("MAVEN_OPTS") or "").strip()
+        missing_opts = [opt for opt in WINDOWS_MAVEN_TRUSTSTORE_OPTS if opt not in existing]
+        if missing_opts:
+            env["MAVEN_OPTS"] = " ".join([part for part in [existing, *missing_opts] if part]).strip()
     return env
 
 
