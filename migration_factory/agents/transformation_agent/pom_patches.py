@@ -27,16 +27,34 @@ TEST_JAVAX_SERVLET_IMPORT_PATTERN = re.compile(
 JUNIT_ASSERTTHAT_STATIC_IMPORT = "import static org.junit.Assert.assertThat;"
 HAMCREST_ASSERTTHAT_STATIC_IMPORT = "import static org.hamcrest.MatcherAssert.assertThat;"
 JUNIT_ASSERTTHAT_FQCN_PATTERN = re.compile(r"\borg\.junit\.Assert\.assertThat\s*\(")
+AZURE_MODERN_AMQP_TRANSPORT_IMPORT = "import com.azure.core.amqp.AmqpTransportType;"
+AZURE_MODERN_CLIENT_BUILDER_IMPORT = "import com.azure.messaging.servicebus.ServiceBusClientBuilder;"
 AZURE_LEGACY_TOPICCLIENT_IMPORT = "import com.microsoft.azure.servicebus.TopicClient;"
 AZURE_MODERN_SENDERCLIENT_IMPORT = "import com.azure.messaging.servicebus.ServiceBusSenderClient;"
 AZURE_LEGACY_MESSAGE_IMPORT = "import com.microsoft.azure.servicebus.Message;"
 AZURE_MODERN_MESSAGE_IMPORT = "import com.azure.messaging.servicebus.ServiceBusMessage;"
+AZURE_LEGACY_CONNECTION_STRING_IMPORT = "import com.microsoft.azure.servicebus.primitives.ConnectionStringBuilder;"
+AZURE_LEGACY_EXCEPTION_IMPORT = "import com.microsoft.azure.servicebus.primitives.ServiceBusException;"
 AZURE_LEGACY_SERVICEBUS_PACKAGE = "com.microsoft.azure.servicebus"
 AZURE_FQCN_TOPICCLIENT_PATTERN = re.compile(r"\bcom\.microsoft\.azure\.servicebus\.TopicClient\b")
 AZURE_FQCN_MESSAGE_PATTERN = re.compile(r"\bcom\.microsoft\.azure\.servicebus\.Message\b")
 AZURE_LEGACY_TOPICCLIENT_PATTERN = re.compile(r"\bTopicClient\b")
 AZURE_LEGACY_MESSAGE_PATTERN = re.compile(r"\bMessage\b")
 AZURE_SEND_MESSAGE_PATTERN = re.compile(r"(?P<prefix>\.)send\(\s*(?P<argument>(?:Mockito\.)?any\(\s*Message\.class\s*\))\s*\)")
+AZURE_LEGACY_QUEUE_MARKERS: tuple[str, ...] = ("IQueueClient", "QueueClient", "ReceiveMode.PEEKLOCK")
+AZURE_TOPIC_BUILD_METHOD_PATTERN = re.compile(
+    r"private void buildTopicClient\(\)\s*\{\s*try\s*\{\s*this\.setTopicClient\(new TopicClient\(getAmqpConnectionStringBuilder\(\)\)\);\s*\}\s*"
+    r"catch\s*\(final ServiceBusException e\)\s*\{\s*topicClient = null;\s*log\.error\(e\.getMessage\(\)\);\s*\}\s*"
+    r"catch\s*\(final InterruptedException e\)\s*\{\s*log\.error\(e\.getMessage\(\)\);\s*Thread\.currentThread\(\)\.interrupt\(\);\s*\}\s*"
+    r"lastConnectionInstant = Instant\.now\(\);\s*\}",
+    re.DOTALL,
+)
+AZURE_TOPIC_SEND_METHOD_PATTERN = re.compile(
+    r"public void sendMessage\(\s*final String jsonMessage,\s*final Map<String,\s*String> properties,\s*String sessionId\s*\)\s*\{\s*"
+    r"try\s*\{\s*(?P<body>.*?)\s*\}\s*catch\s*\(final ServiceBusException e\)\s*\{\s*log\.error\(e\.getMessage\(\)\);\s*\}\s*"
+    r"catch\s*\(final InterruptedException e\)\s*\{\s*log\.error\(e\.getMessage\(\)\);\s*Thread\.currentThread\(\)\.interrupt\(\);\s*\}\s*\}",
+    re.DOTALL,
+)
 MOCKITO_INLINE_MOCK_MAKER_CONTENT = "mock-maker-inline\n"
 MOCKITO_USAGE_MARKERS: tuple[str, ...] = (
     "org.mockito",
@@ -727,8 +745,12 @@ def _replace_spring_data_sort_constructor_usage(text: str) -> str:
 
 
 def _patch_azure_servicebus_text(text: str) -> str:
+    if _is_azure_queue_only_text(text):
+        return text
     updated = text.replace(AZURE_LEGACY_TOPICCLIENT_IMPORT, AZURE_MODERN_SENDERCLIENT_IMPORT)
     updated = updated.replace(AZURE_LEGACY_MESSAGE_IMPORT, AZURE_MODERN_MESSAGE_IMPORT)
+    if _needs_azure_topic_builder_upgrade(text):
+        updated = _patch_azure_topic_builder_text(updated)
     updated = AZURE_FQCN_TOPICCLIENT_PATTERN.sub("com.azure.messaging.servicebus.ServiceBusSenderClient", updated)
     updated = AZURE_FQCN_MESSAGE_PATTERN.sub("com.azure.messaging.servicebus.ServiceBusMessage", updated)
     updated = AZURE_SEND_MESSAGE_PATTERN.sub(
@@ -738,6 +760,86 @@ def _patch_azure_servicebus_text(text: str) -> str:
     updated = AZURE_LEGACY_TOPICCLIENT_PATTERN.sub("ServiceBusSenderClient", updated)
     updated = AZURE_LEGACY_MESSAGE_PATTERN.sub("ServiceBusMessage", updated)
     return updated
+
+
+def _is_azure_queue_only_text(text: str) -> bool:
+    if "TopicClient" in text or "com.microsoft.azure.servicebus.TopicClient" in text:
+        return False
+    return any(marker in text for marker in AZURE_LEGACY_QUEUE_MARKERS)
+
+
+def _needs_azure_topic_builder_upgrade(text: str) -> bool:
+    return "TopicClient" in text and "ConnectionStringBuilder" in text
+
+
+def _patch_azure_topic_builder_text(text: str) -> str:
+    updated = text
+    updated = updated.replace(AZURE_LEGACY_CONNECTION_STRING_IMPORT, "")
+    updated = updated.replace(AZURE_LEGACY_EXCEPTION_IMPORT, "")
+    if AZURE_MODERN_SENDERCLIENT_IMPORT in updated and AZURE_MODERN_CLIENT_BUILDER_IMPORT not in updated:
+        updated = updated.replace(
+            AZURE_MODERN_SENDERCLIENT_IMPORT,
+            "\n".join(
+                (
+                    AZURE_MODERN_AMQP_TRANSPORT_IMPORT,
+                    AZURE_MODERN_CLIENT_BUILDER_IMPORT,
+                    AZURE_MODERN_SENDERCLIENT_IMPORT,
+                )
+            ),
+        )
+    updated = updated.replace(
+        "private ConnectionStringBuilder amqpConnectionStringBuilder;",
+        "private ServiceBusClientBuilder amqpConnectionStringBuilder;",
+    )
+    updated = updated.replace(
+        "public ConnectionStringBuilder getAmqpConnectionStringBuilder() {",
+        "public ServiceBusClientBuilder getAmqpConnectionStringBuilder() {",
+    )
+    updated = updated.replace(
+        "public void setAmqpConnectionStringBuilder(final ConnectionStringBuilder amqpConnectionStringBuilder) {",
+        "public void setAmqpConnectionStringBuilder(final ServiceBusClientBuilder amqpConnectionStringBuilder) {",
+    )
+    updated = updated.replace(
+        '        connectionString.append(";OperationTimeout=");\n        connectionString.append("PT10S");\n\n'
+        "        setAmqpConnectionStringBuilder(new ConnectionStringBuilder(connectionString.toString(), bus.getTopicName()));\n",
+        "        ServiceBusClientBuilder serviceBusClientBuilder =\n"
+        "                new ServiceBusClientBuilder()\n"
+        "                    .connectionString(connectionString.toString())\n"
+        "                    .transportType(AmqpTransportType.AMQP_WEB_SOCKETS);\n\n"
+        "        setAmqpConnectionStringBuilder(serviceBusClientBuilder);\n",
+    )
+    updated = AZURE_TOPIC_BUILD_METHOD_PATTERN.sub(
+        "private void buildTopicClient() {\n"
+        "        this.setTopicClient(getAmqpConnectionStringBuilder()\n"
+        "                .sender()\n"
+        "                .topicName(getBus().getTopicName())\n"
+        "                .buildClient());\n"
+        "        lastConnectionInstant = Instant.now();\n"
+        "    }",
+        updated,
+    )
+    updated = updated.replace(
+        "oldClient.closeAsync().get(5, java.util.concurrent.TimeUnit.SECONDS);",
+        "java.util.concurrent.CompletableFuture.runAsync(oldClient::close).get(5, java.util.concurrent.TimeUnit.SECONDS);",
+    )
+    updated = AZURE_TOPIC_SEND_METHOD_PATTERN.sub(_replace_azure_topic_send_method, updated)
+    updated = updated.replace("getTopicClient().send(message);", "getTopicClient().sendMessage(message);")
+    return updated
+
+
+def _replace_azure_topic_send_method(match: re.Match[str]) -> str:
+    body = match.group("body")
+    body = body.replace("final Message message = new Message(jsonMessage);", "final ServiceBusMessage message = new ServiceBusMessage(jsonMessage);")
+    body = body.replace(
+        "message.setProperties(properties);",
+        "Map<String, Object> applicationProperties = message.getApplicationProperties();\n                applicationProperties.putAll(properties);",
+    )
+    body = body.replace("getTopicClient().send(message);", "getTopicClient().sendMessage(message);")
+    return (
+        "public void sendMessage(final String jsonMessage, final Map<String, String> properties, String sessionId) {\n"
+        f"            {body.strip()}\n"
+        "    }"
+    )
 
 
 def _patch_jjwt_parser_assignments(text: str) -> str:

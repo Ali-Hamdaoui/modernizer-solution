@@ -1633,6 +1633,150 @@ class AzureBusTopicTest {
             self.assertEqual(patches[0].file.replace("\\", "/"), "common-utils/src/test/java/com/example/AzureBusTopicTest.java")
             self.assertIn("ServiceBusSenderClient topicClient;", java_file.read_text(encoding="utf-8"))
 
+    def test_patch_azure_servicebus_legacy_to_modern_upgrades_topic_builder_pattern(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "ServiceBusTopic.java"
+            java_file.write_text(
+                """package com.example;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Map;
+
+import com.microsoft.azure.servicebus.Message;
+import com.microsoft.azure.servicebus.TopicClient;
+import com.microsoft.azure.servicebus.primitives.ConnectionStringBuilder;
+import com.microsoft.azure.servicebus.primitives.ServiceBusException;
+
+class ServiceBusTopic {
+    private TopicClient topicClient;
+    private ConnectionStringBuilder amqpConnectionStringBuilder;
+
+    public ConnectionStringBuilder getAmqpConnectionStringBuilder() {
+        return amqpConnectionStringBuilder;
+    }
+
+    public void setAmqpConnectionStringBuilder(final ConnectionStringBuilder amqpConnectionStringBuilder) {
+        this.amqpConnectionStringBuilder = amqpConnectionStringBuilder;
+    }
+
+    public TopicClient getTopicClient() {
+        return topicClient;
+    }
+
+    public void setTopicClient(final TopicClient topicClient) {
+        this.topicClient = topicClient;
+    }
+
+    private Bus getBus() {
+        return null;
+    }
+
+    public void init(final Bus bus) {
+        final StringBuilder connectionString = new StringBuilder();
+        connectionString.append(";OperationTimeout=");
+        connectionString.append("PT10S");
+
+        setAmqpConnectionStringBuilder(new ConnectionStringBuilder(connectionString.toString(), bus.getTopicName()));
+        buildTopicClient();
+    }
+
+    private void buildTopicClient() {
+        try {
+            this.setTopicClient(new TopicClient(getAmqpConnectionStringBuilder()));
+        } catch (final ServiceBusException e) {
+            topicClient = null;
+            log.error(e.getMessage());
+        } catch (final InterruptedException e) {
+            log.error(e.getMessage());
+            Thread.currentThread().interrupt();
+        }
+        lastConnectionInstant = Instant.now();
+    }
+
+    private void recreateLinkIfNecessary() throws Exception {
+        TopicClient oldClient = getTopicClient();
+        oldClient.closeAsync().get(5, java.util.concurrent.TimeUnit.SECONDS);
+    }
+
+    public void sendMessage(final String jsonMessage, final Map<String, String> properties, String sessionId) {
+        try {
+            final Message message = new Message(jsonMessage);
+            message.setContentType("application/json");
+            message.setTimeToLive(Duration.ofDays(getBus().getMessageTTL()));
+            if (properties != null) {
+                message.setProperties(properties);
+            }
+            getTopicClient().send(message);
+        } catch (final ServiceBusException e) {
+            log.error(e.getMessage());
+        } catch (final InterruptedException e) {
+            log.error(e.getMessage());
+            Thread.currentThread().interrupt();
+        }
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_azure_servicebus_legacy_to_modern(app, unit_id="java-21")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("import com.azure.core.amqp.AmqpTransportType;", after)
+            self.assertIn("import com.azure.messaging.servicebus.ServiceBusClientBuilder;", after)
+            self.assertIn("import com.azure.messaging.servicebus.ServiceBusSenderClient;", after)
+            self.assertIn("import com.azure.messaging.servicebus.ServiceBusMessage;", after)
+            self.assertNotIn("import com.microsoft.azure.servicebus.primitives.ConnectionStringBuilder;", after)
+            self.assertNotIn("import com.microsoft.azure.servicebus.primitives.ServiceBusException;", after)
+            self.assertIn("private ServiceBusClientBuilder amqpConnectionStringBuilder;", after)
+            self.assertIn("new ServiceBusClientBuilder()", after)
+            self.assertIn(".transportType(AmqpTransportType.AMQP_WEB_SOCKETS);", after)
+            self.assertIn(".sender()", after)
+            self.assertIn(".topicName(getBus().getTopicName())", after)
+            self.assertIn(".buildClient());", after)
+            self.assertIn("java.util.concurrent.CompletableFuture.runAsync(oldClient::close).get(5, java.util.concurrent.TimeUnit.SECONDS);", after)
+            self.assertIn("Map<String, Object> applicationProperties = message.getApplicationProperties();", after)
+            self.assertIn("applicationProperties.putAll(properties);", after)
+            self.assertIn("getTopicClient().sendMessage(message);", after)
+            self.assertNotIn("new TopicClient(", after)
+            self.assertNotIn("message.setProperties(properties);", after)
+            self.assertNotIn("getTopicClient().send(message);", after)
+
+    def test_patch_azure_servicebus_legacy_to_modern_skips_queue_only_legacy_wrappers(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "ServiceBusQueue.java"
+            original = """package com.example;
+
+import com.microsoft.azure.servicebus.IQueueClient;
+import com.microsoft.azure.servicebus.Message;
+import com.microsoft.azure.servicebus.QueueClient;
+import com.microsoft.azure.servicebus.ReceiveMode;
+import com.microsoft.azure.servicebus.primitives.ConnectionStringBuilder;
+
+class ServiceBusQueue {
+    IQueueClient queueClient;
+
+    void sendMessage(String jsonMessage) {
+        Message message = new Message(jsonMessage);
+        queueClient.send(message);
+    }
+}
+"""
+            java_file.write_text(original, encoding="utf-8")
+
+            patches = patch_azure_servicebus_legacy_to_modern(app, unit_id="java-21")
+
+            self.assertEqual(patches, [])
+            self.assertEqual(java_file.read_text(encoding="utf-8"), original)
+
     def test_patch_jjwt_parser_assignment_adds_build_for_simple_parser_usage(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"
