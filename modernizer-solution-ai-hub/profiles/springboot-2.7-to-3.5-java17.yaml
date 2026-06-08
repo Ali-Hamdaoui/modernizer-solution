@@ -13,6 +13,7 @@ framework_versions:
   jakarta_validation_api: "3.0.2"
   slf4j_api: "2.0.17"
   spring_security: "6.5.10"
+  problem_spring_web: "0.29.1"
 source:
   java:
     allowed_versions:

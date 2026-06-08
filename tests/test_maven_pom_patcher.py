@@ -1210,6 +1210,55 @@ class MavenPomPatcherTests(unittest.TestCase):
             self.assertEqual(result.operations_applied[0]["status"], "no_change")
             self.assertEqual(_pom_text(project).count("<artifactId>spring-boot-starter-validation</artifactId>"), 1)
 
+    def test_align_validation_dependencies_adds_boot_starter_even_when_api_already_present(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(
+                tmp,
+                """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>3.5.14</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>jakarta.validation</groupId>
+      <artifactId>jakarta.validation-api</artifactId>
+      <version>3.0.2</version>
+    </dependency>
+  </dependencies>
+</project>""",
+            )
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="spring-boot-3-5-14",
+                operations=[
+                    {
+                        "op": "align_validation_dependencies",
+                        "prefer_boot_starter": True,
+                        "detected_validation_usage": ["jakarta.validation.Valid"],
+                    }
+                ],
+            )
+
+            operation = result.operations_applied[0]
+            self.assertEqual(operation["status"], "added")
+            self.assertEqual(
+                operation["dependency_added"],
+                "org.springframework.boot:spring-boot-starter-validation",
+            )
+            pom_text = _pom_text(project)
+            self.assertIn("<artifactId>spring-boot-starter-validation</artifactId>", pom_text)
+            self.assertIn("<artifactId>jakarta.validation-api</artifactId>", pom_text)
+
     def test_align_validation_dependencies_is_not_applicable_without_usage(self) -> None:
         with workspace_temp_dir() as tmp:
             project = _write_project(tmp, POM_TEMPLATE)

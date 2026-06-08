@@ -1053,17 +1053,6 @@ def _align_validation_dependencies(
             },
         )
 
-    if _has_dependency(root, namespace, *JAKARTA_VALIDATION_API_COORDINATE):
-        return MavenPomPatchOperationResult(
-            op="align_validation_dependencies",
-            status="no_change",
-            details={
-                "detected_validation_usage": detected_usage,
-                "dependency_added": None,
-                "dependency_already_present": "jakarta.validation:jakarta.validation-api",
-            },
-        )
-
     prefer_boot_starter = bool(operation.get("prefer_boot_starter", False))
     has_boot_bom = _has_dependency(root, namespace, *SPRING_BOOT_BOM_COORDINATE)
     has_boot_parent = _has_parent(root, namespace, *SPRING_BOOT_PARENT_COORDINATE)
@@ -1085,6 +1074,17 @@ def _align_validation_dependencies(
                 "used_boot_starter": True,
                 "used_boot_bom_management": has_boot_bom,
                 "used_boot_parent_management": has_boot_parent,
+            },
+        )
+
+    if _has_dependency(root, namespace, *JAKARTA_VALIDATION_API_COORDINATE):
+        return MavenPomPatchOperationResult(
+            op="align_validation_dependencies",
+            status="no_change",
+            details={
+                "detected_validation_usage": detected_usage,
+                "dependency_added": None,
+                "dependency_already_present": "jakarta.validation:jakarta.validation-api",
             },
         )
 

@@ -1312,20 +1312,27 @@ def _patch_constraint_violation_override(
     if match is None:
         return text, None
     old_signature = " ".join(match.group("signature").strip().split()) + match.group("type") + match.group("suffix")
-    replacement_type = "javax.validation.ConstraintViolationException"
-    if match.group("type") == replacement_type:
+    original_type = match.group("type")
+    updated = text
+    if original_type == "jakarta.validation.ConstraintViolationException":
         return text, None
-    updated = (
-        text[: match.start("type")]
-        + replacement_type
-        + text[match.end("type") :]
-    )
-    if "import jakarta.validation.ConstraintViolationException;" in updated:
-        updated = updated.replace(
-            "import jakarta.validation.ConstraintViolationException;",
+    if original_type == "javax.validation.ConstraintViolationException":
+        updated = (
+            text[: match.start("type")]
+            + "jakarta.validation.ConstraintViolationException"
+            + text[match.end("type") :]
+        )
+    elif (
+        original_type == "ConstraintViolationException"
+        and "import javax.validation.ConstraintViolationException;" in text
+    ):
+        updated = text.replace(
             "import javax.validation.ConstraintViolationException;",
+            "import jakarta.validation.ConstraintViolationException;",
             1,
         )
+    else:
+        return text, None
     new_match = SPRING6_CONSTRAINT_OVERRIDE_PATTERN.search(updated)
     new_signature = old_signature
     if new_match is not None:

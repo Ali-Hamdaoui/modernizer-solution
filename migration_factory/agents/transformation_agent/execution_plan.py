@@ -23,6 +23,7 @@ TRANSFORMATION_PLAN_SCHEMA_VERSION = "1.3"
 TRANSFORMATION_DIR_NAME = "transformation"
 TRANSFORMATION_EXECUTION_PLAN = "transformation_execution_plan.yaml"
 DEFAULT_AZURE_MESSAGING_SERVICEBUS_VERSION = "7.17.16"
+DEFAULT_PROBLEM_SPRING_WEB_VERSION = "0.29.1"
 
 
 class TransformationExecutionPlanError(ValueError):
@@ -102,6 +103,11 @@ def _build_transformer_plan(
     framework_versions = _mapping_of_strings(migration_plan.get("framework_versions"))
     validation_signals = _detected_validation_usage(app_path, analysis_report, dependency_graph)
     mockito_signals = _detected_mockito_test_usage(app_path, analysis_report, dependency_graph)
+    problem_spring_signals = _detected_problem_spring_usage(
+        app_path,
+        analysis_report,
+        dependency_graph,
+    )
     legacy_azure_servicebus_signals = _detected_legacy_azure_servicebus_usage(
         app_path,
         analysis_report,
@@ -144,6 +150,7 @@ def _build_transformer_plan(
                 framework_versions=framework_versions,
                 validation_signals=validation_signals,
                 mockito_signals=mockito_signals,
+                problem_spring_signals=problem_spring_signals,
                 legacy_azure_servicebus_signals=legacy_azure_servicebus_signals,
             )
             for unit in units
@@ -161,6 +168,7 @@ def _adapt_unit(
     framework_versions: dict[str, str],
     validation_signals: list[str],
     mockito_signals: list[str],
+    problem_spring_signals: list[str],
     legacy_azure_servicebus_signals: list[str],
 ) -> dict[str, Any]:
     if not isinstance(raw_unit, dict):
@@ -192,6 +200,7 @@ def _adapt_unit(
             framework_versions,
             validation_signals,
             mockito_signals,
+            problem_spring_signals,
             legacy_azure_servicebus_signals,
         )
     )
@@ -485,6 +494,7 @@ def _deterministic_source_transformations(
     framework_versions: dict[str, str],
     validation_signals: list[str],
     mockito_signals: list[str],
+    problem_spring_signals: list[str],
     legacy_azure_servicebus_signals: list[str],
 ) -> list[dict[str, Any]]:
     if not isinstance(raw_unit, dict):
@@ -582,6 +592,10 @@ def _deterministic_source_transformations(
             framework_versions.get("azure_messaging_servicebus")
             or DEFAULT_AZURE_MESSAGING_SERVICEBUS_VERSION
         )
+        problem_spring_web_version = (
+            framework_versions.get("problem_spring_web")
+            or DEFAULT_PROBLEM_SPRING_WEB_VERSION
+        )
         operations: list[dict[str, Any]] = []
         if jackson_version:
             jackson_operation: dict[str, Any] = {
@@ -649,6 +663,15 @@ def _deterministic_source_transformations(
         if compiler_plugin_version:
             compiler_operation["plugin_version"] = compiler_plugin_version
         operations.append(compiler_operation)
+        if problem_spring_signals:
+            operations.append(
+                {
+                    "op": "ensure_dependency",
+                    "group_id": "org.zalando",
+                    "artifact_id": "problem-spring-web",
+                    "version": problem_spring_web_version,
+                }
+            )
         if legacy_azure_servicebus_signals:
             operations.append(
                 {
@@ -848,6 +871,66 @@ def _detected_mockito_test_usage(
                 or "PowerMockito" in text
                 or "PowerMockRunner" in text
             ):
+                add(java_file.relative_to(app_path).as_posix())
+
+    return signals
+
+
+def _detected_problem_spring_usage(
+    app_path: Path,
+    analysis_report: dict[str, Any] | None,
+    dependency_graph: dict[str, Any] | None,
+) -> list[str]:
+    signals: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            signals.append(text)
+
+    report = analysis_report if isinstance(analysis_report, dict) else {}
+    for key in ("imports", "java_imports", "detected_imports"):
+        value = report.get(key)
+        if isinstance(value, list):
+            for item in value:
+                token = str(item).strip()
+                if token.startswith("org.zalando.problem"):
+                    add(token)
+
+    project_metadata = report.get("project_metadata")
+    if isinstance(project_metadata, dict):
+        imports = project_metadata.get("imports")
+        if isinstance(imports, list):
+            for item in imports:
+                token = str(item).strip()
+                if token.startswith("org.zalando.problem"):
+                    add(token)
+
+    dependencies = report.get("dependencies")
+    if isinstance(dependencies, list):
+        for item in dependencies:
+            if not isinstance(item, dict):
+                continue
+            group_id = str(item.get("groupId") or item.get("group_id") or "").strip()
+            artifact_id = str(item.get("artifactId") or item.get("artifact_id") or "").strip()
+            if group_id == "org.zalando" and artifact_id.startswith("problem"):
+                add(f"{group_id}:{artifact_id}")
+
+    if isinstance(dependency_graph, dict):
+        for name in sorted(_collect_dependency_names(dependency_graph.get("root"))):
+            if name.startswith("org.zalando:problem"):
+                add(name)
+
+    src_root = app_path / "src"
+    if src_root.is_dir():
+        for java_file in src_root.rglob("*.java"):
+            try:
+                text = java_file.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                text = java_file.read_text(encoding="latin-1")
+            if "org.zalando.problem" in text:
                 add(java_file.relative_to(app_path).as_posix())
 
     return signals

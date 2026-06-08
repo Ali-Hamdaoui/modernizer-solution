@@ -950,6 +950,74 @@ units:
 
             self.assertEqual(ensure_dependency["version"], "7.18.0")
 
+    def test_execution_plan_adapter_aligns_problem_spring_web_when_problem_usage_detected(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True, exist_ok=True)
+            (source / "Advice.java").write_text(
+                """package com.example;
+
+import org.zalando.problem.Problem;
+
+class Advice {
+    Problem problem;
+}
+""",
+                encoding="utf-8",
+            )
+            _write_approved_run_artifacts(
+                app,
+                run_id,
+                include_rewrite_plan=False,
+                planning_units_yaml="""
+schema_version: "1.0.0"
+run_id: "run-1"
+status: "PASS"
+artifact_refs:
+  self: "migration_units.yaml"
+units:
+  - id: "spring-boot-3-5-14"
+    goal: "Upgrade Spring Boot."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: true
+    required: "yes"
+    java_home_env: "JAVA_HOME_21"
+    hop_id: "boot-2.7-to-3.5-java21"
+    expected_artifacts: ["target/classes"]
+""",
+                framework_versions_payload={
+                    "jackson": "2.21.2",
+                    "jackson_annotations": "2.21",
+                    "jjwt": "0.13.0",
+                    "juneau": "9.0.0",
+                    "thymeleaf": "3.1.3.RELEASE",
+                    "jakarta_validation_api": "3.0.2",
+                    "slf4j_api": "2.0.17",
+                    "spring_security": "6.5.10",
+                    "problem_spring_web": "0.29.1",
+                },
+                tooling_versions_payload={
+                    "maven_compiler_plugin": "3.14.1",
+                },
+            )
+
+            output_path = write_transformation_execution_plan(app, run_id)
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+            maven_patch = payload["migration_units"][0]["transformations"][0]
+
+            self.assertIn(
+                {
+                    "op": "ensure_dependency",
+                    "group_id": "org.zalando",
+                    "artifact_id": "problem-spring-web",
+                    "version": "0.29.1",
+                },
+                maven_patch["operations"],
+            )
+
     def test_write_transformation_execution_plan_adds_thymeleaf_alignment_for_boot35_unit(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"
@@ -1096,7 +1164,39 @@ public class Advice extends ResponseEntityExceptionHandler {
             self.assertIn("return super.handleExceptionInternal(ex, body, headers, status, request);", after)
             self.assertNotEqual(before, after)
 
-    def test_patch_spring6_exception_handler_override_updates_constraint_violation_type(self) -> None:
+    def test_patch_spring6_exception_handler_override_updates_constraint_violation_import_to_jakarta(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "Advice.java"
+            java_file.write_text(
+                """package com.example;
+
+import javax.validation.ConstraintViolationException;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.context.request.NativeWebRequest;
+import org.zalando.problem.Problem;
+
+public class Advice {
+    @Override
+    public ResponseEntity<Problem> handleConstraintViolation(final ConstraintViolationException exception, final NativeWebRequest request) {
+        return null;
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_spring6_exception_handler_override_signatures(app, unit_id="spring-boot-3-5-14")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("import jakarta.validation.ConstraintViolationException;", after)
+            self.assertIn("@Override", after)
+            self.assertIn("handleConstraintViolation(final ConstraintViolationException exception", after)
+
+    def test_patch_spring6_exception_handler_override_leaves_jakarta_constraint_violation_type_unchanged(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"
             source = app / "src" / "main" / "java" / "com" / "example"
@@ -1121,12 +1221,8 @@ public class Advice {
             )
 
             patches = patch_spring6_exception_handler_override_signatures(app, unit_id="spring-boot-3-5-14")
-            after = java_file.read_text(encoding="utf-8")
 
-            self.assertEqual(len(patches), 1)
-            self.assertIn("import javax.validation.ConstraintViolationException;", after)
-            self.assertIn("@Override", after)
-            self.assertIn("handleConstraintViolation(final javax.validation.ConstraintViolationException exception", after)
+            self.assertEqual(patches, [])
 
     def test_patch_spring6_exception_handler_override_is_noop_for_unrelated_class(self) -> None:
         with workspace_temp_dir() as tmp:
