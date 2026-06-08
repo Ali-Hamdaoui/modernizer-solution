@@ -73,6 +73,7 @@ def test_boot21_profile_loads_successfully() -> None:
     assert loaded.profile["framework_versions"]["jakarta_validation_api"] == "3.0.2"
     assert loaded.profile["framework_versions"]["slf4j_api"] == "2.0.17"
     assert loaded.profile["framework_versions"]["spring_security"] == "6.5.10"
+    assert loaded.profile["framework_versions"]["azure_messaging_servicebus"] == "7.17.16"
 
 
 def test_boot21_profile_passes_schema_validation() -> None:
@@ -139,6 +140,7 @@ def test_boot21_profile_planning_includes_selected_route_and_warning(tmp_path: P
         "jakarta_validation_api": "3.0.2",
         "slf4j_api": "2.0.17",
         "spring_security": "6.5.10",
+        "azure_messaging_servicebus": "7.17.16",
     }
     assert [hop["id"] for hop in plan_payload["selected_hops"]] == [
         "boot-2.1-to-2.7-java11",

@@ -22,6 +22,7 @@ from .rewrite import (
 TRANSFORMATION_PLAN_SCHEMA_VERSION = "1.3"
 TRANSFORMATION_DIR_NAME = "transformation"
 TRANSFORMATION_EXECUTION_PLAN = "transformation_execution_plan.yaml"
+DEFAULT_AZURE_MESSAGING_SERVICEBUS_VERSION = "7.17.16"
 
 
 class TransformationExecutionPlanError(ValueError):
@@ -511,6 +512,10 @@ def _deterministic_source_transformations(
         lombok_version = tooling_versions.get("lombok")
         jacoco_version = tooling_versions.get("jacoco")
         compiler_plugin_version = tooling_versions.get("maven_compiler_plugin")
+        azure_servicebus_version = (
+            framework_versions.get("azure_messaging_servicebus")
+            or DEFAULT_AZURE_MESSAGING_SERVICEBUS_VERSION
+        )
         operations: list[dict[str, Any]] = []
         if lombok_version:
             operations.append(
@@ -531,6 +536,15 @@ def _deterministic_source_transformations(
             if compiler_plugin_version:
                 compiler_operation["plugin_version"] = compiler_plugin_version
             operations.append(compiler_operation)
+            if legacy_azure_servicebus_signals:
+                operations.append(
+                    {
+                        "op": "ensure_dependency",
+                        "group_id": "com.azure",
+                        "artifact_id": "azure-messaging-servicebus",
+                        "version": azure_servicebus_version,
+                    }
+                )
         transformations: list[dict[str, Any]] = []
         if operations:
             transformations.append(
@@ -551,6 +565,10 @@ def _deterministic_source_transformations(
         juneau_version = framework_versions.get("juneau")
         thymeleaf_version = framework_versions.get("thymeleaf")
         compiler_plugin_version = tooling_versions.get("maven_compiler_plugin")
+        azure_servicebus_version = (
+            framework_versions.get("azure_messaging_servicebus")
+            or DEFAULT_AZURE_MESSAGING_SERVICEBUS_VERSION
+        )
         operations: list[dict[str, Any]] = []
         if jackson_version:
             jackson_operation: dict[str, Any] = {
@@ -618,6 +636,15 @@ def _deterministic_source_transformations(
         if compiler_plugin_version:
             compiler_operation["plugin_version"] = compiler_plugin_version
         operations.append(compiler_operation)
+        if legacy_azure_servicebus_signals:
+            operations.append(
+                {
+                    "op": "ensure_dependency",
+                    "group_id": "com.azure",
+                    "artifact_id": "azure-messaging-servicebus",
+                    "version": azure_servicebus_version,
+                }
+            )
         transformations = [
             {
                 "type": "maven_pom_patch",

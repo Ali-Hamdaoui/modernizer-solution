@@ -807,12 +807,87 @@ units:
             payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
             transformations = payload["migration_units"][0]["transformations"]
             transformation_types = [item["type"] for item in transformations]
+            maven_patch = transformations[0]
 
             self.assertIn("azure_servicebus_legacy_to_modern", transformation_types)
             self.assertLess(
                 transformation_types.index("azure_servicebus_legacy_to_modern"),
                 transformation_types.index("azure_sdk_migration_playbook_gate"),
             )
+            self.assertEqual(maven_patch["type"], "maven_pom_patch")
+            self.assertIn(
+                {
+                    "op": "ensure_dependency",
+                    "group_id": "com.azure",
+                    "artifact_id": "azure-messaging-servicebus",
+                    "version": "7.17.16",
+                },
+                maven_patch["operations"],
+            )
+
+    def test_execution_plan_adapter_uses_profile_version_for_azure_servicebus_dependency(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True, exist_ok=True)
+            (source / "AzureBusTopicTest.java").write_text(
+                """package com.example;
+
+import com.microsoft.azure.servicebus.TopicClient;
+
+class AzureBusTopicTest {
+    TopicClient client;
+}
+""",
+                encoding="utf-8",
+            )
+            _write_approved_run_artifacts(
+                app,
+                run_id,
+                include_rewrite_plan=False,
+                planning_units_yaml="""
+schema_version: "1.0.0"
+run_id: "run-1"
+status: "PASS"
+artifact_refs:
+  self: "migration_units.yaml"
+units:
+  - id: "spring-boot-3-5-14"
+    goal: "Upgrade Spring Boot."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: true
+    required: "yes"
+    java_home_env: "JAVA_HOME_21"
+    hop_id: "boot-2.7-to-3.5-java21"
+    expected_artifacts: ["target/classes"]
+""",
+                framework_versions_payload={
+                    "jackson": "2.21.2",
+                    "jackson_annotations": "2.21",
+                    "jjwt": "0.13.0",
+                    "juneau": "9.0.0",
+                    "thymeleaf": "3.1.3.RELEASE",
+                    "slf4j_api": "2.0.17",
+                    "spring_security": "6.5.10",
+                    "azure_messaging_servicebus": "7.18.0",
+                },
+                tooling_versions_payload={
+                    "maven_compiler_plugin": "3.14.1",
+                },
+            )
+
+            output_path = write_transformation_execution_plan(app, run_id)
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+            maven_patch = payload["migration_units"][0]["transformations"][0]
+            ensure_dependency = next(
+                operation
+                for operation in maven_patch["operations"]
+                if operation["op"] == "ensure_dependency"
+            )
+
+            self.assertEqual(ensure_dependency["version"], "7.18.0")
 
     def test_write_transformation_execution_plan_adds_thymeleaf_alignment_for_boot35_unit(self) -> None:
         with workspace_temp_dir() as tmp:

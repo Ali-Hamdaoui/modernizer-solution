@@ -234,6 +234,7 @@ def _apply_operation(
     handlers = {
         "update_property": _update_property,
         "add_property_if_missing": _add_property_if_missing,
+        "ensure_dependency": _ensure_dependency,
         "update_dependency_version": _update_dependency_version,
         "replace_dependency": _replace_dependency,
         "remove_dependency_if_version_matches": _remove_dependency_if_version_matches,
@@ -319,6 +320,60 @@ def _add_property_if_missing(
         op="add_property_if_missing",
         status="added",
         details={"name": name, "value": value},
+    )
+
+
+def _ensure_dependency(
+    root: ET.Element,
+    namespace: str,
+    operation: Mapping[str, Any],
+) -> MavenPomPatchOperationResult:
+    group_id = _required_text(operation, "group_id")
+    artifact_id = _required_text(operation, "artifact_id")
+    version = _required_text(operation, "version")
+    scope = str(operation.get("scope") or "").strip()
+    dependency_type = str(operation.get("type") or "").strip()
+
+    dependencies = _dependencies_section(root, namespace)
+    existing = _find_dependency_in_parent(dependencies, namespace, group_id, artifact_id)
+    if existing is None:
+        existing = ET.SubElement(dependencies, _tag(namespace, "dependency"))
+        _set_child_text(existing, namespace, "groupId", group_id)
+        _set_child_text(existing, namespace, "artifactId", artifact_id)
+        _set_child_text(existing, namespace, "version", version)
+        if dependency_type:
+            _set_child_text(existing, namespace, "type", dependency_type)
+        if scope:
+            _set_child_text(existing, namespace, "scope", scope)
+        return MavenPomPatchOperationResult(
+            op="ensure_dependency",
+            status="added",
+            details={
+                "group_id": group_id,
+                "artifact_id": artifact_id,
+                "version": version,
+                "scope": scope or None,
+                "type": dependency_type or None,
+                "dependency_present": f"{group_id}:{artifact_id}",
+            },
+        )
+
+    changed = _set_child_text(existing, namespace, "version", version)
+    if dependency_type:
+        changed |= _set_child_text(existing, namespace, "type", dependency_type)
+    if scope:
+        changed |= _set_child_text(existing, namespace, "scope", scope)
+    return MavenPomPatchOperationResult(
+        op="ensure_dependency",
+        status="updated" if changed else "no_change",
+        details={
+            "group_id": group_id,
+            "artifact_id": artifact_id,
+            "version": version,
+            "scope": scope or None,
+            "type": dependency_type or None,
+            "dependency_present": f"{group_id}:{artifact_id}",
+        },
     )
 
 

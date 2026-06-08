@@ -195,6 +195,60 @@ class MavenPomPatcherTests(unittest.TestCase):
             self.assertIn("<artifactId>spring-boot-dependencies</artifactId>", pom_text)
             self.assertIn("<scope>import</scope>", pom_text)
 
+    def test_ensure_dependency_adds_azure_servicebus_when_missing(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(tmp, POM_TEMPLATE)
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="spring-boot-3-5-14",
+                operations=[
+                    {
+                        "op": "ensure_dependency",
+                        "group_id": "com.azure",
+                        "artifact_id": "azure-messaging-servicebus",
+                        "version": "7.17.16",
+                    }
+                ],
+            )
+
+            self.assertEqual(result.operations_applied[0]["status"], "added")
+            pom_text = _pom_text(project)
+            self.assertIn("<groupId>com.azure</groupId>", pom_text)
+            self.assertIn("<artifactId>azure-messaging-servicebus</artifactId>", pom_text)
+            self.assertIn("<version>7.17.16</version>", pom_text)
+
+    def test_ensure_dependency_does_not_duplicate_when_already_present(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(
+                tmp,
+                """<project>
+  <dependencies>
+    <dependency>
+      <groupId>com.azure</groupId>
+      <artifactId>azure-messaging-servicebus</artifactId>
+      <version>7.17.16</version>
+    </dependency>
+  </dependencies>
+</project>""",
+            )
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="spring-boot-3-5-14",
+                operations=[
+                    {
+                        "op": "ensure_dependency",
+                        "group_id": "com.azure",
+                        "artifact_id": "azure-messaging-servicebus",
+                        "version": "7.17.16",
+                    }
+                ],
+            )
+
+            self.assertEqual(result.operations_applied[0]["status"], "no_change")
+            self.assertEqual(_pom_text(project).count("<artifactId>azure-messaging-servicebus</artifactId>"), 1)
+
     def test_remove_duplicate_dependencies(self) -> None:
         with workspace_temp_dir() as tmp:
             project = _write_project(

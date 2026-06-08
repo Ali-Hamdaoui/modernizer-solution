@@ -19,6 +19,7 @@ framework_versions:
   jakarta_validation_api: "3.0.2"
   slf4j_api: "2.0.17"
   spring_security: "6.5.10"
+  azure_messaging_servicebus: "7.17.16"
 source:
   java:
     allowed_versions:
