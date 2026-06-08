@@ -1224,6 +1224,75 @@ public class Advice {
 
             self.assertEqual(patches, [])
 
+    def test_patch_spring6_exception_handler_override_removes_stale_problem_security_override_before_exceptionhandler(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "Advice.java"
+            java_file.write_text(
+                """package com.example;
+
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.AuthenticationException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.context.request.NativeWebRequest;
+import org.zalando.problem.Problem;
+
+public class Advice {
+    @Override
+    @ExceptionHandler(AuthenticationException.class)
+    public ResponseEntity<Problem> handleAuthentication(final AuthenticationException e, final NativeWebRequest request) {
+        return null;
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_spring6_exception_handler_override_signatures(app, unit_id="spring-boot-3-5-14")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertNotIn("@Override", after)
+            self.assertIn("@ExceptionHandler(AuthenticationException.class)", after)
+            self.assertIn("handleAuthentication(final AuthenticationException e", after)
+
+    def test_patch_spring6_exception_handler_override_removes_stale_problem_security_override_after_exceptionhandler(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "Advice.java"
+            java_file.write_text(
+                """package com.example;
+
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.context.request.NativeWebRequest;
+import org.zalando.problem.Problem;
+
+public class Advice {
+    @ExceptionHandler(AccessDeniedException.class)
+    @Override
+    public ResponseEntity<Problem> handleAccessDenied(final AccessDeniedException e,
+            final NativeWebRequest request) {
+        return null;
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_spring6_exception_handler_override_signatures(app, unit_id="spring-boot-3-5-14")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertNotIn("@Override", after)
+            self.assertIn("@ExceptionHandler(AccessDeniedException.class)", after)
+            self.assertIn("handleAccessDenied(final AccessDeniedException e", after)
+
     def test_patch_spring6_exception_handler_override_is_noop_for_unrelated_class(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"

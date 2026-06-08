@@ -142,6 +142,10 @@ SPRING6_CONSTRAINT_OVERRIDE_PATTERN = re.compile(
     r"(?P<suffix>\s+exception\s*,\s*final\s+NativeWebRequest\s+request\s*\))",
     re.DOTALL,
 )
+SPRING6_STALE_PROBLEM_SECURITY_OVERRIDE_METHODS = (
+    "handleAuthentication(",
+    "handleAccessDenied(",
+)
 
 
 def patch_maven_enforcer_java_version(
@@ -448,6 +452,10 @@ def patch_spring6_exception_handler_override_signatures(
             updated, patch = _patch_httpstatus_override(updated, relative_path, unit_id)
             if patch is not None:
                 local_patches.append(patch)
+
+        if "@Override" in updated and "@ExceptionHandler" in updated:
+            updated, override_patches = _patch_stale_problem_security_overrides(updated, relative_path, unit_id)
+            local_patches.extend(override_patches)
 
         if updated == text:
             continue
@@ -1384,3 +1392,88 @@ def _patch_httpstatus_override(
         old_signature=old_signature,
         new_signature=new_signature,
     )
+
+
+def _patch_stale_problem_security_overrides(
+    text: str,
+    relative_path: Path,
+    unit_id: str,
+) -> tuple[str, list[SourcePatch]]:
+    lines = text.splitlines(keepends=True)
+    remove_indexes: set[int] = set()
+    patches: list[SourcePatch] = []
+
+    def next_nonempty(index: int) -> int | None:
+        cursor = index
+        while cursor < len(lines):
+            if lines[cursor].strip():
+                return cursor
+            cursor += 1
+        return None
+
+    def stale_signature(index: int | None) -> bool:
+        if index is None:
+            return False
+        line = lines[index]
+        return any(marker in line for marker in SPRING6_STALE_PROBLEM_SECURITY_OVERRIDE_METHODS)
+
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "@Override":
+            if index in remove_indexes:
+                continue
+            next_index = next_nonempty(index + 1)
+            if next_index is None:
+                continue
+            if lines[next_index].strip().startswith("@ExceptionHandler"):
+                signature_index = next_nonempty(next_index + 1)
+                if stale_signature(signature_index):
+                    remove_indexes.add(index)
+                    signature = lines[signature_index].strip() if signature_index is not None else ""
+                    patches.append(
+                        SourcePatch(
+                            file=str(relative_path),
+                            patch="spring6_exception_handler_override_alignment",
+                            unit=unit_id,
+                            old_signature=f"@Override {signature}".strip(),
+                            new_signature=signature,
+                        )
+                    )
+            elif stale_signature(next_index):
+                remove_indexes.add(index)
+                signature = lines[next_index].strip()
+                patches.append(
+                    SourcePatch(
+                        file=str(relative_path),
+                        patch="spring6_exception_handler_override_alignment",
+                        unit=unit_id,
+                        old_signature=f"@Override {signature}".strip(),
+                        new_signature=signature,
+                    )
+                )
+        elif stripped.startswith("@ExceptionHandler"):
+            next_index = next_nonempty(index + 1)
+            if next_index is None or lines[next_index].strip() != "@Override":
+                continue
+            if next_index in remove_indexes:
+                continue
+            signature_index = next_nonempty(next_index + 1)
+            if not stale_signature(signature_index):
+                continue
+            remove_indexes.add(next_index)
+            signature = lines[signature_index].strip() if signature_index is not None else ""
+            patches.append(
+                SourcePatch(
+                    file=str(relative_path),
+                    patch="spring6_exception_handler_override_alignment",
+                    unit=unit_id,
+                    old_signature=f"@Override {signature}".strip(),
+                    new_signature=signature,
+                )
+            )
+
+    if not remove_indexes:
+        return text, []
+
+    updated = "".join(line for idx, line in enumerate(lines) if idx not in remove_indexes)
+    return updated, patches
