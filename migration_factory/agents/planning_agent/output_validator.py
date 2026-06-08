@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 from migration_factory.agents.planning_agent.paths import get_run_planning_dir
+from migration_factory.agents.planning_agent.unit_builder import ROUTE_UNIT_ORDERS
 from migration_factory.contracts.schema_validation import validate_against_schema
 from migration_factory.contracts.constants import APPROVAL_DECISION_VALUES
 
@@ -37,28 +38,6 @@ REQUIRED_UNIT_ORDER: tuple[str, ...] = (
     "dependency-cleanup",
     "existing-test-migration",
 )
-ALLOWED_UNIT_ORDERS: tuple[tuple[str, ...], ...] = (
-    REQUIRED_UNIT_ORDER,
-    (
-        "baseline",
-        "java-21",
-        "spring-boot-4-0",
-        "jakarta",
-        "dependency-cleanup",
-        "existing-test-migration",
-    ),
-    (
-        "baseline",
-        "spring-boot-2-7-stabilization",
-        "java-17",
-        "spring-boot-3-5-14",
-        "jakarta",
-        "jaxb-jakarta",
-        "dependency-cleanup",
-        "contract-compatibility-review",
-        "existing-test-migration",
-    ),
-)
 APPROVAL_OPTIONS = APPROVAL_DECISION_VALUES
 
 
@@ -67,6 +46,28 @@ class PlanValidationResult:
     status: str
     reasons: tuple[str, ...]
     report_path: Path
+
+
+def _allowed_unit_orders() -> tuple[tuple[str, ...], ...]:
+    seen: set[tuple[str, ...]] = set()
+    allowed: list[tuple[str, ...]] = []
+    for order in (
+        REQUIRED_UNIT_ORDER,
+        (
+            "baseline",
+            "java-21",
+            "spring-boot-4-0",
+            "jakarta",
+            "dependency-cleanup",
+            "existing-test-migration",
+        ),
+        *ROUTE_UNIT_ORDERS.values(),
+    ):
+        if order in seen:
+            continue
+        seen.add(order)
+        allowed.append(order)
+    return tuple(allowed)
 
 
 def validate_planning_outputs(modernized_app_path: str, run_id: str) -> PlanValidationResult:
@@ -187,7 +188,7 @@ def _validate_units_yaml(path: Path, run_id: str, reasons: list[str]) -> None:
             if "copilot" in str(tool).lower() or "llm" in str(tool).lower():
                 reasons.append(f"units[{idx}].tools contains forbidden token: {tool}")
 
-    if tuple(ordered_ids) not in ALLOWED_UNIT_ORDERS:
+    if tuple(ordered_ids) not in _allowed_unit_orders():
         reasons.append(
             "migration_units.yaml unit order mismatch; expected one supported profile order"
         )

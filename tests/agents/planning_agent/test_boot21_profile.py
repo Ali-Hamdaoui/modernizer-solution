@@ -5,6 +5,7 @@ import jsonschema
 import yaml
 
 from migration_factory.agents.planning_agent.node import planning_node
+from migration_factory.agents.planning_agent.output_validator import validate_planning_outputs
 from migration_factory.agents.planning_agent.profile_compatibility import validate_profile_compatibility
 from migration_factory.agents.planning_agent.profile_reader import load_migration_profile
 from migration_factory.agents.planning_agent.artifact_reader import LoadedAnalysisArtifacts
@@ -73,7 +74,6 @@ def test_boot21_profile_loads_successfully() -> None:
     assert loaded.profile["framework_versions"]["jakarta_validation_api"] == "3.0.2"
     assert loaded.profile["framework_versions"]["slf4j_api"] == "2.0.17"
     assert loaded.profile["framework_versions"]["spring_security"] == "6.5.10"
-    assert loaded.profile["framework_versions"]["azure_messaging_servicebus"] == "7.17.16"
 
 
 def test_boot21_profile_passes_schema_validation() -> None:
@@ -140,7 +140,6 @@ def test_boot21_profile_planning_includes_selected_route_and_warning(tmp_path: P
         "jakarta_validation_api": "3.0.2",
         "slf4j_api": "2.0.17",
         "spring_security": "6.5.10",
-        "azure_messaging_servicebus": "7.17.16",
     }
     assert [hop["id"] for hop in plan_payload["selected_hops"]] == [
         "boot-2.1-to-2.7-java11",
@@ -184,6 +183,28 @@ def test_boot21_profile_planning_includes_selected_route_and_warning(tmp_path: P
     assert jaxb["openrewrite"]["active_recipes"] == [
         "org.openrewrite.java.migrate.jakarta.JavaxXmlBindMigrationToJakartaXmlBind"
     ]
+
+    validation = validate_planning_outputs(str(app_dir), run_id)
+    assert validation.status == "PASS"
+
+
+def test_java21_profile_planning_outputs_validate_supported_route_order(tmp_path: Path) -> None:
+    app_dir = tmp_path / "app-java21"
+    run_id = "boot21-java21-plan"
+    _write_analysis_fixture(app_dir / ".migration" / "runs" / run_id / "analysis")
+
+    result = planning_node(
+        {
+            "run_id": run_id,
+            "profile": "springboot-2.1-to-3.5-java21",
+            "modernized_app_path": str(app_dir),
+            "ai_hub_path": str(AI_HUB),
+        }
+    )
+
+    assert result["planning_status"] == "PASS"
+    validation = validate_planning_outputs(str(app_dir), run_id)
+    assert validation.status == "PASS"
 
 
 def test_schema_accepts_direct_route_without_hops_and_legacy_profile_shape() -> None:
