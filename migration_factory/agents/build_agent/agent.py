@@ -512,7 +512,10 @@ def _cross_major_fallback_warning(
     if current_path != java_home_path:
         return None
     required_major = _target_java_for_unit(validation_unit_id) or 11
-    version_result = _run_version_command(["java", "-version"], env=_build_command_env(java_home))
+    version_result = _run_version_command(
+        _java_version_command(_build_command_env(java_home)),
+        env=_build_command_env(java_home),
+    )
     version_text = "\n".join([*version_result.stderr, *version_result.stdout])
     current_major = _parse_java_major(version_text)
     if current_major is None or current_major <= required_major:
@@ -558,7 +561,7 @@ def _target_environment_gate(
     target_java = _target_java_for_unit(validation_unit_id)
     boot4 = "spring-boot-4-0" in validation_unit_id
     if target_java is not None and target_java >= 21:
-        java_result = _run_version_command(["java", "-version"], env=env)
+        java_result = _run_version_command(_java_version_command(env), env=env)
         java_major = _parse_java_major("\n".join([*java_result.stderr, *java_result.stdout]))
         if java_result.exit_code != 0 or java_major is None:
             return BuildEnvironmentGateFailure(f"Java runtime version check failed for target Java {target_java}.")
@@ -644,6 +647,15 @@ def _run_version_command(command: list[str], env: dict[str, str] | None = None) 
         completed.stdout.splitlines(),
         completed.stderr.splitlines(),
     )
+
+
+def _java_version_command(env: dict[str, str] | None = None) -> list[str]:
+    java_home = str((env or {}).get("JAVA_HOME") or "").strip()
+    if java_home:
+        java_bin = Path(java_home) / "bin" / ("java.exe" if os.name == "nt" else "java")
+        if java_bin.is_file():
+            return [str(java_bin), "-version"]
+    return ["java", "-version"]
 
 
 def _parse_java_major(output: str) -> int | None:

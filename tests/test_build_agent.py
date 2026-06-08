@@ -755,6 +755,57 @@ public class Application {
             self.assertIn("incompatible with target Java 21", result.message)
             run_process.assert_not_called()
 
+    def test_java21_validation_uses_selected_java_home_binary_for_runtime_gate(self) -> None:
+        with workspace_temp_dir() as project:
+            _write_multi_module_project(project)
+            selected_java_home = project / "jdk21"
+            selected_java_bin = selected_java_home / "bin" / ("java.exe" if os.name == "nt" else "java")
+            selected_java_bin.parent.mkdir(parents=True)
+            selected_java_bin.write_text("", encoding="utf-8")
+            observed_commands: list[list[str]] = []
+
+            def version_side_effect(command, env=None):
+                observed_commands.append(command)
+                if command[0] == str(selected_java_bin):
+                    return ProcessRunResult(
+                        classification=BuildClassification(BuildResultKind.SUCCESS, "version checked"),
+                        exit_code=0,
+                        stderr=['openjdk version "21.0.2"'],
+                    )
+                return ProcessRunResult(
+                    classification=BuildClassification(BuildResultKind.SUCCESS, "version checked"),
+                    exit_code=0,
+                    stderr=['openjdk version "17.0.12"'],
+                )
+
+            with patch.dict(
+                os.environ,
+                {"JAVA_HOME": str(project / "jdk17"), "JAVA_HOME_21": str(selected_java_home)},
+                clear=False,
+            ):
+                with patch(
+                    "migration_factory.agents.build_agent.agent._run_version_command",
+                    side_effect=version_side_effect,
+                ):
+                    with patch("migration_factory.agents.build_agent.agent.run_until_exit") as run_process:
+                        run_process.return_value = ProcessRunResult(
+                            classification=BuildClassification(BuildResultKind.SUCCESS, "build ok"),
+                            exit_code=0,
+                            stdout=["BUILD SUCCESS"],
+                        )
+                        result = run_build_agent(
+                            project / "shoppoc-app",
+                            stream_output=False,
+                            validation_unit_id="java-21",
+                            source_changing_unit=True,
+                            java_home_env="JAVA_HOME_21",
+                            target_jdk_home_env="JAVA_HOME_21",
+                        )
+
+            self.assertTrue(result.succeeded)
+            self.assertEqual(observed_commands[0], [str(selected_java_bin), "-version"])
+            run_process.assert_called_once()
+
     def test_boot4_validation_requires_maven_363_or_newer(self) -> None:
         with workspace_temp_dir() as project:
             _write_multi_module_project(project)
