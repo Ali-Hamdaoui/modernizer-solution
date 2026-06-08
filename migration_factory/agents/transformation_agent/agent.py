@@ -27,6 +27,7 @@ from .pom_patches import (
     patch_batch_config_flat_file_item_reader_constructor,
     patch_jjwt_api_parser_builder_compatibility,
     patch_maven_enforcer_java_version,
+    patch_mockito_final_class_inline_mock_maker,
     patch_mockito_initmocks_to_openmocks,
     patch_test_javax_servlet_imports_to_jakarta,
     patch_junit_assertthat_to_hamcrest_matcherassert,
@@ -497,6 +498,25 @@ def _run_unit(
 
         if transformation_type == "mockito_initmocks_to_openmocks":
             patches = [] if dry_run else patch_mockito_initmocks_to_openmocks(
+                plan.target_path,
+                unit_id=unit.id,
+            )
+            for patch in patches:
+                print(f"unit={patch.unit} patch={patch.patch} file={patch.file}")
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "applied" if patches else "not_applicable",
+                    "patches": [
+                        {"file": patch.file, "patch": patch.patch, "unit": patch.unit}
+                        for patch in patches
+                    ],
+                }
+            )
+            continue
+
+        if transformation_type == "mockito_final_class_inline_mock_maker":
+            patches = [] if dry_run else patch_mockito_final_class_inline_mock_maker(
                 plan.target_path,
                 unit_id=unit.id,
             )

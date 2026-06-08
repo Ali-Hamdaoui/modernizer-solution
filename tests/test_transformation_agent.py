@@ -38,6 +38,7 @@ from migration_factory.agents.transformation_agent.pom_patches import (
     patch_jjwt_api_parser_builder_compatibility,
     patch_junit_assertthat_to_hamcrest_matcherassert,
     patch_maven_enforcer_java_version,
+    patch_mockito_final_class_inline_mock_maker,
     patch_mockito_initmocks_to_openmocks,
     patch_pom_property,
     patch_quality_rules_allow_jakarta,
@@ -696,6 +697,57 @@ units:
             self.assertEqual(transformations[0]["operations"][0], {"op": "align_lombok_version", "version": "1.18.34"})
             self.assertEqual(transformations[0]["operations"][1], {"op": "align_jacoco_version", "version": "0.8.12"})
 
+    def test_execution_plan_adapter_adds_java21_compiler_alignment_and_mockito_inline_support(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            _write_approved_run_artifacts(
+                app,
+                run_id,
+                include_rewrite_plan=False,
+                source_unit_id="java-21",
+                source_unit_goal="Upgrade Java.",
+                planning_units_yaml="""
+schema_version: "1.0.0"
+run_id: "run-1"
+status: "PASS"
+artifact_refs:
+  self: "migration_units.yaml"
+units:
+  - id: "java-21"
+    goal: "Upgrade Java."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: true
+    required: "yes"
+    java_home_env: "JAVA_HOME_21"
+    hop_id: "boot-2.7-to-3.5-java21"
+    expected_artifacts: ["target/classes"]
+""",
+                tooling_versions_payload={
+                    "lombok": "1.18.34",
+                    "jacoco": "0.8.12",
+                    "maven_compiler_plugin": "3.14.1",
+                },
+            )
+
+            output_path = write_transformation_execution_plan(app, run_id)
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+            unit = payload["migration_units"][0]
+            transformations = unit["transformations"]
+
+            self.assertEqual(unit["java_home_env"], "JAVA_HOME_21")
+            self.assertEqual(unit["hop_id"], "boot-2.7-to-3.5-java21")
+            self.assertEqual(transformations[0]["type"], "maven_pom_patch")
+            self.assertEqual(
+                transformations[0]["operations"][2],
+                {
+                    "op": "align_maven_compiler_parameters",
+                    "plugin_version": "3.14.1",
+                },
+            )
+            self.assertEqual(transformations[1]["type"], "mockito_final_class_inline_mock_maker")
+
     def test_write_transformation_execution_plan_adds_thymeleaf_alignment_for_boot35_unit(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"
@@ -1208,6 +1260,110 @@ class AssertTest {
 
             self.assertEqual(patches, [])
             self.assertEqual(java_file.read_text(encoding="utf-8"), original)
+
+    def test_patch_mockito_inline_mock_maker_creates_nested_module_test_resource(self) -> None:
+        with workspace_temp_dir() as tmp:
+            repo = tmp / "repo"
+            module = repo / "common-utils"
+            source = module / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            (module / "pom.xml").write_text(
+                """<project>
+  <dependencies>
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-core</artifactId>
+      <version>5.12.0</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>""",
+                encoding="utf-8",
+            )
+            (source / "ExampleTest.java").write_text(
+                """package com.example;
+
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+
+class ExampleTest {
+    @Mock
+    private Runnable dependency;
+
+    void setUp() {
+        MockitoAnnotations.openMocks(this);
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_mockito_final_class_inline_mock_maker(repo, unit_id="java-21")
+            resource = (
+                module
+                / "src"
+                / "test"
+                / "resources"
+                / "mockito-extensions"
+                / "org.mockito.plugins.MockMaker"
+            )
+
+            self.assertEqual(len(patches), 1)
+            self.assertEqual(
+                patches[0].file,
+                "common-utils/src/test/resources/mockito-extensions/org.mockito.plugins.MockMaker",
+            )
+            self.assertEqual(resource.read_text(encoding="utf-8"), "mock-maker-inline\n")
+
+    def test_patch_mockito_inline_mock_maker_skips_powermock_heavy_tests(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            (app / "pom.xml").write_text(
+                """<project>
+  <dependencies>
+    <dependency>
+      <groupId>org.powermock</groupId>
+      <artifactId>powermock-module-junit4</artifactId>
+      <version>2.0.9</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-core</artifactId>
+      <version>5.12.0</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>""",
+                encoding="utf-8",
+            )
+            (source / "ExampleTest.java").write_text(
+                """package com.example;
+
+import org.junit.runner.RunWith;
+import org.powermock.modules.junit4.PowerMockRunner;
+
+@RunWith(PowerMockRunner.class)
+class ExampleTest {}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_mockito_final_class_inline_mock_maker(app, unit_id="java-21")
+
+            self.assertEqual(patches, [])
+            self.assertFalse(
+                (
+                    app
+                    / "src"
+                    / "test"
+                    / "resources"
+                    / "mockito-extensions"
+                    / "org.mockito.plugins.MockMaker"
+                ).exists()
+            )
 
     def test_patch_jjwt_parser_assignment_adds_build_for_simple_parser_usage(self) -> None:
         with workspace_temp_dir() as tmp:

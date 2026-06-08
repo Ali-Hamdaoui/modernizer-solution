@@ -141,6 +141,48 @@ def test_build_migration_units_for_boot4_java21_profile() -> None:
     assert units[2].goal == "Upgrade Spring Boot dependencies and plugins to 4.0."
 
 
+def test_build_migration_units_route_aware_boot21_java21_sequence() -> None:
+    profile = yaml.safe_load(
+        (
+            Path(__file__).resolve().parents[3]
+            / "modernizer-solution-ai-hub"
+            / "profiles"
+            / "springboot-2.1-to-3.5-java21.yaml"
+        ).read_text(encoding="utf-8")
+    )
+    units = build_migration_units(
+        profile,
+        selected_route_id="boot-2.1-to-3.5-java21",
+        selected_hops=(
+            {"id": "boot-2.1-to-2.7-java11"},
+            {"id": "boot-2.7-to-3.5-java21"},
+        ),
+    )
+
+    assert [unit.id for unit in units] == [
+        "baseline",
+        "spring-boot-2-7-stabilization",
+        "java-21",
+        "spring-boot-3-5-14",
+        "jakarta",
+        "jaxb-jakarta",
+        "dependency-cleanup",
+        "contract-compatibility-review",
+        "existing-test-migration",
+    ]
+    assert next(unit for unit in units if unit.id == "baseline").java_home_env == "JAVA_HOME_11"
+    assert next(unit for unit in units if unit.id == "spring-boot-2-7-stabilization").java_home_env == "JAVA_HOME_11"
+    assert next(unit for unit in units if unit.id == "java-21").java_home_env == "JAVA_HOME_21"
+    assert next(unit for unit in units if unit.id == "java-21").hop_id == "boot-2.7-to-3.5-java21"
+    assert next(unit for unit in units if unit.id == "spring-boot-3-5-14").java_home_env == "JAVA_HOME_21"
+    assert next(unit for unit in units if unit.id == "java-21").openrewrite == {
+        "active_recipes": ("org.openrewrite.java.migrate.UpgradeToJava21",)
+    }
+    assert next(unit for unit in units if unit.id == "spring-boot-3-5-14").openrewrite == {
+        "active_recipes": ("org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5",)
+    }
+
+
 def test_each_unit_has_required_fields_and_assist_policy_separate_from_tools() -> None:
     units = build_migration_units()
 

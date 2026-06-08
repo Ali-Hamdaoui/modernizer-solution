@@ -27,6 +27,25 @@ TEST_JAVAX_SERVLET_IMPORT_PATTERN = re.compile(
 JUNIT_ASSERTTHAT_STATIC_IMPORT = "import static org.junit.Assert.assertThat;"
 HAMCREST_ASSERTTHAT_STATIC_IMPORT = "import static org.hamcrest.MatcherAssert.assertThat;"
 JUNIT_ASSERTTHAT_FQCN_PATTERN = re.compile(r"\borg\.junit\.Assert\.assertThat\s*\(")
+MOCKITO_INLINE_MOCK_MAKER_CONTENT = "mock-maker-inline\n"
+MOCKITO_USAGE_MARKERS: tuple[str, ...] = (
+    "org.mockito",
+    "Mockito.",
+    "@Mock",
+    "@Spy",
+    "@InjectMocks",
+    "@Captor",
+    "MockitoAnnotations.",
+    "@MockBean",
+    "@MockitoBean",
+)
+POWERMOCK_USAGE_MARKERS: tuple[str, ...] = (
+    "org.powermock",
+    "PowerMockito",
+    "PowerMockRunner",
+    "@PrepareForTest",
+    "PrepareForTest(",
+)
 
 
 @dataclass(frozen=True)
@@ -495,6 +514,42 @@ def patch_junit_assertthat_to_hamcrest_matcherassert(
     return patches
 
 
+def patch_mockito_final_class_inline_mock_maker(
+    project_path: Path,
+    *,
+    unit_id: str,
+) -> list[SourcePatch]:
+    root_path = Path(project_path).expanduser().resolve()
+    project_root = _resolve_java_project_root(root_path)
+    if _project_uses_powermock(project_root):
+        return []
+    if not _project_uses_mockito(project_root):
+        return []
+
+    resource_path = (
+        project_root
+        / "src"
+        / "test"
+        / "resources"
+        / "mockito-extensions"
+        / "org.mockito.plugins.MockMaker"
+    )
+    if resource_path.is_file():
+        existing = resource_path.read_text(encoding="utf-8")
+        if existing.strip() == "mock-maker-inline":
+            return []
+
+    resource_path.parent.mkdir(parents=True, exist_ok=True)
+    resource_path.write_text(MOCKITO_INLINE_MOCK_MAKER_CONTENT, encoding="utf-8")
+    return [
+        SourcePatch(
+            file=str(resource_path.relative_to(root_path).as_posix()),
+            patch="mockito_final_class_inline_mock_maker",
+            unit=unit_id,
+        )
+    ]
+
+
 def patch_jjwt_api_parser_builder_compatibility(
     project_path: Path,
     *,
@@ -560,6 +615,43 @@ def _iter_test_java_files(project_path: Path) -> list[Path]:
             continue
         matches.append(path)
     return matches
+
+
+def _resolve_java_project_root(project_path: Path) -> Path:
+    direct_pom = project_path / "pom.xml"
+    if direct_pom.is_file():
+        return project_path
+    try:
+        detected = detect_java_project(project_path)
+    except JavaProjectDetectionError:
+        return project_path
+    return detected.path
+
+
+def _project_uses_mockito(project_root: Path) -> bool:
+    pom_path = project_root / "pom.xml"
+    if pom_path.is_file():
+        pom_text = pom_path.read_text(encoding="utf-8")
+        if "mockito" in pom_text.lower():
+            return True
+    for path in _iter_test_java_files(project_root):
+        text = path.read_text(encoding="utf-8")
+        if any(marker in text for marker in MOCKITO_USAGE_MARKERS):
+            return True
+    return False
+
+
+def _project_uses_powermock(project_root: Path) -> bool:
+    pom_path = project_root / "pom.xml"
+    if pom_path.is_file():
+        pom_text = pom_path.read_text(encoding="utf-8")
+        if "powermock" in pom_text.lower():
+            return True
+    for path in _iter_test_java_files(project_root):
+        text = path.read_text(encoding="utf-8")
+        if any(marker in text for marker in POWERMOCK_USAGE_MARKERS):
+            return True
+    return False
 
 
 def _namespace(tag: str) -> str:

@@ -498,9 +498,10 @@ def _deterministic_source_transformations(
                 ],
             },
         ]
-    if unit_id == "java-17":
+    if unit_id in {"java-17", "java-21"}:
         lombok_version = tooling_versions.get("lombok")
         jacoco_version = tooling_versions.get("jacoco")
+        compiler_plugin_version = tooling_versions.get("maven_compiler_plugin")
         operations: list[dict[str, Any]] = []
         if lombok_version:
             operations.append(
@@ -516,14 +517,22 @@ def _deterministic_source_transformations(
                     "version": jacoco_version,
                 }
             )
-        if not operations:
-            return []
-        return [
-            {
-                "type": "maven_pom_patch",
-                "operations": operations,
-            }
-        ]
+        if unit_id == "java-21":
+            compiler_operation: dict[str, Any] = {"op": "align_maven_compiler_parameters"}
+            if compiler_plugin_version:
+                compiler_operation["plugin_version"] = compiler_plugin_version
+            operations.append(compiler_operation)
+        transformations: list[dict[str, Any]] = []
+        if operations:
+            transformations.append(
+                {
+                    "type": "maven_pom_patch",
+                    "operations": operations,
+                }
+            )
+        if unit_id == "java-21":
+            transformations.append({"type": "mockito_final_class_inline_mock_maker"})
+        return transformations
     if unit_id == "spring-boot-3-5-14":
         jackson_version = framework_versions.get("jackson")
         jackson_annotations_version = framework_versions.get("jackson_annotations")

@@ -28,6 +28,17 @@ ROUTE_UNIT_ORDERS: dict[str, tuple[UnitId, ...]] = {
         "contract-compatibility-review",
         "existing-test-migration",
     ),
+    "boot-2.1-to-3.5-java21": (
+        "baseline",
+        "spring-boot-2-7-stabilization",
+        "java-21",
+        "spring-boot-3-5-14",
+        "jakarta",
+        "jaxb-jakarta",
+        "dependency-cleanup",
+        "contract-compatibility-review",
+        "existing-test-migration",
+    ),
 }
 
 ROUTE_UNIT_OPENREWRITE: dict[str, dict[UnitId, dict[str, Any]]] = {
@@ -44,7 +55,24 @@ ROUTE_UNIT_OPENREWRITE: dict[str, dict[UnitId, dict[str, Any]]] = {
         "jaxb-jakarta": {
             "active_recipes": ("org.openrewrite.java.migrate.jakarta.JavaxXmlBindMigrationToJakartaXmlBind",),
         },
-    }
+    },
+    "boot-2.1-to-3.5-java21": {
+        "spring-boot-2-7-stabilization": {
+            "active_recipes": ("org.openrewrite.java.spring.boot2.UpgradeSpringBoot_2_7",),
+        },
+        "java-21": {
+            "active_recipes": ("org.openrewrite.java.migrate.UpgradeToJava21",),
+        },
+        "spring-boot-3-5-14": {
+            "active_recipes": ("org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5",),
+        },
+        "jakarta": {
+            "active_recipes": ("org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",),
+        },
+        "jaxb-jakarta": {
+            "active_recipes": ("org.openrewrite.java.migrate.jakarta.JavaxXmlBindMigrationToJakartaXmlBind",),
+        },
+    },
 }
 
 # Deterministic tool mapping owned centrally to avoid per-unit drift.
@@ -359,6 +387,19 @@ def _runtime_metadata_for_units(
             "baseline": {"java_home_env": source_env, "hop_id": first_hop},
             "spring-boot-2-7-stabilization": {"java_home_env": source_env, "hop_id": first_hop},
             "java-17": {"java_home_env": target_env, "hop_id": second_hop},
+            "spring-boot-3-5-14": {"java_home_env": target_env, "hop_id": second_hop},
+            "jakarta": {"java_home_env": target_env, "hop_id": second_hop},
+            "jaxb-jakarta": {"java_home_env": target_env, "hop_id": second_hop},
+            "dependency-cleanup": {"java_home_env": target_env, "hop_id": second_hop},
+            "contract-compatibility-review": {"java_home_env": target_env, "hop_id": second_hop},
+            "existing-test-migration": {"java_home_env": target_env, "hop_id": second_hop},
+        }
+        return mapping
+    if selected_route_id == "boot-2.1-to-3.5-java21":
+        mapping = {
+            "baseline": {"java_home_env": source_env, "hop_id": first_hop},
+            "spring-boot-2-7-stabilization": {"java_home_env": source_env, "hop_id": first_hop},
+            "java-21": {"java_home_env": target_env, "hop_id": second_hop},
             "spring-boot-3-5-14": {"java_home_env": target_env, "hop_id": second_hop},
             "jakarta": {"java_home_env": target_env, "hop_id": second_hop},
             "jaxb-jakarta": {"java_home_env": target_env, "hop_id": second_hop},
