@@ -698,9 +698,7 @@ def patch_mockito_final_class_inline_mock_maker(
 ) -> list[SourcePatch]:
     root_path = Path(project_path).expanduser().resolve()
     project_root = _resolve_java_project_root(root_path)
-    if _project_uses_powermock(project_root):
-        return []
-    if not _project_uses_mockito(project_root):
+    if not _project_needs_mockito_inline_mock_maker(project_root):
         return []
 
     resource_path = (
@@ -829,6 +827,30 @@ def _project_uses_powermock(project_root: Path) -> bool:
         if any(marker in text for marker in POWERMOCK_USAGE_MARKERS):
             return True
     return False
+
+
+def _project_needs_mockito_inline_mock_maker(project_root: Path) -> bool:
+    has_mockito_test = False
+    has_powermock_test = False
+    has_non_powermock_mockito_test = False
+
+    for path in _iter_test_java_files(project_root):
+        text = path.read_text(encoding="utf-8")
+        uses_mockito = any(marker in text for marker in MOCKITO_USAGE_MARKERS)
+        uses_powermock = any(marker in text for marker in POWERMOCK_USAGE_MARKERS)
+        if uses_mockito:
+            has_mockito_test = True
+            if not uses_powermock:
+                has_non_powermock_mockito_test = True
+        if uses_powermock:
+            has_powermock_test = True
+
+    if has_non_powermock_mockito_test:
+        return True
+    if has_mockito_test:
+        return not has_powermock_test
+
+    return _project_uses_mockito(project_root) and not _project_uses_powermock(project_root)
 
 
 def _namespace(tag: str) -> str:

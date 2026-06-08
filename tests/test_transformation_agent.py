@@ -1884,6 +1884,76 @@ class ExampleTest {}
                 ).exists()
             )
 
+    def test_patch_mockito_inline_mock_maker_supports_mixed_powermock_and_mockito_suites(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            (app / "pom.xml").write_text(
+                """<project>
+  <dependencies>
+    <dependency>
+      <groupId>org.powermock</groupId>
+      <artifactId>powermock-module-junit4</artifactId>
+      <version>2.0.9</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-core</artifactId>
+      <version>5.12.0</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>""",
+                encoding="utf-8",
+            )
+            (source / "LegacyHarnessTest.java").write_text(
+                """package com.example;
+
+import org.junit.runner.RunWith;
+import org.powermock.modules.junit4.PowerMockRunner;
+
+@RunWith(PowerMockRunner.class)
+class LegacyHarnessTest {}
+""",
+                encoding="utf-8",
+            )
+            (source / "ModernMockitoTest.java").write_text(
+                """package com.example;
+
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+
+class ModernMockitoTest {
+    @Mock
+    private Runnable dependency;
+
+    void setUp() {
+        MockitoAnnotations.openMocks(this);
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_mockito_final_class_inline_mock_maker(app, unit_id="java-21")
+            resource = (
+                app
+                / "src"
+                / "test"
+                / "resources"
+                / "mockito-extensions"
+                / "org.mockito.plugins.MockMaker"
+            )
+
+            self.assertEqual(len(patches), 1)
+            self.assertEqual(
+                patches[0].file,
+                "src/test/resources/mockito-extensions/org.mockito.plugins.MockMaker",
+            )
+            self.assertEqual(resource.read_text(encoding="utf-8"), "mock-maker-inline\n")
+
     def test_patch_azure_servicebus_legacy_to_modern_updates_imports_types_and_send_message(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"
