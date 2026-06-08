@@ -1,6 +1,6 @@
 id: springboot-3.5-java17-to-java21
 kind: openrewrite-catalog
-verification_status: validation-preview-only
+verification_status: sandbox
 plugin:
   group_id: org.openrewrite.maven
   artifact_id: rewrite-maven-plugin
@@ -14,18 +14,13 @@ active_recipes:
 preview_goals:
   - dryRun
   - dryRunNoFork
-forbidden_apply_goals:
-  - run
-  - runNoFork
-  - rewrite:run
-  - rewrite:runNoFork
 defaults:
   export_datatables: true
   fail_on_dry_run_results: false
-dry_run_only: true
-rewrite_run_allowed: false
-code_modification_allowed: false
+apply_goal: runNoFork
+rewrite_run_allowed: true
+code_modification_allowed: true
 notes:
-  - Java 21 is optional runtime validation for Boot 3.5, not a prerequisite for Boot 3.5.
+  - Apply Java 21 upgrade recipes in a sandbox only after the Boot 3.5 / Java 17 stage is green.
   - Do not target Spring Boot 4 from this profile.
 

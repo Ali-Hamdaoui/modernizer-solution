@@ -8,14 +8,14 @@ verification_sources:
 plugin:
   group_id: org.openrewrite.maven
   artifact_id: rewrite-maven-plugin
-  version: "RELEASE"
+  version: "6.40.0"
 recipe_artifacts:
   - group_id: org.openrewrite.recipe
     artifact_id: rewrite-migrate-java
-    version: "RELEASE"
+    version: "3.36.0"
   - group_id: org.openrewrite.recipe
     artifact_id: rewrite-spring
-    version: "RELEASE"
+    version: "6.31.0"
 active_recipes:
   - org.openrewrite.java.migrate.UpgradeToJava21
   - org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0

@@ -73,3 +73,18 @@ def test_readonly_verification_ignores_build_and_cache_paths(tmp_path):
 
     assert verification["status"] == "PASS"
     assert verification["violations"] == []
+
+
+def test_readonly_verification_ignores_openrewrite_patch_artifacts(tmp_path):
+    legacy, modernized, output = _roots(tmp_path)
+    before_legacy = snapshot_tree(legacy)
+    before_modernized = snapshot_tree(modernized)
+
+    (legacy / "rewrite.patch").write_text("diff --git a/pom.xml b/pom.xml\n", encoding="utf-8")
+    (modernized / "rewrite.diff").write_text("diff --git a/src/main/java/App.java b/src/main/java/App.java\n", encoding="utf-8")
+
+    verification = _verify(legacy, modernized, output, before_legacy, before_modernized)
+
+    assert verification["status"] == "PASS"
+    assert verification["source_modified"] is False
+    assert verification["violations"] == []

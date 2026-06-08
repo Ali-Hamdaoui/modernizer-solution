@@ -7,7 +7,10 @@ from migration_factory.orchestrator.preflight import (
     build_langgraph_config,
     validate_preflight,
 )
-from migration_factory.orchestrator.state import build_initial_state
+from migration_factory.orchestrator.state import (
+    FULL_SANDBOX_MIGRATION_MODE,
+    build_initial_state,
+)
 
 
 def _write_profile(ai_hub_path: Path, profile_id: str = "java17") -> None:
@@ -108,3 +111,41 @@ def test_preflight_accepts_valid_input_and_creates_modernized_path(
     validate_preflight(state, build_langgraph_config(state["run_id"]))
 
     assert modernized_app_path.is_dir()
+
+
+def test_preflight_rejects_full_sandbox_for_dry_run_only_profile(tmp_path: Path) -> None:
+    legacy_app_path = tmp_path / "legacy"
+    modernized_app_path = tmp_path / "modernized"
+    ai_hub_path = tmp_path / "ai-hub"
+    legacy_app_path.mkdir()
+    profiles_dir = ai_hub_path / "profiles"
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    (profiles_dir / "java21.yaml").write_text(
+        "\n".join(
+            [
+                "id: java21",
+                "dry_run_only: true",
+                "rules:",
+                "  dry_run_only: true",
+                "openrewrite:",
+                "  apply_allowed: false",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    state = build_initial_state(
+        run_id="run-001",
+        legacy_app_path=str(legacy_app_path),
+        modernized_app_path=str(modernized_app_path),
+        ai_hub_path=str(ai_hub_path),
+        profile_id="java21",
+        mode=FULL_SANDBOX_MIGRATION_MODE,
+    )
+
+    with pytest.raises(
+        PreflightError,
+        match="profile java21 does not support mode full_sandbox_migration; use read_only_assessment instead",
+    ):
+        validate_preflight(state, build_langgraph_config(state["run_id"]))

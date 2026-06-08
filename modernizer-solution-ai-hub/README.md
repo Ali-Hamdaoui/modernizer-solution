@@ -13,7 +13,7 @@ The engine may generate `.migration/ai-hub` content as run support, snapshots, o
 
 ## Current Default Profile
 
-- AI Hub path: `C:\Users\abdelilah.mortaki\Desktop\modernizer-solution\modernizer-solution-ai-hub`
+- AI Hub path: `C:\Users\hamdaoui.ali\modernizer-solution\modernizer-solution-ai-hub`
 - Profile id: `springboot-2.7-to-3.5-java17`
 - Target: Spring Boot `3.5.14`, Spring Framework `6.2.18`, Java `17`
 

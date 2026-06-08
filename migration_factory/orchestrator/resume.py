@@ -14,6 +14,7 @@ from migration_factory.orchestrator.phase_services import record_approval_decisi
 from migration_factory.orchestrator.preflight import build_langgraph_config
 from migration_factory.orchestrator.state import (
     APPROVAL_DECISION_VALUES,
+    FULL_SANDBOX_MIGRATION_MODE,
     apply_copilot_config,
     parse_copilot_config_from_env,
 )
@@ -135,6 +136,8 @@ def _resume_completed(result: dict[str, Any], run_dir: Path) -> bool:
     if not (run_dir / "approval" / "approval_decision.json").is_file():
         return False
     if result.get("approval_decision") == "approved":
+        if result.get("mode") != FULL_SANDBOX_MIGRATION_MODE:
+            return True
         return bool(result.get("transform_status"))
     return True
 
@@ -173,6 +176,9 @@ def _resume_from_interrupt_snapshot(
     recorded = dict(state)
     recorded.update(record_approval_decision_phase(recorded))
     if decision != "approved" or recorded.get("errors"):
+        return recorded
+    if recorded.get("mode") != FULL_SANDBOX_MIGRATION_MODE:
+        recorded["stop_reason"] = "Approval decision 'approved' recorded; stopping."
         return recorded
 
     transformed = dict(recorded)
