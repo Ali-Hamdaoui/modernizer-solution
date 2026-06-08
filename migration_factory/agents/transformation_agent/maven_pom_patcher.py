@@ -234,6 +234,7 @@ def _apply_operation(
     handlers = {
         "update_property": _update_property,
         "add_property_if_missing": _add_property_if_missing,
+        "ensure_property_contains_token": _ensure_property_contains_token,
         "ensure_dependency": _ensure_dependency,
         "update_dependency_version": _update_dependency_version,
         "replace_dependency": _replace_dependency,
@@ -320,6 +321,44 @@ def _add_property_if_missing(
         op="add_property_if_missing",
         status="added",
         details={"name": name, "value": value},
+    )
+
+
+def _ensure_property_contains_token(
+    root: ET.Element,
+    namespace: str,
+    operation: Mapping[str, Any],
+) -> MavenPomPatchOperationResult:
+    name = _required_text(operation, "name")
+    token = _required_text(operation, "token")
+    properties = root.find(_tag(namespace, "properties"))
+    if properties is None:
+        properties = ET.SubElement(root, _tag(namespace, "properties"))
+    property_node = properties.find(_tag(namespace, name))
+    if property_node is None:
+        property_node = ET.SubElement(properties, _tag(namespace, name))
+        property_node.text = token
+        return MavenPomPatchOperationResult(
+            op="ensure_property_contains_token",
+            status="added",
+            details={"name": name, "token": token, "value": token},
+        )
+
+    current = (property_node.text or "").strip()
+    tokens = current.split()
+    if token in tokens:
+        return MavenPomPatchOperationResult(
+            op="ensure_property_contains_token",
+            status="no_change",
+            details={"name": name, "token": token, "value": current},
+        )
+
+    updated = f"{current} {token}".strip() if current else token
+    property_node.text = updated
+    return MavenPomPatchOperationResult(
+        op="ensure_property_contains_token",
+        status="updated",
+        details={"name": name, "token": token, "old_value": current, "new_value": updated},
     )
 
 

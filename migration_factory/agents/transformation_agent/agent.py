@@ -26,6 +26,7 @@ from .pom_patches import (
     patch_azure_servicebus_legacy_to_modern,
     patch_forbidden_source_patterns_allow_jakarta,
     patch_batch_config_flat_file_item_reader_constructor,
+    patch_duplicate_support_mockitobeans_into_spring_tests,
     patch_jjwt_api_parser_builder_compatibility,
     patch_maven_enforcer_java_version,
     patch_mockito_final_class_inline_mock_maker,
@@ -480,6 +481,25 @@ def _run_unit(
 
         if transformation_type == "spring_boot_test_mockbean_to_mockitobean":
             patches = [] if dry_run else patch_spring_boot_test_mockbean_to_mockitobean(
+                plan.target_path,
+                unit_id=unit.id,
+            )
+            for patch in patches:
+                print(f"unit={patch.unit} patch={patch.patch} file={patch.file}")
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "applied" if patches else "not_applicable",
+                    "patches": [
+                        {"file": patch.file, "patch": patch.patch, "unit": patch.unit}
+                        for patch in patches
+                    ],
+                }
+            )
+            continue
+
+        if transformation_type == "duplicate_support_mockitobeans_into_spring_tests":
+            patches = [] if dry_run else patch_duplicate_support_mockitobeans_into_spring_tests(
                 plan.target_path,
                 unit_id=unit.id,
             )

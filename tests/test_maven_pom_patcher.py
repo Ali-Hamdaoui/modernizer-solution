@@ -65,6 +65,61 @@ class MavenPomPatcherTests(unittest.TestCase):
             self.assertEqual(result.operations_applied[0]["status"], "added")
             self.assertIn("<java.version>17</java.version>", _pom_text(project))
 
+    def test_ensure_property_contains_token_appends_argline_flag(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(
+                tmp,
+                """<project>
+  <properties>
+    <argLine>-Djava.security.egd=file:/dev/./urandom -Xmx256m</argLine>
+  </properties>
+</project>""",
+            )
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="java-21",
+                operations=[
+                    {
+                        "op": "ensure_property_contains_token",
+                        "name": "argLine",
+                        "token": "-Dnet.bytebuddy.experimental=true",
+                    }
+                ],
+            )
+
+            self.assertEqual(result.operations_applied[0]["status"], "updated")
+            self.assertIn(
+                "<argLine>-Djava.security.egd=file:/dev/./urandom -Xmx256m -Dnet.bytebuddy.experimental=true</argLine>",
+                _pom_text(project),
+            )
+
+    def test_ensure_property_contains_token_does_not_duplicate_existing_flag(self) -> None:
+        with workspace_temp_dir() as tmp:
+            project = _write_project(
+                tmp,
+                """<project>
+  <properties>
+    <argLine>-Xmx256m -Dnet.bytebuddy.experimental=true</argLine>
+  </properties>
+</project>""",
+            )
+
+            result = apply_maven_pom_patch(
+                project,
+                unit_id="java-21",
+                operations=[
+                    {
+                        "op": "ensure_property_contains_token",
+                        "name": "argLine",
+                        "token": "-Dnet.bytebuddy.experimental=true",
+                    }
+                ],
+            )
+
+            self.assertEqual(result.operations_applied[0]["status"], "no_change")
+            self.assertEqual(_pom_text(project).count("-Dnet.bytebuddy.experimental=true"), 1)
+
     def test_apply_patch_falls_back_to_nested_single_module_pom_from_repo_root(self) -> None:
         with workspace_temp_dir() as tmp:
             project = tmp / "repo"

@@ -36,6 +36,7 @@ from migration_factory.agents.transformation_agent.pom_patches import (
     patch_azure_servicebus_legacy_to_modern,
     patch_forbidden_source_patterns_allow_jakarta,
     patch_batch_config_flat_file_item_reader_constructor,
+    patch_duplicate_support_mockitobeans_into_spring_tests,
     patch_jjwt_api_parser_builder_compatibility,
     patch_junit_assertthat_to_hamcrest_matcherassert,
     patch_maven_enforcer_java_version,
@@ -749,6 +750,66 @@ units:
             )
             self.assertEqual(transformations[1]["type"], "mockito_final_class_inline_mock_maker")
 
+    def test_execution_plan_adapter_adds_bytebuddy_experimental_argline_for_java21_mockito_usage(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            test_source = app / "src" / "test" / "java" / "com" / "example"
+            test_source.mkdir(parents=True, exist_ok=True)
+            (test_source / "ExampleTest.java").write_text(
+                """package com.example;
+
+import org.mockito.MockitoAnnotations;
+
+class ExampleTest {
+    void init() {
+        MockitoAnnotations.openMocks(this);
+    }
+}
+""",
+                encoding="utf-8",
+            )
+            _write_approved_run_artifacts(
+                app,
+                run_id,
+                include_rewrite_plan=False,
+                source_unit_id="java-21",
+                source_unit_goal="Upgrade Java.",
+                planning_units_yaml="""
+schema_version: "1.0.0"
+run_id: "run-1"
+status: "PASS"
+artifact_refs:
+  self: "migration_units.yaml"
+units:
+  - id: "java-21"
+    goal: "Upgrade Java."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: true
+    required: "yes"
+    java_home_env: "JAVA_HOME_21"
+    hop_id: "boot-2.7-to-3.5-java21"
+    expected_artifacts: ["target/classes"]
+""",
+                tooling_versions_payload={
+                    "maven_compiler_plugin": "3.14.1",
+                },
+            )
+
+            output_path = write_transformation_execution_plan(app, run_id)
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+            operations = payload["migration_units"][0]["transformations"][0]["operations"]
+
+            self.assertIn(
+                {
+                    "op": "ensure_property_contains_token",
+                    "name": "argLine",
+                    "token": "-Dnet.bytebuddy.experimental=true",
+                },
+                operations,
+            )
+
     def test_execution_plan_adapter_adds_azure_servicebus_modernization_when_legacy_markers_detected(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"
@@ -940,12 +1001,13 @@ units:
             self.assertEqual(transformations[1]["type"], "jjwt_api_compatibility_migration")
             self.assertEqual(transformations[2]["type"], "spring6_exception_handler_override_alignment")
             self.assertEqual(transformations[3]["type"], "spring_boot_test_mockbean_to_mockitobean")
-            self.assertEqual(transformations[4]["type"], "mockito_initmocks_to_openmocks")
-            self.assertEqual(transformations[5]["type"], "test_javax_servlet_imports_to_jakarta")
-            self.assertEqual(transformations[6]["type"], "junit_assertthat_to_hamcrest_matcherassert")
-            self.assertEqual(transformations[7]["type"], "jakarta_hybrid_strategy_gate")
-            self.assertEqual(transformations[8]["type"], "powermock_legacy_test_strategy_gate")
-            self.assertEqual(transformations[9]["type"], "azure_sdk_migration_playbook_gate")
+            self.assertEqual(transformations[4]["type"], "duplicate_support_mockitobeans_into_spring_tests")
+            self.assertEqual(transformations[5]["type"], "mockito_initmocks_to_openmocks")
+            self.assertEqual(transformations[6]["type"], "test_javax_servlet_imports_to_jakarta")
+            self.assertEqual(transformations[7]["type"], "junit_assertthat_to_hamcrest_matcherassert")
+            self.assertEqual(transformations[8]["type"], "jakarta_hybrid_strategy_gate")
+            self.assertEqual(transformations[9]["type"], "powermock_legacy_test_strategy_gate")
+            self.assertEqual(transformations[10]["type"], "azure_sdk_migration_playbook_gate")
             self.assertEqual(
                 transformations[0]["operations"][0],
                 {
@@ -1205,6 +1267,106 @@ class ExampleTest {}
             java_file.write_text(original, encoding="utf-8")
 
             patches = patch_spring_boot_test_mockbean_to_mockitobean(app, unit_id="spring-boot-3-5-14")
+
+            self.assertEqual(patches, [])
+            self.assertEqual(java_file.read_text(encoding="utf-8"), original)
+
+    def test_patch_duplicate_support_mockitobeans_into_spring_tests_copies_support_override(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            support = app / "src" / "test" / "java" / "com" / "example"
+            tests = app / "src" / "test" / "java" / "com" / "example" / "translator"
+            support.mkdir(parents=True)
+            tests.mkdir(parents=True)
+            (support / "App.java").write_text(
+                """package com.example;
+
+import com.example.support.FunctionalMessageHelper;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+
+@SpringBootApplication
+class App {
+    @MockitoBean
+    protected FunctionalMessageHelper functionalMessageHelper;
+}
+""",
+                encoding="utf-8",
+            )
+            java_file = tests / "TranslatorAdapterTest.java"
+            java_file.write_text(
+                """package com.example.translator;
+
+import com.example.App;
+import org.springframework.boot.test.context.SpringBootTest;
+
+@SpringBootTest(classes = App.class)
+class TranslatorAdapterTest {
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_duplicate_support_mockitobeans_into_spring_tests(
+                app,
+                unit_id="spring-boot-3-5-14",
+            )
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertEqual(
+                patches[0].file.replace("\\", "/"),
+                "src/test/java/com/example/translator/TranslatorAdapterTest.java",
+            )
+            self.assertIn(
+                "import org.springframework.test.context.bean.override.mockito.MockitoBean;",
+                after,
+            )
+            self.assertIn("import com.example.support.FunctionalMessageHelper;", after)
+            self.assertIn("@MockitoBean\n    FunctionalMessageHelper functionalMessageHelper;", after)
+
+    def test_patch_duplicate_support_mockitobeans_into_spring_tests_skips_existing_override(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            support = app / "src" / "test" / "java" / "com" / "example"
+            tests = app / "src" / "test" / "java" / "com" / "example" / "translator"
+            support.mkdir(parents=True)
+            tests.mkdir(parents=True)
+            (support / "App.java").write_text(
+                """package com.example;
+
+import com.example.support.FunctionalMessageHelper;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+
+@SpringBootApplication
+class App {
+    @MockitoBean
+    protected FunctionalMessageHelper functionalMessageHelper;
+}
+""",
+                encoding="utf-8",
+            )
+            java_file = tests / "TranslatorAdapterTest.java"
+            original = """package com.example.translator;
+
+import com.example.App;
+import com.example.support.FunctionalMessageHelper;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+
+@SpringBootTest(classes = App.class)
+class TranslatorAdapterTest {
+    @MockitoBean
+    private FunctionalMessageHelper functionalMessageHelper;
+}
+"""
+            java_file.write_text(original, encoding="utf-8")
+
+            patches = patch_duplicate_support_mockitobeans_into_spring_tests(
+                app,
+                unit_id="spring-boot-3-5-14",
+            )
 
             self.assertEqual(patches, [])
             self.assertEqual(java_file.read_text(encoding="utf-8"), original)
@@ -1823,6 +1985,43 @@ class AzureBusTopicTest {
             self.assertIn("Mockito.doNothing().when(topicClient).sendMessage(Mockito.any(ServiceBusMessage.class));", after)
             self.assertNotIn("InterruptedException | ServiceBusException", after)
             self.assertNotIn("import com.microsoft.azure.servicebus.primitives.ServiceBusException;", after)
+
+    def test_patch_azure_servicebus_legacy_to_modern_restores_null_sender_path_for_assertthrows_tests(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "AzureBusTopicTest.java"
+            java_file.write_text(
+                """package com.example;
+
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+import com.microsoft.azure.servicebus.Message;
+import com.microsoft.azure.servicebus.TopicClient;
+
+class AzureBusTopicTest {
+    void topicTest() {
+        assertThrows(NullPointerException.class, () -> {
+            final ServiceBusTopic busTopic = new ServiceBusTopic();
+            TopicClient topicClient = null;
+            Message message = null;
+            busTopic.setBus(buildBus());
+            busTopic.init(busTopic.getBus());
+            busTopic.sendMessage("jsonMessage-XXX-XXX", null);
+        });
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_azure_servicebus_legacy_to_modern(app, unit_id="java-21")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("busTopic.init(busTopic.getBus());\n            busTopic.setTopicClient(null);", after)
+            self.assertIn('busTopic.sendMessage("jsonMessage-XXX-XXX", null);', after)
 
     def test_patch_azure_servicebus_legacy_to_modern_skips_queue_only_legacy_wrappers(self) -> None:
         with workspace_temp_dir() as tmp:

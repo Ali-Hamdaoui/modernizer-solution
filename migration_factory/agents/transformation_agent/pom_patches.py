@@ -18,6 +18,17 @@ SPRING_DATA_SORT_CONSTRUCTOR_PATTERN = re.compile(
 SPRING_BOOT_TEST_MOCKBEAN_IMPORT = "import org.springframework.boot.test.mock.mockito.MockBean;"
 SPRING_BOOT_TEST_MOCKITOBEAN_IMPORT = "import org.springframework.test.context.bean.override.mockito.MockitoBean;"
 SPRING_BOOT_TEST_MOCKBEAN_ANNOTATION_PATTERN = re.compile(r"@MockBean\b")
+SPRING_BOOT_TEST_CLASSES_PATTERN = re.compile(
+    r"@SpringBootTest\s*\(\s*classes\s*=\s*(?P<body>[^)]*)\)",
+    re.DOTALL,
+)
+SPRING_BOOT_TEST_CLASS_REFERENCE_PATTERN = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\.class\b")
+MOCKITOBEAN_FIELD_PATTERN = re.compile(
+    r"@MockitoBean(?:\s*\([^)]*\))?\s+(?:private|protected|public)?\s*(?P<type>[A-Za-z_][A-Za-z0-9_$.<>]*)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*;"
+)
+JAVA_PACKAGE_PATTERN = re.compile(r"^\s*package\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;", re.MULTILINE)
+JAVA_IMPORT_PATTERN = re.compile(r"^\s*import\s+([A-Za-z_][A-Za-z0-9_$.]*)\s*;\s*$", re.MULTILINE)
+JAVA_CLASS_PATTERN = re.compile(r"\bclass\s+[A-Za-z_][A-Za-z0-9_]*[^{]*\{", re.MULTILINE)
 MOCKITO_INITMOCKS_PATTERN = re.compile(
     r"MockitoAnnotations\.initMocks\(\s*(?P<target>[^)]+?)\s*\);"
 )
@@ -64,6 +75,13 @@ AZURE_DEAD_CHECKED_CATCH_PATTERN = re.compile(
     r"(?P<exceptions>(?:InterruptedException\s*\|\s*ServiceBusException|ServiceBusException\s*\|\s*InterruptedException))"
     r"\s+e\s*\)\s*\{\s*(?P<catch_body>.*?)\s*\}",
     re.DOTALL | re.MULTILINE,
+)
+AZURE_NULL_EXPECTED_ASSERTTHROWS_PATTERN = re.compile(
+    r"assertThrows\(\s*NullPointerException\.class\s*,\s*\(\)\s*->\s*\{\s*(?P<body>.*?)\s*\}\s*\)\s*;",
+    re.DOTALL,
+)
+AZURE_TOPIC_DECLARATION_PATTERN = re.compile(
+    r"ServiceBusTopic\s+(?P<var>[A-Za-z_][A-Za-z0-9_]*)\s*=",
 )
 MOCKITO_INLINE_MOCK_MAKER_CONTENT = "mock-maker-inline\n"
 MOCKITO_USAGE_MARKERS: tuple[str, ...] = (
@@ -467,6 +485,62 @@ def patch_spring_boot_test_mockbean_to_mockitobean(
     return patches
 
 
+def patch_duplicate_support_mockitobeans_into_spring_tests(
+    project_path: Path,
+    *,
+    unit_id: str,
+) -> list[SourcePatch]:
+    root_path = Path(project_path).expanduser().resolve()
+    test_files = _iter_test_java_files(root_path)
+    support_fields: dict[str, list[dict[str, str]]] = {}
+    for path in test_files:
+        text = path.read_text(encoding="utf-8")
+        if "@MockitoBean" not in text:
+            continue
+        if not any(marker in text for marker in ("@SpringBootApplication", "@TestConfiguration", "@Configuration")):
+            continue
+        fields = _extract_mockitobean_fields(text)
+        if not fields:
+            continue
+        support_fields[path.stem] = fields
+
+    if not support_fields:
+        return []
+
+    patches: list[SourcePatch] = []
+    for path in test_files:
+        text = path.read_text(encoding="utf-8")
+        referenced_classes = _spring_boot_test_class_refs(text)
+        if not referenced_classes:
+            continue
+        candidate_fields: list[dict[str, str]] = []
+        for class_name in sorted(referenced_classes):
+            if class_name == path.stem:
+                continue
+            candidate_fields.extend(support_fields.get(class_name, []))
+        if not candidate_fields:
+            continue
+        updated = text
+        changed = False
+        for field in candidate_fields:
+            candidate = _add_mockitobean_field_if_missing(updated, field)
+            if not candidate or candidate == updated:
+                continue
+            updated = candidate
+            changed = True
+        if not changed:
+            continue
+        path.write_text(updated, encoding="utf-8")
+        patches.append(
+            SourcePatch(
+                file=str(path.relative_to(project_path)),
+                patch="duplicate_support_mockitobeans_into_spring_tests",
+                unit=unit_id,
+            )
+        )
+    return patches
+
+
 def patch_mockito_initmocks_to_openmocks(
     project_path: Path,
     *,
@@ -777,6 +851,7 @@ def _patch_azure_servicebus_text(text: str) -> str:
     )
     updated = AZURE_LEGACY_TOPICCLIENT_PATTERN.sub("ServiceBusSenderClient", updated)
     updated = AZURE_LEGACY_MESSAGE_PATTERN.sub("ServiceBusMessage", updated)
+    updated = _patch_azure_expected_nullpath_assertthrows(updated)
     return updated
 
 
@@ -844,6 +919,7 @@ def _patch_azure_topic_builder_text(text: str) -> str:
     )
     updated = AZURE_TOPIC_SEND_METHOD_PATTERN.sub(_replace_azure_topic_send_method, updated)
     updated = updated.replace("getTopicClient().send(message);", "getTopicClient().sendMessage(message);")
+    updated = _patch_azure_expected_nullpath_assertthrows(updated)
     return updated
 
 
@@ -901,6 +977,124 @@ def _patch_azure_dead_checked_catches(text: str) -> str:
     if "ServiceBusException" not in without_legacy_exception_import:
         updated = without_legacy_exception_import
     return updated
+
+
+def _patch_azure_expected_nullpath_assertthrows(text: str) -> str:
+    def _replacement(match: re.Match[str]) -> str:
+        body = match.group("body")
+        if "ServiceBusTopic" not in body:
+            return match.group(0)
+        if ".setTopicClient(null);" in body or ".setServiceBusSenderClient(null);" in body:
+            return match.group(0)
+        declaration = AZURE_TOPIC_DECLARATION_PATTERN.search(body)
+        if declaration is None:
+            return match.group(0)
+        var_name = declaration.group("var")
+        init_line = f"{var_name}.init({var_name}.getBus());"
+        indent_match = re.search(rf"(?P<indent>[ \t]*){re.escape(init_line)}", body)
+        if indent_match is None:
+            return match.group(0)
+        injection = f"{init_line}\n{indent_match.group('indent')}{var_name}.setTopicClient(null);"
+        updated_body = body.replace(init_line, injection, 1)
+        if updated_body == body:
+            return match.group(0)
+        return match.group(0).replace(body, updated_body, 1)
+
+    return AZURE_NULL_EXPECTED_ASSERTTHROWS_PATTERN.sub(_replacement, text)
+
+
+def _extract_mockitobean_fields(text: str) -> list[dict[str, str]]:
+    imports = {item.rsplit(".", 1)[-1]: item for item in JAVA_IMPORT_PATTERN.findall(text)}
+    package_name = _java_package_name(text)
+    rows: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for match in MOCKITOBEAN_FIELD_PATTERN.finditer(text):
+        raw_type = match.group("type").strip()
+        field_name = match.group("name").strip()
+        bean_simple = raw_type.rsplit(".", 1)[-1]
+        bean_fqcn = raw_type if "." in raw_type else imports.get(bean_simple, "")
+        if not bean_fqcn and package_name:
+            bean_fqcn = f"{package_name}.{bean_simple}"
+        key = (bean_simple, field_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(
+            {
+                "bean_simple": bean_simple,
+                "bean_fqcn": bean_fqcn,
+                "field_name": field_name,
+            }
+        )
+    return rows
+
+
+def _spring_boot_test_class_refs(text: str) -> set[str]:
+    refs: set[str] = set()
+    for match in SPRING_BOOT_TEST_CLASSES_PATTERN.finditer(text):
+        refs.update(SPRING_BOOT_TEST_CLASS_REFERENCE_PATTERN.findall(match.group("body")))
+    return refs
+
+
+def _add_mockitobean_field_if_missing(text: str, field: dict[str, str]) -> str:
+    bean_simple = str(field.get("bean_simple") or "").strip()
+    bean_fqcn = str(field.get("bean_fqcn") or "").strip()
+    field_name = str(field.get("field_name") or "").strip() or bean_simple[:1].lower() + bean_simple[1:]
+    if not bean_simple:
+        return text
+    if _has_mockitobean_field(text, bean_simple):
+        return text
+    updated = text
+    if SPRING_BOOT_TEST_MOCKITOBEAN_IMPORT not in updated:
+        updated = _insert_java_import(updated, SPRING_BOOT_TEST_MOCKITOBEAN_IMPORT + "\n")
+    if bean_fqcn and "." in bean_fqcn:
+        updated = _ensure_java_import(updated, bean_fqcn)
+    class_match = JAVA_CLASS_PATTERN.search(updated)
+    if not class_match:
+        return text
+    brace_idx = updated.find("{", class_match.end() - 1)
+    if brace_idx < 0:
+        return text
+    field_block = f"\n\n    @MockitoBean\n    {bean_simple} {field_name};\n"
+    return updated[: brace_idx + 1] + field_block + updated[brace_idx + 1 :]
+
+
+def _has_mockitobean_field(text: str, bean_simple: str) -> bool:
+    return bool(
+        re.search(
+            rf"@(MockBean|MockitoBean)(?:\s*\([^)]*\))?\s+(?:private|protected|public)?\s*{re.escape(bean_simple)}\s+[A-Za-z_][A-Za-z0-9_]*\s*;",
+            text,
+        )
+    )
+
+
+def _insert_java_import(text: str, import_stmt: str) -> str:
+    imports = list(re.finditer(r"^\s*import\s+.*?;\s*$", text, flags=re.MULTILINE))
+    if imports:
+        last = imports[-1]
+        return text[: last.end()] + "\n" + import_stmt.rstrip("\n") + text[last.end() :]
+    package_match = JAVA_PACKAGE_PATTERN.search(text)
+    if package_match:
+        return text[: package_match.end()] + "\n\n" + import_stmt + text[package_match.end() :]
+    return import_stmt + "\n" + text
+
+
+def _ensure_java_import(text: str, fqcn: str) -> str:
+    simple = fqcn.rsplit(".", 1)[-1]
+    package_name = _java_package_name(text)
+    if not fqcn or "." not in fqcn or fqcn.startswith("java.lang.") or package_name == fqcn.rsplit(".", 1)[0]:
+        return text
+    import_stmt = f"import {fqcn};\n"
+    if import_stmt in text:
+        return text
+    if re.search(rf"^\s*import\s+.*\.{re.escape(simple)}\s*;\s*$", text, flags=re.MULTILINE):
+        return text
+    return _insert_java_import(text, import_stmt)
+
+
+def _java_package_name(text: str) -> str:
+    match = JAVA_PACKAGE_PATTERN.search(text)
+    return str(match.group(1) if match else "").strip()
 
 
 def _patch_jjwt_parser_assignments(text: str) -> str:
