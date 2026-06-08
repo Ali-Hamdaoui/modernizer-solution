@@ -1783,6 +1783,47 @@ class NotifyBus {
             self.assertNotIn("getAmqpConnectionStringBuilder()", after)
             self.assertNotIn(".getEntityPath()", after)
 
+    def test_patch_azure_servicebus_legacy_to_modern_removes_dead_checked_catches_in_modernized_tests(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "AzureBusTopicTest.java"
+            java_file.write_text(
+                """package com.example;
+
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.Mockito;
+import org.powermock.modules.junit4.PowerMockRunner;
+
+import com.azure.messaging.servicebus.ServiceBusMessage;
+import com.azure.messaging.servicebus.ServiceBusSenderClient;
+import com.microsoft.azure.servicebus.primitives.ServiceBusException;
+
+@RunWith(PowerMockRunner.class)
+class AzureBusTopicTest {
+    void verify(ServiceBusSenderClient topicClient) {
+        try {
+            Mockito.doNothing().when(topicClient).sendMessage(Mockito.any(ServiceBusMessage.class));
+        } catch (final InterruptedException | ServiceBusException e) {
+            throw new RuntimeException(e);
+        }
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_azure_servicebus_legacy_to_modern(app, unit_id="java-21")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("@RunWith(PowerMockRunner.class)", after)
+            self.assertIn("Mockito.doNothing().when(topicClient).sendMessage(Mockito.any(ServiceBusMessage.class));", after)
+            self.assertNotIn("InterruptedException | ServiceBusException", after)
+            self.assertNotIn("import com.microsoft.azure.servicebus.primitives.ServiceBusException;", after)
+
     def test_patch_azure_servicebus_legacy_to_modern_skips_queue_only_legacy_wrappers(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"

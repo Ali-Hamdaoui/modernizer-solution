@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import textwrap
 import xml.etree.ElementTree as ET
 
 from migration_factory.agents.build_agent.detection import JavaProjectDetectionError, detect_java_project
@@ -57,6 +58,12 @@ AZURE_TOPIC_SEND_METHOD_PATTERN = re.compile(
 )
 AZURE_BUILDER_ENTITY_PATH_ASSIGNMENT_PATTERN = re.compile(
     r"(?P<indent>\s*)(?P<lhs>[A-Za-z0-9_$.]+)\s*=\s*(?P<target>[A-Za-z0-9_$.()]+\.getAmqp(?:ConnectionStringBuilder|ServiceBusClientBuilder)\(\))\.getEntityPath\(\);"
+)
+AZURE_DEAD_CHECKED_CATCH_PATTERN = re.compile(
+    r"(?P<indent>^[ \t]*)try\s*\{\s*(?P<body>.*?)\s*\}\s*catch\s*\(\s*final\s+"
+    r"(?P<exceptions>(?:InterruptedException\s*\|\s*ServiceBusException|ServiceBusException\s*\|\s*InterruptedException))"
+    r"\s+e\s*\)\s*\{\s*(?P<catch_body>.*?)\s*\}",
+    re.DOTALL | re.MULTILINE,
 )
 MOCKITO_INLINE_MOCK_MAKER_CONTENT = "mock-maker-inline\n"
 MOCKITO_USAGE_MARKERS: tuple[str, ...] = (
@@ -761,6 +768,7 @@ def _patch_azure_servicebus_text(text: str) -> str:
     if _needs_azure_topic_builder_upgrade(text):
         updated = _patch_azure_topic_builder_text(updated)
     updated = _patch_azure_topic_builder_consumers(updated)
+    updated = _patch_azure_dead_checked_catches(updated)
     updated = AZURE_FQCN_TOPICCLIENT_PATTERN.sub("com.azure.messaging.servicebus.ServiceBusSenderClient", updated)
     updated = AZURE_FQCN_MESSAGE_PATTERN.sub("com.azure.messaging.servicebus.ServiceBusMessage", updated)
     updated = AZURE_SEND_MESSAGE_PATTERN.sub(
@@ -863,6 +871,36 @@ def _replace_azure_topic_send_method(match: re.Match[str]) -> str:
         f"            {body.strip()}\n"
         "    }"
     )
+
+
+def _patch_azure_dead_checked_catches(text: str) -> str:
+    def _replacement(match: re.Match[str]) -> str:
+        body = match.group("body")
+        if not any(
+            marker in body
+            for marker in (
+                "ServiceBusSenderClient",
+                "ServiceBusMessage",
+                ".sendMessage(",
+                ".close()",
+                "Mockito.when(",
+                "Mockito.doNothing()",
+                "PowerMockito.when(",
+                "PowerMockito.doNothing()",
+            )
+        ):
+            return match.group(0)
+        indent = match.group("indent")
+        body_block = textwrap.dedent(body).strip("\n")
+        if not body_block:
+            return ""
+        return textwrap.indent(body_block, indent)
+
+    updated = AZURE_DEAD_CHECKED_CATCH_PATTERN.sub(_replacement, text)
+    without_legacy_exception_import = updated.replace(AZURE_LEGACY_EXCEPTION_IMPORT, "")
+    if "ServiceBusException" not in without_legacy_exception_import:
+        updated = without_legacy_exception_import
+    return updated
 
 
 def _patch_jjwt_parser_assignments(text: str) -> str:
