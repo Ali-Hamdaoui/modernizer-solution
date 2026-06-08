@@ -33,6 +33,7 @@ from migration_factory.agents.transformation_agent.rewrite import (
     openrewrite_policy_from_mapping,
 )
 from migration_factory.agents.transformation_agent.pom_patches import (
+    patch_azure_servicebus_legacy_to_modern,
     patch_forbidden_source_patterns_allow_jakarta,
     patch_batch_config_flat_file_item_reader_constructor,
     patch_jjwt_api_parser_builder_compatibility,
@@ -748,6 +749,71 @@ units:
             )
             self.assertEqual(transformations[1]["type"], "mockito_final_class_inline_mock_maker")
 
+    def test_execution_plan_adapter_adds_azure_servicebus_modernization_when_legacy_markers_detected(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            run_id = "run-1"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True, exist_ok=True)
+            (source / "AzureBusTopicTest.java").write_text(
+                """package com.example;
+
+import com.microsoft.azure.servicebus.Message;
+import com.microsoft.azure.servicebus.TopicClient;
+
+class AzureBusTopicTest {
+    TopicClient client;
+    Message message;
+}
+""",
+                encoding="utf-8",
+            )
+            _write_approved_run_artifacts(
+                app,
+                run_id,
+                include_rewrite_plan=False,
+                planning_units_yaml="""
+schema_version: "1.0.0"
+run_id: "run-1"
+status: "PASS"
+artifact_refs:
+  self: "migration_units.yaml"
+units:
+  - id: "spring-boot-3-5-14"
+    goal: "Upgrade Spring Boot."
+    tools: ["maven"]
+    validation: ["mvn", "clean", "test"]
+    writes_source: true
+    required: "yes"
+    java_home_env: "JAVA_HOME_21"
+    hop_id: "boot-2.7-to-3.5-java21"
+    expected_artifacts: ["target/classes"]
+""",
+                framework_versions_payload={
+                    "jackson": "2.21.2",
+                    "jackson_annotations": "2.21",
+                    "jjwt": "0.13.0",
+                    "juneau": "9.0.0",
+                    "thymeleaf": "3.1.3.RELEASE",
+                    "slf4j_api": "2.0.17",
+                    "spring_security": "6.5.10",
+                },
+                tooling_versions_payload={
+                    "maven_compiler_plugin": "3.14.1",
+                },
+            )
+
+            output_path = write_transformation_execution_plan(app, run_id)
+            payload = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+            transformations = payload["migration_units"][0]["transformations"]
+            transformation_types = [item["type"] for item in transformations]
+
+            self.assertIn("azure_servicebus_legacy_to_modern", transformation_types)
+            self.assertLess(
+                transformation_types.index("azure_servicebus_legacy_to_modern"),
+                transformation_types.index("azure_sdk_migration_playbook_gate"),
+            )
+
     def test_write_transformation_execution_plan_adds_thymeleaf_alignment_for_boot35_unit(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"
@@ -1364,6 +1430,133 @@ class ExampleTest {}
                     / "org.mockito.plugins.MockMaker"
                 ).exists()
             )
+
+    def test_patch_azure_servicebus_legacy_to_modern_updates_imports_types_and_send_message(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "AzureBusTopicTest.java"
+            java_file.write_text(
+                """package com.example;
+
+import static org.mockito.Mockito.any;
+
+import com.microsoft.azure.servicebus.Message;
+import com.microsoft.azure.servicebus.TopicClient;
+import org.mockito.Mockito;
+
+class AzureBusTopicTest {
+    TopicClient topicClient;
+    Message payload;
+
+    void verify() {
+        topicClient.send(Mockito.any(Message.class));
+        topicClient.send(any(Message.class));
+        topicClient.close();
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_azure_servicebus_legacy_to_modern(app, unit_id="spring-boot-3-5-14")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("import com.azure.messaging.servicebus.ServiceBusMessage;", after)
+            self.assertIn("import com.azure.messaging.servicebus.ServiceBusSenderClient;", after)
+            self.assertIn("ServiceBusSenderClient topicClient;", after)
+            self.assertIn("ServiceBusMessage payload;", after)
+            self.assertIn("topicClient.sendMessage(Mockito.any(ServiceBusMessage.class));", after)
+            self.assertIn("topicClient.sendMessage(any(ServiceBusMessage.class));", after)
+            self.assertIn("topicClient.close();", after)
+            self.assertNotIn("import com.microsoft.azure.servicebus.Message;", after)
+            self.assertNotIn("import com.microsoft.azure.servicebus.TopicClient;", after)
+
+    def test_patch_azure_servicebus_legacy_to_modern_preserves_powermock_and_junit4(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "AzureBusTopicTest.java"
+            java_file.write_text(
+                """package com.example;
+
+import com.microsoft.azure.servicebus.Message;
+import com.microsoft.azure.servicebus.TopicClient;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.powermock.core.classloader.annotations.PrepareForTest;
+import org.powermock.modules.junit4.PowerMockRunner;
+
+@RunWith(PowerMockRunner.class)
+@PrepareForTest({AzureBusTopicTest.class})
+public class AzureBusTopicTest {
+    @Test
+    public void keepsLegacyHarness() {
+        TopicClient topicClient = null;
+        Message payload = null;
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_azure_servicebus_legacy_to_modern(app, unit_id="spring-boot-3-5-14")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("@RunWith(PowerMockRunner.class)", after)
+            self.assertIn("@PrepareForTest({AzureBusTopicTest.class})", after)
+            self.assertIn("import org.powermock.modules.junit4.PowerMockRunner;", after)
+            self.assertIn("import org.junit.Test;", after)
+            self.assertIn("ServiceBusSenderClient topicClient = null;", after)
+            self.assertIn("ServiceBusMessage payload = null;", after)
+
+    def test_patch_azure_servicebus_legacy_to_modern_is_noop_without_legacy_markers(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "PlainTest.java"
+            original = """package com.example;
+
+class PlainTest {
+    void verify() {}
+}
+"""
+            java_file.write_text(original, encoding="utf-8")
+
+            patches = patch_azure_servicebus_legacy_to_modern(app, unit_id="spring-boot-3-5-14")
+
+            self.assertEqual(patches, [])
+            self.assertEqual(java_file.read_text(encoding="utf-8"), original)
+
+    def test_patch_azure_servicebus_legacy_to_modern_works_from_nested_maven_repo_root(self) -> None:
+        with workspace_temp_dir() as tmp:
+            repo = tmp / "repo"
+            module = repo / "common-utils"
+            source = module / "src" / "test" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "AzureBusTopicTest.java"
+            java_file.write_text(
+                """package com.example;
+
+import com.microsoft.azure.servicebus.TopicClient;
+
+class AzureBusTopicTest {
+    TopicClient topicClient;
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_azure_servicebus_legacy_to_modern(repo, unit_id="spring-boot-3-5-14")
+
+            self.assertEqual(len(patches), 1)
+            self.assertEqual(patches[0].file.replace("\\", "/"), "common-utils/src/test/java/com/example/AzureBusTopicTest.java")
+            self.assertIn("ServiceBusSenderClient topicClient;", java_file.read_text(encoding="utf-8"))
 
     def test_patch_jjwt_parser_assignment_adds_build_for_simple_parser_usage(self) -> None:
         with workspace_temp_dir() as tmp:

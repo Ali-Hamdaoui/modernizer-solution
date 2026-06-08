@@ -100,6 +100,11 @@ def _build_transformer_plan(
     tooling_versions = _mapping_of_strings(migration_plan.get("tooling_versions"))
     framework_versions = _mapping_of_strings(migration_plan.get("framework_versions"))
     validation_signals = _detected_validation_usage(app_path, analysis_report, dependency_graph)
+    legacy_azure_servicebus_signals = _detected_legacy_azure_servicebus_usage(
+        app_path,
+        analysis_report,
+        dependency_graph,
+    )
 
     return {
         "schema_version": TRANSFORMATION_PLAN_SCHEMA_VERSION,
@@ -136,6 +141,7 @@ def _build_transformer_plan(
                 tooling_versions=tooling_versions,
                 framework_versions=framework_versions,
                 validation_signals=validation_signals,
+                legacy_azure_servicebus_signals=legacy_azure_servicebus_signals,
             )
             for unit in units
         ],
@@ -151,6 +157,7 @@ def _adapt_unit(
     tooling_versions: dict[str, str],
     framework_versions: dict[str, str],
     validation_signals: list[str],
+    legacy_azure_servicebus_signals: list[str],
 ) -> dict[str, Any]:
     if not isinstance(raw_unit, dict):
         raise TransformationExecutionPlanError("planning/migration_units.yaml units must be mappings")
@@ -180,6 +187,7 @@ def _adapt_unit(
             tooling_versions,
             framework_versions,
             validation_signals,
+            legacy_azure_servicebus_signals,
         )
     )
     transformations.append(
@@ -471,6 +479,7 @@ def _deterministic_source_transformations(
     tooling_versions: dict[str, str],
     framework_versions: dict[str, str],
     validation_signals: list[str],
+    legacy_azure_servicebus_signals: list[str],
 ) -> list[dict[str, Any]]:
     if not isinstance(raw_unit, dict):
         return []
@@ -532,6 +541,8 @@ def _deterministic_source_transformations(
             )
         if unit_id == "java-21":
             transformations.append({"type": "mockito_final_class_inline_mock_maker"})
+            if legacy_azure_servicebus_signals:
+                transformations.append({"type": "azure_servicebus_legacy_to_modern"})
         return transformations
     if unit_id == "spring-boot-3-5-14":
         jackson_version = framework_versions.get("jackson")
@@ -607,7 +618,7 @@ def _deterministic_source_transformations(
         if compiler_plugin_version:
             compiler_operation["plugin_version"] = compiler_plugin_version
         operations.append(compiler_operation)
-        return [
+        transformations = [
             {
                 "type": "maven_pom_patch",
                 "operations": operations,
@@ -620,8 +631,11 @@ def _deterministic_source_transformations(
             {"type": "junit_assertthat_to_hamcrest_matcherassert"},
             {"type": "jakarta_hybrid_strategy_gate"},
             {"type": "powermock_legacy_test_strategy_gate"},
-            {"type": "azure_sdk_migration_playbook_gate"},
         ]
+        if legacy_azure_servicebus_signals:
+            transformations.append({"type": "azure_servicebus_legacy_to_modern"})
+        transformations.append({"type": "azure_sdk_migration_playbook_gate"})
+        return transformations
     return []
 
 
@@ -723,6 +737,70 @@ def _present_spring_security_artifacts(dependency_graph: dict[str, Any] | None) 
     root = dependency_graph.get("root")
     names = _collect_dependency_names(root)
     return sorted(name for name in names if name.startswith("org.springframework.security:"))
+
+
+def _detected_legacy_azure_servicebus_usage(
+    app_path: Path,
+    analysis_report: dict[str, Any] | None,
+    dependency_graph: dict[str, Any] | None,
+) -> list[str]:
+    signals: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            signals.append(text)
+
+    report = analysis_report if isinstance(analysis_report, dict) else {}
+    for key in ("imports", "java_imports", "detected_imports"):
+        value = report.get(key)
+        if isinstance(value, list):
+            for item in value:
+                token = str(item).strip()
+                if token.startswith("com.microsoft.azure.servicebus"):
+                    add(token)
+
+    project_metadata = report.get("project_metadata")
+    if isinstance(project_metadata, dict):
+        imports = project_metadata.get("imports")
+        if isinstance(imports, list):
+            for item in imports:
+                token = str(item).strip()
+                if token.startswith("com.microsoft.azure.servicebus"):
+                    add(token)
+
+    dependencies = report.get("dependencies")
+    if isinstance(dependencies, list):
+        for item in dependencies:
+            if not isinstance(item, dict):
+                continue
+            group_id = str(item.get("groupId") or item.get("group_id") or "").strip()
+            artifact_id = str(item.get("artifactId") or item.get("artifact_id") or "").strip()
+            if group_id == "com.microsoft.azure" and artifact_id == "azure-servicebus":
+                add(f"{group_id}:{artifact_id}")
+
+    if isinstance(dependency_graph, dict):
+        for name in sorted(_collect_dependency_names(dependency_graph.get("root"))):
+            if name == "com.microsoft.azure:azure-servicebus":
+                add(name)
+
+    src_root = app_path / "src"
+    if src_root.is_dir():
+        for java_file in src_root.rglob("*.java"):
+            try:
+                text = java_file.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                text = java_file.read_text(encoding="latin-1")
+            if "com.microsoft.azure.servicebus" in text:
+                add("com.microsoft.azure.servicebus")
+            if "TopicClient" in text:
+                add("TopicClient")
+            if "ServiceBusException" in text:
+                add("ServiceBusException")
+
+    return signals
 
 
 def _collect_dependency_names(node: Any) -> set[str]:

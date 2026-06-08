@@ -27,6 +27,16 @@ TEST_JAVAX_SERVLET_IMPORT_PATTERN = re.compile(
 JUNIT_ASSERTTHAT_STATIC_IMPORT = "import static org.junit.Assert.assertThat;"
 HAMCREST_ASSERTTHAT_STATIC_IMPORT = "import static org.hamcrest.MatcherAssert.assertThat;"
 JUNIT_ASSERTTHAT_FQCN_PATTERN = re.compile(r"\borg\.junit\.Assert\.assertThat\s*\(")
+AZURE_LEGACY_TOPICCLIENT_IMPORT = "import com.microsoft.azure.servicebus.TopicClient;"
+AZURE_MODERN_SENDERCLIENT_IMPORT = "import com.azure.messaging.servicebus.ServiceBusSenderClient;"
+AZURE_LEGACY_MESSAGE_IMPORT = "import com.microsoft.azure.servicebus.Message;"
+AZURE_MODERN_MESSAGE_IMPORT = "import com.azure.messaging.servicebus.ServiceBusMessage;"
+AZURE_LEGACY_SERVICEBUS_PACKAGE = "com.microsoft.azure.servicebus"
+AZURE_FQCN_TOPICCLIENT_PATTERN = re.compile(r"\bcom\.microsoft\.azure\.servicebus\.TopicClient\b")
+AZURE_FQCN_MESSAGE_PATTERN = re.compile(r"\bcom\.microsoft\.azure\.servicebus\.Message\b")
+AZURE_LEGACY_TOPICCLIENT_PATTERN = re.compile(r"\bTopicClient\b")
+AZURE_LEGACY_MESSAGE_PATTERN = re.compile(r"\bMessage\b")
+AZURE_SEND_MESSAGE_PATTERN = re.compile(r"(?P<prefix>\.)send\(\s*(?P<argument>(?:Mockito\.)?any\(\s*Message\.class\s*\))\s*\)")
 MOCKITO_INLINE_MOCK_MAKER_CONTENT = "mock-maker-inline\n"
 MOCKITO_USAGE_MARKERS: tuple[str, ...] = (
     "org.mockito",
@@ -350,10 +360,7 @@ def patch_spring_data_sort_constructor_usage(
 ) -> list[SourcePatch]:
     patches: list[SourcePatch] = []
     for path in sorted(project_path.rglob("*.java")):
-        try:
-            relative_path = path.relative_to(project_path)
-        except ValueError:
-            continue
+        relative_path = path.relative_to(project_path)
         text = path.read_text(encoding="utf-8")
         if SPRING_DATA_SORT_IMPORT not in text and "org.springframework.data.domain.Sort" not in text:
             continue
@@ -508,6 +515,44 @@ def patch_junit_assertthat_to_hamcrest_matcherassert(
             SourcePatch(
                 file=str(relative_path),
                 patch="junit_assertthat_to_hamcrest_matcherassert",
+                unit=unit_id,
+            )
+        )
+    return patches
+
+
+def patch_azure_servicebus_legacy_to_modern(
+    project_path: Path,
+    *,
+    unit_id: str,
+) -> list[SourcePatch]:
+    patches: list[SourcePatch] = []
+    root_path = Path(project_path).expanduser().resolve()
+    java_files = []
+    for path in sorted(root_path.rglob("*.java")):
+        try:
+            relative_path = path.relative_to(root_path)
+        except ValueError:
+            continue
+        if "src" not in {part.lower() for part in relative_path.parts[:-1]}:
+            continue
+        java_files.append(path)
+    for path in java_files:
+        try:
+            relative_path = path.relative_to(project_path)
+        except ValueError:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if AZURE_LEGACY_SERVICEBUS_PACKAGE not in text and "TopicClient" not in text and "Message.class" not in text:
+            continue
+        updated = _patch_azure_servicebus_text(text)
+        if updated == text:
+            continue
+        path.write_text(updated, encoding="utf-8")
+        patches.append(
+            SourcePatch(
+                file=str(relative_path),
+                patch="azure_servicebus_legacy_to_modern",
                 unit=unit_id,
             )
         )
@@ -679,6 +724,20 @@ def _replace_spring_data_sort_constructor_usage(text: str) -> str:
         return f"{factory_target}.by({direction}, {property_value})"
 
     return SPRING_DATA_SORT_CONSTRUCTOR_PATTERN.sub(_replacement, text)
+
+
+def _patch_azure_servicebus_text(text: str) -> str:
+    updated = text.replace(AZURE_LEGACY_TOPICCLIENT_IMPORT, AZURE_MODERN_SENDERCLIENT_IMPORT)
+    updated = updated.replace(AZURE_LEGACY_MESSAGE_IMPORT, AZURE_MODERN_MESSAGE_IMPORT)
+    updated = AZURE_FQCN_TOPICCLIENT_PATTERN.sub("com.azure.messaging.servicebus.ServiceBusSenderClient", updated)
+    updated = AZURE_FQCN_MESSAGE_PATTERN.sub("com.azure.messaging.servicebus.ServiceBusMessage", updated)
+    updated = AZURE_SEND_MESSAGE_PATTERN.sub(
+        lambda match: "." + "sendMessage(" + match.group("argument").replace("Message.class", "ServiceBusMessage.class") + ")",
+        updated,
+    )
+    updated = AZURE_LEGACY_TOPICCLIENT_PATTERN.sub("ServiceBusSenderClient", updated)
+    updated = AZURE_LEGACY_MESSAGE_PATTERN.sub("ServiceBusMessage", updated)
+    return updated
 
 
 def _patch_jjwt_parser_assignments(text: str) -> str:

@@ -23,6 +23,7 @@ from .executor import CommandResult, run_command
 from .maven_pom_patcher import MavenPomPatchError, apply_maven_pom_patch
 from .plan import MigrationPlan, MigrationUnit, load_migration_plan
 from .pom_patches import (
+    patch_azure_servicebus_legacy_to_modern,
     patch_forbidden_source_patterns_allow_jakarta,
     patch_batch_config_flat_file_item_reader_constructor,
     patch_jjwt_api_parser_builder_compatibility,
@@ -517,6 +518,25 @@ def _run_unit(
 
         if transformation_type == "mockito_final_class_inline_mock_maker":
             patches = [] if dry_run else patch_mockito_final_class_inline_mock_maker(
+                plan.target_path,
+                unit_id=unit.id,
+            )
+            for patch in patches:
+                print(f"unit={patch.unit} patch={patch.patch} file={patch.file}")
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "applied" if patches else "not_applicable",
+                    "patches": [
+                        {"file": patch.file, "patch": patch.patch, "unit": patch.unit}
+                        for patch in patches
+                    ],
+                }
+            )
+            continue
+
+        if transformation_type == "azure_servicebus_legacy_to_modern":
+            patches = [] if dry_run else patch_azure_servicebus_legacy_to_modern(
                 plan.target_path,
                 unit_id=unit.id,
             )
