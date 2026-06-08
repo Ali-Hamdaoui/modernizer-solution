@@ -55,6 +55,9 @@ AZURE_TOPIC_SEND_METHOD_PATTERN = re.compile(
     r"catch\s*\(final InterruptedException e\)\s*\{\s*log\.error\(e\.getMessage\(\)\);\s*Thread\.currentThread\(\)\.interrupt\(\);\s*\}\s*\}",
     re.DOTALL,
 )
+AZURE_BUILDER_ENTITY_PATH_ASSIGNMENT_PATTERN = re.compile(
+    r"(?P<indent>\s*)(?P<lhs>[A-Za-z0-9_$.]+)\s*=\s*(?P<target>[A-Za-z0-9_$.()]+\.getAmqp(?:ConnectionStringBuilder|ServiceBusClientBuilder)\(\))\.getEntityPath\(\);"
+)
 MOCKITO_INLINE_MOCK_MAKER_CONTENT = "mock-maker-inline\n"
 MOCKITO_USAGE_MARKERS: tuple[str, ...] = (
     "org.mockito",
@@ -561,7 +564,13 @@ def patch_azure_servicebus_legacy_to_modern(
         except ValueError:
             continue
         text = path.read_text(encoding="utf-8")
-        if AZURE_LEGACY_SERVICEBUS_PACKAGE not in text and "TopicClient" not in text and "Message.class" not in text:
+        if (
+            AZURE_LEGACY_SERVICEBUS_PACKAGE not in text
+            and "TopicClient" not in text
+            and "Message.class" not in text
+            and "getAmqpConnectionStringBuilder()" not in text
+            and "getAmqpServiceBusClientBuilder()" not in text
+        ):
             continue
         updated = _patch_azure_servicebus_text(text)
         if updated == text:
@@ -751,6 +760,7 @@ def _patch_azure_servicebus_text(text: str) -> str:
     updated = updated.replace(AZURE_LEGACY_MESSAGE_IMPORT, AZURE_MODERN_MESSAGE_IMPORT)
     if _needs_azure_topic_builder_upgrade(text):
         updated = _patch_azure_topic_builder_text(updated)
+    updated = _patch_azure_topic_builder_consumers(updated)
     updated = AZURE_FQCN_TOPICCLIENT_PATTERN.sub("com.azure.messaging.servicebus.ServiceBusSenderClient", updated)
     updated = AZURE_FQCN_MESSAGE_PATTERN.sub("com.azure.messaging.servicebus.ServiceBusMessage", updated)
     updated = AZURE_SEND_MESSAGE_PATTERN.sub(
@@ -789,16 +799,18 @@ def _patch_azure_topic_builder_text(text: str) -> str:
         )
     updated = updated.replace(
         "private ConnectionStringBuilder amqpConnectionStringBuilder;",
-        "private ServiceBusClientBuilder amqpConnectionStringBuilder;",
+        "private ServiceBusClientBuilder amqpServiceBusClientBuilder;",
     )
     updated = updated.replace(
         "public ConnectionStringBuilder getAmqpConnectionStringBuilder() {",
-        "public ServiceBusClientBuilder getAmqpConnectionStringBuilder() {",
+        "public ServiceBusClientBuilder getAmqpServiceBusClientBuilder() {",
     )
     updated = updated.replace(
         "public void setAmqpConnectionStringBuilder(final ConnectionStringBuilder amqpConnectionStringBuilder) {",
-        "public void setAmqpConnectionStringBuilder(final ServiceBusClientBuilder amqpConnectionStringBuilder) {",
+        "public void setAmqpServiceBusClientBuilder(final ServiceBusClientBuilder amqpServiceBusClientBuilder) {",
     )
+    updated = updated.replace("return amqpConnectionStringBuilder;", "return amqpServiceBusClientBuilder;")
+    updated = updated.replace("this.amqpConnectionStringBuilder = amqpConnectionStringBuilder;", "this.amqpServiceBusClientBuilder = amqpServiceBusClientBuilder;")
     updated = updated.replace(
         '        connectionString.append(";OperationTimeout=");\n        connectionString.append("PT10S");\n\n'
         "        setAmqpConnectionStringBuilder(new ConnectionStringBuilder(connectionString.toString(), bus.getTopicName()));\n",
@@ -806,11 +818,11 @@ def _patch_azure_topic_builder_text(text: str) -> str:
         "                new ServiceBusClientBuilder()\n"
         "                    .connectionString(connectionString.toString())\n"
         "                    .transportType(AmqpTransportType.AMQP_WEB_SOCKETS);\n\n"
-        "        setAmqpConnectionStringBuilder(serviceBusClientBuilder);\n",
+        "        setAmqpServiceBusClientBuilder(serviceBusClientBuilder);\n",
     )
     updated = AZURE_TOPIC_BUILD_METHOD_PATTERN.sub(
         "private void buildTopicClient() {\n"
-        "        this.setTopicClient(getAmqpConnectionStringBuilder()\n"
+        "        this.setTopicClient(getAmqpServiceBusClientBuilder()\n"
         "                .sender()\n"
         "                .topicName(getBus().getTopicName())\n"
         "                .buildClient());\n"
@@ -824,6 +836,17 @@ def _patch_azure_topic_builder_text(text: str) -> str:
     )
     updated = AZURE_TOPIC_SEND_METHOD_PATTERN.sub(_replace_azure_topic_send_method, updated)
     updated = updated.replace("getTopicClient().send(message);", "getTopicClient().sendMessage(message);")
+    return updated
+
+
+def _patch_azure_topic_builder_consumers(text: str) -> str:
+    updated = text.replace("getAmqpConnectionStringBuilder()", "getAmqpServiceBusClientBuilder()")
+    updated = updated.replace("setAmqpConnectionStringBuilder(", "setAmqpServiceBusClientBuilder(")
+    updated = AZURE_BUILDER_ENTITY_PATH_ASSIGNMENT_PATTERN.sub(
+        lambda match: f"{match.group('indent')}{match.group('target')}.getClass();",
+        updated,
+    )
+    updated = updated.replace(".getAmqpServiceBusClientBuilder().getEntityPath()", ".getAmqpServiceBusClientBuilder().getClass()")
     return updated
 
 

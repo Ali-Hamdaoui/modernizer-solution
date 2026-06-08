@@ -1733,7 +1733,9 @@ class ServiceBusTopic {
             self.assertIn("import com.azure.messaging.servicebus.ServiceBusMessage;", after)
             self.assertNotIn("import com.microsoft.azure.servicebus.primitives.ConnectionStringBuilder;", after)
             self.assertNotIn("import com.microsoft.azure.servicebus.primitives.ServiceBusException;", after)
-            self.assertIn("private ServiceBusClientBuilder amqpConnectionStringBuilder;", after)
+            self.assertIn("private ServiceBusClientBuilder amqpServiceBusClientBuilder;", after)
+            self.assertIn("public ServiceBusClientBuilder getAmqpServiceBusClientBuilder()", after)
+            self.assertIn("public void setAmqpServiceBusClientBuilder(final ServiceBusClientBuilder amqpServiceBusClientBuilder)", after)
             self.assertIn("new ServiceBusClientBuilder()", after)
             self.assertIn(".transportType(AmqpTransportType.AMQP_WEB_SOCKETS);", after)
             self.assertIn(".sender()", after)
@@ -1746,6 +1748,40 @@ class ServiceBusTopic {
             self.assertNotIn("new TopicClient(", after)
             self.assertNotIn("message.setProperties(properties);", after)
             self.assertNotIn("getTopicClient().send(message);", after)
+
+    def test_patch_azure_servicebus_legacy_to_modern_updates_builder_consumers(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            source = app / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            java_file = source / "NotifyBus.java"
+            java_file.write_text(
+                """package com.example;
+
+class NotifyBus {
+    ServiceBusTopic getServiceBusTopic() {
+        return null;
+    }
+
+    void verify() {
+        String entityPath = null;
+        if (getServiceBusTopic().getAmqpConnectionStringBuilder() != null) {
+            entityPath = getServiceBusTopic().getAmqpConnectionStringBuilder().getEntityPath();
+        }
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_azure_servicebus_legacy_to_modern(app, unit_id="java-21")
+            after = java_file.read_text(encoding="utf-8")
+
+            self.assertEqual(len(patches), 1)
+            self.assertIn("getServiceBusTopic().getAmqpServiceBusClientBuilder()", after)
+            self.assertIn("getServiceBusTopic().getAmqpServiceBusClientBuilder().getClass();", after)
+            self.assertNotIn("getAmqpConnectionStringBuilder()", after)
+            self.assertNotIn(".getEntityPath()", after)
 
     def test_patch_azure_servicebus_legacy_to_modern_skips_queue_only_legacy_wrappers(self) -> None:
         with workspace_temp_dir() as tmp:
