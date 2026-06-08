@@ -1,8 +1,8 @@
 # PRD — AI Migration Control Tower
-**Version:** 0.1 — DRAFT  
+**Version:** 0.2 — DRAFT  
 **Status:** In Review  
-**Owner:** [Your Name]  
-**Last Updated:** 2026-06-06  
+**Owner:** ABDELILAH MORTAKI  
+**Last Updated:** 2026-06-08  
 **Reviewers:** ABDELILAH MORTAKI · HAMDAOUI Ali · ilyas abarbach
 
 ---
@@ -35,7 +35,8 @@
 **Current baseline:** AI Migration Factory V1 using LangGraph, OpenRewrite, Maven, dependency-policy checks, repair/fallback foundations, and a Textual TUI  
 **Validated migration path:** Spring Boot 2.1.6 → 2.7 → 3.5 / Java 17  
 **Validated proof level:** Build + test verified  
-**Target operating model:** Local-first on a developer-managed Windows workstation
+**Target operating model:** Local-first on a developer-managed Windows workstation  
+**Primary interaction model:** Live dashboard + run-scoped Migration Assistant chatbot
 
 The existing migration factory is a capable migration engine with a limited operational layer. Developers currently launch and control migrations mainly through terminal commands and a Textual TUI. The system produces useful run artifacts, build/test results, dependency-policy reports, repair proposals, and final reports, but it does not yet provide a unified live web interface, durable event history, conversational interaction, governed plan amendments, or developer-approved AI repair execution.
 
@@ -102,7 +103,50 @@ Production readiness
 | Developer-approved general AI repair path | Not implemented |
 | Parent two-stage migration job | Not implemented |
 
+### 1.4 Migration Assistant chatbot
+
+The Control Tower includes a **run-scoped Migration Assistant chatbot** displayed beside the live pipeline. It is the developer's conversational interface to the active migration.
+
+The chatbot is not a separate migration engine and does not replace the dashboard. It works on top of the same persisted job state, events, artifacts, approvals, and proof results used by the visual pipeline.
+
+The developer uses the chatbot to:
+
+```text
+Ask what is happening and why
+Request explanations of plans, risks, logs, diffs, and failures
+Add instructions to the migration plan
+Request build, test, dependency, and diagnostic operations
+Review AI-generated repair proposals
+Approve, edit, or reject proposed sandbox modifications
+Resume, retry, roll back, or cancel through governed actions
+```
+
+The chatbot uses a worker/reviewer workflow internally:
+
+```text
+GPT-5-mini
+    diagnoses and proposes
+
+Mistral-Large-3
+    critiques the proposal
+
+Backend policy gate
+    validates scope and permissions
+
+Developer
+    approves or rejects source-changing actions
+
+Maven, tests, policies, and runtime gates
+    determine the technical result
+```
+
+There is **one visible chatbot**, not multiple chatbots. The worker and reviewer are internal model roles behind the same conversation.
+
+The chatbot may invoke typed backend tools, but it cannot execute arbitrary terminal commands, modify the legacy source, approve its own patches, or claim a proof level without deterministic validation.
+
 ---
+
+
 
 ## 2. Problem Statement
 
@@ -112,7 +156,7 @@ Production readiness
 |---|---|---|
 | P1 | No unified live visibility during migration execution | Terminal/TUI-oriented workflow; several subprocesses still capture output until completion |
 | P2 | No complete structured approval workflow | Existing approval supports approve/reject/replan states, but plan amendment and regeneration are not implemented |
-| P3 | No AI assistant during a live run | Developers cannot ask grounded questions, request diagnosis, or approve AI repair proposals through one run-scoped interface |
+| P3 | No conversational migration interface during a live run | Developers cannot use a chatbot to ask grounded questions, request diagnosis, amend plans, approve repairs, or trigger governed actions while the pipeline runs |
 | P4 | No durable, queryable operational history | Artifacts exist in run folders, but events, decisions, approvals, chat actions, and worker state are not unified in a Control Tower database |
 | P5 | Incomplete proof governance | Build/test proof exists, but requested proof and achieved proof are not centrally modelled across all execution paths |
 | P6 | Two-stage migrations are operated as separate runs | The successful 2.1.6 → 2.7 → 3.5 path is not yet represented as one parent migration job |
@@ -132,7 +176,7 @@ Create a web-based Control Tower where the migration engine remains deterministi
 - live pipeline visibility;
 - structured approvals;
 - plan amendment and regeneration;
-- one run-scoped Migration Assistant;
+- one run-scoped Migration Assistant chatbot;
 - governed diagnostic and validation tools;
 - developer-approved sandbox repair;
 - complete evidence and proof reporting.
@@ -165,7 +209,7 @@ Create a web-based Control Tower where the migration engine remains deterministi
 | Live structured stage progress visible without page refresh | Required |
 | Browser reconnect replays persisted events without losing run state | Required |
 | Plan review, amendment, regeneration, critique, and final approval work end-to-end | Required |
-| Migration Assistant accessible during the live run | Required |
+| Migration Assistant chatbot accessible beside the live pipeline | Required |
 | Failure diagnosis is grounded in registered evidence | Required |
 | Repair proposal shows evidence, proposed diff, critique, and validation plan | Required |
 | No AI-generated source change occurs without explicit developer approval | Required |
@@ -292,7 +336,7 @@ Live pipeline visualization using SSE
 Replayable structured event history
 Live Maven/OpenRewrite/test logs
 Plan review, amendment, regeneration, critique, and final approval
-One run-scoped Migration Assistant beside the dashboard
+One run-scoped Migration Assistant chatbot beside the live dashboard
 Bounded Context Builder
 Typed diagnostic and validation tools
 GPT-5-mini primary worker model
@@ -519,12 +563,12 @@ planning/plan_revision_history.json
 
 ---
 
-### 6.5 AI Migration Assistant
+### 6.5 Migration Assistant Chatbot
 
 | ID | Requirement | Priority |
 |---|---|---|
-| F-AST-01 | One Migration Assistant panel is visible beside the live pipeline | P0 |
-| F-AST-02 | Each parent migration job has one run-scoped assistant conversation | P0 |
+| F-AST-01 | One Migration Assistant chatbot panel is visible beside the live pipeline | P0 |
+| F-AST-02 | Each parent migration job has exactly one run-scoped chatbot conversation | P0 |
 | F-AST-03 | Assistant reads only state and artifacts registered to the selected job, except approved shared RAG sources | P0 |
 | F-AST-04 | Assistant can explain current stage, status, risks, blockers, plans, diffs, and proof | P0 |
 | F-AST-05 | Assistant cites registered evidence references in operational answers | P0 |
@@ -535,6 +579,22 @@ planning/plan_revision_history.json
 | F-AST-10 | All model calls, tool proposals, tool executions, and results are auditable | P0 |
 | F-AST-11 | Assistant may answer that evidence is insufficient and request human escalation | P0 |
 | F-AST-12 | Assistant chat streaming is independent from migration SSE events | P1 |
+
+#### Chatbot product definition
+
+> The Migration Assistant is a conversational control surface for the active migration. It explains live state, retrieves evidence, prepares plan amendments and repair proposals, invokes authorized diagnostic or validation tools, and submits explicitly confirmed developer actions to the control plane.
+
+The chatbot and dashboard are complementary:
+
+| Dashboard responsibility | Chatbot responsibility |
+|---|---|
+| Show pipeline state visually | Explain the current state conversationally |
+| Display logs, artifacts, plans, diffs, and proof | Find and summarize the relevant evidence |
+| Present structured controls and confirmation cards | Translate developer intent into typed proposed actions |
+| Remain the visual source of operational state | Act as the conversational navigation and decision layer |
+| Record final state | Never maintain a separate version of truth |
+
+The chatbot does not communicate directly with Maven, OpenRewrite, the filesystem, or the terminal. It calls typed FastAPI tools that validate the run, permissions, working directory, operation, arguments, and approval requirements.
 
 #### Allowed assistant capabilities
 
@@ -1212,10 +1272,10 @@ Analysis
 → approval
 ```
 
-#### Slice C — Read-only assistant
+#### Slice C — Read-only chatbot
 
 ```text
-Chat
+Migration Assistant chatbot
 → Context Builder
 → run evidence
 → explanations and navigation
