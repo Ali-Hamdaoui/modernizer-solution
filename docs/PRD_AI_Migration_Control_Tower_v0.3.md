@@ -1,7 +1,7 @@
 # PRD — AI Migration Control Tower
 
 **Version:** 0.3 — DRAFT FOR ENGINEERING REVIEW  
-**Status:** In Review — Foundation Development May Start After M0 Gates  
+**Status:** VALIDATED 
 **Owner:** ABDELILAH MORTAKI  
 **Last Updated:** 2026-06-08  
 **Reviewers:** ABDELILAH MORTAKI · HAMDAOUI Ali · ilyas abarbach
