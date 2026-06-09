@@ -4,99 +4,154 @@
 
 This repository builds and evolves an AI-assisted software modernization platform.
 
-Always work from the **current assigned issue and current repository state**. Do not assume that an older milestone, architecture phase, status, state model, or implementation plan is still active.
+Always work from the current assigned issue and current repository state. Keep one issue per branch or worktree.
 
 ## Sources of truth
 
 Use this priority order:
 
-1. Assigned Jira issue or explicit user request
+1. Current assigned issue and acceptance criteria
 2. Current approved specification or implementation plan
 3. Repository code and tests
-4. Existing documentation
+4. Relevant documentation under `docs/`
 5. This file
 
-When sources conflict, stop and report the conflict instead of silently choosing.
+For M1, use:
 
-## Context discipline
+```text
+docs/M1_IMPLEMENTATION_PLAN.md
+```
 
-* Read the assigned issue first.
-* Read all applicable `AGENTS.md` files.
-* Use targeted searches such as `rg`; avoid scanning the whole repository without need.
-* Open only relevant parts of large documents.
-* Do not repeat specifications in code or reports.
-* Do not expand scope beyond the assigned issue.
-* Verify assumptions against the current code.
+When sources conflict, report the conflict. Do not silently choose.
 
-## Engineering approach
+## Required workflow
 
-* Understand existing behavior before changing it.
-* Prefer small, typed, testable changes.
-* Reuse existing abstractions and conventions.
-* Avoid broad refactors unless explicitly required.
-* Keep domain logic independent from interfaces and infrastructure.
-* Preserve backward compatibility unless the issue approves a breaking change.
-* Never store credentials, secrets, or private keys in source code or configuration examples.
-* Validate external input at system boundaries.
-* Make state-changing operations atomic where practical.
-* Keep generated artifacts, logs, and persistent state traceable and reproducible.
+Before editing or switching branches:
 
-## Parallel work
+```powershell
+git status --short
+git branch --show-current
+```
 
-* Use one issue per branch or worktree.
+Preserve unrelated work. Never delete, reset, clean, overwrite, rebase, or modify unrelated files.
+
+If completed issue-owned files are modified or untracked:
+
+1. Run focused and regression tests.
+2. Review the files.
+3. Stage only issue-owned files.
+4. Commit them locally.
+
+Use explicit paths:
+
+```powershell
+git add <issue-files>
+git diff --cached --check
+git diff --cached
+git commit -m "<type>(<scope>): <summary>"
+```
+
+Do not use `git add .` when unrelated files exist. Never commit secrets, logs, local databases, generated files, environment files, or another developer’s work.
+
+After committing:
+
+```powershell
+git status --short
+git log -1 --oneline
+```
+
+## Starting a new issue
+
+New issue branches must start from the latest `DEMO2`, unless the issue specifies another approved base.
+
+```powershell
+git switch DEMO2
+git pull --ff-only origin DEMO2
+git rev-parse --short HEAD
+git switch -c <issue-branch>
+```
+
+If `DEMO2` does not exist locally:
+
+```powershell
+git fetch origin
+git switch --track origin/DEMO2
+```
+
+If the issue branch already exists, switch to it instead of recreating it.
+
+Do not merge, rebase, reset, force-update, or resolve branch divergence without explicit approval.
+
+## Scope and engineering
+
+* Read the assigned issue and all applicable `AGENTS.md` files.
+* Use targeted searches such as `rg`.
 * Change only files required by the issue.
-* Run `git status --short` before editing.
-* Preserve unrelated and uncommitted work.
-* Do not reset, rebase, delete, commit, push, or modify unrelated files unless explicitly requested.
-* Minimize shared-file edits to reduce merge conflicts.
-* Report dependencies or conflicts early.
+* Prefer small, typed, testable changes.
+* Reuse existing abstractions.
+* Keep domain logic independent from infrastructure and interfaces.
+* Preserve existing behavior unless the issue approves a change.
+* Do not add future milestone features.
+* Do not add or upgrade dependencies without justification.
+* Never store credentials or secrets.
 
 ## Testing
 
-Before editing, identify the relevant existing tests and baseline.
+Before editing, identify and run the relevant baseline tests.
 
 After editing:
 
-1. Run focused tests for the changed behavior.
-2. Run the broader affected test group.
+1. Run focused tests.
+2. Run broader affected tests.
 3. Run the full repository suite when practical.
-4. Do not weaken tests or change them only to force success.
-5. Do not claim success without actual test output.
+4. Run:
 
-If an unrelated failure already exists, report it separately.
+```powershell
+git diff --check
+git diff --cached --check
+```
 
-## Dependencies and tools
+Do not weaken tests or claim success without real output. Report unrelated baseline failures separately.
 
-* Prefer existing dependencies and standard-library solutions.
-* Do not add or upgrade dependencies without explaining the need.
-* Follow the repository’s supported language and tool versions.
-* Use the project’s existing formatting, linting, and test commands.
+## Commit and push policy
 
-## Documentation
+Completed issue work must end in a local commit unless:
 
-Update documentation when behavior, configuration, architecture, setup, or public contracts change.
+* acceptance criteria are incomplete;
+* implementation tests fail;
+* a source conflict blocks completion;
+* safe staging is impossible;
+* the user explicitly says not to commit.
 
-Keep comments focused on intent and non-obvious decisions.
+Do not push unless explicitly requested.
+
+Never force-push without explicit approval.
 
 ## Completion criteria
 
 Work is complete only when:
 
-* The assigned acceptance criteria are satisfied.
-* Focused tests pass.
-* Relevant regression tests pass.
-* No unrelated behavior changed.
-* No unapproved scope was added.
-* Risks, assumptions, and deviations are reported.
+* acceptance criteria pass;
+* focused and regression tests pass;
+* no unrelated behavior changed;
+* no unapproved scope was added;
+* issue-owned files are committed locally;
+* only issue-relevant files are included;
+* risks and deviations are reported.
+
+Do not mark an issue complete while its implementation remains untracked.
 
 ## Final report
 
 Report:
 
-* Files changed
-* What was implemented
-* Tests run and results
-* Acceptance-criteria status
-* Assumptions, risks, blockers, or deviations
-
-Keep the report concise and evidence-based.
+* integration base and commit;
+* issue branch;
+* final commit hash and subject;
+* files changed;
+* implementation summary;
+* tests and exact results;
+* acceptance-criteria status;
+* final `git status --short`;
+* risks, conflicts, or deviations;
+* whether anything was pushed.
