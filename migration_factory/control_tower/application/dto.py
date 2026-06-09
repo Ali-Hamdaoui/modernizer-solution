@@ -94,6 +94,36 @@ class AuditRecordDto:
 
 
 @dataclass(frozen=True, slots=True)
+class RunConfigurationDto:
+    run_configuration_id: str
+    job_id: str
+    schema_version: str
+    runner_profile_id: str
+    runner_profile_version: str
+    pipeline_id: str
+    pipeline_version: str
+    target_proof_level: str
+    enabled_gates: tuple[str, ...]
+    policy: dict[str, Any]
+    payload_json: str
+    payload_checksum: str
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class StageRunDto:
+    stage_run_id: str
+    job_id: str
+    stage_index: int
+    stage_id: str
+    status: str
+    input_source: dict[str, Any]
+    created_at: str
+    started_at: str | None
+    finished_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class ArtifactDto:
     artifact_id: str
     job_id: str

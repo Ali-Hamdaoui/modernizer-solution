@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Protocol, Self, Sequence
+from typing import Protocol, Sequence
+from typing_extensions import Self
 
 from migration_factory.control_tower.application.dto import (
     AuditRecordDto,
@@ -56,6 +57,8 @@ class MigrationJobRepository(Protocol):
 
     def get_active_job(self) -> MigrationJobRecord | None: ...
 
+    def list(self) -> tuple[MigrationJobDto, ...]: ...
+
     def transition_state(
         self,
         job_id: str,
@@ -78,6 +81,8 @@ class StageRunRepository(Protocol):
     def insert_many(self, stage_runs: Sequence[StageRunRecord]) -> None: ...
 
     def get(self, stage_run_id: str) -> StageRunRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[StageRunRecord, ...]: ...
 
 
 class RunEventRepository(Protocol):

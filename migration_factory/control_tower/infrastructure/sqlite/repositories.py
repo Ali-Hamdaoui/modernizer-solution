@@ -295,6 +295,17 @@ class SqliteMigrationJobRepository:
         )
         return cursor.rowcount == 1
 
+    def list(self) -> tuple[MigrationJobDto, ...]:
+        rows = self._connection.execute(
+            """
+            SELECT job_id, version, status, active_slot, last_event_sequence,
+                   created_at, updated_at, started_at, finished_at
+            FROM migration_jobs
+            ORDER BY created_at, job_id
+            """
+        ).fetchall()
+        return tuple(_migration_job_dto_from_row(row) for row in rows)
+
     def increment_event_sequence(self, job_id: str) -> int:
         cursor = self._connection.execute(
             """
@@ -426,17 +437,20 @@ class SqliteStageRunRepository:
         ).fetchone()
         if row is None:
             return None
-        return StageRunRecord(
-            stage_run_id=str(row["stage_run_id"]),
-            job_id=str(row["job_id"]),
-            stage_index=int(row["stage_index"]),
-            stage_id=str(row["stage_id"]),
-            status=str(row["status"]),
-            input_source_json=str(row["input_source_json"]),
-            created_at=str(row["created_at"]),
-            started_at=None if row["started_at"] is None else str(row["started_at"]),
-            finished_at=None if row["finished_at"] is None else str(row["finished_at"]),
-        )
+        return _stage_run_record_from_row(row)
+
+    def list_for_job(self, job_id: str) -> tuple[StageRunRecord, ...]:
+        rows = self._connection.execute(
+            """
+            SELECT stage_run_id, job_id, stage_index, stage_id, status, input_source_json,
+                   created_at, started_at, finished_at
+            FROM stage_runs
+            WHERE job_id = ?
+            ORDER BY stage_index
+            """,
+            (job_id,),
+        ).fetchall()
+        return tuple(_stage_run_record_from_row(row) for row in rows)
 
 
 class SqliteArtifactRepository:
@@ -860,6 +874,20 @@ def _artifact_from_row(row: sqlite3.Row) -> ArtifactDto:
         checksum=str(row["checksum"]),
         created_at=str(row["created_at"]),
         created_by=str(row["created_by"]),
+    )
+
+
+def _stage_run_record_from_row(row: sqlite3.Row) -> StageRunRecord:
+    return StageRunRecord(
+        stage_run_id=str(row["stage_run_id"]),
+        job_id=str(row["job_id"]),
+        stage_index=int(row["stage_index"]),
+        stage_id=str(row["stage_id"]),
+        status=str(row["status"]),
+        input_source_json=str(row["input_source_json"]),
+        created_at=str(row["created_at"]),
+        started_at=None if row["started_at"] is None else str(row["started_at"]),
+        finished_at=None if row["finished_at"] is None else str(row["finished_at"]),
     )
 
 
