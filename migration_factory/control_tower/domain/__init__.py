@@ -3,6 +3,8 @@
 from migration_factory.control_tower.domain.errors import (
     ControlTowerDomainError,
     InvalidJobStateTransitionError,
+    NotFoundError,
+    RegistrationConflictError,
 )
 from migration_factory.control_tower.domain.states import (
     JobState,
@@ -23,6 +25,8 @@ __all__ = [
     "InvalidJobStateTransitionError",
     "JOB_STATE_TRANSITIONS",
     "JobState",
+    "NotFoundError",
+    "RegistrationConflictError",
     "StageState",
     "TERMINAL_JOB_STATES",
     "TargetProofLevel",
