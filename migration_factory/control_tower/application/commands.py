@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from migration_factory.control_tower.domain.artifacts import ArtifactHashResult
 from migration_factory.control_tower.domain.states import JobState, TargetProofLevel
 from migration_factory.control_tower.schemas import PipelineDefinition, RunnerProfile
 from migration_factory.control_tower.schemas.run_configuration import RunPolicy
@@ -39,6 +40,19 @@ class RegisterPipelineDefinitionCommand:
     pipeline: PipelineDefinition | dict[str, Any]
     actor_type: str
     actor_id: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RegisterArtifactCommand:
+    job_id: str
+    artifact: ArtifactHashResult
+    artifact_type: str
+    actor_type: str
+    actor_id: str
+    stage_run_id: str | None = None
+    content_type: str | None = None
     correlation_id: str | None = None
     causation_id: str | None = None
 

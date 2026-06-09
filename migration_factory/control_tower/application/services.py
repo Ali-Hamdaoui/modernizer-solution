@@ -8,19 +8,23 @@ from uuid import uuid4
 
 from migration_factory.control_tower.application.commands import (
     CreateMigrationJobCommand,
+    RegisterArtifactCommand,
     RegisterPipelineDefinitionCommand,
     RegisterRunnerProfileCommand,
     TransitionJobStateCommand,
 )
 from migration_factory.control_tower.application.dto import (
+    ArtifactDto,
     CreatedMigrationJob,
     MigrationJobDto,
     PipelineDefinitionDto,
     RunnerProfileDto,
 )
 from migration_factory.control_tower.application.ports import ControlTowerUnitOfWork
+from migration_factory.control_tower.domain.artifacts import ArtifactHashResult
 from migration_factory.control_tower.domain.checksums import canonical_json_text, sha256_canonical_json, utc_now_text
 from migration_factory.control_tower.domain.entities import (
+    ArtifactRecord,
     AuditRecord,
     MigrationJobRecord,
     RunConfigurationRecord,
@@ -28,6 +32,7 @@ from migration_factory.control_tower.domain.entities import (
     StageRunRecord,
 )
 from migration_factory.control_tower.domain.errors import (
+    ArtifactPathError,
     CompatibilityError,
     ConcurrencyConflictError,
     ExpectedVersionRequiredError,
@@ -483,10 +488,195 @@ class ControlTowerRegistrationService:
             return updated_job
 
 
+class ArtifactRegistryService:
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+
+    def register_artifact(self, command: RegisterArtifactCommand) -> ArtifactDto:
+        artifact = _validate_artifact_hash_result(command.artifact)
+        _require_non_empty(command.artifact_type, "artifact_type")
+        _require_non_empty(command.actor_type, "actor_type")
+        _require_non_empty(command.actor_id, "actor_id")
+
+        with self._unit_of_work_factory() as uow:
+            job = uow.migration_jobs.get(command.job_id)
+            if job is None:
+                raise NotFoundError("migration job", command.job_id)
+
+            run_configuration = uow.run_configurations.get_for_job(command.job_id)
+            if run_configuration is None:
+                raise NotFoundError("run configuration", command.job_id)
+
+            runner = uow.runner_profiles.get_exact(
+                run_configuration.runner_profile_id,
+                run_configuration.runner_profile_version,
+            )
+            if runner is None:
+                raise NotFoundError(
+                    "runner profile",
+                    f"{run_configuration.runner_profile_id}/{run_configuration.runner_profile_version}",
+                )
+
+            registered_root = _find_registered_root(runner.payload, artifact)
+            stage_run = None
+            if command.stage_run_id is not None:
+                stage_run = uow.stage_runs.get(command.stage_run_id)
+                if stage_run is None or stage_run.job_id != job.job_id:
+                    raise NotFoundError("stage run", command.stage_run_id)
+
+            existing = uow.artifacts.get_exact(
+                command.job_id,
+                artifact.registered_root_id,
+                artifact.normalized_relative_path,
+            )
+            if existing is not None:
+                if existing.checksum != artifact.checksum:
+                    raise RegistrationConflictError(
+                        "artifact",
+                        f"{command.job_id}:{artifact.registered_root_id}:{artifact.normalized_relative_path}",
+                        artifact.checksum,
+                    )
+                return existing
+
+            created_at = utc_now_text()
+            artifact_id = f"artifact-{uuid4().hex}"
+            artifact_record = ArtifactRecord(
+                artifact_id=artifact_id,
+                job_id=command.job_id,
+                stage_run_id=stage_run.stage_run_id if stage_run is not None else None,
+                artifact_type=command.artifact_type,
+                registered_root_id=artifact.registered_root_id,
+                relative_path=artifact.relative_path,
+                normalized_relative_path=artifact.normalized_relative_path,
+                content_type=command.content_type,
+                size_bytes=artifact.size_bytes,
+                checksum_algorithm=artifact.checksum_algorithm,
+                checksum=artifact.checksum,
+                created_at=created_at,
+                created_by=command.actor_id,
+            )
+
+            uow.artifacts.insert(artifact_record)
+
+            sequence = uow.migration_jobs.increment_event_sequence(command.job_id)
+
+            event_id = f"event-{command.job_id}-{sequence:04d}"
+            event_payload = {
+                "artifact_id": artifact_id,
+                "artifact_type": command.artifact_type,
+                "checksum": artifact.checksum,
+                "checksum_algorithm": artifact.checksum_algorithm,
+                "content_type": command.content_type,
+                "created_at": created_at,
+                "created_by": command.actor_id,
+                "job_id": command.job_id,
+                "normalized_relative_path": artifact.normalized_relative_path,
+                "relative_path": artifact.relative_path,
+                "registered_root_id": registered_root.root_id,
+                "size_bytes": artifact.size_bytes,
+                "stage_run_id": stage_run.stage_run_id if stage_run is not None else None,
+            }
+            event_record = RunEventRecord(
+                event_id=event_id,
+                job_id=command.job_id,
+                sequence=sequence,
+                event_type="artifact_registered",
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+                payload_json=canonical_json_text(event_payload),
+                payload_checksum=sha256_canonical_json(event_payload),
+                created_at=created_at,
+            )
+            uow.run_events.insert(event_record)
+
+            audit_payload = {
+                "artifact_id": artifact_id,
+                "artifact_type": command.artifact_type,
+                "checksum": artifact.checksum,
+                "checksum_algorithm": artifact.checksum_algorithm,
+                "content_type": command.content_type,
+                "event_id": event_id,
+                "job_id": command.job_id,
+                "normalized_relative_path": artifact.normalized_relative_path,
+                "relative_path": artifact.relative_path,
+                "registered_root_id": registered_root.root_id,
+                "sequence": sequence,
+                "size_bytes": artifact.size_bytes,
+                "stage_run_id": stage_run.stage_run_id if stage_run is not None else None,
+            }
+            audit_record = AuditRecord(
+                audit_id=f"audit-{command.job_id}-{sequence:04d}",
+                job_id=command.job_id,
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                action="artifact_registered",
+                prior_state=None,
+                new_state=None,
+                job_version=job.version,
+                correlation_id=command.correlation_id,
+                causation_id=event_record.event_id,
+                payload_json=canonical_json_text(audit_payload),
+                created_at=created_at,
+            )
+            uow.audit_records.insert(audit_record)
+
+            return ArtifactDto(
+                artifact_id=artifact_id,
+                job_id=command.job_id,
+                stage_run_id=stage_run.stage_run_id if stage_run is not None else None,
+                artifact_type=command.artifact_type,
+                registered_root_id=artifact.registered_root_id,
+                relative_path=artifact.relative_path,
+                normalized_relative_path=artifact.normalized_relative_path,
+                content_type=command.content_type,
+                size_bytes=artifact.size_bytes,
+                checksum_algorithm=artifact.checksum_algorithm,
+                checksum=artifact.checksum,
+                created_at=created_at,
+                created_by=command.actor_id,
+            )
+
+
 def _validate_runner_profile(profile: RunnerProfile | dict[str, Any]) -> RunnerProfile:
     if isinstance(profile, RunnerProfile):
         return profile
     return RunnerProfile.model_validate(profile)
+
+
+def _require_non_empty(value: str, field_name: str) -> None:
+    if not value.strip():
+        raise ArtifactPathError(f"{field_name} must not be empty")
+
+
+def _validate_artifact_hash_result(artifact: ArtifactHashResult) -> ArtifactHashResult:
+    if not isinstance(artifact, ArtifactHashResult):
+        raise ArtifactPathError("Artifact registration requires trusted validated artifact metadata")
+    if not artifact.registered_root_id.strip():
+        raise ArtifactPathError("Registered root ID must not be empty")
+    if not artifact.normalized_relative_path.strip():
+        raise ArtifactPathError("Normalized relative path must not be empty")
+    if not artifact.relative_path.strip():
+        raise ArtifactPathError("Relative path must not be empty")
+    if artifact.checksum_algorithm != "sha256":
+        raise ArtifactPathError(f"Unsupported artifact checksum algorithm: {artifact.checksum_algorithm}")
+    if not artifact.checksum.strip():
+        raise ArtifactPathError("Artifact checksum must not be empty")
+    if artifact.size_bytes < 0:
+        raise ArtifactPathError("Artifact size must not be negative")
+    return artifact
+
+
+def _find_registered_root(runner_profile: RunnerProfile, artifact: ArtifactHashResult):
+    for root in runner_profile.filesystem.roots:
+        if root.root_id == artifact.registered_root_id:
+            if root.kind != artifact.root_kind:
+                raise CompatibilityError(
+                    "Artifact metadata root kind does not match the selected runner profile"
+                )
+            return root
+    raise NotFoundError("registered root", artifact.registered_root_id)
 
 
 def _validate_pipeline_definition(

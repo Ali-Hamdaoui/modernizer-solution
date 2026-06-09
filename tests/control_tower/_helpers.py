@@ -8,6 +8,7 @@ import sqlite3
 from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.infrastructure.sqlite.connection import connect_control_tower
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+from migration_factory.control_tower.schemas.runner_profile import RegisteredFilesystemRoot
 
 
 def canonical_json(value: object) -> str:
@@ -28,6 +29,37 @@ def make_migrated_connection(tmp_path: Path) -> sqlite3.Connection:
 
 def seed_runner_profile(connection: sqlite3.Connection) -> None:
     payload = runner_profile_payload()
+    _insert_runner_profile_payload(connection, payload)
+
+
+def seed_runner_profile_with_roots(
+    connection: sqlite3.Connection,
+    roots: tuple[RegisteredFilesystemRoot, ...],
+) -> None:
+    payload = runner_profile_payload()
+    payload["filesystem"]["roots"] = tuple(
+        {
+            "root_id": root.root_id,
+            "kind": root.kind,
+            "path": root.path,
+        }
+        for root in roots
+    )
+    _insert_runner_profile_payload(connection, payload)
+
+
+def artifact_roots(tmp_path: Path) -> tuple[RegisteredFilesystemRoot, ...]:
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    source.mkdir()
+    output.mkdir()
+    return (
+        RegisteredFilesystemRoot(root_id="source-root", kind="source", path=str(source)),
+        RegisteredFilesystemRoot(root_id="output-root", kind="output", path=str(output)),
+    )
+
+
+def _insert_runner_profile_payload(connection: sqlite3.Connection, payload: dict) -> None:
     connection.execute(
         """
         INSERT INTO runner_profiles (

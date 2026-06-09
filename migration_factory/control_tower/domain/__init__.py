@@ -11,7 +11,9 @@ from migration_factory.control_tower.domain.checksums import (
     utc_now,
     utc_now_text,
 )
+from migration_factory.control_tower.domain.artifacts import ArtifactHashResult
 from migration_factory.control_tower.domain.entities import (
+    ArtifactRecord,
     AuditRecord,
     MigrationJobRecord,
     PipelineDefinitionRecord,
@@ -50,6 +52,8 @@ from migration_factory.control_tower.domain.transitions import (
 )
 
 __all__ = [
+    "ArtifactHashResult",
+    "ArtifactRecord",
     "ArtifactHashError",
     "ArtifactPathError",
     "AuditRecord",
