@@ -368,6 +368,20 @@ def test_all_m1_tables_exist_after_foundation_migration(tmp_path: Path) -> None:
     }.issubset(actual_tables)
 
 
+def test_schema_migration_timestamps_use_microseconds(tmp_path: Path) -> None:
+    connection = _migrated_connection(tmp_path)
+    try:
+        applied_at = connection.execute(
+            "SELECT applied_at FROM schema_migrations WHERE version = 1"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+    assert applied_at.endswith("Z")
+    assert "." in applied_at
+    assert len(applied_at.split(".")[1].rstrip("Z")) == 6
+
+
 def test_runner_profiles_schema_matches_contract(tmp_path: Path) -> None:
     connection = _migrated_connection(tmp_path)
     try:

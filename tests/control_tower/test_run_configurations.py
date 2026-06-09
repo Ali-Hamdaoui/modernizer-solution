@@ -3,7 +3,10 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from migration_factory.control_tower.schemas.run_configuration import RunConfiguration
+from migration_factory.control_tower.schemas.run_configuration import (
+    RunConfiguration,
+    RunPolicy,
+)
 
 
 def _run_configuration_payload() -> dict:
@@ -17,13 +20,7 @@ def _run_configuration_payload() -> dict:
         "pipeline_version": "2026.06",
         "target_proof_level": "BUILD_TEST_VERIFIED",
         "enabled_gates": ("build", "test"),
-        "policy": {
-            "continue_after_warning": False,
-            "enable_runtime_gate": True,
-            "enable_endpoint_gate": False,
-            "allow_ai_assistance": True,
-            "allow_ai_repair": False,
-        },
+        "policy": {},
     }
 
 
@@ -32,6 +29,7 @@ def test_valid_run_configuration() -> None:
 
     assert configuration.job_id == "job-123"
     assert configuration.target_proof_level == "BUILD_TEST_VERIFIED"
+    assert configuration.policy == RunPolicy()
 
 
 def test_unknown_field_rejected() -> None:
@@ -53,12 +51,20 @@ def test_run_policy_is_immutable() -> None:
     configuration = RunConfiguration.model_validate(_run_configuration_payload())
 
     with pytest.raises(ValidationError):
-        configuration.policy.allow_ai_repair = True
+        configuration.policy.enable_endpoint_gate = True
+
+
+def test_run_policy_defaults_are_false() -> None:
+    assert RunPolicy() == RunPolicy(
+        continue_after_warning=False,
+        enable_runtime_gate=False,
+        enable_endpoint_gate=False,
+    )
 
 
 def test_strict_booleans_reject_string_values() -> None:
     payload = _run_configuration_payload()
-    payload["policy"]["allow_ai_assistance"] = "true"
+    payload["policy"] = {"enable_runtime_gate": "true"}
 
     with pytest.raises(ValidationError):
         RunConfiguration.model_validate(payload)

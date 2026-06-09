@@ -17,6 +17,25 @@ from migration_factory.control_tower.infrastructure.sqlite.migrations import (
     migrate_control_tower,
     split_sql_statements,
 )
+from migration_factory.control_tower.infrastructure.sqlite.artifact_paths import (
+    ArtifactHashResult,
+    ValidatedArtifactPath,
+    hash_registered_artifact,
+    normalize_registered_relative_path,
+    validate_registered_artifact_path,
+)
+from migration_factory.control_tower.infrastructure.sqlite.repositories import (
+    SqliteAuditRecordRepository,
+    SqliteMigrationJobRepository,
+    SqlitePipelineDefinitionRepository,
+    SqliteRunConfigurationRepository,
+    SqliteRunEventRepository,
+    SqliteRunnerProfileRepository,
+    SqliteStageRunRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import (
+    SqliteControlTowerUnitOfWork,
+)
 
 __all__ = [
     "AppliedMigrationChecksumMismatchError",
@@ -25,11 +44,24 @@ __all__ = [
     "MigrationExecutionError",
     "MigrationFile",
     "MigrationSafetyError",
+    "ArtifactHashResult",
+    "SqliteAuditRecordRepository",
+    "SqliteControlTowerUnitOfWork",
+    "SqliteMigrationJobRepository",
+    "SqlitePipelineDefinitionRepository",
+    "SqliteRunConfigurationRepository",
+    "SqliteRunEventRepository",
+    "SqliteRunnerProfileRepository",
+    "SqliteStageRunRepository",
     "UnsupportedJournalModeError",
     "apply_pending_migrations",
     "configure_control_tower_journal_mode",
     "connect_control_tower",
+    "hash_registered_artifact",
     "discover_migrations",
     "migrate_control_tower",
+    "normalize_registered_relative_path",
     "split_sql_statements",
+    "ValidatedArtifactPath",
+    "validate_registered_artifact_path",
 ]
