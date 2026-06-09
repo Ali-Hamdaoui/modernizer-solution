@@ -4,38 +4,47 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from .common import NonEmptyString, StrictModel, require_non_empty_string
 
 
 StageInputSourceKind = Literal["legacy_source", "previous_stage"]
+KNOWN_CONTINUATION_POLICY_IDS = frozenset(
+    {
+        "default",
+        "stage1-build-test-policy",
+        "final-build-test-policy",
+    }
+)
 
 
-class StageInputSource(StrictModel):
+class PipelineInputSource(StrictModel):
     kind: StageInputSourceKind
     previous_stage_index: int | None = None
 
 
-class PipelineStageDefinition(StrictModel):
+class PipelineTarget(StrictModel):
+    spring_boot: str | None = None
+    java: int
+
+
+class PipelineStage(StrictModel):
     stage_index: int
     stage_id: NonEmptyString
-    display_name: NonEmptyString
-    input_source: StageInputSource
+    profile_id: NonEmptyString
     command_jdk: NonEmptyString
-    continuation_policy: str | None = None
+    input_source: PipelineInputSource
+    continuation_policy_id: NonEmptyString
+    target: PipelineTarget
 
-    @field_validator("stage_id", "display_name", "command_jdk", mode="after")
+    @field_validator("stage_id", "profile_id", "command_jdk", "continuation_policy_id", mode="after")
     @classmethod
     def _validate_required_strings(cls, value: str, info):
-        return require_non_empty_string(value, info.field_name)
-
-    @field_validator("continuation_policy", mode="after")
-    @classmethod
-    def _validate_optional_string(cls, value: str | None, info):
-        if value is None:
-            return value
-        return require_non_empty_string(value, info.field_name)
+        value = require_non_empty_string(value, info.field_name)
+        if info.field_name == "continuation_policy_id" and value not in KNOWN_CONTINUATION_POLICY_IDS:
+            raise ValueError("unknown continuation policy")
+        return value
 
 
 class PipelineDefinition(StrictModel):
@@ -45,7 +54,7 @@ class PipelineDefinition(StrictModel):
     display_name: NonEmptyString
     graph_version: NonEmptyString
     graph_state_schema_version: NonEmptyString
-    stages: tuple[PipelineStageDefinition, ...]
+    stages: tuple[PipelineStage, ...] = Field(min_length=1)
 
     @field_validator(
         "schema_version",
@@ -62,27 +71,25 @@ class PipelineDefinition(StrictModel):
 
     @model_validator(mode="after")
     def _validate_stages(self) -> "PipelineDefinition":
-        if not self.stages:
-            raise ValueError("stages must not be empty")
-
         expected_indexes = list(range(1, len(self.stages) + 1))
         stage_indexes = [stage.stage_index for stage in self.stages]
         if stage_indexes != expected_indexes:
-            raise ValueError("stage indexes must be contiguous starting at 1")
+            raise ValueError("stage indexes must be contiguous and start at 1")
 
         first_stage = self.stages[0]
         if first_stage.input_source.kind != "legacy_source":
-            raise ValueError('stage 1 must use input_source.kind == "legacy_source"')
+            raise ValueError("stage 1 must read the legacy source")
         if first_stage.input_source.previous_stage_index is not None:
-            raise ValueError("legacy_source stages must not define previous_stage_index")
+            raise ValueError("stage 1 must not declare previous_stage_index")
 
         for stage in self.stages[1:]:
             if stage.input_source.kind != "previous_stage":
-                raise ValueError("stages after stage 1 must use previous_stage input sources")
-            if (
-                stage.input_source.previous_stage_index is not None
-                and stage.input_source.previous_stage_index != stage.stage_index - 1
-            ):
+                raise ValueError("stage 2+ must explicitly read a previous stage")
+            if stage.input_source.previous_stage_index != stage.stage_index - 1:
                 raise ValueError("previous_stage_index must point to the immediately previous stage")
 
         return self
+
+
+StageInputSource = PipelineInputSource
+PipelineStageDefinition = PipelineStage

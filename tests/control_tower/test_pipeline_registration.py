@@ -15,6 +15,7 @@ from migration_factory.control_tower.domain.errors import RegistrationConflictEr
 from migration_factory.control_tower.infrastructure.sqlite.connection import connect_control_tower
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
+from tests.control_tower._helpers import pipeline_definition_payload
 
 
 def test_valid_pipeline_definition_can_be_registered(tmp_path: Path) -> None:
@@ -216,30 +217,9 @@ def _register_command(
 
 
 def _pipeline_payload() -> dict:
-    return {
-        "schema_version": "1.0.0",
-        "pipeline_id": "pipeline-default",
-        "pipeline_version": "v1",
-        "display_name": "Default pipeline",
-        "graph_version": "graph-v1",
-        "graph_state_schema_version": "graph-state-v1",
-        "stages": (
-            {
-                "stage_index": 1,
-                "stage_id": "analysis",
-                "display_name": "Analysis",
-                "input_source": {"kind": "legacy_source"},
-                "command_jdk": "jdk-17",
-            },
-            {
-                "stage_index": 2,
-                "stage_id": "transform",
-                "display_name": "Transform",
-                "input_source": {"kind": "previous_stage", "previous_stage_index": 1},
-                "command_jdk": "jdk-17",
-            },
-        ),
-    }
+    payload = pipeline_definition_payload()
+    payload["pipeline_version"] = "v1"
+    return payload
 
 
 def _pipeline_row(connection: sqlite3.Connection) -> sqlite3.Row:

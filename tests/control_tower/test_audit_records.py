@@ -20,6 +20,7 @@ from migration_factory.control_tower.infrastructure.sqlite.repositories import (
     SqliteRunnerProfileRepository,
 )
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
+from tests.control_tower._helpers import pipeline_definition_payload, runner_profile_payload
 
 
 def test_global_audit_records_allow_null_job_id(tmp_path: Path) -> None:
@@ -182,37 +183,10 @@ def _migrated_connection(tmp_path: Path) -> sqlite3.Connection:
 
 
 def _runner_command() -> RegisterRunnerProfileCommand:
+    profile = runner_profile_payload()
+    profile["runner_profile_version"] = "v1"
     return RegisterRunnerProfileCommand(
-        profile={
-            "schema_version": "1.0.0",
-            "runner_profile_id": "runner-default",
-            "runner_profile_version": "v1",
-            "display_name": "Default runner",
-            "filesystem_roots": (
-                {
-                    "root_id": "source-root",
-                    "kind": "source",
-                    "path": "C:/workspace/source",
-                },
-            ),
-            "maven": {"maven_id": "maven-3.9"},
-            "jdk_inventory": (
-                {
-                    "jdk_id": "jdk-17",
-                    "java_home": "C:/jdks/temurin-17",
-                    "major_version": 17,
-                },
-            ),
-            "network_policy": {"allow_outbound": True},
-            "ai_profiles": (
-                {
-                    "profile_id": "azure-gpt",
-                    "profile_version": "1",
-                    "provider": "azure-openai",
-                    "deployment_ref": "deployments/gpt-4.1",
-                },
-            ),
-        },
+        profile=profile,
         actor_type="user",
         actor_id="tester",
     )
@@ -223,24 +197,10 @@ def _pipeline_command(
     correlation_id: str | None = None,
     causation_id: str | None = None,
 ) -> RegisterPipelineDefinitionCommand:
+    pipeline = pipeline_definition_payload()
+    pipeline["pipeline_version"] = "v1"
     return RegisterPipelineDefinitionCommand(
-        pipeline={
-            "schema_version": "1.0.0",
-            "pipeline_id": "pipeline-default",
-            "pipeline_version": "v1",
-            "display_name": "Default pipeline",
-            "graph_version": "graph-v1",
-            "graph_state_schema_version": "graph-state-v1",
-            "stages": (
-                {
-                    "stage_index": 1,
-                    "stage_id": "analysis",
-                    "display_name": "Analysis",
-                    "input_source": {"kind": "legacy_source"},
-                    "command_jdk": "jdk-17",
-                },
-            ),
-        },
+        pipeline=pipeline,
         actor_type="user",
         actor_id="tester",
         correlation_id=correlation_id,

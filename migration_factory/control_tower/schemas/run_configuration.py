@@ -2,29 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from pydantic import Field, field_validator
 
-from pydantic import field_validator
+from migration_factory.control_tower.domain.states import TargetProofLevel
 
 from .common import NonEmptyString, StrictModel, require_non_empty_string
 
 
-TargetProofLevel = Literal[
-    "ANALYZED",
-    "PLANNED",
-    "TRANSFORMED",
-    "BUILD_TEST_VERIFIED",
-    "RUNTIME_VERIFIED",
-    "ENDPOINT_VERIFIED",
-]
-
-
 class RunPolicy(StrictModel):
-    continue_after_warning: bool
-    enable_runtime_gate: bool
-    enable_endpoint_gate: bool
-    allow_ai_assistance: bool
-    allow_ai_repair: bool
+    continue_after_warning: bool = False
+    enable_runtime_gate: bool = False
+    enable_endpoint_gate: bool = False
 
 
 class RunConfiguration(StrictModel):
@@ -36,8 +24,18 @@ class RunConfiguration(StrictModel):
     pipeline_id: NonEmptyString
     pipeline_version: NonEmptyString
     target_proof_level: TargetProofLevel
-    enabled_gates: tuple[str, ...]
+    enabled_gates: tuple[str, ...] = Field(default_factory=tuple)
     policy: RunPolicy
+
+    @field_validator(
+        "target_proof_level",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_target_proof_level(cls, value):
+        if isinstance(value, TargetProofLevel):
+            return value
+        return TargetProofLevel(value)
 
     @field_validator(
         "schema_version",

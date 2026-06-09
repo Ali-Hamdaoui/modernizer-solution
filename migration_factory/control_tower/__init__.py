@@ -1,13 +1,21 @@
 """AI Migration Control Tower package."""
 
 from .schemas import (
+    AIProfileReference,
     AiProfileReference,
+    FilesystemPolicy,
+    JdkConfig,
     JdkInstallation,
+    MavenConfig,
     MavenConfiguration,
     NetworkPolicy,
     PipelineDefinition,
+    PipelineInputSource,
+    PipelineStage,
     PipelineStageDefinition,
+    PipelineTarget,
     RegisteredFilesystemRoot,
+    RegisteredRoot,
     RunConfiguration,
     RunPolicy,
     RunnerProfile,
@@ -17,13 +25,21 @@ from .schemas import (
 )
 
 __all__ = [
+    "AIProfileReference",
     "AiProfileReference",
+    "FilesystemPolicy",
+    "JdkConfig",
     "JdkInstallation",
+    "MavenConfig",
     "MavenConfiguration",
     "NetworkPolicy",
     "PipelineDefinition",
+    "PipelineInputSource",
+    "PipelineStage",
     "PipelineStageDefinition",
+    "PipelineTarget",
     "RegisteredFilesystemRoot",
+    "RegisteredRoot",
     "RunConfiguration",
     "RunPolicy",
     "RunnerProfile",

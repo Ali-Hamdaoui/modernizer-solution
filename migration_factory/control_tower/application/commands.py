@@ -1,14 +1,31 @@
-"""Command DTOs for Control Tower registration operations."""
+"""Application command DTOs for Control Tower."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
 
+from migration_factory.control_tower.domain.states import TargetProofLevel
 from migration_factory.control_tower.schemas import PipelineDefinition, RunnerProfile
+from migration_factory.control_tower.schemas.run_configuration import RunPolicy
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
+class CreateMigrationJobCommand:
+    actor: str
+    legacy_source_ref: str
+    output_root_ref: str
+    runner_profile_id: str
+    runner_profile_version: str
+    pipeline_id: str
+    pipeline_version: str
+    target_proof_level: TargetProofLevel
+    enabled_gates: tuple[str, ...]
+    policy: RunPolicy
+    correlation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RegisterRunnerProfileCommand:
     profile: RunnerProfile | dict[str, Any]
     actor_type: str
@@ -17,7 +34,7 @@ class RegisterRunnerProfileCommand:
     causation_id: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RegisterPipelineDefinitionCommand:
     pipeline: PipelineDefinition | dict[str, Any]
     actor_type: str

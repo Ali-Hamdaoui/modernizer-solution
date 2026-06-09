@@ -15,6 +15,7 @@ from migration_factory.control_tower.domain.errors import RegistrationConflictEr
 from migration_factory.control_tower.infrastructure.sqlite.connection import connect_control_tower
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
+from tests.control_tower._helpers import runner_profile_payload
 
 
 def test_valid_runner_profile_can_be_registered(tmp_path: Path) -> None:
@@ -216,40 +217,9 @@ def _register_command(
 
 
 def _runner_profile_payload() -> dict:
-    return {
-        "schema_version": "1.0.0",
-        "runner_profile_id": "runner-default",
-        "runner_profile_version": "v1",
-        "display_name": "Default runner",
-        "filesystem_roots": (
-            {
-                "root_id": "source-root",
-                "kind": "source",
-                "path": "C:/workspace/source",
-            },
-        ),
-        "maven": {
-            "maven_id": "maven-3.9",
-        },
-        "jdk_inventory": (
-            {
-                "jdk_id": "jdk-17",
-                "java_home": "C:/jdks/temurin-17",
-                "major_version": 17,
-            },
-        ),
-        "network_policy": {
-            "allow_outbound": True,
-        },
-        "ai_profiles": (
-            {
-                "profile_id": "azure-gpt",
-                "profile_version": "1",
-                "provider": "azure-openai",
-                "deployment_ref": "deployments/gpt-4.1",
-            },
-        ),
-    }
+    payload = runner_profile_payload()
+    payload["runner_profile_version"] = "v1"
+    return payload
 
 
 def _runner_row(connection: sqlite3.Connection) -> sqlite3.Row:

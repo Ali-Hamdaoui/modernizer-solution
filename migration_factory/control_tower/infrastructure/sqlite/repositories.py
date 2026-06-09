@@ -1,31 +1,54 @@
-"""SQLite repositories for Control Tower registration records."""
+"""SQLite repository implementations for Control Tower."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
+from typing import Sequence
 
 from migration_factory.control_tower.application.dto import (
     AuditRecordDto,
     PipelineDefinitionDto,
     RunnerProfileDto,
 )
+from migration_factory.control_tower.domain.entities import (
+    AuditRecord,
+    MigrationJobRecord,
+    PipelineDefinitionRecord,
+    RunConfigurationRecord,
+    RunEventRecord,
+    RunnerProfileRecord,
+    StageRunRecord,
+)
+from migration_factory.control_tower.domain.errors import StorageIntegrityError
+from migration_factory.control_tower.domain.states import JobState, TargetProofLevel
+from migration_factory.control_tower.schemas.pipeline_definition import PipelineDefinition
+from migration_factory.control_tower.schemas.runner_profile import RunnerProfile
 
 
 class SqliteRunnerProfileRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
 
+    def get_exact(self, runner_profile_id: str, runner_profile_version: str) -> RunnerProfileRecord | None:
+        row = self._select_one(runner_profile_id, runner_profile_version)
+        if row is None:
+            return None
+        payload = RunnerProfile.model_validate_json(str(row["payload_json"]))
+        return RunnerProfileRecord(
+            runner_profile_id=str(row["runner_profile_id"]),
+            runner_profile_version=str(row["runner_profile_version"]),
+            display_name=str(row["display_name"]),
+            schema_version=str(row["schema_version"]),
+            payload_json=str(row["payload_json"]),
+            payload_checksum=str(row["payload_checksum"]),
+            created_at=str(row["created_at"]),
+            created_by=str(row["created_by"]),
+            payload=payload,
+        )
+
     def get(self, runner_profile_id: str, runner_profile_version: str) -> RunnerProfileDto | None:
-        row = self._connection.execute(
-            """
-            SELECT runner_profile_id, runner_profile_version, display_name, schema_version,
-                   payload_json, payload_checksum, created_at, created_by
-            FROM runner_profiles
-            WHERE runner_profile_id = ? AND runner_profile_version = ?
-            """,
-            (runner_profile_id, runner_profile_version),
-        ).fetchone()
+        row = self._select_one(runner_profile_id, runner_profile_version)
         return _runner_profile_from_row(row) if row is not None else None
 
     def list(self) -> tuple[RunnerProfileDto, ...]:
@@ -40,24 +63,27 @@ class SqliteRunnerProfileRepository:
         return tuple(_runner_profile_from_row(row) for row in rows)
 
     def insert(self, profile: RunnerProfileDto) -> None:
-        self._connection.execute(
-            """
-            INSERT INTO runner_profiles (
-                runner_profile_id, runner_profile_version, display_name, schema_version,
-                payload_json, payload_checksum, created_at, created_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                profile.runner_profile_id,
-                profile.runner_profile_version,
-                profile.display_name,
-                profile.schema_version,
-                profile.payload_json,
-                profile.payload_checksum,
-                profile.created_at,
-                profile.created_by,
-            ),
-        )
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO runner_profiles (
+                    runner_profile_id, runner_profile_version, display_name, schema_version,
+                    payload_json, payload_checksum, created_at, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    profile.runner_profile_id,
+                    profile.runner_profile_version,
+                    profile.display_name,
+                    profile.schema_version,
+                    profile.payload_json,
+                    profile.payload_checksum,
+                    profile.created_at,
+                    profile.created_by,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
 
     def find_checksum(self, runner_profile_id: str, runner_profile_version: str) -> str | None:
         row = self._connection.execute(
@@ -70,22 +96,43 @@ class SqliteRunnerProfileRepository:
         ).fetchone()
         return str(row["payload_checksum"]) if row is not None else None
 
+    def _select_one(self, runner_profile_id: str, runner_profile_version: str) -> sqlite3.Row | None:
+        return self._connection.execute(
+            """
+            SELECT runner_profile_id, runner_profile_version, display_name, schema_version,
+                   payload_json, payload_checksum, created_at, created_by
+            FROM runner_profiles
+            WHERE runner_profile_id = ? AND runner_profile_version = ?
+            """,
+            (runner_profile_id, runner_profile_version),
+        ).fetchone()
+
 
 class SqlitePipelineDefinitionRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
 
+    def get_exact(self, pipeline_id: str, pipeline_version: str) -> PipelineDefinitionRecord | None:
+        row = self._select_one(pipeline_id, pipeline_version)
+        if row is None:
+            return None
+        payload = PipelineDefinition.model_validate_json(str(row["payload_json"]))
+        return PipelineDefinitionRecord(
+            pipeline_id=str(row["pipeline_id"]),
+            pipeline_version=str(row["pipeline_version"]),
+            display_name=str(row["display_name"]),
+            schema_version=str(row["schema_version"]),
+            graph_version=str(row["graph_version"]),
+            graph_state_schema_version=str(row["graph_state_schema_version"]),
+            payload_json=str(row["payload_json"]),
+            payload_checksum=str(row["payload_checksum"]),
+            created_at=str(row["created_at"]),
+            created_by=str(row["created_by"]),
+            payload=payload,
+        )
+
     def get(self, pipeline_id: str, pipeline_version: str) -> PipelineDefinitionDto | None:
-        row = self._connection.execute(
-            """
-            SELECT pipeline_id, pipeline_version, display_name, schema_version,
-                   graph_version, graph_state_schema_version, payload_json,
-                   payload_checksum, created_at, created_by
-            FROM pipeline_definitions
-            WHERE pipeline_id = ? AND pipeline_version = ?
-            """,
-            (pipeline_id, pipeline_version),
-        ).fetchone()
+        row = self._select_one(pipeline_id, pipeline_version)
         return _pipeline_definition_from_row(row) if row is not None else None
 
     def list(self) -> tuple[PipelineDefinitionDto, ...]:
@@ -101,27 +148,30 @@ class SqlitePipelineDefinitionRepository:
         return tuple(_pipeline_definition_from_row(row) for row in rows)
 
     def insert(self, pipeline: PipelineDefinitionDto) -> None:
-        self._connection.execute(
-            """
-            INSERT INTO pipeline_definitions (
-                pipeline_id, pipeline_version, display_name, schema_version,
-                graph_version, graph_state_schema_version, payload_json, payload_checksum,
-                created_at, created_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                pipeline.pipeline_id,
-                pipeline.pipeline_version,
-                pipeline.display_name,
-                pipeline.schema_version,
-                pipeline.graph_version,
-                pipeline.graph_state_schema_version,
-                pipeline.payload_json,
-                pipeline.payload_checksum,
-                pipeline.created_at,
-                pipeline.created_by,
-            ),
-        )
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO pipeline_definitions (
+                    pipeline_id, pipeline_version, display_name, schema_version,
+                    graph_version, graph_state_schema_version, payload_json, payload_checksum,
+                    created_at, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    pipeline.pipeline_id,
+                    pipeline.pipeline_version,
+                    pipeline.display_name,
+                    pipeline.schema_version,
+                    pipeline.graph_version,
+                    pipeline.graph_state_schema_version,
+                    pipeline.payload_json,
+                    pipeline.payload_checksum,
+                    pipeline.created_at,
+                    pipeline.created_by,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
 
     def find_checksum(self, pipeline_id: str, pipeline_version: str) -> str | None:
         row = self._connection.execute(
@@ -134,10 +184,194 @@ class SqlitePipelineDefinitionRepository:
         ).fetchone()
         return str(row["payload_checksum"]) if row is not None else None
 
+    def _select_one(self, pipeline_id: str, pipeline_version: str) -> sqlite3.Row | None:
+        return self._connection.execute(
+            """
+            SELECT pipeline_id, pipeline_version, display_name, schema_version,
+                   graph_version, graph_state_schema_version, payload_json,
+                   payload_checksum, created_at, created_by
+            FROM pipeline_definitions
+            WHERE pipeline_id = ? AND pipeline_version = ?
+            """,
+            (pipeline_id, pipeline_version),
+        ).fetchone()
+
+
+class SqliteMigrationJobRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert_created(self, job: MigrationJobRecord) -> None:
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO migration_jobs (
+                    job_id, version, status, active_slot, last_event_sequence,
+                    runner_profile_id, runner_profile_version, pipeline_id, pipeline_version,
+                    target_proof_level, achieved_proof_level, legacy_source_ref, output_root_ref,
+                    created_at, updated_at, started_at, finished_at, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job.job_id,
+                    job.version,
+                    job.status.value,
+                    job.active_slot,
+                    job.last_event_sequence,
+                    job.runner_profile_id,
+                    job.runner_profile_version,
+                    job.pipeline_id,
+                    job.pipeline_version,
+                    job.target_proof_level.value,
+                    job.achieved_proof_level.value if job.achieved_proof_level else None,
+                    job.legacy_source_ref,
+                    job.output_root_ref,
+                    job.created_at,
+                    job.updated_at,
+                    job.started_at,
+                    job.finished_at,
+                    job.created_by,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get_active_job(self) -> MigrationJobRecord | None:
+        row = self._connection.execute(
+            """
+            SELECT job_id, version, status, active_slot, last_event_sequence,
+                   runner_profile_id, runner_profile_version, pipeline_id, pipeline_version,
+                   target_proof_level, achieved_proof_level, legacy_source_ref, output_root_ref,
+                   created_at, updated_at, started_at, finished_at, created_by
+            FROM migration_jobs
+            WHERE active_slot = 1
+            ORDER BY created_at ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        return _migration_job_from_row(row) if row is not None else None
+
+
+class SqliteRunConfigurationRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, run_configuration: RunConfigurationRecord) -> None:
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO run_configurations (
+                    run_configuration_id, job_id, schema_version,
+                    runner_profile_id, runner_profile_version, pipeline_id, pipeline_version,
+                    target_proof_level, enabled_gates_json, policy_json,
+                    payload_json, payload_checksum, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_configuration.run_configuration_id,
+                    run_configuration.job_id,
+                    run_configuration.schema_version,
+                    run_configuration.runner_profile_id,
+                    run_configuration.runner_profile_version,
+                    run_configuration.pipeline_id,
+                    run_configuration.pipeline_version,
+                    run_configuration.target_proof_level.value,
+                    run_configuration.enabled_gates_json,
+                    run_configuration.policy_json,
+                    run_configuration.payload_json,
+                    run_configuration.payload_checksum,
+                    run_configuration.created_at,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+
+class SqliteStageRunRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert_many(self, stage_runs: Sequence[StageRunRecord]) -> None:
+        try:
+            self._connection.executemany(
+                """
+                INSERT INTO stage_runs (
+                    stage_run_id, job_id, stage_index, stage_id, status,
+                    input_source_json, created_at, started_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        stage.stage_run_id,
+                        stage.job_id,
+                        stage.stage_index,
+                        stage.stage_id,
+                        stage.status,
+                        stage.input_source_json,
+                        stage.created_at,
+                        stage.started_at,
+                        stage.finished_at,
+                    )
+                    for stage in stage_runs
+                ],
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+
+class SqliteRunEventRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, event: RunEventRecord) -> None:
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO run_events (
+                    event_id, job_id, sequence, event_type, actor_type, actor_id,
+                    correlation_id, causation_id, payload_json, payload_checksum, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.event_id,
+                    event.job_id,
+                    event.sequence,
+                    event.event_type,
+                    event.actor_type,
+                    event.actor_id,
+                    event.correlation_id,
+                    event.causation_id,
+                    event.payload_json,
+                    event.payload_checksum,
+                    event.created_at,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
 
 class SqliteAuditRecordRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
+
+    def insert(self, audit_record: AuditRecord) -> None:
+        try:
+            self._insert(
+                audit_id=audit_record.audit_id,
+                job_id=audit_record.job_id,
+                actor_type=audit_record.actor_type,
+                actor_id=audit_record.actor_id,
+                action=audit_record.action,
+                prior_state=audit_record.prior_state,
+                new_state=audit_record.new_state,
+                job_version=audit_record.job_version,
+                correlation_id=audit_record.correlation_id,
+                causation_id=audit_record.causation_id,
+                payload_json=audit_record.payload_json,
+                created_at=audit_record.created_at,
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
 
     def append_global_audit(
         self,
@@ -151,24 +385,23 @@ class SqliteAuditRecordRepository:
         correlation_id: str | None = None,
         causation_id: str | None = None,
     ) -> None:
-        self._connection.execute(
-            """
-            INSERT INTO audit_records (
-                audit_id, job_id, actor_type, actor_id, action, prior_state, new_state,
-                job_version, correlation_id, causation_id, payload_json, created_at
-            ) VALUES (?, NULL, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?)
-            """,
-            (
-                audit_id,
-                actor_type,
-                actor_id,
-                action,
-                correlation_id,
-                causation_id,
-                payload_json,
-                created_at,
-            ),
-        )
+        try:
+            self._insert(
+                audit_id=audit_id,
+                job_id=None,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                action=action,
+                prior_state=None,
+                new_state=None,
+                job_version=None,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+                payload_json=payload_json,
+                created_at=created_at,
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
 
     def list(self) -> tuple[AuditRecordDto, ...]:
         rows = self._connection.execute(
@@ -184,6 +417,45 @@ class SqliteAuditRecordRepository:
     def count(self) -> int:
         row = self._connection.execute("SELECT COUNT(*) AS count FROM audit_records").fetchone()
         return int(row["count"])
+
+    def _insert(
+        self,
+        *,
+        audit_id: str,
+        job_id: str | None,
+        actor_type: str,
+        actor_id: str,
+        action: str,
+        prior_state: str | None,
+        new_state: str | None,
+        job_version: int | None,
+        correlation_id: str | None,
+        causation_id: str | None,
+        payload_json: str,
+        created_at: str,
+    ) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO audit_records (
+                audit_id, job_id, actor_type, actor_id, action, prior_state, new_state,
+                job_version, correlation_id, causation_id, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                audit_id,
+                job_id,
+                actor_type,
+                actor_id,
+                action,
+                prior_state,
+                new_state,
+                job_version,
+                correlation_id,
+                causation_id,
+                payload_json,
+                created_at,
+            ),
+        )
 
 
 def _runner_profile_from_row(row: sqlite3.Row) -> RunnerProfileDto:
@@ -235,4 +507,31 @@ def _audit_record_from_row(row: sqlite3.Row) -> AuditRecordDto:
         payload=json.loads(payload_json),
         payload_json=payload_json,
         created_at=str(row["created_at"]),
+    )
+
+
+def _migration_job_from_row(row: sqlite3.Row) -> MigrationJobRecord:
+    return MigrationJobRecord(
+        job_id=str(row["job_id"]),
+        version=int(row["version"]),
+        status=JobState(str(row["status"])),
+        active_slot=None if row["active_slot"] is None else int(row["active_slot"]),
+        last_event_sequence=int(row["last_event_sequence"]),
+        runner_profile_id=str(row["runner_profile_id"]),
+        runner_profile_version=str(row["runner_profile_version"]),
+        pipeline_id=str(row["pipeline_id"]),
+        pipeline_version=str(row["pipeline_version"]),
+        target_proof_level=TargetProofLevel(str(row["target_proof_level"])),
+        achieved_proof_level=(
+            None
+            if row["achieved_proof_level"] is None
+            else TargetProofLevel(str(row["achieved_proof_level"]))
+        ),
+        legacy_source_ref=str(row["legacy_source_ref"]),
+        output_root_ref=str(row["output_root_ref"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+        started_at=None if row["started_at"] is None else str(row["started_at"]),
+        finished_at=None if row["finished_at"] is None else str(row["finished_at"]),
+        created_by=str(row["created_by"]),
     )

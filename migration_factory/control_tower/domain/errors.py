@@ -5,12 +5,22 @@ from __future__ import annotations
 from migration_factory.control_tower.domain.states import JobState
 
 
-class ControlTowerDomainError(Exception):
+class ControlTowerError(Exception):
+    """Base exception for Control Tower failures."""
+
+
+class ControlTowerDomainError(ControlTowerError):
     """Base exception for Control Tower domain failures."""
 
 
 class NotFoundError(ControlTowerDomainError):
-    """Raised when a requested Control Tower record does not exist."""
+    """Raised when a required Control Tower record is missing."""
+
+    def __init__(self, entity_name: str, identifier: str | None = None) -> None:
+        self.entity_name = entity_name
+        self.identifier = identifier
+        message = entity_name if identifier is None else f"{entity_name} not found: {identifier}"
+        super().__init__(message)
 
 
 class RegistrationConflictError(ControlTowerDomainError):
@@ -35,3 +45,30 @@ class InvalidJobStateTransitionError(ControlTowerDomainError):
             "Invalid job state transition: "
             f"{current_state.value} -> {requested_state.value}"
         )
+
+
+class StaleVersionError(ControlTowerError):
+    """Raised when an optimistic version check fails."""
+
+
+class ConcurrencyConflictError(ControlTowerError):
+    """Raised when the active-job slot is already occupied."""
+
+
+class CompatibilityError(ControlTowerError):
+    """Raised when loaded configuration objects cannot be combined safely."""
+
+
+class ArtifactPathError(ControlTowerError):
+    """Raised when an artifact path is not trusted."""
+
+
+class ArtifactHashError(ControlTowerError):
+    """Raised when artifact hashing detects a race or mismatch."""
+
+
+class StorageIntegrityError(ControlTowerError):
+    """Raised when a persistence layer integrity violation cannot be classified."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
