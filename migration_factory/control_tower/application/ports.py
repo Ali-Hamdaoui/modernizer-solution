@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from typing import Protocol, Self, Sequence
 
+from migration_factory.control_tower.application.dto import (
+    AuditRecordDto,
+    PipelineDefinitionDto,
+    RunnerProfileDto,
+)
 from migration_factory.control_tower.domain.entities import (
     AuditRecord,
     MigrationJobRecord,
@@ -18,9 +23,25 @@ from migration_factory.control_tower.domain.entities import (
 class RunnerProfileRepository(Protocol):
     def get_exact(self, runner_profile_id: str, runner_profile_version: str) -> RunnerProfileRecord | None: ...
 
+    def get(self, runner_profile_id: str, runner_profile_version: str) -> RunnerProfileDto | None: ...
+
+    def list(self) -> tuple[RunnerProfileDto, ...]: ...
+
+    def insert(self, profile: RunnerProfileDto) -> None: ...
+
+    def find_checksum(self, runner_profile_id: str, runner_profile_version: str) -> str | None: ...
+
 
 class PipelineDefinitionRepository(Protocol):
     def get_exact(self, pipeline_id: str, pipeline_version: str) -> PipelineDefinitionRecord | None: ...
+
+    def get(self, pipeline_id: str, pipeline_version: str) -> PipelineDefinitionDto | None: ...
+
+    def list(self) -> tuple[PipelineDefinitionDto, ...]: ...
+
+    def insert(self, pipeline: PipelineDefinitionDto) -> None: ...
+
+    def find_checksum(self, pipeline_id: str, pipeline_version: str) -> str | None: ...
 
 
 class MigrationJobRepository(Protocol):
@@ -44,6 +65,23 @@ class RunEventRepository(Protocol):
 class AuditRecordRepository(Protocol):
     def insert(self, audit_record: AuditRecord) -> None: ...
 
+    def append_global_audit(
+        self,
+        *,
+        audit_id: str,
+        actor_type: str,
+        actor_id: str,
+        action: str,
+        payload_json: str,
+        created_at: str,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> None: ...
+
+    def list(self) -> tuple[AuditRecordDto, ...]: ...
+
+    def count(self) -> int: ...
+
 
 class ControlTowerUnitOfWork(Protocol):
     runner_profiles: RunnerProfileRepository
@@ -57,3 +95,6 @@ class ControlTowerUnitOfWork(Protocol):
     def __enter__(self) -> Self: ...
 
     def __exit__(self, exc_type, exc, tb) -> bool | None: ...
+
+
+UnitOfWork = ControlTowerUnitOfWork

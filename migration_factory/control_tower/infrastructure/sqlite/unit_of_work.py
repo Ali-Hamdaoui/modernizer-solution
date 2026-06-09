@@ -39,3 +39,6 @@ class SqliteControlTowerUnitOfWork:
         if self._close_connection:
             self.connection.close()
         return None
+
+
+SqliteUnitOfWork = SqliteControlTowerUnitOfWork

@@ -1,5 +1,12 @@
 """SQLite foundation for Control Tower persistence."""
 
+from migration_factory.control_tower.infrastructure.sqlite.artifact_paths import (
+    ArtifactHashResult,
+    ValidatedArtifactPath,
+    hash_registered_artifact,
+    normalize_registered_relative_path,
+    validate_registered_artifact_path,
+)
 from migration_factory.control_tower.infrastructure.sqlite.connection import (
     ControlTowerSqliteError,
     UnsupportedJournalModeError,
@@ -17,13 +24,6 @@ from migration_factory.control_tower.infrastructure.sqlite.migrations import (
     migrate_control_tower,
     split_sql_statements,
 )
-from migration_factory.control_tower.infrastructure.sqlite.artifact_paths import (
-    ArtifactHashResult,
-    ValidatedArtifactPath,
-    hash_registered_artifact,
-    normalize_registered_relative_path,
-    validate_registered_artifact_path,
-)
 from migration_factory.control_tower.infrastructure.sqlite.repositories import (
     SqliteAuditRecordRepository,
     SqliteMigrationJobRepository,
@@ -35,16 +35,17 @@ from migration_factory.control_tower.infrastructure.sqlite.repositories import (
 )
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import (
     SqliteControlTowerUnitOfWork,
+    SqliteUnitOfWork,
 )
 
 __all__ = [
     "AppliedMigrationChecksumMismatchError",
+    "ArtifactHashResult",
     "ControlTowerSqliteError",
     "MigrationDiscoveryError",
     "MigrationExecutionError",
     "MigrationFile",
     "MigrationSafetyError",
-    "ArtifactHashResult",
     "SqliteAuditRecordRepository",
     "SqliteControlTowerUnitOfWork",
     "SqliteMigrationJobRepository",
@@ -53,15 +54,16 @@ __all__ = [
     "SqliteRunEventRepository",
     "SqliteRunnerProfileRepository",
     "SqliteStageRunRepository",
+    "SqliteUnitOfWork",
     "UnsupportedJournalModeError",
+    "ValidatedArtifactPath",
     "apply_pending_migrations",
     "configure_control_tower_journal_mode",
     "connect_control_tower",
-    "hash_registered_artifact",
     "discover_migrations",
+    "hash_registered_artifact",
     "migrate_control_tower",
     "normalize_registered_relative_path",
     "split_sql_statements",
-    "ValidatedArtifactPath",
     "validate_registered_artifact_path",
 ]

@@ -12,11 +12,11 @@ from typing import Any, Mapping, Sequence
 
 
 def utc_now_text() -> str:
-    return (
-        datetime.now(timezone.utc)
-        .isoformat(timespec="microseconds")
-        .replace("+00:00", "Z")
-    )
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def utc_now() -> str:
+    return utc_now_text()
 
 
 def canonical_json_text(value: Any) -> str:
@@ -26,6 +26,10 @@ def canonical_json_text(value: Any) -> str:
         separators=(",", ":"),
         sort_keys=True,
     )
+
+
+def canonical_json(value: Any) -> str:
+    return canonical_json_text(value)
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -38,6 +42,10 @@ def sha256_hex(value: bytes | bytearray | memoryview) -> str:
 
 def sha256_canonical_json(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def sha256_checksum(value: Any) -> str:
+    return sha256_canonical_json(value)
 
 
 def stream_sha256(path: Path, *, chunk_size: int = 1024 * 1024) -> tuple[str, int]:
@@ -60,7 +68,7 @@ def _normalize_json_value(value: Any) -> Any:
     if is_dataclass(value):
         return _normalize_json_value(asdict(value))
     if hasattr(value, "model_dump"):
-        return _normalize_json_value(value.model_dump())
+        return _normalize_json_value(value.model_dump(mode="json"))
     if isinstance(value, Mapping):
         return {
             str(key): _normalize_json_value(item)

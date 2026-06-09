@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from migration_factory.control_tower.domain.states import TargetProofLevel
+from migration_factory.control_tower.schemas import PipelineDefinition, RunnerProfile
 from migration_factory.control_tower.schemas.run_configuration import RunPolicy
 
 
@@ -21,3 +23,21 @@ class CreateMigrationJobCommand:
     enabled_gates: tuple[str, ...]
     policy: RunPolicy
     correlation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RegisterRunnerProfileCommand:
+    profile: RunnerProfile | dict[str, Any]
+    actor_type: str
+    actor_id: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RegisterPipelineDefinitionCommand:
+    pipeline: PipelineDefinition | dict[str, Any]
+    actor_type: str
+    actor_id: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
