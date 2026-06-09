@@ -1,4 +1,4 @@
-"""Control Tower configuration contracts."""
+"""AI Migration Control Tower package."""
 
 from .schemas import (
     AiProfileReference,
