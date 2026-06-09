@@ -9,17 +9,34 @@ import pytest
 from migration_factory.control_tower.application.commands import (
     RegisterPipelineDefinitionCommand,
     RegisterRunnerProfileCommand,
+    TransitionJobStateCommand,
 )
 from migration_factory.control_tower.application.dto import AuditRecordDto
 from migration_factory.control_tower.application.services import ControlTowerRegistrationService
+from migration_factory.control_tower.domain.errors import (
+    ExpectedVersionRequiredError,
+    InvalidJobStateTransitionError,
+    StaleVersionError,
+)
+from migration_factory.control_tower.domain.states import JobState
 from migration_factory.control_tower.infrastructure.sqlite.connection import connect_control_tower
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
 from migration_factory.control_tower.infrastructure.sqlite.repositories import (
     SqliteAuditRecordRepository,
+    SqliteMigrationJobRepository,
     SqlitePipelineDefinitionRepository,
+    SqliteRunConfigurationRepository,
     SqliteRunnerProfileRepository,
+    SqliteRunEventRepository,
+    SqliteStageRunRepository,
 )
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
+from tests.control_tower.transition_helpers import (
+    count_audit_records,
+    count_run_events,
+    fetch_job,
+    seed_job,
+)
 from tests.control_tower._helpers import pipeline_definition_payload, runner_profile_payload
 
 
@@ -142,8 +159,120 @@ def test_audit_query_helpers_return_dtos_and_scalars_not_sqlite_rows(tmp_path: P
         connection.close()
 
 
+def test_transition_creates_one_job_scoped_audit_record(tmp_path: Path) -> None:
+    connection = _migrated_connection(tmp_path)
+    try:
+        seed_job(connection, status=JobState.CREATED)
+
+        _service(connection).transition_job_state(_transition_command(JobState.QUEUED))
+
+        with SqliteUnitOfWork(connection) as uow:
+            audits = uow.audit_records.list_for_job("job-1")
+            count = uow.audit_records.count_for_job("job-1")
+
+        assert count == 1
+        assert len(audits) == 1
+        assert audits[0].job_id == "job-1"
+        assert audits[0].action == "job_state_changed"
+    finally:
+        connection.close()
+
+
+def test_transition_audit_records_states_version_actor_and_reason(tmp_path: Path) -> None:
+    connection = _migrated_connection(tmp_path)
+    try:
+        seed_job(connection, status=JobState.RUNNING, version=3)
+
+        _service(connection).transition_job_state(
+            _transition_command(JobState.COMPLETED, expected_version=3)
+        )
+
+        audit = _transition_audit(connection)
+        assert audit.prior_state == "RUNNING"
+        assert audit.new_state == "COMPLETED"
+        assert audit.job_version == 4
+        assert audit.payload["prior_state"] == "RUNNING"
+        assert audit.payload["new_state"] == "COMPLETED"
+        assert audit.payload["prior_version"] == 3
+        assert audit.payload["new_version"] == 4
+        assert audit.payload["event_sequence"] == 1
+        assert audit.payload["actor_type"] == "user"
+        assert audit.payload["actor_id"] == "tester"
+        assert audit.payload["reason"] == "advance lifecycle"
+        assert audit.payload["correlation_id"] == "corr-1"
+        assert audit.payload["causation_id"] == "cause-1"
+    finally:
+        connection.close()
+
+
+def test_audit_failure_rolls_back_job_state_update_and_run_event_insert(tmp_path: Path) -> None:
+    connection = _migrated_connection(tmp_path)
+    try:
+        seed_job(connection, status=JobState.CREATED)
+        service = ControlTowerRegistrationService(lambda: _FailingAuditUnitOfWork(connection))
+
+        with pytest.raises(RuntimeError, match="audit failed"):
+            service.transition_job_state(_transition_command(JobState.QUEUED))
+
+        row = fetch_job(connection)
+        assert row["status"] == "CREATED"
+        assert row["version"] == 1
+        assert row["active_slot"] == 1
+        assert row["last_event_sequence"] == 0
+        assert count_run_events(connection) == 0
+        assert count_audit_records(connection) == 0
+    finally:
+        connection.close()
+
+
+def test_no_audit_is_created_for_invalid_transition(tmp_path: Path) -> None:
+    connection = _migrated_connection(tmp_path)
+    try:
+        seed_job(connection, status=JobState.CREATED)
+
+        with pytest.raises(InvalidJobStateTransitionError):
+            _service(connection).transition_job_state(_transition_command(JobState.RUNNING))
+
+        assert count_audit_records(connection) == 0
+    finally:
+        connection.close()
+
+
+def test_no_audit_is_created_for_stale_version(tmp_path: Path) -> None:
+    connection = _migrated_connection(tmp_path)
+    try:
+        seed_job(connection, status=JobState.CREATED, version=2)
+
+        with pytest.raises(StaleVersionError):
+            _service(connection).transition_job_state(
+                _transition_command(JobState.QUEUED, expected_version=1)
+            )
+
+        assert count_audit_records(connection) == 0
+    finally:
+        connection.close()
+
+
+def test_no_audit_is_created_for_missing_expected_version(tmp_path: Path) -> None:
+    connection = _migrated_connection(tmp_path)
+    try:
+        seed_job(connection, status=JobState.CREATED)
+
+        with pytest.raises(ExpectedVersionRequiredError):
+            _service(connection).transition_job_state(
+                _transition_command(JobState.QUEUED, expected_version=None)
+            )
+
+        assert count_audit_records(connection) == 0
+    finally:
+        connection.close()
+
+
 class _FailingAuditRepository:
     def append_global_audit(self, **kwargs) -> None:
+        raise RuntimeError("audit failed")
+
+    def append_job_state_changed_audit(self, **kwargs) -> None:
         raise RuntimeError("audit failed")
 
     def list(self) -> tuple[AuditRecordDto, ...]:
@@ -158,6 +287,10 @@ class _FailingAuditUnitOfWork:
         self._connection = connection
         self.runner_profiles = SqliteRunnerProfileRepository(connection)
         self.pipeline_definitions = SqlitePipelineDefinitionRepository(connection)
+        self.migration_jobs = SqliteMigrationJobRepository(connection)
+        self.run_configurations = SqliteRunConfigurationRepository(connection)
+        self.stage_runs = SqliteStageRunRepository(connection)
+        self.run_events = SqliteRunEventRepository(connection)
         self.audit_records = _FailingAuditRepository()
 
     def __enter__(self) -> "_FailingAuditUnitOfWork":
@@ -208,8 +341,32 @@ def _pipeline_command(
     )
 
 
+def _transition_command(
+    target_state: JobState,
+    *,
+    expected_version: int | None = 1,
+) -> TransitionJobStateCommand:
+    return TransitionJobStateCommand(
+        job_id="job-1",
+        expected_version=expected_version,
+        target_state=target_state,
+        actor_type="user",
+        actor_id="tester",
+        reason="advance lifecycle",
+        correlation_id="corr-1",
+        causation_id="cause-1",
+    )
+
+
 def _audit_row(connection: sqlite3.Connection) -> sqlite3.Row:
     return connection.execute("SELECT * FROM audit_records").fetchone()
+
+
+def _transition_audit(connection: sqlite3.Connection) -> AuditRecordDto:
+    with SqliteUnitOfWork(connection) as uow:
+        audits = uow.audit_records.list_for_job("job-1")
+    assert len(audits) == 1
+    return audits[0]
 
 
 def _count(connection: sqlite3.Connection, table_name: str) -> int:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from migration_factory.control_tower.domain.states import TargetProofLevel
+from migration_factory.control_tower.domain.states import JobState, TargetProofLevel
 from migration_factory.control_tower.schemas import PipelineDefinition, RunnerProfile
 from migration_factory.control_tower.schemas.run_configuration import RunPolicy
 
@@ -39,5 +39,17 @@ class RegisterPipelineDefinitionCommand:
     pipeline: PipelineDefinition | dict[str, Any]
     actor_type: str
     actor_id: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TransitionJobStateCommand:
+    job_id: str
+    expected_version: int | None
+    target_state: JobState
+    actor_type: str
+    actor_id: str
+    reason: str
     correlation_id: str | None = None
     causation_id: str | None = None
