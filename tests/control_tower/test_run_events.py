@@ -2,18 +2,29 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+import sqlite3
 
 import pytest
 
-from migration_factory.control_tower.application.commands import TransitionJobStateCommand
+from migration_factory.control_tower.application.commands import (
+    CreateMigrationJobCommand,
+    TransitionJobStateCommand,
+)
+from migration_factory.control_tower.application.services import CreateMigrationJobService
 from migration_factory.control_tower.domain.checksums import canonical_json
 from migration_factory.control_tower.domain.errors import (
     ExpectedVersionRequiredError,
     InvalidJobStateTransitionError,
     StaleVersionError,
 )
-from migration_factory.control_tower.domain.states import JobState
-from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
+from migration_factory.control_tower.domain.states import JobState, TargetProofLevel
+from migration_factory.control_tower.infrastructure.sqlite.connection import connect_control_tower
+from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import (
+    SqliteControlTowerUnitOfWork,
+    SqliteUnitOfWork,
+)
+from migration_factory.control_tower.schemas.run_configuration import RunPolicy
+from tests.control_tower._helpers import make_migrated_connection, seed_runner_and_pipeline
 from tests.control_tower.transition_helpers import (
     count_audit_records,
     count_run_events,
@@ -24,12 +35,70 @@ from tests.control_tower.transition_helpers import (
 )
 
 
+def test_job_created_event_sequence_is_one(tmp_path: Path) -> None:
+    db_path = tmp_path / "control_tower.sqlite3"
+    connection = make_migrated_connection(tmp_path)
+    seed_runner_and_pipeline(connection)
+    connection.close()
+
+    result = _create_service_for(db_path).execute(_create_command())
+
+    with connect_control_tower(db_path) as verification_connection:
+        row = verification_connection.execute(
+            """
+            SELECT sequence, event_type, actor_type, actor_id
+            FROM run_events
+            WHERE job_id = ?
+            """,
+            (result.job_id,),
+        ).fetchone()
+
+    assert row is not None
+    assert row["sequence"] == 1
+    assert row["event_type"] == "job_created"
+    assert row["actor_type"] == "user"
+    assert row["actor_id"] == "tester"
+
+
+def test_event_sequence_is_unique_per_job(tmp_path: Path) -> None:
+    db_path = tmp_path / "control_tower.sqlite3"
+    connection = make_migrated_connection(tmp_path)
+    seed_runner_and_pipeline(connection)
+    connection.close()
+
+    result = _create_service_for(db_path).execute(_create_command())
+
+    with connect_control_tower(db_path) as verification_connection:
+        with pytest.raises(sqlite3.IntegrityError):
+            verification_connection.execute(
+                """
+                INSERT INTO run_events (
+                    event_id, job_id, sequence, event_type, actor_type, actor_id,
+                    correlation_id, causation_id, payload_json, payload_checksum, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "duplicate-event",
+                    result.job_id,
+                    1,
+                    "job_created",
+                    "user",
+                    "tester",
+                    None,
+                    None,
+                    "{}",
+                    "checksum",
+                    "2026-01-01T00:00:00.000000Z",
+                ),
+            )
+
+
 def test_successful_transition_creates_job_state_changed_event(tmp_path: Path) -> None:
     connection = migrated_connection(tmp_path)
     try:
         seed_job(connection, status=JobState.CREATED)
 
-        service(connection).transition_job_state(_command(JobState.QUEUED))
+        service(connection).transition_job_state(_transition_command(JobState.QUEUED))
 
         event = _single_event(connection)
         assert event.event_type == "job_state_changed"
@@ -48,7 +117,7 @@ def test_event_sequence_starts_from_existing_last_event_sequence_plus_one(tmp_pa
     try:
         seed_job(connection, status=JobState.CREATED, last_event_sequence=4)
 
-        service(connection).transition_job_state(_command(JobState.QUEUED))
+        service(connection).transition_job_state(_transition_command(JobState.QUEUED))
 
         event = _single_event(connection)
         assert event.sequence == 5
@@ -63,7 +132,7 @@ def test_event_payload_records_state_actor_reason_and_versions(tmp_path: Path) -
         seed_job(connection, status=JobState.RUNNING, version=3)
 
         service(connection).transition_job_state(
-            _command(JobState.PAUSED_FOR_PLAN_APPROVAL, expected_version=3)
+            _transition_command(JobState.PAUSED_FOR_PLAN_APPROVAL, expected_version=3)
         )
 
         payload = _single_event(connection).payload
@@ -86,7 +155,7 @@ def test_event_payload_checksum_matches_canonical_payload_json(tmp_path: Path) -
     try:
         seed_job(connection, status=JobState.CREATED)
 
-        service(connection).transition_job_state(_command(JobState.QUEUED))
+        service(connection).transition_job_state(_transition_command(JobState.QUEUED))
 
         event = _single_event(connection)
         assert event.payload_json == canonical_json(event.payload)
@@ -104,7 +173,7 @@ def test_event_failure_rolls_back_job_update_and_sequence(tmp_path: Path) -> Non
         transition_service = service_with_failing_events(connection)
 
         with pytest.raises(RuntimeError, match="event failed"):
-            transition_service.transition_job_state(_command(JobState.QUEUED))
+            transition_service.transition_job_state(_transition_command(JobState.QUEUED))
 
         row = fetch_job(connection)
         assert row["status"] == "CREATED"
@@ -123,7 +192,7 @@ def test_no_event_is_created_for_invalid_transition(tmp_path: Path) -> None:
         seed_job(connection, status=JobState.CREATED)
 
         with pytest.raises(InvalidJobStateTransitionError):
-            service(connection).transition_job_state(_command(JobState.RUNNING))
+            service(connection).transition_job_state(_transition_command(JobState.RUNNING))
 
         assert count_run_events(connection) == 0
     finally:
@@ -137,7 +206,7 @@ def test_no_event_is_created_for_stale_version(tmp_path: Path) -> None:
 
         with pytest.raises(StaleVersionError):
             service(connection).transition_job_state(
-                _command(JobState.QUEUED, expected_version=1)
+                _transition_command(JobState.QUEUED, expected_version=1)
             )
 
         assert count_run_events(connection) == 0
@@ -152,7 +221,7 @@ def test_no_event_is_created_for_missing_expected_version(tmp_path: Path) -> Non
 
         with pytest.raises(ExpectedVersionRequiredError):
             service(connection).transition_job_state(
-                _command(JobState.QUEUED, expected_version=None)
+                _transition_command(JobState.QUEUED, expected_version=None)
             )
 
         assert count_run_events(connection) == 0
@@ -183,7 +252,30 @@ def _single_event(connection):
     return events[0]
 
 
-def _command(
+def _create_service_for(db_path: Path) -> CreateMigrationJobService:
+    def factory() -> SqliteControlTowerUnitOfWork:
+        return SqliteControlTowerUnitOfWork(connect_control_tower(db_path), close_connection=True)
+
+    return CreateMigrationJobService(factory)
+
+
+def _create_command() -> CreateMigrationJobCommand:
+    return CreateMigrationJobCommand(
+        actor="tester",
+        legacy_source_ref="C:/legacy/source",
+        output_root_ref="C:/workspace/output",
+        runner_profile_id="runner-default",
+        runner_profile_version="2026.06",
+        pipeline_id="pipeline-default",
+        pipeline_version="2026.06",
+        target_proof_level=TargetProofLevel.BUILD_TEST_VERIFIED,
+        enabled_gates=("build", "test"),
+        policy=RunPolicy(),
+        correlation_id="corr-1",
+    )
+
+
+def _transition_command(
     target_state: JobState,
     *,
     expected_version: int | None = 1,
