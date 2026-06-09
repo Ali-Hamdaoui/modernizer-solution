@@ -19,4 +19,3 @@ class InvalidJobStateTransitionError(ControlTowerDomainError):
             "Invalid job state transition: "
             f"{current_state.value} -> {requested_state.value}"
         )
-

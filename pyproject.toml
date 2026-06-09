@@ -11,12 +11,14 @@ requires-python = ">=3.10"
 dependencies = [
   "jsonschema",
   "langgraph",
+  "pydantic>=2,<3",
   "PyYAML",
 ]
 
 [project.optional-dependencies]
 test = [
   "jsonschema",
+  "pydantic>=2,<3",
   "pytest",
 ]
 

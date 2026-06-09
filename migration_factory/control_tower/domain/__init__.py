@@ -31,4 +31,3 @@ __all__ = [
     "is_terminal_job_state",
     "validate_job_state_transition",
 ]
-

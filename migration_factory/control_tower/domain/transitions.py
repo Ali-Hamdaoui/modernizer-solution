@@ -127,4 +127,3 @@ def validate_job_state_transition(
 ) -> None:
     if not can_transition_job_state(current_state, next_state):
         raise InvalidJobStateTransitionError(current_state, next_state)
-
