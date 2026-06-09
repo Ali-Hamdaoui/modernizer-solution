@@ -17,6 +17,12 @@ from migration_factory.control_tower.infrastructure.sqlite.migrations import (
     migrate_control_tower,
     split_sql_statements,
 )
+from migration_factory.control_tower.infrastructure.sqlite.repositories import (
+    SqliteAuditRecordRepository,
+    SqlitePipelineDefinitionRepository,
+    SqliteRunnerProfileRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
 
 __all__ = [
     "AppliedMigrationChecksumMismatchError",
@@ -25,6 +31,10 @@ __all__ = [
     "MigrationExecutionError",
     "MigrationFile",
     "MigrationSafetyError",
+    "SqliteAuditRecordRepository",
+    "SqlitePipelineDefinitionRepository",
+    "SqliteRunnerProfileRepository",
+    "SqliteUnitOfWork",
     "UnsupportedJournalModeError",
     "apply_pending_migrations",
     "configure_control_tower_journal_mode",
