@@ -14,7 +14,6 @@ from migration_factory.control_tower.infrastructure.sqlite.migrations import (
     AppliedMigrationChecksumMismatchError,
     MigrationDiscoveryError,
     MigrationExecutionError,
-    MigrationSafetyError,
     apply_pending_migrations,
     discover_migrations,
     split_sql_statements,
@@ -78,7 +77,18 @@ def test_duplicate_migration_versions_are_rejected(tmp_path: Path) -> None:
 def test_changed_checksum_for_applied_migration_is_rejected(tmp_path: Path) -> None:
     migrations_dir = tmp_path / "migrations"
     migrations_dir.mkdir()
-    _write_sql(migrations_dir, "0001_first.sql", "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum_sha256 TEXT NOT NULL, applied_utc TEXT NOT NULL);")
+    _write_sql(
+        migrations_dir,
+        "0001_first.sql",
+        """
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        );
+        """,
+    )
     _write_sql(migrations_dir, "0002_second.sql", "CREATE TABLE example_table (id INTEGER PRIMARY KEY);")
 
     connection = connect_control_tower(tmp_path / "control_tower.sqlite3")
@@ -106,7 +116,18 @@ def test_each_migration_uses_begin_immediate(tmp_path: Path) -> None:
     connection.set_trace_callback(trace.append)
     migrations_dir = tmp_path / "migrations"
     migrations_dir.mkdir()
-    _write_sql(migrations_dir, "0001_schema_migrations.sql", "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum_sha256 TEXT NOT NULL, applied_utc TEXT NOT NULL);")
+    _write_sql(
+        migrations_dir,
+        "0001_schema_migrations.sql",
+        """
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        );
+        """,
+    )
     _write_sql(migrations_dir, "0002_demo.sql", "CREATE TABLE demo_table (id INTEGER PRIMARY KEY);")
     try:
         apply_pending_migrations(connection, migrations_dir=migrations_dir)
@@ -120,7 +141,18 @@ def test_schema_changes_and_schema_history_insertion_are_atomic(tmp_path: Path) 
     connection = connect_control_tower(tmp_path / "control_tower.sqlite3")
     migrations_dir = tmp_path / "migrations"
     migrations_dir.mkdir()
-    _write_sql(migrations_dir, "0001_schema_migrations.sql", "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum_sha256 TEXT NOT NULL, applied_utc TEXT NOT NULL);")
+    _write_sql(
+        migrations_dir,
+        "0001_schema_migrations.sql",
+        """
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        );
+        """,
+    )
     _write_sql(
         migrations_dir,
         "0002_fail.sql",
@@ -150,7 +182,18 @@ def test_failed_migration_rolls_back_completely(tmp_path: Path) -> None:
     connection = connect_control_tower(tmp_path / "control_tower.sqlite3")
     migrations_dir = tmp_path / "migrations"
     migrations_dir.mkdir()
-    _write_sql(migrations_dir, "0001_schema_migrations.sql", "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum_sha256 TEXT NOT NULL, applied_utc TEXT NOT NULL);")
+    _write_sql(
+        migrations_dir,
+        "0001_schema_migrations.sql",
+        """
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        );
+        """,
+    )
     _write_sql(
         migrations_dir,
         "0002_fail.sql",
@@ -180,7 +223,14 @@ def test_foreign_key_check_happens_before_commit(tmp_path: Path) -> None:
     _write_sql(
         migrations_dir,
         "0001_schema_migrations.sql",
-        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum_sha256 TEXT NOT NULL, applied_utc TEXT NOT NULL);",
+        """
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        );
+        """,
     )
     try:
         apply_pending_migrations(connection, migrations_dir=migrations_dir)
@@ -200,7 +250,12 @@ def test_trigger_bodies_with_internal_semicolons_work(tmp_path: Path) -> None:
         migrations_dir,
         "0001_schema_migrations.sql",
         """
-        CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum_sha256 TEXT NOT NULL, applied_utc TEXT NOT NULL);
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        );
         CREATE TABLE parent_table (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE child_table (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL, FOREIGN KEY (parent_id) REFERENCES parent_table (id));
         CREATE TRIGGER child_table_touch
@@ -244,7 +299,12 @@ def test_transaction_statements_are_rejected(tmp_path: Path) -> None:
         migrations_dir,
         "0001_begin.sql",
         """
-        CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum_sha256 TEXT NOT NULL, applied_utc TEXT NOT NULL);
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        );
         BEGIN;
         """,
     )
@@ -262,7 +322,14 @@ def test_dangerous_pragmas_are_rejected(tmp_path: Path) -> None:
     _write_sql(
         migrations_dir,
         "0001_schema_migrations.sql",
-        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum_sha256 TEXT NOT NULL, applied_utc TEXT NOT NULL);",
+        """
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        );
+        """,
     )
     _write_sql(
         migrations_dir,
@@ -277,9 +344,8 @@ def test_dangerous_pragmas_are_rejected(tmp_path: Path) -> None:
 
 
 def test_all_m1_tables_exist_after_foundation_migration(tmp_path: Path) -> None:
-    connection = connect_control_tower(tmp_path / "control_tower.sqlite3")
+    connection = _migrated_connection(tmp_path)
     try:
-        apply_pending_migrations(connection)
         actual_tables = {
             row[0]
             for row in connection.execute(
@@ -302,78 +368,230 @@ def test_all_m1_tables_exist_after_foundation_migration(tmp_path: Path) -> None:
     }.issubset(actual_tables)
 
 
-def test_audit_records_update_delete_is_blocked_by_triggers(tmp_path: Path) -> None:
-    connection = connect_control_tower(tmp_path / "control_tower.sqlite3")
+def test_runner_profiles_schema_matches_contract(tmp_path: Path) -> None:
+    connection = _migrated_connection(tmp_path)
     try:
-        apply_pending_migrations(connection)
+        columns = _table_columns(connection, "runner_profiles")
+        pk_columns = _primary_key_columns(connection, "runner_profiles")
+    finally:
+        connection.close()
+
+    assert set(columns) == {
+        "runner_profile_id",
+        "runner_profile_version",
+        "display_name",
+        "schema_version",
+        "payload_json",
+        "payload_checksum",
+        "created_at",
+        "created_by",
+    }
+    assert pk_columns == ["runner_profile_id", "runner_profile_version"]
+    assert "profile_id" not in columns
+    assert "config_json" not in columns
+
+
+def test_pipeline_definitions_schema_matches_contract(tmp_path: Path) -> None:
+    connection = _migrated_connection(tmp_path)
+    try:
+        columns = _table_columns(connection, "pipeline_definitions")
+        pk_columns = _primary_key_columns(connection, "pipeline_definitions")
+    finally:
+        connection.close()
+
+    assert set(columns) == {
+        "pipeline_id",
+        "pipeline_version",
+        "display_name",
+        "schema_version",
+        "graph_version",
+        "graph_state_schema_version",
+        "payload_json",
+        "payload_checksum",
+        "created_at",
+        "created_by",
+    }
+    assert pk_columns == ["pipeline_id", "pipeline_version"]
+    assert "pipeline_name" not in columns
+
+
+def test_migration_jobs_composite_foreign_keys_match_contract(tmp_path: Path) -> None:
+    connection = _migrated_connection(tmp_path)
+    try:
+        columns = _table_columns(connection, "migration_jobs")
+        foreign_keys = _foreign_keys_grouped(connection, "migration_jobs")
+    finally:
+        connection.close()
+
+    assert "runner_profile_version" in columns
+    assert "pipeline_version" in columns
+    assert {
+        "table": "runner_profiles",
+        "from": ["runner_profile_id", "runner_profile_version"],
+        "to": ["runner_profile_id", "runner_profile_version"],
+    } in foreign_keys
+    assert {
+        "table": "pipeline_definitions",
+        "from": ["pipeline_id", "pipeline_version"],
+        "to": ["pipeline_id", "pipeline_version"],
+    } in foreign_keys
+
+
+def test_run_configurations_schema_and_foreign_keys_match_contract(tmp_path: Path) -> None:
+    connection = _migrated_connection(tmp_path)
+    try:
+        columns = _table_columns(connection, "run_configurations")
+        foreign_keys = _foreign_keys_grouped(connection, "run_configurations")
+    finally:
+        connection.close()
+
+    for expected_column in (
+        "payload_json",
+        "payload_checksum",
+        "enabled_gates_json",
+        "policy_json",
+        "runner_profile_version",
+        "pipeline_version",
+    ):
+        assert expected_column in columns
+
+    assert {
+        "table": "runner_profiles",
+        "from": ["runner_profile_id", "runner_profile_version"],
+        "to": ["runner_profile_id", "runner_profile_version"],
+    } in foreign_keys
+    assert {
+        "table": "pipeline_definitions",
+        "from": ["pipeline_id", "pipeline_version"],
+        "to": ["pipeline_id", "pipeline_version"],
+    } in foreign_keys
+
+
+def test_audit_records_schema_matches_contract_and_legacy_columns_absent(tmp_path: Path) -> None:
+    connection = _migrated_connection(tmp_path)
+    try:
+        columns = _table_columns(connection, "audit_records")
+    finally:
+        connection.close()
+
+    for expected_column in (
+        "audit_id",
+        "actor_type",
+        "actor_id",
+        "prior_state",
+        "new_state",
+        "job_version",
+        "correlation_id",
+        "causation_id",
+        "payload_json",
+        "created_at",
+    ):
+        assert expected_column in columns
+
+    for unexpected_column in (
+        "audit_record_id",
+        "recorded_utc",
+        "entity_type",
+        "entity_id",
+        "stage_run_id",
+        "actor",
+    ):
+        assert unexpected_column not in columns
+
+
+def test_required_indexes_exist(tmp_path: Path) -> None:
+    connection = _migrated_connection(tmp_path)
+    try:
+        indexes = _all_index_names(connection)
+    finally:
+        connection.close()
+
+    assert {
+        "ix_migration_jobs_status",
+        "ix_migration_jobs_created_at",
+        "ix_stage_runs_job_id",
+        "ix_run_events_job_sequence",
+        "ix_artifacts_job_id",
+        "ix_audit_records_job_created_at",
+        "ux_one_active_job",
+    }.issubset(indexes)
+
+
+def test_audit_records_update_delete_is_blocked_by_triggers(tmp_path: Path) -> None:
+    connection = _migrated_connection(tmp_path)
+    try:
         _seed_foundation_references(connection)
         connection.execute(
             """
             INSERT INTO audit_records (
-                audit_record_id, job_id, stage_run_id, entity_type, entity_id, action,
-                payload_json, recorded_utc, actor
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                audit_id, job_id, actor_type, actor_id, action, prior_state, new_state,
+                job_version, correlation_id, causation_id, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "audit-1",
                 "job-1",
-                "stage-1",
-                "migration_job",
-                "job-1",
-                "CREATED",
+                "user",
+                "tester",
+                "job_state_changed",
+                "QUEUED",
+                "RUNNING",
+                1,
+                "corr-1",
+                "cause-1",
                 "{}",
                 "2026-01-01T00:00:00Z",
-                "tester",
             ),
         )
 
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             connection.execute(
-                "UPDATE audit_records SET actor = ? WHERE audit_record_id = ?",
+                "UPDATE audit_records SET actor_id = ? WHERE audit_id = ?",
                 ("other", "audit-1"),
             )
 
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             connection.execute(
-                "DELETE FROM audit_records WHERE audit_record_id = ?",
+                "DELETE FROM audit_records WHERE audit_id = ?",
                 ("audit-1",),
             )
     finally:
         connection.close()
 
 
-def test_one_active_job_index_and_active_slot_check_exist_and_work(tmp_path: Path) -> None:
-    connection = connect_control_tower(tmp_path / "control_tower.sqlite3")
+def test_one_active_job_index_and_status_active_slot_check_exist_and_work(tmp_path: Path) -> None:
+    connection = _migrated_connection(tmp_path)
     try:
-        apply_pending_migrations(connection)
-        connection.execute(
-            """
-            INSERT INTO runner_profiles (profile_id, display_name, config_json, created_utc, updated_utc)
-            VALUES ('profile-1', 'Profile', '{}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
-            """
-        )
-        connection.execute(
-            """
-            INSERT INTO pipeline_definitions (pipeline_id, pipeline_name, pipeline_version, description, created_utc, updated_utc)
-            VALUES ('pipeline-1', 'Pipeline', '1.0', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
-            """
-        )
+        _seed_runner_profile(connection)
+        _seed_pipeline_definition(connection)
         connection.execute(
             """
             INSERT INTO migration_jobs (
-                job_id, pipeline_id, runner_profile_id, requested_by, state, active_slot,
-                created_utc, updated_utc
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                job_id, version, status, active_slot, last_event_sequence,
+                runner_profile_id, runner_profile_version, pipeline_id, pipeline_version,
+                target_proof_level, achieved_proof_level, legacy_source_ref, output_root_ref,
+                created_at, updated_at, started_at, finished_at, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "job-1",
-                "pipeline-1",
-                "profile-1",
-                "tester",
+                1,
                 "RUNNING",
                 1,
+                0,
+                "profile-1",
+                "v1",
+                "pipeline-1",
+                "v1",
+                "ANALYZED",
+                None,
+                "legacy-ref",
+                "output-ref",
                 "2026-01-01T00:00:00Z",
                 "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+                None,
+                "tester",
             ),
         )
 
@@ -381,19 +599,31 @@ def test_one_active_job_index_and_active_slot_check_exist_and_work(tmp_path: Pat
             connection.execute(
                 """
                 INSERT INTO migration_jobs (
-                    job_id, pipeline_id, runner_profile_id, requested_by, state, active_slot,
-                    created_utc, updated_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    job_id, version, status, active_slot, last_event_sequence,
+                    runner_profile_id, runner_profile_version, pipeline_id, pipeline_version,
+                    target_proof_level, achieved_proof_level, legacy_source_ref, output_root_ref,
+                    created_at, updated_at, started_at, finished_at, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     "job-2",
-                    "pipeline-1",
-                    "profile-1",
-                    "tester",
+                    1,
                     "QUEUED",
                     1,
+                    0,
+                    "profile-1",
+                    "v1",
+                    "pipeline-1",
+                    "v1",
+                    "ANALYZED",
+                    None,
+                    "legacy-ref",
+                    "output-ref",
                     "2026-01-01T00:00:00Z",
                     "2026-01-01T00:00:00Z",
+                    None,
+                    None,
+                    "tester",
                 ),
             )
 
@@ -401,72 +631,209 @@ def test_one_active_job_index_and_active_slot_check_exist_and_work(tmp_path: Pat
             connection.execute(
                 """
                 INSERT INTO migration_jobs (
-                    job_id, pipeline_id, runner_profile_id, requested_by, state, active_slot,
-                    created_utc, updated_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    job_id, version, status, active_slot, last_event_sequence,
+                    runner_profile_id, runner_profile_version, pipeline_id, pipeline_version,
+                    target_proof_level, achieved_proof_level, legacy_source_ref, output_root_ref,
+                    created_at, updated_at, started_at, finished_at, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     "job-3",
-                    "pipeline-1",
-                    "profile-1",
-                    "tester",
+                    1,
                     "COMPLETED",
                     1,
+                    0,
+                    "profile-1",
+                    "v1",
+                    "pipeline-1",
+                    "v1",
+                    "ANALYZED",
+                    "ANALYZED",
+                    "legacy-ref",
+                    "output-ref",
                     "2026-01-01T00:00:00Z",
                     "2026-01-01T00:00:00Z",
+                    None,
+                    "2026-01-01T01:00:00Z",
+                    "tester",
                 ),
             )
 
         connection.execute(
             """
             INSERT INTO migration_jobs (
-                job_id, pipeline_id, runner_profile_id, requested_by, state, active_slot,
-                created_utc, updated_utc, finished_utc
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                job_id, version, status, active_slot, last_event_sequence,
+                runner_profile_id, runner_profile_version, pipeline_id, pipeline_version,
+                target_proof_level, achieved_proof_level, legacy_source_ref, output_root_ref,
+                created_at, updated_at, started_at, finished_at, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "job-4",
-                "pipeline-1",
-                "profile-1",
-                "tester",
+                2,
                 "COMPLETED",
-                0,
+                None,
+                4,
+                "profile-1",
+                "v1",
+                "pipeline-1",
+                "v1",
+                "BUILD_TEST_VERIFIED",
+                "BUILD_TEST_VERIFIED",
+                "legacy-ref",
+                "output-ref",
+                "2026-01-01T00:00:00Z",
                 "2026-01-01T00:00:00Z",
                 "2026-01-01T00:00:00Z",
                 "2026-01-01T01:00:00Z",
+                "tester",
             ),
         )
     finally:
         connection.close()
 
 
+def _migrated_connection(tmp_path: Path) -> sqlite3.Connection:
+    connection = connect_control_tower(tmp_path / "control_tower.sqlite3")
+    apply_pending_migrations(connection)
+    return connection
+
+
+def _table_columns(connection: sqlite3.Connection, table_name: str) -> dict[str, sqlite3.Row]:
+    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row["name"]): row for row in rows}
+
+
+def _primary_key_columns(connection: sqlite3.Connection, table_name: str) -> list[str]:
+    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return [
+        str(row["name"])
+        for row in sorted(rows, key=lambda row: int(row["pk"]))
+        if int(row["pk"]) > 0
+    ]
+
+
+def _foreign_keys_grouped(connection: sqlite3.Connection, table_name: str) -> list[dict[str, object]]:
+    rows = connection.execute(f"PRAGMA foreign_key_list({table_name})").fetchall()
+    grouped: dict[int, dict[str, object]] = {}
+    for row in rows:
+        group = grouped.setdefault(
+            int(row["id"]),
+            {"table": str(row["table"]), "from": [], "to": []},
+        )
+        group["from"].append(str(row["from"]))  # type: ignore[union-attr]
+        group["to"].append(str(row["to"]))  # type: ignore[union-attr]
+    return list(grouped.values())
+
+
+def _all_index_names(connection: sqlite3.Connection) -> set[str]:
+    rows = connection.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'index'
+          AND name NOT LIKE 'sqlite_autoindex_%'
+        """
+    ).fetchall()
+    return {str(row["name"]) for row in rows}
+
+
+def _seed_runner_profile(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        INSERT INTO runner_profiles (
+            runner_profile_id, runner_profile_version, display_name, schema_version,
+            payload_json, payload_checksum, created_at, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "profile-1",
+            "v1",
+            "Profile",
+            "runner-profile/v1",
+            "{}",
+            "checksum-runner",
+            "2026-01-01T00:00:00Z",
+            "tester",
+        ),
+    )
+
+
+def _seed_pipeline_definition(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        INSERT INTO pipeline_definitions (
+            pipeline_id, pipeline_version, display_name, schema_version,
+            graph_version, graph_state_schema_version, payload_json, payload_checksum,
+            created_at, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "pipeline-1",
+            "v1",
+            "Pipeline",
+            "pipeline-definition/v1",
+            "graph-v1",
+            "graph-state/v1",
+            "{}",
+            "checksum-pipeline",
+            "2026-01-01T00:00:00Z",
+            "tester",
+        ),
+    )
+
+
 def _seed_foundation_references(connection: sqlite3.Connection) -> None:
-    connection.execute(
-        """
-        INSERT INTO runner_profiles (profile_id, display_name, config_json, created_utc, updated_utc)
-        VALUES ('profile-1', 'Profile', '{}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
-        """
-    )
-    connection.execute(
-        """
-        INSERT INTO pipeline_definitions (pipeline_id, pipeline_name, pipeline_version, description, created_utc, updated_utc)
-        VALUES ('pipeline-1', 'Pipeline', '1.0', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
-        """
-    )
+    _seed_runner_profile(connection)
+    _seed_pipeline_definition(connection)
     connection.execute(
         """
         INSERT INTO migration_jobs (
-            job_id, pipeline_id, runner_profile_id, requested_by, state, active_slot,
-            created_utc, updated_utc
-        ) VALUES ('job-1', 'pipeline-1', 'profile-1', 'tester', 'RUNNING', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
-        """
+            job_id, version, status, active_slot, last_event_sequence,
+            runner_profile_id, runner_profile_version, pipeline_id, pipeline_version,
+            target_proof_level, achieved_proof_level, legacy_source_ref, output_root_ref,
+            created_at, updated_at, started_at, finished_at, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "job-1",
+            1,
+            "RUNNING",
+            1,
+            1,
+            "profile-1",
+            "v1",
+            "pipeline-1",
+            "v1",
+            "ANALYZED",
+            None,
+            "legacy-ref",
+            "output-ref",
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:00Z",
+            None,
+            "tester",
+        ),
     )
     connection.execute(
         """
         INSERT INTO stage_runs (
-            stage_run_id, job_id, stage_name, state, ordinal, started_utc, details_json
-        ) VALUES ('stage-1', 'job-1', 'analysis', 'RUNNING', 1, '2026-01-01T00:00:00Z', '{}')
-        """
+            stage_run_id, job_id, stage_index, stage_id, status,
+            input_source_json, created_at, started_at, finished_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "stage-1",
+            "job-1",
+            1,
+            "analysis",
+            "RUNNING",
+            "{}",
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:00Z",
+            None,
+        ),
     )
 
 

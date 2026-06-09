@@ -340,7 +340,7 @@ def _apply_single_migration(connection: sqlite3.Connection, migration: Migration
         _run_foreign_key_check(connection)
         connection.execute(
             """
-            INSERT INTO schema_migrations (version, name, checksum_sha256, applied_utc)
+            INSERT INTO schema_migrations (version, name, checksum, applied_at)
             VALUES (?, ?, ?, ?)
             """,
             (
@@ -459,7 +459,7 @@ def _load_applied_migrations(connection: sqlite3.Connection) -> dict[int, sqlite
 
     rows = connection.execute(
         """
-        SELECT version, name, checksum_sha256, applied_utc
+        SELECT version, name, checksum, applied_at
         FROM schema_migrations
         ORDER BY version ASC
         """
@@ -478,7 +478,7 @@ def _verify_applied_checksums(
             raise MigrationDiscoveryError(
                 f"Applied migration missing from disk: {version:04d}"
             )
-        actual_checksum = str(row["checksum_sha256"])
+        actual_checksum = str(row["checksum"])
         if actual_checksum != migration.checksum:
             raise AppliedMigrationChecksumMismatchError(
                 version,
