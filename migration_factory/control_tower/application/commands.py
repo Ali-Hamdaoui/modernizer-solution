@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from migration_factory.control_tower.domain.artifacts import ArtifactHashResult
-from migration_factory.control_tower.domain.states import TargetProofLevel
+from migration_factory.control_tower.domain.states import JobState, TargetProofLevel
 from migration_factory.control_tower.schemas import PipelineDefinition, RunnerProfile
 from migration_factory.control_tower.schemas.run_configuration import RunPolicy
 
@@ -53,5 +53,17 @@ class RegisterArtifactCommand:
     actor_id: str
     stage_run_id: str | None = None
     content_type: str | None = None
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TransitionJobStateCommand:
+    job_id: str
+    expected_version: int | None
+    target_state: JobState
+    actor_type: str
+    actor_id: str
+    reason: str
     correlation_id: str | None = None
     causation_id: str | None = None

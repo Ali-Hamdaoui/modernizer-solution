@@ -110,6 +110,10 @@ def is_terminal_job_state(state: JobState) -> bool:
     return state in TERMINAL_JOB_STATES
 
 
+def active_slot_for(state: JobState) -> int | None:
+    return None if is_terminal_job_state(state) else 1
+
+
 def allowed_job_transitions_from(state: JobState) -> frozenset[JobState]:
     return JOB_STATE_TRANSITIONS[state]
 
