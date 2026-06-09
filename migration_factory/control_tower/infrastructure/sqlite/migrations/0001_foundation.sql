@@ -20,6 +20,7 @@ CREATE TABLE pipeline_definitions (
     pipeline_name TEXT NOT NULL,
     pipeline_version TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
+    definition_json TEXT NOT NULL DEFAULT '{}',
     created_utc TEXT NOT NULL,
     updated_utc TEXT NOT NULL,
     CONSTRAINT uq_pipeline_definitions_name_version UNIQUE (pipeline_name, pipeline_version)
@@ -27,11 +28,16 @@ CREATE TABLE pipeline_definitions (
 
 CREATE TABLE migration_jobs (
     job_id TEXT PRIMARY KEY,
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
     pipeline_id TEXT NOT NULL,
     runner_profile_id TEXT NOT NULL,
     requested_by TEXT NOT NULL,
     state TEXT NOT NULL,
     active_slot INTEGER NOT NULL DEFAULT 1,
+    last_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK (last_event_sequence >= 0),
+    target_proof_level TEXT NOT NULL DEFAULT 'ANALYZED',
+    legacy_source_ref TEXT NOT NULL DEFAULT '',
+    output_root_ref TEXT NOT NULL DEFAULT '',
     created_utc TEXT NOT NULL,
     updated_utc TEXT NOT NULL,
     started_utc TEXT,
@@ -57,6 +63,17 @@ CREATE TABLE migration_jobs (
                 'FAILED',
                 'REJECTED',
                 'CANCELLED'
+            )
+        ),
+    CONSTRAINT ck_migration_jobs_target_proof_level
+        CHECK (
+            target_proof_level IN (
+                'ANALYZED',
+                'PLANNED',
+                'TRANSFORMED',
+                'BUILD_TEST_VERIFIED',
+                'RUNTIME_VERIFIED',
+                'ENDPOINT_VERIFIED'
             )
         ),
     CONSTRAINT ck_migration_jobs_active_slot
@@ -85,6 +102,7 @@ CREATE TABLE run_configurations (
     job_id TEXT NOT NULL,
     target_proof_level TEXT NOT NULL,
     config_json TEXT NOT NULL,
+    config_checksum_sha256 TEXT NOT NULL DEFAULT '',
     created_utc TEXT NOT NULL,
     CONSTRAINT fk_run_configurations_job
         FOREIGN KEY (job_id) REFERENCES migration_jobs (job_id) ON DELETE CASCADE,
@@ -142,13 +160,16 @@ CREATE TABLE run_events (
     event_id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL,
     stage_run_id TEXT,
+    sequence INTEGER NOT NULL CHECK (sequence >= 1),
     event_type TEXT NOT NULL,
     event_utc TEXT NOT NULL,
     payload_json TEXT NOT NULL DEFAULT '{}',
+    payload_checksum_sha256 TEXT NOT NULL DEFAULT '',
     CONSTRAINT fk_run_events_job
         FOREIGN KEY (job_id) REFERENCES migration_jobs (job_id) ON DELETE CASCADE,
     CONSTRAINT fk_run_events_stage_run
-        FOREIGN KEY (stage_run_id) REFERENCES stage_runs (stage_run_id) ON DELETE CASCADE
+        FOREIGN KEY (stage_run_id) REFERENCES stage_runs (stage_run_id) ON DELETE CASCADE,
+    CONSTRAINT uq_run_events_job_sequence UNIQUE (job_id, sequence)
 );
 
 CREATE INDEX ix_run_events_job_id
