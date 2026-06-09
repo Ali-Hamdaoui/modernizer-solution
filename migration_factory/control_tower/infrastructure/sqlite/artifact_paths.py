@@ -171,7 +171,7 @@ def _normalize_relative_path(relative_path: str | Path) -> str:
     if not parts:
         raise ArtifactPathError("Relative path must contain at least one real segment")
 
-    normalized_parts = [part.casefold() if os.name == "nt" else part for part in parts]
+    normalized_parts = [part.casefold() for part in parts]
     normalized = "/".join(normalized_parts)
     if ".." in normalized.split("/"):
         raise ArtifactPathError(f"Parent traversal is not allowed: {raw_text}")
