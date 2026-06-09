@@ -170,7 +170,7 @@ def _resume_from_interrupt_snapshot(
             "stop_reason": f"Approval decision '{decision}' received; stopping.",
         }
     )
-    if decision == "approved":
+    if decision == "approved" and state.get("mode") == FULL_SANDBOX_MIGRATION_MODE:
         state["stop_reason"] = "Approval decision 'approved' received; continuing to sandbox transform."
 
     recorded = dict(state)
@@ -234,6 +234,8 @@ def _normalize_resume_result(
     if decision != "approved":
         result["stop_reason"] = f"Approval decision '{decision}' recorded; stopping."
         result["final_status"] = decision.upper()
+    elif result.get("mode") != FULL_SANDBOX_MIGRATION_MODE:
+        result["stop_reason"] = "Approval decision 'approved' recorded; stopping."
     return result
 
 

@@ -28,6 +28,7 @@ from migration_factory.agents.transformation_agent.execution_plan import (
     TransformationExecutionPlanError,
     write_transformation_execution_plan,
 )
+from migration_factory.agents.transformation_agent.pom_patches import patch_spring_boot_version
 from migration_factory.agents.transformation_agent.plan import MigrationPlan, MigrationPlanError, load_migration_plan
 from migration_factory.agents.transformation_agent.rewrite import (
     DEFAULT_OPENREWRITE_MAVEN_PLUGIN_VERSION,
