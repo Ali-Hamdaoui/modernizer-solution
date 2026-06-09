@@ -25,6 +25,7 @@ from migration_factory.control_tower.infrastructure.sqlite.migrations import (
     split_sql_statements,
 )
 from migration_factory.control_tower.infrastructure.sqlite.repositories import (
+    SqliteArtifactRepository,
     SqliteAuditRecordRepository,
     SqliteMigrationJobRepository,
     SqlitePipelineDefinitionRepository,
@@ -46,6 +47,7 @@ __all__ = [
     "MigrationExecutionError",
     "MigrationFile",
     "MigrationSafetyError",
+    "SqliteArtifactRepository",
     "SqliteAuditRecordRepository",
     "SqliteControlTowerUnitOfWork",
     "SqliteMigrationJobRepository",

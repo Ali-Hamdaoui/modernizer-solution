@@ -6,10 +6,12 @@ from typing import Protocol, Self, Sequence
 
 from migration_factory.control_tower.application.dto import (
     AuditRecordDto,
+    ArtifactDto,
     PipelineDefinitionDto,
     RunnerProfileDto,
 )
 from migration_factory.control_tower.domain.entities import (
+    ArtifactRecord,
     AuditRecord,
     MigrationJobRecord,
     PipelineDefinitionRecord,
@@ -47,19 +49,40 @@ class PipelineDefinitionRepository(Protocol):
 class MigrationJobRepository(Protocol):
     def insert_created(self, job: MigrationJobRecord) -> None: ...
 
+    def get(self, job_id: str) -> MigrationJobRecord | None: ...
+
     def get_active_job(self) -> MigrationJobRecord | None: ...
+
+    def increment_last_event_sequence(self, job_id: str) -> int | None: ...
 
 
 class RunConfigurationRepository(Protocol):
     def insert(self, run_configuration: RunConfigurationRecord) -> None: ...
 
+    def get_for_job(self, job_id: str) -> RunConfigurationRecord | None: ...
+
 
 class StageRunRepository(Protocol):
     def insert_many(self, stage_runs: Sequence[StageRunRecord]) -> None: ...
 
+    def get(self, stage_run_id: str) -> StageRunRecord | None: ...
+
 
 class RunEventRepository(Protocol):
     def insert(self, event: RunEventRecord) -> None: ...
+
+
+class ArtifactRepository(Protocol):
+    def insert(self, artifact: ArtifactRecord) -> None: ...
+
+    def get_exact(
+        self,
+        job_id: str,
+        registered_root_id: str,
+        normalized_relative_path: str,
+    ) -> ArtifactDto | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[ArtifactDto, ...]: ...
 
 
 class AuditRecordRepository(Protocol):
@@ -90,6 +113,7 @@ class ControlTowerUnitOfWork(Protocol):
     run_configurations: RunConfigurationRepository
     stage_runs: StageRunRepository
     run_events: RunEventRepository
+    artifacts: ArtifactRepository
     audit_records: AuditRecordRepository
 
     def __enter__(self) -> Self: ...

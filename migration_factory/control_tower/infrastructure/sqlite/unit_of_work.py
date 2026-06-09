@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 
 from migration_factory.control_tower.infrastructure.sqlite.repositories import (
+    SqliteArtifactRepository,
     SqliteAuditRecordRepository,
     SqliteMigrationJobRepository,
     SqlitePipelineDefinitionRepository,
@@ -25,6 +26,7 @@ class SqliteControlTowerUnitOfWork:
         self.run_configurations = SqliteRunConfigurationRepository(connection)
         self.stage_runs = SqliteStageRunRepository(connection)
         self.run_events = SqliteRunEventRepository(connection)
+        self.artifacts = SqliteArtifactRepository(connection)
         self.audit_records = SqliteAuditRecordRepository(connection)
 
     def __enter__(self) -> "SqliteControlTowerUnitOfWork":

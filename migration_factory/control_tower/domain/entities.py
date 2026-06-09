@@ -89,6 +89,23 @@ class StageRunRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactRecord:
+    artifact_id: str
+    job_id: str
+    stage_run_id: str | None
+    artifact_type: str
+    registered_root_id: str
+    relative_path: str
+    normalized_relative_path: str
+    content_type: str | None
+    size_bytes: int
+    checksum_algorithm: str
+    checksum: str
+    created_at: str
+    created_by: str
+
+
+@dataclass(frozen=True, slots=True)
 class RunEventRecord:
     event_id: str
     job_id: str

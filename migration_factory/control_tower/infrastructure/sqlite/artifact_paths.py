@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 import os
 import stat
-from typing import Iterable, Sequence
+from typing import Sequence
 
+from migration_factory.control_tower.domain.artifacts import ArtifactHashResult
 from migration_factory.control_tower.domain.checksums import stream_sha256
 from migration_factory.control_tower.domain.errors import ArtifactHashError, ArtifactPathError
 from migration_factory.control_tower.schemas.runner_profile import RegisteredFilesystemRoot
@@ -19,19 +20,6 @@ class ValidatedArtifactPath:
     root_kind: str
     relative_path: str
     normalized_relative_path: str
-
-
-@dataclass(frozen=True, slots=True)
-class ArtifactHashResult:
-    registered_root_id: str
-    root_kind: str
-    relative_path: str
-    normalized_relative_path: str
-    checksum_algorithm: str
-    checksum: str
-    size_bytes: int
-    mtime_ns: int
-    file_identity: tuple[int | None, int | None]
 
 
 @dataclass(frozen=True, slots=True)

@@ -7,11 +7,13 @@ import sqlite3
 from typing import Sequence
 
 from migration_factory.control_tower.application.dto import (
+    ArtifactDto,
     AuditRecordDto,
     PipelineDefinitionDto,
     RunnerProfileDto,
 )
 from migration_factory.control_tower.domain.entities import (
+    ArtifactRecord,
     AuditRecord,
     MigrationJobRecord,
     PipelineDefinitionRecord,
@@ -236,6 +238,20 @@ class SqliteMigrationJobRepository:
         except sqlite3.IntegrityError as exc:
             raise StorageIntegrityError(str(exc)) from exc
 
+    def get(self, job_id: str) -> MigrationJobRecord | None:
+        row = self._connection.execute(
+            """
+            SELECT job_id, version, status, active_slot, last_event_sequence,
+                   runner_profile_id, runner_profile_version, pipeline_id, pipeline_version,
+                   target_proof_level, achieved_proof_level, legacy_source_ref, output_root_ref,
+                   created_at, updated_at, started_at, finished_at, created_by
+            FROM migration_jobs
+            WHERE job_id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+        return _migration_job_from_row(row) if row is not None else None
+
     def get_active_job(self) -> MigrationJobRecord | None:
         row = self._connection.execute(
             """
@@ -250,6 +266,27 @@ class SqliteMigrationJobRepository:
             """
         ).fetchone()
         return _migration_job_from_row(row) if row is not None else None
+
+    def increment_last_event_sequence(self, job_id: str) -> int | None:
+        cursor = self._connection.execute(
+            """
+            UPDATE migration_jobs
+            SET last_event_sequence = last_event_sequence + 1
+            WHERE job_id = ?
+            """,
+            (job_id,),
+        )
+        if cursor.rowcount == 0:
+            return None
+        row = self._connection.execute(
+            """
+            SELECT last_event_sequence
+            FROM migration_jobs
+            WHERE job_id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+        return int(row["last_event_sequence"]) if row is not None else None
 
 
 class SqliteRunConfigurationRepository:
@@ -286,6 +323,35 @@ class SqliteRunConfigurationRepository:
         except sqlite3.IntegrityError as exc:
             raise StorageIntegrityError(str(exc)) from exc
 
+    def get_for_job(self, job_id: str) -> RunConfigurationRecord | None:
+        row = self._connection.execute(
+            """
+            SELECT run_configuration_id, job_id, schema_version, runner_profile_id,
+                   runner_profile_version, pipeline_id, pipeline_version, target_proof_level,
+                   enabled_gates_json, policy_json, payload_json, payload_checksum, created_at
+            FROM run_configurations
+            WHERE job_id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return RunConfigurationRecord(
+            run_configuration_id=str(row["run_configuration_id"]),
+            job_id=str(row["job_id"]),
+            schema_version=str(row["schema_version"]),
+            runner_profile_id=str(row["runner_profile_id"]),
+            runner_profile_version=str(row["runner_profile_version"]),
+            pipeline_id=str(row["pipeline_id"]),
+            pipeline_version=str(row["pipeline_version"]),
+            target_proof_level=TargetProofLevel(str(row["target_proof_level"])),
+            enabled_gates_json=str(row["enabled_gates_json"]),
+            policy_json=str(row["policy_json"]),
+            payload_json=str(row["payload_json"]),
+            payload_checksum=str(row["payload_checksum"]),
+            created_at=str(row["created_at"]),
+        )
+
 
 class SqliteStageRunRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:
@@ -317,6 +383,99 @@ class SqliteStageRunRepository:
             )
         except sqlite3.IntegrityError as exc:
             raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, stage_run_id: str) -> StageRunRecord | None:
+        row = self._connection.execute(
+            """
+            SELECT stage_run_id, job_id, stage_index, stage_id, status, input_source_json,
+                   created_at, started_at, finished_at
+            FROM stage_runs
+            WHERE stage_run_id = ?
+            """,
+            (stage_run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return StageRunRecord(
+            stage_run_id=str(row["stage_run_id"]),
+            job_id=str(row["job_id"]),
+            stage_index=int(row["stage_index"]),
+            stage_id=str(row["stage_id"]),
+            status=str(row["status"]),
+            input_source_json=str(row["input_source_json"]),
+            created_at=str(row["created_at"]),
+            started_at=None if row["started_at"] is None else str(row["started_at"]),
+            finished_at=None if row["finished_at"] is None else str(row["finished_at"]),
+        )
+
+
+class SqliteArtifactRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, artifact: ArtifactRecord) -> None:
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO artifacts (
+                    artifact_id, job_id, stage_run_id, artifact_type,
+                    registered_root_id, relative_path, normalized_relative_path,
+                    content_type, size_bytes, checksum_algorithm, checksum,
+                    created_at, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    artifact.artifact_id,
+                    artifact.job_id,
+                    artifact.stage_run_id,
+                    artifact.artifact_type,
+                    artifact.registered_root_id,
+                    artifact.relative_path,
+                    artifact.normalized_relative_path,
+                    artifact.content_type,
+                    artifact.size_bytes,
+                    artifact.checksum_algorithm,
+                    artifact.checksum,
+                    artifact.created_at,
+                    artifact.created_by,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get_exact(
+        self,
+        job_id: str,
+        registered_root_id: str,
+        normalized_relative_path: str,
+    ) -> ArtifactDto | None:
+        row = self._connection.execute(
+            """
+            SELECT artifact_id, job_id, stage_run_id, artifact_type, registered_root_id,
+                   relative_path, normalized_relative_path, content_type, size_bytes,
+                   checksum_algorithm, checksum, created_at, created_by
+            FROM artifacts
+            WHERE job_id = ?
+              AND registered_root_id = ?
+              AND normalized_relative_path = ?
+            """,
+            (job_id, registered_root_id, normalized_relative_path),
+        ).fetchone()
+        return _artifact_from_row(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> tuple[ArtifactDto, ...]:
+        rows = self._connection.execute(
+            """
+            SELECT artifact_id, job_id, stage_run_id, artifact_type, registered_root_id,
+                   relative_path, normalized_relative_path, content_type, size_bytes,
+                   checksum_algorithm, checksum, created_at, created_by
+            FROM artifacts
+            WHERE job_id = ?
+            ORDER BY created_at, artifact_id
+            """,
+            (job_id,),
+        ).fetchall()
+        return tuple(_artifact_from_row(row) for row in rows)
 
 
 class SqliteRunEventRepository:
@@ -507,6 +666,24 @@ def _audit_record_from_row(row: sqlite3.Row) -> AuditRecordDto:
         payload=json.loads(payload_json),
         payload_json=payload_json,
         created_at=str(row["created_at"]),
+    )
+
+
+def _artifact_from_row(row: sqlite3.Row) -> ArtifactDto:
+    return ArtifactDto(
+        artifact_id=str(row["artifact_id"]),
+        job_id=str(row["job_id"]),
+        stage_run_id=str(row["stage_run_id"]) if row["stage_run_id"] is not None else None,
+        artifact_type=str(row["artifact_type"]),
+        registered_root_id=str(row["registered_root_id"]),
+        relative_path=str(row["relative_path"]),
+        normalized_relative_path=str(row["normalized_relative_path"]),
+        content_type=str(row["content_type"]) if row["content_type"] is not None else None,
+        size_bytes=int(row["size_bytes"]),
+        checksum_algorithm=str(row["checksum_algorithm"]),
+        checksum=str(row["checksum"]),
+        created_at=str(row["created_at"]),
+        created_by=str(row["created_by"]),
     )
 
 
