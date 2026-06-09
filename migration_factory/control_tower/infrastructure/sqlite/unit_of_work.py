@@ -6,8 +6,10 @@ import sqlite3
 
 from migration_factory.control_tower.infrastructure.sqlite.repositories import (
     SqliteAuditRecordRepository,
+    SqliteMigrationJobRepository,
     SqlitePipelineDefinitionRepository,
     SqliteRunnerProfileRepository,
+    SqliteRunEventRepository,
 )
 
 
@@ -16,6 +18,8 @@ class SqliteUnitOfWork:
         self._connection = connection
         self.runner_profiles = SqliteRunnerProfileRepository(connection)
         self.pipeline_definitions = SqlitePipelineDefinitionRepository(connection)
+        self.migration_jobs = SqliteMigrationJobRepository(connection)
+        self.run_events = SqliteRunEventRepository(connection)
         self.audit_records = SqliteAuditRecordRepository(connection)
 
     def __enter__(self) -> "SqliteUnitOfWork":

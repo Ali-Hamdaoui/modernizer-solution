@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from migration_factory.control_tower.domain.states import JobState
+
 
 @dataclass(frozen=True)
 class RunnerProfileDto:
@@ -32,6 +34,35 @@ class PipelineDefinitionDto:
     payload_checksum: str
     created_at: str
     created_by: str
+
+
+@dataclass(frozen=True)
+class MigrationJobDto:
+    job_id: str
+    version: int
+    status: JobState
+    active_slot: int | None
+    last_event_sequence: int
+    created_at: str
+    updated_at: str
+    started_at: str | None
+    finished_at: str | None
+
+
+@dataclass(frozen=True)
+class RunEventDto:
+    event_id: str
+    job_id: str
+    sequence: int
+    event_type: str
+    actor_type: str
+    actor_id: str
+    correlation_id: str | None
+    causation_id: str | None
+    payload: dict[str, Any]
+    payload_json: str
+    payload_checksum: str
+    created_at: str
 
 
 @dataclass(frozen=True)

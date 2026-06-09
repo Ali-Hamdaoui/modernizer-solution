@@ -7,9 +7,13 @@ import sqlite3
 
 from migration_factory.control_tower.application.dto import (
     AuditRecordDto,
+    MigrationJobDto,
     PipelineDefinitionDto,
     RunnerProfileDto,
+    RunEventDto,
 )
+from migration_factory.control_tower.domain.errors import NotFoundError
+from migration_factory.control_tower.domain.states import JobState
 
 
 class SqliteRunnerProfileRepository:
@@ -135,6 +139,137 @@ class SqlitePipelineDefinitionRepository:
         return str(row["payload_checksum"]) if row is not None else None
 
 
+class SqliteMigrationJobRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, job_id: str) -> MigrationJobDto | None:
+        row = self._connection.execute(
+            """
+            SELECT job_id, version, status, active_slot, last_event_sequence,
+                   created_at, updated_at, started_at, finished_at
+            FROM migration_jobs
+            WHERE job_id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+        return _migration_job_from_row(row) if row is not None else None
+
+    def transition_state(
+        self,
+        job_id: str,
+        expected_version: int,
+        target_state: JobState,
+        active_slot: int | None,
+        updated_at: str,
+    ) -> bool:
+        cursor = self._connection.execute(
+            """
+            UPDATE migration_jobs
+            SET status = ?,
+                version = version + 1,
+                active_slot = ?,
+                updated_at = ?
+            WHERE job_id = ?
+              AND version = ?
+            """,
+            (
+                target_state.value,
+                active_slot,
+                updated_at,
+                job_id,
+                expected_version,
+            ),
+        )
+        return cursor.rowcount == 1
+
+    def increment_event_sequence(self, job_id: str) -> int:
+        cursor = self._connection.execute(
+            """
+            UPDATE migration_jobs
+            SET last_event_sequence = last_event_sequence + 1
+            WHERE job_id = ?
+            """,
+            (job_id,),
+        )
+        if cursor.rowcount != 1:
+            raise NotFoundError(f"Migration job {job_id!r} not found")
+
+        row = self._connection.execute(
+            """
+            SELECT last_event_sequence
+            FROM migration_jobs
+            WHERE job_id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"Migration job {job_id!r} not found")
+        return int(row["last_event_sequence"])
+
+
+class SqliteRunEventRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def append_job_state_changed_event(
+        self,
+        *,
+        event_id: str,
+        job_id: str,
+        sequence: int,
+        actor_type: str,
+        actor_id: str,
+        payload_json: str,
+        payload_checksum: str,
+        created_at: str,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO run_events (
+                event_id, job_id, sequence, event_type, actor_type, actor_id,
+                correlation_id, causation_id, payload_json, payload_checksum,
+                created_at
+            ) VALUES (?, ?, ?, 'job_state_changed', ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                job_id,
+                sequence,
+                actor_type,
+                actor_id,
+                correlation_id,
+                causation_id,
+                payload_json,
+                payload_checksum,
+                created_at,
+            ),
+        )
+
+    def list_for_job(self, job_id: str) -> tuple[RunEventDto, ...]:
+        rows = self._connection.execute(
+            """
+            SELECT event_id, job_id, sequence, event_type, actor_type, actor_id,
+                   correlation_id, causation_id, payload_json, payload_checksum,
+                   created_at
+            FROM run_events
+            WHERE job_id = ?
+            ORDER BY sequence
+            """,
+            (job_id,),
+        ).fetchall()
+        return tuple(_run_event_from_row(row) for row in rows)
+
+    def count_for_job(self, job_id: str) -> int:
+        row = self._connection.execute(
+            "SELECT COUNT(*) AS count FROM run_events WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        return int(row["count"])
+
+
 class SqliteAuditRecordRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
@@ -170,6 +305,43 @@ class SqliteAuditRecordRepository:
             ),
         )
 
+    def append_job_state_changed_audit(
+        self,
+        *,
+        audit_id: str,
+        job_id: str,
+        actor_type: str,
+        actor_id: str,
+        prior_state: JobState,
+        new_state: JobState,
+        job_version: int,
+        payload_json: str,
+        created_at: str,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO audit_records (
+                audit_id, job_id, actor_type, actor_id, action, prior_state, new_state,
+                job_version, correlation_id, causation_id, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, 'job_state_changed', ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                audit_id,
+                job_id,
+                actor_type,
+                actor_id,
+                prior_state.value,
+                new_state.value,
+                job_version,
+                correlation_id,
+                causation_id,
+                payload_json,
+                created_at,
+            ),
+        )
+
     def list(self) -> tuple[AuditRecordDto, ...]:
         rows = self._connection.execute(
             """
@@ -183,6 +355,26 @@ class SqliteAuditRecordRepository:
 
     def count(self) -> int:
         row = self._connection.execute("SELECT COUNT(*) AS count FROM audit_records").fetchone()
+        return int(row["count"])
+
+    def list_for_job(self, job_id: str) -> tuple[AuditRecordDto, ...]:
+        rows = self._connection.execute(
+            """
+            SELECT audit_id, job_id, actor_type, actor_id, action, prior_state, new_state,
+                   job_version, correlation_id, causation_id, payload_json, created_at
+            FROM audit_records
+            WHERE job_id = ?
+            ORDER BY created_at, audit_id
+            """,
+            (job_id,),
+        ).fetchall()
+        return tuple(_audit_record_from_row(row) for row in rows)
+
+    def count_for_job(self, job_id: str) -> int:
+        row = self._connection.execute(
+            "SELECT COUNT(*) AS count FROM audit_records WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
         return int(row["count"])
 
 
@@ -215,6 +407,39 @@ def _pipeline_definition_from_row(row: sqlite3.Row) -> PipelineDefinitionDto:
         payload_checksum=str(row["payload_checksum"]),
         created_at=str(row["created_at"]),
         created_by=str(row["created_by"]),
+    )
+
+
+def _migration_job_from_row(row: sqlite3.Row) -> MigrationJobDto:
+    active_slot = row["active_slot"]
+    return MigrationJobDto(
+        job_id=str(row["job_id"]),
+        version=int(row["version"]),
+        status=JobState(str(row["status"])),
+        active_slot=int(active_slot) if active_slot is not None else None,
+        last_event_sequence=int(row["last_event_sequence"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+        started_at=str(row["started_at"]) if row["started_at"] is not None else None,
+        finished_at=str(row["finished_at"]) if row["finished_at"] is not None else None,
+    )
+
+
+def _run_event_from_row(row: sqlite3.Row) -> RunEventDto:
+    payload_json = str(row["payload_json"])
+    return RunEventDto(
+        event_id=str(row["event_id"]),
+        job_id=str(row["job_id"]),
+        sequence=int(row["sequence"]),
+        event_type=str(row["event_type"]),
+        actor_type=str(row["actor_type"]),
+        actor_id=str(row["actor_id"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+        payload=json.loads(payload_json),
+        payload_json=payload_json,
+        payload_checksum=str(row["payload_checksum"]),
+        created_at=str(row["created_at"]),
     )
 
 

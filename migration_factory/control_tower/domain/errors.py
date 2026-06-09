@@ -25,6 +25,30 @@ class RegistrationConflictError(ControlTowerDomainError):
         )
 
 
+class ExpectedVersionRequiredError(ControlTowerDomainError):
+    """Raised when an optimistic transition command omits expected_version."""
+
+    def __init__(self) -> None:
+        super().__init__("expected_version is required")
+
+
+class StaleVersionError(ControlTowerDomainError):
+    """Raised when a transition uses a job version that is no longer current."""
+
+    def __init__(self, job_id: str, expected_version: int, actual_version: int | None) -> None:
+        self.job_id = job_id
+        self.expected_version = expected_version
+        self.actual_version = actual_version
+        actual = "missing" if actual_version is None else str(actual_version)
+        super().__init__(
+            f"Stale version for job {job_id!r}: expected {expected_version}, actual {actual}"
+        )
+
+
+class ConcurrencyConflictError(ControlTowerDomainError):
+    """Raised when a database-enforced optimistic update loses a race."""
+
+
 class InvalidJobStateTransitionError(ControlTowerDomainError):
     """Raised when a requested job state transition is not allowed."""
 

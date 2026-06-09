@@ -9,11 +9,26 @@ from uuid import uuid4
 from migration_factory.control_tower.application.commands import (
     RegisterPipelineDefinitionCommand,
     RegisterRunnerProfileCommand,
+    TransitionJobStateCommand,
 )
-from migration_factory.control_tower.application.dto import PipelineDefinitionDto, RunnerProfileDto
+from migration_factory.control_tower.application.dto import (
+    MigrationJobDto,
+    PipelineDefinitionDto,
+    RunnerProfileDto,
+)
 from migration_factory.control_tower.application.ports import UnitOfWork
 from migration_factory.control_tower.domain.checksums import canonical_json, sha256_checksum, utc_now
-from migration_factory.control_tower.domain.errors import NotFoundError, RegistrationConflictError
+from migration_factory.control_tower.domain.errors import (
+    ExpectedVersionRequiredError,
+    NotFoundError,
+    RegistrationConflictError,
+    StaleVersionError,
+)
+from migration_factory.control_tower.domain.states import JobState
+from migration_factory.control_tower.domain.transitions import (
+    active_slot_for,
+    validate_job_state_transition,
+)
 from migration_factory.control_tower.schemas import PipelineDefinition, RunnerProfile
 
 
@@ -185,6 +200,86 @@ class ControlTowerRegistrationService:
         with self._unit_of_work_factory() as uow:
             return uow.pipeline_definitions.list()
 
+    def transition_job_state(self, command: TransitionJobStateCommand) -> MigrationJobDto:
+        if command.expected_version is None:
+            raise ExpectedVersionRequiredError()
+
+        expected_version = command.expected_version
+        target_state = _coerce_job_state(command.target_state)
+
+        with self._unit_of_work_factory() as uow:
+            job = uow.migration_jobs.get(command.job_id)
+            if job is None:
+                raise NotFoundError(f"Migration job {command.job_id!r} not found")
+            if job.version != expected_version:
+                raise StaleVersionError(command.job_id, expected_version, job.version)
+
+            validate_job_state_transition(job.status, target_state)
+
+            updated_at = utc_now()
+            target_active_slot = active_slot_for(target_state)
+            updated = uow.migration_jobs.transition_state(
+                command.job_id,
+                expected_version,
+                target_state,
+                target_active_slot,
+                updated_at,
+            )
+            if not updated:
+                current = uow.migration_jobs.get(command.job_id)
+                if current is None:
+                    raise NotFoundError(f"Migration job {command.job_id!r} not found")
+                raise StaleVersionError(command.job_id, expected_version, current.version)
+
+            new_version = expected_version + 1
+            sequence = uow.migration_jobs.increment_event_sequence(command.job_id)
+            event_payload = _job_state_changed_payload(
+                job_id=command.job_id,
+                prior_state=job.status,
+                new_state=target_state,
+                prior_version=expected_version,
+                new_version=new_version,
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                reason=command.reason,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+            )
+            event_payload_json = canonical_json(event_payload)
+            uow.run_events.append_job_state_changed_event(
+                event_id=str(uuid4()),
+                job_id=command.job_id,
+                sequence=sequence,
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                payload_json=event_payload_json,
+                payload_checksum=sha256_checksum(event_payload),
+                created_at=updated_at,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+            )
+
+            audit_payload = dict(event_payload)
+            audit_payload["event_sequence"] = sequence
+            uow.audit_records.append_job_state_changed_audit(
+                audit_id=str(uuid4()),
+                job_id=command.job_id,
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                prior_state=job.status,
+                new_state=target_state,
+                job_version=new_version,
+                payload_json=canonical_json(audit_payload),
+                created_at=updated_at,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+            )
+
+            updated_job = uow.migration_jobs.get(command.job_id)
+            if updated_job is None:
+                raise NotFoundError(f"Migration job {command.job_id!r} not found after transition")
+            return updated_job
+
 
 def _validate_runner_profile(profile: RunnerProfile | dict[str, Any]) -> RunnerProfile:
     if isinstance(profile, RunnerProfile):
@@ -200,8 +295,42 @@ def _validate_pipeline_definition(
     return PipelineDefinition.model_validate(pipeline)
 
 
+def _coerce_job_state(state: JobState | str) -> JobState:
+    return state if isinstance(state, JobState) else JobState(state)
+
+
 def _schema_payload(model: RunnerProfile | PipelineDefinition) -> dict[str, Any]:
     return model.model_dump(mode="json")
+
+
+def _job_state_changed_payload(
+    *,
+    job_id: str,
+    prior_state: JobState,
+    new_state: JobState,
+    prior_version: int,
+    new_version: int,
+    actor_type: str,
+    actor_id: str,
+    reason: str,
+    correlation_id: str | None,
+    causation_id: str | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "actor_id": actor_id,
+        "actor_type": actor_type,
+        "job_id": job_id,
+        "new_state": new_state.value,
+        "new_version": new_version,
+        "prior_state": prior_state.value,
+        "prior_version": prior_version,
+        "reason": reason,
+    }
+    if correlation_id is not None:
+        payload["correlation_id"] = correlation_id
+    if causation_id is not None:
+        payload["causation_id"] = causation_id
+    return payload
 
 
 def _registration_audit_payload_json(

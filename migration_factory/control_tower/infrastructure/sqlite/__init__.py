@@ -19,8 +19,10 @@ from migration_factory.control_tower.infrastructure.sqlite.migrations import (
 )
 from migration_factory.control_tower.infrastructure.sqlite.repositories import (
     SqliteAuditRecordRepository,
+    SqliteMigrationJobRepository,
     SqlitePipelineDefinitionRepository,
     SqliteRunnerProfileRepository,
+    SqliteRunEventRepository,
 )
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
 
@@ -32,8 +34,10 @@ __all__ = [
     "MigrationFile",
     "MigrationSafetyError",
     "SqliteAuditRecordRepository",
+    "SqliteMigrationJobRepository",
     "SqlitePipelineDefinitionRepository",
     "SqliteRunnerProfileRepository",
+    "SqliteRunEventRepository",
     "SqliteUnitOfWork",
     "UnsupportedJournalModeError",
     "apply_pending_migrations",
