@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pathlib import Path
 
 from migration_factory.control_tower.application.commands import (
+    CancelCommand,
     CreateDiagnosticJobCommand,
     FinalizeCommandCommand,
     LaunchWorkerCommand,
@@ -32,6 +33,7 @@ from migration_factory.control_tower.application.queries import (
     parse_public_event_cursor,
 )
 from migration_factory.control_tower.application.services import (
+    CancelService,
     CommandFinalizationService,
     DiagnosticJobService,
     WorkerLaunchService,
@@ -437,6 +439,35 @@ def create_app(
             "terminal": window.terminal,
             "max_bytes": window.max_bytes,
         }
+
+    @app.post("/v1/jobs/{job_id}/cancel")
+    async def cancel_job(
+        job_id: str,
+        request: StrictRequest,
+        if_match: str | None = Header(default=None, alias="If-Match"),
+    ) -> dict[str, Any]:
+        if if_match is None:
+            raise _error(
+                status.HTTP_428_PRECONDITION_REQUIRED,
+                "PRECONDITION_REQUIRED",
+                "If-Match is required for cancel.",
+            )
+        expected_version = _expected_version_from_if_match(job_id, if_match)
+
+        service = CancelService(unit_of_work_factory, worker_launcher)
+        try:
+            projection = service.cancel(
+                CancelCommand(
+                    job_id=job_id,
+                    expected_version=expected_version,
+                    actor_type="user",
+                    actor_id=getpass.getuser(),
+                )
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        await app.state.public_event_notifier.notify()
+        return _projection_payload(projection)
 
     @app.get("/v1/jobs/{job_id}/commands/{command_id}/stderr")
     def read_stderr(
