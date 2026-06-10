@@ -28,6 +28,7 @@ from migration_factory.control_tower.domain.entities import (
     RunnerProfileRecord,
     StageRunRecord,
 )
+from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.domain.commands import CommandState
 from migration_factory.control_tower.domain.errors import NotFoundError, StorageIntegrityError
 from migration_factory.control_tower.domain.states import JobState, TargetProofLevel
@@ -831,7 +832,9 @@ class SqliteCommandExecutionRepository:
         row = self._connection.execute(
             """
             SELECT command_id, job_id, operation, status, created_at, updated_at,
-                   correlation_id, causation_id
+                   correlation_id, causation_id,
+                   command_manifest_artifact_id, working_directory_root_id,
+                   working_directory_relative_path, worker_id, launch_attempt
             FROM command_executions
             WHERE command_id = ?
             """,
@@ -843,7 +846,9 @@ class SqliteCommandExecutionRepository:
         row = self._connection.execute(
             """
             SELECT command_id, job_id, operation, status, created_at, updated_at,
-                   correlation_id, causation_id
+                   correlation_id, causation_id,
+                   command_manifest_artifact_id, working_directory_root_id,
+                   working_directory_relative_path, worker_id, launch_attempt
             FROM command_executions
             WHERE job_id = ?
               AND status IN ('QUEUED', 'STARTING', 'RUNNING', 'CANCELLING')
@@ -853,6 +858,36 @@ class SqliteCommandExecutionRepository:
             (job_id,),
         ).fetchone()
         return _command_execution_from_row(row) if row is not None else None
+
+    def update_workspace_columns(
+        self,
+        command_id: str,
+        *,
+        command_manifest_artifact_id: str,
+        working_directory_root_id: str,
+        working_directory_relative_path: str,
+        worker_id: str,
+        launch_attempt: int,
+    ) -> None:
+        self._connection.execute(
+            """UPDATE command_executions
+            SET command_manifest_artifact_id = ?,
+                working_directory_root_id = ?,
+                working_directory_relative_path = ?,
+                worker_id = ?,
+                launch_attempt = ?,
+                updated_at = ?
+            WHERE command_id = ?""",
+            (
+                command_manifest_artifact_id,
+                working_directory_root_id,
+                working_directory_relative_path,
+                worker_id,
+                launch_attempt,
+                utc_now_text(),
+                command_id,
+            ),
+        )
 
 
 class SqliteIdempotencyRepository:
@@ -1007,6 +1042,27 @@ def _command_execution_from_row(row: sqlite3.Row) -> CommandExecutionDto:
         updated_at=str(row["updated_at"]),
         correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
         causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+        command_manifest_artifact_id=(
+            str(row["command_manifest_artifact_id"])
+            if row["command_manifest_artifact_id"] is not None
+            else None
+        ),
+        working_directory_root_id=(
+            str(row["working_directory_root_id"])
+            if row["working_directory_root_id"] is not None
+            else None
+        ),
+        working_directory_relative_path=(
+            str(row["working_directory_relative_path"])
+            if row["working_directory_relative_path"] is not None
+            else None
+        ),
+        worker_id=(
+            str(row["worker_id"]) if row["worker_id"] is not None else None
+        ),
+        launch_attempt=(
+            int(row["launch_attempt"]) if row["launch_attempt"] is not None else None
+        ),
     )
 
 

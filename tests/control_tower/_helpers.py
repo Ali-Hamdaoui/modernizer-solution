@@ -190,3 +190,29 @@ def pipeline_definition_payload() -> dict:
             },
         ),
     }
+
+
+def workspace_roots(tmp_path) -> tuple:
+    workspace = tmp_path / "workspace"
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    workspace.mkdir()
+    source.mkdir()
+    output.mkdir()
+    from migration_factory.control_tower.schemas.runner_profile import RegisteredFilesystemRoot
+
+    return (
+        RegisteredFilesystemRoot(root_id="source-root", kind="source", path=str(source)),
+        RegisteredFilesystemRoot(root_id="output-root", kind="output", path=str(output)),
+        RegisteredFilesystemRoot(root_id="working-root", kind="output", path=str(workspace)),
+    )
+
+
+def seed_runner_profile_with_workspace_root(connection, tmp_path) -> None:
+    roots = workspace_roots(tmp_path)
+    payload = runner_profile_payload()
+    payload["filesystem"]["roots"] = tuple(
+        {"root_id": root.root_id, "kind": root.kind, "path": root.path}
+        for root in roots
+    )
+    _insert_runner_profile_payload(connection, payload)
