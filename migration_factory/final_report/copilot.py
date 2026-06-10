@@ -14,7 +14,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from migration_factory.copilot_cli import resolve_copilot_cli_executable
+from migration_factory.copilot_cli import resolve_copilot_cli_executable, _is_windows
 
 
 PROVIDER = "github_copilot"
@@ -1569,7 +1569,7 @@ def _normalize_model(model: str) -> str:
 
 
 def _find_copilot_command(timeout_seconds: float) -> str | None:
-    found = resolve_copilot_cli_executable()
+    found = resolve_copilot_cli_executable(is_windows=_is_windows())
     if found:
         return found
     where_commands = tuple(dict.fromkeys(item for item in (shutil.which("where.exe"), shutil.which("where")) if item))

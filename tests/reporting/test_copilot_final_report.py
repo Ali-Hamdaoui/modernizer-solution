@@ -496,7 +496,7 @@ def test_copilot_cli_detector_prefers_cmd_on_windows(monkeypatch) -> None:
             return CompletedProcess(args=args, returncode=0, stdout="GitHub Copilot CLI 1.0.51\n", stderr="")
         return CompletedProcess(args=args, returncode=1, stdout="", stderr="")
 
-    monkeypatch.setattr(copilot_module.os, "name", "nt")
+    monkeypatch.setattr(copilot_module, "_is_windows", lambda: True)
     monkeypatch.setattr("migration_factory.final_report.copilot.shutil.which", fake_which)
     monkeypatch.setattr("migration_factory.final_report.copilot.subprocess.run", fake_run)
 
@@ -505,6 +505,18 @@ def test_copilot_cli_detector_prefers_cmd_on_windows(monkeypatch) -> None:
     assert status.cli_status == "installed"
     assert status.resolved_executable == r"C:\Users\ada\AppData\Roaming\npm\copilot.cmd"
     assert calls[0] == [r"C:\Users\ada\AppData\Roaming\npm\copilot.cmd", "version"]
+
+
+def test_copilot_cli_detector_windows_patch_does_not_mutate_os_name(monkeypatch) -> None:
+    import os
+
+    original_os_name = os.name
+    monkeypatch.setattr(copilot_module, "_is_windows", lambda: True)
+
+    detect_copilot_cli_status(env={"AI_MIGRATION_COPILOT_PROVIDER": "copilot_cli"})
+
+    assert os.name == original_os_name
+    Path.cwd()
 
 
 def test_copilot_cli_detector_normalizes_configured_model(monkeypatch) -> None:
@@ -835,7 +847,7 @@ def test_copilot_cli_provider_uses_resolved_cmd_path_on_windows(tmp_path: Path, 
             return CompletedProcess(args=args, returncode=0, stdout=VALID_COPILOT_MARKDOWN, stderr="")
         raise AssertionError(f"unexpected command: {args}")
 
-    monkeypatch.setattr(copilot_module.os, "name", "nt")
+    monkeypatch.setattr(copilot_module, "_is_windows", lambda: True)
     monkeypatch.setattr("migration_factory.final_report.copilot.shutil.which", fake_which)
     monkeypatch.setattr("migration_factory.final_report.copilot.subprocess.run", fake_run)
 
