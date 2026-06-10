@@ -120,3 +120,14 @@ class LaunchWorkerCommand:
     actor_id: str
     correlation_id: str | None = None
     causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FinalizeCommandCommand:
+    command_id: str
+    job_id: str
+    outcome: str
+    actor_type: str
+    actor_id: str
+    correlation_id: str | None = None
+    causation_id: str | None = None

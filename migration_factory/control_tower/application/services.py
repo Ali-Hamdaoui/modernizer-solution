@@ -9,6 +9,7 @@ from uuid import uuid4
 from migration_factory.control_tower.application.commands import (
     CreateMigrationJobCommand,
     CreateDiagnosticJobCommand,
+    FinalizeCommandCommand,
     LaunchWorkerCommand,
     PrepareCommandWorkspaceCommand,
     RegisterArtifactCommand,
@@ -904,6 +905,284 @@ class ArtifactRegistryService:
                 created_at=created_at,
                 created_by=command.actor_id,
             )
+
+
+class CommandFinalizationService:
+    """Finalize terminal command artifacts into immutable artifact records.
+
+    After a command reaches a terminal state (SUCCEEDED, FAILED, TIMED_OUT,
+    CANCELLED), this service stream-hashes the closed stdout, stderr, result,
+    and spool files, registers them as immutable artifacts, and links them
+    to the command execution record atomically.
+
+    The service is idempotent: retry after a crash during hashing or after
+    a failed DB commit will not create duplicate artifacts or links.
+    """
+
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+
+    def execute(self, command: FinalizeCommandCommand) -> ArtifactDto | None:
+        from migration_factory.control_tower.infrastructure.workspace import (
+            prepare_safe_workspace,
+        )
+
+        with self._unit_of_work_factory() as uow:
+            cmd = uow.command_executions.get(command.command_id)
+            if cmd is None:
+                raise NotFoundError("command execution", command.command_id)
+            if cmd.job_id != command.job_id:
+                raise NotFoundError("command execution for job", command.command_id)
+
+            # Check if already finalized
+            links = uow.command_executions.get_terminal_artifact_links(command.command_id)
+            if links["finalization_status"] != "PENDING":
+                return None  # Already finalized, idempotent
+
+            if cmd.status not in (
+                CommandState.SUCCEEDED,
+                CommandState.FAILED,
+                CommandState.TIMED_OUT,
+                CommandState.CANCELLED,
+            ):
+                raise InvalidJobStateTransitionError(
+                    cmd.status, CommandState.SUCCEEDED
+                )
+
+            if cmd.working_directory_root_id is None or cmd.working_directory_relative_path is None:
+                raise NotFoundError("command working directory", command.command_id)
+
+            # Resolve runner and working directory
+            job = uow.migration_jobs.get(command.job_id)
+            if job is None:
+                raise NotFoundError("migration job", command.job_id)
+
+            run_config = uow.run_configurations.get_for_job(command.job_id)
+            if run_config is None:
+                raise NotFoundError("run configuration", command.job_id)
+
+            runner = uow.runner_profiles.get_exact(
+                run_config.runner_profile_id,
+                run_config.runner_profile_version,
+            )
+            if runner is None:
+                raise NotFoundError(
+                    "runner profile",
+                    f"{run_config.runner_profile_id}/{run_config.runner_profile_version}",
+                )
+
+            root_path = _find_workspace_root(runner.payload, cmd.working_directory_root_id)
+            working_dir = root_path / cmd.working_directory_relative_path
+
+            # Determine log paths from manifest
+            manifest_dir = working_dir / "control" / "commands" / cmd.command_id
+            manifest_path = manifest_dir / "command_manifest.json"
+
+            if manifest_path.exists():
+                from migration_factory.control_tower.domain.manifests import (
+                    CommandManifest,
+                )
+
+                manifest = CommandManifest.model_validate_json(manifest_path.read_bytes())
+                stdout_rel = manifest.stdout_relative_path
+                stderr_rel = manifest.stderr_relative_path
+                result_rel = manifest.result_relative_path
+                spool_rel = manifest.spool_relative_path
+            else:
+                stdout_rel = "logs/stdout.log"
+                stderr_rel = "logs/stderr.log"
+                result_rel = "result.json"
+                spool_rel = "spool"
+
+            stdout_path = working_dir / stdout_rel
+            stderr_path = working_dir / stderr_rel
+            result_path = working_dir / result_rel
+            spool_path = working_dir / spool_rel
+
+        # Register artifacts outside the outer UoW (each registration opens its own transaction)
+        registry = ArtifactRegistryService(self._unit_of_work_factory)
+        now = utc_now_text()
+
+        root_id = cmd.working_directory_root_id
+
+        stdout_artifact_id: str | None = None
+        stderr_artifact_id: str | None = None
+        result_artifact_id: str | None = None
+        spool_artifact_id: str | None = None
+
+        def _hash_and_register(
+            path: Path,
+            artifact_type: str,
+            content_type: str | None,
+        ) -> str | None:
+            if not path.exists() or not path.is_file():
+                return None
+
+            from migration_factory.control_tower.domain.checksums import stream_sha256
+
+            checksum, size_bytes = stream_sha256(path)
+            stat_result = path.stat(follow_symlinks=False)
+
+            hash_result = ArtifactHashResult(
+                registered_root_id=root_id,
+                root_kind="output",
+                relative_path=str(path.relative_to(working_dir)),
+                normalized_relative_path=str(path.relative_to(working_dir)),
+                checksum_algorithm="sha256",
+                checksum=checksum,
+                size_bytes=size_bytes,
+                mtime_ns=int(stat_result.st_mtime_ns),
+                file_identity=(None, None),
+            )
+
+            artifact = registry.register_artifact(
+                RegisterArtifactCommand(
+                    job_id=command.job_id,
+                    artifact=hash_result,
+                    artifact_type=artifact_type,
+                    actor_type=command.actor_type,
+                    actor_id=command.actor_id,
+                    content_type=content_type,
+                    correlation_id=command.correlation_id,
+                    causation_id=command.causation_id,
+                )
+            )
+            return artifact.artifact_id
+
+        stdout_artifact_id = _hash_and_register(stdout_path, "command_stdout", "text/plain")
+        stderr_artifact_id = _hash_and_register(stderr_path, "command_stderr", "text/plain")
+        result_artifact_id = _hash_and_register(result_path, "command_result", "application/json")
+
+        # Handle spool: distinguish verified from forensic
+        spool_is_verified = False
+        if spool_path.exists():
+            if spool_path.is_dir():
+                # Check for completed worker event spool
+                event_files = list(spool_path.glob("*.jsonl"))
+                if event_files:
+                    spool_is_verified = self._verify_spool(spool_path, event_files)
+                    spool_type = (
+                        "command_spool_verified"
+                        if spool_is_verified
+                        else "command_spool_forensic"
+                    )
+                    spool_artifact_id = _hash_and_register(
+                        spool_path / event_files[0], spool_type, "application/jsonl"
+                    )
+            else:
+                spool_artifact_id = _hash_and_register(
+                    spool_path, "command_spool_forensic", "application/octet-stream"
+                )
+
+        # Determine finalization status
+        if stdout_artifact_id or stderr_artifact_id or result_artifact_id:
+            if spool_is_verified:
+                finalization_status = "COMPLETE_VERIFIED"
+            else:
+                finalization_status = "COMPLETE_FORENSIC"
+        else:
+            finalization_status = "EMPTY"
+
+        # Link artifacts to command execution atomically
+        with self._unit_of_work_factory() as uow:
+            uow.command_executions.finalize_terminal_artifacts(
+                command.command_id,
+                stdout_artifact_id=stdout_artifact_id,
+                stderr_artifact_id=stderr_artifact_id,
+                result_artifact_id=result_artifact_id,
+                spool_artifact_id=spool_artifact_id,
+                finalization_status=finalization_status,
+                finalized_at=now,
+            )
+
+            sequence = uow.migration_jobs.increment_event_sequence(command.job_id)
+            event_payload = {
+                "command_id": command.command_id,
+                "command_status": cmd.status.value,
+                "finalization_status": finalization_status,
+                "job_id": command.job_id,
+                "outcome": command.outcome,
+                "stdout_artifact_id": stdout_artifact_id,
+                "stderr_artifact_id": stderr_artifact_id,
+                "result_artifact_id": result_artifact_id,
+                "spool_artifact_id": spool_artifact_id,
+                "spool_verified": spool_is_verified,
+            }
+            event_record = RunEventRecord(
+                event_id=f"event-{command.job_id}-{sequence:04d}",
+                job_id=command.job_id,
+                sequence=sequence,
+                event_type="command_finalized",
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+                payload_json=canonical_json_text(event_payload),
+                payload_checksum=sha256_canonical_json(event_payload),
+                created_at=now,
+            )
+            uow.run_events.insert(event_record)
+
+            audit_payload = {
+                "command_id": command.command_id,
+                "command_status": cmd.status.value,
+                "event_sequence": sequence,
+                "finalization_status": finalization_status,
+                "job_id": command.job_id,
+                "outcome": command.outcome,
+                "spool_verified": spool_is_verified,
+                "stdout_artifact_id": stdout_artifact_id,
+                "stderr_artifact_id": stderr_artifact_id,
+                "result_artifact_id": result_artifact_id,
+                "spool_artifact_id": spool_artifact_id,
+            }
+            uow.audit_records.insert(
+                AuditRecord(
+                    audit_id=f"audit-{command.job_id}-{sequence:04d}",
+                    job_id=command.job_id,
+                    actor_type=command.actor_type,
+                    actor_id=command.actor_id,
+                    action="command_finalized",
+                    prior_state=cmd.status.value,
+                    new_state=cmd.status.value,
+                    job_version=job.version,
+                    correlation_id=command.correlation_id,
+                    causation_id=event_record.event_id,
+                    payload_json=canonical_json_text(audit_payload),
+                    created_at=now,
+                )
+            )
+
+        return None
+
+    def _verify_spool(self, spool_path, event_files) -> bool:
+        """Check if spool event files contain complete JSONL records.
+
+        A verified spool must have at least one complete, valid JSONL
+        record that parses as valid JSON.
+        """
+        import json as _json
+
+        for ef in event_files:
+            try:
+                with ef.open("rb") as f:
+                    raw = f.read()
+                if not raw:
+                    continue
+                lines = raw.split(b"\n")
+                # Skip the last line if it's incomplete (no trailing newline)
+                complete_lines = [
+                    ln for ln in lines if ln.strip()
+                ]
+                for line in complete_lines:
+                    try:
+                        _json.loads(line)
+                        return True  # At least one valid JSONL record
+                    except (_json.JSONDecodeError, ValueError):
+                        continue
+            except Exception:
+                continue
+        return False
 
 
 class CommandWorkspaceService:

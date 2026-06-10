@@ -987,6 +987,66 @@ class SqliteCommandExecutionRepository:
         if cursor.rowcount == 0:
             raise NotFoundError("command execution", command_id)
 
+    def get_terminal_artifact_links(self, command_id: str) -> dict[str, str | None]:
+        row = self._connection.execute(
+            """
+            SELECT stdout_artifact_id, stderr_artifact_id, result_artifact_id,
+                   spool_artifact_id, finalization_status, finalized_at
+            FROM command_executions
+            WHERE command_id = ?
+            """,
+            (command_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("command execution", command_id)
+        return {
+            "stdout_artifact_id": row["stdout_artifact_id"],
+            "stderr_artifact_id": row["stderr_artifact_id"],
+            "result_artifact_id": row["result_artifact_id"],
+            "spool_artifact_id": row["spool_artifact_id"],
+            "finalization_status": str(row["finalization_status"]),
+            "finalized_at": row["finalized_at"],
+        }
+
+    def finalize_terminal_artifacts(
+        self,
+        command_id: str,
+        *,
+        stdout_artifact_id: str | None,
+        stderr_artifact_id: str | None,
+        result_artifact_id: str | None,
+        spool_artifact_id: str | None,
+        finalization_status: str,
+        finalized_at: str,
+    ) -> None:
+        cursor = self._connection.execute(
+            """UPDATE command_executions
+            SET stdout_artifact_id = ?,
+                stderr_artifact_id = ?,
+                result_artifact_id = ?,
+                spool_artifact_id = ?,
+                finalization_status = ?,
+                finalized_at = ?,
+                updated_at = ?
+            WHERE command_id = ?
+              AND finalization_status = 'PENDING'""",
+            (
+                stdout_artifact_id,
+                stderr_artifact_id,
+                result_artifact_id,
+                spool_artifact_id,
+                finalization_status,
+                finalized_at,
+                utc_now_text(),
+                command_id,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise NotFoundError(
+                "command execution",
+                f"{command_id} already finalized or not found",
+            )
+
 
 class SqliteIdempotencyRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:
