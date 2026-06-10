@@ -19,6 +19,7 @@ from pathlib import Path
 
 from migration_factory.control_tower.application.commands import (
     CreateDiagnosticJobCommand,
+    FinalizeCommandCommand,
     LaunchWorkerCommand,
     StartMigrationJobCommand,
 )
@@ -30,7 +31,11 @@ from migration_factory.control_tower.application.queries import (
     _decode_utf8_safe,
     parse_public_event_cursor,
 )
-from migration_factory.control_tower.application.services import DiagnosticJobService, WorkerLaunchService
+from migration_factory.control_tower.application.services import (
+    CommandFinalizationService,
+    DiagnosticJobService,
+    WorkerLaunchService,
+)
 from migration_factory.control_tower.domain.errors import (
     ActiveCommandConflictError,
     ControlTowerError,
@@ -132,6 +137,11 @@ class StartJobRequest(StrictRequest):
 
 class LaunchWorkerRequest(StrictRequest):
     command_id: str
+
+
+class FinalizeCommandRequest(StrictRequest):
+    command_id: str
+    outcome: str
 
 
 def create_app(
@@ -300,6 +310,31 @@ def create_app(
             "command_id": result.command_id,
             "job_id": result.job_id,
             "status": "RUNNING",
+        }
+
+    @app.post("/v1/jobs/{job_id}/finalize")
+    async def finalize_command(
+        job_id: str,
+        request: FinalizeCommandRequest,
+    ) -> dict[str, Any]:
+        service = CommandFinalizationService(unit_of_work_factory)
+        try:
+            service.execute(
+                FinalizeCommandCommand(
+                    command_id=request.command_id,
+                    job_id=job_id,
+                    outcome=request.outcome,
+                    actor_type="system",
+                    actor_id="controller",
+                )
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        await app.state.public_event_notifier.notify()
+        return {
+            "command_id": request.command_id,
+            "job_id": job_id,
+            "status": "FINALIZED",
         }
 
     @app.get("/v1/jobs/{job_id}/events")
