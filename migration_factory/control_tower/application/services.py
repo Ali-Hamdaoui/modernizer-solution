@@ -17,6 +17,7 @@ from migration_factory.control_tower.application.commands import (
     RegisterPipelineDefinitionCommand,
     RegisterRunnerProfileCommand,
     StartMigrationJobCommand,
+    TimeoutCommand,
     TransitionJobStateCommand,
 )
 from migration_factory.control_tower.application.dto import (
@@ -31,7 +32,7 @@ from migration_factory.control_tower.application.dto import (
     RunnerProfileDto,
     WorkerLaunchResult,
 )
-from migration_factory.control_tower.application.ports import ControlTowerUnitOfWork, WorkerLauncher
+from migration_factory.control_tower.application.ports import ControlTowerUnitOfWork, WorkerLauncher, WorkerTerminator
 from migration_factory.control_tower.domain.artifacts import ArtifactHashResult
 from migration_factory.control_tower.domain.checksums import canonical_json_text, sha256_canonical_json, utc_now_text
 from migration_factory.control_tower.domain.commands import CommandState
@@ -916,20 +917,22 @@ class ArtifactRegistryService:
 
 
 class CancelService:
-    """Cancel or time out a command with atomic state transitions.
+    """Cancel a command with cooperative stop, grace period, and forced termination.
 
-    Implements the cancel and timeout path for controlled diagnostic commands.
-    The transition to CANCELLING is atomic with event/audit. After that,
-    cooperative stop is attempted, then forced termination via the Job Object.
+    Implements the cancel path for controlled diagnostic commands:
+    1. Atomic transition to CANCELLING with event/audit.
+    2. Cooperative stop (SIGTERM on POSIX) via WorkerTerminator.
+    3. Grace period wait, then forced termination if still alive.
+    4. Durable transition to CANCELLED or FAILED.
     """
 
     def __init__(
         self,
         unit_of_work_factory: UnitOfWorkFactory,
-        worker_launcher: WorkerLauncher | None = None,
+        worker_terminator: WorkerTerminator | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
-        self._worker_launcher = worker_launcher
+        self._worker_terminator = worker_terminator
 
     def cancel(self, command: CancelCommand) -> JobProjectionDto:
         """Cancel a command with atomic CANCELLING transition.
@@ -1033,53 +1036,244 @@ class CancelService:
                 )
             )
 
-            process_control_id = cmd.process_control_id
             worker_pid = cmd.worker_pid
+            cmd_id = cmd.command_id
+            process_control_id = cmd.process_control_id
 
-        # Attempt cooperative stop and forced termination outside transaction
-        if self._worker_launcher is not None and process_control_id is not None:
+        # Attempt termination outside the DB transaction
+        terminated = False
+        if (
+            self._worker_terminator is not None
+            and worker_pid is not None
+        ):
+            terminated = self._worker_terminator.terminate(
+                worker_pid=worker_pid,
+                process_control_id=process_control_id,
+                grace_period_seconds=command.grace_period_seconds,
+            )
+
+        # Transition to terminal CANCELLED (or FAILED if termination failed)
+        target_state = JobState.CANCELLED
+        target_cmd_state = CommandState.CANCELLED
+        if not terminated and worker_pid is not None:
+            # Could not confirm termination; mark as FAILED to be safe
+            target_state = JobState.FAILED
+            target_cmd_state = CommandState.FAILED
+
+        with self._unit_of_work_factory() as uow:
+            current_job = uow.migration_jobs.get(command.job_id)
+            if current_job is None or current_job.status != JobState.CANCELLING:
+                return _job_projection_from_uow(self._unit_of_work_factory, command.job_id)
+
+            final_now = utc_now_text()
+            final_version = current_job.version + 1
             try:
-                self._force_terminate(process_control_id, worker_pid)
-            except Exception:
-                pass  # Best-effort termination
+                validate_job_state_transition(current_job.status, target_state)
+            except InvalidJobStateTransitionError:
+                return _job_projection_from_uow(self._unit_of_work_factory, command.job_id)
+
+            updated = uow.migration_jobs.transition_state(
+                command.job_id,
+                current_job.version,
+                target_state,
+                active_slot_for(target_state),
+                final_now,
+            )
+            if not updated:
+                return _job_projection_from_uow(self._unit_of_work_factory, command.job_id)
+
+            uow.command_executions.update_status(cmd_id, target_cmd_state)
+
+            final_seq = uow.migration_jobs.increment_event_sequence(command.job_id)
+            final_payload = _job_state_changed_payload(
+                job_id=command.job_id,
+                prior_state=JobState.CANCELLING,
+                new_state=target_state,
+                prior_version=current_job.version,
+                new_version=final_version,
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                reason=command.reason,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+            )
+            final_event_id = f"event-{command.job_id}-{final_seq:04d}"
+            uow.run_events.append_job_state_changed_event(
+                event_id=final_event_id,
+                job_id=command.job_id,
+                sequence=final_seq,
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                payload_json=canonical_json_text(final_payload),
+                payload_checksum=sha256_canonical_json(final_payload),
+                created_at=final_now,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+            )
+
+            final_audit = {
+                "command_id": cmd_id,
+                "command_status": target_cmd_state.value,
+                "terminated": terminated,
+                "event_sequence": final_seq,
+                "job_id": command.job_id,
+                "reason": command.reason,
+            }
+            uow.audit_records.insert(
+                AuditRecord(
+                    audit_id=f"audit-{command.job_id}-{final_seq:04d}",
+                    job_id=command.job_id,
+                    actor_type=command.actor_type,
+                    actor_id=command.actor_id,
+                    action="command_cancelled",
+                    prior_state=JobState.CANCELLING.value,
+                    new_state=target_state.value,
+                    job_version=final_version,
+                    correlation_id=command.correlation_id,
+                    causation_id=final_event_id,
+                    payload_json=canonical_json_text(final_audit),
+                    created_at=final_now,
+                )
+            )
 
         return _job_projection_from_uow(self._unit_of_work_factory, command.job_id)
 
-    def _force_terminate(self, process_control_id: str | None, worker_pid: int | None) -> None:
-        """Force-terminate the process tree.
 
-        On Windows, terminates via the Job Object handle cached in
-        the worker launcher. On other platforms, this is a no-op.
+class TimeoutService:
+    """Handle command timeout with monotonic clock and forced termination.
+
+    When a command exceeds its configured timeout, this service:
+    1. Verifies the deadline has elapsed (monotonic clock).
+    2. Atomically transitions command/job to TIMED_OUT/FAILED.
+    3. Force-terminates the worker process.
+    """
+
+    def __init__(
+        self,
+        unit_of_work_factory: UnitOfWorkFactory,
+        worker_terminator: WorkerTerminator | None = None,
+    ) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+        self._worker_terminator = worker_terminator
+
+    def handle_timeout(self, command: TimeoutCommand) -> JobProjectionDto:
+        """Handle a command timeout.
+
+        The caller must pass a deadline already compared against time.monotonic().
         """
-        if not self._worker_launcher:
-            return
-        # Windows-specific: the WindowsWorkerLauncher has access to the Job Object
-        # through its private mechanism. The terminate path is best-effort.
-        import sys as _sys
+        import time as _time
 
-        if not _sys.platform.startswith("win"):
-            return
-        if worker_pid is None:
-            return
+        if _time.monotonic() < command.deadline:
+            # Not yet expired; caller should not have invoked this
+            return _job_projection_from_uow(self._unit_of_work_factory, command.job_id)
 
-        import ctypes
-        from ctypes import wintypes
+        worker_pid: int | None = None
+        process_control_id: str | None = None
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel32.OpenProcess.restype = wintypes.HANDLE
-        kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
-        kernel32.TerminateProcess.restype = wintypes.BOOL
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
+        with self._unit_of_work_factory() as uow:
+            job = uow.migration_jobs.get(command.job_id)
+            if job is None:
+                raise NotFoundError("migration job", command.job_id)
 
-        PROCESS_TERMINATE = 0x0001
-        handle = kernel32.OpenProcess(PROCESS_TERMINATE, False, worker_pid)
-        if handle:
+            if job.status in TERMINAL_JOB_STATES:
+                # Already terminal, nothing to do — build projection from this UoW
+                return _job_projection(uow, command.job_id)
+
+            cmd = uow.command_executions.get_active_for_job(command.job_id)
+            if cmd is None or cmd.command_id != command.command_id:
+                return _job_projection(uow, command.job_id)
+
+            if cmd.status in (CommandState.SUCCEEDED, CommandState.FAILED,
+                              CommandState.TIMED_OUT, CommandState.CANCELLED):
+                return _job_projection(uow, command.job_id)
+
             try:
-                kernel32.TerminateProcess(handle, 1)
-            finally:
-                kernel32.CloseHandle(handle)
+                validate_job_state_transition(job.status, JobState.FAILED)
+            except InvalidJobStateTransitionError:
+                return _job_projection(uow, command.job_id)
+
+            now = utc_now_text()
+            new_version = job.version + 1
+            updated = uow.migration_jobs.transition_state(
+                command.job_id,
+                job.version,
+                JobState.FAILED,
+                active_slot_for(JobState.FAILED),
+                now,
+            )
+            if not updated:
+                return _job_projection(uow, command.job_id)
+
+            uow.command_executions.update_status(command.command_id, CommandState.TIMED_OUT)
+
+            state_sequence = uow.migration_jobs.increment_event_sequence(command.job_id)
+            state_payload = _job_state_changed_payload(
+                job_id=command.job_id,
+                prior_state=job.status,
+                new_state=JobState.FAILED,
+                prior_version=job.version,
+                new_version=new_version,
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                reason=f"command timed out after {command.timeout_seconds}s",
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+            )
+            state_event_id = f"event-{command.job_id}-{state_sequence:04d}"
+            uow.run_events.append_job_state_changed_event(
+                event_id=state_event_id,
+                job_id=command.job_id,
+                sequence=state_sequence,
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                payload_json=canonical_json_text(state_payload),
+                payload_checksum=sha256_canonical_json(state_payload),
+                created_at=now,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+            )
+
+            audit_payload = {
+                "command_id": command.command_id,
+                "command_status": CommandState.TIMED_OUT.value,
+                "timeout_seconds": command.timeout_seconds,
+                "event_sequence": state_sequence,
+                "job_id": command.job_id,
+            }
+            uow.audit_records.insert(
+                AuditRecord(
+                    audit_id=f"audit-{command.job_id}-{state_sequence:04d}",
+                    job_id=command.job_id,
+                    actor_type=command.actor_type,
+                    actor_id=command.actor_id,
+                    action="command_timed_out",
+                    prior_state=job.status.value,
+                    new_state=JobState.FAILED.value,
+                    job_version=new_version,
+                    correlation_id=command.correlation_id,
+                    causation_id=state_event_id,
+                    payload_json=canonical_json_text(audit_payload),
+                    created_at=now,
+                )
+            )
+
+            worker_pid = cmd.worker_pid
+            process_control_id = cmd.process_control_id
+
+            projection = _job_projection(uow, command.job_id)
+
+        # Force-terminate outside the DB transaction
+        if (
+            self._worker_terminator is not None
+            and worker_pid is not None
+        ):
+            self._worker_terminator.terminate(
+                worker_pid=worker_pid,
+                process_control_id=process_control_id,
+                grace_period_seconds=0.0,
+            )
+
+        return projection
 
 
 def _job_projection_from_uow(
