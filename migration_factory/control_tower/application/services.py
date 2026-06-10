@@ -56,6 +56,7 @@ from migration_factory.control_tower.domain.errors import (
     RegistrationConflictError,
     StaleVersionError,
     StorageIntegrityError,
+    WorkspaceConflictError,
     WorkspacePathError,
 )
 from migration_factory.control_tower.domain.states import JobState
@@ -918,6 +919,10 @@ class CommandWorkspaceService:
             cmd = uow.command_executions.get(command.command_id)
             if cmd is None:
                 raise NotFoundError("command execution", command.command_id)
+            if cmd.command_manifest_artifact_id is not None:
+                raise WorkspaceConflictError(
+                    f"Workspace already prepared for command {command.command_id!r}"
+                )
 
             job = uow.migration_jobs.get(command.job_id)
             if job is None:

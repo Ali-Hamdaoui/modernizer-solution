@@ -30,7 +30,7 @@ from migration_factory.control_tower.domain.entities import (
 )
 from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.domain.commands import CommandState
-from migration_factory.control_tower.domain.errors import NotFoundError, StorageIntegrityError
+from migration_factory.control_tower.domain.errors import NotFoundError, StorageIntegrityError, WorkspaceConflictError
 from migration_factory.control_tower.domain.states import JobState, TargetProofLevel
 from migration_factory.control_tower.schemas.pipeline_definition import PipelineDefinition
 from migration_factory.control_tower.schemas.runner_profile import RunnerProfile
@@ -869,7 +869,7 @@ class SqliteCommandExecutionRepository:
         worker_id: str,
         launch_attempt: int,
     ) -> None:
-        self._connection.execute(
+        cursor = self._connection.execute(
             """UPDATE command_executions
             SET command_manifest_artifact_id = ?,
                 working_directory_root_id = ?,
@@ -877,7 +877,8 @@ class SqliteCommandExecutionRepository:
                 worker_id = ?,
                 launch_attempt = ?,
                 updated_at = ?
-            WHERE command_id = ?""",
+            WHERE command_id = ?
+              AND command_manifest_artifact_id IS NULL""",
             (
                 command_manifest_artifact_id,
                 working_directory_root_id,
@@ -888,6 +889,10 @@ class SqliteCommandExecutionRepository:
                 command_id,
             ),
         )
+        if cursor.rowcount == 0:
+            raise WorkspaceConflictError(
+                f"Workspace already prepared for command {command_id!r}"
+            )
 
 
 class SqliteIdempotencyRepository:

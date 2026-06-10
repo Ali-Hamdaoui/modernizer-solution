@@ -595,6 +595,76 @@ class TestPrepareWorkspaceEndToEnd:
             assert "run_configuration" in artifact_types
             assert "command_manifest" in artifact_types
 
+    def test_prepare_workspace_rejects_retry(self, tmp_path: Path):
+        db_path = tmp_path / "control_tower.sqlite3"
+        connection = make_migrated_connection(tmp_path)
+        seed_runner_profile_with_workspace_root(connection, tmp_path)
+        seed_pipeline_definition(connection)
+        connection.close()
+
+        job_service = _service_for(db_path, CreateMigrationJobService)
+        job = job_service.execute(
+            CreateMigrationJobCommand(
+                actor="tester",
+                legacy_source_ref="source-root:source",
+                output_root_ref="output-root:output",
+                runner_profile_id="runner-default",
+                runner_profile_version="2026.06",
+                pipeline_id="pipeline-default",
+                pipeline_version="2026.06",
+                target_proof_level=TargetProofLevel.BUILD_TEST_VERIFIED,
+                enabled_gates=("build", "test"),
+                policy=RunPolicy(),
+                correlation_id="corr-job",
+            )
+        )
+
+        command_id = f"command-{uuid4().hex}"
+        with connect_control_tower(db_path) as conn:
+            with SqliteControlTowerUnitOfWork(conn) as uow:
+                now = utc_now_text()
+                cmd = CommandExecutionRecord(
+                    command_id=command_id,
+                    job_id=job.job_id,
+                    operation="foundation_diagnostic",
+                    status=CommandState.QUEUED,
+                    created_at=now,
+                    updated_at=now,
+                    correlation_id="corr-cmd",
+                    causation_id=None,
+                )
+                uow.command_executions.insert_queued(cmd)
+
+        workspace_service = _service_for(db_path, CommandWorkspaceService)
+        cmd = PrepareCommandWorkspaceCommand(
+            command_id=command_id,
+            job_id=job.job_id,
+            working_directory_root_id="working-root",
+            working_directory_relative_path=job.job_id,
+            worker_id="worker-1",
+            launch_attempt=1,
+            actor_type="system",
+            actor_id="worker",
+            correlation_id="corr-ws",
+            causation_id=None,
+        )
+        workspace_service.prepare_workspace(cmd)
+
+        cmd2 = PrepareCommandWorkspaceCommand(
+            command_id=command_id,
+            job_id=job.job_id,
+            working_directory_root_id="working-root",
+            working_directory_relative_path=job.job_id,
+            worker_id="worker-2",
+            launch_attempt=2,
+            actor_type="system",
+            actor_id="worker",
+            correlation_id="corr-ws2",
+            causation_id=None,
+        )
+        with pytest.raises(WorkspaceConflictError, match="already prepared"):
+            workspace_service.prepare_workspace(cmd2)
+
 
 def _seed_job_for_triggers(connection: sqlite3.Connection) -> None:
     now = utc_now_text()
