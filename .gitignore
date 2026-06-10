@@ -18,3 +18,11 @@ coverage/
 migration_factory/contracts/build/build-error-*.json
 
 .migration/
+
+# Graphify local-only outputs (not shared graph artifacts)
+graphify-out/cost.json
+graphify-out/cache/
+graphify-out/.graphify_python
+graphify-out/.graphify_analysis.json
+graphify-out/.graphify_labels.json
+graphify-out/graph.html
