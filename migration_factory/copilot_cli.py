@@ -6,6 +6,10 @@ from pathlib import Path
 from typing import Callable
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def resolve_copilot_cli_executable(
     executable: str = "copilot",
     *,
@@ -20,7 +24,7 @@ def resolve_copilot_cli_executable(
     if path.is_absolute() or any(separator in requested for separator in ("\\", "/")):
         return requested
 
-    windows = os.name == "nt" if is_windows is None else is_windows
+    windows = _is_windows() if is_windows is None else is_windows
     names: tuple[str, ...]
     if requested.lower() in {"copilot", "copilot.cmd"}:
         names = ("copilot.cmd", "copilot") if windows else ("copilot",)
