@@ -9,6 +9,7 @@ from uuid import uuid4
 from migration_factory.control_tower.application.commands import (
     CreateMigrationJobCommand,
     CreateDiagnosticJobCommand,
+    LaunchWorkerCommand,
     PrepareCommandWorkspaceCommand,
     RegisterArtifactCommand,
     RegisterPipelineDefinitionCommand,
@@ -23,8 +24,9 @@ from migration_factory.control_tower.application.dto import (
     MigrationJobDto,
     PipelineDefinitionDto,
     RunnerProfileDto,
+    WorkerLaunchResult,
 )
-from migration_factory.control_tower.application.ports import ControlTowerUnitOfWork
+from migration_factory.control_tower.application.ports import ControlTowerUnitOfWork, WorkerLauncher
 from migration_factory.control_tower.domain.artifacts import ArtifactHashResult
 from migration_factory.control_tower.domain.checksums import canonical_json_text, sha256_canonical_json, utc_now_text
 from migration_factory.control_tower.domain.commands import CommandState
@@ -1009,6 +1011,176 @@ class CommandWorkspaceService:
             return run_config_result, manifest_result
 
 
+class WorkerLaunchService:
+    def __init__(
+        self,
+        unit_of_work_factory: UnitOfWorkFactory,
+        worker_launcher: WorkerLauncher,
+    ) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+        self._worker_launcher = worker_launcher
+
+    def execute(self, command: LaunchWorkerCommand) -> WorkerLaunchResult:
+        with self._unit_of_work_factory() as uow:
+            cmd = uow.command_executions.get(command.command_id)
+            if cmd is None:
+                raise NotFoundError("command execution", command.command_id)
+            if cmd.status != CommandState.QUEUED:
+                raise InvalidJobStateTransitionError(
+                    JobState(cmd.status.value), JobState.STARTING
+                )
+            if cmd.command_manifest_artifact_id is None:
+                raise WorkspaceConflictError(
+                    f"Workspace not prepared for command {command.command_id!r}"
+                )
+
+            job = uow.migration_jobs.get(command.job_id)
+            if job is None:
+                raise NotFoundError("migration job", command.job_id)
+
+            run_config = uow.run_configurations.get_for_job(command.job_id)
+            if run_config is None:
+                raise NotFoundError("run configuration", command.job_id)
+
+            runner = uow.runner_profiles.get_exact(
+                run_config.runner_profile_id,
+                run_config.runner_profile_version,
+            )
+            if runner is None:
+                raise NotFoundError(
+                    "runner profile",
+                    f"{run_config.runner_profile_id}/{run_config.runner_profile_version}",
+                )
+
+            now = utc_now_text()
+            uow.command_executions.update_status(
+                command.command_id,
+                CommandState.STARTING,
+            )
+
+            sequence = uow.migration_jobs.increment_event_sequence(command.job_id)
+            event_payload = {
+                "command_id": command.command_id,
+                "command_status": CommandState.STARTING.value,
+                "job_id": command.job_id,
+                "operation": cmd.operation,
+            }
+            event_record = RunEventRecord(
+                event_id=f"event-{command.job_id}-{sequence:04d}",
+                job_id=command.job_id,
+                sequence=sequence,
+                event_type="command_starting",
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+                payload_json=canonical_json_text(event_payload),
+                payload_checksum=sha256_canonical_json(event_payload),
+                created_at=now,
+            )
+            uow.run_events.insert(event_record)
+
+            audit_payload = {
+                "command_id": command.command_id,
+                "command_status": CommandState.STARTING.value,
+                "event_sequence": sequence,
+                "job_id": command.job_id,
+                "operation": cmd.operation,
+            }
+            uow.audit_records.insert(
+                AuditRecord(
+                    audit_id=f"audit-{command.job_id}-{sequence:04d}",
+                    job_id=command.job_id,
+                    actor_type=command.actor_type,
+                    actor_id=command.actor_id,
+                    action="command_starting",
+                    prior_state=CommandState.QUEUED.value,
+                    new_state=CommandState.STARTING.value,
+                    job_version=job.version,
+                    correlation_id=command.correlation_id,
+                    causation_id=event_record.event_id,
+                    payload_json=canonical_json_text(audit_payload),
+                    created_at=now,
+                )
+            )
+
+            working_dir = _find_workspace_working_dir(
+                runner.payload, cmd.working_directory_root_id, cmd.working_directory_relative_path
+            )
+            manifest_path = working_dir / "control" / "commands" / command.command_id / "command_manifest.json"
+            manifest_bytes = manifest_path.read_bytes()
+            manifest = CommandManifest.model_validate_json(manifest_bytes)
+
+            python_executable = _get_python_executable(runner.payload)
+
+        launch_result = self._worker_launcher.launch(
+            working_dir=working_dir,
+            manifest=manifest,
+            manifest_bytes=manifest_bytes,
+            python_executable=python_executable,
+        )
+
+        with self._unit_of_work_factory() as uow:
+            uow.command_executions.update_process_columns(
+                command.command_id,
+                status=CommandState.RUNNING,
+                process_control_id=launch_result.process_control_id,
+                worker_pid=launch_result.worker_pid,
+                process_started_at=launch_result.process_started_at,
+            )
+
+            sequence = uow.migration_jobs.increment_event_sequence(command.job_id)
+            now = utc_now_text()
+            running_payload = {
+                "command_id": command.command_id,
+                "command_status": CommandState.RUNNING.value,
+                "job_id": command.job_id,
+                "operation": cmd.operation,
+            }
+            running_event = RunEventRecord(
+                event_id=f"event-{command.job_id}-{sequence:04d}",
+                job_id=command.job_id,
+                sequence=sequence,
+                event_type="command_running",
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+                payload_json=canonical_json_text(running_payload),
+                payload_checksum=sha256_canonical_json(running_payload),
+                created_at=now,
+            )
+            uow.run_events.insert(running_event)
+
+            audit_payload = {
+                "command_id": command.command_id,
+                "command_status": CommandState.RUNNING.value,
+                "event_sequence": sequence,
+                "job_id": command.job_id,
+                "operation": cmd.operation,
+                "process_control_id": launch_result.process_control_id,
+                "worker_pid": launch_result.worker_pid,
+            }
+            uow.audit_records.insert(
+                AuditRecord(
+                    audit_id=f"audit-{command.job_id}-{sequence:04d}",
+                    job_id=command.job_id,
+                    actor_type=command.actor_type,
+                    actor_id=command.actor_id,
+                    action="command_running",
+                    prior_state=CommandState.STARTING.value,
+                    new_state=CommandState.RUNNING.value,
+                    job_version=job.version,
+                    correlation_id=command.correlation_id,
+                    causation_id=running_event.event_id,
+                    payload_json=canonical_json_text(audit_payload),
+                    created_at=now,
+                )
+            )
+
+        return launch_result
+
+
 def _find_workspace_root(runner_profile, root_id: str) -> Path:
     from pathlib import Path as _Path
 
@@ -1191,3 +1363,21 @@ def _job_projection(uow: ControlTowerUnitOfWork, job_id: str) -> JobProjectionDt
         active_command=uow.command_executions.get_active_for_job(job_id),
         etag=f'"job-{job.job_id}-v{job.version}"',
     )
+
+
+def _find_workspace_working_dir(
+    runner_profile: RunnerProfile,
+    root_id: str | None,
+    relative_path: str | None,
+) -> Path:
+    if root_id is None or relative_path is None:
+        raise WorkspacePathError("Workspace not fully prepared: missing root or path")
+    root_path = _find_workspace_root(runner_profile, root_id)
+    return root_path / relative_path
+
+
+def _get_python_executable(runner_profile: RunnerProfile) -> str:
+    payload = runner_profile.model_dump(mode="json") if hasattr(runner_profile, "model_dump") else runner_profile
+    if isinstance(payload, dict):
+        return payload.get("python_executable", "python")
+    return getattr(runner_profile, "python_executable", "python")

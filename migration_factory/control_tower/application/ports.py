@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Protocol, Sequence
 from typing_extensions import Self
 
+from pathlib import Path
+
 from migration_factory.control_tower.application.dto import (
     AuditRecordDto,
     ArtifactDto,
@@ -14,7 +16,9 @@ from migration_factory.control_tower.application.dto import (
     PipelineDefinitionDto,
     RunnerProfileDto,
     RunEventDto,
+    WorkerLaunchResult,
 )
+from migration_factory.control_tower.domain.commands import CommandState
 from migration_factory.control_tower.domain.entities import (
     ArtifactRecord,
     AuditRecord,
@@ -27,6 +31,7 @@ from migration_factory.control_tower.domain.entities import (
     RunnerProfileRecord,
     StageRunRecord,
 )
+from migration_factory.control_tower.domain.manifests import CommandManifest
 from migration_factory.control_tower.domain.states import JobState
 
 
@@ -180,6 +185,8 @@ class CommandExecutionRepository(Protocol):
 
     def get_active_for_job(self, job_id: str) -> CommandExecutionDto | None: ...
 
+    def update_status(self, command_id: str, status: CommandState) -> None: ...
+
     def update_workspace_columns(
         self,
         command_id: str,
@@ -190,6 +197,27 @@ class CommandExecutionRepository(Protocol):
         worker_id: str,
         launch_attempt: int,
     ) -> None: ...
+
+    def update_process_columns(
+        self,
+        command_id: str,
+        *,
+        status: CommandState,
+        process_control_id: str,
+        worker_pid: int,
+        process_started_at: str,
+    ) -> None: ...
+
+
+class WorkerLauncher(Protocol):
+    def launch(
+        self,
+        *,
+        working_dir: Path,
+        manifest: CommandManifest,
+        manifest_bytes: bytes,
+        python_executable: str,
+    ) -> WorkerLaunchResult: ...
 
 
 class IdempotencyRepository(Protocol):
