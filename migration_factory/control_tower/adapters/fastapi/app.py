@@ -11,6 +11,9 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel, ConfigDict, Field
@@ -36,6 +39,7 @@ from migration_factory.control_tower.application.services import (
     CancelService,
     CommandFinalizationService,
     DiagnosticJobService,
+    ReconciliationService,
     WorkerLaunchService,
 )
 from migration_factory.control_tower.domain.errors import (
@@ -50,7 +54,7 @@ from migration_factory.control_tower.domain.errors import (
     StaleVersionError,
     UnsupportedPlatformError,
 )
-from migration_factory.control_tower.domain.states import TargetProofLevel
+from migration_factory.control_tower.domain.states import JobState, TargetProofLevel
 from migration_factory.control_tower.schemas.run_configuration import RunPolicy
 
 
@@ -146,6 +150,34 @@ class FinalizeCommandRequest(StrictRequest):
     outcome: str
 
 
+@asynccontextmanager
+async def _control_tower_lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Run startup reconciliation on service start."""
+    unit_of_work_factory: UnitOfWorkFactory = app.state.unit_of_work_factory
+    try:
+        service = ReconciliationService(unit_of_work_factory)
+        results = service.reconcile_all()
+        app.state.reconciliation_results = results
+        if results:
+            _LOG_RECONCILIATION(results)
+    except Exception:
+        pass  # Startup reconciliation must not crash the service
+    yield
+
+
+def _LOG_RECONCILIATION(results: list[dict[str, Any]]) -> None:
+    """Log reconciliation results for observability."""
+    import logging as _logging
+
+    logger = _logging.getLogger(__name__)
+    for result in results:
+        logger.info(
+            "Startup reconciliation: job_id=%s action=%s",
+            result.get("job_id", "?"),
+            result.get("action", "?"),
+        )
+
+
 def create_app(
     unit_of_work_factory: UnitOfWorkFactory,
     *,
@@ -153,10 +185,11 @@ def create_app(
     event_replay_config: EventReplayConfig | None = None,
 ) -> FastAPI:
     config = event_replay_config or EventReplayConfig()
-    app = FastAPI(title="AI Migration Control Tower", version="0.1.0")
+    app = FastAPI(title="AI Migration Control Tower", version="0.1.0", lifespan=_control_tower_lifespan)
     app.state.event_replay_config = config
     app.state.public_event_notifier = PublicEventNotifier()
     app.state.sse_client_limiter = SseClientLimiter(config.max_sse_clients)
+    app.state.unit_of_work_factory = unit_of_work_factory
 
     @app.get("/v1/runner-profiles")
     def list_runner_profiles() -> dict[str, Any]:
@@ -519,6 +552,9 @@ def _projection(uow: ControlTowerUnitOfWork, job_id: str) -> JobProjectionDto:
 def _projection_payload(projection: JobProjectionDto) -> dict[str, Any]:
     job = projection.job
     command = projection.active_command
+    recovery_reason = None
+    if job.status == JobState.RECOVERY_REQUIRED:
+        recovery_reason = "uncertain active execution after restart"
     return {
         "job": {
             "job_id": job.job_id,
@@ -526,6 +562,7 @@ def _projection_payload(projection: JobProjectionDto) -> dict[str, Any]:
             "state": job.status.value,
             "created_at": job.created_at,
             "updated_at": job.updated_at,
+            "recovery_reason": recovery_reason,
         },
         "active_command": None
         if command is None

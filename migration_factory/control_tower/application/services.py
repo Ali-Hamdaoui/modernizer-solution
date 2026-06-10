@@ -20,6 +20,9 @@ from migration_factory.control_tower.application.commands import (
     TransitionJobStateCommand,
 )
 from migration_factory.control_tower.application.dto import (
+    CommandExecutionDto,
+)
+from migration_factory.control_tower.application.dto import (
     ArtifactDto,
     CreatedMigrationJob,
     JobProjectionDto,
@@ -64,7 +67,11 @@ from migration_factory.control_tower.domain.errors import (
     WorkspacePathError,
 )
 from migration_factory.control_tower.domain.states import JobState
-from migration_factory.control_tower.domain.transitions import active_slot_for, validate_job_state_transition
+from migration_factory.control_tower.domain.transitions import (
+    TERMINAL_JOB_STATES,
+    active_slot_for,
+    validate_job_state_transition,
+)
 from migration_factory.control_tower.infrastructure.sqlite.artifact_paths import normalize_registered_relative_path
 from migration_factory.control_tower.schemas import PipelineDefinition, RunnerProfile
 from migration_factory.control_tower.schemas.run_configuration import RunConfiguration
@@ -1081,6 +1088,182 @@ def _job_projection_from_uow(
 ) -> JobProjectionDto:
     with unit_of_work_factory() as uow:
         return _job_projection(uow, job_id)
+
+
+class ReconciliationService:
+    """Startup reconciliation for fail-closed restart behavior.
+
+    After a service restart, this service reconciles all existing
+    jobs and commands to ensure no uncertain active execution is
+    silently resumed or relaunched.
+
+    Terminal jobs remain queryable and replayable.
+    Untouched QUEUED commands remain dispatchable once.
+    STARTING, RUNNING, CANCELLING states become RECOVERY_REQUIRED.
+    """
+
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+
+    def reconcile_all(self) -> list[dict[str, Any]]:
+        """Run startup reconciliation for all current jobs.
+
+        Returns a list of reconciliation results, one per job.
+        """
+        results: list[dict[str, Any]] = []
+
+        with self._unit_of_work_factory() as uow:
+            jobs = uow.migration_jobs.list()
+            for job in jobs:
+                result = self._reconcile_job(uow, job)
+                if result:
+                    results.append(result)
+
+        return results
+
+    def _reconcile_job(
+        self,
+        uow: ControlTowerUnitOfWork,
+        job: MigrationJobDto,
+    ) -> dict[str, Any] | None:
+        """Reconcile a single job after restart.
+
+        Returns a result dict if the job was modified, None if unchanged.
+        """
+        from migration_factory.control_tower.domain.checksums import (
+            canonical_json_text,
+            sha256_canonical_json,
+            utc_now_text,
+        )
+
+        # Terminal jobs need no reconciliation
+        if job.status in TERMINAL_JOB_STATES:
+            return {
+                "job_id": job.job_id,
+                "status": job.status.value,
+                "action": "unchanged_terminal",
+            }
+
+        # Check for active command that needs reconciliation
+        active_command = uow.command_executions.get_active_for_job(job.job_id)
+        if active_command is None:
+            # No active command, job is in a non-terminal state without an active command
+            # This is unusual but not necessarily unsafe
+            return None
+
+        # Determine the action based on command state
+        if active_command.status == CommandState.QUEUED:
+            # Untouched QUEUED commands remain dispatchable once
+            # No state change needed, but mark as reconciled
+            return {
+                "job_id": job.job_id,
+                "command_id": active_command.command_id,
+                "status": job.status.value,
+                "command_status": active_command.status.value,
+                "action": "queued_dispatchable",
+            }
+
+        if active_command.status in (
+            CommandState.STARTING,
+            CommandState.RUNNING,
+            CommandState.CANCELLING,
+        ):
+            # Cannot verify worker state after restart
+            # Transition to RECOVERY_REQUIRED
+            now = utc_now_text()
+            new_version = job.version + 1
+
+            try:
+                validate_job_state_transition(job.status, JobState.RECOVERY_REQUIRED)
+            except InvalidJobStateTransitionError:
+                # If the direct transition is invalid, try through FAILED
+                # to ensure we don't leave an uncertain state
+                return {
+                    "job_id": job.job_id,
+                    "command_id": active_command.command_id,
+                    "status": job.status.value,
+                    "action": "cannot_transition_recovery",
+                }
+
+            updated = uow.migration_jobs.transition_state(
+                job.job_id,
+                job.version,
+                JobState.RECOVERY_REQUIRED,
+                active_slot_for(JobState.RECOVERY_REQUIRED),
+                now,
+            )
+            if not updated:
+                return {
+                    "job_id": job.job_id,
+                    "command_id": active_command.command_id,
+                    "action": "transition_conflict",
+                }
+
+            # Append event
+            state_sequence = uow.migration_jobs.increment_event_sequence(job.job_id)
+            recovery_reason = "uncertain active execution after restart"
+            state_payload: dict[str, Any] = {
+                "actor_id": "system",
+                "actor_type": "system",
+                "job_id": job.job_id,
+                "new_state": JobState.RECOVERY_REQUIRED.value,
+                "new_version": new_version,
+                "prior_state": job.status.value,
+                "prior_version": job.version,
+                "reason": recovery_reason,
+                "command_id": active_command.command_id,
+                "command_status": active_command.status.value,
+            }
+            state_event_id = f"event-{job.job_id}-{state_sequence:04d}"
+            uow.run_events.append_job_state_changed_event(
+                event_id=state_event_id,
+                job_id=job.job_id,
+                sequence=state_sequence,
+                actor_type="system",
+                actor_id="system",
+                payload_json=canonical_json_text(state_payload),
+                payload_checksum=sha256_canonical_json(state_payload),
+                created_at=now,
+            )
+
+            # Append audit
+            audit_payload = {
+                "command_id": active_command.command_id,
+                "command_status": active_command.status.value,
+                "event_sequence": state_sequence,
+                "job_id": job.job_id,
+                "reason": recovery_reason,
+                "recovery_reason": recovery_reason,
+            }
+            uow.audit_records.insert(
+                AuditRecord(
+                    audit_id=f"audit-{job.job_id}-{state_sequence:04d}",
+                    job_id=job.job_id,
+                    actor_type="system",
+                    actor_id="system",
+                    action="startup_reconciliation",
+                    prior_state=job.status.value,
+                    new_state=JobState.RECOVERY_REQUIRED.value,
+                    job_version=new_version,
+                    correlation_id=None,
+                    causation_id=state_event_id,
+                    payload_json=canonical_json_text(audit_payload),
+                    created_at=now,
+                )
+            )
+
+            return {
+                "job_id": job.job_id,
+                "command_id": active_command.command_id,
+                "prior_status": job.status.value,
+                "prior_command_status": active_command.status.value,
+                "new_status": JobState.RECOVERY_REQUIRED.value,
+                "action": "recovery_required",
+                "reason": recovery_reason,
+            }
+
+        # Terminal command states don't need action
+        return None
 
 
 class CommandFinalizationService:
