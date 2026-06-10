@@ -225,7 +225,7 @@ class TestCommandOutputQuery:
         log_dir = working_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         stdout_path = log_dir / "stdout.log"
-        stdout_path.write_text("line1\nline2\nline3\n")
+        stdout_path.write_bytes(b"line1\nline2\nline3\n")
 
         query_service = _service_for(db_path, ControlTowerQueryService)
         window = query_service.get_command_output_window(
@@ -243,7 +243,7 @@ class TestCommandOutputQuery:
         log_dir = working_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         stderr_path = log_dir / "stderr.log"
-        stderr_path.write_text("error1\nerror2\n")
+        stderr_path.write_bytes(b"error1\nerror2\n")
 
         query_service = _service_for(db_path, ControlTowerQueryService)
         window = query_service.get_command_output_window(
