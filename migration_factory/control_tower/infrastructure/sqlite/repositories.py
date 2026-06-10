@@ -610,6 +610,27 @@ class SqliteRunEventRepository:
         ).fetchall()
         return tuple(_run_event_from_row(row) for row in rows)
 
+    def list_for_job_after(
+        self,
+        job_id: str,
+        after_sequence: int,
+        limit: int,
+    ) -> tuple[RunEventDto, ...]:
+        rows = self._connection.execute(
+            """
+            SELECT event_id, job_id, sequence, event_type, actor_type, actor_id,
+                   correlation_id, causation_id, payload_json, payload_checksum,
+                   created_at
+            FROM run_events
+            WHERE job_id = ?
+              AND sequence > ?
+            ORDER BY sequence
+            LIMIT ?
+            """,
+            (job_id, after_sequence, limit),
+        ).fetchall()
+        return tuple(_run_event_from_row(row) for row in rows)
+
     def count_for_job(self, job_id: str) -> int:
         row = self._connection.execute(
             "SELECT COUNT(*) AS count FROM run_events WHERE job_id = ?",

@@ -6,6 +6,7 @@
   "scripts": {
     "audit": "npm audit --audit-level=moderate",
     "build": "next build",
+    "dev": "next dev",
     "test": "vitest run",
     "type-check": "tsc --noEmit"
   },

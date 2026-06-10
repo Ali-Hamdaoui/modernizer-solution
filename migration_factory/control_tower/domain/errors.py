@@ -107,3 +107,22 @@ class ActiveCommandConflictError(ControlTowerError):
     def __init__(self, job_id: str) -> None:
         self.job_id = job_id
         super().__init__(f"Migration job {job_id!r} already has a nonterminal command")
+
+
+class InvalidEventCursorError(ControlTowerError):
+    """Raised when a public event replay cursor is malformed or outside the valid range."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class EventCursorConflictError(ControlTowerError):
+    """Raised when Last-Event-ID and after_sequence disagree."""
+
+    def __init__(self, header_sequence: int, query_sequence: int) -> None:
+        self.header_sequence = header_sequence
+        self.query_sequence = query_sequence
+        super().__init__(
+            "Last-Event-ID and after_sequence must match when both are provided: "
+            f"{header_sequence} != {query_sequence}"
+        )

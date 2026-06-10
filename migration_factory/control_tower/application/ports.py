@@ -109,6 +109,13 @@ class RunEventRepository(Protocol):
 
     def list_for_job(self, job_id: str) -> tuple[RunEventDto, ...]: ...
 
+    def list_for_job_after(
+        self,
+        job_id: str,
+        after_sequence: int,
+        limit: int,
+    ) -> tuple[RunEventDto, ...]: ...
+
     def count_for_job(self, job_id: str) -> int: ...
 
 

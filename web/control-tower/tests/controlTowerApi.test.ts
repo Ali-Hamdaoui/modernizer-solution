@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { allowedStatusCopy, createDiagnosticJobPayload } from "../lib/controlTowerApi";
+import { allowedStatusCopy, createDiagnosticJobPayload, eventStreamUrl } from "../lib/controlTowerApi";
+import { applyPublicEvent, latestAppliedSequence, shouldRefetchJobProjection } from "../lib/eventReplay";
 
 describe("M2-01 frontend diagnostic contracts", () => {
   it("submits only allowed create-job fields", () => {
@@ -42,5 +43,33 @@ describe("M2-01 frontend diagnostic contracts", () => {
     expect(copy).not.toContain("Build verified");
     expect(copy).not.toContain("Spring Boot upgraded");
     expect(copy).not.toContain("Proof achieved");
+  });
+
+  it("opens event replay from the last applied sequence", () => {
+    expect(eventStreamUrl("job-1", 7)).toContain("/v1/jobs/job-1/events/stream?after_sequence=7");
+  });
+
+  it("applies public events idempotently and refetches state-changing projections", () => {
+    const event = {
+      actor_id: "tester",
+      actor_type: "user",
+      causation_id: null,
+      correlation_id: null,
+      created_at: "2026-06-10T00:00:00Z",
+      event_id: "event-1",
+      event_type: "command_queued",
+      job_id: "job-1",
+      payload: {},
+      payload_checksum: "abc",
+      sequence: 2
+    };
+    const applied = applyPublicEvent({ events: [], lastAppliedSequence: 1 }, event);
+    const duplicate = applyPublicEvent(applied, event);
+
+    expect(applied.events).toHaveLength(1);
+    expect(applied.lastAppliedSequence).toBe(2);
+    expect(duplicate).toBe(applied);
+    expect(latestAppliedSequence(applied.events)).toBe(2);
+    expect(shouldRefetchJobProjection(event)).toBe(true);
   });
 });
