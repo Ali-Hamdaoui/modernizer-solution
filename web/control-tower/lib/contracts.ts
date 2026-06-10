@@ -69,3 +69,25 @@ export type JobRepresentation = {
   };
   etag: string;
 };
+
+export type PublicRunEvent = {
+  event_id: string;
+  job_id: string;
+  sequence: number;
+  event_type: string;
+  actor_type: string;
+  actor_id: string;
+  correlation_id: string | null;
+  causation_id: string | null;
+  payload: Record<string, unknown>;
+  payload_checksum: string;
+  created_at: string;
+};
+
+export type PublicEventReplayResponse = {
+  job_id: string;
+  after_sequence: number;
+  next_after_sequence: number;
+  latest_sequence: number;
+  events: PublicRunEvent[];
+};

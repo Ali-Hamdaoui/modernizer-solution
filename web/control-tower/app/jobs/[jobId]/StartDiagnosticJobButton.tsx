@@ -6,9 +6,10 @@ import { CONTROL_TOWER_API_BASE_URL } from "../../../lib/controlTowerApi";
 type Props = {
   etag: string;
   jobId: string;
+  onStarted?: () => void | Promise<void>;
 };
 
-export function StartDiagnosticJobButton({ etag, jobId }: Props) {
+export function StartDiagnosticJobButton({ etag, jobId, onStarted }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -28,7 +29,8 @@ export function StartDiagnosticJobButton({ etag, jobId }: Props) {
       if (!response.ok) {
         throw new Error("Could not queue command.");
       }
-      window.location.reload();
+      await onStarted?.();
+      setPending(false);
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Could not queue command.");
       setPending(false);

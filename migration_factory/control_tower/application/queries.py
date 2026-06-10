@@ -19,7 +19,14 @@ from migration_factory.control_tower.application.dto import (
     StageRunDto,
 )
 from migration_factory.control_tower.application.services import UnitOfWorkFactory
-from migration_factory.control_tower.domain.errors import NotFoundError
+from migration_factory.control_tower.domain.errors import (
+    EventCursorConflictError,
+    InvalidEventCursorError,
+    NotFoundError,
+)
+
+
+DEFAULT_PUBLIC_EVENT_REPLAY_BATCH_SIZE = 500
 
 
 class ControlTowerQueryService:
@@ -107,6 +114,34 @@ class ControlTowerQueryService:
         with self._unit_of_work_factory() as uow:
             return uow.run_events.list_for_job(job_id)
 
+    def replay_run_events(
+        self,
+        job_id: str,
+        *,
+        after_sequence: int,
+        limit: int = DEFAULT_PUBLIC_EVENT_REPLAY_BATCH_SIZE,
+    ) -> tuple[RunEventDto, ...]:
+        if after_sequence < 0:
+            raise InvalidEventCursorError("after_sequence must be greater than or equal to 0")
+        if limit < 1:
+            raise InvalidEventCursorError("event replay limit must be greater than 0")
+        with self._unit_of_work_factory() as uow:
+            job = uow.migration_jobs.get(job_id)
+            if job is None:
+                raise NotFoundError("migration job", job_id)
+            if after_sequence > job.last_event_sequence:
+                raise InvalidEventCursorError(
+                    "after_sequence cannot be greater than the latest committed event sequence"
+                )
+            return uow.run_events.list_for_job_after(job_id, after_sequence, limit)
+
+    def latest_run_event_sequence(self, job_id: str) -> int:
+        with self._unit_of_work_factory() as uow:
+            job = uow.migration_jobs.get(job_id)
+            if job is None:
+                raise NotFoundError("migration job", job_id)
+            return job.last_event_sequence
+
     # ── Artifact ─────────────────────────────────────────────────
 
     def list_artifacts(self, job_id: str) -> tuple[ArtifactDto, ...]:
@@ -162,3 +197,43 @@ class ControlTowerQueryService:
     def list_pipeline_definitions(self) -> tuple[PipelineDefinitionDto, ...]:
         with self._unit_of_work_factory() as uow:
             return uow.pipeline_definitions.list()
+
+
+def parse_public_event_cursor(
+    *,
+    after_sequence: str | int | None,
+    last_event_id: str | None,
+    latest_sequence: int,
+) -> int:
+    query_sequence = _parse_optional_sequence(after_sequence, "after_sequence")
+    header_sequence = _parse_optional_sequence(last_event_id, "Last-Event-ID")
+
+    if query_sequence is not None and header_sequence is not None and query_sequence != header_sequence:
+        raise EventCursorConflictError(header_sequence, query_sequence)
+
+    sequence = query_sequence if query_sequence is not None else header_sequence
+    if sequence is None:
+        sequence = 0
+    if sequence > latest_sequence:
+        raise InvalidEventCursorError(
+            "event cursor cannot be greater than the latest committed event sequence"
+        )
+    return sequence
+
+
+def _parse_optional_sequence(value: str | int | None, field_name: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        sequence = value
+    else:
+        text = value.strip()
+        if not text:
+            raise InvalidEventCursorError(f"{field_name} must be an integer")
+        try:
+            sequence = int(text, 10)
+        except ValueError as exc:
+            raise InvalidEventCursorError(f"{field_name} must be an integer") from exc
+    if sequence < 0:
+        raise InvalidEventCursorError(f"{field_name} must be greater than or equal to 0")
+    return sequence

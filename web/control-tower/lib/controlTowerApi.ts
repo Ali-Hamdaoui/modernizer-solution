@@ -5,6 +5,7 @@ import type {
   FilesystemRootOption,
   JobRepresentation,
   PipelineOption,
+  PublicEventReplayResponse,
   RunnerProfileOption
 } from "./contracts";
 
@@ -13,6 +14,8 @@ export const CONTROL_TOWER_API_BASE_URL =
 
 export const allowedStatusCopy = {
   created: "Foundation diagnostic job created",
+  connected: "Event replay connected",
+  diagnosticQueued: "Foundation diagnostic queued",
   queued: "Command queued"
 } as const;
 
@@ -73,6 +76,19 @@ export async function getJob(jobId: string): Promise<JobRepresentation & { etag:
     throw new Error("Job response did not include an ETag.");
   }
   return { ...((await response.json()) as JobRepresentation), etag };
+}
+
+export async function getCommittedEvents(
+  jobId: string,
+  afterSequence: number
+): Promise<PublicEventReplayResponse> {
+  const params = new URLSearchParams({ after_sequence: String(afterSequence) });
+  return getJson<PublicEventReplayResponse>(`/v1/jobs/${encodeURIComponent(jobId)}/events?${params}`);
+}
+
+export function eventStreamUrl(jobId: string, afterSequence: number): string {
+  const params = new URLSearchParams({ after_sequence: String(afterSequence) });
+  return `${CONTROL_TOWER_API_BASE_URL}/v1/jobs/${encodeURIComponent(jobId)}/events/stream?${params}`;
 }
 
 async function getJson<T>(path: string): Promise<T> {
