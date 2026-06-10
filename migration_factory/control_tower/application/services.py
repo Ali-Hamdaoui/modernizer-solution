@@ -8,14 +8,17 @@ from uuid import uuid4
 
 from migration_factory.control_tower.application.commands import (
     CreateMigrationJobCommand,
+    CreateDiagnosticJobCommand,
     RegisterArtifactCommand,
     RegisterPipelineDefinitionCommand,
     RegisterRunnerProfileCommand,
+    StartMigrationJobCommand,
     TransitionJobStateCommand,
 )
 from migration_factory.control_tower.application.dto import (
     ArtifactDto,
     CreatedMigrationJob,
+    JobProjectionDto,
     MigrationJobDto,
     PipelineDefinitionDto,
     RunnerProfileDto,
@@ -23,19 +26,25 @@ from migration_factory.control_tower.application.dto import (
 from migration_factory.control_tower.application.ports import ControlTowerUnitOfWork
 from migration_factory.control_tower.domain.artifacts import ArtifactHashResult
 from migration_factory.control_tower.domain.checksums import canonical_json_text, sha256_canonical_json, utc_now_text
+from migration_factory.control_tower.domain.commands import CommandState
 from migration_factory.control_tower.domain.entities import (
     ArtifactRecord,
     AuditRecord,
+    CommandExecutionRecord,
+    IdempotencyRecord,
     MigrationJobRecord,
     RunConfigurationRecord,
     RunEventRecord,
     StageRunRecord,
 )
 from migration_factory.control_tower.domain.errors import (
+    ActiveCommandConflictError,
     ArtifactPathError,
     CompatibilityError,
     ConcurrencyConflictError,
     ExpectedVersionRequiredError,
+    IdempotencyConflictError,
+    InvalidJobStateTransitionError,
     NotFoundError,
     RegistrationConflictError,
     StaleVersionError,
@@ -43,11 +52,15 @@ from migration_factory.control_tower.domain.errors import (
 )
 from migration_factory.control_tower.domain.states import JobState
 from migration_factory.control_tower.domain.transitions import active_slot_for, validate_job_state_transition
+from migration_factory.control_tower.infrastructure.sqlite.artifact_paths import normalize_registered_relative_path
 from migration_factory.control_tower.schemas import PipelineDefinition, RunnerProfile
 from migration_factory.control_tower.schemas.run_configuration import RunConfiguration
 
 
 UnitOfWorkFactory = Callable[[], ControlTowerUnitOfWork]
+DIAGNOSTIC_OPERATION = "foundation_diagnostic"
+CREATE_DIAGNOSTIC_JOB_OPERATION = "create_diagnostic_job"
+START_DIAGNOSTIC_JOB_OPERATION = "start_diagnostic_job"
 
 
 class CreateMigrationJobService:
@@ -488,6 +501,237 @@ class ControlTowerRegistrationService:
             return updated_job
 
 
+class DiagnosticJobService:
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+        self._create_job_service = CreateMigrationJobService(unit_of_work_factory)
+
+    def create_diagnostic_job(self, command: CreateDiagnosticJobCommand) -> JobProjectionDto:
+        _require_non_empty(command.idempotency_key, "idempotency_key")
+        request_payload = _create_diagnostic_request_payload(command)
+        request_checksum = sha256_canonical_json(request_payload)
+
+        with self._unit_of_work_factory() as uow:
+            existing = uow.idempotency_records.get(
+                CREATE_DIAGNOSTIC_JOB_OPERATION,
+                command.idempotency_key,
+            )
+            if existing is not None:
+                if existing.request_checksum != request_checksum:
+                    raise IdempotencyConflictError(CREATE_DIAGNOSTIC_JOB_OPERATION, command.idempotency_key)
+                return _job_projection(uow, existing.resource_id)
+
+            runner = uow.runner_profiles.get_exact(
+                command.runner_profile_id,
+                command.runner_profile_version,
+            )
+            if runner is None:
+                raise NotFoundError(
+                    "runner profile",
+                    f"{command.runner_profile_id}/{command.runner_profile_version}",
+                )
+            _validate_job_roots(
+                runner.payload,
+                command.legacy_source_root_id,
+                command.legacy_source_relative_path,
+                command.output_root_id,
+                command.output_relative_path,
+            )
+
+        created = self._create_job_service.execute(
+            CreateMigrationJobCommand(
+                actor=_local_actor_id(),
+                legacy_source_ref=_root_ref(
+                    command.legacy_source_root_id,
+                    command.legacy_source_relative_path,
+                ),
+                output_root_ref=_root_ref(
+                    command.output_root_id,
+                    command.output_relative_path,
+                ),
+                runner_profile_id=command.runner_profile_id,
+                runner_profile_version=command.runner_profile_version,
+                pipeline_id=command.pipeline_id,
+                pipeline_version=command.pipeline_version,
+                target_proof_level=command.target_proof_level,
+                enabled_gates=command.enabled_gates,
+                policy=command.policy,
+                correlation_id=command.correlation_id,
+            )
+        )
+
+        with self._unit_of_work_factory() as uow:
+            uow.idempotency_records.insert(
+                IdempotencyRecord(
+                    operation=CREATE_DIAGNOSTIC_JOB_OPERATION,
+                    idempotency_key=command.idempotency_key,
+                    request_checksum=request_checksum,
+                    resource_type="migration_job",
+                    resource_id=created.job_id,
+                    original_status_code=201,
+                    created_at=utc_now_text(),
+                )
+            )
+            return _job_projection(uow, created.job_id)
+
+    def start_migration_job(self, command: StartMigrationJobCommand) -> JobProjectionDto:
+        _require_non_empty(command.idempotency_key, "idempotency_key")
+        if command.expected_version is None:
+            raise ExpectedVersionRequiredError()
+
+        request_payload = {
+            "job_id": command.job_id,
+            "expected_version": command.expected_version,
+        }
+        request_checksum = sha256_canonical_json(request_payload)
+
+        with self._unit_of_work_factory() as uow:
+            existing = uow.idempotency_records.get(
+                START_DIAGNOSTIC_JOB_OPERATION,
+                command.idempotency_key,
+            )
+            if existing is not None:
+                if existing.request_checksum != request_checksum:
+                    raise IdempotencyConflictError(START_DIAGNOSTIC_JOB_OPERATION, command.idempotency_key)
+                return _job_projection(uow, command.job_id)
+
+            job = uow.migration_jobs.get(command.job_id)
+            if job is None:
+                raise NotFoundError("migration job", command.job_id)
+            if job.version != command.expected_version:
+                raise StaleVersionError(command.job_id, command.expected_version, job.version)
+            if uow.command_executions.get_active_for_job(command.job_id) is not None:
+                raise ActiveCommandConflictError(command.job_id)
+            if job.status != JobState.CREATED:
+                raise InvalidJobStateTransitionError(job.status, JobState.QUEUED)
+
+            now = utc_now_text()
+            command_id = f"command-{uuid4().hex}"
+            queued = CommandExecutionRecord(
+                command_id=command_id,
+                job_id=command.job_id,
+                operation=DIAGNOSTIC_OPERATION,
+                status=CommandState.QUEUED,
+                created_at=now,
+                updated_at=now,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+            )
+            try:
+                uow.command_executions.insert_queued(queued)
+            except StorageIntegrityError as exc:
+                raise ActiveCommandConflictError(command.job_id) from exc
+
+            updated = uow.migration_jobs.transition_state(
+                command.job_id,
+                command.expected_version,
+                JobState.QUEUED,
+                active_slot_for(JobState.QUEUED),
+                now,
+            )
+            if not updated:
+                current = uow.migration_jobs.get(command.job_id)
+                actual = current.version if current is not None else None
+                raise StaleVersionError(command.job_id, command.expected_version, actual)
+
+            command_sequence = uow.migration_jobs.increment_event_sequence(command.job_id)
+            command_event_payload = {
+                "actor_id": command.actor_id,
+                "actor_type": command.actor_type,
+                "command_id": command_id,
+                "command_status": CommandState.QUEUED.value,
+                "job_id": command.job_id,
+                "operation": DIAGNOSTIC_OPERATION,
+            }
+            if command.correlation_id is not None:
+                command_event_payload["correlation_id"] = command.correlation_id
+            if command.causation_id is not None:
+                command_event_payload["causation_id"] = command.causation_id
+            command_event_id = f"event-{command.job_id}-{command_sequence:04d}"
+            uow.run_events.insert(
+                RunEventRecord(
+                    event_id=command_event_id,
+                    job_id=command.job_id,
+                    sequence=command_sequence,
+                    event_type="command_queued",
+                    actor_type=command.actor_type,
+                    actor_id=command.actor_id,
+                    correlation_id=command.correlation_id,
+                    causation_id=command.causation_id,
+                    payload_json=canonical_json_text(command_event_payload),
+                    payload_checksum=sha256_canonical_json(command_event_payload),
+                    created_at=now,
+                )
+            )
+
+            new_version = command.expected_version + 1
+            state_sequence = uow.migration_jobs.increment_event_sequence(command.job_id)
+            state_payload = _job_state_changed_payload(
+                job_id=command.job_id,
+                prior_state=JobState.CREATED,
+                new_state=JobState.QUEUED,
+                prior_version=command.expected_version,
+                new_version=new_version,
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                reason="diagnostic command queued",
+                correlation_id=command.correlation_id,
+                causation_id=command_event_id,
+            )
+            state_event_id = f"event-{command.job_id}-{state_sequence:04d}"
+            uow.run_events.append_job_state_changed_event(
+                event_id=state_event_id,
+                job_id=command.job_id,
+                sequence=state_sequence,
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                payload_json=canonical_json_text(state_payload),
+                payload_checksum=sha256_canonical_json(state_payload),
+                created_at=now,
+                correlation_id=command.correlation_id,
+                causation_id=command_event_id,
+            )
+
+            audit_payload = {
+                "command_id": command_id,
+                "command_status": CommandState.QUEUED.value,
+                "command_event_id": command_event_id,
+                "event_sequence": command_sequence,
+                "job_id": command.job_id,
+                "operation": DIAGNOSTIC_OPERATION,
+                "state_event_id": state_event_id,
+                "state_event_sequence": state_sequence,
+            }
+            uow.audit_records.insert(
+                AuditRecord(
+                    audit_id=f"audit-{command.job_id}-{state_sequence:04d}",
+                    job_id=command.job_id,
+                    actor_type=command.actor_type,
+                    actor_id=command.actor_id,
+                    action="diagnostic_command_queued",
+                    prior_state=JobState.CREATED.value,
+                    new_state=JobState.QUEUED.value,
+                    job_version=new_version,
+                    correlation_id=command.correlation_id,
+                    causation_id=command_event_id,
+                    payload_json=canonical_json_text(audit_payload),
+                    created_at=now,
+                )
+            )
+            uow.idempotency_records.insert(
+                IdempotencyRecord(
+                    operation=START_DIAGNOSTIC_JOB_OPERATION,
+                    idempotency_key=command.idempotency_key,
+                    request_checksum=request_checksum,
+                    resource_type="command_execution",
+                    resource_id=command_id,
+                    original_status_code=200,
+                    created_at=now,
+                )
+            )
+            return _job_projection(uow, command.job_id)
+
+
 class ArtifactRegistryService:
     def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
         self._unit_of_work_factory = unit_of_work_factory
@@ -755,3 +999,60 @@ def _registration_audit_payload_json(
     if causation_id is not None:
         payload["causation_id"] = causation_id
     return canonical_json_text(payload)
+
+
+def _create_diagnostic_request_payload(command: CreateDiagnosticJobCommand) -> dict[str, Any]:
+    return {
+        "enabled_gates": command.enabled_gates,
+        "legacy_source_relative_path": normalize_registered_relative_path(command.legacy_source_relative_path),
+        "legacy_source_root_id": command.legacy_source_root_id,
+        "output_relative_path": normalize_registered_relative_path(command.output_relative_path),
+        "output_root_id": command.output_root_id,
+        "pipeline_id": command.pipeline_id,
+        "pipeline_version": command.pipeline_version,
+        "policy": command.policy,
+        "runner_profile_id": command.runner_profile_id,
+        "runner_profile_version": command.runner_profile_version,
+        "target_proof_level": command.target_proof_level,
+    }
+
+
+def _validate_job_roots(
+    runner_profile: RunnerProfile,
+    source_root_id: str,
+    source_relative_path: str,
+    output_root_id: str,
+    output_relative_path: str,
+) -> None:
+    source_normalized = normalize_registered_relative_path(source_relative_path)
+    output_normalized = normalize_registered_relative_path(output_relative_path)
+    del source_normalized, output_normalized
+
+    roots = {root.root_id: root for root in runner_profile.filesystem.roots}
+    source = roots.get(source_root_id)
+    if source is None or source.kind != "source":
+        raise NotFoundError("source registered root", source_root_id)
+    output = roots.get(output_root_id)
+    if output is None or output.kind != "output":
+        raise NotFoundError("output registered root", output_root_id)
+
+
+def _root_ref(root_id: str, relative_path: str) -> str:
+    return f"{root_id}:{normalize_registered_relative_path(relative_path)}"
+
+
+def _local_actor_id() -> str:
+    import getpass
+
+    return getpass.getuser()
+
+
+def _job_projection(uow: ControlTowerUnitOfWork, job_id: str) -> JobProjectionDto:
+    job = uow.migration_jobs.get(job_id)
+    if job is None:
+        raise NotFoundError("migration job", job_id)
+    return JobProjectionDto(
+        job=job,
+        active_command=uow.command_executions.get_active_for_job(job_id),
+        etag=f'"job-{job.job_id}-v{job.version}"',
+    )

@@ -2,15 +2,20 @@
 
 from migration_factory.control_tower.application.commands import (
     CreateMigrationJobCommand,
+    CreateDiagnosticJobCommand,
     RegisterArtifactCommand,
     RegisterPipelineDefinitionCommand,
     RegisterRunnerProfileCommand,
+    StartMigrationJobCommand,
     TransitionJobStateCommand,
 )
 from migration_factory.control_tower.application.dto import (
     AuditRecordDto,
     ArtifactDto,
+    CommandExecutionDto,
     CreatedMigrationJob,
+    IdempotencyRecordDto,
+    JobProjectionDto,
     MigrationJobDto,
     PipelineDefinitionDto,
     RunnerProfileDto,
@@ -19,7 +24,9 @@ from migration_factory.control_tower.application.dto import (
 from migration_factory.control_tower.application.ports import (
     ArtifactRepository,
     AuditRecordRepository,
+    CommandExecutionRepository,
     ControlTowerUnitOfWork,
+    IdempotencyRepository,
     MigrationJobRepository,
     PipelineDefinitionRepository,
     RunConfigurationRepository,
@@ -32,6 +39,7 @@ from migration_factory.control_tower.application.services import (
     ArtifactRegistryService,
     ControlTowerRegistrationService,
     CreateMigrationJobService,
+    DiagnosticJobService,
 )
 
 __all__ = [
@@ -40,11 +48,18 @@ __all__ = [
     "ArtifactRepository",
     "AuditRecordDto",
     "AuditRecordRepository",
+    "CommandExecutionDto",
+    "CommandExecutionRepository",
     "ControlTowerRegistrationService",
     "ControlTowerUnitOfWork",
+    "CreateDiagnosticJobCommand",
     "CreateMigrationJobCommand",
     "CreateMigrationJobService",
     "CreatedMigrationJob",
+    "DiagnosticJobService",
+    "IdempotencyRecordDto",
+    "IdempotencyRepository",
+    "JobProjectionDto",
     "MigrationJobDto",
     "MigrationJobRepository",
     "PipelineDefinitionDto",
@@ -58,6 +73,7 @@ __all__ = [
     "RunnerProfileDto",
     "RunnerProfileRepository",
     "StageRunRepository",
+    "StartMigrationJobCommand",
     "TransitionJobStateCommand",
     "UnitOfWork",
 ]

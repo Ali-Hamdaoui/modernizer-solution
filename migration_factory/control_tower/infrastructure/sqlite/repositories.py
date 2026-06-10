@@ -9,6 +9,8 @@ from typing import Sequence
 from migration_factory.control_tower.application.dto import (
     ArtifactDto,
     AuditRecordDto,
+    CommandExecutionDto,
+    IdempotencyRecordDto,
     MigrationJobDto,
     PipelineDefinitionDto,
     RunnerProfileDto,
@@ -17,6 +19,8 @@ from migration_factory.control_tower.application.dto import (
 from migration_factory.control_tower.domain.entities import (
     ArtifactRecord,
     AuditRecord,
+    CommandExecutionRecord,
+    IdempotencyRecord,
     MigrationJobRecord,
     PipelineDefinitionRecord,
     RunConfigurationRecord,
@@ -24,6 +28,7 @@ from migration_factory.control_tower.domain.entities import (
     RunnerProfileRecord,
     StageRunRecord,
 )
+from migration_factory.control_tower.domain.commands import CommandState
 from migration_factory.control_tower.domain.errors import NotFoundError, StorageIntegrityError
 from migration_factory.control_tower.domain.states import JobState, TargetProofLevel
 from migration_factory.control_tower.schemas.pipeline_definition import PipelineDefinition
@@ -774,6 +779,100 @@ class SqliteAuditRecordRepository:
         )
 
 
+class SqliteCommandExecutionRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert_queued(self, command: CommandExecutionRecord) -> None:
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO command_executions (
+                    command_id, job_id, operation, status, created_at, updated_at,
+                    correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    command.command_id,
+                    command.job_id,
+                    command.operation,
+                    command.status.value,
+                    command.created_at,
+                    command.updated_at,
+                    command.correlation_id,
+                    command.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, command_id: str) -> CommandExecutionDto | None:
+        row = self._connection.execute(
+            """
+            SELECT command_id, job_id, operation, status, created_at, updated_at,
+                   correlation_id, causation_id
+            FROM command_executions
+            WHERE command_id = ?
+            """,
+            (command_id,),
+        ).fetchone()
+        return _command_execution_from_row(row) if row is not None else None
+
+    def get_active_for_job(self, job_id: str) -> CommandExecutionDto | None:
+        row = self._connection.execute(
+            """
+            SELECT command_id, job_id, operation, status, created_at, updated_at,
+                   correlation_id, causation_id
+            FROM command_executions
+            WHERE job_id = ?
+              AND status IN ('QUEUED', 'STARTING', 'RUNNING', 'CANCELLING')
+            ORDER BY created_at, command_id
+            LIMIT 1
+            """,
+            (job_id,),
+        ).fetchone()
+        return _command_execution_from_row(row) if row is not None else None
+
+
+class SqliteIdempotencyRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, operation: str, idempotency_key: str) -> IdempotencyRecordDto | None:
+        row = self._connection.execute(
+            """
+            SELECT operation, idempotency_key, request_checksum, resource_type,
+                   resource_id, original_status_code, created_at
+            FROM idempotency_records
+            WHERE operation = ? AND idempotency_key = ?
+            """,
+            (operation, idempotency_key),
+        ).fetchone()
+        return _idempotency_record_from_row(row) if row is not None else None
+
+    def insert(self, record: IdempotencyRecord) -> None:
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO idempotency_records (
+                    operation, idempotency_key, request_checksum, resource_type,
+                    resource_id, original_status_code, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.operation,
+                    record.idempotency_key,
+                    record.request_checksum,
+                    record.resource_type,
+                    record.resource_id,
+                    record.original_status_code,
+                    record.created_at,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+
 def _runner_profile_from_row(row: sqlite3.Row) -> RunnerProfileDto:
     payload_json = str(row["payload_json"])
     return RunnerProfileDto(
@@ -874,6 +973,31 @@ def _artifact_from_row(row: sqlite3.Row) -> ArtifactDto:
         checksum=str(row["checksum"]),
         created_at=str(row["created_at"]),
         created_by=str(row["created_by"]),
+    )
+
+
+def _command_execution_from_row(row: sqlite3.Row) -> CommandExecutionDto:
+    return CommandExecutionDto(
+        command_id=str(row["command_id"]),
+        job_id=str(row["job_id"]),
+        operation=str(row["operation"]),
+        status=CommandState(str(row["status"])),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+def _idempotency_record_from_row(row: sqlite3.Row) -> IdempotencyRecordDto:
+    return IdempotencyRecordDto(
+        operation=str(row["operation"]),
+        idempotency_key=str(row["idempotency_key"]),
+        request_checksum=str(row["request_checksum"]),
+        resource_type=str(row["resource_type"]),
+        resource_id=str(row["resource_id"]),
+        original_status_code=int(row["original_status_code"]),
+        created_at=str(row["created_at"]),
     )
 
 

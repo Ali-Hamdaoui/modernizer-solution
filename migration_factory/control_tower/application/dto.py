@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from migration_factory.control_tower.domain.states import JobState
+from migration_factory.control_tower.domain.commands import CommandState
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,3 +139,33 @@ class ArtifactDto:
     checksum: str
     created_at: str
     created_by: str
+
+
+@dataclass(frozen=True, slots=True)
+class CommandExecutionDto:
+    command_id: str
+    job_id: str
+    operation: str
+    status: CommandState
+    created_at: str
+    updated_at: str
+    correlation_id: str | None
+    causation_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class IdempotencyRecordDto:
+    operation: str
+    idempotency_key: str
+    request_checksum: str
+    resource_type: str
+    resource_id: str
+    original_status_code: int
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class JobProjectionDto:
+    job: MigrationJobDto
+    active_command: CommandExecutionDto | None
+    etag: str
