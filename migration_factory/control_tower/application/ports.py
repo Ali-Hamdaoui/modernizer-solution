@@ -180,6 +180,17 @@ class CommandExecutionRepository(Protocol):
 
     def get_active_for_job(self, job_id: str) -> CommandExecutionDto | None: ...
 
+    def update_workspace_columns(
+        self,
+        command_id: str,
+        *,
+        command_manifest_artifact_id: str,
+        working_directory_root_id: str,
+        working_directory_relative_path: str,
+        worker_id: str,
+        launch_attempt: int,
+    ) -> None: ...
+
 
 class IdempotencyRepository(Protocol):
     def get(self, operation: str, idempotency_key: str) -> IdempotencyRecordDto | None: ...

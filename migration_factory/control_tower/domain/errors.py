@@ -109,6 +109,18 @@ class ActiveCommandConflictError(ControlTowerError):
         super().__init__(f"Migration job {job_id!r} already has a nonterminal command")
 
 
+class WorkspacePathError(ControlTowerError):
+    """Raised when a workspace path fails security validation."""
+
+
+class ManifestIntegrityError(ControlTowerError):
+    """Raised when a manifest checksum does not match."""
+
+
+class WorkspaceConflictError(ControlTowerError):
+    """Raised when workspace preparation conflicts with existing state."""
+
+
 class InvalidEventCursorError(ControlTowerError):
     """Raised when a public event replay cursor is malformed or outside the valid range."""
 

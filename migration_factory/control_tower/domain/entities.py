@@ -147,6 +147,21 @@ class CommandExecutionRecord:
     updated_at: str
     correlation_id: str | None
     causation_id: str | None
+    command_manifest_artifact_id: str | None = None
+    working_directory_root_id: str | None = None
+    working_directory_relative_path: str | None = None
+    worker_id: str | None = None
+    launch_attempt: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CommandManifestRecord:
+    command_id: str
+    manifest_json: str
+    manifest_checksum: str
+    run_configuration_artifact_id: str
+    run_configuration_checksum: str
+    created_at: str
 
 
 @dataclass(frozen=True, slots=True)

@@ -151,6 +151,11 @@ class CommandExecutionDto:
     updated_at: str
     correlation_id: str | None
     causation_id: str | None
+    command_manifest_artifact_id: str | None = None
+    working_directory_root_id: str | None = None
+    working_directory_relative_path: str | None = None
+    worker_id: str | None = None
+    launch_attempt: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
