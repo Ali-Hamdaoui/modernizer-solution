@@ -88,3 +88,22 @@ class StorageIntegrityError(ControlTowerError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
+
+
+class IdempotencyConflictError(ControlTowerError):
+    """Raised when an idempotency key is reused with different request content."""
+
+    def __init__(self, operation: str, idempotency_key: str) -> None:
+        self.operation = operation
+        self.idempotency_key = idempotency_key
+        super().__init__(
+            f"Idempotency key {idempotency_key!r} for {operation!r} was already used with a different request"
+        )
+
+
+class ActiveCommandConflictError(ControlTowerError):
+    """Raised when a job already owns a nonterminal command."""
+
+    def __init__(self, job_id: str) -> None:
+        self.job_id = job_id
+        super().__init__(f"Migration job {job_id!r} already has a nonterminal command")

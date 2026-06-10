@@ -10,14 +10,17 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "jsonschema",
+  "fastapi",
   "langgraph",
   "pydantic>=2,<3",
   "PyYAML",
+  "uvicorn",
 ]
 
 [project.optional-dependencies]
 test = [
   "jsonschema",
+  "fastapi",
   "pydantic>=2,<3",
   "pytest",
 ]

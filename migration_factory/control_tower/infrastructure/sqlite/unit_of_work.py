@@ -7,6 +7,8 @@ import sqlite3
 from migration_factory.control_tower.infrastructure.sqlite.repositories import (
     SqliteArtifactRepository,
     SqliteAuditRecordRepository,
+    SqliteCommandExecutionRepository,
+    SqliteIdempotencyRepository,
     SqliteMigrationJobRepository,
     SqlitePipelineDefinitionRepository,
     SqliteRunConfigurationRepository,
@@ -28,6 +30,8 @@ class SqliteControlTowerUnitOfWork:
         self.run_events = SqliteRunEventRepository(connection)
         self.artifacts = SqliteArtifactRepository(connection)
         self.audit_records = SqliteAuditRecordRepository(connection)
+        self.command_executions = SqliteCommandExecutionRepository(connection)
+        self.idempotency_records = SqliteIdempotencyRepository(connection)
 
     def __enter__(self) -> "SqliteControlTowerUnitOfWork":
         self.connection.execute("BEGIN IMMEDIATE")

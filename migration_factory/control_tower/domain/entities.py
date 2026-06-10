@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from migration_factory.control_tower.domain.states import JobState, TargetProofLevel
+from migration_factory.control_tower.domain.commands import CommandState
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,4 +134,27 @@ class AuditRecord:
     correlation_id: str | None
     causation_id: str | None
     payload_json: str
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class CommandExecutionRecord:
+    command_id: str
+    job_id: str
+    operation: str
+    status: CommandState
+    created_at: str
+    updated_at: str
+    correlation_id: str | None
+    causation_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class IdempotencyRecord:
+    operation: str
+    idempotency_key: str
+    request_checksum: str
+    resource_type: str
+    resource_id: str
+    original_status_code: int
     created_at: str

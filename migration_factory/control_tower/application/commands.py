@@ -67,3 +67,32 @@ class TransitionJobStateCommand:
     reason: str
     correlation_id: str | None = None
     causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CreateDiagnosticJobCommand:
+    idempotency_key: str
+    runner_profile_id: str
+    runner_profile_version: str
+    pipeline_id: str
+    pipeline_version: str
+    legacy_source_root_id: str
+    legacy_source_relative_path: str
+    output_root_id: str
+    output_relative_path: str
+    target_proof_level: TargetProofLevel
+    enabled_gates: tuple[str, ...]
+    policy: RunPolicy
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StartMigrationJobCommand:
+    job_id: str
+    expected_version: int | None
+    idempotency_key: str
+    actor_type: str
+    actor_id: str
+    correlation_id: str | None = None
+    causation_id: str | None = None

@@ -8,6 +8,8 @@ from typing_extensions import Self
 from migration_factory.control_tower.application.dto import (
     AuditRecordDto,
     ArtifactDto,
+    CommandExecutionDto,
+    IdempotencyRecordDto,
     MigrationJobDto,
     PipelineDefinitionDto,
     RunnerProfileDto,
@@ -16,6 +18,8 @@ from migration_factory.control_tower.application.dto import (
 from migration_factory.control_tower.domain.entities import (
     ArtifactRecord,
     AuditRecord,
+    CommandExecutionRecord,
+    IdempotencyRecord,
     MigrationJobRecord,
     PipelineDefinitionRecord,
     RunConfigurationRecord,
@@ -162,6 +166,20 @@ class AuditRecordRepository(Protocol):
     def count_for_job(self, job_id: str) -> int: ...
 
 
+class CommandExecutionRepository(Protocol):
+    def insert_queued(self, command: CommandExecutionRecord) -> None: ...
+
+    def get(self, command_id: str) -> CommandExecutionDto | None: ...
+
+    def get_active_for_job(self, job_id: str) -> CommandExecutionDto | None: ...
+
+
+class IdempotencyRepository(Protocol):
+    def get(self, operation: str, idempotency_key: str) -> IdempotencyRecordDto | None: ...
+
+    def insert(self, record: IdempotencyRecord) -> None: ...
+
+
 class ControlTowerUnitOfWork(Protocol):
     runner_profiles: RunnerProfileRepository
     pipeline_definitions: PipelineDefinitionRepository
@@ -171,6 +189,8 @@ class ControlTowerUnitOfWork(Protocol):
     run_events: RunEventRepository
     artifacts: ArtifactRepository
     audit_records: AuditRecordRepository
+    command_executions: CommandExecutionRepository
+    idempotency_records: IdempotencyRepository
 
     def __enter__(self) -> Self: ...
 
