@@ -8,9 +8,13 @@ from __future__ import annotations
 
 import json
 
+from pathlib import Path
+
 from migration_factory.control_tower.application.dto import (
     ArtifactDto,
     AuditRecordDto,
+    CommandExecutionDto,
+    CommandOutputWindowDto,
     MigrationJobDto,
     PipelineDefinitionDto,
     RunConfigurationDto,
@@ -197,6 +201,173 @@ class ControlTowerQueryService:
     def list_pipeline_definitions(self) -> tuple[PipelineDefinitionDto, ...]:
         with self._unit_of_work_factory() as uow:
             return uow.pipeline_definitions.list()
+
+
+    def get_command_output_window(
+        self,
+        job_id: str,
+        command_id: str,
+        *,
+        stream: str,
+        after_offset: int,
+        max_bytes: int,
+    ) -> CommandOutputWindowDto:
+        """Read a bounded window from a command's stdout or stderr file.
+
+        The read is safe for UTF-8 split boundaries, bounded by max_bytes,
+        and returns the actual byte range read along with decoded text.
+        """
+        if stream not in ("stdout", "stderr"):
+            raise InvalidEventCursorError(f"Invalid stream name: {stream!r}; must be 'stdout' or 'stderr'")
+        if after_offset < 0:
+            raise InvalidEventCursorError("after_offset must be greater than or equal to 0")
+        if max_bytes < 1:
+            raise InvalidEventCursorError("max_bytes must be greater than 0")
+
+        log_path: Path | None = None
+        cmd_status: CommandState | None = None
+
+        with self._unit_of_work_factory() as uow:
+            cmd = uow.command_executions.get(command_id)
+            if cmd is None:
+                raise NotFoundError("command execution", command_id)
+            if cmd.job_id != job_id:
+                raise NotFoundError("command execution for job", command_id)
+
+            cmd_status = cmd.status
+            log_path = _resolve_log_path(uow, cmd, stream)
+
+        if log_path is None or not log_path.exists() or not log_path.is_file():
+            return CommandOutputWindowDto(
+                command_id=command_id,
+                job_id=job_id,
+                stream=stream,
+                requested_offset=after_offset,
+                start_offset=0,
+                next_offset=0,
+                data="",
+                encoding="utf-8",
+                replacement_characters_used=0,
+                truncated=False,
+                terminal=False,
+                max_bytes=max_bytes,
+            )
+
+        file_size = log_path.stat().st_size
+        terminal = _is_command_terminal(cmd_status)
+
+        start_offset = min(after_offset, file_size)
+        read_size = min(max_bytes, file_size - start_offset)
+
+        with log_path.open("rb") as f:
+            if start_offset > 0:
+                f.seek(start_offset)
+            raw = f.read(read_size)
+
+        decoded, replacement_count = _decode_utf8_safe(raw)
+        truncated = read_size >= max_bytes and (start_offset + read_size) < file_size
+
+        next_offset = start_offset + len(raw)
+
+        return CommandOutputWindowDto(
+            command_id=command_id,
+            job_id=job_id,
+            stream=stream,
+            requested_offset=after_offset,
+            start_offset=start_offset,
+            next_offset=next_offset,
+            data=decoded,
+            encoding="utf-8",
+            replacement_characters_used=replacement_count,
+            truncated=truncated,
+            terminal=terminal,
+            max_bytes=max_bytes,
+        )
+
+    def get_command_output_offsets(
+        self,
+        command_id: str,
+    ) -> tuple[int, int]:
+        with self._unit_of_work_factory() as uow:
+            return uow.command_executions.get_output_offsets(command_id)
+
+
+def _is_command_terminal(status) -> bool:
+    from migration_factory.control_tower.domain.commands import (
+        TERMINAL_COMMAND_STATES,
+    )
+
+    return status in TERMINAL_COMMAND_STATES
+
+
+def _resolve_log_path(uow, cmd, stream: str) -> Path | None:
+    """Resolve the full path to a command's stdout or stderr log file.
+
+    Uses the runner profile's filesystem roots to resolve the working
+    directory, then appends the log relative path from the manifest.
+    """
+    from migration_factory.control_tower.application.services import (
+        _find_workspace_root,
+    )
+    from migration_factory.control_tower.domain.errors import WorkspacePathError
+
+    if cmd.working_directory_root_id is None or cmd.working_directory_relative_path is None:
+        return None
+
+    # Get the runner profile to resolve the root path
+    job_record = uow.migration_jobs.get(cmd.job_id)
+    if job_record is None:
+        return None
+
+    # Need to get runner_profile_id and version from the run_configuration
+    run_config_record = uow.run_configurations.get_for_job(cmd.job_id)
+    if run_config_record is None:
+        return None
+
+    runner = uow.runner_profiles.get_exact(
+        run_config_record.runner_profile_id,
+        run_config_record.runner_profile_version,
+    )
+    if runner is None:
+        return None
+
+    try:
+        root_path = _find_workspace_root(runner.payload, cmd.working_directory_root_id)
+    except Exception:
+        return None
+
+    working_dir = root_path / cmd.working_directory_relative_path
+
+    # Determine log relative path from manifest (default to logs/stdout.log or logs/stderr.log)
+    manifest_dir = working_dir / "control" / "commands" / cmd.command_id
+    manifest_path = manifest_dir / "command_manifest.json"
+
+    if manifest_path.exists():
+        from migration_factory.control_tower.domain.manifests import (
+            CommandManifest,
+        )
+
+        manifest = CommandManifest.model_validate_json(manifest_path.read_bytes())
+        rel_path = (
+            manifest.stdout_relative_path if stream == "stdout"
+            else manifest.stderr_relative_path
+        )
+    else:
+        rel_path = f"logs/{stream}.log"
+
+    return working_dir / rel_path
+
+
+def _decode_utf8_safe(
+    raw: bytes,
+) -> tuple[str, int]:
+    """Decode bytes as UTF-8, replacing invalid sequences with U+FFFD.
+
+    Returns (decoded_text, replacement_count).
+    """
+    decoded = raw.decode("utf-8", errors="replace")
+    replacement_count = decoded.count("\ufffd")
+    return decoded, replacement_count
 
 
 def parse_public_event_cursor(

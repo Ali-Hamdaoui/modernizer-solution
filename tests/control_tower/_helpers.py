@@ -51,8 +51,8 @@ def seed_runner_profile_with_roots(
 def artifact_roots(tmp_path: Path) -> tuple[RegisteredFilesystemRoot, ...]:
     source = tmp_path / "source"
     output = tmp_path / "output"
-    source.mkdir()
-    output.mkdir()
+    source.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=True)
     return (
         RegisteredFilesystemRoot(root_id="source-root", kind="source", path=str(source)),
         RegisteredFilesystemRoot(root_id="output-root", kind="output", path=str(output)),

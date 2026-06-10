@@ -208,6 +208,18 @@ class CommandExecutionRepository(Protocol):
         process_started_at: str,
     ) -> None: ...
 
+    def get_output_offsets(self, command_id: str) -> tuple[int, int]: ...
+
+    def update_output_offsets(
+        self,
+        command_id: str,
+        *,
+        stdout_offset: int,
+        stderr_offset: int,
+    ) -> None: ...
+
+    def set_output_limit_exceeded(self, command_id: str) -> None: ...
+
 
 class WorkerLauncher(Protocol):
     def launch(

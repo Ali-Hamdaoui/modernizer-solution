@@ -27,6 +27,7 @@ from migration_factory.control_tower.application.ports import ControlTowerUnitOf
 from migration_factory.control_tower.application.queries import (
     DEFAULT_PUBLIC_EVENT_REPLAY_BATCH_SIZE,
     ControlTowerQueryService,
+    _decode_utf8_safe,
     parse_public_event_cursor,
 )
 from migration_factory.control_tower.application.services import DiagnosticJobService, WorkerLaunchService
@@ -368,6 +369,72 @@ def create_app(
                 config=config,
             )
         )
+
+    @app.get("/v1/jobs/{job_id}/commands/{command_id}/stdout")
+    def read_stdout(
+        job_id: str,
+        command_id: str,
+        after_offset: int = Query(default=0),
+        max_bytes: int = Query(default=8192, le=1048576),
+    ) -> dict[str, Any]:
+        query_service = ControlTowerQueryService(unit_of_work_factory)
+        try:
+            window = query_service.get_command_output_window(
+                job_id,
+                command_id,
+                stream="stdout",
+                after_offset=after_offset,
+                max_bytes=max_bytes,
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return {
+            "command_id": window.command_id,
+            "job_id": window.job_id,
+            "stream": window.stream,
+            "requested_offset": window.requested_offset,
+            "start_offset": window.start_offset,
+            "next_offset": window.next_offset,
+            "data": window.data,
+            "encoding": window.encoding,
+            "replacement_characters_used": window.replacement_characters_used,
+            "truncated": window.truncated,
+            "terminal": window.terminal,
+            "max_bytes": window.max_bytes,
+        }
+
+    @app.get("/v1/jobs/{job_id}/commands/{command_id}/stderr")
+    def read_stderr(
+        job_id: str,
+        command_id: str,
+        after_offset: int = Query(default=0),
+        max_bytes: int = Query(default=8192, le=1048576),
+    ) -> dict[str, Any]:
+        query_service = ControlTowerQueryService(unit_of_work_factory)
+        try:
+            window = query_service.get_command_output_window(
+                job_id,
+                command_id,
+                stream="stderr",
+                after_offset=after_offset,
+                max_bytes=max_bytes,
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return {
+            "command_id": window.command_id,
+            "job_id": window.job_id,
+            "stream": window.stream,
+            "requested_offset": window.requested_offset,
+            "start_offset": window.start_offset,
+            "next_offset": window.next_offset,
+            "data": window.data,
+            "encoding": window.encoding,
+            "replacement_characters_used": window.replacement_characters_used,
+            "truncated": window.truncated,
+            "terminal": window.terminal,
+            "max_bytes": window.max_bytes,
+        }
 
     return app
 
