@@ -173,6 +173,24 @@ class WorkerLaunchResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CommandOutputWindowDto:
+    """Bounded window of command output bytes."""
+
+    command_id: str
+    job_id: str
+    stream: str
+    requested_offset: int
+    start_offset: int
+    next_offset: int
+    data: str
+    encoding: str
+    replacement_characters_used: int
+    truncated: bool
+    terminal: bool
+    max_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
 class IdempotencyRecordDto:
     operation: str
     idempotency_key: str

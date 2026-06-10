@@ -834,7 +834,9 @@ class SqliteCommandExecutionRepository:
             SELECT command_id, job_id, operation, status, created_at, updated_at,
                    correlation_id, causation_id,
                    command_manifest_artifact_id, working_directory_root_id,
-                   working_directory_relative_path, worker_id, launch_attempt
+                   working_directory_relative_path, worker_id, launch_attempt,
+                   stdout_offset, stderr_offset,
+                   worker_pid, process_control_id, process_started_at
             FROM command_executions
             WHERE command_id = ?
             """,
@@ -848,7 +850,9 @@ class SqliteCommandExecutionRepository:
             SELECT command_id, job_id, operation, status, created_at, updated_at,
                    correlation_id, causation_id,
                    command_manifest_artifact_id, working_directory_root_id,
-                   working_directory_relative_path, worker_id, launch_attempt
+                   working_directory_relative_path, worker_id, launch_attempt,
+                   stdout_offset, stderr_offset,
+                   worker_pid, process_control_id, process_started_at
             FROM command_executions
             WHERE job_id = ?
               AND status IN ('QUEUED', 'STARTING', 'RUNNING', 'CANCELLING')
@@ -941,6 +945,108 @@ class SqliteCommandExecutionRepository:
             raise NotFoundError(
                 "command execution",
                 f"{command_id} not in QUEUED/STARTING or workspace not prepared",
+            )
+
+    def get_output_offsets(self, command_id: str) -> tuple[int, int]:
+        row = self._connection.execute(
+            """
+            SELECT stdout_offset, stderr_offset
+            FROM command_executions
+            WHERE command_id = ?
+            """,
+            (command_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("command execution", command_id)
+        return int(row["stdout_offset"]), int(row["stderr_offset"])
+
+    def update_output_offsets(
+        self,
+        command_id: str,
+        *,
+        stdout_offset: int,
+        stderr_offset: int,
+    ) -> None:
+        cursor = self._connection.execute(
+            """UPDATE command_executions
+            SET stdout_offset = ?,
+                stderr_offset = ?,
+                updated_at = ?
+            WHERE command_id = ?""",
+            (stdout_offset, stderr_offset, utc_now_text(), command_id),
+        )
+        if cursor.rowcount == 0:
+            raise NotFoundError("command execution", command_id)
+
+    def set_output_limit_exceeded(self, command_id: str) -> None:
+        cursor = self._connection.execute(
+            """UPDATE command_executions
+            SET output_limit_exceeded = 1,
+                updated_at = ?
+            WHERE command_id = ?""",
+            (utc_now_text(), command_id),
+        )
+        if cursor.rowcount == 0:
+            raise NotFoundError("command execution", command_id)
+
+    def get_terminal_artifact_links(self, command_id: str) -> dict[str, str | None]:
+        row = self._connection.execute(
+            """
+            SELECT stdout_artifact_id, stderr_artifact_id, result_artifact_id,
+                   spool_artifact_id, finalization_status, finalized_at
+            FROM command_executions
+            WHERE command_id = ?
+            """,
+            (command_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("command execution", command_id)
+        return {
+            "stdout_artifact_id": row["stdout_artifact_id"],
+            "stderr_artifact_id": row["stderr_artifact_id"],
+            "result_artifact_id": row["result_artifact_id"],
+            "spool_artifact_id": row["spool_artifact_id"],
+            "finalization_status": str(row["finalization_status"]),
+            "finalized_at": row["finalized_at"],
+        }
+
+    def finalize_terminal_artifacts(
+        self,
+        command_id: str,
+        *,
+        stdout_artifact_id: str | None,
+        stderr_artifact_id: str | None,
+        result_artifact_id: str | None,
+        spool_artifact_id: str | None,
+        finalization_status: str,
+        finalized_at: str,
+    ) -> None:
+        cursor = self._connection.execute(
+            """UPDATE command_executions
+            SET stdout_artifact_id = ?,
+                stderr_artifact_id = ?,
+                result_artifact_id = ?,
+                spool_artifact_id = ?,
+                finalization_status = ?,
+                finalized_at = ?,
+                updated_at = ?
+            WHERE command_id = ?
+              AND finalization_status = 'PENDING'""",
+            (
+                stdout_artifact_id,
+                stderr_artifact_id,
+                result_artifact_id,
+                spool_artifact_id,
+                finalization_status,
+                finalized_at,
+                utc_now_text(),
+                command_id,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise NotFoundError(
+                "command execution",
+                f"{command_id} already finalized or not found",
             )
 
 
@@ -1116,6 +1222,15 @@ def _command_execution_from_row(row: sqlite3.Row) -> CommandExecutionDto:
         ),
         launch_attempt=(
             int(row["launch_attempt"]) if row["launch_attempt"] is not None else None
+        ),
+        worker_pid=(
+            int(row["worker_pid"]) if row["worker_pid"] is not None else None
+        ),
+        process_control_id=(
+            str(row["process_control_id"]) if row["process_control_id"] is not None else None
+        ),
+        process_started_at=(
+            str(row["process_started_at"]) if row["process_started_at"] is not None else None
         ),
     )
 

@@ -11,6 +11,9 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,18 +21,29 @@ from pydantic import BaseModel, ConfigDict, Field
 from pathlib import Path
 
 from migration_factory.control_tower.application.commands import (
+    CancelCommand,
     CreateDiagnosticJobCommand,
+    FinalizeCommandCommand,
     LaunchWorkerCommand,
     StartMigrationJobCommand,
+    TimeoutCommand,
 )
 from migration_factory.control_tower.application.dto import JobProjectionDto, RunEventDto
-from migration_factory.control_tower.application.ports import ControlTowerUnitOfWork, WorkerLauncher
+from migration_factory.control_tower.application.ports import ControlTowerUnitOfWork, WorkerLauncher, WorkerTerminator
 from migration_factory.control_tower.application.queries import (
     DEFAULT_PUBLIC_EVENT_REPLAY_BATCH_SIZE,
     ControlTowerQueryService,
+    _decode_utf8_safe,
     parse_public_event_cursor,
 )
-from migration_factory.control_tower.application.services import DiagnosticJobService, WorkerLaunchService
+from migration_factory.control_tower.application.services import (
+    CancelService,
+    CommandFinalizationService,
+    DiagnosticJobService,
+    ReconciliationService,
+    TimeoutService,
+    WorkerLaunchService,
+)
 from migration_factory.control_tower.domain.errors import (
     ActiveCommandConflictError,
     ControlTowerError,
@@ -42,7 +56,7 @@ from migration_factory.control_tower.domain.errors import (
     StaleVersionError,
     UnsupportedPlatformError,
 )
-from migration_factory.control_tower.domain.states import TargetProofLevel
+from migration_factory.control_tower.domain.states import JobState, TargetProofLevel
 from migration_factory.control_tower.schemas.run_configuration import RunPolicy
 
 
@@ -133,17 +147,52 @@ class LaunchWorkerRequest(StrictRequest):
     command_id: str
 
 
+class FinalizeCommandRequest(StrictRequest):
+    command_id: str
+    outcome: str
+
+
+@asynccontextmanager
+async def _control_tower_lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Run startup reconciliation on service start."""
+    unit_of_work_factory: UnitOfWorkFactory = app.state.unit_of_work_factory
+    try:
+        service = ReconciliationService(unit_of_work_factory)
+        results = service.reconcile_all()
+        app.state.reconciliation_results = results
+        if results:
+            _LOG_RECONCILIATION(results)
+    except Exception:
+        pass  # Startup reconciliation must not crash the service
+    yield
+
+
+def _LOG_RECONCILIATION(results: list[dict[str, Any]]) -> None:
+    """Log reconciliation results for observability."""
+    import logging as _logging
+
+    logger = _logging.getLogger(__name__)
+    for result in results:
+        logger.info(
+            "Startup reconciliation: job_id=%s action=%s",
+            result.get("job_id", "?"),
+            result.get("action", "?"),
+        )
+
+
 def create_app(
     unit_of_work_factory: UnitOfWorkFactory,
     *,
     worker_launcher: WorkerLauncher | None = None,
+    worker_terminator: WorkerTerminator | None = None,
     event_replay_config: EventReplayConfig | None = None,
 ) -> FastAPI:
     config = event_replay_config or EventReplayConfig()
-    app = FastAPI(title="AI Migration Control Tower", version="0.1.0")
+    app = FastAPI(title="AI Migration Control Tower", version="0.1.0", lifespan=_control_tower_lifespan)
     app.state.event_replay_config = config
     app.state.public_event_notifier = PublicEventNotifier()
     app.state.sse_client_limiter = SseClientLimiter(config.max_sse_clients)
+    app.state.unit_of_work_factory = unit_of_work_factory
 
     @app.get("/v1/runner-profiles")
     def list_runner_profiles() -> dict[str, Any]:
@@ -301,6 +350,31 @@ def create_app(
             "status": "RUNNING",
         }
 
+    @app.post("/v1/jobs/{job_id}/finalize")
+    async def finalize_command(
+        job_id: str,
+        request: FinalizeCommandRequest,
+    ) -> dict[str, Any]:
+        service = CommandFinalizationService(unit_of_work_factory)
+        try:
+            service.execute(
+                FinalizeCommandCommand(
+                    command_id=request.command_id,
+                    job_id=job_id,
+                    outcome=request.outcome,
+                    actor_type="system",
+                    actor_id="controller",
+                )
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        await app.state.public_event_notifier.notify()
+        return {
+            "command_id": request.command_id,
+            "job_id": job_id,
+            "status": "FINALIZED",
+        }
+
     @app.get("/v1/jobs/{job_id}/events")
     def replay_events(
         job_id: str,
@@ -369,6 +443,141 @@ def create_app(
             )
         )
 
+    @app.get("/v1/jobs/{job_id}/commands/{command_id}/stdout")
+    def read_stdout(
+        job_id: str,
+        command_id: str,
+        after_offset: int = Query(default=0),
+        max_bytes: int = Query(default=8192, le=1048576),
+    ) -> dict[str, Any]:
+        query_service = ControlTowerQueryService(unit_of_work_factory)
+        try:
+            window = query_service.get_command_output_window(
+                job_id,
+                command_id,
+                stream="stdout",
+                after_offset=after_offset,
+                max_bytes=max_bytes,
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return {
+            "command_id": window.command_id,
+            "job_id": window.job_id,
+            "stream": window.stream,
+            "requested_offset": window.requested_offset,
+            "start_offset": window.start_offset,
+            "next_offset": window.next_offset,
+            "data": window.data,
+            "encoding": window.encoding,
+            "replacement_characters_used": window.replacement_characters_used,
+            "truncated": window.truncated,
+            "terminal": window.terminal,
+            "max_bytes": window.max_bytes,
+        }
+
+    @app.post("/v1/jobs/{job_id}/cancel")
+    async def cancel_job(
+        job_id: str,
+        request: StrictRequest,
+        if_match: str | None = Header(default=None, alias="If-Match"),
+    ) -> dict[str, Any]:
+        if if_match is None:
+            raise _error(
+                status.HTTP_428_PRECONDITION_REQUIRED,
+                "PRECONDITION_REQUIRED",
+                "If-Match is required for cancel.",
+            )
+        expected_version = _expected_version_from_if_match(job_id, if_match)
+
+        service = CancelService(unit_of_work_factory, worker_terminator)
+        try:
+            projection = service.cancel(
+                CancelCommand(
+                    job_id=job_id,
+                    expected_version=expected_version,
+                    grace_period_seconds=5.0,
+                    actor_type="user",
+                    actor_id=getpass.getuser(),
+                )
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        await app.state.public_event_notifier.notify()
+        return _projection_payload(projection)
+
+    @app.post("/v1/jobs/{job_id}/timeout")
+    async def handle_timeout(
+        job_id: str,
+        request: StrictRequest,
+    ) -> dict[str, Any]:
+        import time as _time
+
+        # Parse timeout params from request body
+        body: dict[str, Any] = {}
+        try:
+            body = await request.json()
+        except Exception:
+            pass
+
+        command_id = body.get("command_id", "")
+        timeout_seconds = body.get("timeout_seconds", 3600)
+        deadline = body.get("deadline", 0.0)
+
+        # If no deadline provided, compute from monotonic clock
+        if deadline <= 0.0:
+            deadline = _time.monotonic()
+
+        service = TimeoutService(unit_of_work_factory, worker_terminator)
+        try:
+            projection = service.handle_timeout(
+                TimeoutCommand(
+                    job_id=job_id,
+                    command_id=command_id,
+                    timeout_seconds=int(timeout_seconds),
+                    deadline=float(deadline),
+                    actor_type="system",
+                    actor_id="system",
+                )
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        await app.state.public_event_notifier.notify()
+        return _projection_payload(projection)
+
+    @app.get("/v1/jobs/{job_id}/commands/{command_id}/stderr")
+    def read_stderr(
+        job_id: str,
+        command_id: str,
+        after_offset: int = Query(default=0),
+        max_bytes: int = Query(default=8192, le=1048576),
+    ) -> dict[str, Any]:
+        query_service = ControlTowerQueryService(unit_of_work_factory)
+        try:
+            window = query_service.get_command_output_window(
+                job_id,
+                command_id,
+                stream="stderr",
+                after_offset=after_offset,
+                max_bytes=max_bytes,
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return {
+            "command_id": window.command_id,
+            "job_id": window.job_id,
+            "stream": window.stream,
+            "requested_offset": window.requested_offset,
+            "start_offset": window.start_offset,
+            "next_offset": window.next_offset,
+            "data": window.data,
+            "encoding": window.encoding,
+            "replacement_characters_used": window.replacement_characters_used,
+            "truncated": window.truncated,
+            "terminal": window.terminal,
+            "max_bytes": window.max_bytes,
+        }
+
     return app
 
 
@@ -386,6 +595,9 @@ def _projection(uow: ControlTowerUnitOfWork, job_id: str) -> JobProjectionDto:
 def _projection_payload(projection: JobProjectionDto) -> dict[str, Any]:
     job = projection.job
     command = projection.active_command
+    recovery_reason = None
+    if job.status == JobState.RECOVERY_REQUIRED:
+        recovery_reason = "uncertain active execution after restart"
     return {
         "job": {
             "job_id": job.job_id,
@@ -393,6 +605,7 @@ def _projection_payload(projection: JobProjectionDto) -> dict[str, Any]:
             "state": job.status.value,
             "created_at": job.created_at,
             "updated_at": job.updated_at,
+            "recovery_reason": recovery_reason,
         },
         "active_command": None
         if command is None

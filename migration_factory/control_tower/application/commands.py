@@ -120,3 +120,39 @@ class LaunchWorkerCommand:
     actor_id: str
     correlation_id: str | None = None
     causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FinalizeCommandCommand:
+    command_id: str
+    job_id: str
+    outcome: str
+    actor_type: str
+    actor_id: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CancelCommand:
+    job_id: str
+    expected_version: int
+    command_id: str | None = None
+    reason: str = "user_cancelled"
+    grace_period_seconds: float = 5.0
+    actor_type: str = "user"
+    actor_id: str = "user"
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TimeoutCommand:
+    job_id: str
+    command_id: str
+    timeout_seconds: int
+    deadline: float
+    actor_type: str = "system"
+    actor_id: str = "system"
+    correlation_id: str | None = None
+    causation_id: str | None = None

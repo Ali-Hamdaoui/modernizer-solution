@@ -208,6 +208,32 @@ class CommandExecutionRepository(Protocol):
         process_started_at: str,
     ) -> None: ...
 
+    def get_output_offsets(self, command_id: str) -> tuple[int, int]: ...
+
+    def update_output_offsets(
+        self,
+        command_id: str,
+        *,
+        stdout_offset: int,
+        stderr_offset: int,
+    ) -> None: ...
+
+    def set_output_limit_exceeded(self, command_id: str) -> None: ...
+
+    def get_terminal_artifact_links(self, command_id: str) -> dict[str, str | None]: ...
+
+    def finalize_terminal_artifacts(
+        self,
+        command_id: str,
+        *,
+        stdout_artifact_id: str | None,
+        stderr_artifact_id: str | None,
+        result_artifact_id: str | None,
+        spool_artifact_id: str | None,
+        finalization_status: str,
+        finalized_at: str,
+    ) -> None: ...
+
 
 class WorkerLauncher(Protocol):
     def launch(
@@ -218,6 +244,16 @@ class WorkerLauncher(Protocol):
         manifest_bytes: bytes,
         python_executable: str,
     ) -> WorkerLaunchResult: ...
+
+
+class WorkerTerminator(Protocol):
+    def terminate(
+        self,
+        *,
+        worker_pid: int,
+        process_control_id: str | None = None,
+        grace_period_seconds: float = 5.0,
+    ) -> bool: ...
 
 
 class IdempotencyRepository(Protocol):
