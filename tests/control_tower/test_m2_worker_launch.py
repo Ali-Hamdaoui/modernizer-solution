@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -41,12 +42,14 @@ from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import (
 from migration_factory.control_tower.schemas.run_configuration import RunPolicy
 from tests.control_tower._helpers import (
     artifact_roots,
+    canonical_json,
     make_migrated_connection,
     pipeline_definition_payload,
     runner_profile_payload,
     seed_pipeline_definition,
     seed_runner_profile_with_roots,
     seed_runner_profile_with_workspace_root,
+    sha256_json,
 )
 
 
@@ -63,6 +66,7 @@ def _seed_job_and_command(tmp_path: Path) -> tuple[Path, str, str]:
     db_path = tmp_path / "control_tower.sqlite3"
     connection = make_migrated_connection(tmp_path)
     seed_runner_profile_with_workspace_root(connection, tmp_path)
+    _set_runner_python_executable(connection, sys.executable)
     seed_pipeline_definition(connection)
     connection.close()
 
@@ -116,6 +120,28 @@ def _seed_job_and_command(tmp_path: Path) -> tuple[Path, str, str]:
     )
 
     return db_path, job.job_id, command_id
+
+
+def _set_runner_python_executable(connection, python_executable: str) -> None:
+    row = connection.execute(
+        "SELECT payload_json FROM runner_profiles WHERE runner_profile_id = ?",
+        ("runner-default",),
+    ).fetchone()
+    assert row is not None
+    payload = json.loads(row["payload_json"])
+    payload["python_executable"] = python_executable
+    connection.execute(
+        """
+        UPDATE runner_profiles
+        SET payload_json = ?, payload_checksum = ?
+        WHERE runner_profile_id = ?
+        """,
+        (
+            canonical_json(payload),
+            sha256_json(payload),
+            "runner-default",
+        ),
+    )
 
 
 # ── Portable unsupported-platform fail-closed tests ──────────────
@@ -476,11 +502,19 @@ def test_windows_worker_launcher_assigns_to_job_object(tmp_path: Path):
     kernel32 = ctypes.windll.kernel32
 
     is_in_job = ctypes.c_bool(False)
-    kernel32.IsProcessInJob(
-        kernel32.OpenProcess(0x0040, False, result.worker_pid),
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    process_handle = kernel32.OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION,
+        False,
+        result.worker_pid,
+    )
+    assert process_handle
+    assert kernel32.IsProcessInJob(
+        process_handle,
         None,
         ctypes.byref(is_in_job),
     )
+    kernel32.CloseHandle(process_handle)
     assert is_in_job.value, "Worker process was not assigned to a Job Object"
 
 
