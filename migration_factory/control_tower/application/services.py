@@ -9,6 +9,7 @@ from uuid import uuid4
 from migration_factory.control_tower.application.commands import (
     CreateMigrationJobCommand,
     CreateDiagnosticJobCommand,
+    PrepareCommandWorkspaceCommand,
     RegisterArtifactCommand,
     RegisterPipelineDefinitionCommand,
     RegisterRunnerProfileCommand,
@@ -37,6 +38,11 @@ from migration_factory.control_tower.domain.entities import (
     RunEventRecord,
     StageRunRecord,
 )
+from migration_factory.control_tower.domain.manifests import (
+    CommandManifest,
+    compute_manifest_checksum,
+    verify_manifest_checksum,
+)
 from migration_factory.control_tower.domain.errors import (
     ActiveCommandConflictError,
     ArtifactPathError,
@@ -45,10 +51,13 @@ from migration_factory.control_tower.domain.errors import (
     ExpectedVersionRequiredError,
     IdempotencyConflictError,
     InvalidJobStateTransitionError,
+    ManifestIntegrityError,
     NotFoundError,
     RegistrationConflictError,
     StaleVersionError,
     StorageIntegrityError,
+    WorkspaceConflictError,
+    WorkspacePathError,
 )
 from migration_factory.control_tower.domain.states import JobState
 from migration_factory.control_tower.domain.transitions import active_slot_for, validate_job_state_transition
@@ -893,6 +902,120 @@ class ArtifactRegistryService:
                 created_at=created_at,
                 created_by=command.actor_id,
             )
+
+
+class CommandWorkspaceService:
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+
+    def prepare_workspace(self, command: PrepareCommandWorkspaceCommand) -> tuple[ArtifactHashResult, ArtifactHashResult]:
+        from migration_factory.control_tower.infrastructure.workspace import (
+            materialize_command_manifest,
+            materialize_run_config,
+            prepare_safe_workspace,
+        )
+
+        with self._unit_of_work_factory() as uow:
+            cmd = uow.command_executions.get(command.command_id)
+            if cmd is None:
+                raise NotFoundError("command execution", command.command_id)
+            if cmd.command_manifest_artifact_id is not None:
+                raise WorkspaceConflictError(
+                    f"Workspace already prepared for command {command.command_id!r}"
+                )
+
+            job = uow.migration_jobs.get(command.job_id)
+            if job is None:
+                raise NotFoundError("migration job", command.job_id)
+
+            run_config = uow.run_configurations.get_for_job(command.job_id)
+            if run_config is None:
+                raise NotFoundError("run configuration", command.job_id)
+
+            runner = uow.runner_profiles.get_exact(
+                run_config.runner_profile_id,
+                run_config.runner_profile_version,
+            )
+            if runner is None:
+                raise NotFoundError(
+                    "runner profile",
+                    f"{run_config.runner_profile_id}/{run_config.runner_profile_version}",
+                )
+
+            working_root_path = _find_workspace_root(runner.payload, command.working_directory_root_id)
+            working_dir = prepare_safe_workspace(working_root_path, command.working_directory_relative_path)
+
+            run_config_result = materialize_run_config(run_config, working_dir, command.working_directory_root_id)
+            run_config_artifact = ArtifactRegistryService(lambda: _BorrowedUnitOfWork(uow)).register_artifact(
+                RegisterArtifactCommand(
+                    job_id=command.job_id,
+                    artifact=run_config_result,
+                    artifact_type="run_configuration",
+                    actor_type=command.actor_type,
+                    actor_id=command.actor_id,
+                    correlation_id=command.correlation_id,
+                    causation_id=command.causation_id,
+                )
+            )
+
+            now = utc_now_text()
+            manifest = CommandManifest(
+                schema_version="1.0.0",
+                job_id=command.job_id,
+                command_id=command.command_id,
+                worker_id=command.worker_id,
+                operation=cmd.operation,
+                run_configuration_artifact_id=run_config_artifact.artifact_id,
+                run_configuration_checksum=run_config_result.checksum,
+                working_directory_root_id=command.working_directory_root_id,
+                working_directory_relative_path=command.working_directory_relative_path,
+                stdout_relative_path="logs/stdout.log",
+                stderr_relative_path="logs/stderr.log",
+                result_relative_path="result.json",
+                spool_relative_path="spool",
+                timeout_seconds=3600,
+                max_stdout_bytes=104857600,
+                max_stderr_bytes=104857600,
+                event_schema_version="1.0.0",
+                created_at=now,
+                manifest_checksum="",
+            )
+
+            manifest_result, _manifest_bytes = materialize_command_manifest(
+                manifest, working_dir, run_config_artifact.artifact_id, command.working_directory_root_id
+            )
+
+            manifest_artifact = ArtifactRegistryService(lambda: _BorrowedUnitOfWork(uow)).register_artifact(
+                RegisterArtifactCommand(
+                    job_id=command.job_id,
+                    artifact=manifest_result,
+                    artifact_type="command_manifest",
+                    actor_type=command.actor_type,
+                    actor_id=command.actor_id,
+                    correlation_id=command.correlation_id,
+                    causation_id=command.causation_id,
+                )
+            )
+
+            uow.command_executions.update_workspace_columns(
+                command.command_id,
+                command_manifest_artifact_id=manifest_artifact.artifact_id,
+                working_directory_root_id=command.working_directory_root_id,
+                working_directory_relative_path=command.working_directory_relative_path,
+                worker_id=command.worker_id,
+                launch_attempt=command.launch_attempt,
+            )
+
+            return run_config_result, manifest_result
+
+
+def _find_workspace_root(runner_profile, root_id: str) -> Path:
+    from pathlib import Path as _Path
+
+    for root in runner_profile.filesystem.roots:
+        if root.root_id == root_id:
+            return _Path(root.path).expanduser()
+    raise NotFoundError("registered root", root_id)
 
 
 def _validate_runner_profile(profile: RunnerProfile | dict[str, Any]) -> RunnerProfile:

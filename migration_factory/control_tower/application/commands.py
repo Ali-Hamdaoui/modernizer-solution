@@ -96,3 +96,17 @@ class StartMigrationJobCommand:
     actor_id: str
     correlation_id: str | None = None
     causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PrepareCommandWorkspaceCommand:
+    command_id: str
+    job_id: str
+    working_directory_root_id: str
+    working_directory_relative_path: str
+    worker_id: str
+    launch_attempt: int
+    actor_type: str
+    actor_id: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
