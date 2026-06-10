@@ -835,7 +835,8 @@ class SqliteCommandExecutionRepository:
                    correlation_id, causation_id,
                    command_manifest_artifact_id, working_directory_root_id,
                    working_directory_relative_path, worker_id, launch_attempt,
-                   stdout_offset, stderr_offset
+                   stdout_offset, stderr_offset,
+                   worker_pid, process_control_id, process_started_at
             FROM command_executions
             WHERE command_id = ?
             """,
@@ -850,7 +851,8 @@ class SqliteCommandExecutionRepository:
                    correlation_id, causation_id,
                    command_manifest_artifact_id, working_directory_root_id,
                    working_directory_relative_path, worker_id, launch_attempt,
-                   stdout_offset, stderr_offset
+                   stdout_offset, stderr_offset,
+                   worker_pid, process_control_id, process_started_at
             FROM command_executions
             WHERE job_id = ?
               AND status IN ('QUEUED', 'STARTING', 'RUNNING', 'CANCELLING')
@@ -1220,6 +1222,15 @@ def _command_execution_from_row(row: sqlite3.Row) -> CommandExecutionDto:
         ),
         launch_attempt=(
             int(row["launch_attempt"]) if row["launch_attempt"] is not None else None
+        ),
+        worker_pid=(
+            int(row["worker_pid"]) if row["worker_pid"] is not None else None
+        ),
+        process_control_id=(
+            str(row["process_control_id"]) if row["process_control_id"] is not None else None
+        ),
+        process_started_at=(
+            str(row["process_started_at"]) if row["process_started_at"] is not None else None
         ),
     )
 

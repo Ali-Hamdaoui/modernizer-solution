@@ -15,12 +15,14 @@ from migration_factory.control_tower.application.commands import (
     LaunchWorkerCommand,
     PrepareCommandWorkspaceCommand,
     StartMigrationJobCommand,
+    TimeoutCommand,
 )
 from migration_factory.control_tower.application.services import (
     CancelService,
     CommandWorkspaceService,
     CreateMigrationJobService,
     DiagnosticJobService,
+    TimeoutService,
     WorkerLaunchService,
 )
 from migration_factory.control_tower.domain.commands import CommandState
@@ -225,7 +227,7 @@ def _set_runner_python_executable(connection, python_executable: str) -> None:
 
 
 class TestCancelService:
-    def test_cancel_transitions_to_cancelling(self, tmp_path: Path) -> None:
+    def test_cancel_transitions_to_cancelled(self, tmp_path: Path) -> None:
         db_path, job_id, command_id = _seed_started_job_with_active_command(tmp_path)
 
         service = CancelService(
@@ -251,9 +253,9 @@ class TestCancelService:
             )
         )
 
-        assert projection.job.status == JobState.CANCELLING
-        assert projection.active_command is not None
-        assert projection.active_command.status == CommandState.CANCELLING
+        # Cancel with no terminator: CANCELLING then CANCELLED (no worker to terminate)
+        assert projection.job.status == JobState.CANCELLED
+        # CANCELLED is terminal; active slot is released
 
     def test_cancel_creates_cancelling_event(self, tmp_path: Path) -> None:
         db_path, job_id, command_id = _seed_started_job_with_active_command(tmp_path)
@@ -355,7 +357,7 @@ class TestCancelService:
             ),
         )
 
-        # First cancel succeeds
+        # First cancel succeeds (goes through CANCELLING to CANCELLED)
         projection1 = service.cancel(
             CancelCommand(
                 job_id=job_id,
@@ -364,9 +366,9 @@ class TestCancelService:
                 actor_id="tester",
             )
         )
-        assert projection1.job.status == JobState.CANCELLING
+        assert projection1.job.status == JobState.CANCELLED
 
-        # Second cancel with original version fails (stale)
+        # Second cancel with original version fails (stale — version advanced twice)
         with pytest.raises(StaleVersionError):
             service.cancel(
                 CancelCommand(
@@ -472,6 +474,352 @@ class TestFastapiCancelEndpoint:
         )
         assert resp.status_code == 412
         assert resp.json()["detail"]["error"]["code"] == "JOB_VERSION_CONFLICT"
+
+
+# ── Cooperative stop / grace period tests ────────────────────────
+
+
+class TestCancellationWithTerminator:
+    def test_terminator_called_with_grace_period(self, tmp_path: Path) -> None:
+        from migration_factory.control_tower.infrastructure.worker_launcher import (
+            StubWorkerTerminator,
+        )
+
+        db_path, job_id, command_id = _seed_started_job_with_active_command(tmp_path)
+
+        # Set worker PID so the terminator is invoked
+        with connect_control_tower(db_path) as conn:
+            conn.execute(
+                "UPDATE command_executions SET worker_pid = ? WHERE command_id = ?",
+                (12345, command_id),
+            )
+            row = conn.execute(
+                "SELECT version FROM migration_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        expected_version = int(row["version"])
+
+        terminator = StubWorkerTerminator()
+        service = CancelService(
+            lambda: SqliteControlTowerUnitOfWork(
+                connect_control_tower(db_path), close_connection=True
+            ),
+            worker_terminator=terminator,
+        )
+
+        projection = service.cancel(
+            CancelCommand(
+                job_id=job_id,
+                expected_version=expected_version,
+                grace_period_seconds=5.0,
+                actor_type="user",
+                actor_id="tester",
+            )
+        )
+
+        assert projection.job.status == JobState.CANCELLED
+        assert len(terminator.terminate_calls) == 1
+        assert terminator.terminate_calls[0]["worker_pid"] == 12345
+        assert terminator.terminate_calls[0]["grace_period_seconds"] == 5.0
+
+    def test_grace_period_default(self, tmp_path: Path) -> None:
+        from migration_factory.control_tower.infrastructure.worker_launcher import (
+            StubWorkerTerminator,
+        )
+
+        db_path, job_id, command_id = _seed_started_job_with_active_command(tmp_path)
+
+        with connect_control_tower(db_path) as conn:
+            conn.execute(
+                "UPDATE command_executions SET worker_pid = ? WHERE command_id = ?",
+                (99999, command_id),
+            )
+            row = conn.execute(
+                "SELECT version FROM migration_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        expected_version = int(row["version"])
+
+        terminator = StubWorkerTerminator()
+        service = CancelService(
+            lambda: SqliteControlTowerUnitOfWork(
+                connect_control_tower(db_path), close_connection=True
+            ),
+            worker_terminator=terminator,
+        )
+
+        service.cancel(
+            CancelCommand(
+                job_id=job_id,
+                expected_version=expected_version,
+                actor_type="user",
+                actor_id="tester",
+            )
+        )
+
+        # Default grace_period_seconds in CancelCommand is 5.0
+        assert terminator.terminate_calls[0]["grace_period_seconds"] == 5.0
+
+    def test_cancelled_when_terminator_succeeds(self, tmp_path: Path) -> None:
+        from migration_factory.control_tower.infrastructure.worker_launcher import (
+            StubWorkerTerminator,
+        )
+
+        db_path, job_id, command_id = _seed_started_job_with_active_command(tmp_path)
+
+        with connect_control_tower(db_path) as conn:
+            conn.execute(
+                "UPDATE command_executions SET worker_pid = ? WHERE command_id = ?",
+                (11111, command_id),
+            )
+            row = conn.execute(
+                "SELECT version FROM migration_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        expected_version = int(row["version"])
+
+        terminator = StubWorkerTerminator()
+        terminator.set_should_succeed(True)
+        service = CancelService(
+            lambda: SqliteControlTowerUnitOfWork(
+                connect_control_tower(db_path), close_connection=True
+            ),
+            worker_terminator=terminator,
+        )
+
+        projection = service.cancel(
+            CancelCommand(
+                job_id=job_id,
+                expected_version=expected_version,
+                actor_type="user",
+                actor_id="tester",
+            )
+        )
+
+        assert projection.job.status == JobState.CANCELLED
+
+    def test_no_grace_period_when_no_worker_pid(self, tmp_path: Path) -> None:
+        from migration_factory.control_tower.infrastructure.worker_launcher import (
+            StubWorkerTerminator,
+        )
+
+        db_path, job_id, command_id = _seed_started_job_with_active_command(tmp_path)
+
+        with connect_control_tower(db_path) as conn:
+            row = conn.execute(
+                "SELECT version FROM migration_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        expected_version = int(row["version"])
+
+        terminator = StubWorkerTerminator()
+        service = CancelService(
+            lambda: SqliteControlTowerUnitOfWork(
+                connect_control_tower(db_path), close_connection=True
+            ),
+            worker_terminator=terminator,
+        )
+
+        projection = service.cancel(
+            CancelCommand(
+                job_id=job_id,
+                expected_version=expected_version,
+                actor_type="user",
+                actor_id="tester",
+            )
+        )
+
+        # No worker_pid set, so terminator should not be called
+        assert len(terminator.terminate_calls) == 0
+        assert projection.job.status == JobState.CANCELLED
+
+
+# ── Timeout service tests ───────────────────────────────────────
+
+
+class TestTimeoutService:
+    def test_timeout_uses_monotonic_deadline(self, tmp_path: Path) -> None:
+        db_path, job_id, command_id = _seed_started_job_with_active_command(tmp_path)
+
+        # Set worker PID and transition to RUNNING
+        with connect_control_tower(db_path) as conn:
+            with SqliteControlTowerUnitOfWork(conn) as uow:
+                now = __import__("migration_factory.control_tower.domain.checksums",
+                                 fromlist=["utc_now_text"]).utc_now_text()
+                uow.migration_jobs.transition_state(
+                    job_id, 2, JobState.RUNNING, 1, now
+                )
+                uow.command_executions.update_status(command_id, CommandState.RUNNING)
+            conn.execute(
+                "UPDATE command_executions SET worker_pid = ? WHERE command_id = ?",
+                (54321, command_id),
+            )
+
+        import time
+
+        # Deadline is in the past → timeout applies
+        service = TimeoutService(
+            lambda: SqliteControlTowerUnitOfWork(
+                connect_control_tower(db_path), close_connection=True
+            ),
+        )
+
+        projection = service.handle_timeout(
+            TimeoutCommand(
+                job_id=job_id,
+                command_id=command_id,
+                timeout_seconds=3600,
+                deadline=time.monotonic() - 1.0,  # 1 second ago
+                actor_type="system",
+                actor_id="system",
+            )
+        )
+
+        assert projection.job.status == JobState.FAILED
+
+    def test_timeout_transitions_command_to_timed_out(self, tmp_path: Path) -> None:
+        db_path, job_id, command_id = _seed_started_job_with_active_command(tmp_path)
+
+        with connect_control_tower(db_path) as conn:
+            with SqliteControlTowerUnitOfWork(conn) as uow:
+                now = __import__("migration_factory.control_tower.domain.checksums",
+                                 fromlist=["utc_now_text"]).utc_now_text()
+                uow.migration_jobs.transition_state(
+                    job_id, 2, JobState.RUNNING, 1, now
+                )
+                uow.command_executions.update_status(command_id, CommandState.RUNNING)
+            conn.execute(
+                "UPDATE command_executions SET worker_pid = ? WHERE command_id = ?",
+                (54321, command_id),
+            )
+
+        import time
+
+        service = TimeoutService(
+            lambda: SqliteControlTowerUnitOfWork(
+                connect_control_tower(db_path), close_connection=True
+            ),
+        )
+
+        service.handle_timeout(
+            TimeoutCommand(
+                job_id=job_id,
+                command_id=command_id,
+                timeout_seconds=3600,
+                deadline=time.monotonic() - 1.0,
+                actor_type="system",
+                actor_id="system",
+            )
+        )
+
+        # Check the command status in DB
+        with connect_control_tower(db_path) as conn:
+            row = conn.execute(
+                "SELECT status FROM command_executions WHERE command_id = ?",
+                (command_id,),
+            ).fetchone()
+        assert row is not None
+        assert row["status"] == CommandState.TIMED_OUT.value
+
+    def test_timeout_delayed_until_deadline(self, tmp_path: Path) -> None:
+        db_path, job_id, command_id = _seed_started_job_with_active_command(tmp_path)
+
+        import time
+
+        # Deadline is far in the future → should not apply yet
+        service = TimeoutService(
+            lambda: SqliteControlTowerUnitOfWork(
+                connect_control_tower(db_path), close_connection=True
+            ),
+        )
+
+        projection = service.handle_timeout(
+            TimeoutCommand(
+                job_id=job_id,
+                command_id=command_id,
+                timeout_seconds=3600,
+                deadline=time.monotonic() + 999999.0,  # Far future
+                actor_type="system",
+                actor_id="system",
+            )
+        )
+
+        # Should return unchanged — not yet expired
+        assert projection.job.status != JobState.FAILED
+
+    def test_timeout_ignored_for_terminal_job(self, tmp_path: Path) -> None:
+        import time
+
+        # Build everything manually to avoid connection leaks
+        db_path = tmp_path / "control_tower.sqlite3"
+        connection = make_migrated_connection(tmp_path)
+        seed_runner_profile_with_workspace_root(connection, tmp_path)
+        _set_runner_python_executable(connection, sys.executable)
+        seed_pipeline_definition(connection)
+        connection.close()
+
+        job_service = _service_for(db_path, CreateMigrationJobService)
+        now = __import__("migration_factory.control_tower.domain.checksums",
+                         fromlist=["utc_now_text"]).utc_now_text()
+        job = job_service.execute(
+            CreateMigrationJobCommand(
+                actor="tester",
+                legacy_source_ref="source-root:source",
+                output_root_ref="output-root:output",
+                runner_profile_id="runner-default",
+                runner_profile_version="2026.06",
+                pipeline_id="pipeline-default",
+                pipeline_version="2026.06",
+                target_proof_level=TargetProofLevel.BUILD_TEST_VERIFIED,
+                enabled_gates=("build", "test"),
+                policy=RunPolicy(),
+                correlation_id="corr-job",
+            )
+        )
+
+        command_id = f"command-{uuid4().hex}"
+        with SqliteControlTowerUnitOfWork(
+            connect_control_tower(db_path), close_connection=True
+        ) as uow:
+            cmd = CommandExecutionRecord(
+                command_id=command_id,
+                job_id=job.job_id,
+                operation="foundation_diagnostic",
+                status=CommandState.QUEUED,
+                created_at=now,
+                updated_at=now,
+                correlation_id="corr-cmd",
+                causation_id=None,
+            )
+            uow.command_executions.insert_queued(cmd)
+
+        # Transition to QUEUED then COMPLETED
+        conn = connect_control_tower(db_path)
+        try:
+            conn.execute(
+                "UPDATE migration_jobs SET status = ?, active_slot = 1, version = version + 1 WHERE job_id = ?",
+                (JobState.QUEUED.value, job.job_id),
+            )
+            conn.execute(
+                "UPDATE migration_jobs SET status = ?, active_slot = NULL, version = version + 1 WHERE job_id = ?",
+                (JobState.COMPLETED.value, job.job_id),
+            )
+        finally:
+            conn.close()
+
+        service = _service_for(db_path, TimeoutService)
+        projection = service.handle_timeout(
+            TimeoutCommand(
+                job_id=job.job_id,
+                command_id=command_id,
+                timeout_seconds=3600,
+                deadline=time.monotonic() - 1.0,
+                actor_type="system",
+                actor_id="system",
+            )
+        )
+
+        assert projection.job.status == JobState.COMPLETED
 
 
 # ── Helpers ──────────────────────────────────────────────────────

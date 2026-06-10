@@ -26,9 +26,10 @@ from migration_factory.control_tower.application.commands import (
     FinalizeCommandCommand,
     LaunchWorkerCommand,
     StartMigrationJobCommand,
+    TimeoutCommand,
 )
 from migration_factory.control_tower.application.dto import JobProjectionDto, RunEventDto
-from migration_factory.control_tower.application.ports import ControlTowerUnitOfWork, WorkerLauncher
+from migration_factory.control_tower.application.ports import ControlTowerUnitOfWork, WorkerLauncher, WorkerTerminator
 from migration_factory.control_tower.application.queries import (
     DEFAULT_PUBLIC_EVENT_REPLAY_BATCH_SIZE,
     ControlTowerQueryService,
@@ -40,6 +41,7 @@ from migration_factory.control_tower.application.services import (
     CommandFinalizationService,
     DiagnosticJobService,
     ReconciliationService,
+    TimeoutService,
     WorkerLaunchService,
 )
 from migration_factory.control_tower.domain.errors import (
@@ -182,6 +184,7 @@ def create_app(
     unit_of_work_factory: UnitOfWorkFactory,
     *,
     worker_launcher: WorkerLauncher | None = None,
+    worker_terminator: WorkerTerminator | None = None,
     event_replay_config: EventReplayConfig | None = None,
 ) -> FastAPI:
     config = event_replay_config or EventReplayConfig()
@@ -487,14 +490,54 @@ def create_app(
             )
         expected_version = _expected_version_from_if_match(job_id, if_match)
 
-        service = CancelService(unit_of_work_factory, worker_launcher)
+        service = CancelService(unit_of_work_factory, worker_terminator)
         try:
             projection = service.cancel(
                 CancelCommand(
                     job_id=job_id,
                     expected_version=expected_version,
+                    grace_period_seconds=5.0,
                     actor_type="user",
                     actor_id=getpass.getuser(),
+                )
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        await app.state.public_event_notifier.notify()
+        return _projection_payload(projection)
+
+    @app.post("/v1/jobs/{job_id}/timeout")
+    async def handle_timeout(
+        job_id: str,
+        request: StrictRequest,
+    ) -> dict[str, Any]:
+        import time as _time
+
+        # Parse timeout params from request body
+        body: dict[str, Any] = {}
+        try:
+            body = await request.json()
+        except Exception:
+            pass
+
+        command_id = body.get("command_id", "")
+        timeout_seconds = body.get("timeout_seconds", 3600)
+        deadline = body.get("deadline", 0.0)
+
+        # If no deadline provided, compute from monotonic clock
+        if deadline <= 0.0:
+            deadline = _time.monotonic()
+
+        service = TimeoutService(unit_of_work_factory, worker_terminator)
+        try:
+            projection = service.handle_timeout(
+                TimeoutCommand(
+                    job_id=job_id,
+                    command_id=command_id,
+                    timeout_seconds=int(timeout_seconds),
+                    deadline=float(deadline),
+                    actor_type="system",
+                    actor_id="system",
                 )
             )
         except ControlTowerError as exc:

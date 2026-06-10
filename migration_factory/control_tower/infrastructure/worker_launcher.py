@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from migration_factory.control_tower.application.dto import WorkerLaunchResult
@@ -256,6 +257,76 @@ class UnsupportedPlatformWorkerLauncher:
         python_executable: str,
     ) -> WorkerLaunchResult:
         raise UnsupportedPlatformError(sys.platform)
+
+
+class StubWorkerTerminator:
+    """Stub terminator for tests and non-Windows platforms.
+
+    Tracks calls for test assertions without real process termination.
+    """
+
+    def __init__(self) -> None:
+        self.terminate_calls: list[dict[str, Any]] = []
+        self._should_succeed: bool = True
+
+    def terminate(
+        self,
+        *,
+        worker_pid: int,
+        process_control_id: str | None = None,
+        grace_period_seconds: float = 5.0,
+    ) -> bool:
+        self.terminate_calls.append({
+            "worker_pid": worker_pid,
+            "process_control_id": process_control_id,
+            "grace_period_seconds": grace_period_seconds,
+        })
+        return self._should_succeed
+
+    def set_should_succeed(self, value: bool) -> None:
+        self._should_succeed = value
+
+
+class PosixWorkerTerminator:
+    """POSIX worker terminator with SIGTERM cooperative stop.
+
+    Sends SIGTERM, waits grace period, then sends SIGKILL if still alive.
+    """
+
+    def terminate(
+        self,
+        *,
+        worker_pid: int,
+        process_control_id: str | None = None,
+        grace_period_seconds: float = 5.0,
+    ) -> bool:
+        import os as _os
+        import time as _time
+        import signal as _signal
+
+        try:
+            _os.kill(worker_pid, _signal.SIGTERM)
+        except OSError:
+            return True  # Already dead
+
+        # Wait grace period in small increments
+        deadline = _time.monotonic() + grace_period_seconds
+        while _time.monotonic() < deadline:
+            try:
+                pid_result, _ = _os.waitpid(worker_pid, _os.WNOHANG)
+                if pid_result == worker_pid or pid_result != 0:
+                    return True  # Exited during grace period
+            except ChildProcessError:
+                return True
+            _time.sleep(0.1)
+
+        # Grace period expired, force kill
+        try:
+            _os.kill(worker_pid, _signal.SIGKILL)
+            _os.waitpid(worker_pid, 0)
+            return True
+        except OSError:
+            return True  # Already dead
 
 
 _DIAGNOSTIC_WORKER_SOURCE = r"""import json, os, sys, time

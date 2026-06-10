@@ -246,6 +246,16 @@ class WorkerLauncher(Protocol):
     ) -> WorkerLaunchResult: ...
 
 
+class WorkerTerminator(Protocol):
+    def terminate(
+        self,
+        *,
+        worker_pid: int,
+        process_control_id: str | None = None,
+        grace_period_seconds: float = 5.0,
+    ) -> bool: ...
+
+
 class IdempotencyRepository(Protocol):
     def get(self, operation: str, idempotency_key: str) -> IdempotencyRecordDto | None: ...
 
