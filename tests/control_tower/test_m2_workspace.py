@@ -69,6 +69,15 @@ from ._helpers import (
 )
 
 
+def _symlink_to_or_skip(link: Path, target: Path, *, target_is_directory: bool = False) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except OSError as exc:
+        if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip(f"Windows symlink creation privilege unavailable: {exc}")
+        raise
+
+
 def _service_for(db_path: Path, service_cls):
     return service_cls(
         lambda: SqliteControlTowerUnitOfWork(
@@ -369,7 +378,7 @@ class TestSafeWorkspace:
         root = tmp_path / "workspace"
         root.mkdir()
         link = tmp_path / "link"
-        link.symlink_to(root)
+        _symlink_to_or_skip(link, root, target_is_directory=True)
         with pytest.raises(ArtifactPathError):
             prepare_safe_workspace(link, "test-dir")
 
