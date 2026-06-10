@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, status
-from fastapi.sse import EventSourceResponse
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel, ConfigDict, Field
 
 from migration_factory.control_tower.application.commands import (
@@ -366,7 +366,7 @@ async def _event_stream(
     notifier: PublicEventNotifier,
     limiter: SseClientLimiter,
     config: EventReplayConfig,
-) -> AsyncIterator[str]:
+) -> AsyncIterator[str | ServerSentEvent]:
     last_sent_sequence = initial_after_sequence
     last_keepalive = time.monotonic()
     notifier_version = notifier.version

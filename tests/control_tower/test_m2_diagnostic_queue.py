@@ -20,6 +20,7 @@ from migration_factory.control_tower.domain.errors import (
     IdempotencyConflictError,
     InvalidJobStateTransitionError,
     StaleVersionError,
+    StorageIntegrityError,
 )
 from migration_factory.control_tower.domain.states import JobState, TargetProofLevel
 from migration_factory.control_tower.infrastructure.sqlite.connection import connect_control_tower
@@ -91,6 +92,98 @@ def test_create_diagnostic_job_idempotency_replays_and_conflicts(tmp_path: Path)
         service.create_diagnostic_job(
             _create_command("idem-create", legacy_source_relative_path="different")
         )
+
+
+def test_failed_create_before_commit_leaves_no_job_or_completed_idempotency(tmp_path: Path) -> None:
+    connection = _seeded_connection(tmp_path)
+    service = DiagnosticJobService(lambda: _FailingCreateIdempotencyUnitOfWork(connection))
+
+    with pytest.raises(StorageIntegrityError):
+        service.create_diagnostic_job(_create_command("idem-create"))
+
+    assert _count(connection, "migration_jobs") == 0
+    assert _count(connection, "run_configurations") == 0
+    assert _count(connection, "stage_runs") == 0
+    assert _count(connection, "run_events") == 0
+    assert _count(connection, "audit_records") == 0
+    assert _count(connection, "idempotency_records") == 0
+
+
+def test_former_create_crash_window_rolls_back_job_and_idempotency_together(tmp_path: Path) -> None:
+    connection = _seeded_connection(tmp_path)
+    service = DiagnosticJobService(lambda: _FailingCreateIdempotencyUnitOfWork(connection))
+
+    with pytest.raises(StorageIntegrityError):
+        service.create_diagnostic_job(_create_command("idem-create"))
+
+    retry = _service(connection).create_diagnostic_job(_create_command("idem-create"))
+
+    assert retry.job.status == JobState.CREATED
+    assert _count(connection, "migration_jobs") == 1
+    assert _count(connection, "run_configurations") == 1
+    assert _count(connection, "run_events") == 1
+    assert _count(connection, "idempotency_records") == 1
+
+
+def test_concurrent_identical_creates_produce_one_job(tmp_path: Path) -> None:
+    db_path = tmp_path / "control_tower.sqlite3"
+    connection = connect_control_tower(db_path)
+    apply_pending_migrations(connection)
+    seed_runner_profile_with_roots(connection, artifact_roots(tmp_path))
+    seed_pipeline_definition(connection)
+    connection.close()
+
+    def attempt() -> str:
+        service = DiagnosticJobService(
+            lambda: SqliteUnitOfWork(
+                connect_control_tower(db_path),
+                close_connection=True,
+            )
+        )
+        return service.create_diagnostic_job(_create_command("idem-create")).job.job_id
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        job_ids = list(executor.map(lambda _: attempt(), range(2)))
+
+    verification = connect_control_tower(db_path)
+    assert len(set(job_ids)) == 1
+    assert _count(verification, "migration_jobs") == 1
+    assert _count(verification, "idempotency_records") == 1
+    verification.close()
+
+
+def test_concurrent_changed_create_requests_under_one_key_conflict(tmp_path: Path) -> None:
+    db_path = tmp_path / "control_tower.sqlite3"
+    connection = connect_control_tower(db_path)
+    apply_pending_migrations(connection)
+    seed_runner_profile_with_roots(connection, artifact_roots(tmp_path))
+    seed_pipeline_definition(connection)
+    connection.close()
+
+    def attempt(relative_path: str) -> str:
+        service = DiagnosticJobService(
+            lambda: SqliteUnitOfWork(
+                connect_control_tower(db_path),
+                close_connection=True,
+            )
+        )
+        try:
+            service.create_diagnostic_job(
+                _create_command("idem-create", legacy_source_relative_path=relative_path)
+            )
+        except IdempotencyConflictError:
+            return "conflict"
+        return "created"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(attempt, ("src", "different")))
+
+    verification = connect_control_tower(db_path)
+    assert results.count("created") == 1
+    assert results.count("conflict") == 1
+    assert _count(verification, "migration_jobs") == 1
+    assert _count(verification, "idempotency_records") == 1
+    verification.close()
 
 
 def test_start_queues_command_transitions_job_events_audit_and_idempotency(tmp_path: Path) -> None:
@@ -246,3 +339,21 @@ def _start_command(job_id: str, version: int, idempotency_key: str) -> StartMigr
 
 def _count(connection: sqlite3.Connection, table: str) -> int:
     return int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+
+class _FailingCreateIdempotencyUnitOfWork(SqliteUnitOfWork):
+    def __enter__(self):
+        result = super().__enter__()
+        self.idempotency_records = _FailingIdempotencyRepository(self.idempotency_records)
+        return result
+
+
+class _FailingIdempotencyRepository:
+    def __init__(self, wrapped) -> None:
+        self._wrapped = wrapped
+
+    def get(self, operation: str, idempotency_key: str):
+        return self._wrapped.get(operation, idempotency_key)
+
+    def insert(self, record) -> None:
+        raise StorageIntegrityError("injected idempotency failure")

@@ -63,6 +63,20 @@ CREATE_DIAGNOSTIC_JOB_OPERATION = "create_diagnostic_job"
 START_DIAGNOSTIC_JOB_OPERATION = "start_diagnostic_job"
 
 
+class _BorrowedUnitOfWork:
+    def __init__(self, unit_of_work: ControlTowerUnitOfWork) -> None:
+        self._unit_of_work = unit_of_work
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._unit_of_work, name)
+
+    def __enter__(self) -> ControlTowerUnitOfWork:
+        return self._unit_of_work
+
+    def __exit__(self, exc_type, exc, tb) -> bool | None:
+        return None
+
+
 class CreateMigrationJobService:
     def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
         self._unit_of_work_factory = unit_of_work_factory
@@ -504,7 +518,6 @@ class ControlTowerRegistrationService:
 class DiagnosticJobService:
     def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
         self._unit_of_work_factory = unit_of_work_factory
-        self._create_job_service = CreateMigrationJobService(unit_of_work_factory)
 
     def create_diagnostic_job(self, command: CreateDiagnosticJobCommand) -> JobProjectionDto:
         _require_non_empty(command.idempotency_key, "idempotency_key")
@@ -538,29 +551,28 @@ class DiagnosticJobService:
                 command.output_relative_path,
             )
 
-        created = self._create_job_service.execute(
-            CreateMigrationJobCommand(
-                actor=_local_actor_id(),
-                legacy_source_ref=_root_ref(
-                    command.legacy_source_root_id,
-                    command.legacy_source_relative_path,
-                ),
-                output_root_ref=_root_ref(
-                    command.output_root_id,
-                    command.output_relative_path,
-                ),
-                runner_profile_id=command.runner_profile_id,
-                runner_profile_version=command.runner_profile_version,
-                pipeline_id=command.pipeline_id,
-                pipeline_version=command.pipeline_version,
-                target_proof_level=command.target_proof_level,
-                enabled_gates=command.enabled_gates,
-                policy=command.policy,
-                correlation_id=command.correlation_id,
+            create_service = CreateMigrationJobService(lambda: _BorrowedUnitOfWork(uow))
+            created = create_service.execute(
+                CreateMigrationJobCommand(
+                    actor=_local_actor_id(),
+                    legacy_source_ref=_root_ref(
+                        command.legacy_source_root_id,
+                        command.legacy_source_relative_path,
+                    ),
+                    output_root_ref=_root_ref(
+                        command.output_root_id,
+                        command.output_relative_path,
+                    ),
+                    runner_profile_id=command.runner_profile_id,
+                    runner_profile_version=command.runner_profile_version,
+                    pipeline_id=command.pipeline_id,
+                    pipeline_version=command.pipeline_version,
+                    target_proof_level=command.target_proof_level,
+                    enabled_gates=command.enabled_gates,
+                    policy=command.policy,
+                    correlation_id=command.correlation_id,
+                )
             )
-        )
-
-        with self._unit_of_work_factory() as uow:
             uow.idempotency_records.insert(
                 IdempotencyRecord(
                     operation=CREATE_DIAGNOSTIC_JOB_OPERATION,

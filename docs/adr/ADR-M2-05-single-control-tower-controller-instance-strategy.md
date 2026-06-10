@@ -1,6 +1,6 @@
 # ADR-M2-05 Single Control Tower controller-instance strategy
 
-Status: Proposed for review
+Status: Ready for reviewer approval
 
 Date: 2026-06-10
 
@@ -44,3 +44,10 @@ M2-06 owns singleton implementation and tests.
 M2-10 FastAPI lifespan must acquire singleton ownership before starting background services.
 
 Readiness must report singleton ownership status.
+
+## Approval
+
+| Reviewer | Decision | Date | Comments |
+|---|---|---|---|
+| HAMDAOUI Ali | Pending | Pending | Pending |
+| ilyas abarbach | Pending | Pending | Pending |
