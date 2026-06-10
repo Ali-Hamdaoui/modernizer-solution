@@ -152,6 +152,9 @@ class CommandExecutionRecord:
     working_directory_relative_path: str | None = None
     worker_id: str | None = None
     launch_attempt: int | None = None
+    process_control_id: str | None = None
+    worker_pid: int | None = None
+    process_started_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

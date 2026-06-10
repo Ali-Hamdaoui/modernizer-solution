@@ -110,3 +110,13 @@ class PrepareCommandWorkspaceCommand:
     actor_id: str
     correlation_id: str | None = None
     causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LaunchWorkerCommand:
+    command_id: str
+    job_id: str
+    actor_type: str
+    actor_id: str
+    correlation_id: str | None = None
+    causation_id: str | None = None

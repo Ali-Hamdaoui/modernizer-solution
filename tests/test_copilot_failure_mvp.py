@@ -66,7 +66,7 @@ def test_copilot_feature_probe_windows_uses_full_cmd_path(tmp_path: Path, monkey
             return subprocess.CompletedProcess(args, 0, stdout=HELP_ALL_FLAGS, stderr="")
         return subprocess.CompletedProcess(args, 0, stdout="GitHub Copilot CLI 1.0.56\n", stderr="")
 
-    monkeypatch.setattr(copilot_cli_module.os, "name", "nt")
+    monkeypatch.setattr(copilot_cli_module, "_is_windows", lambda: True)
     monkeypatch.setattr(copilot_cli_module.shutil, "which", fake_which)
 
     result = probe_copilot_availability(
@@ -91,7 +91,7 @@ def test_copilot_resolver_falls_back_to_copilot_on_non_windows(monkeypatch) -> N
         calls.append(name)
         return "/usr/local/bin/copilot" if name == "copilot" else None
 
-    monkeypatch.setattr(copilot_cli_module.os, "name", "posix")
+    monkeypatch.setattr(copilot_cli_module, "_is_windows", lambda: False)
     monkeypatch.setattr(copilot_cli_module.shutil, "which", fake_which)
 
     assert copilot_cli_module.resolve_copilot_cli_executable() == "/usr/local/bin/copilot"
@@ -99,7 +99,7 @@ def test_copilot_resolver_falls_back_to_copilot_on_non_windows(monkeypatch) -> N
 
 
 def test_copilot_resolver_returns_none_when_unresolved(monkeypatch) -> None:
-    monkeypatch.setattr(copilot_cli_module.os, "name", "nt")
+    monkeypatch.setattr(copilot_cli_module, "_is_windows", lambda: True)
     monkeypatch.setattr(copilot_cli_module.shutil, "which", lambda name: None)
 
     assert copilot_cli_module.resolve_copilot_cli_executable() is None

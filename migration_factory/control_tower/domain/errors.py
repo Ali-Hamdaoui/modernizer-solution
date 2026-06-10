@@ -121,6 +121,14 @@ class WorkspaceConflictError(ControlTowerError):
     """Raised when workspace preparation conflicts with existing state."""
 
 
+class UnsupportedPlatformError(ControlTowerError):
+    """Raised when the current platform does not support worker launch."""
+
+    def __init__(self, platform: str) -> None:
+        self.platform = platform
+        super().__init__(f"Worker launch is not supported on this platform: {platform}")
+
+
 class InvalidEventCursorError(ControlTowerError):
     """Raised when a public event replay cursor is malformed or outside the valid range."""
 

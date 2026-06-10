@@ -859,6 +859,21 @@ class SqliteCommandExecutionRepository:
         ).fetchone()
         return _command_execution_from_row(row) if row is not None else None
 
+    def update_status(self, command_id: str, status: CommandState) -> None:
+        cursor = self._connection.execute(
+            """UPDATE command_executions
+            SET status = ?,
+                updated_at = ?
+            WHERE command_id = ?""",
+            (
+                status.value,
+                utc_now_text(),
+                command_id,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise NotFoundError("command execution", command_id)
+
     def update_workspace_columns(
         self,
         command_id: str,
@@ -892,6 +907,40 @@ class SqliteCommandExecutionRepository:
         if cursor.rowcount == 0:
             raise WorkspaceConflictError(
                 f"Workspace already prepared for command {command_id!r}"
+            )
+
+    def update_process_columns(
+        self,
+        command_id: str,
+        *,
+        status: CommandState,
+        process_control_id: str,
+        worker_pid: int,
+        process_started_at: str,
+    ) -> None:
+        cursor = self._connection.execute(
+            """UPDATE command_executions
+            SET status = ?,
+                process_control_id = ?,
+                worker_pid = ?,
+                process_started_at = ?,
+                updated_at = ?
+            WHERE command_id = ?
+              AND command_manifest_artifact_id IS NOT NULL
+              AND status IN ('QUEUED', 'STARTING')""",
+            (
+                status.value,
+                process_control_id,
+                worker_pid,
+                process_started_at,
+                utc_now_text(),
+                command_id,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise NotFoundError(
+                "command execution",
+                f"{command_id} not in QUEUED/STARTING or workspace not prepared",
             )
 
 

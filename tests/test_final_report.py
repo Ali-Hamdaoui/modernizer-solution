@@ -201,7 +201,8 @@ def test_copilot_documentation_cli_nonzero_records_bounded_status_and_falls_back
     resolved = r"C:\Users\test\AppData\Roaming\npm\copilot.cmd"
     calls: list[list[str]] = []
 
-    monkeypatch.setattr(copilot_cli_module.os, "name", "nt")
+    monkeypatch.setattr(copilot_cli_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(copilot_module, "_is_windows", lambda: True)
     monkeypatch.setattr(
         copilot_cli_module.shutil,
         "which",
@@ -237,6 +238,9 @@ def test_copilot_documentation_cli_timeout_records_status_and_falls_back(tmp_pat
             return subprocess.CompletedProcess(args, 0, stdout="copilot 1.0\n", stderr="")
         raise subprocess.TimeoutExpired(args, timeout=kwargs["timeout"], output="partial", stderr="late")
 
+    monkeypatch.setattr(copilot_cli_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(copilot_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(copilot_cli_module.shutil, "which", lambda name: "/tmp/fake-copilot")
     monkeypatch.setattr(copilot_doc_agent.subprocess, "run", fake_run)
 
     result = finalize_orchestration_state(state)
@@ -260,6 +264,9 @@ def test_copilot_documentation_cli_success_uses_generated_docs(tmp_path: Path, m
             (docs_dir / artifact).write_text(f"# CLI {artifact}\n", encoding="utf-8")
         return subprocess.CompletedProcess(args, 0, stdout="ok", stderr="")
 
+    monkeypatch.setattr(copilot_cli_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(copilot_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(copilot_cli_module.shutil, "which", lambda name: "/tmp/fake-copilot")
     monkeypatch.setattr(copilot_doc_agent.subprocess, "run", fake_run)
 
     result = finalize_orchestration_state(state)
@@ -289,6 +296,9 @@ def test_copilot_documentation_cli_outside_write_is_rejected_and_falls_back(tmp_
             (docs_dir / artifact).write_text(f"# CLI {artifact}\n", encoding="utf-8")
         return subprocess.CompletedProcess(args, 0, stdout="ok", stderr="")
 
+    monkeypatch.setattr(copilot_cli_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(copilot_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(copilot_cli_module.shutil, "which", lambda name: "/tmp/fake-copilot")
     monkeypatch.setattr(copilot_doc_agent.subprocess, "run", fake_run)
 
     result = finalize_orchestration_state(state)

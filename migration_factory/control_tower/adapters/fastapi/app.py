@@ -15,18 +15,21 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, st
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel, ConfigDict, Field
 
+from pathlib import Path
+
 from migration_factory.control_tower.application.commands import (
     CreateDiagnosticJobCommand,
+    LaunchWorkerCommand,
     StartMigrationJobCommand,
 )
 from migration_factory.control_tower.application.dto import JobProjectionDto, RunEventDto
-from migration_factory.control_tower.application.ports import ControlTowerUnitOfWork
+from migration_factory.control_tower.application.ports import ControlTowerUnitOfWork, WorkerLauncher
 from migration_factory.control_tower.application.queries import (
     DEFAULT_PUBLIC_EVENT_REPLAY_BATCH_SIZE,
     ControlTowerQueryService,
     parse_public_event_cursor,
 )
-from migration_factory.control_tower.application.services import DiagnosticJobService
+from migration_factory.control_tower.application.services import DiagnosticJobService, WorkerLaunchService
 from migration_factory.control_tower.domain.errors import (
     ActiveCommandConflictError,
     ControlTowerError,
@@ -37,6 +40,7 @@ from migration_factory.control_tower.domain.errors import (
     InvalidJobStateTransitionError,
     NotFoundError,
     StaleVersionError,
+    UnsupportedPlatformError,
 )
 from migration_factory.control_tower.domain.states import TargetProofLevel
 from migration_factory.control_tower.schemas.run_configuration import RunPolicy
@@ -125,9 +129,14 @@ class StartJobRequest(StrictRequest):
     pass
 
 
+class LaunchWorkerRequest(StrictRequest):
+    command_id: str
+
+
 def create_app(
     unit_of_work_factory: UnitOfWorkFactory,
     *,
+    worker_launcher: WorkerLauncher | None = None,
     event_replay_config: EventReplayConfig | None = None,
 ) -> FastAPI:
     config = event_replay_config or EventReplayConfig()
@@ -249,6 +258,48 @@ def create_app(
         response.headers["ETag"] = projection.etag
         await app.state.public_event_notifier.notify()
         return _projection_payload(projection)
+
+    @app.post("/v1/jobs/{job_id}/launch")
+    async def launch_worker(
+        job_id: str,
+        request: LaunchWorkerRequest,
+    ) -> dict[str, Any]:
+        if worker_launcher is None:
+            raise _error(
+                status.HTTP_501_NOT_IMPLEMENTED,
+                "WORKER_LAUNCH_NOT_CONFIGURED",
+                "Worker launcher is not configured.",
+            )
+        service = WorkerLaunchService(unit_of_work_factory, worker_launcher)
+        try:
+            result = service.execute(
+                LaunchWorkerCommand(
+                    command_id=request.command_id,
+                    job_id=job_id,
+                    actor_type="system",
+                    actor_id="controller",
+                )
+            )
+        except (ControlTowerError, FileNotFoundError) as exc:
+            if isinstance(exc, UnsupportedPlatformError):
+                raise _error(
+                    status.HTTP_501_NOT_IMPLEMENTED,
+                    "UNSUPPORTED_PLATFORM",
+                    str(exc),
+                ) from exc
+            if isinstance(exc, ControlTowerError):
+                _raise_http_error(exc)
+            raise _error(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "WORKER_LAUNCH_FAILED",
+                str(exc),
+            ) from exc
+        await app.state.public_event_notifier.notify()
+        return {
+            "command_id": result.command_id,
+            "job_id": result.job_id,
+            "status": "RUNNING",
+        }
 
     @app.get("/v1/jobs/{job_id}/events")
     def replay_events(
@@ -453,6 +504,8 @@ def _expected_version_from_if_match(job_id: str, if_match: str | None) -> int:
 
 
 def _raise_http_error(exc: ControlTowerError) -> None:
+    if isinstance(exc, UnsupportedPlatformError):
+        raise _error(status.HTTP_501_NOT_IMPLEMENTED, "UNSUPPORTED_PLATFORM", str(exc)) from exc
     if isinstance(exc, EventCursorConflictError):
         raise _error(status.HTTP_400_BAD_REQUEST, "EVENT_CURSOR_CONFLICT", str(exc)) from exc
     if isinstance(exc, InvalidEventCursorError):

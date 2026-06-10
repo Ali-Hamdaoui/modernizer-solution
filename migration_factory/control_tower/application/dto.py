@@ -156,6 +156,20 @@ class CommandExecutionDto:
     working_directory_relative_path: str | None = None
     worker_id: str | None = None
     launch_attempt: int | None = None
+    process_control_id: str | None = None
+    worker_pid: int | None = None
+    process_started_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerLaunchResult:
+    command_id: str
+    job_id: str
+    process_control_id: str
+    worker_pid: int
+    process_started_at: str
+    worker_id: str
+    launch_attempt: int
 
 
 @dataclass(frozen=True, slots=True)
