@@ -155,3 +155,14 @@ Report:
 * final `git status --short`;
 * risks, conflicts, or deviations;
 * whether anything was pushed.
+
+## Graphify developer context
+
+When `graphify-out/graph.json` is present, use focused Graphify queries during EXPLORE, ANALYZE, and PLAN before broad repository scans.
+
+Use the graph to locate likely components, callers, dependencies, tests, and blast radius. Confirm implementation, security, deletion, and acceptance decisions against actual source and tests.
+
+Graphify is derived developer tooling. It is not an authoritative source, runtime dependency, migration stage, or replacement for targeted inspection and verification.
+
+Do not update shared graph artifacts in ordinary issue branches. Refresh them from merged `DEMO2` through `tooling/repository-skills`.
+
