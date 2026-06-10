@@ -156,13 +156,53 @@ Report:
 * risks, conflicts, or deviations;
 * whether anything was pushed.
 
-## Graphify developer context
+## Graphify-first repository exploration
 
-When `graphify-out/graph.json` is present, use focused Graphify queries during EXPLORE, ANALYZE, and PLAN before broad repository scans.
+When `graphify-out/graph.json` is present, every coding agent must use Graphify before broad repository scans or implementation work.
 
-Use the graph to locate likely components, callers, dependencies, tests, and blast radius. Confirm implementation, security, deletion, and acceptance decisions against actual source and tests.
+Graphify is required during:
 
-Graphify is derived developer tooling. It is not an authoritative source, runtime dependency, migration stage, or replacement for targeted inspection and verification.
+* EXPLORE
+* ANALYZE
+* PLAN
 
-Do not update shared graph artifacts in ordinary issue branches. Refresh them from merged `DEMO2` through `tooling/repository-skills`.
+Before editing files, the agent must run focused Graphify queries to identify:
+
+* likely components
+* callers and dependencies
+* related tests
+* affected repositories/services
+* blast radius
+* existing abstractions to reuse
+* files that should not be touched
+
+The agent must prefer Graphify queries before opening many files manually. Use targeted `rg` and direct source inspection only after Graphify has narrowed the search area.
+
+Minimum expected Graphify flow for each issue:
+
+```text
+graphify --version
+graphify query "<issue-specific component or behavior>"
+graphify query "<likely service/repository/test relationship>"
+graphify path "<source component>" "<target dependency>"   # when useful
+graphify explain "<key component>"                        # when useful
+```
+
+For AMF-152 / M2-04, examples include:
+
+```text
+graphify query "Which services prepare command workspaces?"
+graphify query "Which services update command execution state?"
+graphify query "Where are command manifests created and verified?"
+graphify path "CommandWorkspaceService" "SqliteControlTowerUnitOfWork"
+graphify explain "CommandWorkspaceService"
+```
+
+Graphify results are navigation hints, not source of truth. The agent must confirm every implementation, security, deletion, and acceptance decision against actual source code, tests, assigned issue acceptance criteria, and approved documentation.
+
+Graphify must not be used as acceptance evidence. Passing Graphify queries does not prove the issue is complete.
+
+Do not update shared Graphify artifacts in ordinary issue branches. Do not regenerate or commit `graphify-out/*` unless the assigned issue explicitly asks for Graphify/tooling updates. Refresh shared graph artifacts only from merged `DEMO2` through the approved tooling branch/workflow.
+
+If Graphify is unavailable, missing, or stale, the agent must report that clearly, then fall back to targeted `rg` searches. Do not silently skip the Graphify step.
 
