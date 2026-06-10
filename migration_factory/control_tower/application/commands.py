@@ -131,3 +131,15 @@ class FinalizeCommandCommand:
     actor_id: str
     correlation_id: str | None = None
     causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CancelCommand:
+    job_id: str
+    expected_version: int
+    command_id: str | None = None
+    reason: str = "user_cancelled"
+    actor_type: str = "user"
+    actor_id: str = "user"
+    correlation_id: str | None = None
+    causation_id: str | None = None
