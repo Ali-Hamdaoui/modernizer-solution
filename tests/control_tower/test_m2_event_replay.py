@@ -93,6 +93,8 @@ def test_replay_query_is_ordered_bounded_and_returns_dtos(tmp_path: Path) -> Non
 def test_public_event_cursor_validation() -> None:
     assert parse_public_event_cursor(after_sequence=None, last_event_id=None, latest_sequence=3) == 0
     assert parse_public_event_cursor(after_sequence="2", last_event_id="2", latest_sequence=3) == 2
+    assert parse_public_event_cursor(after_sequence=None, last_event_id="2", latest_sequence=3) == 2
+    assert parse_public_event_cursor(after_sequence="0", last_event_id="2", latest_sequence=3) == 2
 
     with pytest.raises(InvalidEventCursorError):
         parse_public_event_cursor(after_sequence="-1", last_event_id=None, latest_sequence=3)
@@ -101,7 +103,7 @@ def test_public_event_cursor_validation() -> None:
     with pytest.raises(InvalidEventCursorError):
         parse_public_event_cursor(after_sequence="4", last_event_id=None, latest_sequence=3)
     with pytest.raises(EventCursorConflictError):
-        parse_public_event_cursor(after_sequence="1", last_event_id="2", latest_sequence=3)
+        parse_public_event_cursor(after_sequence="3", last_event_id="2", latest_sequence=3)
 
 
 def test_http_event_replay_endpoint_returns_committed_events_only(tmp_path: Path) -> None:
@@ -158,6 +160,32 @@ def test_http_event_replay_rejects_bad_missing_and_conflicting_cursors(tmp_path:
     assert conflict.json()["detail"]["error"]["code"] == "EVENT_CURSOR_CONFLICT"
 
 
+def test_http_event_replay_browser_reconnect_uses_last_event_id_over_stale_query(
+    tmp_path: Path,
+) -> None:
+    connection = _api_test_connection(tmp_path)
+    apply_pending_migrations(connection)
+    seed_runner_profile_with_roots(connection, artifact_roots(tmp_path))
+    seed_pipeline_definition(connection)
+    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)))
+    job_id, etag = _create_job_over_http(client)
+    client.post(
+        f"/v1/jobs/{job_id}/start",
+        json={},
+        headers={"Idempotency-Key": "start-1", "If-Match": etag},
+    )
+
+    response = client.get(
+        f"/v1/jobs/{job_id}/events?after_sequence=0",
+        headers={"Last-Event-ID": "2"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["after_sequence"] == 2
+    assert [event["sequence"] for event in body["events"]] == [3]
+
+
 def test_sse_replays_committed_events_with_persisted_sequence_ids(tmp_path: Path) -> None:
     connection = _api_test_connection(tmp_path)
     apply_pending_migrations(connection)
@@ -206,6 +234,26 @@ def test_sse_cursor_conflict_keepalive_and_client_limit(tmp_path: Path) -> None:
 
     assert client.get(f"/v1/jobs/{job_id}/events/stream?after_sequence=1").status_code == 429
     assert asyncio.run(_collect_keepalive(connection, job_id)) == ": keepalive\n\n"
+
+
+def test_sse_browser_style_reconnect_resumes_after_last_event_id(tmp_path: Path) -> None:
+    connection = _api_test_connection(tmp_path)
+    apply_pending_migrations(connection)
+    seed_runner_profile_with_roots(connection, artifact_roots(tmp_path))
+    seed_pipeline_definition(connection)
+    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)))
+    job_id, etag = _create_job_over_http(client)
+    client.post(
+        f"/v1/jobs/{job_id}/start",
+        json={},
+        headers={"Idempotency-Key": "start-1", "If-Match": etag},
+    )
+
+    cursor = parse_public_event_cursor(after_sequence="0", last_event_id="2", latest_sequence=3)
+    text = asyncio.run(_collect_sse_frames(connection, job_id, after_sequence=cursor, stop_after=1))
+
+    assert "id: 3" in text
+    assert "id: 2" not in text
 
 
 def _seeded_connection(tmp_path: Path) -> sqlite3.Connection:

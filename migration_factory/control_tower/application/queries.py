@@ -208,16 +208,20 @@ def parse_public_event_cursor(
     query_sequence = _parse_optional_sequence(after_sequence, "after_sequence")
     header_sequence = _parse_optional_sequence(last_event_id, "Last-Event-ID")
 
-    if query_sequence is not None and header_sequence is not None and query_sequence != header_sequence:
-        raise EventCursorConflictError(header_sequence, query_sequence)
+    for sequence in (query_sequence, header_sequence):
+        if sequence is not None and sequence > latest_sequence:
+            raise InvalidEventCursorError(
+                "event cursor cannot be greater than the latest committed event sequence"
+            )
 
-    sequence = query_sequence if query_sequence is not None else header_sequence
+    if header_sequence is not None:
+        if query_sequence is not None and query_sequence > header_sequence:
+            raise EventCursorConflictError(header_sequence, query_sequence)
+        return header_sequence
+
+    sequence = query_sequence
     if sequence is None:
         sequence = 0
-    if sequence > latest_sequence:
-        raise InvalidEventCursorError(
-            "event cursor cannot be greater than the latest committed event sequence"
-        )
     return sequence
 
 

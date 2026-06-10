@@ -1,8 +1,12 @@
-import { describe, expect, it } from "vitest";
-import { allowedStatusCopy, createDiagnosticJobPayload, eventStreamUrl } from "../lib/controlTowerApi";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { allowedStatusCopy, createDiagnosticJobPayload, eventStreamUrl, getJob } from "../lib/controlTowerApi";
 import { applyPublicEvent, latestAppliedSequence, shouldRefetchJobProjection } from "../lib/eventReplay";
 
 describe("M2-01 frontend diagnostic contracts", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("submits only allowed create-job fields", () => {
     const payload = createDiagnosticJobPayload({
       runnerProfileKey: "runner-default@2026.06",
@@ -47,6 +51,32 @@ describe("M2-01 frontend diagnostic contracts", () => {
 
   it("opens event replay from the last applied sequence", () => {
     expect(eventStreamUrl("job-1", 7)).toContain("/v1/jobs/job-1/events/stream?after_sequence=7");
+  });
+
+  it("keeps initial job projection fetch non-cached", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      headers: {
+        get: (name: string) => (name.toLowerCase() === "etag" ? '"job-job-1-v1"' : null)
+      },
+      json: async () => ({
+        job: {
+          job_id: "job-1",
+          version: 1,
+          state: "CREATED",
+          created_at: "2026-06-10T00:00:00Z",
+          updated_at: "2026-06-10T00:00:00Z"
+        },
+        active_command: null
+      })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getJob("job-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/v1/jobs/job-1"), {
+      cache: "no-store"
+    });
   });
 
   it("applies public events idempotently and refetches state-changing projections", () => {

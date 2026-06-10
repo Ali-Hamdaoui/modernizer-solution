@@ -1,19 +1,20 @@
 # ADR-M2-01 FastAPI and SSE adapter strategy
 
-Status: Proposed for review
+Status: Ready for reviewer approval
 
 Date: 2026-06-10
 
 ## Context
 
-The repository currently has no FastAPI adapter, no SSE adapter, and no declared FastAPI, Starlette, or Uvicorn dependency.
+The repository now has a minimal FastAPI adapter and persisted SSE replay path for the AMF-149/AMF-150 tracer bullets.
 
 Runtime diagnostics:
 
-- FastAPI: not installed.
-- Starlette: not installed.
-- Uvicorn: not installed.
-- Python: 3.13.9 locally; repository declares `>=3.10`.
+- FastAPI: `0.136.3`.
+- Starlette: `1.2.1`.
+- Uvicorn: `0.38.0`.
+- `sse-starlette`: `3.4.4`.
+- Python: `3.14.5` locally through `py`; repository declares `>=3.10`.
 - Pydantic: 2.13.4 locally; repository declares `pydantic>=2,<3`.
 
 The M2 plan lists FastAPI `0.136.3` as a candidate only. It also proposes:
@@ -22,17 +23,37 @@ The M2 plan lists FastAPI `0.136.3` as a candidate only. It also proposes:
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 ```
 
-This import path is not verified in this repository because FastAPI is not installed.
+This import path is verified in the current environment:
+
+```powershell
+py -c "from fastapi.sse import EventSourceResponse, ServerSentEvent; print(EventSourceResponse.__module__, ServerSentEvent.__module__)"
+```
+
+Output:
+
+```text
+fastapi.sse fastapi.sse
+```
 
 ## Decision
 
-M2-00 does not add FastAPI, Starlette, Uvicorn, routes, or SSE code.
+Use FastAPI `0.136.3`, Uvicorn `0.38.0`, and native `fastapi.sse.EventSourceResponse` / `ServerSentEvent`.
 
-M2-10 must introduce the FastAPI adapter only after dependency compatibility is verified against the repository's supported Python and Pydantic versions.
+Keep `sse-starlette==3.4.4` declared because FastAPI's native SSE module depends on that package.
 
-M2-11 must use native FastAPI SSE only if the selected FastAPI version provides verified `EventSourceResponse` and `ServerSentEvent` support. If the native import is unavailable, M2-11 must record a reviewed alternative before implementation.
+The reproducible backend installation command is:
+
+```powershell
+py -m pip install -e .[test]
+```
 
 FastAPI lifespan is the required ownership boundary for singleton ownership, dispatcher, ingestor, notifier, and process monitor startup once those components exist.
+
+AMF-150 SSE cursor precedence:
+
+- Initial connection: when `Last-Event-ID` is absent, use validated `after_sequence` when provided; otherwise use `0`.
+- Browser automatic reconnect: when valid `Last-Event-ID` is present, it is authoritative. `after_sequence` is treated as the original bootstrap cursor and may be stale if it is less than or equal to `Last-Event-ID`.
+- Invalid requests: reject malformed cursors, negative cursors, cursors greater than the committed event head, and `after_sequence > Last-Event-ID` because that is not ordinary EventSource reconnect behavior.
 
 ## Rules
 
@@ -43,14 +64,17 @@ FastAPI lifespan is the required ownership boundary for singleton ownership, dis
 - Routes adapt HTTP to application services only.
 - SSE streams committed public database events only.
 
-## Blocked or unverified
+## Approval
 
-- Native FastAPI SSE availability is unverified.
-- Exact FastAPI/Starlette/Uvicorn versions are unverified.
-- Dependency lock strategy is absent.
+| Reviewer | Decision | Date | Comments |
+|---|---|---|---|
+| HAMDAOUI Ali | Pending | Pending | Pending |
+| ilyas abarbach | Pending | Pending | Pending |
 
 ## Consequences
 
-M2-10 owns dependency introduction and local-security HTTP adapter tests.
+AMF-149 owns create/start HTTP contracts for the diagnostic queue slice.
 
-M2-11 owns native SSE verification, replay behavior, keepalive behavior, and disconnect cleanup tests.
+AMF-150 owns persisted public event replay, bounded event queries, FastAPI SSE, browser EventSource replay, and reconnect behavior.
+
+Later worker/private-event behavior remains deferred and must extend these public contracts instead of duplicating them.

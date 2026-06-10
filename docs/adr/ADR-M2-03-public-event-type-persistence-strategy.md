@@ -1,6 +1,6 @@
 # ADR-M2-03 Public event-type persistence strategy
 
-Status: Proposed for review
+Status: Ready for reviewer approval
 
 Date: 2026-06-10
 
@@ -19,9 +19,9 @@ M2 needs additional public event types for command, worker, cancellation, output
 
 ## Decision
 
-M2 should introduce an `event_types` catalog table in M2-02 and rebuild `run_events` so `event_type` references the catalog.
+M2 introduces an `event_types` catalog table in `0002_m2_queued_diagnostic.sql` and rebuilds `run_events` so `event_type` references the catalog.
 
-M2 should not keep expanding a closed `CHECK` list for every new event type.
+M2 does not keep expanding a closed `CHECK` list for every new event type.
 
 ## Migration strategy
 
@@ -38,4 +38,13 @@ M2 should not keep expanding a closed `CHECK` list for every new event type.
 
 Future public event additions become catalog inserts rather than table rebuilds.
 
-M2-02 must include upgrade tests from an actual M1 database and rollback tests for failed rebuilds.
+AMF-150 public replay uses only committed rows in `run_events`. Private worker events, worker spool content, log text, PIDs, process-control IDs, absolute paths, and secrets are not public SSE payloads.
+
+Later M2 tasks that add new public event types must insert catalog rows and extend the committed public-event contract instead of creating duplicate event tables for browser replay.
+
+## Approval
+
+| Reviewer | Decision | Date | Comments |
+|---|---|---|---|
+| HAMDAOUI Ali | Pending | Pending | Pending |
+| ilyas abarbach | Pending | Pending | Pending |

@@ -1,6 +1,6 @@
 # ADR-M2-02 Windows Job Object and process-control strategy
 
-Status: Proposed for review
+Status: Ready for reviewer approval
 
 Date: 2026-06-10
 
@@ -52,3 +52,10 @@ The preferred M2 runtime strategy remains a Windows Job Object owned by the cont
 M2-06 and M2-08 need explicit reviewer approval before process-control implementation begins.
 
 M2-13 acceptance must include Windows process-tree tests proving assignment-before-resume, non-inherited handle behavior, process-tree termination, timeout, and cancellation.
+
+## Approval
+
+| Reviewer | Decision | Date | Comments |
+|---|---|---|---|
+| HAMDAOUI Ali | Pending | Pending | Pending |
+| ilyas abarbach | Pending | Pending | Pending |

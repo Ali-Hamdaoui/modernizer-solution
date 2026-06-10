@@ -1,19 +1,21 @@
 # ADR-M2-04 Next.js and Node.js workspace/version strategy
 
-Status: Proposed for review
+Status: Ready for reviewer approval
 
 Date: 2026-06-10
 
 ## Context
 
-No frontend workspace exists in the repository today.
+The repository now has a minimal M2 Next.js vertical-slice workspace at:
 
-Not found:
+```text
+web/control-tower/
+```
+
+Found:
 
 - `package.json`.
 - `package-lock.json`.
-- `pnpm-lock.yaml`.
-- `yarn.lock`.
 - Next.js app files.
 - React dependency.
 
@@ -21,40 +23,44 @@ Local Node.js diagnostic:
 
 - `node --version`: `v24.15.0`.
 
-The M2 plan lists Next.js `16.2.7`, React `19.2.7`, and Node 24 LTS as candidates for a new frontend. These are not installed by the repository today.
+The workspace declares Next.js `16.2.7`, React `19.2.7`, and React DOM `19.2.7`.
 
 ## Decision
 
-M2-00 does not create a frontend workspace or force a frontend migration.
-
-If reviewers do not choose another convention, M2-12 should create the new frontend under:
+Use the existing frontend workspace:
 
 ```text
 web/control-tower/
 ```
 
-A new frontend should target Node 24 LTS, Next.js 16.x, and React 19.x after dependency resolution is verified.
+Use npm with committed `package-lock.json`. Do not introduce another frontend package manager for M2 without a reviewed M2-00 update.
 
 ## Lockfile strategy
 
-M2-12 must commit the selected package-manager lockfile with the new workspace.
+`package-lock.json` is the reproducibility lockfile.
 
-The package manager is not currently selected by repository convention. M2-12 must choose one explicitly and document the install/audit/build commands.
+## Required frontend commands
 
-## Required frontend commands once workspace exists
-
-Commands are unverified until a package manager is selected:
-
-```text
-install consistency check
-audit
-type-check
-unit tests
-production build
+```powershell
+cd web/control-tower
+npm ci
+npm run type-check
+npm test
+npm run build
+npm audit --audit-level=moderate
 ```
 
 ## Consequences
 
-Frontend checks are not applicable in M2-00.
+The workspace is a minimal M2 vertical slice, not the final Control Tower frontend.
 
-M2-12 owns frontend dependency introduction, lockfile creation, accessibility checks, and wording tests that prevent diagnostic success from being described as migration proof.
+Frontend code must keep business rules, proof rules, filesystem access, executable details, and actor authority in the backend.
+
+Native browser `EventSource` should handle reconnect. The client bootstraps from the last applied persisted public sequence, ignores already-applied sequences, updates its last-applied sequence, and refetches the current job projection after state-changing events.
+
+## Approval
+
+| Reviewer | Decision | Date | Comments |
+|---|---|---|---|
+| HAMDAOUI Ali | Pending | Pending | Pending |
+| ilyas abarbach | Pending | Pending | Pending |
