@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import getpass
 import json
 import re
 import time
@@ -11,10 +10,12 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
-from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -47,6 +48,8 @@ from migration_factory.control_tower.application.services import (
 from migration_factory.control_tower.domain.errors import (
     ActiveCommandConflictError,
     ControlTowerError,
+    ControllerOwnershipConflictError,
+    ControllerOwnershipUnavailableError,
     EventCursorConflictError,
     ExpectedVersionRequiredError,
     IdempotencyConflictError,
@@ -57,7 +60,24 @@ from migration_factory.control_tower.domain.errors import (
     UnsupportedPlatformError,
 )
 from migration_factory.control_tower.domain.states import JobState, TargetProofLevel
+from migration_factory.control_tower.infrastructure.singleton import (
+    ControllerOwnership,
+    ControllerOwnershipStatus,
+    controller_resource_path_from_unit_of_work_factory,
+    create_controller_ownership,
+)
 from migration_factory.control_tower.schemas.run_configuration import RunPolicy
+from migration_factory.control_tower.adapters.fastapi.security import (
+    MUTATION_METHODS,
+    ActorProvider,
+    LocalApiSecuritySettings,
+    OperatingSystemActorProvider,
+    dependency_versions,
+    normalize_correlation_id,
+    path_accessible,
+    public_error_payload,
+    redact_public_data,
+)
 
 
 UnitOfWorkFactory = Any
@@ -152,19 +172,24 @@ class FinalizeCommandRequest(StrictRequest):
     outcome: str
 
 
+class TimeoutRequest(StrictRequest):
+    command_id: str = ""
+    timeout_seconds: int = 3600
+    deadline: float = 0.0
+
+
 @asynccontextmanager
 async def _control_tower_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Run startup reconciliation on service start."""
-    unit_of_work_factory: UnitOfWorkFactory = app.state.unit_of_work_factory
     try:
-        service = ReconciliationService(unit_of_work_factory)
-        results = service.reconcile_all()
-        app.state.reconciliation_results = results
-        if results:
-            _LOG_RECONCILIATION(results)
-    except Exception:
-        pass  # Startup reconciliation must not crash the service
-    yield
+        _ensure_controller_ownership(app)
+        yield
+    finally:
+        ownership: ControllerOwnership = app.state.controller_ownership
+        try:
+            ownership.release()
+        except ControlTowerError:
+            pass
 
 
 def _LOG_RECONCILIATION(results: list[dict[str, Any]]) -> None:
@@ -186,13 +211,131 @@ def create_app(
     worker_launcher: WorkerLauncher | None = None,
     worker_terminator: WorkerTerminator | None = None,
     event_replay_config: EventReplayConfig | None = None,
+    security_settings: LocalApiSecuritySettings | None = None,
+    actor_provider: ActorProvider | None = None,
+    controller_ownership: ControllerOwnership | None = None,
 ) -> FastAPI:
     config = event_replay_config or EventReplayConfig()
+    local_security = security_settings or LocalApiSecuritySettings()
+    resolved_actor_provider = actor_provider or OperatingSystemActorProvider()
+    resolved_controller_ownership = controller_ownership or create_controller_ownership(
+        controller_resource_path_from_unit_of_work_factory(unit_of_work_factory)
+    )
     app = FastAPI(title="AI Migration Control Tower", version="0.1.0", lifespan=_control_tower_lifespan)
     app.state.event_replay_config = config
     app.state.public_event_notifier = PublicEventNotifier()
     app.state.sse_client_limiter = SseClientLimiter(config.max_sse_clients)
     app.state.unit_of_work_factory = unit_of_work_factory
+    app.state.security_settings = local_security
+    app.state.actor_provider = resolved_actor_provider
+    app.state.worker_launcher = worker_launcher
+    app.state.worker_terminator = worker_terminator
+    app.state.controller_ownership = resolved_controller_ownership
+    app.state.controller_services_started = False
+    app.state.reconciliation_results = []
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[local_security.frontend_origin],
+        allow_credentials=False,
+        allow_methods=list(local_security.cors_allowed_methods),
+        allow_headers=list(local_security.cors_allowed_headers),
+    )
+
+    @app.middleware("http")
+    async def add_correlation_id(request: Request, call_next):
+        correlation_id = normalize_correlation_id(request.headers.get("X-Correlation-ID"))
+        request.state.correlation_id = correlation_id
+        response = await call_next(request)
+        response.headers["X-Correlation-ID"] = correlation_id
+        return response
+
+    @app.middleware("http")
+    async def enforce_local_security(request: Request, call_next):
+        host = request.headers.get("host")
+        if not host:
+            return _json_error(
+                request,
+                status.HTTP_400_BAD_REQUEST,
+                "MISSING_HOST",
+                "Host header is required.",
+            )
+        if host != local_security.trusted_api_host:
+            return _json_error(
+                request,
+                status.HTTP_403_FORBIDDEN,
+                "UNTRUSTED_HOST",
+                "Host is not allowed.",
+            )
+
+        if request.method in MUTATION_METHODS:
+            origin = request.headers.get("origin")
+            if origin != local_security.frontend_origin:
+                return _json_error(
+                    request,
+                    status.HTTP_403_FORBIDDEN,
+                    "INVALID_ORIGIN",
+                    "Origin is not allowed for mutation requests.",
+                )
+            client_id = request.headers.get("X-Control-Tower-Client")
+            if client_id != local_security.frontend_client_id:
+                return _json_error(
+                    request,
+                    status.HTTP_400_BAD_REQUEST,
+                    "INVALID_CLIENT_HEADER",
+                    "X-Control-Tower-Client is required for mutation requests.",
+                )
+            content_type = request.headers.get("content-type", "")
+            if not content_type.lower().startswith("application/json"):
+                return _json_error(
+                    request,
+                    status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                    "UNSUPPORTED_MEDIA_TYPE",
+                    "Mutation requests must use Content-Type application/json.",
+                )
+
+        if request.url.path not in {
+            "/v1/health/live",
+            "/v1/health/ready",
+            "/v1/health/dependencies",
+        }:
+            ownership = _ensure_controller_ownership(app)
+            if not ownership.ready:
+                error_code = "SERVICE_INSTANCE_CONFLICT" if ownership.status == "conflict" else "SERVICE_NOT_READY"
+                return _json_error(
+                    request,
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    error_code,
+                    "Local Control Tower controller ownership is unavailable.",
+                )
+        return await call_next(request)
+
+    @app.exception_handler(HTTPException)
+    async def handle_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        code = str(detail.get("code", "HTTP_ERROR"))
+        message = str(detail.get("message", "Request failed."))
+        return _json_error(request, exc.status_code, code, message)
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        del exc
+        return _json_error(
+            request,
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "INVALID_REQUEST",
+            "Request body did not match the expected contract.",
+        )
+
+    @app.exception_handler(Exception)
+    async def handle_unexpected_exception(request: Request, exc: Exception) -> JSONResponse:
+        del exc
+        return _json_error(
+            request,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "INTERNAL_SERVER_ERROR",
+            "Internal server error.",
+        )
 
     @app.get("/v1/runner-profiles")
     def list_runner_profiles() -> dict[str, Any]:
@@ -205,7 +348,7 @@ def create_app(
                 }
                 for profile in uow.runner_profiles.list()
             ]
-        return {"runner_profiles": profiles}
+        return {"runner_profiles": redact_public_data(profiles)}
 
     @app.get("/v1/pipelines")
     def list_pipelines() -> dict[str, Any]:
@@ -218,7 +361,7 @@ def create_app(
                 }
                 for pipeline in uow.pipeline_definitions.list()
             ]
-        return {"pipelines": pipelines}
+        return {"pipelines": redact_public_data(pipelines)}
 
     @app.get("/v1/filesystem/roots")
     def list_filesystem_roots() -> dict[str, Any]:
@@ -235,7 +378,7 @@ def create_app(
                             "display_name": str(root["root_id"]),
                         }
                     )
-        return {"filesystem_roots": roots}
+        return {"filesystem_roots": redact_public_data(roots)}
 
     @app.post("/v1/jobs", status_code=status.HTTP_201_CREATED)
     async def create_job(
@@ -291,6 +434,7 @@ def create_app(
         if not idempotency_key:
             raise _error(status.HTTP_400_BAD_REQUEST, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key is required.")
         expected_version = _expected_version_from_if_match(job_id, if_match)
+        actor = resolved_actor_provider.current_actor()
         service = DiagnosticJobService(unit_of_work_factory)
         try:
             projection = service.start_migration_job(
@@ -298,8 +442,8 @@ def create_app(
                     job_id=job_id,
                     expected_version=expected_version,
                     idempotency_key=idempotency_key,
-                    actor_type="user",
-                    actor_id=getpass.getuser(),
+                    actor_type=actor.actor_type,
+                    actor_id=actor.actor_id,
                 )
             )
         except ControlTowerError as exc:
@@ -489,6 +633,7 @@ def create_app(
                 "If-Match is required for cancel.",
             )
         expected_version = _expected_version_from_if_match(job_id, if_match)
+        actor = resolved_actor_provider.current_actor()
 
         service = CancelService(unit_of_work_factory, worker_terminator)
         try:
@@ -497,8 +642,8 @@ def create_app(
                     job_id=job_id,
                     expected_version=expected_version,
                     grace_period_seconds=5.0,
-                    actor_type="user",
-                    actor_id=getpass.getuser(),
+                    actor_type=actor.actor_type,
+                    actor_id=actor.actor_id,
                 )
             )
         except ControlTowerError as exc:
@@ -509,22 +654,12 @@ def create_app(
     @app.post("/v1/jobs/{job_id}/timeout")
     async def handle_timeout(
         job_id: str,
-        request: StrictRequest,
+        request: TimeoutRequest,
     ) -> dict[str, Any]:
         import time as _time
 
-        # Parse timeout params from request body
-        body: dict[str, Any] = {}
-        try:
-            body = await request.json()
-        except Exception:
-            pass
-
-        command_id = body.get("command_id", "")
-        timeout_seconds = body.get("timeout_seconds", 3600)
-        deadline = body.get("deadline", 0.0)
-
         # If no deadline provided, compute from monotonic clock
+        deadline = request.deadline
         if deadline <= 0.0:
             deadline = _time.monotonic()
 
@@ -533,8 +668,8 @@ def create_app(
             projection = service.handle_timeout(
                 TimeoutCommand(
                     job_id=job_id,
-                    command_id=command_id,
-                    timeout_seconds=int(timeout_seconds),
+                    command_id=request.command_id,
+                    timeout_seconds=int(request.timeout_seconds),
                     deadline=float(deadline),
                     actor_type="system",
                     actor_id="system",
@@ -578,6 +713,32 @@ def create_app(
             "max_bytes": window.max_bytes,
         }
 
+    @app.get("/v1/health/live")
+    def health_live(request: Request) -> dict[str, Any]:
+        return {
+            "status": "live",
+            "service": "control-tower-api",
+            "correlation_id": request.state.correlation_id,
+        }
+
+    @app.get("/v1/health/ready")
+    def health_ready(request: Request) -> dict[str, Any]:
+        payload = _ready_payload(
+            request=request,
+            app=app,
+            unit_of_work_factory=unit_of_work_factory,
+        )
+        return redact_public_data(payload)
+
+    @app.get("/v1/health/dependencies")
+    def health_dependencies(request: Request) -> dict[str, Any]:
+        payload = _dependencies_payload(
+            request=request,
+            app=app,
+            unit_of_work_factory=unit_of_work_factory,
+        )
+        return redact_public_data(payload)
+
     return app
 
 
@@ -598,7 +759,7 @@ def _projection_payload(projection: JobProjectionDto) -> dict[str, Any]:
     recovery_reason = None
     if job.status == JobState.RECOVERY_REQUIRED:
         recovery_reason = "uncertain active execution after restart"
-    return {
+    return redact_public_data({
         "job": {
             "job_id": job.job_id,
             "version": job.version,
@@ -618,7 +779,7 @@ def _projection_payload(projection: JobProjectionDto) -> dict[str, Any]:
             "updated_at": command.updated_at,
         },
         "etag": projection.etag,
-    }
+    })
 
 
 async def _event_stream(
@@ -670,7 +831,7 @@ async def _event_stream(
 
 
 def _event_payload(event: RunEventDto) -> dict[str, Any]:
-    return {
+    return redact_public_data({
         "event_id": event.event_id,
         "job_id": event.job_id,
         "sequence": event.sequence,
@@ -682,7 +843,7 @@ def _event_payload(event: RunEventDto) -> dict[str, Any]:
         "payload": event.payload,
         "payload_checksum": event.payload_checksum,
         "created_at": event.created_at,
-    }
+    })
 
 
 def _sse_frame(
@@ -718,7 +879,7 @@ def _expected_version_from_if_match(job_id: str, if_match: str | None) -> int:
 
 def _raise_http_error(exc: ControlTowerError) -> None:
     if isinstance(exc, UnsupportedPlatformError):
-        raise _error(status.HTTP_501_NOT_IMPLEMENTED, "UNSUPPORTED_PLATFORM", str(exc)) from exc
+        raise _error(status.HTTP_501_NOT_IMPLEMENTED, "UNSUPPORTED_PLATFORM", "Worker launch is not supported on this platform.") from exc
     if isinstance(exc, EventCursorConflictError):
         raise _error(status.HTTP_400_BAD_REQUEST, "EVENT_CURSOR_CONFLICT", str(exc)) from exc
     if isinstance(exc, InvalidEventCursorError):
@@ -739,5 +900,176 @@ def _raise_http_error(exc: ControlTowerError) -> None:
 def _error(status_code: int, code: str, message: str) -> HTTPException:
     return HTTPException(
         status_code=status_code,
-        detail={"error": {"code": code, "message": message, "details": {}}},
+        detail={"code": code, "message": message},
     )
+
+
+def _json_error(request: Request, status_code: int, code: str, message: str) -> JSONResponse:
+    correlation_id = getattr(request.state, "correlation_id", normalize_correlation_id(None))
+    return JSONResponse(
+        status_code=status_code,
+        content=public_error_payload(code, message, correlation_id),
+        headers={"X-Correlation-ID": correlation_id},
+    )
+
+
+def _ready_payload(
+    *,
+    request: Request,
+    app: FastAPI,
+    unit_of_work_factory: UnitOfWorkFactory,
+) -> dict[str, Any]:
+    migration = _migration_status(unit_of_work_factory)
+    roots = _registered_root_status(unit_of_work_factory)
+    process_control = _process_control_status(app)
+    singleton = _singleton_status(app)
+    service_loop = _service_loop_status(app)
+    ready = all(
+        (
+            migration["ready"],
+            roots["ready"],
+            process_control["ready"],
+            singleton["ready"],
+            service_loop["ready"],
+        )
+    )
+    return {
+        "status": "ready" if ready else "not_ready",
+        "correlation_id": request.state.correlation_id,
+        "checks": {
+            "singleton_ownership": singleton,
+            "db_migrations": migration,
+            "required_root_access": roots,
+            "service_loop": service_loop,
+            "process_control": process_control,
+        },
+    }
+
+
+def _dependencies_payload(
+    *,
+    request: Request,
+    app: FastAPI,
+    unit_of_work_factory: UnitOfWorkFactory,
+) -> dict[str, Any]:
+    settings: LocalApiSecuritySettings = app.state.security_settings
+    return {
+        "status": "ok",
+        "correlation_id": request.state.correlation_id,
+        "runtime": dependency_versions(),
+        "origins": {
+            "api": settings.api_origin,
+            "frontend": settings.frontend_origin,
+        },
+        "db_migrations": _migration_status(unit_of_work_factory),
+        "process_control": _process_control_status(app),
+        "service_loop": _service_loop_status(app),
+    }
+
+
+def _singleton_status(app: FastAPI) -> dict[str, Any]:
+    status = _ensure_controller_ownership(app)
+    return {
+        "ready": status.ready,
+        "status": status.status,
+    }
+
+
+def _ensure_controller_ownership(app: FastAPI) -> ControllerOwnershipStatus:
+    ownership: ControllerOwnership = app.state.controller_ownership
+    if not ownership.is_owned:
+        try:
+            ownership.acquire()
+        except (ControllerOwnershipConflictError, ControllerOwnershipUnavailableError):
+            return ownership.snapshot()
+        if not app.state.controller_services_started:
+            _run_startup_reconciliation(app)
+            app.state.controller_services_started = True
+    elif not app.state.controller_services_started:
+        _run_startup_reconciliation(app)
+        app.state.controller_services_started = True
+    return ownership.snapshot()
+
+
+def _run_startup_reconciliation(app: FastAPI) -> None:
+    unit_of_work_factory: UnitOfWorkFactory = app.state.unit_of_work_factory
+    try:
+        service = ReconciliationService(unit_of_work_factory)
+        results = service.reconcile_all()
+        app.state.reconciliation_results = results
+        if results:
+            _LOG_RECONCILIATION(results)
+    except Exception:
+        pass
+
+
+def _service_loop_status(app: FastAPI) -> dict[str, Any]:
+    notifier_ready = hasattr(app.state, "public_event_notifier")
+    limiter_ready = hasattr(app.state, "sse_client_limiter")
+    config_ready = hasattr(app.state, "event_replay_config")
+    return {
+        "ready": notifier_ready and limiter_ready and config_ready,
+        "status": "ok" if notifier_ready and limiter_ready and config_ready else "missing",
+        "sse_active_clients": getattr(app.state.sse_client_limiter, "active_clients", 0),
+    }
+
+
+def _process_control_status(app: FastAPI) -> dict[str, Any]:
+    launcher = getattr(app.state, "worker_launcher", None)
+    terminator = getattr(app.state, "worker_terminator", None)
+    ready = launcher is not None and terminator is not None
+    return {
+        "ready": ready,
+        "status": "configured" if ready else "not_configured",
+    }
+
+
+def _migration_status(unit_of_work_factory: UnitOfWorkFactory) -> dict[str, Any]:
+    from migration_factory.control_tower.infrastructure.sqlite.migrations import discover_migrations
+
+    expected_versions = [migration.version for migration in discover_migrations()]
+    try:
+        uow = unit_of_work_factory()
+        connection = getattr(uow, "connection", None)
+        if connection is None:
+            return {"ready": False, "status": "unknown", "applied_versions": 0}
+        table_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+        ).fetchone()
+        if table_exists is None:
+            return {"ready": False, "status": "missing", "applied_versions": 0}
+        rows = connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall()
+        applied_versions = [int(row["version"]) for row in rows]
+        return {
+            "ready": applied_versions == expected_versions,
+            "status": "current" if applied_versions == expected_versions else "outdated",
+            "applied_versions": len(applied_versions),
+            "expected_versions": len(expected_versions),
+        }
+    except Exception:
+        return {"ready": False, "status": "error", "applied_versions": 0}
+
+
+def _registered_root_status(unit_of_work_factory: UnitOfWorkFactory) -> dict[str, Any]:
+    try:
+        with unit_of_work_factory() as uow:
+            roots: list[Path] = []
+            for profile in uow.runner_profiles.list():
+                for root in (profile.payload.get("filesystem", {}).get("roots", ()) or ()):
+                    root_path = root.get("path")
+                    if isinstance(root_path, str):
+                        roots.append(Path(root_path))
+        accessible_count = sum(1 for root in roots if path_accessible(root))
+        ready = accessible_count == len(roots)
+        if not roots:
+            return {"ready": True, "status": "not_configured", "checked_root_count": 0}
+        return {
+            "ready": ready,
+            "status": "ok" if ready else "inaccessible",
+            "checked_root_count": len(roots),
+            "accessible_root_count": accessible_count,
+        }
+    except Exception:
+        return {"ready": False, "status": "error", "checked_root_count": 0}

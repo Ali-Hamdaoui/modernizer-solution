@@ -23,7 +23,7 @@ def test_create_get_and_start_diagnostic_job_over_http(tmp_path: Path) -> None:
     apply_pending_migrations(connection)
     seed_runner_profile_with_roots(connection, artifact_roots(tmp_path))
     seed_pipeline_definition(connection)
-    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)))
+    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)), base_url="http://127.0.0.1:8000")
 
     assert client.get("/v1/runner-profiles").json()["runner_profiles"][0]["runner_profile_id"] == "runner-default"
     assert client.get("/v1/pipelines").json()["pipelines"][0]["pipeline_id"] == "pipeline-default"
@@ -31,7 +31,7 @@ def test_create_get_and_start_diagnostic_job_over_http(tmp_path: Path) -> None:
     assert root_payload["filesystem_roots"][0]["root_id"] == "source-root"
     assert "path" not in root_payload["filesystem_roots"][0]
 
-    create_response = client.post("/v1/jobs", json=_job_payload(), headers={"Idempotency-Key": "create-1"})
+    create_response = client.post("/v1/jobs", json=_job_payload(), headers=_mutation_headers(idempotency_key="create-1"))
     assert create_response.status_code == 201
     assert create_response.json()["job"]["state"] == "CREATED"
     etag = create_response.headers["etag"]
@@ -44,14 +44,14 @@ def test_create_get_and_start_diagnostic_job_over_http(tmp_path: Path) -> None:
     missing_precondition = client.post(
         f"/v1/jobs/{job_id}/start",
         json={},
-        headers={"Idempotency-Key": "start-1"},
+        headers=_mutation_headers(idempotency_key="start-1"),
     )
     assert missing_precondition.status_code == 428
 
     queued = client.post(
         f"/v1/jobs/{job_id}/start",
         json={},
-        headers={"Idempotency-Key": "start-1", "If-Match": etag},
+        headers=_mutation_headers(idempotency_key="start-1", if_match=etag),
     )
     assert queued.status_code == 200
     assert queued.json()["job"]["state"] == "QUEUED"
@@ -62,12 +62,20 @@ def test_create_get_and_start_diagnostic_job_over_http(tmp_path: Path) -> None:
 def test_create_requires_idempotency_key(tmp_path: Path) -> None:
     connection = _api_test_connection(tmp_path)
     apply_pending_migrations(connection)
-    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)))
+    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)), base_url="http://127.0.0.1:8000")
 
-    response = client.post("/v1/jobs", json=_job_payload())
+    response = client.post(
+        "/v1/jobs",
+        json=_job_payload(),
+        headers={
+            "Content-Type": "application/json",
+            "Origin": "http://127.0.0.1:3000",
+            "X-Control-Tower-Client": "control-tower-frontend",
+        },
+    )
 
     assert response.status_code == 400
-    assert response.json()["detail"]["error"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
+    assert response.json()["error"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
 
 
 def _job_payload() -> dict:
@@ -88,6 +96,18 @@ def _job_payload() -> dict:
             "enable_endpoint_gate": False,
         },
     }
+
+
+def _mutation_headers(*, idempotency_key: str, if_match: str | None = None) -> dict[str, str]:
+    headers = {
+        "Content-Type": "application/json",
+        "Origin": "http://127.0.0.1:3000",
+        "X-Control-Tower-Client": "control-tower-frontend",
+        "Idempotency-Key": idempotency_key,
+    }
+    if if_match is not None:
+        headers["If-Match"] = if_match
+    return headers
 
 
 def _api_test_connection(tmp_path: Path) -> sqlite3.Connection:

@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from tests.control_tower.test_fastapi_diagnostic_queue import _mutation_headers
 
 from migration_factory.control_tower.application.commands import (
     CancelCommand,
@@ -419,11 +420,11 @@ class TestFastapiCancelEndpoint:
         from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import (
             SqliteUnitOfWork,
         )
-        client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)))
+        client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)), base_url="http://127.0.0.1:8000")
 
-        resp = client.post("/v1/jobs/fake-job/cancel", json={})
+        resp = client.post("/v1/jobs/fake-job/cancel", json={}, headers=_mutation_headers(idempotency_key="cancel-1"))
         assert resp.status_code == 428
-        assert resp.json()["detail"]["error"]["code"] == "PRECONDITION_REQUIRED"
+        assert resp.json()["error"]["code"] == "PRECONDITION_REQUIRED"
 
     def test_cancel_endpoint_rejects_bad_etag(self, tmp_path: Path) -> None:
         fastapi = pytest.importorskip("fastapi")
@@ -455,13 +456,13 @@ class TestFastapiCancelEndpoint:
             SqliteUnitOfWork,
         )
         from tests.control_tower.test_fastapi_diagnostic_queue import _job_payload
-        client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)))
+        client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)), base_url="http://127.0.0.1:8000")
 
         # Create a job to get a real job_id
         create_resp = client.post(
             "/v1/jobs",
             json=_job_payload(),
-            headers={"Idempotency-Key": "cancel-etag-test"},
+            headers=_mutation_headers(idempotency_key="cancel-etag-test"),
         )
         assert create_resp.status_code == 201
         job_id = create_resp.json()["job"]["job_id"]
@@ -470,10 +471,10 @@ class TestFastapiCancelEndpoint:
         resp = client.post(
             f"/v1/jobs/{job_id}/cancel",
             json={},
-            headers={"If-Match": '"job-fake-v999"'},
+            headers=_mutation_headers(idempotency_key="cancel-etag-test-2", if_match='"job-fake-v999"'),
         )
         assert resp.status_code == 412
-        assert resp.json()["detail"]["error"]["code"] == "JOB_VERSION_CONFLICT"
+        assert resp.json()["error"]["code"] == "JOB_VERSION_CONFLICT"
 
 
 # ── Cooperative stop / grace period tests ────────────────────────
