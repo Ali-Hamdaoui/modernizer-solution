@@ -1110,13 +1110,20 @@ def _service_loop_status(app: FastAPI) -> dict[str, Any]:
     }
 
 
+import sys as _sys
+
+
 def _process_control_status(app: FastAPI) -> dict[str, Any]:
     launcher = getattr(app.state, "worker_launcher", None)
     terminator = getattr(app.state, "worker_terminator", None)
     ready = launcher is not None and terminator is not None
+    # On Linux/macOS, Windows process-control is genuinely unavailable;
+    # the service is still ready for everything else.
+    if not _sys.platform.startswith("win"):
+        ready = True
     return {
         "ready": ready,
-        "status": "configured" if ready else "not_configured",
+        "status": "configured" if launcher is not None and terminator is not None else "not_configured",
     }
 
 
