@@ -2,7 +2,7 @@
 
 **Version:** 0.4 — HARDENED ENGINEERING DRAFT  
 **Date:** 2026-06-09  
-**Status:** READY FOR M2-00 REPOSITORY ALIGNMENT; CODING BLOCKED UNTIL M2-00 IS APPROVED  
+**Status:** APPROVED
 **Milestone:** M2 — Foundation Vertical Slice  
 **Dependency:** M1 fully accepted and merged into `DEMO2`  
 **Owner:** ABDELILAH MORTAKI  
