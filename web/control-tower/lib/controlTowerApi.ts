@@ -12,8 +12,27 @@ import type {
   RunnerProfileOption
 } from "./contracts";
 
-export const CONTROL_TOWER_API_BASE_URL =
-  process.env.NEXT_PUBLIC_CONTROL_TOWER_API_BASE_URL ?? "http://127.0.0.1:8000";
+export const CONTROL_TOWER_FRONTEND_CLIENT_ID = "control-tower-frontend";
+export const DEFAULT_CONTROL_TOWER_API_BASE_URL = "http://127.0.0.1:8000";
+
+export function resolveControlTowerApiBaseUrl(
+  configuredValue: string | undefined = process.env.NEXT_PUBLIC_CONTROL_TOWER_API_BASE_URL
+): string {
+  const candidate = configuredValue ?? DEFAULT_CONTROL_TOWER_API_BASE_URL;
+  const url = new URL(candidate);
+  if (url.protocol !== "http:") {
+    throw new Error("Control Tower API base URL must use http for local development.");
+  }
+  if (url.hostname !== "127.0.0.1") {
+    throw new Error("Control Tower API base URL must use 127.0.0.1 and must not mix localhost.");
+  }
+  if (!url.port) {
+    throw new Error("Control Tower API base URL must include an explicit port.");
+  }
+  return url.origin;
+}
+
+export const CONTROL_TOWER_API_BASE_URL = resolveControlTowerApiBaseUrl();
 
 export const allowedStatusCopy = {
   cancelled: "Foundation diagnostic cancelled",
@@ -116,6 +135,26 @@ export async function getArtifacts(jobId: string): Promise<ArtifactListResponse>
 export function eventStreamUrl(jobId: string, afterSequence: number): string {
   const params = new URLSearchParams({ after_sequence: String(afterSequence) });
   return `${CONTROL_TOWER_API_BASE_URL}/v1/jobs/${encodeURIComponent(jobId)}/events/stream?${params}`;
+}
+
+export async function postJson<TResponse>(
+  path: string,
+  body: unknown,
+  headers: HeadersInit = {}
+): Promise<TResponse> {
+  const response = await fetch(`${CONTROL_TOWER_API_BASE_URL}${path}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+    headers: {
+      "Content-Type": "application/json",
+      "X-Control-Tower-Client": CONTROL_TOWER_FRONTEND_CLIENT_ID,
+      ...headers
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`Control Tower mutation failed for ${path}.`);
+  }
+  return (await response.json()) as TResponse;
 }
 
 async function getJson<T>(path: string): Promise<T> {

@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { allowedStatusCopy, createDiagnosticJobPayload, eventStreamUrl, getJob } from "../lib/controlTowerApi";
+import {
+  CONTROL_TOWER_FRONTEND_CLIENT_ID,
+  DEFAULT_CONTROL_TOWER_API_BASE_URL,
+  allowedStatusCopy,
+  createDiagnosticJobPayload,
+  eventStreamUrl,
+  getJob,
+  postJson,
+  resolveControlTowerApiBaseUrl
+} from "../lib/controlTowerApi";
 import { applyPublicEvent, latestAppliedSequence, shouldRefetchJobProjection } from "../lib/eventReplay";
 
 describe("M2-01 frontend diagnostic contracts", () => {
@@ -53,6 +62,12 @@ describe("M2-01 frontend diagnostic contracts", () => {
     expect(eventStreamUrl("job-1", 7)).toContain("/v1/jobs/job-1/events/stream?after_sequence=7");
   });
 
+  it("uses canonical 127.0.0.1 api base url", () => {
+    expect(DEFAULT_CONTROL_TOWER_API_BASE_URL).toBe("http://127.0.0.1:8000");
+    expect(resolveControlTowerApiBaseUrl(undefined)).toBe("http://127.0.0.1:8000");
+    expect(() => resolveControlTowerApiBaseUrl("http://localhost:8000")).toThrow(/127\.0\.0\.1/);
+  });
+
   it("keeps initial job projection fetch non-cached", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -77,6 +92,28 @@ describe("M2-01 frontend diagnostic contracts", () => {
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/v1/jobs/job-1"), {
       cache: "no-store"
     });
+  });
+
+  it("mutation helper sends required client header and json content type", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ ok: true })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await postJson("/v1/jobs", { value: "ok" }, { "Idempotency-Key": "key-1" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/v1/jobs"),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "Content-Type": "application/json",
+          "X-Control-Tower-Client": CONTROL_TOWER_FRONTEND_CLIENT_ID,
+          "Idempotency-Key": "key-1"
+        })
+      })
+    );
   });
 
   it("applies public events idempotently and refetches state-changing projections", () => {

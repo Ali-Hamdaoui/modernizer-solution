@@ -146,3 +146,24 @@ class EventCursorConflictError(ControlTowerError):
             "Last-Event-ID and after_sequence must match when both are provided: "
             f"{header_sequence} != {query_sequence}"
         )
+
+
+class ControllerOwnershipConflictError(ControlTowerError):
+    """Raised when another local Control Tower controller already owns the singleton."""
+
+    def __init__(self) -> None:
+        super().__init__("Another local Control Tower controller is already active")
+
+
+class ControllerOwnershipUnavailableError(ControlTowerError):
+    """Raised when singleton/controller ownership cannot be established."""
+
+    def __init__(self) -> None:
+        super().__init__("Local Control Tower controller ownership is unavailable")
+
+
+class ControllerOwnershipReleaseError(ControlTowerError):
+    """Raised when singleton/controller ownership cannot be released cleanly."""
+
+    def __init__(self) -> None:
+        super().__init__("Local Control Tower controller ownership could not be released cleanly")

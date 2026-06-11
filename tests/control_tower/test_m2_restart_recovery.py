@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from tests.control_tower.test_fastapi_diagnostic_queue import _mutation_headers
 
 from migration_factory.control_tower.application.commands import (
     CreateMigrationJobCommand,
@@ -418,7 +419,7 @@ class TestFastapiRecoveryProjection:
         from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import (
             SqliteUnitOfWork,
         )
-        client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)))
+        client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)), base_url="http://127.0.0.1:8000")
 
         # Create a job
         from tests.control_tower.test_fastapi_diagnostic_queue import _job_payload
@@ -426,7 +427,7 @@ class TestFastapiRecoveryProjection:
         create_resp = client.post(
             "/v1/jobs",
             json=_job_payload(),
-            headers={"Idempotency-Key": "recovery-proj-test"},
+            headers=_mutation_headers(idempotency_key="recovery-proj-test"),
         )
         assert create_resp.status_code == 201
         job_id = create_resp.json()["job"]["job_id"]
@@ -480,14 +481,14 @@ class TestBrowserReconnect:
         from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import (
             SqliteUnitOfWork,
         )
-        client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)))
+        client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)), base_url="http://127.0.0.1:8000")
 
         # Create and start a job
         from tests.control_tower.test_fastapi_diagnostic_queue import _job_payload
         create_resp = client.post(
             "/v1/jobs",
             json=_job_payload(),
-            headers={"Idempotency-Key": "reconnect-test"},
+            headers=_mutation_headers(idempotency_key="reconnect-test"),
         )
         assert create_resp.status_code == 201
         job_id = create_resp.json()["job"]["job_id"]
@@ -497,7 +498,7 @@ class TestBrowserReconnect:
         start_resp = client.post(
             f"/v1/jobs/{job_id}/start",
             json={},
-            headers={"Idempotency-Key": "reconnect-start", "If-Match": etag},
+            headers=_mutation_headers(idempotency_key="reconnect-start", if_match=etag),
         )
         assert start_resp.status_code == 200
 

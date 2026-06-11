@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { Catalog } from "../../../lib/contracts";
-import { CONTROL_TOWER_API_BASE_URL, createDiagnosticJobPayload } from "../../../lib/controlTowerApi";
+import { createDiagnosticJobPayload, postJson } from "../../../lib/controlTowerApi";
 
 type Props = {
   catalog: Catalog;
@@ -26,18 +26,9 @@ export function CreateDiagnosticJobForm({ catalog }: Props) {
         outputRootId: String(formData.get("outputRootId") ?? ""),
         outputRelativePath: String(formData.get("outputRelativePath") ?? "")
       });
-      const response = await fetch(`${CONTROL_TOWER_API_BASE_URL}/v1/jobs`, {
-        body: JSON.stringify(payload),
-        headers: {
-          "Content-Type": "application/json",
-          "Idempotency-Key": crypto.randomUUID()
-        },
-        method: "POST"
+      const body = await postJson<{ job: { job_id: string } }>("/v1/jobs", payload, {
+        "Idempotency-Key": crypto.randomUUID()
       });
-      if (!response.ok) {
-        throw new Error("Could not create foundation diagnostic job.");
-      }
-      const body = (await response.json()) as { job: { job_id: string } };
       window.location.assign(`/jobs/${encodeURIComponent(body.job.job_id)}`);
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Could not create foundation diagnostic job.");

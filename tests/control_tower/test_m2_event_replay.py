@@ -37,6 +37,7 @@ from tests.control_tower._helpers import (
     seed_pipeline_definition,
     seed_runner_profile_with_roots,
 )
+from tests.control_tower.test_fastapi_diagnostic_queue import _mutation_headers
 
 
 def test_public_event_catalog_and_run_events_fk_are_extensible(tmp_path: Path) -> None:
@@ -111,13 +112,13 @@ def test_http_event_replay_endpoint_returns_committed_events_only(tmp_path: Path
     apply_pending_migrations(connection)
     seed_runner_profile_with_roots(connection, artifact_roots(tmp_path))
     seed_pipeline_definition(connection)
-    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)))
+    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)), base_url="http://127.0.0.1:8000")
 
     job_id, etag = _create_job_over_http(client)
     client.post(
         f"/v1/jobs/{job_id}/start",
         json={},
-        headers={"Idempotency-Key": "start-1", "If-Match": etag},
+        headers=_mutation_headers(idempotency_key="start-1", if_match=etag),
     )
 
     response = client.get(f"/v1/jobs/{job_id}/events?after_sequence=1")
@@ -137,7 +138,7 @@ def test_http_event_replay_endpoint_returns_committed_events_only(tmp_path: Path
 def test_http_event_replay_rejects_bad_missing_and_conflicting_cursors(tmp_path: Path) -> None:
     connection = _api_test_connection(tmp_path)
     apply_pending_migrations(connection)
-    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)))
+    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)), base_url="http://127.0.0.1:8000")
 
     assert client.get("/v1/jobs/missing/events").status_code == 404
 
@@ -153,11 +154,11 @@ def test_http_event_replay_rejects_bad_missing_and_conflicting_cursors(tmp_path:
     )
 
     assert malformed.status_code == 400
-    assert malformed.json()["detail"]["error"]["code"] == "INVALID_EVENT_CURSOR"
+    assert malformed.json()["error"]["code"] == "INVALID_EVENT_CURSOR"
     assert future.status_code == 400
-    assert future.json()["detail"]["error"]["code"] == "INVALID_EVENT_CURSOR"
+    assert future.json()["error"]["code"] == "INVALID_EVENT_CURSOR"
     assert conflict.status_code == 400
-    assert conflict.json()["detail"]["error"]["code"] == "EVENT_CURSOR_CONFLICT"
+    assert conflict.json()["error"]["code"] == "EVENT_CURSOR_CONFLICT"
 
 
 def test_http_event_replay_browser_reconnect_uses_last_event_id_over_stale_query(
@@ -167,12 +168,12 @@ def test_http_event_replay_browser_reconnect_uses_last_event_id_over_stale_query
     apply_pending_migrations(connection)
     seed_runner_profile_with_roots(connection, artifact_roots(tmp_path))
     seed_pipeline_definition(connection)
-    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)))
+    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)), base_url="http://127.0.0.1:8000")
     job_id, etag = _create_job_over_http(client)
     client.post(
         f"/v1/jobs/{job_id}/start",
         json={},
-        headers={"Idempotency-Key": "start-1", "If-Match": etag},
+        headers=_mutation_headers(idempotency_key="start-1", if_match=etag),
     )
 
     response = client.get(
@@ -191,12 +192,12 @@ def test_sse_replays_committed_events_with_persisted_sequence_ids(tmp_path: Path
     apply_pending_migrations(connection)
     seed_runner_profile_with_roots(connection, artifact_roots(tmp_path))
     seed_pipeline_definition(connection)
-    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)))
+    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)), base_url="http://127.0.0.1:8000")
     job_id, etag = _create_job_over_http(client)
     client.post(
         f"/v1/jobs/{job_id}/start",
         json={},
-        headers={"Idempotency-Key": "start-1", "If-Match": etag},
+        headers=_mutation_headers(idempotency_key="start-1", if_match=etag),
     )
 
     text = asyncio.run(_collect_sse_frames(connection, job_id, after_sequence=1, stop_after=2))
@@ -223,7 +224,7 @@ def test_sse_cursor_conflict_keepalive_and_client_limit(tmp_path: Path) -> None:
         keepalive_interval_seconds=0,
         reconnect_delay_ms=1000,
     )
-    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection), event_replay_config=config))
+    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection), event_replay_config=config), base_url="http://127.0.0.1:8000")
     job_id, _etag = _create_job_over_http(client)
 
     conflict = client.get(
@@ -241,12 +242,12 @@ def test_sse_browser_style_reconnect_resumes_after_last_event_id(tmp_path: Path)
     apply_pending_migrations(connection)
     seed_runner_profile_with_roots(connection, artifact_roots(tmp_path))
     seed_pipeline_definition(connection)
-    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)))
+    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)), base_url="http://127.0.0.1:8000")
     job_id, etag = _create_job_over_http(client)
     client.post(
         f"/v1/jobs/{job_id}/start",
         json={},
-        headers={"Idempotency-Key": "start-1", "If-Match": etag},
+        headers=_mutation_headers(idempotency_key="start-1", if_match=etag),
     )
 
     cursor = parse_public_event_cursor(after_sequence="0", last_event_id="2", latest_sequence=3)
@@ -328,7 +329,7 @@ def _create_job_over_http(client: TestClient) -> tuple[str, str]:
                 "enable_endpoint_gate": False,
             },
         },
-        headers={"Idempotency-Key": "create-1"},
+        headers=_mutation_headers(idempotency_key="create-1"),
     )
     assert response.status_code == 201
     return str(response.json()["job"]["job_id"]), str(response.headers["etag"])

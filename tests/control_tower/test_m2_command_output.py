@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from tests.control_tower.test_fastapi_diagnostic_queue import _mutation_headers
 
 from migration_factory.control_tower.application.commands import (
     CreateMigrationJobCommand,
@@ -452,13 +453,13 @@ class TestFastapiOutputEndpoints:
             SqliteUnitOfWork,
         )
         from tests.control_tower.test_fastapi_diagnostic_queue import _job_payload
-        client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)))
+        client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)), base_url="http://127.0.0.1:8000")
 
         # Create job and start it
         create_resp = client.post(
             "/v1/jobs",
             json=_job_payload(),
-            headers={"Idempotency-Key": "output-test-create"},
+            headers=_mutation_headers(idempotency_key="output-test-create"),
         )
         assert create_resp.status_code == 201
         job_id = create_resp.json()["job"]["job_id"]
@@ -468,7 +469,7 @@ class TestFastapiOutputEndpoints:
         start_resp = client.post(
             f"/v1/jobs/{job_id}/start",
             json={},
-            headers={"Idempotency-Key": "output-test-start", "If-Match": etag},
+            headers=_mutation_headers(idempotency_key="output-test-start", if_match=etag),
         )
         assert start_resp.status_code == 200
         command_id = start_resp.json()["active_command"]["command_id"]
