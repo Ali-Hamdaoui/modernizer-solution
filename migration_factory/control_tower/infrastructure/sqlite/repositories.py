@@ -844,6 +844,23 @@ class SqliteCommandExecutionRepository:
         ).fetchone()
         return _command_execution_from_row(row) if row is not None else None
 
+    def list_for_job(self, job_id: str) -> tuple[CommandExecutionDto, ...]:
+        rows = self._connection.execute(
+            """
+            SELECT command_id, job_id, operation, status, created_at, updated_at,
+                   correlation_id, causation_id,
+                   command_manifest_artifact_id, working_directory_root_id,
+                   working_directory_relative_path, worker_id, launch_attempt,
+                   stdout_offset, stderr_offset,
+                   worker_pid, process_control_id, process_started_at
+            FROM command_executions
+            WHERE job_id = ?
+            ORDER BY created_at, command_id
+            """,
+            (job_id,),
+        ).fetchall()
+        return tuple(_command_execution_from_row(row) for row in rows)
+
     def get_active_for_job(self, job_id: str) -> CommandExecutionDto | None:
         row = self._connection.execute(
             """

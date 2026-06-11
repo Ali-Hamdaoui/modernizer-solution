@@ -31,5 +31,24 @@ export function latestAppliedSequence(events: PublicRunEvent[]): number {
 }
 
 export function jobStatusCopy(job: JobRepresentation["job"]): string {
-  return job.state === "QUEUED" ? "Command queued" : "Foundation diagnostic job created";
+  switch (job.state) {
+    case "QUEUED":
+      return "Command queued";
+    case "STARTING":
+      return "Foundation diagnostic starting";
+    case "RUNNING":
+      return "Foundation diagnostic running";
+    case "CANCELLING":
+      return "Foundation diagnostic cancelling";
+    case "COMPLETED":
+      return "Foundation diagnostic completed";
+    case "FAILED":
+      return "Foundation diagnostic failed";
+    case "CANCELLED":
+      return "Foundation diagnostic cancelled";
+    case "RECOVERY_REQUIRED":
+      return "Foundation diagnostic needs recovery";
+    default:
+      return "Foundation diagnostic job created";
+  }
 }

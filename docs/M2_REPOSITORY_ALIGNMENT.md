@@ -1,455 +1,350 @@
-# M2 Repository Alignment
+# M2 Repository Alignment and Manual Vertical Slice Evidence
 
-Issue: AMF-148 - [Control Tower] M2-00 - Align the repository and freeze M2 contracts
+Date inspected: 2026-06-11
 
-Date inspected: 2026-06-10
+Integration base: `DEMO2` at `fc0bb49`
 
-Integration base: `DEMO2` at `521d7b4`
+Issue branch: `DEMO2`
 
-Issue branch: `fix/amf-148-150-review-findings`
+Working feature frozen for this pass: **Foundation Diagnostic Run from UI**
 
-This document records the current repository state after AMF-149 and AMF-150 tracer bullets. It does not approve future M2 behavior and does not add worker, dispatcher, Job Object, private spool, cancellation, output capture, migration execution, AI, or proof behavior.
+This document compares `docs/M2_IMPLEMENTATION_PLAN_HARDENED_v0.4.md` sections 0 through 31 against the current repository. It also records the manual-testable slice now available through the Next.js UI and FastAPI API. Graphify was used first for repository exploration, then all findings were confirmed against source and tests.
 
-## 0. Status and review
+## 1. Source Of Truth Files
 
-Status: Implementation model ready for reviewer approval.
+Inspected sources, in priority order:
 
-The original horizontal M2 work breakdown is now delivered through Jira tracer-bullet vertical slices:
+- `AGENTS.md`
+- `docs/M2_IMPLEMENTATION_PLAN_HARDENED_v0.4.md`
+- `docs/M2_REPOSITORY_ALIGNMENT.md`
+- `docs/adr/ADR-M2-01-fastapi-and-sse-adapter-strategy.md`
+- `docs/adr/ADR-M2-02-windows-job-object-and-process-control-strategy.md`
+- `docs/adr/ADR-M2-03-public-event-type-persistence-strategy.md`
+- `docs/adr/ADR-M2-04-nextjs-and-nodejs-workspace-version-strategy.md`
+- `docs/adr/ADR-M2-05-single-control-tower-controller-instance-strategy.md`
+- `migration_factory/control_tower/**`
+- `tests/control_tower/**`
+- `web/control-tower/**`
 
-- AMF-149 owns create/queue API behavior and the minimal frontend create/current-run path.
-- AMF-150 owns committed public-event SSE replay and frontend reconnect behavior.
-- Later M2 tasks extend these components. They must not create duplicate FastAPI apps, duplicate SSE endpoints, duplicate event-replay tables, or a replacement frontend workspace.
-- Worker launch, dispatcher, Windows Job Object, private worker event spool, raw output capture, cancellation, migration execution, AI behavior, repair behavior, and proof behavior remain deferred.
+No nested `AGENTS.md` files were found under `docs/`, `migration_factory/`, `tests/`, or `web/control-tower/`.
 
-Reviewer decisions remain pending. No approval is claimed by this document.
+## 2. Repository Evidence Snapshot
 
-| Reviewer | Decision | Date | Comments |
-|---|---|---|---|
-| HAMDAOUI Ali | Pending | Pending | Pending |
-| ilyas abarbach | Pending | Pending | Pending |
+Implemented backend files found:
 
-## 1. Sources inspected
+- `migration_factory/control_tower/adapters/fastapi/app.py`
+- `migration_factory/control_tower/application/commands.py`
+- `migration_factory/control_tower/application/dto.py`
+- `migration_factory/control_tower/application/ports.py`
+- `migration_factory/control_tower/application/queries.py`
+- `migration_factory/control_tower/application/services.py`
+- `migration_factory/control_tower/domain/commands.py`
+- `migration_factory/control_tower/domain/entities.py`
+- `migration_factory/control_tower/domain/errors.py`
+- `migration_factory/control_tower/domain/manifests.py`
+- `migration_factory/control_tower/domain/states.py`
+- `migration_factory/control_tower/domain/transitions.py`
+- `migration_factory/control_tower/infrastructure/worker_launcher.py`
+- `migration_factory/control_tower/infrastructure/workspace.py`
+- `migration_factory/control_tower/adapters/fastapi/dev_app.py`
+- `migration_factory/control_tower/infrastructure/sqlite/connection.py`
+- `migration_factory/control_tower/infrastructure/sqlite/repositories.py`
+- `migration_factory/control_tower/infrastructure/sqlite/unit_of_work.py`
+- `migration_factory/control_tower/infrastructure/sqlite/migrations/0001_foundation.sql`
+- `migration_factory/control_tower/infrastructure/sqlite/migrations/0002_m2_queued_diagnostic.sql`
+- `migration_factory/control_tower/infrastructure/sqlite/migrations/0003_m2_workspace_and_manifests.sql`
+- `migration_factory/control_tower/infrastructure/sqlite/migrations/0004_m2_controlled_worker_launch.sql`
+- `migration_factory/control_tower/infrastructure/sqlite/migrations/0005_m2_command_output.sql`
+- `migration_factory/control_tower/infrastructure/sqlite/migrations/0006_m2_terminal_artifacts.sql`
 
-Files and sources inspected:
+Implemented frontend files found:
 
-- Current assigned issues: AMF-148, AMF-149, AMF-150.
-- `AGENTS.md`.
-- `docs/M1_IMPLEMENTATION_PLAN.md`.
-- `docs/M2_IMPLEMENTATION_PLAN_HARDENED_v0.4.md`.
-- `docs/PRD_AI_Migration_Control_Tower_v0.3.md`.
-- `docs/adr/ADR-M2-01-fastapi-and-sse-adapter-strategy.md`.
-- `docs/adr/ADR-M2-02-windows-job-object-and-process-control-strategy.md`.
-- `docs/adr/ADR-M2-03-public-event-type-persistence-strategy.md`.
-- `docs/adr/ADR-M2-04-nextjs-and-nodejs-workspace-version-strategy.md`.
-- `docs/adr/ADR-M2-05-single-control-tower-controller-instance-strategy.md`.
-- `pyproject.toml`.
-- `migration_factory/control_tower/**`.
-- `tests/control_tower/**`.
-- `web/control-tower/**`.
+- `web/control-tower/app/page.tsx`
+- `web/control-tower/app/jobs/new/page.tsx`
+- `web/control-tower/app/jobs/new/CreateDiagnosticJobForm.tsx`
+- `web/control-tower/app/jobs/[jobId]/page.tsx`
+- `web/control-tower/app/jobs/[jobId]/CurrentRunClient.tsx`
+- `web/control-tower/app/jobs/[jobId]/StartDiagnosticJobButton.tsx`
+- `web/control-tower/app/globals.css`
+- `web/control-tower/lib/contracts.ts`
+- `web/control-tower/lib/controlTowerApi.ts`
+- `web/control-tower/lib/eventReplay.ts`
+- `web/control-tower/package.json`
+- `web/control-tower/package-lock.json`
 
-No nested `AGENTS.md` files exist under `docs/`, `migration_factory/`, `tests/`, or `web/control-tower/`.
+Tests found:
 
-## 2. Current package tree
+- `tests/control_tower/test_fastapi_diagnostic_queue.py`
+- `tests/control_tower/test_m2_diagnostic_queue.py`
+- `tests/control_tower/test_m2_event_replay.py`
+- `tests/control_tower/test_m2_workspace.py`
+- `tests/control_tower/test_m2_worker_launch.py`
+- `tests/control_tower/test_m2_command_output.py`
+- `tests/control_tower/test_m2_cancellation.py`
+- `tests/control_tower/test_m2_restart_recovery.py`
+- `tests/control_tower/test_m2_terminal_artifacts.py`
+- `tests/control_tower/test_sqlite_migrations.py`
+- `web/control-tower/tests/controlTowerApi.test.ts`
 
-Current Control Tower backend tree:
+## 3. Frozen Manual-Test Feature
 
-```text
-migration_factory/control_tower/
-  __init__.py
-  adapters/
-    __init__.py
-    fastapi/
-      __init__.py
-      app.py
-  application/
-    __init__.py
-    commands.py
-    dto.py
-    ports.py
-    queries.py
-    services.py
-  domain/
-    __init__.py
-    artifacts.py
-    checksums.py
-    commands.py
-    entities.py
-    errors.py
-    states.py
-    transitions.py
-  infrastructure/
-    __init__.py
-    paths.py
-    windows_paths.py
-    sqlite/
-      __init__.py
-      artifact_paths.py
-      connection.py
-      repositories.py
-      unit_of_work.py
-      migrations/
-        __init__.py
-        0001_foundation.sql
-        0002_m2_queued_diagnostic.sql
-  schemas/
-    __init__.py
-    common.py
-    pipeline_definition.py
-    run_configuration.py
-    runner_profile.py
-```
+Feature name: **Foundation Diagnostic Run from UI**
 
-Current Control Tower tests:
+Smallest useful flow now available:
 
-```text
-tests/control_tower/
-  __init__.py
-  _helpers.py
-  transition_helpers.py
-  test_active_job_lock.py
-  test_application_commands_queries.py
-  test_artifact_hashing.py
-  test_artifact_paths.py
-  test_artifact_registry.py
-  test_audit_records.py
-  test_create_migration_job.py
-  test_domain_transitions.py
-  test_fastapi_diagnostic_queue.py
-  test_m1_acceptance.py
-  test_m2_diagnostic_queue.py
-  test_m2_event_replay.py
-  test_paths.py
-  test_pipeline_definition_schema.py
-  test_pipeline_registration.py
-  test_run_configurations.py
-  test_run_events.py
-  test_runner_profile_registration.py
-  test_runner_profile_schema.py
-  test_sqlite_migrations.py
-  test_transition_job_state.py
-```
+1. User opens Next.js at `http://127.0.0.1:3000`.
+2. User opens `/jobs/new`.
+3. UI loads runner profiles, pipelines, and safe root IDs from FastAPI.
+4. User submits profile, pipeline, source relative path, and output relative path.
+5. FastAPI persists a diagnostic job and immutable M1 run configuration through application services.
+6. User opens `/jobs/{jobId}`.
+7. User starts the job.
+8. FastAPI persists a queued backend-owned `foundation_diagnostic` command and returns without launching a worker.
+9. UI shows job state, ETag/version, active command, event stream connection status, public event timeline, stdout/stderr windows with byte offsets, cancel button, and artifact metadata panel.
+10. UI wording uses `Foundation diagnostic` and never claims `Migration completed`, `Build verified`, `Spring Boot upgraded`, or `Proof achieved`.
 
-Current frontend workspace:
+Important limitation:
 
-```text
-web/control-tower/
-  app/
-    globals.css
-    layout.tsx
-    page.tsx
-    jobs/
-      [jobId]/
-        CurrentRunClient.tsx
-        StartDiagnosticJobButton.tsx
-        page.tsx
-      new/
-        CreateDiagnosticJobForm.tsx
-        page.tsx
-  lib/
-    contracts.ts
-    controlTowerApi.ts
-    eventReplay.ts
-  tests/
-    controlTowerApi.test.ts
-  next.config.mjs
-  next-env.d.ts
-  package.json
-  package-lock.json
-  tsconfig.json
-  vitest.config.ts
-```
+- A durable dispatcher/ingestor process is not wired into FastAPI lifespan yet. The existing `/v1/jobs/{job_id}/launch` and `/v1/jobs/{job_id}/finalize` routes are internal/manual non-production routes. They are not used by the frontend and remain documented as a gap until M2 dispatcher/ingestor ownership is implemented.
 
-## 3. Current dependencies
+## 4. FastAPI Endpoint Readiness
 
-Declared backend dependencies in `pyproject.toml`:
+Current required endpoint status:
 
-- `jsonschema`.
-- `fastapi==0.136.3`.
-- `langgraph`.
-- `pydantic>=2,<3`.
-- `PyYAML`.
-- `sse-starlette==3.4.4`.
-- `uvicorn==0.38.0`.
+| Endpoint | Status | Evidence |
+|---|---|---|
+| `GET /v1/health/live` | Implemented | `migration_factory/control_tower/adapters/fastapi/app.py` |
+| `GET /v1/health/ready` | Partially implemented | Checks database; reports dispatcher/singleton as `not_configured` |
+| `GET /v1/runner-profiles` | Implemented | Existing query over registered profiles |
+| `GET /v1/pipelines` | Implemented | Existing query over registered pipelines |
+| `POST /v1/jobs` | Implemented | `DiagnosticJobService.create_diagnostic_job` |
+| `GET /v1/jobs` | Implemented | Lists persisted jobs through `ControlTowerQueryService` |
+| `GET /v1/jobs/{job_id}` | Implemented | Returns projection and ETag |
+| `POST /v1/jobs/{job_id}/start` | Implemented | Queues command, no worker launch in route |
+| `POST /v1/jobs/{job_id}/cancel` | Implemented | Uses `CancelService` |
+| `GET /v1/jobs/{job_id}/commands` | Implemented | Lists command executions for a job |
+| `GET /v1/jobs/{job_id}/commands/{command_id}/logs/stdout` | Implemented | Alias for bounded stdout window |
+| `GET /v1/jobs/{job_id}/commands/{command_id}/logs/stderr` | Implemented | Alias for bounded stderr window |
+| `GET /v1/jobs/{job_id}/events` | Implemented | Committed public event replay |
+| `GET /v1/jobs/{job_id}/events/stream` | Implemented | SSE replay of committed public events |
+| `GET /v1/jobs/{job_id}/artifacts` | Implemented | Lists registered artifact metadata |
 
-Declared backend test extras:
+Existing internal/non-production endpoints:
 
-- `jsonschema`.
-- `fastapi==0.136.3`.
-- `pydantic>=2,<3`.
-- `pytest`.
-- `sse-starlette==3.4.4`.
+- `POST /v1/jobs/{job_id}/launch`
+- `POST /v1/jobs/{job_id}/finalize`
+- `POST /v1/jobs/{job_id}/timeout`
 
-Declared Python support remains `>=3.10`.
+These routes are useful for internal/manual development but do not satisfy the durable dispatcher requirement because route handlers can invoke lifecycle services directly.
 
-Verified local runtime:
+## 5. Section-By-Section M2 Status
 
-- `py --version`: `Python 3.14.5`.
-- FastAPI: `0.136.3`.
-- `sse-starlette`: `3.4.4`.
-- Uvicorn: `0.38.0`.
-- Starlette: `1.2.1`.
-- Pydantic: `2.13.4`.
-- `node --version`: `v24.15.0`.
-- `npm --version`: `11.12.1`.
+| Plan section | Repo status | Exact files found | Exact tests found | Next work required |
+|---|---|---|---|---|
+| 0. Readiness Verdict | Partially implemented, conflicting with older alignment text because production files now exist | `docs/M2_REPOSITORY_ALIGNMENT.md`, ADRs, Control Tower source | `tests/control_tower/**` | Reviewer approval and updated evidence matrix still required |
+| 1. M2 Purpose | Partially implemented | FastAPI, SQLite, Next.js, command services, workspace, launch, logs, artifacts | `test_fastapi_diagnostic_queue.py`, `test_m2_worker_launch.py`, `test_m2_command_output.py`, `test_m2_terminal_artifacts.py` | Durable dispatcher, private event ingestion, worker completion path |
+| 2. Locked M2 Architecture | Partially implemented | `app.py`, services, SQLite UoW, `worker_launcher.py`, Next app | Same as section 1 | Add dispatcher, ingestor, monitor, singleton ownership |
+| 3. Latest Technology Baseline | Partially implemented | `pyproject.toml`, `web/control-tower/package.json` | frontend build/typecheck, backend suite | Confirm runtime dependency diagnostics endpoint |
+| 4. M2-00 Repository Alignment | Implemented as living evidence, but reviewer approval pending | This document, ADRs | Control Tower and frontend checks | Keep this document current after each M2 slice |
+| 5. Critical Invariants | Partially implemented | `states.py`, `commands.py`, `services.py`, SQLite migrations | `test_active_job_lock.py`, `test_m2_diagnostic_queue.py`, `test_m2_worker_launch.py` | API singleton guard and full persist-before-resume acceptance evidence |
+| 6. Domain Contracts | Implemented for job/command states used so far | `domain/states.py`, `domain/commands.py`, `domain/transitions.py` | `test_domain_transitions.py`, `test_m2_cancellation.py` | Complete late-event authority via private ingestor |
+| 7. Immutable Manifests | Partially implemented | `domain/manifests.py`, `CommandWorkspaceService` | `test_m2_workspace.py`, `test_m2_worker_launch.py` | Wire manifest creation into dispatcher path |
+| 8. Persistence Extension | Partially implemented | migrations `0002` through `0006`, repositories, UoW | `test_sqlite_migrations.py`, M2 tests | Add worker event stream and receipt tables |
+| 9. Safe Workspace Lifecycle | Implemented for current workspace/manifest service | `application/services.py`, `infrastructure/workspace.py` | `test_m2_workspace.py` | Validate with full dispatcher and crash-window cases |
+| 10. Durable Start and Two-Phase Launch | Partially implemented | `DiagnosticJobService`, `WorkerLaunchService` | `test_m2_diagnostic_queue.py`, `test_m2_worker_launch.py` | Durable dispatcher claim loop and route-free launch path |
+| 11. API Singleton, Dispatcher, Ingestor, Monitor | Missing/partial | Reconciliation exists; no singleton/dispatcher/ingestor service found | `test_m2_restart_recovery.py` | Implement process-lifetime singleton, dispatcher, ingestor, monitor |
+| 12. Diagnostic Worker and Child Operation | Partially implemented | `infrastructure/worker_launcher.py` inline diagnostic worker | `test_m2_worker_launch.py` | Replace inline diagnostic with durable worker module and child operation contract |
+| 13. Output Capture | Partially implemented | output query windows and migrations | `test_m2_command_output.py` | Connect real worker stdout/stderr capture and offset advancement |
+| 14. Worker Event Spool | Mostly missing | terminal artifact code can preserve spool files | `test_m2_terminal_artifacts.py` | Implement private JSONL envelope, writer, reader, checksums, receipts |
+| 15. Event Ingestion and Late-Event Rules | Mostly missing | public event tables and replay exist | `test_m2_event_replay.py`, `test_m2_cancellation.py` | Implement private event ingestor and late-event disposition rules |
+| 16. Terminal Finalization and Forensic Artifacts | Partially implemented | `CommandFinalizationService`, artifact registry | `test_m2_terminal_artifacts.py` | Wire finalization to monitor/ingestor instead of manual route |
+| 17. Cancellation and Timeout | Partially implemented | `CancelService`, `TimeoutService`, terminator ports | `test_m2_cancellation.py` | Integrate with real process monitor and Job Object termination evidence |
+| 18. Startup and Crash Semantics | Partially implemented | `ReconciliationService` | `test_m2_restart_recovery.py` | Cover full crash windows and unsupported active restart policy |
+| 19. HTTP API Contract | Partially implemented and improved in this pass | `app.py`, `queries.py`, frontend API client | FastAPI tests and frontend tests | Add artifact metadata-by-id and dependency health if required |
+| 20. Optimistic Concurrency and Idempotency | Implemented for create/start/cancel surface used now | `DiagnosticJobService`, `CancelService`, `app.py` | `test_m2_diagnostic_queue.py`, `test_m2_cancellation.py` | Verify every mutation follows same contract |
+| 21. Native SSE Contract | Implemented for committed public event replay | `app.py`, `queries.py`, `eventReplay.ts` | `test_m2_event_replay.py`, frontend tests | Add max-client/dependency diagnostics evidence to runbook |
+| 22. Local Security | Partially implemented | strict request models, safe roots, no frontend command construction | FastAPI queue/event tests | Bind/Host/Origin/CORS guard not yet evident in app factory |
+| 23. Next.js Implementation | Partially implemented and improved in this pass | `web/control-tower/app/**`, `lib/**` | `web/control-tower/tests/controlTowerApi.test.ts` | Generated OpenAPI/shared contracts are still absent |
+| 24. Initial M2 Limits | Partially implemented | SSE config, log max bytes query limits | `test_m2_event_replay.py`, `test_m2_command_output.py` | Centralize all limits and boundary tests |
+| 25. Standard Error Contract | Partially implemented | `_error`, `_raise_http_error` | FastAPI tests | Redact all internal/manual route errors and add correlation IDs |
+| 26. Observability | Mostly missing | some structured payload fields exist | No dedicated observability tests found | Add dependency diagnostics, counters, structured logs |
+| 27. Jira Work Breakdown | Partially implemented across vertical slices | M2 source/tests listed above | M2 tests | Continue through dispatcher, ingestion, monitor, frontend acceptance |
+| 28. Test Strategy | Partially implemented | tests listed in section 2 | 316 Control Tower tests | Add missing spool/ingestion/security/crash-window/browser acceptance tests |
+| 29. Acceptance Criteria | Not fully met | Many components exist | Current tests pass | Full M2 acceptance still blocked by dispatcher/ingestor/singleton/private spool |
+| 30. Definition of Done | Not met | Evidence in this document | Current verification below | Reviewer approval, full suite, runbook, audits, missing M2 services |
+| 31. Final Implementation Order | Partially followed, now vertical-slice driven | current source tree | current tests | Freeze generated contracts and finish backend runtime before claiming M2 |
 
-Verified SSE import:
+## 6. Manual Test Steps
+
+Start FastAPI on loopback:
 
 ```powershell
-py -c "from fastapi.sse import EventSourceResponse, ServerSentEvent; print(EventSourceResponse.__module__, ServerSentEvent.__module__)"
+$env:CONTROL_TOWER_DEV_ROOT="$PWD\.control-tower-dev"
+py -m uvicorn migration_factory.control_tower.adapters.fastapi.dev_app:app --host 127.0.0.1 --port 8000
 ```
 
-Output:
+The dev ASGI module applies pending SQLite migrations and seeds a local runner profile and pipeline when the configured dev database is empty. Do not bind to `0.0.0.0`.
 
-```text
-fastapi.sse fastapi.sse
-```
-
-Frontend dependencies in `web/control-tower/package.json`:
-
-- `next`: `16.2.7`.
-- `react`: `19.2.7`.
-- `react-dom`: `19.2.7`.
-- `@types/node`: `24.10.1`.
-- `@types/react`: `19.2.7`.
-- `@types/react-dom`: `19.2.3`.
-- `typescript`: `5.9.3`.
-- `vitest`: `4.1.8`.
-- `overrides.postcss`: `8.5.10`.
-
-`web/control-tower/package-lock.json` is the frontend lockfile. No Python lockfile is present.
-
-## 4. Current migrations and persistence
-
-Current SQLite migrations:
-
-- `0001_foundation.sql`.
-- `0002_m2_queued_diagnostic.sql`.
-
-`0002_m2_queued_diagnostic.sql` is present and is now baseline M2 schema for later tasks.
-
-Current M2 persistence includes:
-
-- `event_types` catalog.
-- `command_executions`.
-- `idempotency_records`.
-- rebuilt `run_events` event-type FK behavior while preserving job-scoped public sequence.
-
-Later M2 tasks must extend these tables and repositories where needed. They must not recreate another command table, idempotency table, event-type catalog, or public browser replay table.
-
-## 5. Implemented AMF-149 behavior
-
-AMF-149 owns current create/queue vertical slice:
-
-- Domain command states and command execution entities.
-- Application create diagnostic job service.
-- Application start diagnostic job service.
-- Idempotency for create and start.
-- One atomic Unit of Work for create-job idempotency, job creation, run configuration, stage row, public event, audit row, and idempotency record.
-- FastAPI routes:
-  - `GET /v1/runner-profiles`.
-  - `GET /v1/pipelines`.
-  - `GET /v1/filesystem/roots`.
-  - `POST /v1/jobs`.
-  - `GET /v1/jobs/{job_id}`.
-  - `POST /v1/jobs/{job_id}/start`.
-- Minimal frontend create/current-run UI under `web/control-tower/`.
-
-Routes adapt HTTP to application services only. They do not launch subprocesses.
-
-Diagnostic wording remains limited. Diagnostic queue success must not be described as migration success or proof achievement.
-
-## 6. Implemented AMF-150 behavior
-
-AMF-150 owns current committed public-event replay:
-
-- Public event replay queries in `ControlTowerQueryService`.
-- Cursor parsing in `parse_public_event_cursor`.
-- HTTP replay endpoint:
-  - `GET /v1/jobs/{job_id}/events`.
-- SSE replay endpoint:
-  - `GET /v1/jobs/{job_id}/events/stream`.
-- Browser client EventSource bootstrap URL from the last applied public sequence.
-- Frontend event application that ignores already-applied public sequences and refetches projections after state-changing public events.
-
-SSE streams only committed public `run_events` rows. It does not expose private worker events, raw log text, absolute paths, process-control IDs, PIDs, or secrets.
-
-## 7. SSE cursor contract
-
-`Last-Event-ID` is authoritative on browser reconnect.
-
-Rules:
-
-- If `Last-Event-ID` is absent, use validated `after_sequence` when provided; otherwise start at `0`.
-- If valid `Last-Event-ID` is present, resume after that sequence.
-- If both values are present and `after_sequence <= Last-Event-ID`, treat `after_sequence` as stale bootstrap state and use `Last-Event-ID`.
-- Reject malformed cursors.
-- Reject negative cursors.
-- Reject cursors greater than the latest committed public event sequence.
-- Reject `after_sequence > Last-Event-ID` because that is not normal browser reconnect behavior and would create ambiguous replay intent.
-- Keepalive comments do not carry event IDs.
-- Disconnect releases the SSE client slot.
-
-## 8. Existing components to reuse
-
-Reusable current components:
-
-- Canonical JSON/checksum helpers in `domain/checksums.py`.
-- Timestamp helpers in `domain/entities.py`.
-- M1 state/transition rules in `domain/states.py` and `domain/transitions.py`.
-- M2 command state/entity contracts in `domain/commands.py` and `domain/entities.py`.
-- Typed errors in `domain/errors.py`.
-- Immutable command/read DTOs in `application/commands.py` and `application/dto.py`.
-- Repository and Unit of Work ports in `application/ports.py`.
-- Query service in `application/queries.py`.
-- Application services in `application/services.py`.
-- SQLite connection, migration runner, repositories, and Unit of Work under `infrastructure/sqlite/`.
-- Artifact path safety helpers in `infrastructure/sqlite/artifact_paths.py`, `infrastructure/paths.py`, and `infrastructure/windows_paths.py`.
-- FastAPI app factory in `adapters/fastapi/app.py`.
-- Next.js workspace in `web/control-tower/`.
-
-## 9. Future components still deferred
-
-Not implemented yet:
-
-- Durable dispatcher.
-- API/controller singleton guard.
-- Worker runtime.
-- Diagnostic worker subprocess launch.
-- Windows Job Object process control.
-- Private worker event spool.
-- Private event ingestion.
-- Process monitor.
-- Timeout and cancellation.
-- Raw stdout/stderr output capture and log windows.
-- Terminal artifact finalization.
-- Migration execution.
-- AI behavior.
-- Repair behavior.
-- Proof behavior.
-
-These must be implemented only by later approved M2 issues. They must extend existing AMF-149/150 API, persistence, SSE, and frontend components.
-
-## 10. Later M2 task alignment
-
-Later tasks must align as follows:
-
-- M2 persistence work treats `0002_m2_queued_diagnostic.sql`, `event_types`, `command_executions`, and `idempotency_records` as current baseline.
-- Worker/private-event/process-control tasks add deferred runtime behavior without changing browser SSE into a private-event stream.
-- FastAPI work extends `migration_factory/control_tower/adapters/fastapi/app.py`.
-- SSE work extends the existing committed public-event replay endpoint.
-- Frontend work extends `web/control-tower/`.
-- Acceptance work verifies AMF-149/150 behavior as baseline.
-
-## 11. Public contracts frozen by current state
-
-Job projection:
-
-- `job.job_id`.
-- `job.version`.
-- `job.state`.
-- `job.created_at`.
-- `job.updated_at`.
-- `active_command`.
-- `etag`.
-
-Command projection:
-
-- `command_id`.
-- `job_id`.
-- `operation`.
-- `status`.
-- `created_at`.
-- `updated_at`.
-
-Public event envelope:
-
-- `event_id`.
-- `job_id`.
-- `sequence`.
-- `event_type`.
-- `actor_type`.
-- `actor_id`.
-- `correlation_id`.
-- `causation_id`.
-- `payload`.
-- `payload_checksum`.
-- `created_at`.
-
-HTTP mutation rules:
-
-- Create job requires `Idempotency-Key`.
-- Start job requires `Idempotency-Key`.
-- Start job requires `If-Match`.
-- Missing `If-Match` returns `428 PRECONDITION_REQUIRED`.
-- Stale/mismatched `If-Match` returns `412 JOB_VERSION_CONFLICT`.
-- Same idempotency key plus same request checksum replays the stored result.
-- Same idempotency key plus different request checksum returns `409 IDEMPOTENCY_CONFLICT`.
-
-## 12. Commands
-
-Backend setup:
-
-```powershell
-py -m pip install -e .[test]
-```
-
-Backend verification:
-
-```powershell
-py -m pytest -q tests/control_tower
-py -m pytest -q tests/orchestrator/test_full_sandbox_migration.py::test_read_only_resume_approved_records_decision_and_does_not_run_transform
-py -m pytest -q
-git diff --check
-git diff --cached --check
-```
-
-Frontend verification:
+Start Next.js on loopback:
 
 ```powershell
 cd web/control-tower
-npm ci
-npm run type-check
+$env:NEXT_PUBLIC_CONTROL_TOWER_API_BASE_URL='http://127.0.0.1:8000'
+npm run dev -- --hostname 127.0.0.1 --port 3000
+```
+
+Open:
+
+```text
+http://127.0.0.1:3000/jobs/new
+```
+
+Manual UI flow:
+
+1. Select runner profile.
+2. Select pipeline.
+3. Select source root and output root.
+4. Enter source relative path such as `src`.
+5. Enter output relative path such as `out`.
+6. Create the foundation diagnostic job.
+7. On `/jobs/{jobId}`, confirm ETag/version, status cards, SSE connection status, and public events.
+8. Click `Start`.
+9. Confirm command state becomes `QUEUED`, public events advance, stdout/stderr panes remain offset-aware, and artifacts panel is empty until terminal finalization.
+10. Click `Cancel` while the command is active to exercise the cancellation API.
+
+Internal/manual backend-only routes that are not production dispatcher behavior:
+
+```http
+POST /v1/jobs/{job_id}/launch
+POST /v1/jobs/{job_id}/finalize
+POST /v1/jobs/{job_id}/timeout
+```
+
+## 7. Verification Results
+
+Baseline before edits:
+
+```text
+python -m pytest tests/control_tower -q
+```
+
+Result:
+
+```text
+python : The term 'python' is not recognized as the name of a cmdlet, function, script file, or operable program.
+```
+
+Windows launcher fallback:
+
+```text
+py -m pytest tests/control_tower -q
+316 passed, 2 skipped, 1 warning in 34.65s
+```
+
+Focused backend verification after edits:
+
+```text
+py -m pytest tests/control_tower/test_fastapi_diagnostic_queue.py tests/control_tower/test_m2_command_output.py -q
+22 passed, 1 warning in 3.62s
+```
+
+Dev ASGI bootstrap compile check:
+
+```text
+py -m py_compile migration_factory/control_tower/adapters/fastapi/dev_app.py
+```
+
+Focused FastAPI verification after adding the dev bootstrap:
+
+```text
+py -m pytest tests/control_tower/test_fastapi_diagnostic_queue.py -q
+2 passed, 1 warning in 0.50s
+```
+
+Required backend verification after edits:
+
+```text
+py -m pytest tests/control_tower -q
+316 passed, 2 skipped, 1 warning in 25.83s
+```
+
+Frontend install:
+
+```text
+npm install
+up to date, audited 68 packages in 2s
+found 0 vulnerabilities
+```
+
+Frontend typecheck:
+
+```text
+npm run typecheck
+> @modernizer/control-tower-web@0.1.0 typecheck
+> tsc --noEmit
+```
+
+Frontend tests:
+
+```text
 npm test
+Test Files  1 passed (1)
+Tests  5 passed (5)
+Duration  657ms
+```
+
+Frontend build:
+
+```text
 npm run build
-npm audit --audit-level=moderate
+Next.js 16.2.7 (Turbopack)
+Compiled successfully
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ƒ /jobs/[jobId]
+└ ƒ /jobs/new
 ```
 
-## 13. Baseline comparison evidence
+## 8. Remaining Gaps Vs M2 Plan
 
-Targeted orchestrator test requested by review:
+M2 is not complete. Remaining gaps:
 
-```powershell
-py -m pytest -q tests/orchestrator/test_full_sandbox_migration.py::test_read_only_resume_approved_records_decision_and_does_not_run_transform
-```
+- No production durable dispatcher loop in FastAPI lifespan.
+- No API/controller singleton guard.
+- No private worker event spool schema, writer, reader, receipt, and ingestor path.
+- No process monitor that owns timeout/finalization after worker exit.
+- No generated OpenAPI TypeScript contracts; frontend uses local TypeScript contract definitions.
+- Host, Origin, exact CORS, and mutation client-header enforcement are not evident in the FastAPI app factory.
+- Dependency diagnostics endpoint is not implemented.
+- `GET /v1/jobs/{job_id}/artifacts/{artifact_id}/metadata` is still missing, though `GET /v1/jobs/{job_id}/artifacts` is implemented.
+- Internal `/launch`, `/finalize`, and `/timeout` routes must not be treated as the production M2 runtime path.
+- Full private/public event separation is not proven until private events and receipts exist.
+- Full Windows Job Object acceptance evidence depends on Windows-only tests and reviewer approval.
+- Full repository suite beyond `tests/control_tower` was not run in this pass.
 
-Clean `DEMO2` at `521d7b4`, run from temporary detached worktree:
+## 9. Files Changed In This Pass
+
+- `migration_factory/control_tower/adapters/fastapi/app.py`
+- `migration_factory/control_tower/adapters/fastapi/dev_app.py`
+- `migration_factory/control_tower/application/ports.py`
+- `migration_factory/control_tower/application/queries.py`
+- `migration_factory/control_tower/infrastructure/sqlite/repositories.py`
+- `tests/control_tower/test_fastapi_diagnostic_queue.py`
+- `web/control-tower/app/globals.css`
+- `web/control-tower/app/jobs/[jobId]/CurrentRunClient.tsx`
+- `web/control-tower/lib/contracts.ts`
+- `web/control-tower/lib/controlTowerApi.ts`
+- `web/control-tower/lib/eventReplay.ts`
+- `web/control-tower/package.json`
+- `docs/M2_REPOSITORY_ALIGNMENT.md`
+
+## 10. Commit Recommendation
+
+Do not commit automatically unless explicitly requested by the user. Recommended local commit subject if approved:
 
 ```text
-1 passed in 6.30s
+feat(m2): expose foundation diagnostic manual slice
 ```
 
-Fix branch `fix/amf-148-150-review-findings`:
-
-```text
-1 passed in 5.56s
-```
-
-Classification: this exact test is not a current failure on either branch. It is neither proven pre-existing nor a branch regression in this environment.
-
-## 14. Conflicts and decisions
-
-Conflict: M2 plan requires Windows Job Object process-control evidence, but this repository has no reusable M0 Job Object implementation or tests.
-
-- Decision: process-control implementation remains deferred. M2-06/M2-08 need reviewer direction before coding Job Object behavior.
-
-Conflict: M2 plan was written as horizontal M2-00 through M2-13 work, but AMF-149/150 have already landed vertical tracer bullets.
-
-- Decision: AMF-149/150 implementations are current baseline. Later M2 tasks extend them and do not duplicate them.
-
-Conflict: repository now has FastAPI/SSE/frontend code, while older M2-00 inventory said they were absent.
-
-- Decision: this document records current repository state. FastAPI/SSE/frontend are implemented and dependency/workspace files are declared.
-
-Conflict: full repository tests may fail outside Control Tower.
-
-- Decision: run and report exact full-suite evidence for this branch. Fix only regressions caused by AMF-148/149/150 review changes.
+Nothing has been pushed.

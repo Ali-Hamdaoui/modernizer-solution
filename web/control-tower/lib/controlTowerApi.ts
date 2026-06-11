@@ -1,5 +1,8 @@
 import type {
+  ArtifactListResponse,
   Catalog,
+  CommandListResponse,
+  CommandOutputWindow,
   CreateDiagnosticJobFormValues,
   CreateDiagnosticJobRequest,
   FilesystemRootOption,
@@ -13,9 +16,13 @@ export const CONTROL_TOWER_API_BASE_URL =
   process.env.NEXT_PUBLIC_CONTROL_TOWER_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 export const allowedStatusCopy = {
+  cancelled: "Foundation diagnostic cancelled",
   created: "Foundation diagnostic job created",
   connected: "Event replay connected",
+  completed: "Foundation diagnostic completed",
   diagnosticQueued: "Foundation diagnostic queued",
+  failed: "Foundation diagnostic failed",
+  running: "Foundation diagnostic running",
   queued: "Command queued"
 } as const;
 
@@ -84,6 +91,26 @@ export async function getCommittedEvents(
 ): Promise<PublicEventReplayResponse> {
   const params = new URLSearchParams({ after_sequence: String(afterSequence) });
   return getJson<PublicEventReplayResponse>(`/v1/jobs/${encodeURIComponent(jobId)}/events?${params}`);
+}
+
+export async function getCommands(jobId: string): Promise<CommandListResponse> {
+  return getJson<CommandListResponse>(`/v1/jobs/${encodeURIComponent(jobId)}/commands`);
+}
+
+export async function getCommandOutput(
+  jobId: string,
+  commandId: string,
+  stream: "stdout" | "stderr",
+  afterOffset: number
+): Promise<CommandOutputWindow> {
+  const params = new URLSearchParams({ after_offset: String(afterOffset), max_bytes: "65536" });
+  return getJson<CommandOutputWindow>(
+    `/v1/jobs/${encodeURIComponent(jobId)}/commands/${encodeURIComponent(commandId)}/logs/${stream}?${params}`
+  );
+}
+
+export async function getArtifacts(jobId: string): Promise<ArtifactListResponse> {
+  return getJson<ArtifactListResponse>(`/v1/jobs/${encodeURIComponent(jobId)}/artifacts`);
 }
 
 export function eventStreamUrl(jobId: string, afterSequence: number): string {

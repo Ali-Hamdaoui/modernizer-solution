@@ -11,7 +11,6 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
-from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, status
@@ -28,7 +27,13 @@ from migration_factory.control_tower.application.commands import (
     StartMigrationJobCommand,
     TimeoutCommand,
 )
-from migration_factory.control_tower.application.dto import JobProjectionDto, RunEventDto
+from migration_factory.control_tower.application.dto import (
+    ArtifactDto,
+    CommandExecutionDto,
+    CommandOutputWindowDto,
+    JobProjectionDto,
+    RunEventDto,
+)
 from migration_factory.control_tower.application.ports import ControlTowerUnitOfWork, WorkerLauncher, WorkerTerminator
 from migration_factory.control_tower.application.queries import (
     DEFAULT_PUBLIC_EVENT_REPLAY_BATCH_SIZE,
@@ -194,6 +199,27 @@ def create_app(
     app.state.sse_client_limiter = SseClientLimiter(config.max_sse_clients)
     app.state.unit_of_work_factory = unit_of_work_factory
 
+    @app.get("/v1/health/live")
+    def health_live() -> dict[str, str]:
+        return {"status": "live"}
+
+    @app.get("/v1/health/ready")
+    def health_ready(response: Response) -> dict[str, Any]:
+        checks: dict[str, str] = {}
+        ready = True
+        try:
+            with unit_of_work_factory() as uow:
+                uow.runner_profiles.list()
+            checks["database"] = "ok"
+        except Exception:
+            ready = False
+            checks["database"] = "unavailable"
+        checks["dispatcher"] = "not_configured"
+        checks["singleton"] = "not_configured"
+        if not ready:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {"status": "ready" if ready else "not_ready", "checks": checks}
+
     @app.get("/v1/runner-profiles")
     def list_runner_profiles() -> dict[str, Any]:
         with unit_of_work_factory() as uow:
@@ -268,6 +294,24 @@ def create_app(
         response.headers["ETag"] = projection.etag
         await app.state.public_event_notifier.notify()
         return _projection_payload(projection)
+
+    @app.get("/v1/jobs")
+    def list_jobs() -> dict[str, Any]:
+        query_service = ControlTowerQueryService(unit_of_work_factory)
+        return {
+            "jobs": [
+                {
+                    "job_id": job.job_id,
+                    "version": job.version,
+                    "state": job.status.value,
+                    "created_at": job.created_at,
+                    "updated_at": job.updated_at,
+                    "started_at": job.started_at,
+                    "finished_at": job.finished_at,
+                }
+                for job in query_service.list_migration_jobs()
+            ]
+        }
 
     @app.get("/v1/jobs/{job_id}")
     def get_job(job_id: str, response: Response) -> dict[str, Any]:
@@ -443,6 +487,15 @@ def create_app(
             )
         )
 
+    @app.get("/v1/jobs/{job_id}/commands")
+    def list_commands(job_id: str) -> dict[str, Any]:
+        query_service = ControlTowerQueryService(unit_of_work_factory)
+        try:
+            commands = query_service.list_command_executions(job_id)
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return {"job_id": job_id, "commands": [_command_payload(command) for command in commands]}
+
     @app.get("/v1/jobs/{job_id}/commands/{command_id}/stdout")
     def read_stdout(
         job_id: str,
@@ -461,20 +514,16 @@ def create_app(
             )
         except ControlTowerError as exc:
             _raise_http_error(exc)
-        return {
-            "command_id": window.command_id,
-            "job_id": window.job_id,
-            "stream": window.stream,
-            "requested_offset": window.requested_offset,
-            "start_offset": window.start_offset,
-            "next_offset": window.next_offset,
-            "data": window.data,
-            "encoding": window.encoding,
-            "replacement_characters_used": window.replacement_characters_used,
-            "truncated": window.truncated,
-            "terminal": window.terminal,
-            "max_bytes": window.max_bytes,
-        }
+        return _output_window_payload(window)
+
+    @app.get("/v1/jobs/{job_id}/commands/{command_id}/logs/stdout")
+    def read_stdout_log(
+        job_id: str,
+        command_id: str,
+        after_offset: int = Query(default=0),
+        max_bytes: int = Query(default=8192, le=1048576),
+    ) -> dict[str, Any]:
+        return read_stdout(job_id, command_id, after_offset=after_offset, max_bytes=max_bytes)
 
     @app.post("/v1/jobs/{job_id}/cancel")
     async def cancel_job(
@@ -563,20 +612,26 @@ def create_app(
             )
         except ControlTowerError as exc:
             _raise_http_error(exc)
-        return {
-            "command_id": window.command_id,
-            "job_id": window.job_id,
-            "stream": window.stream,
-            "requested_offset": window.requested_offset,
-            "start_offset": window.start_offset,
-            "next_offset": window.next_offset,
-            "data": window.data,
-            "encoding": window.encoding,
-            "replacement_characters_used": window.replacement_characters_used,
-            "truncated": window.truncated,
-            "terminal": window.terminal,
-            "max_bytes": window.max_bytes,
-        }
+        return _output_window_payload(window)
+
+    @app.get("/v1/jobs/{job_id}/commands/{command_id}/logs/stderr")
+    def read_stderr_log(
+        job_id: str,
+        command_id: str,
+        after_offset: int = Query(default=0),
+        max_bytes: int = Query(default=8192, le=1048576),
+    ) -> dict[str, Any]:
+        return read_stderr(job_id, command_id, after_offset=after_offset, max_bytes=max_bytes)
+
+    @app.get("/v1/jobs/{job_id}/artifacts")
+    def list_artifacts(job_id: str) -> dict[str, Any]:
+        query_service = ControlTowerQueryService(unit_of_work_factory)
+        try:
+            query_service.get_migration_job(job_id)
+            artifacts = query_service.list_artifacts(job_id)
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return {"job_id": job_id, "artifacts": [_artifact_payload(artifact) for artifact in artifacts]}
 
     return app
 
@@ -609,15 +664,59 @@ def _projection_payload(projection: JobProjectionDto) -> dict[str, Any]:
         },
         "active_command": None
         if command is None
-        else {
-            "command_id": command.command_id,
-            "job_id": command.job_id,
-            "operation": command.operation,
-            "status": command.status.value,
-            "created_at": command.created_at,
-            "updated_at": command.updated_at,
-        },
+        else _command_payload(command),
         "etag": projection.etag,
+    }
+
+
+def _command_payload(command: CommandExecutionDto) -> dict[str, Any]:
+    return {
+        "command_id": command.command_id,
+        "job_id": command.job_id,
+        "operation": command.operation,
+        "status": command.status.value,
+        "created_at": command.created_at,
+        "updated_at": command.updated_at,
+        "command_manifest_artifact_id": command.command_manifest_artifact_id,
+        "working_directory_root_id": command.working_directory_root_id,
+        "working_directory_relative_path": command.working_directory_relative_path,
+        "worker_id": command.worker_id,
+        "launch_attempt": command.launch_attempt,
+    }
+
+
+def _artifact_payload(artifact: ArtifactDto) -> dict[str, Any]:
+    return {
+        "artifact_id": artifact.artifact_id,
+        "job_id": artifact.job_id,
+        "stage_run_id": artifact.stage_run_id,
+        "artifact_type": artifact.artifact_type,
+        "registered_root_id": artifact.registered_root_id,
+        "relative_path": artifact.relative_path,
+        "normalized_relative_path": artifact.normalized_relative_path,
+        "content_type": artifact.content_type,
+        "size_bytes": artifact.size_bytes,
+        "checksum_algorithm": artifact.checksum_algorithm,
+        "checksum": artifact.checksum,
+        "created_at": artifact.created_at,
+        "created_by": artifact.created_by,
+    }
+
+
+def _output_window_payload(window: CommandOutputWindowDto) -> dict[str, Any]:
+    return {
+        "command_id": window.command_id,
+        "job_id": window.job_id,
+        "stream": window.stream,
+        "requested_offset": window.requested_offset,
+        "start_offset": window.start_offset,
+        "next_offset": window.next_offset,
+        "data": window.data,
+        "encoding": window.encoding,
+        "replacement_characters_used": window.replacement_characters_used,
+        "truncated": window.truncated,
+        "terminal": window.terminal,
+        "max_bytes": window.max_bytes,
     }
 
 

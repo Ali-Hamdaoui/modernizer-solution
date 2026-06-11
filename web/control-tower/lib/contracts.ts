@@ -62,12 +62,60 @@ export type JobRepresentation = {
   active_command: null | {
     command_id: string;
     job_id: string;
-    operation: string;
-    status: string;
-    created_at: string;
-    updated_at: string;
-  };
+      operation: string;
+      status: string;
+      created_at: string;
+      updated_at: string;
+      command_manifest_artifact_id?: string | null;
+      working_directory_root_id?: string | null;
+      working_directory_relative_path?: string | null;
+      worker_id?: string | null;
+      launch_attempt?: number | null;
+    };
   etag: string;
+};
+
+export type CommandRepresentation = NonNullable<JobRepresentation["active_command"]>;
+
+export type CommandListResponse = {
+  job_id: string;
+  commands: CommandRepresentation[];
+};
+
+export type CommandOutputWindow = {
+  command_id: string;
+  job_id: string;
+  stream: "stdout" | "stderr";
+  requested_offset: number;
+  start_offset: number;
+  next_offset: number;
+  data: string;
+  encoding: string;
+  replacement_characters_used: number;
+  truncated: boolean;
+  terminal: boolean;
+  max_bytes: number;
+};
+
+export type ArtifactMetadata = {
+  artifact_id: string;
+  job_id: string;
+  stage_run_id: string | null;
+  artifact_type: string;
+  registered_root_id: string;
+  relative_path: string;
+  normalized_relative_path: string;
+  content_type: string | null;
+  size_bytes: number;
+  checksum_algorithm: string;
+  checksum: string;
+  created_at: string;
+  created_by: string;
+};
+
+export type ArtifactListResponse = {
+  job_id: string;
+  artifacts: ArtifactMetadata[];
 };
 
 export type PublicRunEvent = {

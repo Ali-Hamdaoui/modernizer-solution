@@ -69,6 +69,12 @@ class ControlTowerQueryService:
         with self._unit_of_work_factory() as uow:
             return uow.migration_jobs.list()
 
+    def list_command_executions(self, job_id: str) -> tuple[CommandExecutionDto, ...]:
+        with self._unit_of_work_factory() as uow:
+            if uow.migration_jobs.get(job_id) is None:
+                raise NotFoundError("migration job", job_id)
+            return uow.command_executions.list_for_job(job_id)
+
     # ── RunConfiguration ────────────────────────────────────────
 
     def get_run_configuration(self, job_id: str) -> RunConfigurationDto:

@@ -25,6 +25,8 @@ def test_create_get_and_start_diagnostic_job_over_http(tmp_path: Path) -> None:
     seed_pipeline_definition(connection)
     client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)))
 
+    assert client.get("/v1/health/live").json()["status"] == "live"
+    assert client.get("/v1/health/ready").json()["status"] == "ready"
     assert client.get("/v1/runner-profiles").json()["runner_profiles"][0]["runner_profile_id"] == "runner-default"
     assert client.get("/v1/pipelines").json()["pipelines"][0]["pipeline_id"] == "pipeline-default"
     root_payload = client.get("/v1/filesystem/roots").json()
@@ -40,6 +42,9 @@ def test_create_get_and_start_diagnostic_job_over_http(tmp_path: Path) -> None:
     get_response = client.get(f"/v1/jobs/{job_id}")
     assert get_response.status_code == 200
     assert get_response.headers["etag"] == etag
+    listed_jobs = client.get("/v1/jobs")
+    assert listed_jobs.status_code == 200
+    assert listed_jobs.json()["jobs"][0]["job_id"] == job_id
 
     missing_precondition = client.post(
         f"/v1/jobs/{job_id}/start",
@@ -57,6 +62,22 @@ def test_create_get_and_start_diagnostic_job_over_http(tmp_path: Path) -> None:
     assert queued.json()["job"]["state"] == "QUEUED"
     assert queued.json()["active_command"]["status"] == "QUEUED"
     assert queued.headers["etag"] != etag
+    command_id = queued.json()["active_command"]["command_id"]
+
+    commands = client.get(f"/v1/jobs/{job_id}/commands")
+    assert commands.status_code == 200
+    assert commands.json()["commands"][0]["command_id"] == command_id
+
+    stdout_log = client.get(f"/v1/jobs/{job_id}/commands/{command_id}/logs/stdout")
+    stderr_log = client.get(f"/v1/jobs/{job_id}/commands/{command_id}/logs/stderr")
+    assert stdout_log.status_code == 200
+    assert stdout_log.json()["stream"] == "stdout"
+    assert stderr_log.status_code == 200
+    assert stderr_log.json()["stream"] == "stderr"
+
+    artifacts = client.get(f"/v1/jobs/{job_id}/artifacts")
+    assert artifacts.status_code == 200
+    assert artifacts.json()["artifacts"] == []
 
 
 def test_create_requires_idempotency_key(tmp_path: Path) -> None:
