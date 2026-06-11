@@ -344,25 +344,21 @@ def create_app(
         )
 
     @app.get("/v1/health/live")
-    def health_live() -> dict[str, str]:
-        return {"status": "live"}
+    def health_live(request: Request) -> dict[str, Any]:
+        return {
+            "status": "live",
+            "service": "control-tower-api",
+            "correlation_id": request.state.correlation_id,
+        }
 
     @app.get("/v1/health/ready")
-    def health_ready(response: Response) -> dict[str, Any]:
-        checks: dict[str, str] = {}
-        ready = True
-        try:
-            with unit_of_work_factory() as uow:
-                uow.runner_profiles.list()
-            checks["database"] = "ok"
-        except Exception:
-            ready = False
-            checks["database"] = "unavailable"
-        checks["dispatcher"] = "not_configured"
-        checks["singleton"] = "not_configured"
-        if not ready:
-            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        return {"status": "ready" if ready else "not_ready", "checks": checks}
+    def health_ready(request: Request) -> dict[str, Any]:
+        payload = _ready_payload(
+            request=request,
+            app=app,
+            unit_of_work_factory=unit_of_work_factory,
+        )
+        return redact_public_data(payload)
 
     @app.get("/v1/runner-profiles")
     def list_runner_profiles() -> dict[str, Any]:

@@ -1608,6 +1608,7 @@ class CommandFinalizationService:
 
         # Handle spool: distinguish verified from forensic
         spool_is_verified = False
+        spool_artifact_type: str | None = None
         if spool_path.exists():
             if spool_path.is_dir():
                 # Check for completed worker event spool
@@ -1615,16 +1616,18 @@ class CommandFinalizationService:
                 if event_files:
                     spool_is_verified = self._verify_spool(spool_path, event_files)
                     spool_type = (
-                        "command_spool_verified"
+                        "WORKER_EVENT_SPOOL"
                         if spool_is_verified
-                        else "command_spool_forensic"
+                        else "FORENSIC_WORKER_EVENT_SPOOL"
                     )
+                    spool_artifact_type = spool_type
                     spool_artifact_id = _hash_and_register(
                         spool_path / event_files[0], spool_type, "application/jsonl"
                     )
             else:
+                spool_artifact_type = "FORENSIC_WORKER_EVENT_SPOOL"
                 spool_artifact_id = _hash_and_register(
-                    spool_path, "command_spool_forensic", "application/octet-stream"
+                    spool_path, "FORENSIC_WORKER_EVENT_SPOOL", "application/octet-stream"
                 )
 
         # Determine finalization status
@@ -1658,8 +1661,10 @@ class CommandFinalizationService:
                 "stdout_artifact_id": stdout_artifact_id,
                 "stderr_artifact_id": stderr_artifact_id,
                 "result_artifact_id": result_artifact_id,
+                "spool_artifact_type": spool_artifact_type,
                 "spool_artifact_id": spool_artifact_id,
                 "spool_verified": spool_is_verified,
+                "ingestion_verified": spool_is_verified,
             }
             event_record = RunEventRecord(
                 event_id=f"event-{command.job_id}-{sequence:04d}",
@@ -1683,7 +1688,9 @@ class CommandFinalizationService:
                 "finalization_status": finalization_status,
                 "job_id": command.job_id,
                 "outcome": command.outcome,
+                "spool_artifact_type": spool_artifact_type,
                 "spool_verified": spool_is_verified,
+                "ingestion_verified": spool_is_verified,
                 "stdout_artifact_id": stdout_artifact_id,
                 "stderr_artifact_id": stderr_artifact_id,
                 "result_artifact_id": result_artifact_id,

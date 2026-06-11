@@ -32,6 +32,9 @@ from migration_factory.control_tower.domain.errors import (
 from migration_factory.control_tower.domain.manifests import CommandManifest, compute_manifest_checksum
 from migration_factory.control_tower.domain.states import JobState, TargetProofLevel
 from migration_factory.control_tower.infrastructure.sqlite.connection import connect_control_tower
+from migration_factory.control_tower.infrastructure.sqlite.repositories import (
+    SqliteCommandExecutionRepository,
+)
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import (
     SqliteControlTowerUnitOfWork,
 )
@@ -224,6 +227,69 @@ class TestCommandFinalization:
         assert "command_stderr" in artifact_types
         assert "command_result" in artifact_types
 
+        for artifact in artifacts:
+            relative_path = str(artifact["relative_path"])
+            normalized_relative_path = str(artifact["normalized_relative_path"])
+            assert not Path(relative_path).is_absolute()
+            assert not Path(normalized_relative_path).is_absolute()
+            assert not relative_path.startswith(("/", "\\"))
+            assert not normalized_relative_path.startswith(("/", "\\"))
+
+    def test_finalize_retries_after_database_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db_path, job_id, command_id, working_dir = _seed_job_with_terminal_command(
+            tmp_path, CommandState.SUCCEEDED
+        )
+        _create_log_files(working_dir)
+
+        original_finalize = SqliteCommandExecutionRepository.finalize_terminal_artifacts
+        calls = {"count": 0}
+
+        def flaky_finalize(self, *args, **kwargs):
+            if calls["count"] == 0:
+                calls["count"] += 1
+                raise RuntimeError("event failed")
+            return original_finalize(self, *args, **kwargs)
+
+        monkeypatch.setattr(
+            SqliteCommandExecutionRepository,
+            "finalize_terminal_artifacts",
+            flaky_finalize,
+        )
+
+        service = _service_for(db_path, CommandFinalizationService)
+
+        with pytest.raises(RuntimeError, match="event failed"):
+            service.execute(
+                FinalizeCommandCommand(
+                    command_id=command_id,
+                    job_id=job_id,
+                    outcome="completed",
+                    actor_type="system",
+                    actor_id="finalizer",
+                )
+            )
+
+        service.execute(
+            FinalizeCommandCommand(
+                command_id=command_id,
+                job_id=job_id,
+                outcome="completed",
+                actor_type="system",
+                actor_id="finalizer",
+            )
+        )
+
+        with connect_control_tower(db_path) as conn:
+            row = conn.execute(
+                "SELECT finalization_status, stdout_artifact_id, stderr_artifact_id, result_artifact_id, spool_artifact_id FROM command_executions WHERE command_id = ?",
+                (command_id,),
+            ).fetchone()
+        assert row is not None
+        assert row["finalization_status"] in ("COMPLETE_VERIFIED", "COMPLETE_FORENSIC")
+        assert row["stdout_artifact_id"] is not None
+        assert row["stderr_artifact_id"] is not None
+        assert row["result_artifact_id"] is not None
+
     def test_finalize_creates_finalization_event(self, tmp_path: Path) -> None:
         db_path, job_id, command_id, working_dir = _seed_job_with_terminal_command(
             tmp_path, CommandState.SUCCEEDED
@@ -375,6 +441,22 @@ class TestForensicSpool:
         assert row is not None
         # Without verified spool, status is COMPLETE_FORENSIC (log artifacts exist)
         assert row["finalization_status"] in ("COMPLETE_FORENSIC", "COMPLETE_VERIFIED")
+
+        with connect_control_tower(db_path) as conn:
+            event_row = conn.execute(
+                """
+                SELECT payload_json
+                FROM run_events
+                WHERE job_id = ? AND event_type = 'command_finalized'
+                ORDER BY sequence DESC
+                LIMIT 1
+                """,
+                (job_id,),
+            ).fetchone()
+        assert event_row is not None
+        payload = json.loads(str(event_row["payload_json"]))
+        assert payload["ingestion_verified"] is False
+        assert payload["spool_verified"] is False
 
 
 # ── Artifact registry integration tests ──────────────────────────
