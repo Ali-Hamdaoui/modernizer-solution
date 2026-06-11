@@ -18,12 +18,27 @@ from tests.control_tower._helpers import (
 )
 
 
+class _FakeLauncher:
+    pass
+
+
+class _FakeTerminator:
+    pass
+
+
 def test_create_get_and_start_diagnostic_job_over_http(tmp_path: Path) -> None:
     connection = _api_test_connection(tmp_path)
     apply_pending_migrations(connection)
     seed_runner_profile_with_roots(connection, artifact_roots(tmp_path))
     seed_pipeline_definition(connection)
-    client = TestClient(create_app(lambda: SqliteUnitOfWork(connection)), base_url="http://127.0.0.1:8000")
+    client = TestClient(
+        create_app(
+            lambda: SqliteUnitOfWork(connection),
+            worker_launcher=_FakeLauncher(),
+            worker_terminator=_FakeTerminator(),
+        ),
+        base_url="http://127.0.0.1:8000",
+    )
 
     assert client.get("/v1/health/live").json()["status"] == "live"
     assert client.get("/v1/health/ready").json()["status"] == "ready"
