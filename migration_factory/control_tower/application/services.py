@@ -44,6 +44,8 @@ from migration_factory.control_tower.domain.entities import (
     MigrationJobRecord,
     RunConfigurationRecord,
     RunEventRecord,
+    StageChainEventRecord,
+    StageChainLedgerRecord,
     StageRunRecord,
 )
 from migration_factory.control_tower.domain.manifests import (
@@ -215,6 +217,64 @@ class CreateMigrationJobService:
 
             if stage_runs:
                 uow.stage_runs.insert_many(stage_runs)
+
+            # Persist stage-chain ledger entries
+            pipeline_payload = pipeline.payload
+            ledger_entries = []
+            for i, stage in enumerate(pipeline_payload.stages):
+                stage_run_id = stage_run_ids[i]
+                ledger_id = f"ledger-{job_id}-{stage.stage_index:04d}"
+                source_kind = stage.input_source.kind if hasattr(stage.input_source, "kind") else "legacy_source"
+                # Compute input checksum over the full input source configuration
+                input_checksum = sha256_canonical_json(stage.input_source)
+                # Compute checksum guard over the full stage content
+                stage_json = canonical_json_text(stage)
+                import hashlib as _hashlib
+                checksum_guard = _hashlib.sha256(stage_json.encode("utf-8")).hexdigest()
+
+                ledger_entries.append(
+                    StageChainLedgerRecord(
+                        ledger_id=ledger_id,
+                        job_id=job_id,
+                        stage_index=stage.stage_index,
+                        stage_run_id=stage_run_id,
+                        chain_status="pending",
+                        input_source_kind=source_kind,
+                        input_checksum=input_checksum,
+                        output_artifact_id=None,
+                        output_checksum=None,
+                        output_registered_at=None,
+                        checksum_guard=checksum_guard,
+                        created_at=now,
+                        created_by=command.actor,
+                    )
+                )
+
+            if ledger_entries:
+                uow.stage_chain_ledger.insert_many(ledger_entries)
+
+            # Record chain_created event for audit
+            chain_event_payload = {
+                "job_id": job_id,
+                "ledger_ids": [entry.ledger_id for entry in ledger_entries],
+                "stage_run_ids": stage_run_ids,
+            }
+            uow.stage_chain_ledger.insert_event(
+                StageChainEventRecord(
+                    event_id=f"chain-event-{job_id}-created",
+                    job_id=job_id,
+                    stage_index=None,
+                    event_type="chain_created",
+                    prior_status=None,
+                    new_status="pending",
+                    ledger_id=None,
+                    output_id=None,
+                    payload_json=canonical_json_text(chain_event_payload),
+                    payload_checksum=sha256_canonical_json(chain_event_payload),
+                    created_at=now,
+                    created_by=command.actor,
+                )
+            )
 
             event_payload = {
                 "job_id": job_id,

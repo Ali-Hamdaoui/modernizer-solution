@@ -20,6 +20,7 @@ from migration_factory.control_tower.application.dto import (
     RunConfigurationDto,
     RunEventDto,
     RunnerProfileDto,
+    StageChainEntryDto,
     StageRunDto,
 )
 from migration_factory.control_tower.application.services import UnitOfWorkFactory
@@ -114,6 +115,36 @@ class ControlTowerQueryService:
                     created_at=r.created_at,
                     started_at=r.started_at,
                     finished_at=r.finished_at,
+                )
+                for r in records
+            )
+
+    # ── Stage Chain (V1 Ledger) ──────────────────────────────────
+
+    def get_stage_chain(self, job_id: str) -> tuple[StageChainEntryDto, ...]:
+        """Return ordered, redacted stage chain entries from the V1 ledger.
+
+        Raises NotFoundError if the job does not exist.
+        Returns an empty tuple if the job exists but has no chain entries.
+        """
+        with self._unit_of_work_factory() as uow:
+            job = uow.migration_jobs.get(job_id)
+            if job is None:
+                raise NotFoundError("migration job", job_id)
+            records = uow.stage_chain_ledger.list_for_job(job_id)
+            return tuple(
+                StageChainEntryDto(
+                    ledger_id=r.ledger_id,
+                    job_id=r.job_id,
+                    stage_index=r.stage_index,
+                    stage_run_id=r.stage_run_id,
+                    chain_status=r.chain_status,
+                    input_source_kind=r.input_source_kind,
+                    input_checksum=r.input_checksum,
+                    output_artifact_id=r.output_artifact_id,
+                    output_checksum=r.output_checksum,
+                    output_registered_at=r.output_registered_at,
+                    created_at=r.created_at,
                 )
                 for r in records
             )

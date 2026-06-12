@@ -176,3 +176,51 @@ class IdempotencyRecord:
     resource_id: str
     original_status_code: int
     created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class StageChainLedgerRecord:
+    ledger_id: str
+    job_id: str
+    stage_index: int
+    stage_run_id: str
+    chain_status: str
+    input_source_kind: str
+    input_checksum: str | None
+    output_artifact_id: str | None
+    output_checksum: str | None
+    output_registered_at: str | None
+    checksum_guard: str
+    created_at: str
+    created_by: str
+
+
+@dataclass(frozen=True, slots=True)
+class StageOutputRegistryRecord:
+    output_id: str
+    job_id: str
+    stage_index: int
+    stage_run_id: str
+    artifact_id: str
+    artifact_type: str
+    output_kind: str
+    checksum_algorithm: str
+    checksum: str
+    registered_at: str
+    registered_by: str
+
+
+@dataclass(frozen=True, slots=True)
+class StageChainEventRecord:
+    event_id: str
+    job_id: str
+    stage_index: int | None
+    event_type: str
+    prior_status: str | None
+    new_status: str | None
+    ledger_id: str | None
+    output_id: str | None
+    payload_json: str
+    payload_checksum: str
+    created_at: str
+    created_by: str

@@ -35,6 +35,7 @@ from migration_factory.control_tower.application.dto import (
     CommandOutputWindowDto,
     JobProjectionDto,
     RunEventDto,
+    StageChainEntryDto,
 )
 from migration_factory.control_tower.application.ports import ControlTowerUnitOfWork, WorkerLauncher, WorkerTerminator
 from migration_factory.control_tower.application.queries import (
@@ -51,6 +52,7 @@ from migration_factory.control_tower.application.services import (
     TimeoutService,
     WorkerLaunchService,
 )
+from migration_factory.control_tower.application.runner_readiness import RunnerJdkReadinessService, ReadinessChecker
 from migration_factory.control_tower.domain.errors import (
     ActiveCommandConflictError,
     ControlTowerError,
@@ -373,6 +375,60 @@ def create_app(
             ]
         return {"runner_profiles": redact_public_data(profiles)}
 
+    @app.get("/v1/runner-profiles/{runner_profile_id}/{runner_profile_version}/readiness")
+    def get_runner_readiness(
+        runner_profile_id: str,
+        runner_profile_version: str,
+    ) -> dict[str, Any]:
+        """Check JDK 11/17/21 and Maven readiness for a runner profile.
+
+        All JDK and Maven paths come from the registered runner profile,
+        not from request bodies. This enforces the V1 invariant that
+        browser payloads cannot choose raw executable paths or tool refs.
+        """
+        service = RunnerJdkReadinessService(unit_of_work_factory)
+        try:
+            result = service.check_runner_readiness(
+                runner_profile_id,
+                runner_profile_version,
+                actor="api",
+            )
+        except ValueError as exc:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "RUNNER_PROFILE_NOT_FOUND",
+                str(exc),
+            ) from exc
+
+        return {
+            "runner_profile_id": result.runner_profile_id,
+            "runner_profile_version": result.runner_profile_version,
+            "checked_at": result.checked_at,
+            "all_ready": result.all_ready,
+            "checks": {
+                "jdk_11": {
+                    "ready": result.jdk_11.ready,
+                    "path": result.jdk_11.jdk_path,
+                    "message": result.jdk_11.message,
+                },
+                "jdk_17": {
+                    "ready": result.jdk_17.ready,
+                    "path": result.jdk_17.jdk_path,
+                    "message": result.jdk_17.message,
+                },
+                "jdk_21": {
+                    "ready": result.jdk_21.ready,
+                    "path": result.jdk_21.jdk_path,
+                    "message": result.jdk_21.message,
+                },
+                "maven": {
+                    "ready": result.maven.ready,
+                    "path": result.maven.executable_path,
+                    "message": result.maven.message,
+                },
+            },
+        }
+
     @app.get("/v1/pipelines")
     def list_pipelines() -> dict[str, Any]:
         with unit_of_work_factory() as uow:
@@ -462,6 +518,18 @@ def create_app(
                 _raise_http_error(exc)
         response.headers["ETag"] = projection.etag
         return _projection_payload(projection)
+
+    @app.get("/v1/jobs/{job_id}/stages")
+    def list_stage_chain(job_id: str) -> dict[str, Any]:
+        query_service = ControlTowerQueryService(unit_of_work_factory)
+        try:
+            chain = query_service.get_stage_chain(job_id)
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return {
+            "job_id": job_id,
+            "stages": [_stage_chain_entry_payload(entry) for entry in chain],
+        }
 
     @app.post("/v1/jobs/{job_id}/start")
     async def start_job(
@@ -841,6 +909,22 @@ def _command_payload(command: CommandExecutionDto) -> dict[str, Any]:
         "worker_id": command.worker_id,
         "launch_attempt": command.launch_attempt,
     }
+
+
+def _stage_chain_entry_payload(entry: StageChainEntryDto) -> dict[str, Any]:
+    return redact_public_data({
+        "ledger_id": entry.ledger_id,
+        "job_id": entry.job_id,
+        "stage_index": entry.stage_index,
+        "stage_run_id": entry.stage_run_id,
+        "chain_status": entry.chain_status,
+        "input_source_kind": entry.input_source_kind,
+        "input_checksum": entry.input_checksum,
+        "output_artifact_id": entry.output_artifact_id,
+        "output_checksum": entry.output_checksum,
+        "output_registered_at": entry.output_registered_at,
+        "created_at": entry.created_at,
+    })
 
 
 def _artifact_payload(artifact: ArtifactDto) -> dict[str, Any]:

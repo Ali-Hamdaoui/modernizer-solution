@@ -26,6 +26,9 @@ from migration_factory.control_tower.domain.entities import (
     RunConfigurationRecord,
     RunEventRecord,
     RunnerProfileRecord,
+    StageChainEventRecord,
+    StageChainLedgerRecord,
+    StageOutputRegistryRecord,
     StageRunRecord,
 )
 from migration_factory.control_tower.domain.checksums import utc_now_text
@@ -1104,6 +1107,199 @@ class SqliteIdempotencyRepository:
             )
         except sqlite3.IntegrityError as exc:
             raise StorageIntegrityError(str(exc)) from exc
+
+
+class SqliteStageChainLedgerRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert_many(self, ledger_entries: Sequence[StageChainLedgerRecord]) -> None:
+        try:
+            self._connection.executemany(
+                """
+                INSERT INTO v1_stage_chain_ledger (
+                    ledger_id, job_id, stage_index, stage_run_id, chain_status,
+                    input_source_kind, input_checksum,
+                    output_artifact_id, output_checksum, output_registered_at,
+                    checksum_guard, created_at, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        entry.ledger_id,
+                        entry.job_id,
+                        entry.stage_index,
+                        entry.stage_run_id,
+                        entry.chain_status,
+                        entry.input_source_kind,
+                        entry.input_checksum,
+                        entry.output_artifact_id,
+                        entry.output_checksum,
+                        entry.output_registered_at,
+                        entry.checksum_guard,
+                        entry.created_at,
+                        entry.created_by,
+                    )
+                    for entry in ledger_entries
+                ],
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def list_for_job(self, job_id: str) -> tuple[StageChainLedgerRecord, ...]:
+        rows = self._connection.execute(
+            """
+            SELECT ledger_id, job_id, stage_index, stage_run_id, chain_status,
+                   input_source_kind, input_checksum,
+                   output_artifact_id, output_checksum, output_registered_at,
+                   checksum_guard, created_at, created_by
+            FROM v1_stage_chain_ledger
+            WHERE job_id = ?
+            ORDER BY stage_index
+            """,
+            (job_id,),
+        ).fetchall()
+        return tuple(_stage_chain_ledger_record_from_row(row) for row in rows)
+
+    def insert_output(self, output: StageOutputRegistryRecord) -> None:
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO v1_stage_output_registry (
+                    output_id, job_id, stage_index, stage_run_id,
+                    artifact_id, artifact_type, output_kind,
+                    checksum_algorithm, checksum,
+                    registered_at, registered_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    output.output_id,
+                    output.job_id,
+                    output.stage_index,
+                    output.stage_run_id,
+                    output.artifact_id,
+                    output.artifact_type,
+                    output.output_kind,
+                    output.checksum_algorithm,
+                    output.checksum,
+                    output.registered_at,
+                    output.registered_by,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def list_outputs_for_job(self, job_id: str) -> tuple[StageOutputRegistryRecord, ...]:
+        rows = self._connection.execute(
+            """
+            SELECT output_id, job_id, stage_index, stage_run_id,
+                   artifact_id, artifact_type, output_kind,
+                   checksum_algorithm, checksum,
+                   registered_at, registered_by
+            FROM v1_stage_output_registry
+            WHERE job_id = ?
+            ORDER BY stage_index, output_kind
+            """,
+            (job_id,),
+        ).fetchall()
+        return tuple(_stage_output_registry_record_from_row(row) for row in rows)
+
+    def insert_event(self, event: StageChainEventRecord) -> None:
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO v1_stage_chain_events (
+                    event_id, job_id, stage_index, event_type,
+                    prior_status, new_status,
+                    ledger_id, output_id,
+                    payload_json, payload_checksum,
+                    created_at, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.event_id,
+                    event.job_id,
+                    event.stage_index,
+                    event.event_type,
+                    event.prior_status,
+                    event.new_status,
+                    event.ledger_id,
+                    event.output_id,
+                    event.payload_json,
+                    event.payload_checksum,
+                    event.created_at,
+                    event.created_by,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def list_events_for_job(self, job_id: str) -> tuple[StageChainEventRecord, ...]:
+        rows = self._connection.execute(
+            """
+            SELECT event_id, job_id, stage_index, event_type,
+                   prior_status, new_status,
+                   ledger_id, output_id,
+                   payload_json, payload_checksum,
+                   created_at, created_by
+            FROM v1_stage_chain_events
+            WHERE job_id = ?
+            ORDER BY created_at, event_id
+            """,
+            (job_id,),
+        ).fetchall()
+        return tuple(_stage_chain_event_record_from_row(row) for row in rows)
+
+
+def _stage_chain_ledger_record_from_row(row: sqlite3.Row) -> StageChainLedgerRecord:
+    return StageChainLedgerRecord(
+        ledger_id=str(row["ledger_id"]),
+        job_id=str(row["job_id"]),
+        stage_index=int(row["stage_index"]),
+        stage_run_id=str(row["stage_run_id"]),
+        chain_status=str(row["chain_status"]),
+        input_source_kind=str(row["input_source_kind"]),
+        input_checksum=str(row["input_checksum"]) if row["input_checksum"] is not None else None,
+        output_artifact_id=str(row["output_artifact_id"]) if row["output_artifact_id"] is not None else None,
+        output_checksum=str(row["output_checksum"]) if row["output_checksum"] is not None else None,
+        output_registered_at=str(row["output_registered_at"]) if row["output_registered_at"] is not None else None,
+        checksum_guard=str(row["checksum_guard"]),
+        created_at=str(row["created_at"]),
+        created_by=str(row["created_by"]),
+    )
+
+
+def _stage_output_registry_record_from_row(row: sqlite3.Row) -> StageOutputRegistryRecord:
+    return StageOutputRegistryRecord(
+        output_id=str(row["output_id"]),
+        job_id=str(row["job_id"]),
+        stage_index=int(row["stage_index"]),
+        stage_run_id=str(row["stage_run_id"]),
+        artifact_id=str(row["artifact_id"]),
+        artifact_type=str(row["artifact_type"]),
+        output_kind=str(row["output_kind"]),
+        checksum_algorithm=str(row["checksum_algorithm"]),
+        checksum=str(row["checksum"]),
+        registered_at=str(row["registered_at"]),
+        registered_by=str(row["registered_by"]),
+    )
+
+
+def _stage_chain_event_record_from_row(row: sqlite3.Row) -> StageChainEventRecord:
+    return StageChainEventRecord(
+        event_id=str(row["event_id"]),
+        job_id=str(row["job_id"]),
+        stage_index=int(row["stage_index"]) if row["stage_index"] is not None else None,
+        event_type=str(row["event_type"]),
+        prior_status=str(row["prior_status"]) if row["prior_status"] is not None else None,
+        new_status=str(row["new_status"]) if row["new_status"] is not None else None,
+        ledger_id=str(row["ledger_id"]) if row["ledger_id"] is not None else None,
+        output_id=str(row["output_id"]) if row["output_id"] is not None else None,
+        payload_json=str(row["payload_json"]),
+        payload_checksum=str(row["payload_checksum"]),
+        created_at=str(row["created_at"]),
+        created_by=str(row["created_by"]),
+    )
 
 
 def _runner_profile_from_row(row: sqlite3.Row) -> RunnerProfileDto:
