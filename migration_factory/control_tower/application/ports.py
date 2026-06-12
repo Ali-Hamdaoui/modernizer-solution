@@ -29,6 +29,9 @@ from migration_factory.control_tower.domain.entities import (
     RunConfigurationRecord,
     RunEventRecord,
     RunnerProfileRecord,
+    StageChainEventRecord,
+    StageChainLedgerRecord,
+    StageOutputRegistryRecord,
     StageRunRecord,
 )
 from migration_factory.control_tower.domain.manifests import CommandManifest
@@ -264,6 +267,20 @@ class IdempotencyRepository(Protocol):
     def insert(self, record: IdempotencyRecord) -> None: ...
 
 
+class StageChainLedgerRepository(Protocol):
+    def insert_many(self, ledger_entries: Sequence[StageChainLedgerRecord]) -> None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[StageChainLedgerRecord, ...]: ...
+
+    def insert_output(self, output: StageOutputRegistryRecord) -> None: ...
+
+    def list_outputs_for_job(self, job_id: str) -> tuple[StageOutputRegistryRecord, ...]: ...
+
+    def insert_event(self, event: StageChainEventRecord) -> None: ...
+
+    def list_events_for_job(self, job_id: str) -> tuple[StageChainEventRecord, ...]: ...
+
+
 class ControlTowerUnitOfWork(Protocol):
     runner_profiles: RunnerProfileRepository
     pipeline_definitions: PipelineDefinitionRepository
@@ -275,6 +292,7 @@ class ControlTowerUnitOfWork(Protocol):
     audit_records: AuditRecordRepository
     command_executions: CommandExecutionRepository
     idempotency_records: IdempotencyRepository
+    stage_chain_ledger: StageChainLedgerRepository
 
     def __enter__(self) -> Self: ...
 

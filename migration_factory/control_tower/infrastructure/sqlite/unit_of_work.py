@@ -14,6 +14,7 @@ from migration_factory.control_tower.infrastructure.sqlite.repositories import (
     SqliteRunConfigurationRepository,
     SqliteRunEventRepository,
     SqliteRunnerProfileRepository,
+    SqliteStageChainLedgerRepository,
     SqliteStageRunRepository,
 )
 
@@ -32,6 +33,7 @@ class SqliteControlTowerUnitOfWork:
         self.audit_records = SqliteAuditRecordRepository(connection)
         self.command_executions = SqliteCommandExecutionRepository(connection)
         self.idempotency_records = SqliteIdempotencyRepository(connection)
+        self.stage_chain_ledger = SqliteStageChainLedgerRepository(connection)
 
     def __enter__(self) -> "SqliteControlTowerUnitOfWork":
         self.connection.execute("BEGIN IMMEDIATE")
