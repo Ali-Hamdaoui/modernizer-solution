@@ -176,6 +176,142 @@ describe("M2-01 frontend diagnostic contracts", () => {
     expect(body.redacted_summary.non_authoritative).toBe(true);
   });
 
+  // ── V1-18D model activity normalization ────────────────────────────
+
+  it("normalizes backend { model_invocations } into { invocations }", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        model_invocations: [
+          {
+            invocation_id: "inv-001",
+            profile_id: "profile-azure",
+            provider_kind: "azure-openai",
+            model_name: "gpt-4o",
+            prompt_tokens: 150,
+            completion_tokens: 42,
+            total_tokens: 192,
+            redacted_summary: "Analyzed stage 1 output",
+            created_at: "2026-06-12T00:00:00Z",
+          },
+        ],
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getModelActivity } = await import("../lib/controlTowerApi");
+    const result = await getModelActivity("job-1");
+
+    expect(result).toEqual({
+      job_id: "job-1",
+      invocations: [
+        {
+          invocation_id: "inv-001",
+          job_id: "job-1",
+          profile_id: "profile-azure",
+          provider_kind: "azure-openai",
+          model_name: "gpt-4o",
+          prompt_tokens: 150,
+          completion_tokens: 42,
+          total_tokens: 192,
+          redacted_summary: "Analyzed stage 1 output",
+          actor_type: null,
+          actor_id: null,
+          correlation_id: null,
+          causation_id: null,
+          created_at: "2026-06-12T00:00:00Z",
+        },
+      ],
+    });
+  });
+
+  it("preserves { invocations } key if backend already uses it", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        invocations: [
+          {
+            invocation_id: "inv-002",
+            job_id: "job-2",
+            provider_kind: "openai",
+            model_name: "gpt-4o-mini",
+            prompt_tokens: 80,
+            completion_tokens: 20,
+            total_tokens: 100,
+            redacted_summary: "Patch review",
+            created_at: "2026-06-12T01:00:00Z",
+          },
+        ],
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getModelActivity } = await import("../lib/controlTowerApi");
+    const result = await getModelActivity("job-2");
+
+    expect(result.invocations).toHaveLength(1);
+    expect(result.invocations[0].invocation_id).toBe("inv-002");
+    expect(result.invocations[0].job_id).toBe("job-2");
+  });
+
+  it("handles empty { model_invocations: [] } gracefully", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ model_invocations: [] }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getModelActivity } = await import("../lib/controlTowerApi");
+    const result = await getModelActivity("job-3");
+
+    expect(result).toEqual({ job_id: "job-3", invocations: [] });
+  });
+
+  it("handles empty { invocations: [] } gracefully", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ invocations: [] }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getModelActivity } = await import("../lib/controlTowerApi");
+    const result = await getModelActivity("job-4");
+
+    expect(result).toEqual({ job_id: "job-4", invocations: [] });
+  });
+
+  it("normalized response exposes no raw prompts, secrets, or deployment IDs", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        model_invocations: [
+          {
+            invocation_id: "inv-003",
+            provider_kind: "azure-openai",
+            model_name: "gpt-4o",
+            prompt_tokens: 99,
+            completion_tokens: 10,
+            total_tokens: 109,
+            redacted_summary: "Analyzed output",
+            created_at: "2026-06-12T02:00:00Z",
+          },
+        ],
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getModelActivity } = await import("../lib/controlTowerApi");
+    const result = await getModelActivity("job-5");
+    const serialized = JSON.stringify(result);
+
+    expect(result.invocations).toHaveLength(1);
+    // Raw prompt content must not leak
+    expect(serialized).not.toContain("raw prompt");
+    expect(serialized).not.toContain("secret");
+    expect(serialized).not.toContain("deployment-id");
+    expect(serialized).not.toContain("my-secret");
+  });
+
   it("applies public events idempotently and refetches state-changing projections", () => {
     const event = {
       actor_id: "tester",

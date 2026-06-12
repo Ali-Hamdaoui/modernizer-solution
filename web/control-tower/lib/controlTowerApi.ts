@@ -7,6 +7,7 @@ import type {
   CreateDiagnosticJobRequest,
   FilesystemRootOption,
   JobRepresentation,
+  ModelActivityRawResponse,
   ModelActivityResponse,
   PlanAmendmentPreviewRequest,
   PlanAmendmentPreviewResponse,
@@ -141,7 +142,28 @@ export async function getStageChain(jobId: string): Promise<StageChainResponse> 
 }
 
 export async function getModelActivity(jobId: string): Promise<ModelActivityResponse> {
-  return getJson<ModelActivityResponse>(`/v1/jobs/${encodeURIComponent(jobId)}/model-invocations`);
+  const raw = await getJson<ModelActivityRawResponse>(
+    `/v1/jobs/${encodeURIComponent(jobId)}/model-invocations`
+  );
+
+  // Normalize: backend returns { model_invocations: [...] } but
+  // frontend expects { invocations: [...] }.  Accept both keys so
+  // a future backend change to { invocations } works unmodified.
+  const invocations: ModelActivityResponse["invocations"] = (
+    raw.invocations ?? raw.model_invocations ?? []
+  ).map((inv) => ({
+    ...inv,
+    // Backend per-job endpoint omits top-level job_id; fill from argument.
+    job_id: inv.job_id ?? jobId,
+    // Ensure nullable fields are null not undefined
+    profile_id: inv.profile_id ?? null,
+    actor_type: inv.actor_type ?? null,
+    actor_id: inv.actor_id ?? null,
+    correlation_id: inv.correlation_id ?? null,
+    causation_id: inv.causation_id ?? null,
+  }));
+
+  return { job_id: jobId, invocations };
 }
 
 export async function previewPlanAmendment(

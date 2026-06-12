@@ -241,6 +241,14 @@ export type ModelActivityResponse = {
   invocations: ModelInvocationEntry[];
 };
 
+// Raw backend response shape from V1-10 GET /v1/jobs/{job_id}/model-invocations
+// The live backend returns { model_invocations: [...] } without top-level job_id.
+// This type models both keys for forward/backward compatibility.
+export type ModelActivityRawResponse = {
+  model_invocations?: ModelInvocationEntry[];
+  invocations?: ModelInvocationEntry[];
+};
+
 // ── Stage timeline panel types (V1-18B) ────────────────────────────────
 
 export type StageChainEntry = {
