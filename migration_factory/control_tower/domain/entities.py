@@ -293,3 +293,34 @@ class V1ModelInvocationRecord:
     actor_id: str | None = None
     correlation_id: str | None = None
     causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class V1ContextPackManifestRecord:
+    """Immutable record of a context pack manifest.
+
+    Stores evidence references, boundaries, redaction metadata,
+    and checksums. Raw prompts, secrets, and deployment IDs are
+    never stored.
+    """
+
+    manifest_id: str
+    pack_type: str
+    pack_version: str
+    title: str
+    checksum_algorithm: str = "sha256"
+    checksum: str = ""
+    created_at: str = ""
+    created_by: str = ""
+    job_id: str | None = None
+    stage_run_id: str | None = None
+    description: str | None = None
+    evidence_refs_json: str | None = None
+    bounds_json: str | None = None
+    redaction_policy: str | None = None
+    redacted_summary: str | None = None
+    model_profile_id: str | None = None
+    model_name: str | None = None
+    token_count: int | None = None
+    correlation_id: str | None = None
+    causation_id: str | None = None

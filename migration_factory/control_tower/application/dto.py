@@ -242,6 +242,31 @@ class ModelInvocationDto:
 
 
 @dataclass(frozen=True, slots=True)
+class ContextPackManifestDto:
+    """Redacted context pack manifest DTO.
+
+    Evidence refs, bounds, and redacted summaries are included.
+    Raw prompts, secrets, and deployment IDs are absent.
+    """
+
+    manifest_id: str
+    pack_type: str
+    pack_version: str
+    title: str
+    description: str | None = None
+    evidence_refs_json: str | None = None
+    bounds_json: str | None = None
+    redacted_summary: str | None = None
+    checksum_algorithm: str = "sha256"
+    checksum: str = ""
+    model_profile_id: str | None = None
+    model_name: str | None = None
+    token_count: int | None = None
+    created_at: str = ""
+    created_by: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class JobProjectionDto:
     job: MigrationJobDto
     active_command: CommandExecutionDto | None
