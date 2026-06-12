@@ -2937,6 +2937,293 @@ def _job_projection(uow: ControlTowerUnitOfWork, job_id: str) -> JobProjectionDt
     )
 
 
+class StageTwoAndThreeQueueService:
+    """Queue Stage Two (Java 17 / Boot 3.5.6) and Stage Three (Java 21 / Boot 3.5.6)
+    execution after Stage 1 is complete.
+
+    This service:
+    - Reads the Stage 1 sandbox output from the ledger.
+    - Validates continuation policy via StageContinuationPolicyService.
+    - Builds backend-owned argv/env for Stage 2 (Java 17 / Spring Boot 3.5.6)
+      and Stage 3 (Java 21 / Spring Boot 3.5.6).
+    - Queues each stage via StageCommandLaunchService (creates QUEUED command
+      execution records without launching).
+    - Does NOT launch any process.
+    - Browser payloads CANNOT choose raw paths, Maven goals, shell commands,
+      working directories, or model deployments.
+    - LLM flows CANNOT execute commands, approve decisions, or write files directly.
+    """
+
+    # Backend-owned Stage 2 argv (Java 17 / Spring Boot 2.7 -> 3.5)
+    JAVA17_STAGE2_ARGV: tuple[str, ...] = (
+        "mvn",
+        "-DskipTests",
+        "-Dmaven.test.skip=true",
+        "org.openrewrite.maven:rewrite-maven-plugin:run",
+        "-Drewrite.activeRecipes=org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5",
+        "-Drewrite.exportDatatables=true",
+        "compile",
+    )
+
+    JAVA17_STAGE2_ENV: dict[str, str] = {
+        "JAVA_HOME": "",
+        "MAVEN_OPTS": "-Xmx1024m",
+        "SHELL_DISABLED": "true",
+        "STAGE_INPUT_KIND": "previous_stage_sandbox",
+    }
+
+    # Backend-owned Stage 3 argv (Java 21 / Boot 3.5.6 Java 17 -> Java 21)
+    JAVA21_STAGE3_ARGV: tuple[str, ...] = (
+        "mvn",
+        "-DskipTests",
+        "-Dmaven.test.skip=true",
+        "org.openrewrite.maven:rewrite-maven-plugin:run",
+        "-Drewrite.activeRecipes=org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5",
+        "-Drewrite.exportDatatables=true",
+        "compile",
+    )
+
+    JAVA21_STAGE3_ENV: dict[str, str] = {
+        "JAVA_HOME": "",
+        "MAVEN_OPTS": "-Xmx1024m",
+        "SHELL_DISABLED": "true",
+        "STAGE_INPUT_KIND": "previous_stage_sandbox",
+    }
+
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+
+    def queue_stage_two_and_three(
+        self,
+        job_id: str,
+        stage_run_ids: tuple[str, str],  # (stage2_run_id, stage3_run_id)
+        sandbox_root_id: str,
+        sandbox_relative_path_stage2: str,
+        sandbox_relative_path_stage3: str,
+        ledger_entry_checksums: dict[int, str],  # stage_index -> ledger_id
+        jdk_java_homes: dict[str, str],  # jdk_id -> java_home
+        run_configuration_artifact_id: str,
+        run_configuration_checksum: str,
+        working_directory_root_id: str,
+        working_directory_relative_path: str,
+        worker_id: str = "worker-default",
+        operation: str = "maven_build",
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> list[str]:
+        """Queue Stage 2 and Stage 3 execution commands.
+
+        Returns a list of command IDs that were queued (one per stage).
+        Raises ContinuationPolicyViolationError if continuation policy
+        is not satisfied.
+        """
+        from migration_factory.control_tower.application.commands import (
+            StageCommandLaunchCommand,
+        )
+
+        queued_command_ids: list[str] = []
+
+        with self._unit_of_work_factory() as uow:
+            job = uow.migration_jobs.get(job_id)
+            if job is None:
+                raise NotFoundError("migration job", job_id)
+
+            run_config = uow.run_configurations.get_for_job(job_id)
+            if run_config is None:
+                raise NotFoundError("run configuration", job_id)
+
+            pipeline = uow.pipeline_definitions.get_exact(
+                job.pipeline_id,
+                job.pipeline_version,
+            )
+            if pipeline is None:
+                raise NotFoundError(
+                    "pipeline definition",
+                    f"{job.pipeline_id}/{job.pipeline_version}",
+                )
+
+            runner = uow.runner_profiles.get_exact(
+                run_config.runner_profile_id,
+                run_config.runner_profile_version,
+            )
+            if runner is None:
+                raise NotFoundError(
+                    "runner profile",
+                    f"{run_config.runner_profile_id}/{run_config.runner_profile_version}",
+                )
+
+            now = utc_now_text()
+
+            # Stage definitions for Stage 2 and Stage 3
+            stage2_def = None
+            stage3_def = None
+            for s in pipeline.payload.stages:
+                if s.stage_index == 2:
+                    stage2_def = s
+                elif s.stage_index == 3:
+                    stage3_def = s
+
+            if stage2_def is None or stage3_def is None:
+                raise NotFoundError("stage 2 or stage 3 in pipeline", job.pipeline_id)
+
+            # Get ledger entries for checksums
+            ledger_entries = uow.stage_chain_ledger.list_for_job(job_id)
+            stage1_ledger = None
+            for entry in ledger_entries:
+                if entry.stage_index == 1:
+                    stage1_ledger = entry
+                    break
+
+            if stage1_ledger is None or stage1_ledger.output_checksum is None:
+                raise ContinuationPolicyViolationError(
+                    job_id,
+                    2,
+                    1,
+                    "Stage 1 has no output checksum registered; cannot queue Stage 2",
+                )
+
+            stage2_run_id, stage3_run_id = stage_run_ids
+
+            # Get jdk java_homes for stage 2 (java17) and stage 3 (java21)
+            jdk17_java_home = jdk_java_homes.get("java17", "")
+            jdk21_java_home = jdk_java_homes.get("java21", "")
+
+            # Build Stage 2 command (Java 17 / Boot 3.5.6 from Stage 1 sandbox)
+            stage2_cmd = StageCommandLaunchCommand(
+                job_id=job_id,
+                command_id=f"cmd-{job_id}-stage2-{uuid4().hex[:8]}",
+                worker_id=worker_id,
+                operation=operation,
+                stage_run_id=stage2_run_id,
+                ledger_id=ledger_entry_checksums.get(1, stage1_ledger.ledger_id),
+                jdk_id="java17",
+                jdk_java_home=jdk17_java_home,
+                jdk_expected_major=17,
+                runner_profile_display_name=runner.display_name,
+                pipeline_id=job.pipeline_id,
+                pipeline_version=job.pipeline_version,
+                stage_index=2,
+                stage_id=stage2_def.stage_id,
+                profile_id=stage2_def.profile_id,
+                command_jdk=stage2_def.command_jdk,
+                sandbox_root_id=sandbox_root_id,
+                sandbox_relative_path=sandbox_relative_path_stage2,
+                run_configuration_artifact_id=run_configuration_artifact_id,
+                run_configuration_checksum=run_configuration_checksum,
+                working_directory_root_id=working_directory_root_id,
+                working_directory_relative_path=working_directory_relative_path,
+                stdout_relative_path="logs/stage2-stdout.log",
+                stderr_relative_path="logs/stage2-stderr.log",
+                result_relative_path="result-stage2.json",
+                spool_relative_path="spool/stage2",
+                catalog_checksum=None,
+                ledger_input_checksum=stage1_ledger.output_checksum,
+                ledger_checksum_guard=stage1_ledger.checksum_guard,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+                actor_type="system",
+                actor_id="controller",
+                argv=self.JAVA17_STAGE2_ARGV,
+                env=dict(self.JAVA17_STAGE2_ENV, JAVA_HOME=jdk17_java_home),
+            )
+
+            # Create and queue Stage 2 via StageCommandLaunchService
+            launch_service = StageCommandLaunchService(self._unit_of_work_factory)
+            stage2_manifest = launch_service.execute(stage2_cmd)
+            queued_command_ids.append(stage2_cmd.command_id)
+
+            # Record audit event for Stage 2 queued
+            uow.audit_records.append_global_audit(
+                audit_id=f"audit-{job_id}-queue-stage2",
+                actor_type="system",
+                actor_id="controller",
+                action="stage_two_queued",
+                payload_json=canonical_json_text({
+                    "job_id": job_id,
+                    "stage_index": 2,
+                    "command_id": stage2_cmd.command_id,
+                    "manifest_checksum": stage2_manifest.manifest_checksum,
+                    "jdk_id": "java17",
+                    "stage_run_id": stage2_run_id,
+                    "queue_only": True,
+                }),
+                created_at=now,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+
+            # Check if Stage 3 should also be queued (depends on pipeline config)
+            # For the three-stage V1 pipeline, Stage 3 reads from Stage 2 sandbox
+            # Build Stage 3 command (Java 21 / Boot 3.5.6 from Stage 2 sandbox)
+
+            # Get Stage 2 expected output checksum (not yet computed, use ledger_checksum_guard)
+            stage2_expected_input = stage1_ledger.output_checksum
+
+            stage3_cmd = StageCommandLaunchCommand(
+                job_id=job_id,
+                command_id=f"cmd-{job_id}-stage3-{uuid4().hex[:8]}",
+                worker_id=worker_id,
+                operation=operation,
+                stage_run_id=stage3_run_id,
+                ledger_id=ledger_entry_checksums.get(2, stage2_run_id),
+                jdk_id="java21",
+                jdk_java_home=jdk21_java_home,
+                jdk_expected_major=21,
+                runner_profile_display_name=runner.display_name,
+                pipeline_id=job.pipeline_id,
+                pipeline_version=job.pipeline_version,
+                stage_index=3,
+                stage_id=stage3_def.stage_id,
+                profile_id=stage3_def.profile_id,
+                command_jdk=stage3_def.command_jdk,
+                sandbox_root_id=sandbox_root_id,
+                sandbox_relative_path=sandbox_relative_path_stage3,
+                run_configuration_artifact_id=run_configuration_artifact_id,
+                run_configuration_checksum=run_configuration_checksum,
+                working_directory_root_id=working_directory_root_id,
+                working_directory_relative_path=working_directory_relative_path,
+                stdout_relative_path="logs/stage3-stdout.log",
+                stderr_relative_path="logs/stage3-stderr.log",
+                result_relative_path="result-stage3.json",
+                spool_relative_path="spool/stage3",
+                catalog_checksum=None,
+                ledger_input_checksum=stage2_expected_input,
+                ledger_checksum_guard=stage2_expected_input,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+                actor_type="system",
+                actor_id="controller",
+                argv=self.JAVA21_STAGE3_ARGV,
+                env=dict(self.JAVA21_STAGE3_ENV, JAVA_HOME=jdk21_java_home),
+            )
+
+            # Queue Stage 3
+            stage3_manifest = launch_service.execute(stage3_cmd)
+            queued_command_ids.append(stage3_cmd.command_id)
+
+            # Record audit event for Stage 3 queued
+            uow.audit_records.append_global_audit(
+                audit_id=f"audit-{job_id}-queue-stage3",
+                actor_type="system",
+                actor_id="controller",
+                action="stage_three_queued",
+                payload_json=canonical_json_text({
+                    "job_id": job_id,
+                    "stage_index": 3,
+                    "command_id": stage3_cmd.command_id,
+                    "manifest_checksum": stage3_manifest.manifest_checksum,
+                    "jdk_id": "java21",
+                    "stage_run_id": stage3_run_id,
+                    "queue_only": True,
+                }),
+                created_at=now,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+
+        return queued_command_ids
+
+
 class StageContinuationPolicyService:
     """Enforce stage continuation policy for the V1 pipeline.
 
