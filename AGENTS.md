@@ -1,208 +1,157 @@
-# Modernizer Solution
+# Modernizer Solution — Agent Instructions
 
 ## Purpose
 
-This repository builds and evolves an AI-assisted software modernization platform.
+This repository builds the AI Migration Control Tower and modernization platform. Work is issue-driven. One issue = one branch = one local commit unless blocked.
 
-Always work from the current assigned issue and current repository state. Keep one issue per branch or worktree.
-
-## Sources of truth
+## Source of Truth
 
 Use this priority order:
 
-1. Current assigned issue and acceptance criteria
-2. Current approved specification or implementation plan
-3. Repository code and tests
-4. Relevant documentation under `docs/`
-5. This file
+1. Assigned issue file under `docs/full-implementation/`
+2. `docs/full-implementation/00_IMPLEMENTATION_RULES.md`
+3. `docs/full-implementation/00_INDEX.md`
+4. Current repository code and tests
+5. Relevant local skill files under `.agents/skills/`
+6. This file
 
-For M1, use:
+Read only the assigned issue and directly related docs. Do not read the full docs tree unless the issue requires it. If sources conflict, stop and report.
 
-```text
-docs/M1_IMPLEMENTATION_PLAN.md
-```
+## Branch Workflow
 
-When sources conflict, report the conflict. Do not silently choose.
-
-## Required workflow
-
-Before editing or switching branches:
+Before work:
 
 ```powershell
 git status --short
 git branch --show-current
-```
 
-Preserve unrelated work. Never delete, reset, clean, overwrite, rebase, or modify unrelated files.
-
-If completed issue-owned files are modified or untracked:
-
-1. Run focused and regression tests.
-2. Review the files.
-3. Stage only issue-owned files.
-4. Commit them locally.
-
-Use explicit paths:
-
-```powershell
-git add <issue-files>
-git diff --cached --check
-git diff --cached
-git commit -m "<type>(<scope>): <summary>"
-```
-
-Do not use `git add .` when unrelated files exist. Never commit secrets, logs, local databases, generated files, environment files, or another developer’s work.
-
-After committing:
-
-```powershell
-git status --short
-git log -1 --oneline
-```
-
-## Starting a new issue
-
-New issue branches must start from the latest `DEMO2`, unless the issue specifies another approved base.
-
-```powershell
+# Always start from latest DEMO2:
 git switch DEMO2
 git pull --ff-only origin DEMO2
 git rev-parse --short HEAD
 git switch -c <issue-branch>
-```
 
-If `DEMO2` does not exist locally:
-
-```powershell
+# If local DEMO2 is missing:
 git fetch origin
 git switch --track origin/DEMO2
+git pull --ff-only origin DEMO2
+
+# If the issue branch already exists, switch to it.
+# Do not reset, rebase, force-update, clean, or resolve divergence without approval.
 ```
 
-If the issue branch already exists, switch to it instead of recreating it.
+**Branch name:** `amf/<issue-id>-short-title`
 
-Do not merge, rebase, reset, force-update, or resolve branch divergence without explicit approval.
+## Before Implementation
 
-## Scope and engineering
+Every agent must produce this plan before editing:
 
-* Read the assigned issue and all applicable `AGENTS.md` files.
-* Use targeted searches such as `rg`.
-* Change only files required by the issue.
-* Prefer small, typed, testable changes.
-* Reuse existing abstractions.
-* Keep domain logic independent from infrastructure and interfaces.
-* Preserve existing behavior unless the issue approves a change.
-* Do not add future milestone features.
-* Do not add or upgrade dependencies without justification.
-* Never store credentials or secrets.
+**Implementation plan:**
+
+1. Confirm scope and dependencies:
+   - Read the assigned issue file
+   - Read only directly related rules/docs
+   - Verify dependency issues are complete or not required
+
+2. Locate affected code:
+   - Use graphify first when graphify-out/graph.json exists
+   - Use targeted rg/search after graphify
+   - Identify exact files/classes/tests likely to change
+
+3. Implement the smallest safe change:
+   - Change only issue-owned files
+   - Preserve V1 invariants
+   - Avoid adjacent/future issue work
+   - Keep domain, infrastructure, API, and UI boundaries clean
+
+**Test plan:**
+
+1. Baseline check:
+   - Run focused baseline tests named in the issue when practical
+   - Record unrelated pre-existing failures before editing
+
+2. Focused validation:
+   - Run tests required by issue acceptance criteria
+
+3. Regression validation:
+   - Run affected Control Tower regressions
+   - Run broader suite when practical
+
+4. Hygiene checks:
+   - `git diff --check`
+   - `git diff --cached --check`
+   - `git status --short`
+
+**Other skills:**
+- `to-issues`: backlog splitting only
+- `triage`: scope/dependency risk
+- `requesting-code-review`: security, worker, approval, shell, model, patch, action, or redaction changes
+- `subagent-driven-development`: complex implementation tasks only
+- `test-discipline`: test planning
+- `graphify`: broad exploration when graphify-out/graph.json exists
+
+## Scope Rules
+
+- Change only files required by the assigned issue. Do not implement adjacent issues.
+- Do not touch unrelated deleted docs; some historical docs may be intentionally deleted.
+- Never use `git add .`. Stage explicit paths only.
+- Never commit secrets, logs, local DBs, .env, .next/, caches, or another developer's work.
+
+## V1 Invariants
+
+Preserve always:
+
+- **Pipeline:** springboot-216-to-356-java21-three-stage
+- **Stage 1:** Boot 2.7.18, Java 11, JDK java11
+- **Stage 2:** Boot 3.5.6, Java 17, JDK java17, input from Stage 1 sandbox
+- **Stage 3:** Boot 3.5.6, Java 21, JDK java21, input from Stage 2 sandbox
+- Boot 4 is not selectable in V1
+- 3.5.14 is not execution-relevant in V1
+- Browser cannot choose raw paths, Maven goals, shell commands, working dirs, or model deployment IDs
+- LLM cannot execute, approve, write files directly, or create proof
+- Shell is disabled by default
+- Maven/write actions are typed privileged actions only
+- Control Tower validates; developer approves; worker executes; Maven/tests prove
+
+## Engineering Rules
+
+Prefer small, typed, testable changes. Reuse existing abstractions. Keep domain logic independent from infrastructure and UI. Do not add dependencies unless the issue requires it.
+
+No direct long-running work in API handlers. Persist commands before launch. Worker argv/env must be backend-owned. Approval/resume must be checksum/version guarded.
 
 ## Testing
 
-Before editing, identify and run the relevant baseline tests.
+After editing, run:
 
-After editing:
+- Focused tests from the issue
+- Affected regression tests
+- Broader suite when practical
+- Hygiene checks:
+  - `git diff --check`
+  - `git diff --cached --check`
+  - `git status --short`
 
-1. Run focused tests.
-2. Run broader affected tests.
-3. Run the full repository suite when practical.
-4. Run:
+Use real output. Do not weaken tests. Report unrelated baseline failures separately.
+
+## Commit Policy
+
+When acceptance passes:
 
 ```powershell
-git diff --check
+git add <explicit issue-owned files>
 git diff --cached --check
+git diff --cached
+git commit -m "<type>(<scope>): <summary>"
+git status --short
+git log -1 --oneline
 ```
 
-Do not weaken tests or claim success without real output. Report unrelated baseline failures separately.
+Do not push unless requested.
 
-## Commit and push policy
+## Stop Rules
 
-Completed issue work must end in a local commit unless:
+Stop if acceptance cannot be met after 3 attempts; V1 invariants must change; arbitrary shell is needed; LLM execution/approval/write authority is needed; unrelated deleted docs must be restored; safe staging is impossible; dependency issue is incomplete; or security risk is unclear.
 
-* acceptance criteria are incomplete;
-* implementation tests fail;
-* a source conflict blocks completion;
-* safe staging is impossible;
-* the user explicitly says not to commit.
+## Final Report
 
-Do not push unless explicitly requested.
-
-Never force-push without explicit approval.
-
-## Completion criteria
-
-Work is complete only when:
-
-* acceptance criteria pass;
-* focused and regression tests pass;
-* no unrelated behavior changed;
-* no unapproved scope was added;
-* issue-owned files are committed locally;
-* only issue-relevant files are included;
-* risks and deviations are reported.
-
-Do not mark an issue complete while its implementation remains untracked.
-
-## Final report
-
-Report:
-
-* integration base and commit;
-* issue branch;
-* final commit hash and subject;
-* files changed;
-* implementation summary;
-* tests and exact results;
-* acceptance-criteria status;
-* final `git status --short`;
-* risks, conflicts, or deviations;
-* whether anything was pushed.
-
-## Graphify-first repository exploration
-
-When `graphify-out/graph.json` is present, every coding agent must use Graphify before broad repository scans or implementation work.
-
-Graphify is required during:
-
-* EXPLORE
-* ANALYZE
-* PLAN
-
-Before editing files, the agent must run focused Graphify queries to identify:
-
-* likely components
-* callers and dependencies
-* related tests
-* affected repositories/services
-* blast radius
-* existing abstractions to reuse
-* files that should not be touched
-
-The agent must prefer Graphify queries before opening many files manually. Use targeted `rg` and direct source inspection only after Graphify has narrowed the search area.
-
-Minimum expected Graphify flow for each issue:
-
-```text
-graphify --version
-graphify query "<issue-specific component or behavior>"
-graphify query "<likely service/repository/test relationship>"
-graphify path "<source component>" "<target dependency>"   # when useful
-graphify explain "<key component>"                        # when useful
-```
-
-For AMF-152 / M2-04, examples include:
-
-```text
-graphify query "Which services prepare command workspaces?"
-graphify query "Which services update command execution state?"
-graphify query "Where are command manifests created and verified?"
-graphify path "CommandWorkspaceService" "SqliteControlTowerUnitOfWork"
-graphify explain "CommandWorkspaceService"
-```
-
-Graphify results are navigation hints, not source of truth. The agent must confirm every implementation, security, deletion, and acceptance decision against actual source code, tests, assigned issue acceptance criteria, and approved documentation.
-
-Graphify must not be used as acceptance evidence. Passing Graphify queries does not prove the issue is complete.
-
-Do not update shared Graphify artifacts in ordinary issue branches. Do not regenerate or commit `graphify-out/*` unless the assigned issue explicitly asks for Graphify/tooling updates. Refresh shared graph artifacts only from merged `DEMO2` through the approved tooling branch/workflow.
-
-If Graphify is unavailable, missing, or stale, the agent must report that clearly, then fall back to targeted `rg` searches. Do not silently skip the Graphify step.
-
+Report base branch, issue branch, commit hash, files changed, summary, tests with exact results, acceptance status, final `git status --short`, risks/deviations, and whether anything was pushed.
