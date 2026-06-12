@@ -217,6 +217,30 @@ export type AssistantDoneData = {
   status: string;
 };
 
+// ── Model activity panel types (V1-18D) ─────────────────────────────────
+
+export type ModelInvocationEntry = {
+  invocation_id: string;
+  job_id: string | null;
+  profile_id: string | null;
+  provider_kind: string | null;
+  model_name: string | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  total_tokens: number | null;
+  redacted_summary: string | null;
+  actor_type: string | null;
+  actor_id: string | null;
+  created_at: string;
+  correlation_id: string | null;
+  causation_id: string | null;
+};
+
+export type ModelActivityResponse = {
+  job_id: string;
+  invocations: ModelInvocationEntry[];
+};
+
 // ── Stage timeline panel types (V1-18B) ────────────────────────────────
 
 export type StageChainEntry = {

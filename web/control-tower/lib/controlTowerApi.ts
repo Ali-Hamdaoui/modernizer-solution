@@ -7,6 +7,7 @@ import type {
   CreateDiagnosticJobRequest,
   FilesystemRootOption,
   JobRepresentation,
+  ModelActivityResponse,
   PlanAmendmentPreviewRequest,
   PlanAmendmentPreviewResponse,
   PipelineOption,
@@ -137,6 +138,10 @@ export async function getArtifacts(jobId: string): Promise<ArtifactListResponse>
 
 export async function getStageChain(jobId: string): Promise<StageChainResponse> {
   return getJson<StageChainResponse>(`/v1/jobs/${encodeURIComponent(jobId)}/stages`);
+}
+
+export async function getModelActivity(jobId: string): Promise<ModelActivityResponse> {
+  return getJson<ModelActivityResponse>(`/v1/jobs/${encodeURIComponent(jobId)}/model-invocations`);
 }
 
 export async function previewPlanAmendment(
