@@ -224,3 +224,47 @@ class StageChainEventRecord:
     payload_checksum: str
     created_at: str
     created_by: str
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalRecord:
+    """Immutable record of an approval decision.
+
+    Append-only: once inserted, the record is never updated.
+    Idempotency is guaranteed by the (interrupt_id, request_checksum) unique constraint.
+    """
+
+    approval_id: str
+    job_id: str
+    interrupt_id: str
+    request_checksum: str
+    decision: str
+    approved_by: str
+    approval_comments: str
+    actor_type: str
+    actor_id: str
+    payload_json: str
+    payload_checksum: str
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalResumeRecord:
+    """Immutable record of a queued approval resume command.
+
+    Append-only: the core fields (resume_id, approval_id, etc.) are
+    never updated. Only status, executed_at, and failure_reason may
+    be updated after execution.
+    """
+
+    resume_id: str
+    approval_id: str
+    job_id: str
+    command_type: str
+    command_payload_json: str
+    status: str
+    created_at: str
+    executed_at: str | None
+    failure_reason: str | None
+    correlation_id: str | None
+    causation_id: str | None

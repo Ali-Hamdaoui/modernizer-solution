@@ -20,6 +20,8 @@ from migration_factory.control_tower.application.dto import (
 )
 from migration_factory.control_tower.domain.commands import CommandState
 from migration_factory.control_tower.domain.entities import (
+    ApprovalRecord,
+    ApprovalResumeRecord,
     ArtifactRecord,
     AuditRecord,
     CommandExecutionRecord,
@@ -308,6 +310,36 @@ class V1ModelProfileEventRepository(Protocol):
     ) -> None: ...
 
 
+class V1ApprovalRepository(Protocol):
+    def insert(self, approval: ApprovalRecord) -> None: ...
+
+    def get(self, approval_id: str) -> ApprovalRecord | None: ...
+
+    def get_by_interrupt(
+        self, interrupt_id: str, request_checksum: str
+    ) -> ApprovalRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[ApprovalRecord, ...]: ...
+
+
+class V1ApprovalResumeRepository(Protocol):
+    def insert(self, resume: ApprovalResumeRecord) -> None: ...
+
+    def list_pending(self) -> tuple[ApprovalResumeRecord, ...]: ...
+
+    def list_for_approval(
+        self, approval_id: str
+    ) -> tuple[ApprovalResumeRecord, ...]: ...
+
+    def update_status(
+        self,
+        resume_id: str,
+        status: str,
+        executed_at: str | None = None,
+        failure_reason: str | None = None,
+    ) -> None: ...
+
+
 class ControlTowerUnitOfWork(Protocol):
     runner_profiles: RunnerProfileRepository
     pipeline_definitions: PipelineDefinitionRepository
@@ -322,6 +354,8 @@ class ControlTowerUnitOfWork(Protocol):
     stage_chain_ledger: StageChainLedgerRepository
     v1_model_profiles: V1ModelProfileRepository
     v1_model_profile_events: V1ModelProfileEventRepository
+    v1_approvals: V1ApprovalRepository
+    v1_approval_resume: V1ApprovalResumeRepository
 
     def __enter__(self) -> Self: ...
 

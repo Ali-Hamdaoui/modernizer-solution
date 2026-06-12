@@ -197,6 +197,42 @@ class StageCommandLaunchCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class RecordApprovalCommand:
+    """Record an approval decision for a job.
+
+    The approval is idempotent by (interrupt_id, request_checksum).
+    The decision is persisted, and a resume command is queued for
+    later execution. No direct resume is performed by this command.
+    """
+
+    job_id: str
+    interrupt_id: str
+    request_checksum: str
+    decision: str
+    approved_by: str
+    approval_comments: str = ""
+    actor_type: str = "system"
+    actor_id: str = "system"
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class QueueApprovalResumeCommand:
+    """Queue a resume command for an approved approval.
+
+    This is always queued, never executed directly.
+    """
+
+    approval_id: str
+    job_id: str
+    command_type: str
+    command_payload_json: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class TimeoutCommand:
     job_id: str
     command_id: str

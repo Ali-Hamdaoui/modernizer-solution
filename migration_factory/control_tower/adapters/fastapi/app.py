@@ -26,6 +26,7 @@ from migration_factory.control_tower.application.commands import (
     CreateDiagnosticJobCommand,
     FinalizeCommandCommand,
     LaunchWorkerCommand,
+    RecordApprovalCommand,
     StartMigrationJobCommand,
     TimeoutCommand,
 )
@@ -45,6 +46,7 @@ from migration_factory.control_tower.application.queries import (
     parse_public_event_cursor,
 )
 from migration_factory.control_tower.application.services import (
+    ApprovalService,
     CancelService,
     CommandFinalizationService,
     ControlTowerRegistrationService,
@@ -539,6 +541,85 @@ def create_app(
             "provider_kind": record.provider_kind,
             "is_active": record.is_active,
             "created_at": record.created_at,
+        }
+
+    # ------------------------------------------------------------------
+    # Approval endpoints (V1-07A)
+    # ------------------------------------------------------------------
+
+    class RecordApprovalRequest(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        interrupt_id: str
+        request_checksum: str
+        decision: str = Field(..., pattern="^(approved|rejected|replan_required)$")
+        approved_by: str = Field(default="human", min_length=1)
+        approval_comments: str = ""
+
+    @app.post("/v1/approvals", status_code=status.HTTP_201_CREATED)
+    async def record_approval(
+        request: RecordApprovalRequest,
+        http_request: Request,
+        correlation_id: str | None = Header(default=None, alias="X-Correlation-ID"),
+    ) -> dict[str, Any]:
+        actor = app.state.actor_provider.get_actor(http_request)
+        service = ApprovalService(unit_of_work_factory)
+        try:
+            approval = service.record_approval(
+                RecordApprovalCommand(
+                    job_id="",
+                    interrupt_id=request.interrupt_id,
+                    request_checksum=request.request_checksum,
+                    decision=request.decision,
+                    approved_by=request.approved_by,
+                    approval_comments=request.approval_comments,
+                    actor_type=actor.actor_type,
+                    actor_id=actor.actor_id,
+                    correlation_id=correlation_id,
+                )
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return {
+            "approval_id": approval.approval_id,
+            "interrupt_id": approval.interrupt_id,
+            "decision": approval.decision,
+            "approved_by": approval.approved_by,
+            "created_at": approval.created_at,
+        }
+
+    @app.get("/v1/approvals/{approval_id}")
+    def get_approval(approval_id: str) -> dict[str, Any]:
+        service = ApprovalService(unit_of_work_factory)
+        approval = service.get_approval(approval_id)
+        if approval is None:
+            raise _error(status.HTTP_404_NOT_FOUND, "NOT_FOUND", f"Approval {approval_id!r} not found.")
+        return {
+            "approval_id": approval.approval_id,
+            "job_id": approval.job_id,
+            "interrupt_id": approval.interrupt_id,
+            "decision": approval.decision,
+            "approved_by": approval.approved_by,
+            "approval_comments": approval.approval_comments,
+            "created_at": approval.created_at,
+        }
+
+    @app.get("/v1/jobs/{job_id}/approvals")
+    def list_job_approvals(job_id: str) -> dict[str, Any]:
+        service = ApprovalService(unit_of_work_factory)
+        approvals = service.list_approvals_for_job(job_id)
+        return {
+            "job_id": job_id,
+            "approvals": [
+                {
+                    "approval_id": a.approval_id,
+                    "interrupt_id": a.interrupt_id,
+                    "decision": a.decision,
+                    "approved_by": a.approved_by,
+                    "approval_comments": a.approval_comments,
+                    "created_at": a.created_at,
+                }
+                for a in approvals
+            ],
         }
 
     @app.post("/v1/jobs", status_code=status.HTTP_201_CREATED)
