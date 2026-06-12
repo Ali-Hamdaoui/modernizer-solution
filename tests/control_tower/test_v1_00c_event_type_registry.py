@@ -49,19 +49,23 @@ class TestV1EventTypeEnum:
             "stage_completed",
             "stage_failed",
             "output_registered",
+            "model_invocation_recorded",
         }
         actual_values = {m.value for m in V1EventType}
         assert actual_values == expected_values
 
     def test_all_lifecycle_subsets_are_proper(self) -> None:
         """Lifecycle convenience sets cover disjoint subsets of V1EventType."""
-        all_subsets = (
+        # MODEL_INVOCATION_RECORDED is not part of any lifecycle subset;
+        # it belongs to the model invocation audit category.
+        lifecycle_subsets = (
             JOB_LIFECYCLE_EVENTS
             | COMMAND_LIFECYCLE_EVENTS
             | ROUTE_VALIDATION_EVENTS
             | STAGE_CHAIN_LIFECYCLE_EVENTS
         )
-        assert all_subsets == ALL_V1_EVENT_TYPES
+        expected = lifecycle_subsets | {V1EventType.MODEL_INVOCATION_RECORDED}
+        assert expected == ALL_V1_EVENT_TYPES
 
     def test_lifecycle_subsets_are_disjoint(self) -> None:
         """No event type belongs to more than one lifecycle category."""

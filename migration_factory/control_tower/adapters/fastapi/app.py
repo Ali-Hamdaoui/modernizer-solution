@@ -546,6 +546,51 @@ def create_app(
         }
 
     # ------------------------------------------------------------------
+    # Model invocation audit endpoints (V1-10)
+    # ------------------------------------------------------------------
+
+    @app.get("/v1/model-invocations")
+    def list_model_invocations() -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            invocations = [
+                {
+                    "invocation_id": inv.invocation_id,
+                    "job_id": inv.job_id,
+                    "profile_id": inv.profile_id,
+                    "provider_kind": inv.provider_kind,
+                    "model_name": inv.model_name,
+                    "prompt_tokens": inv.prompt_tokens,
+                    "completion_tokens": inv.completion_tokens,
+                    "total_tokens": inv.total_tokens,
+                    "redacted_summary": inv.redacted_summary,
+                    "actor_type": inv.actor_type,
+                    "actor_id": inv.actor_id,
+                    "created_at": inv.created_at,
+                }
+                for inv in uow.v1_model_invocations.list()
+            ]
+        return {"model_invocations": invocations}
+
+    @app.get("/v1/jobs/{job_id}/model-invocations")
+    def list_job_model_invocations(job_id: str) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            invocations = [
+                {
+                    "invocation_id": inv.invocation_id,
+                    "profile_id": inv.profile_id,
+                    "provider_kind": inv.provider_kind,
+                    "model_name": inv.model_name,
+                    "prompt_tokens": inv.prompt_tokens,
+                    "completion_tokens": inv.completion_tokens,
+                    "total_tokens": inv.total_tokens,
+                    "redacted_summary": inv.redacted_summary,
+                    "created_at": inv.created_at,
+                }
+                for inv in uow.v1_model_invocations.list_for_job(job_id)
+            ]
+        return {"model_invocations": invocations}
+
+    # ------------------------------------------------------------------
     # Approval endpoints (V1-07A)
     # ------------------------------------------------------------------
 

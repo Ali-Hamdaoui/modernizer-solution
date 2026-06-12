@@ -219,6 +219,29 @@ class StageChainEntryDto:
 
 
 @dataclass(frozen=True, slots=True)
+class ModelInvocationDto:
+    """Redacted model invocation audit record DTO.
+
+    Raw prompts, secrets, and deployment IDs are never exposed.
+    """
+
+    invocation_id: str
+    job_id: str | None
+    profile_id: str | None
+    provider_kind: str | None
+    model_name: str | None
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    total_tokens: int | None
+    redacted_summary: str | None
+    actor_type: str | None
+    actor_id: str | None
+    created_at: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class JobProjectionDto:
     job: MigrationJobDto
     active_command: CommandExecutionDto | None

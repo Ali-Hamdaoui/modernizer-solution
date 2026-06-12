@@ -36,6 +36,7 @@ from migration_factory.control_tower.domain.entities import (
     StageOutputRegistryRecord,
     StageRunRecord,
 )
+from migration_factory.control_tower.domain.entities import V1ModelInvocationRecord
 from migration_factory.control_tower.domain.model_profiles import V1ModelProfileRecord
 from migration_factory.control_tower.domain.manifests import CommandManifest
 from migration_factory.control_tower.domain.states import JobState
@@ -292,6 +293,18 @@ class V1ModelProfileRepository(Protocol):
     def list(self) -> tuple[V1ModelProfileRecord, ...]: ...
 
 
+class V1ModelInvocationRepository(Protocol):
+    """Append-only repository for model invocation audit records."""
+
+    def insert(self, invocation: V1ModelInvocationRecord) -> None: ...
+
+    def get(self, invocation_id: str) -> V1ModelInvocationRecord | None: ...
+
+    def list(self) -> tuple[V1ModelInvocationRecord, ...]: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1ModelInvocationRecord, ...]: ...
+
+
 class V1ModelProfileEventRepository(Protocol):
     def insert_event(
         self,
@@ -356,6 +369,7 @@ class ControlTowerUnitOfWork(Protocol):
     v1_model_profile_events: V1ModelProfileEventRepository
     v1_approvals: V1ApprovalRepository
     v1_approval_resume: V1ApprovalResumeRepository
+    v1_model_invocations: V1ModelInvocationRepository
 
     def __enter__(self) -> Self: ...
 
