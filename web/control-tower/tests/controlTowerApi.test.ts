@@ -6,6 +6,7 @@ import {
   createDiagnosticJobPayload,
   eventStreamUrl,
   getJob,
+  previewPlanAmendment,
   postJson,
   resolveControlTowerApiBaseUrl
 } from "../lib/controlTowerApi";
@@ -114,6 +115,65 @@ describe("M2-01 frontend diagnostic contracts", () => {
         })
       })
     );
+  });
+
+  it("preview helper uses preview endpoint and safe preview contract", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        job_id: "job-1",
+        source_kind: "manual",
+        title: "Safe preview",
+        summary: "Planning only",
+        payload_checksum: "chk-1",
+        change_count: 1,
+        affected_stage_indexes: [1],
+        change_types: ["documentation"],
+        redacted_summary: {
+          source_kind: "manual",
+          title: "Safe preview",
+          summary: "Planning only",
+          change_count: 1,
+          affected_stage_indexes: [1],
+          change_types: ["documentation"],
+          non_authoritative: true
+        },
+        validation_status: "PASS",
+        warning_codes: [],
+        preview_persisted: false,
+        preview_applied: false
+      })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const body = await previewPlanAmendment("job-1", {
+      title: "Safe preview",
+      summary: "Planning only",
+      source_kind: "manual",
+      notes: ["safe"],
+      changes: [
+        {
+          stage_index: 1,
+          change_type: "documentation",
+          description: "Clarify plan text"
+        }
+      ]
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/v1/jobs/job-1/plan-amendments/preview"),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "Content-Type": "application/json",
+          "X-Control-Tower-Client": CONTROL_TOWER_FRONTEND_CLIENT_ID
+        })
+      })
+    );
+    expect(body.validation_status).toBe("PASS");
+    expect(body.preview_persisted).toBe(false);
+    expect(body.preview_applied).toBe(false);
+    expect(body.redacted_summary.non_authoritative).toBe(true);
   });
 
   it("applies public events idempotently and refetches state-changing projections", () => {
