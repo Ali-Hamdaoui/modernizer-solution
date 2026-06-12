@@ -139,3 +139,41 @@ export type PublicEventReplayResponse = {
   latest_sequence: number;
   events: PublicRunEvent[];
 };
+
+// ── Assistant panel types (V1-18F) ─────────────────────────────────
+
+export type AssistantStreamEvent = {
+  event_type: "message" | "tool_call" | "tool_result" | "error" | "done";
+  data_json: string;
+  sequence: number;
+};
+
+export type AssistantMessageData = {
+  message_id: string;
+  role: "user" | "assistant" | "tool_result";
+  content: string;
+  tool_call_id?: string;
+};
+
+export type AssistantToolResultData = {
+  tool_call_id: string;
+  tool_name: string;
+  result: string;
+  truncated: boolean;
+  duration_ms: number;
+};
+
+export type AssistantToolCallData = {
+  tool_call_id: string;
+  tool_name: string;
+  parameters: Record<string, unknown>;
+};
+
+export type AssistantErrorData = {
+  tool_call_id: string;
+  error: string;
+};
+
+export type AssistantDoneData = {
+  status: string;
+};
