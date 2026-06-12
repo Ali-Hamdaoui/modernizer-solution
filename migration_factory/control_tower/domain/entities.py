@@ -296,6 +296,42 @@ class V1ModelInvocationRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class V1PrivilegedActionRecord:
+    """Immutable record of a pending privileged action request.
+
+    Append-only: once inserted, the record is never updated.
+    Status changes are tracked by inserting new records with
+    updated status (not by updating existing rows).
+
+    Only typed Maven and write actions are allowed. Shell actions
+    are rejected at the service layer.
+
+    Approval logic belongs to V1-17C. Execution belongs to V1-17D.
+    Policy/checksum validation beyond basic storage belongs to V1-17B.
+    """
+
+    action_id: str
+    job_id: str
+    action_type: str  # 'maven' or 'write'
+    parameters_json: str
+    parameters_checksum: str
+    status: str = "pending"
+    requested_by: str = ""
+    requested_at: str = ""
+    action_version: str = "1.0"
+    policy_json: str | None = None
+    policy_version: str | None = None
+    approved_by: str | None = None
+    approved_at: str | None = None
+    rejected_by: str | None = None
+    rejected_reason: str | None = None
+    executed_at: str | None = None
+    failure_reason: str | None = None
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class V1ContextPackManifestRecord:
     """Immutable record of a context pack manifest.
 

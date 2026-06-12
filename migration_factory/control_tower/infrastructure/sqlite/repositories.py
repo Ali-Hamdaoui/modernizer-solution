@@ -32,6 +32,7 @@ from migration_factory.control_tower.domain.entities import (
     StageRunRecord,
     V1ContextPackManifestRecord,
     V1ModelInvocationRecord,
+    V1PrivilegedActionRecord,
 )
 from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.domain.commands import CommandState
@@ -1690,6 +1691,123 @@ def _context_pack_manifest_from_row(row: sqlite3.Row) -> V1ContextPackManifestRe
         token_count=int(row["token_count"]) if row["token_count"] is not None else None,
         created_at=str(row["created_at"]),
         created_by=str(row["created_by"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1PrivilegedActionRepository:
+    """SQLite repository for v1_privileged_actions table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, action: V1PrivilegedActionRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_privileged_actions (
+                    action_id, job_id, action_type, action_version,
+                    parameters_json, parameters_checksum, policy_json,
+                    policy_version, status, requested_by, requested_at,
+                    approved_by, approved_at, rejected_by, rejected_reason,
+                    executed_at, failure_reason, correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    action.action_id,
+                    action.job_id,
+                    action.action_type,
+                    action.action_version,
+                    action.parameters_json,
+                    action.parameters_checksum,
+                    action.policy_json,
+                    action.policy_version,
+                    action.status,
+                    action.requested_by,
+                    action.requested_at,
+                    action.approved_by,
+                    action.approved_at,
+                    action.rejected_by,
+                    action.rejected_reason,
+                    action.executed_at,
+                    action.failure_reason,
+                    action.correlation_id,
+                    action.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, action_id: str) -> V1PrivilegedActionRecord | None:
+        row = self._connection.execute(
+            """SELECT action_id, job_id, action_type, action_version,
+                      parameters_json, parameters_checksum, policy_json,
+                      policy_version, status, requested_by, requested_at,
+                      approved_by, approved_at, rejected_by, rejected_reason,
+                      executed_at, failure_reason, correlation_id, causation_id
+               FROM v1_privileged_actions WHERE action_id = ?""",
+            (action_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _privileged_action_from_row(row)
+
+    def list(self) -> tuple[V1PrivilegedActionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT action_id, job_id, action_type, action_version,
+                      parameters_json, parameters_checksum, policy_json,
+                      policy_version, status, requested_by, requested_at,
+                      approved_by, approved_at, rejected_by, rejected_reason,
+                      executed_at, failure_reason, correlation_id, causation_id
+               FROM v1_privileged_actions ORDER BY requested_at DESC"""
+        ).fetchall()
+        return tuple(_privileged_action_from_row(r) for r in rows)
+
+    def list_for_job(self, job_id: str) -> tuple[V1PrivilegedActionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT action_id, job_id, action_type, action_version,
+                      parameters_json, parameters_checksum, policy_json,
+                      policy_version, status, requested_by, requested_at,
+                      approved_by, approved_at, rejected_by, rejected_reason,
+                      executed_at, failure_reason, correlation_id, causation_id
+               FROM v1_privileged_actions
+               WHERE job_id = ? ORDER BY requested_at DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_privileged_action_from_row(r) for r in rows)
+
+    def list_by_status(self, status: str) -> tuple[V1PrivilegedActionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT action_id, job_id, action_type, action_version,
+                      parameters_json, parameters_checksum, policy_json,
+                      policy_version, status, requested_by, requested_at,
+                      approved_by, approved_at, rejected_by, rejected_reason,
+                      executed_at, failure_reason, correlation_id, causation_id
+               FROM v1_privileged_actions
+               WHERE status = ? ORDER BY requested_at DESC""",
+            (status,),
+        ).fetchall()
+        return tuple(_privileged_action_from_row(r) for r in rows)
+
+
+def _privileged_action_from_row(row: sqlite3.Row) -> V1PrivilegedActionRecord:
+    return V1PrivilegedActionRecord(
+        action_id=str(row["action_id"]),
+        job_id=str(row["job_id"]),
+        action_type=str(row["action_type"]),
+        action_version=str(row["action_version"]),
+        parameters_json=str(row["parameters_json"]),
+        parameters_checksum=str(row["parameters_checksum"]),
+        policy_json=str(row["policy_json"]) if row["policy_json"] is not None else None,
+        policy_version=str(row["policy_version"]) if row["policy_version"] is not None else None,
+        status=str(row["status"]),
+        requested_by=str(row["requested_by"]),
+        requested_at=str(row["requested_at"]),
+        approved_by=str(row["approved_by"]) if row["approved_by"] is not None else None,
+        approved_at=str(row["approved_at"]) if row["approved_at"] is not None else None,
+        rejected_by=str(row["rejected_by"]) if row["rejected_by"] is not None else None,
+        rejected_reason=str(row["rejected_reason"]) if row["rejected_reason"] is not None else None,
+        executed_at=str(row["executed_at"]) if row["executed_at"] is not None else None,
+        failure_reason=str(row["failure_reason"]) if row["failure_reason"] is not None else None,
         correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
         causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
     )
