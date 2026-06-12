@@ -140,6 +140,45 @@ export type PublicEventReplayResponse = {
   events: PublicRunEvent[];
 };
 
+export type PlanAmendmentPreviewChange = {
+  stage_index: number;
+  change_type: string;
+  description: string;
+  rationale?: string | null;
+};
+
+export type PlanAmendmentPreviewRequest = {
+  title: string;
+  summary: string;
+  source_kind: "manual" | "fake_provider";
+  notes: string[];
+  changes: PlanAmendmentPreviewChange[];
+};
+
+export type PlanAmendmentPreviewResponse = {
+  job_id: string;
+  source_kind: string;
+  title: string;
+  summary: string;
+  payload_checksum: string;
+  change_count: number;
+  affected_stage_indexes: number[];
+  change_types: string[];
+  redacted_summary: {
+    source_kind: string;
+    title: string;
+    summary: string;
+    change_count: number;
+    affected_stage_indexes: number[];
+    change_types: string[];
+    non_authoritative: boolean;
+  };
+  validation_status: "PASS";
+  warning_codes: string[];
+  preview_persisted: false;
+  preview_applied: false;
+};
+
 // ── Assistant panel types (V1-18F) ─────────────────────────────────
 
 export type AssistantStreamEvent = {

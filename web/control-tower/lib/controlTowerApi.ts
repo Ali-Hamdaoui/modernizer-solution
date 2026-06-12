@@ -7,6 +7,8 @@ import type {
   CreateDiagnosticJobRequest,
   FilesystemRootOption,
   JobRepresentation,
+  PlanAmendmentPreviewRequest,
+  PlanAmendmentPreviewResponse,
   PipelineOption,
   PublicEventReplayResponse,
   RunnerProfileOption
@@ -130,6 +132,16 @@ export async function getCommandOutput(
 
 export async function getArtifacts(jobId: string): Promise<ArtifactListResponse> {
   return getJson<ArtifactListResponse>(`/v1/jobs/${encodeURIComponent(jobId)}/artifacts`);
+}
+
+export async function previewPlanAmendment(
+  jobId: string,
+  payload: PlanAmendmentPreviewRequest
+): Promise<PlanAmendmentPreviewResponse> {
+  return postJson<PlanAmendmentPreviewResponse>(
+    `/v1/jobs/${encodeURIComponent(jobId)}/plan-amendments/preview`,
+    payload
+  );
 }
 
 export function eventStreamUrl(jobId: string, afterSequence: number): string {

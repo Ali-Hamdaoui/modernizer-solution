@@ -1483,6 +1483,10 @@ def _plan_preview_payload(preview: Any) -> dict[str, Any]:
         "change_count": preview.change_count,
         "affected_stage_indexes": list(preview.affected_stage_indexes),
         "change_types": list(preview.change_types),
+        "redacted_summary": preview.redacted_summary,
+        "validation_status": preview.validation_status,
+        "warning_codes": list(preview.warning_codes),
+        "preview_persisted": preview.preview_persisted,
         "preview_applied": preview.preview_applied,
     })
 

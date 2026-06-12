@@ -25,6 +25,7 @@ from migration_factory.control_tower.domain.errors import (
     PlanAmendmentValidationError,
     PlanRevisionConflictError,
 )
+from migration_factory.control_tower.application.redaction import redact_public_value
 
 
 _ALLOWED_SOURCE_KINDS = {"manual", "fake_provider"}
@@ -300,15 +301,20 @@ class PlanAmendmentService:
             summary=str(payload["summary"]),
             changes=normalized_changes,
         )
+        redacted_summary = redact_public_value(summary_dict)
         return PlanPreviewDto(
             job_id=job_id,
             source_kind=normalized_source,
-            title=str(summary_dict["title"]),
-            summary=str(summary_dict["summary"]),
+            title=str(redacted_summary["title"]),
+            summary=str(redacted_summary["summary"]),
             payload_checksum=sha256_canonical_json(payload),
-            change_count=int(summary_dict["change_count"]),
-            affected_stage_indexes=tuple(summary_dict["affected_stage_indexes"]),
-            change_types=tuple(summary_dict["change_types"]),
+            change_count=int(redacted_summary["change_count"]),
+            affected_stage_indexes=tuple(redacted_summary["affected_stage_indexes"]),
+            change_types=tuple(redacted_summary["change_types"]),
+            redacted_summary=redacted_summary,
+            validation_status="PASS",
+            warning_codes=(),
+            preview_persisted=False,
             preview_applied=False,
         )
 

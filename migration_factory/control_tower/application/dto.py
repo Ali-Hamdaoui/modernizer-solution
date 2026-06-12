@@ -305,6 +305,10 @@ class PlanPreviewDto:
     change_count: int
     affected_stage_indexes: tuple[int, ...]
     change_types: tuple[str, ...]
+    redacted_summary: dict[str, Any]
+    validation_status: str = "PASS"
+    warning_codes: tuple[str, ...] = ()
+    preview_persisted: bool = False
     preview_applied: bool = False
 
 
