@@ -34,6 +34,7 @@ from migration_factory.control_tower.domain.entities import (
     StageOutputRegistryRecord,
     StageRunRecord,
 )
+from migration_factory.control_tower.domain.model_profiles import V1ModelProfileRecord
 from migration_factory.control_tower.domain.manifests import CommandManifest
 from migration_factory.control_tower.domain.states import JobState
 
@@ -281,6 +282,32 @@ class StageChainLedgerRepository(Protocol):
     def list_events_for_job(self, job_id: str) -> tuple[StageChainEventRecord, ...]: ...
 
 
+class V1ModelProfileRepository(Protocol):
+    def insert(self, profile: V1ModelProfileRecord) -> None: ...
+
+    def get(self, profile_id: str) -> V1ModelProfileRecord | None: ...
+
+    def list(self) -> tuple[V1ModelProfileRecord, ...]: ...
+
+
+class V1ModelProfileEventRepository(Protocol):
+    def insert_event(
+        self,
+        *,
+        event_id: str,
+        profile_id: str,
+        event_type: str,
+        provider_kind: str,
+        actor_type: str,
+        actor_id: str,
+        payload_json: str,
+        payload_checksum: str,
+        created_at: str,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> None: ...
+
+
 class ControlTowerUnitOfWork(Protocol):
     runner_profiles: RunnerProfileRepository
     pipeline_definitions: PipelineDefinitionRepository
@@ -293,6 +320,8 @@ class ControlTowerUnitOfWork(Protocol):
     command_executions: CommandExecutionRepository
     idempotency_records: IdempotencyRepository
     stage_chain_ledger: StageChainLedgerRepository
+    v1_model_profiles: V1ModelProfileRepository
+    v1_model_profile_events: V1ModelProfileEventRepository
 
     def __enter__(self) -> Self: ...
 
