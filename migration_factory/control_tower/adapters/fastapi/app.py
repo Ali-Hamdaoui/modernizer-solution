@@ -45,7 +45,6 @@ from migration_factory.control_tower.application.queries import (
     _decode_utf8_safe,
     parse_public_event_cursor,
 )
-from migration_factory.control_tower.application.proof import DeterministicProofGateService
 from migration_factory.control_tower.application.services import (
     ApprovalService,
     CancelService,
@@ -746,72 +745,6 @@ def create_app(
                 }
                 for e in events
             ],
-        }
-
-    @app.get("/v1/jobs/{job_id}/proof-gates")
-    def get_proof_gates(job_id: str) -> dict[str, Any]:
-        """Get computed proof gates for a job.
-
-        Returns proof gate status for all three stages.
-        Proof gates are deterministic checksums computed from the
-        stage chain ledger outputs. Model summaries CANNOT create
-        or override proof gates.
-
-        Browser payloads CANNOT choose raw paths, Maven goals, shell
-        commands, working directories, or model deployments.
-        """
-        from migration_factory.control_tower.domain.errors import NotFoundError
-
-        proof_service = DeterministicProofGateService(unit_of_work_factory)
-        try:
-            summary = proof_service.get_gate_summary(job_id)
-        except NotFoundError:
-            raise _error(
-                status.HTTP_404_NOT_FOUND,
-                "NOT_FOUND",
-                f"Job {job_id!r} not found.",
-            )
-
-        return summary
-
-    @app.post("/v1/jobs/{job_id}/proof-gates/compute")
-    async def compute_proof_gates(
-        job_id: str,
-    ) -> dict[str, Any]:
-        """Compute deterministic proof gates for all three stages.
-
-        Proof gates are computed from the stage chain ledger, never
-        from LLM output or browser payloads. All three gates must be
-        present for proof to be considered complete.
-
-        Browser payloads CANNOT choose raw paths, Maven goals, shell
-        commands, working directories, or model deployments.
-        """
-        from migration_factory.control_tower.domain.errors import NotFoundError
-
-        proof_service = DeterministicProofGateService(unit_of_work_factory)
-        try:
-            gates = proof_service.compute_proof_gates(job_id)
-        except (NotFoundError, ValueError) as exc:
-            if isinstance(exc, NotFoundError):
-                raise _error(
-                    status.HTTP_404_NOT_FOUND,
-                    "NOT_FOUND",
-                    str(exc),
-                ) from exc
-            raise _error(
-                status.HTTP_409_CONFLICT,
-                "PROOF_GATE_ERROR",
-                str(exc),
-            ) from exc
-
-        return {
-            "job_id": job_id,
-            "gate_count": len(gates),
-            "required_gates": 3,
-            "gates": {str(k): v for k, v in gates.items()},
-            "algorithm": "sha256",
-            "proof_complete": len(gates) == 3,
         }
 
     @app.post("/v1/jobs/{job_id}/start")
