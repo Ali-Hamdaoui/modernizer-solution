@@ -1506,10 +1506,6 @@ def _migration_job_record_from_row(row: sqlite3.Row) -> MigrationJobRecord:
 class SqliteV1ModelInvocationRepository:
     """SQLite repository for v1_model_invocations table."""
 
-
-class SqliteV1ContextPackManifestRepository:
-    """SQLite repository for v1_context_pack_manifests table."""
-
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
 
@@ -1694,9 +1690,6 @@ def _context_pack_manifest_from_row(row: sqlite3.Row) -> V1ContextPackManifestRe
         token_count=int(row["token_count"]) if row["token_count"] is not None else None,
         created_at=str(row["created_at"]),
         created_by=str(row["created_by"]),
-        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
-        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
-    )
         correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
         causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
     )
