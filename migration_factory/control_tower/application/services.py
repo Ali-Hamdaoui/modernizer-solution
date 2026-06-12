@@ -73,6 +73,7 @@ from migration_factory.control_tower.domain.errors import (
     InvalidJobStateTransitionError,
     ManifestIntegrityError,
     NotFoundError,
+    ContinuationPolicyViolationError,
     RegistrationConflictError,
     StaleVersionError,
     StorageIntegrityError,
@@ -2935,6 +2936,293 @@ def _job_projection(uow: ControlTowerUnitOfWork, job_id: str) -> JobProjectionDt
         etag=f'"job-{job.job_id}-v{job.version}"',
     )
 
+
+class StageContinuationPolicyService:
+    """Enforce stage continuation policy for the V1 pipeline.
+
+    Stage 2 MUST read from Stage 1 sandbox output only.
+    Stage 3 MUST read from Stage 2 sandbox output only.
+
+    This service:
+    - Creates policy entries when stage chain is initialized.
+    - Validates that each downstream stage's input matches the
+      expected prior-stage sandbox output.
+    - Records deterministic Blocked/Queued/Failed events on violation.
+    - Browser payloads CANNOT choose raw paths, Maven goals, shell
+      commands, working directories, or model deployments.
+    - LLM flows CANNOT execute commands, approve decisions, or write
+      files directly.
+    - Boot 4 NOT selectable; 3.5.14 NOT execution-relevant.
+    """
+
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+
+    def enforce_stage_continuation(
+        self,
+        job_id: str,
+        stage_index: int,
+        input_checksum: str,
+        sandbox_root_id: str | None = None,
+        sandbox_relative_path: str | None = None,
+    ) -> None:
+        """Enforce that stage `stage_index` can proceed.
+
+        For Stage 1, a policy entry is created but no prior-stage
+        check is performed (Stage 1 reads from legacy source).
+
+        For Stage 2+, the input checksum is validated against the
+        expected prior-stage sandbox output checksum.
+
+        Raises ContinuationPolicyViolationError if the policy is
+        not satisfied.
+        """
+        with self._unit_of_work_factory() as uow:
+            job = uow.migration_jobs.get(job_id)
+            if job is None:
+                raise NotFoundError("migration job", job_id)
+
+            pipeline = uow.pipeline_definitions.get_exact(
+                job.pipeline_id, job.pipeline_version
+            )
+            if pipeline is None:
+                raise NotFoundError(
+                    "pipeline definition",
+                    f"{job.pipeline_id}/{job.pipeline_version}",
+                )
+
+            stage_def = None
+            for s in pipeline.payload.stages:
+                if s.stage_index == stage_index:
+                    stage_def = s
+                    break
+            if stage_def is None:
+                raise NotFoundError(f"stage {stage_index} in pipeline", job.pipeline_id)
+
+            now = utc_now_text()
+
+            if stage_index == 1:
+                # Stage 1 reads from legacy source; no prior-stage check
+                policy_id = f"cont-policy-{job_id}-s{stage_index:04d}"
+                uow.stage_chain_ledger.insert_event(
+                    StageChainEventRecord(
+                        event_id=f"cont-policy-event-{job_id}-s{stage_index:04d}",
+                        job_id=job_id,
+                        stage_index=stage_index,
+                        event_type="policy_created",
+                        prior_status=None,
+                        new_status="pending",
+                        ledger_id=None,
+                        output_id=None,
+                        payload_json=canonical_json_text({
+                            "policy_id": policy_id,
+                            "stage_index": stage_index,
+                            "chain_rule": "previous_stage_sandbox",
+                            "input_checksum": input_checksum,
+                            "sandbox_root_id": sandbox_root_id,
+                            "sandbox_relative_path": sandbox_relative_path,
+                        }),
+                        payload_checksum=sha256_canonical_json({
+                            "policy_id": policy_id,
+                            "stage_index": stage_index,
+                            "chain_rule": "previous_stage_sandbox",
+                            "input_checksum": input_checksum,
+                        }),
+                        created_at=now,
+                        created_by="system",
+                    )
+                )
+                return
+
+            # Stage 2+: must read from immediate prior-stage sandbox output
+            prior_stage_index = stage_index - 1
+
+            # Find the prior-stage output checksum from the ledger
+            ledger_entries = uow.stage_chain_ledger.list_for_job(job_id)
+            prior_output_checksum: str | None = None
+            prior_sandbox_root_id: str | None = None
+            prior_sandbox_path: str | None = None
+
+            for entry in ledger_entries:
+                if entry.stage_index == prior_stage_index:
+                    prior_output_checksum = entry.output_checksum
+                    break
+
+            if prior_output_checksum is None:
+                raise ContinuationPolicyViolationError(
+                    job_id,
+                    stage_index,
+                    prior_stage_index,
+                    "prior stage has no output checksum registered",
+                )
+
+            # Enforce: input checksum must match prior stage output checksum
+            if input_checksum != prior_output_checksum:
+                # Record policy mismatch event
+                uow.stage_chain_ledger.insert_event(
+                    StageChainEventRecord(
+                        event_id=f"cont-policy-event-{job_id}-s{stage_index:04d}-mismatch",
+                        job_id=job_id,
+                        stage_index=stage_index,
+                        event_type="policy_mismatched",
+                        prior_status="pending",
+                        new_status="mismatched",
+                        ledger_id=None,
+                        output_id=None,
+                        payload_json=canonical_json_text({
+                            "stage_index": stage_index,
+                            "expected_prior_stage_index": prior_stage_index,
+                            "expected_prior_output_checksum": prior_output_checksum,
+                            "actual_input_checksum": input_checksum,
+                            "failure_reason": "input checksum does not match expected prior-stage output checksum",
+                        }),
+                        payload_checksum=sha256_canonical_json({
+                            "stage_index": stage_index,
+                            "expected_prior_stage_index": prior_stage_index,
+                            "expected_prior_output_checksum": prior_output_checksum,
+                            "actual_input_checksum": input_checksum,
+                            "failure_reason": "input checksum does not match expected prior-stage output checksum",
+                        }),
+                        created_at=now,
+                        created_by="system",
+                    )
+                )
+
+                # Record stage_blocked event
+                uow.stage_chain_ledger.insert_event(
+                    StageChainEventRecord(
+                        event_id=f"cont-policy-event-{job_id}-s{stage_index:04d}-blocked",
+                        job_id=job_id,
+                        stage_index=stage_index,
+                        event_type="stage_blocked",
+                        prior_status="pending",
+                        new_status="blocked",
+                        ledger_id=None,
+                        output_id=None,
+                        payload_json=canonical_json_text({
+                            "stage_index": stage_index,
+                            "expected_prior_stage_index": prior_stage_index,
+                            "reason": "continuation policy violation: input checksum mismatch",
+                        }),
+                        payload_checksum=sha256_canonical_json({
+                            "stage_index": stage_index,
+                            "expected_prior_stage_index": prior_stage_index,
+                            "reason": "continuation policy violation: input checksum mismatch",
+                        }),
+                        created_at=now,
+                        created_by="system",
+                    )
+                )
+
+                raise ContinuationPolicyViolationError(
+                    job_id,
+                    stage_index,
+                    prior_stage_index,
+                    f"input checksum {input_checksum!r} does not match "
+                    f"expected prior stage {prior_stage_index} output checksum "
+                    f"{prior_output_checksum!r}",
+                )
+
+            # Policy matched: record success
+            policy_id = f"cont-policy-{job_id}-s{stage_index:04d}"
+            uow.stage_chain_ledger.insert_event(
+                StageChainEventRecord(
+                    event_id=f"cont-policy-event-{job_id}-s{stage_index:04d}-matched",
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    event_type="policy_matched",
+                    prior_status="pending",
+                    new_status="matched",
+                    ledger_id=None,
+                    output_id=None,
+                    payload_json=canonical_json_text({
+                        "policy_id": policy_id,
+                        "stage_index": stage_index,
+                        "expected_prior_stage_index": prior_stage_index,
+                        "expected_prior_output_checksum": prior_output_checksum,
+                        "input_checksum": input_checksum,
+                    }),
+                    payload_checksum=sha256_canonical_json({
+                        "policy_id": policy_id,
+                        "stage_index": stage_index,
+                        "expected_prior_stage_index": prior_stage_index,
+                        "expected_prior_output_checksum": prior_output_checksum,
+                        "input_checksum": input_checksum,
+                    }),
+                    created_at=now,
+                    created_by="system",
+                )
+            )
+
+            # Record stage_queued event
+            uow.stage_chain_ledger.insert_event(
+                StageChainEventRecord(
+                    event_id=f"cont-policy-event-{job_id}-s{stage_index:04d}-queued",
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    event_type="stage_queued",
+                    prior_status="pending",
+                    new_status="queued",
+                    ledger_id=None,
+                    output_id=None,
+                    payload_json=canonical_json_text({
+                        "stage_index": stage_index,
+                        "expected_prior_stage_index": prior_stage_index,
+                        "input_checksum": input_checksum,
+                        "sandbox_root_id": sandbox_root_id,
+                        "sandbox_relative_path": sandbox_relative_path,
+                    }),
+                    payload_checksum=sha256_canonical_json({
+                        "stage_index": stage_index,
+                        "expected_prior_stage_index": prior_stage_index,
+                        "input_checksum": input_checksum,
+                    }),
+                    created_at=now,
+                    created_by="system",
+                )
+            )
+
+    def check_stage_readiness(
+        self,
+        job_id: str,
+        stage_index: int,
+    ) -> tuple[bool, str | None]:
+        """Check whether a stage is allowed to proceed based on its
+        continuation policy status.
+
+        Returns (allowed, failure_reason).
+        """
+        with self._unit_of_work_factory() as uow:
+            ledger_entries = uow.stage_chain_ledger.list_for_job(job_id)
+
+            # Find the policy or output events for this stage
+            events = uow.stage_chain_ledger.list_events_for_job(job_id)
+
+            # Check if this stage has a blocked event
+            for event in reversed(events):
+                if event.stage_index == stage_index:
+                    if event.event_type == "stage_blocked":
+                        return False, "stage blocked by continuation policy"
+                    if event.event_type in ("policy_matched", "stage_queued"):
+                        return True, None
+                    if event.event_type == "stage_failed":
+                        return False, "stage failed by continuation policy"
+
+            # No events found for this stage — check prior stage completeness
+            if stage_index > 1:
+                prior_stage_index = stage_index - 1
+                for entry in ledger_entries:
+                    if entry.stage_index == prior_stage_index:
+                        if entry.output_checksum is None:
+                            return (
+                                False,
+                                f"prior stage {prior_stage_index} has no output registered",
+                            )
+                        break
+                else:
+                    return False, f"no ledger entry for prior stage {prior_stage_index}"
+
+            return True, None
 
 def _find_workspace_working_dir(
     runner_profile: RunnerProfile,

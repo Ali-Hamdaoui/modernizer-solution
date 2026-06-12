@@ -167,3 +167,38 @@ class ControllerOwnershipReleaseError(ControlTowerError):
 
     def __init__(self) -> None:
         super().__init__("Local Control Tower controller ownership could not be released cleanly")
+
+
+class ContinuationPolicyViolationError(ControlTowerError):
+    """Raised when a stage continuation policy check fails.
+
+    The stage cannot proceed because its input source does not match
+    the expected prior-stage sandbox output.
+    """
+
+    def __init__(
+        self,
+        job_id: str,
+        stage_index: int,
+        expected_prior_stage_index: int,
+        reason: str,
+    ) -> None:
+        self.job_id = job_id
+        self.stage_index = stage_index
+        self.expected_prior_stage_index = expected_prior_stage_index
+        self.reason = reason
+        super().__init__(
+            f"Stage {stage_index} continuation policy violation for job {job_id!r}: "
+            f"expected prior stage {expected_prior_stage_index} sandbox - {reason}"
+        )
+
+
+class ContinuationPolicyNotFoundError(ControlTowerError):
+    """Raised when no continuation policy entry exists for a job/stage."""
+
+    def __init__(self, job_id: str, stage_index: int) -> None:
+        self.job_id = job_id
+        self.stage_index = stage_index
+        super().__init__(
+            f"No continuation policy entry found for job {job_id!r} stage {stage_index}"
+        )
