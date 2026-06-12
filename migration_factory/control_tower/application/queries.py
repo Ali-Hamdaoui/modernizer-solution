@@ -24,6 +24,7 @@ from migration_factory.control_tower.application.dto import (
     StageRunDto,
 )
 from migration_factory.control_tower.application.services import UnitOfWorkFactory
+from migration_factory.control_tower.domain.entities import V1ContextPackManifestRecord
 from migration_factory.control_tower.domain.entities import V1ModelInvocationRecord
 from migration_factory.control_tower.domain.errors import (
     EventCursorConflictError,
@@ -226,6 +227,24 @@ class ControlTowerQueryService:
     ) -> V1ModelInvocationRecord | None:
         with self._unit_of_work_factory() as uow:
             return uow.v1_model_invocations.get(invocation_id)
+
+    # ── ContextPackManifest ──────────────────────────────────────
+
+    def list_context_pack_manifests(self) -> tuple[V1ContextPackManifestRecord, ...]:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_context_pack_manifests.list()
+
+    def list_context_pack_manifests_for_job(
+        self, job_id: str
+    ) -> tuple[V1ContextPackManifestRecord, ...]:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_context_pack_manifests.list_for_job(job_id)
+
+    def get_context_pack_manifest(
+        self, manifest_id: str
+    ) -> V1ContextPackManifestRecord | None:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_context_pack_manifests.get(manifest_id)
 
     # ── RunnerProfile ────────────────────────────────────────────
 

@@ -16,6 +16,7 @@ from migration_factory.control_tower.infrastructure.sqlite.repositories import (
     SqliteRunnerProfileRepository,
     SqliteStageChainLedgerRepository,
     SqliteStageRunRepository,
+    SqliteV1ContextPackManifestRepository,
     SqliteV1ModelInvocationRepository,
 )
 from migration_factory.control_tower.infrastructure.sqlite.v1_model_profile_repository import (
@@ -48,6 +49,7 @@ class SqliteControlTowerUnitOfWork:
         self.v1_approvals = SqliteV1ApprovalRepository(connection)
         self.v1_approval_resume = SqliteV1ApprovalResumeRepository(connection)
         self.v1_model_invocations = SqliteV1ModelInvocationRepository(connection)
+        self.v1_context_pack_manifests = SqliteV1ContextPackManifestRepository(connection)
 
     def __enter__(self) -> "SqliteControlTowerUnitOfWork":
         self.connection.execute("BEGIN IMMEDIATE")

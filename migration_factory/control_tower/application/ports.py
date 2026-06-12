@@ -36,6 +36,7 @@ from migration_factory.control_tower.domain.entities import (
     StageOutputRegistryRecord,
     StageRunRecord,
 )
+from migration_factory.control_tower.domain.entities import V1ContextPackManifestRecord
 from migration_factory.control_tower.domain.entities import V1ModelInvocationRecord
 from migration_factory.control_tower.domain.model_profiles import V1ModelProfileRecord
 from migration_factory.control_tower.domain.manifests import CommandManifest
@@ -305,6 +306,18 @@ class V1ModelInvocationRepository(Protocol):
     def list_for_job(self, job_id: str) -> tuple[V1ModelInvocationRecord, ...]: ...
 
 
+class V1ContextPackManifestRepository(Protocol):
+    """Append-only repository for context pack manifest records."""
+
+    def insert(self, manifest: V1ContextPackManifestRecord) -> None: ...
+
+    def get(self, manifest_id: str) -> V1ContextPackManifestRecord | None: ...
+
+    def list(self) -> tuple[V1ContextPackManifestRecord, ...]: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1ContextPackManifestRecord, ...]: ...
+
+
 class V1ModelProfileEventRepository(Protocol):
     def insert_event(
         self,
@@ -370,6 +383,7 @@ class ControlTowerUnitOfWork(Protocol):
     v1_approvals: V1ApprovalRepository
     v1_approval_resume: V1ApprovalResumeRepository
     v1_model_invocations: V1ModelInvocationRepository
+    v1_context_pack_manifests: V1ContextPackManifestRepository
 
     def __enter__(self) -> Self: ...
 

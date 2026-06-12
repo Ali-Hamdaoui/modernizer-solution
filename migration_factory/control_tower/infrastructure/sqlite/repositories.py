@@ -30,6 +30,7 @@ from migration_factory.control_tower.domain.entities import (
     StageChainLedgerRecord,
     StageOutputRegistryRecord,
     StageRunRecord,
+    V1ContextPackManifestRecord,
     V1ModelInvocationRecord,
 )
 from migration_factory.control_tower.domain.checksums import utc_now_text
@@ -1505,6 +1506,10 @@ def _migration_job_record_from_row(row: sqlite3.Row) -> MigrationJobRecord:
 class SqliteV1ModelInvocationRepository:
     """SQLite repository for v1_model_invocations table."""
 
+
+class SqliteV1ContextPackManifestRepository:
+    """SQLite repository for v1_context_pack_manifests table."""
+
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
 
@@ -1583,6 +1588,115 @@ def _model_invocation_record_from_row(row: sqlite3.Row) -> V1ModelInvocationReco
         actor_type=str(row["actor_type"]) if row["actor_type"] is not None else None,
         actor_id=str(row["actor_id"]) if row["actor_id"] is not None else None,
         created_at=str(row["created_at"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1ContextPackManifestRepository:
+    """SQLite repository for v1_context_pack_manifests table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, manifest: V1ContextPackManifestRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_context_pack_manifests (
+                    manifest_id, job_id, stage_run_id, pack_type, pack_version,
+                    title, description, evidence_refs_json, bounds_json,
+                    redaction_policy, redacted_summary, checksum_algorithm,
+                    checksum, model_profile_id, model_name, token_count,
+                    created_at, created_by, correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    manifest.manifest_id,
+                    manifest.job_id,
+                    manifest.stage_run_id,
+                    manifest.pack_type,
+                    manifest.pack_version,
+                    manifest.title,
+                    manifest.description,
+                    manifest.evidence_refs_json,
+                    manifest.bounds_json,
+                    manifest.redaction_policy,
+                    manifest.redacted_summary,
+                    manifest.checksum_algorithm,
+                    manifest.checksum,
+                    manifest.model_profile_id,
+                    manifest.model_name,
+                    manifest.token_count,
+                    manifest.created_at,
+                    manifest.created_by,
+                    manifest.correlation_id,
+                    manifest.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, manifest_id: str) -> V1ContextPackManifestRecord | None:
+        row = self._connection.execute(
+            """SELECT manifest_id, job_id, stage_run_id, pack_type, pack_version,
+                      title, description, evidence_refs_json, bounds_json,
+                      redaction_policy, redacted_summary, checksum_algorithm,
+                      checksum, model_profile_id, model_name, token_count,
+                      created_at, created_by, correlation_id, causation_id
+               FROM v1_context_pack_manifests WHERE manifest_id = ?""",
+            (manifest_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _context_pack_manifest_from_row(row)
+
+    def list(self) -> tuple[V1ContextPackManifestRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT manifest_id, job_id, stage_run_id, pack_type, pack_version,
+                      title, description, evidence_refs_json, bounds_json,
+                      redaction_policy, redacted_summary, checksum_algorithm,
+                      checksum, model_profile_id, model_name, token_count,
+                      created_at, created_by, correlation_id, causation_id
+               FROM v1_context_pack_manifests ORDER BY created_at DESC"""
+        ).fetchall()
+        return tuple(_context_pack_manifest_from_row(r) for r in rows)
+
+    def list_for_job(self, job_id: str) -> tuple[V1ContextPackManifestRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT manifest_id, job_id, stage_run_id, pack_type, pack_version,
+                      title, description, evidence_refs_json, bounds_json,
+                      redaction_policy, redacted_summary, checksum_algorithm,
+                      checksum, model_profile_id, model_name, token_count,
+                      created_at, created_by, correlation_id, causation_id
+               FROM v1_context_pack_manifests
+               WHERE job_id = ? ORDER BY created_at DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_context_pack_manifest_from_row(r) for r in rows)
+
+
+def _context_pack_manifest_from_row(row: sqlite3.Row) -> V1ContextPackManifestRecord:
+    return V1ContextPackManifestRecord(
+        manifest_id=str(row["manifest_id"]),
+        job_id=str(row["job_id"]) if row["job_id"] is not None else None,
+        stage_run_id=str(row["stage_run_id"]) if row["stage_run_id"] is not None else None,
+        pack_type=str(row["pack_type"]),
+        pack_version=str(row["pack_version"]),
+        title=str(row["title"]),
+        description=str(row["description"]) if row["description"] is not None else None,
+        evidence_refs_json=str(row["evidence_refs_json"]) if row["evidence_refs_json"] is not None else None,
+        bounds_json=str(row["bounds_json"]) if row["bounds_json"] is not None else None,
+        redaction_policy=str(row["redaction_policy"]) if row["redaction_policy"] is not None else None,
+        redacted_summary=str(row["redacted_summary"]) if row["redacted_summary"] is not None else None,
+        checksum_algorithm=str(row["checksum_algorithm"]),
+        checksum=str(row["checksum"]),
+        model_profile_id=str(row["model_profile_id"]) if row["model_profile_id"] is not None else None,
+        model_name=str(row["model_name"]) if row["model_name"] is not None else None,
+        token_count=int(row["token_count"]) if row["token_count"] is not None else None,
+        created_at=str(row["created_at"]),
+        created_by=str(row["created_by"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
         correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
         causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
     )

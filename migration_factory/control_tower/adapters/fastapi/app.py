@@ -591,6 +591,83 @@ def create_app(
         return {"model_invocations": invocations}
 
     # ------------------------------------------------------------------
+    # Context pack manifest endpoints (V1-11A)
+    # ------------------------------------------------------------------
+
+    @app.get("/v1/context-pack-manifests")
+    def list_context_pack_manifests() -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            manifests = [
+                {
+                    "manifest_id": m.manifest_id,
+                    "pack_type": m.pack_type,
+                    "pack_version": m.pack_version,
+                    "title": m.title,
+                    "description": m.description,
+                    "checksum_algorithm": m.checksum_algorithm,
+                    "checksum": m.checksum,
+                    "model_profile_id": m.model_profile_id,
+                    "model_name": m.model_name,
+                    "token_count": m.token_count,
+                    "created_at": m.created_at,
+                    "created_by": m.created_by,
+                }
+                for m in uow.v1_context_pack_manifests.list()
+            ]
+        return {"context_pack_manifests": manifests}
+
+    @app.get("/v1/jobs/{job_id}/context-pack-manifests")
+    def list_job_context_pack_manifests(job_id: str) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            manifests = [
+                {
+                    "manifest_id": m.manifest_id,
+                    "pack_type": m.pack_type,
+                    "pack_version": m.pack_version,
+                    "title": m.title,
+                    "description": m.description,
+                    "checksum_algorithm": m.checksum_algorithm,
+                    "checksum": m.checksum,
+                    "model_profile_id": m.model_profile_id,
+                    "model_name": m.model_name,
+                    "token_count": m.token_count,
+                    "created_at": m.created_at,
+                    "created_by": m.created_by,
+                }
+                for m in uow.v1_context_pack_manifests.list_for_job(job_id)
+            ]
+        return {"context_pack_manifests": manifests}
+
+    @app.get("/v1/context-pack-manifests/{manifest_id}")
+    def get_context_pack_manifest(manifest_id: str) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            m = uow.v1_context_pack_manifests.get(manifest_id)
+        if m is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "CONTEXT_PACK_MANIFEST_NOT_FOUND",
+                f"Context pack manifest {manifest_id!r} not found",
+            )
+        return {
+            "manifest_id": m.manifest_id,
+            "pack_type": m.pack_type,
+            "pack_version": m.pack_version,
+            "title": m.title,
+            "description": m.description,
+            "evidence_refs_json": m.evidence_refs_json,
+            "bounds_json": m.bounds_json,
+            "redaction_policy": m.redaction_policy,
+            "redacted_summary": m.redacted_summary,
+            "checksum_algorithm": m.checksum_algorithm,
+            "checksum": m.checksum,
+            "model_profile_id": m.model_profile_id,
+            "model_name": m.model_name,
+            "token_count": m.token_count,
+            "created_at": m.created_at,
+            "created_by": m.created_by,
+        }
+
+    # ------------------------------------------------------------------
     # Approval endpoints (V1-07A)
     # ------------------------------------------------------------------
 
