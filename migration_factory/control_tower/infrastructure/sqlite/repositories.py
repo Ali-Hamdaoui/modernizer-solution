@@ -33,6 +33,7 @@ from migration_factory.control_tower.domain.entities import (
     V1ContextPackManifestRecord,
     V1ModelInvocationRecord,
     V1PrivilegedActionDecisionRecord,
+    V1PrivilegedActionExecutionRecord,
     V1PrivilegedActionRecord,
 )
 from migration_factory.control_tower.domain.checksums import utc_now_text
@@ -1884,6 +1885,95 @@ def _decision_from_row(row: sqlite3.Row) -> V1PrivilegedActionDecisionRecord:
         decided_at=str(row["decided_at"]),
         parameters_checksum=str(row["parameters_checksum"]),
         rejection_reason=str(row["rejection_reason"]) if row["rejection_reason"] is not None else None,
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1PrivilegedActionExecutionRepository:
+    """SQLite repository for v1_privileged_action_executions table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, execution: V1PrivilegedActionExecutionRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_privileged_action_executions (
+                    action_id, job_id, action_type, parameters_checksum,
+                    status, started_at, completed_at, result_summary,
+                    failure_reason, executed_by, execution_version,
+                    correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    execution.action_id,
+                    execution.job_id,
+                    execution.action_type,
+                    execution.parameters_checksum,
+                    execution.status,
+                    execution.started_at,
+                    execution.completed_at,
+                    execution.result_summary,
+                    execution.failure_reason,
+                    execution.executed_by,
+                    execution.execution_version,
+                    execution.correlation_id,
+                    execution.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, action_id: str) -> V1PrivilegedActionExecutionRecord | None:
+        row = self._connection.execute(
+            """SELECT action_id, job_id, action_type, parameters_checksum,
+                      status, started_at, completed_at, result_summary,
+                      failure_reason, executed_by, execution_version,
+                      correlation_id, causation_id
+               FROM v1_privileged_action_executions WHERE action_id = ?""",
+            (action_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _execution_from_row(row)
+
+    def list(self) -> tuple[V1PrivilegedActionExecutionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT action_id, job_id, action_type, parameters_checksum,
+                      status, started_at, completed_at, result_summary,
+                      failure_reason, executed_by, execution_version,
+                      correlation_id, causation_id
+               FROM v1_privileged_action_executions
+               ORDER BY started_at DESC"""
+        ).fetchall()
+        return tuple(_execution_from_row(r) for r in rows)
+
+    def list_by_status(self, status: str) -> tuple[V1PrivilegedActionExecutionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT action_id, job_id, action_type, parameters_checksum,
+                      status, started_at, completed_at, result_summary,
+                      failure_reason, executed_by, execution_version,
+                      correlation_id, causation_id
+               FROM v1_privileged_action_executions
+               WHERE status = ? ORDER BY started_at DESC""",
+            (status,),
+        ).fetchall()
+        return tuple(_execution_from_row(r) for r in rows)
+
+
+def _execution_from_row(row: sqlite3.Row) -> V1PrivilegedActionExecutionRecord:
+    return V1PrivilegedActionExecutionRecord(
+        action_id=str(row["action_id"]),
+        job_id=str(row["job_id"]),
+        action_type=str(row["action_type"]),
+        parameters_checksum=str(row["parameters_checksum"]),
+        status=str(row["status"]),
+        started_at=str(row["started_at"]),
+        completed_at=str(row["completed_at"]) if row["completed_at"] is not None else None,
+        result_summary=str(row["result_summary"]) if row["result_summary"] is not None else None,
+        failure_reason=str(row["failure_reason"]) if row["failure_reason"] is not None else None,
+        executed_by=str(row["executed_by"]),
+        execution_version=str(row["execution_version"]),
         correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
         causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
     )
