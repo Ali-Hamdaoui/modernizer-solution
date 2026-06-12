@@ -52,6 +52,7 @@ from migration_factory.control_tower.application.services import (
     TimeoutService,
     WorkerLaunchService,
 )
+from migration_factory.control_tower.application.runner_readiness import RunnerJdkReadinessService, ReadinessChecker
 from migration_factory.control_tower.domain.errors import (
     ActiveCommandConflictError,
     ControlTowerError,
@@ -373,6 +374,60 @@ def create_app(
                 for profile in uow.runner_profiles.list()
             ]
         return {"runner_profiles": redact_public_data(profiles)}
+
+    @app.get("/v1/runner-profiles/{runner_profile_id}/{runner_profile_version}/readiness")
+    def get_runner_readiness(
+        runner_profile_id: str,
+        runner_profile_version: str,
+    ) -> dict[str, Any]:
+        """Check JDK 11/17/21 and Maven readiness for a runner profile.
+
+        All JDK and Maven paths come from the registered runner profile,
+        not from request bodies. This enforces the V1 invariant that
+        browser payloads cannot choose raw executable paths or tool refs.
+        """
+        service = RunnerJdkReadinessService(unit_of_work_factory)
+        try:
+            result = service.check_runner_readiness(
+                runner_profile_id,
+                runner_profile_version,
+                actor="api",
+            )
+        except ValueError as exc:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "RUNNER_PROFILE_NOT_FOUND",
+                str(exc),
+            ) from exc
+
+        return {
+            "runner_profile_id": result.runner_profile_id,
+            "runner_profile_version": result.runner_profile_version,
+            "checked_at": result.checked_at,
+            "all_ready": result.all_ready,
+            "checks": {
+                "jdk_11": {
+                    "ready": result.jdk_11.ready,
+                    "path": result.jdk_11.jdk_path,
+                    "message": result.jdk_11.message,
+                },
+                "jdk_17": {
+                    "ready": result.jdk_17.ready,
+                    "path": result.jdk_17.jdk_path,
+                    "message": result.jdk_17.message,
+                },
+                "jdk_21": {
+                    "ready": result.jdk_21.ready,
+                    "path": result.jdk_21.jdk_path,
+                    "message": result.jdk_21.message,
+                },
+                "maven": {
+                    "ready": result.maven.ready,
+                    "path": result.maven.executable_path,
+                    "message": result.maven.message,
+                },
+            },
+        }
 
     @app.get("/v1/pipelines")
     def list_pipelines() -> dict[str, Any]:
