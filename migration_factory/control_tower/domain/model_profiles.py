@@ -62,8 +62,7 @@ _MODEL_PROFILE_EVENT_TYPES = frozenset(
 
 def _assert_valid_event_type(event_type: str) -> None:
     if event_type not in _MODEL_PROFILE_EVENT_TYPES:
-        # In V1 profile registration, we use runner_validation as the
-        # event type since profiles are validated alongside their runner.
-        # This is not a generic check — only runner_validation is valid
-        # for model profile events in V1-09 scope.
-        pass
+        raise ValueError(
+            f"Unsupported model profile event type {event_type!r}. "
+            f"Only {sorted(_MODEL_PROFILE_EVENT_TYPES)} are valid for V1-09."
+        )

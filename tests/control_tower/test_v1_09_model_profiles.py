@@ -176,6 +176,42 @@ class TestV1ModelProfileRecord:
         assert not record.model_env_ref.startswith("gpt-")
         assert not record.model_env_ref.startswith("https://")
 
+    def test_event_record_rejects_unsupported_event_type(self) -> None:
+        """V1ModelProfileEventRecord raises ValueError for unsupported event types."""
+        from migration_factory.control_tower.domain.model_profiles import (
+            V1ModelProfileEventRecord,
+        )
+        with pytest.raises(ValueError, match="Unsupported model profile event type"):
+            V1ModelProfileEventRecord(
+                event_id="bad-evt",
+                profile_id="test-p",
+                event_type="chain_created",
+                provider_kind="fake",
+                actor_type="sys",
+                actor_id="test",
+                payload_json="{}",
+                payload_checksum="abc",
+                created_at="2026-06-12T00:00:00.000000Z",
+            )
+
+    def test_event_record_accepts_runner_validation_event_type(self) -> None:
+        """V1ModelProfileEventRecord accepts runner_validation event type."""
+        from migration_factory.control_tower.domain.model_profiles import (
+            V1ModelProfileEventRecord,
+        )
+        record = V1ModelProfileEventRecord(
+            event_id="valid-evt",
+            profile_id="test-p",
+            event_type="runner_validation",
+            provider_kind="fake",
+            actor_type="api",
+            actor_id="tester",
+            payload_json="{}",
+            payload_checksum="def",
+            created_at="2026-06-12T00:00:00.000000Z",
+        )
+        assert record.event_type == "runner_validation"
+
 
 # ── Repository tests ──────────────────────────────────────────────────
 
