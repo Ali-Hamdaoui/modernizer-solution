@@ -21,6 +21,7 @@ from migration_factory.control_tower.domain.checksums import (
     utc_now_text,
 )
 from migration_factory.control_tower.domain.entities import V1PrivilegedActionDecisionRecord
+from migration_factory.control_tower.domain.entities import V1PrivilegedActionExecutionRecord
 from migration_factory.control_tower.domain.entities import V1PrivilegedActionRecord
 from migration_factory.control_tower.domain.errors import ControlTowerError
 
@@ -79,6 +80,16 @@ class DuplicateActionDecisionError(PrivilegedActionError):
         self.existing_decision = existing_decision
         super().__init__(
             f"Action {action_id!r} already has a {existing_decision!r} decision"
+        )
+
+
+class ActionNotApprovedError(PrivilegedActionError):
+    """Raised when an action has not been approved for execution."""
+
+    def __init__(self, action_id: str, reason: str) -> None:
+        self.action_id = action_id
+        super().__init__(
+            f"Action {action_id!r} is not approved: {reason}"
         )
 
 
@@ -724,3 +735,151 @@ class PrivilegedActionService:
             )
 
         return decision
+
+    # ── V1-17D: Execute methods ──────────────────────────────────────
+
+    def execute_action(
+        self,
+        action_id: str,
+        *,
+        executed_by: str,
+        parameters_checksum: str,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> V1PrivilegedActionExecutionRecord:
+        """Execute a previously approved, checksum-bound privileged action.
+
+        Validates:
+        - Action exists and is pending (not stale).
+        - Provided checksum matches stored parameters_checksum.
+        - Action has been approved (decision table has 'approved' entry).
+        - Action has not already been executed (no duplicate execution).
+
+        Records the execution with a redacted result summary.
+
+        Args:
+            action_id: The action to execute.
+            executed_by: Actor executing the action.
+            parameters_checksum: Checksum to verify against stored value.
+
+        Returns:
+            The persisted V1PrivilegedActionExecutionRecord with
+            redacted result summary.
+
+        Raises:
+            ActionStaleError: If the action is not found or not pending.
+            ChecksumMismatchError: If the checksum does not match.
+            ActionNotApprovedError: If the action has not been approved.
+        """
+        record = self.validate_action_available(action_id)
+
+        # Verify checksum
+        self.verify_checksum(
+            action_id=action_id,
+            expected_checksum=parameters_checksum,
+            actual_checksum=record.parameters_checksum,
+        )
+
+        with self._unit_of_work_factory() as uow:
+            # Verify approved
+            decision = uow.v1_privileged_action_decisions.get(action_id)
+            if decision is None:
+                raise ActionNotApprovedError(
+                    action_id, "No approval decision found"
+                )
+            if decision.decision != "approved":
+                raise ActionNotApprovedError(
+                    action_id,
+                    f"Decision is {decision.decision!r}, expected 'approved'",
+                )
+
+            # Verify not already executed
+            existing = uow.v1_privileged_action_executions.get(action_id)
+            if existing is not None:
+                raise ActionNotApprovedError(
+                    action_id,
+                    f"Action already executed with status {existing.status!r}",
+                )
+
+            now = utc_now_text()
+
+            # Build redacted result summary
+            parameters = json.loads(record.parameters_json) if record.parameters_json else {}
+            result_summary = self._build_redacted_execution_summary(
+                record.action_type, parameters
+            )
+
+            execution = V1PrivilegedActionExecutionRecord(
+                action_id=action_id,
+                job_id=record.job_id,
+                action_type=record.action_type,
+                parameters_checksum=parameters_checksum,
+                status="completed",
+                started_at=now,
+                completed_at=now,
+                result_summary=result_summary,
+                executed_by=executed_by,
+                correlation_id=correlation_id,
+                causation_id=causation_id or action_id,
+            )
+            uow.v1_privileged_action_executions.insert(execution)
+
+            # Audit trail
+            import json as _json
+
+            audit_payload = _json.dumps(
+                {
+                    "action": "privileged_action_executed",
+                    "action_id": action_id,
+                    "job_id": record.job_id,
+                    "action_type": record.action_type,
+                    "result_summary": result_summary,
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            uow.audit_records.append_global_audit(
+                audit_id=str(uuid4()),
+                actor_type="user",
+                actor_id=executed_by,
+                action="privileged_action_executed",
+                payload_json=audit_payload,
+                created_at=now,
+                correlation_id=correlation_id,
+                causation_id=causation_id or action_id,
+            )
+
+        return execution
+
+    def get_execution(self, action_id: str) -> V1PrivilegedActionExecutionRecord | None:
+        """Get an execution record for an action."""
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_privileged_action_executions.get(action_id)
+
+    @staticmethod
+    def _build_redacted_execution_summary(
+        action_type: str,
+        parameters: dict[str, object],
+    ) -> str:
+        """Build a redacted summary of what was executed.
+
+        Applies V1-00D redaction baseline to remove paths, secrets,
+        and sensitive content from the result summary.
+        """
+        from migration_factory.control_tower.application.redaction import (
+            redact_model_summary,
+        )
+
+        if action_type == "maven":
+            goal = parameters.get("goal", "unknown")
+            module = parameters.get("module")
+            summary = f"Maven goal: {goal}"
+            if module:
+                summary += f" (module: {module})"
+        elif action_type == "write":
+            path = parameters.get("path", "unknown")
+            summary = f"Write action to: {path}"
+        else:
+            summary = f"Action type: {action_type}"
+
+        return redact_model_summary(summary)
