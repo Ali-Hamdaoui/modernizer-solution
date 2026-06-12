@@ -268,3 +268,28 @@ class ApprovalResumeRecord:
     failure_reason: str | None
     correlation_id: str | None
     causation_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class V1ModelInvocationRecord:
+    """Immutable record of a model invocation call.
+
+    Captures profile ref, token usage, model name, provider kind,
+    and a redacted summary. Raw prompts, secrets, and deployment IDs
+    are never stored in this record.
+    """
+
+    invocation_id: str
+    created_at: str
+    job_id: str | None = None
+    profile_id: str | None = None
+    provider_kind: str | None = None
+    model_name: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    redacted_summary: str | None = None
+    actor_type: str | None = None
+    actor_id: str | None = None
+    correlation_id: str | None = None
+    causation_id: str | None = None

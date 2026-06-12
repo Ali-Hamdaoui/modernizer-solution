@@ -24,6 +24,7 @@ from migration_factory.control_tower.application.dto import (
     StageRunDto,
 )
 from migration_factory.control_tower.application.services import UnitOfWorkFactory
+from migration_factory.control_tower.domain.entities import V1ModelInvocationRecord
 from migration_factory.control_tower.domain.errors import (
     EventCursorConflictError,
     InvalidEventCursorError,
@@ -207,6 +208,24 @@ class ControlTowerQueryService:
     def list_audit_records_for_job(self, job_id: str) -> tuple[AuditRecordDto, ...]:
         with self._unit_of_work_factory() as uow:
             return uow.audit_records.list_for_job(job_id)
+
+    # ── ModelInvocation ──────────────────────────────────────────
+
+    def list_model_invocations(self) -> tuple[V1ModelInvocationRecord, ...]:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_model_invocations.list()
+
+    def list_model_invocations_for_job(
+        self, job_id: str
+    ) -> tuple[V1ModelInvocationRecord, ...]:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_model_invocations.list_for_job(job_id)
+
+    def get_model_invocation(
+        self, invocation_id: str
+    ) -> V1ModelInvocationRecord | None:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_model_invocations.get(invocation_id)
 
     # ── RunnerProfile ────────────────────────────────────────────
 

@@ -30,6 +30,7 @@ from migration_factory.control_tower.domain.entities import (
     StageChainLedgerRecord,
     StageOutputRegistryRecord,
     StageRunRecord,
+    V1ModelInvocationRecord,
 )
 from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.domain.commands import CommandState
@@ -1498,4 +1499,90 @@ def _migration_job_record_from_row(row: sqlite3.Row) -> MigrationJobRecord:
         started_at=None if row["started_at"] is None else str(row["started_at"]),
         finished_at=None if row["finished_at"] is None else str(row["finished_at"]),
         created_by=str(row["created_by"]),
+    )
+
+
+class SqliteV1ModelInvocationRepository:
+    """SQLite repository for v1_model_invocations table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, invocation: V1ModelInvocationRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_model_invocations (
+                    invocation_id, job_id, profile_id, provider_kind, model_name,
+                    prompt_tokens, completion_tokens, total_tokens, redacted_summary,
+                    actor_type, actor_id, created_at, correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    invocation.invocation_id,
+                    invocation.job_id,
+                    invocation.profile_id,
+                    invocation.provider_kind,
+                    invocation.model_name,
+                    invocation.prompt_tokens,
+                    invocation.completion_tokens,
+                    invocation.total_tokens,
+                    invocation.redacted_summary,
+                    invocation.actor_type,
+                    invocation.actor_id,
+                    invocation.created_at,
+                    invocation.correlation_id,
+                    invocation.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, invocation_id: str) -> V1ModelInvocationRecord | None:
+        row = self._connection.execute(
+            """SELECT invocation_id, job_id, profile_id, provider_kind, model_name,
+                      prompt_tokens, completion_tokens, total_tokens, redacted_summary,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_model_invocations WHERE invocation_id = ?""",
+            (invocation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _model_invocation_record_from_row(row)
+
+    def list(self) -> tuple[V1ModelInvocationRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT invocation_id, job_id, profile_id, provider_kind, model_name,
+                      prompt_tokens, completion_tokens, total_tokens, redacted_summary,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_model_invocations ORDER BY created_at DESC"""
+        ).fetchall()
+        return tuple(_model_invocation_record_from_row(r) for r in rows)
+
+    def list_for_job(self, job_id: str) -> tuple[V1ModelInvocationRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT invocation_id, job_id, profile_id, provider_kind, model_name,
+                      prompt_tokens, completion_tokens, total_tokens, redacted_summary,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_model_invocations
+               WHERE job_id = ? ORDER BY created_at DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_model_invocation_record_from_row(r) for r in rows)
+
+
+def _model_invocation_record_from_row(row: sqlite3.Row) -> V1ModelInvocationRecord:
+    return V1ModelInvocationRecord(
+        invocation_id=str(row["invocation_id"]),
+        job_id=str(row["job_id"]) if row["job_id"] is not None else None,
+        profile_id=str(row["profile_id"]) if row["profile_id"] is not None else None,
+        provider_kind=str(row["provider_kind"]) if row["provider_kind"] is not None else None,
+        model_name=str(row["model_name"]) if row["model_name"] is not None else None,
+        prompt_tokens=int(row["prompt_tokens"]) if row["prompt_tokens"] is not None else None,
+        completion_tokens=int(row["completion_tokens"]) if row["completion_tokens"] is not None else None,
+        total_tokens=int(row["total_tokens"]) if row["total_tokens"] is not None else None,
+        redacted_summary=str(row["redacted_summary"]) if row["redacted_summary"] is not None else None,
+        actor_type=str(row["actor_type"]) if row["actor_type"] is not None else None,
+        actor_id=str(row["actor_id"]) if row["actor_id"] is not None else None,
+        created_at=str(row["created_at"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
     )

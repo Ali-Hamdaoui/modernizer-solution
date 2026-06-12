@@ -52,6 +52,7 @@ from migration_factory.control_tower.domain.entities import (
     StageChainEventRecord,
     StageChainLedgerRecord,
     StageRunRecord,
+    V1ModelInvocationRecord,
 )
 from migration_factory.control_tower.domain.model_profiles import V1ModelProfileRecord
 from migration_factory.control_tower.domain.manifests import (
@@ -3520,6 +3521,96 @@ def _find_workspace_working_dir(
         raise WorkspacePathError("Workspace not fully prepared: missing root or path")
     root_path = _find_workspace_root(runner_profile, root_id)
     return root_path / relative_path
+
+
+class ModelInvocationAuditService:
+    """Service for recording and querying model invocation audit records.
+
+    Records are append-only. Raw prompts, secrets, and deployment IDs
+    are never persisted. Only profile refs, token counts, and redacted
+    summaries are stored.
+    """
+
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+
+    def record_invocation(
+        self,
+        *,
+        invocation_id: str,
+        job_id: str | None = None,
+        profile_id: str | None = None,
+        provider_kind: str | None = None,
+        model_name: str | None = None,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        total_tokens: int | None = None,
+        redacted_summary: str | None = None,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> V1ModelInvocationRecord:
+        created_at = utc_now_text()
+        record = V1ModelInvocationRecord(
+            invocation_id=invocation_id,
+            job_id=job_id,
+            profile_id=profile_id,
+            provider_kind=provider_kind,
+            model_name=model_name,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            redacted_summary=redacted_summary,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            created_at=created_at,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+        )
+        with self._unit_of_work_factory() as uow:
+            uow.v1_model_invocations.insert(record)
+
+            # Record audit event
+            import json as _json
+
+            event_payload = {
+                "action": "model_invocation_recorded",
+                "invocation_id": invocation_id,
+                "profile_id": profile_id,
+                "provider_kind": provider_kind,
+                "model_name": model_name,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "actor_type": actor_type,
+                "actor_id": actor_id,
+            }
+            event_payload_json = _json.dumps(event_payload, separators=(",", ":"), sort_keys=True)
+            from migration_factory.control_tower.domain.checksums import sha256_canonical_json as _sha256_canonical_json
+            uow.audit_records.append_global_audit(
+                audit_id=str(uuid4()),
+                actor_type=actor_type or "system",
+                actor_id=actor_id or "system",
+                action="model_invocation_recorded",
+                payload_json=event_payload_json,
+                created_at=created_at,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        return record
+
+    def list_invocations(self) -> tuple[V1ModelInvocationRecord, ...]:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_model_invocations.list()
+
+    def list_invocations_for_job(self, job_id: str) -> tuple[V1ModelInvocationRecord, ...]:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_model_invocations.list_for_job(job_id)
+
+    def get_invocation(self, invocation_id: str) -> V1ModelInvocationRecord | None:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_model_invocations.get(invocation_id)
 
 
 def _get_python_executable(runner_profile: RunnerProfile) -> str:
