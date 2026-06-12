@@ -7,6 +7,8 @@ import json
 from typing import Any
 
 from migration_factory.control_tower.domain.errors import ManifestIntegrityError
+from pydantic import Field
+
 from migration_factory.control_tower.schemas.common import StrictModel
 
 
@@ -71,7 +73,7 @@ class StageCommandManifest(CommandManifest):
     sandbox_relative_path: str
     catalog_checksum: str | None = None
     argv: tuple[str, ...] = ()
-    env: dict[str, str] = {}
+    env: dict[str, str] = Field(default_factory=dict)
 
 
 class BrowserRestrictedPayload:

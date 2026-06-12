@@ -455,6 +455,38 @@ class TestV1Invariants:
 
 
 # ---------------------------------------------------------------------------
+# Shared mutable default isolation tests (AMF-170)
+# ---------------------------------------------------------------------------
+
+
+class TestStageManifestEnvDefaultIsolation:
+    """Verify env default does not share mutable state across instances.
+
+    Regression for AMF-170: using ``env: dict[str, str] = {}`` as a class-level
+    default causes all instances created without an explicit ``env`` to share
+    the same dict object. Mutations on one instance leak to all others.
+    """
+
+    def test_two_manifests_without_env_have_independent_env_dicts(self):
+        """Two StageCommandManifests created without env must have independent env."""
+        m1 = _make_stage_manifest()
+        m2 = _make_stage_manifest()
+        m1.env["MUTATION"] = "only-m1"
+        assert "MUTATION" not in m2.env, (
+            "Mutating env on m1 leaked into m2 — shared mutable default detected"
+        )
+
+    def test_manifest_with_env_and_without_env_are_independent(self):
+        """A manifest with explicit env and one without must not share state."""
+        m1 = _make_stage_manifest(env={"EXPLICIT": "yes"})
+        m2 = _make_stage_manifest()
+        m2.env["IMPLICIT"] = "leak-test"
+        assert "IMPLICIT" not in m1.env, (
+            "Mutating env on default-instance leaked into explicit-env instance"
+        )
+
+
+# ---------------------------------------------------------------------------
 # StageCommandLaunchService contract tests (no-db verification)
 # ---------------------------------------------------------------------------
 
