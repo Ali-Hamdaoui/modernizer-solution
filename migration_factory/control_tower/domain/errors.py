@@ -216,3 +216,10 @@ class PlanRevisionConflictError(ControlTowerError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
+
+
+class PlanAdvisoryValidationError(ControlTowerError):
+    """Raised when an advisory validation report cannot be projected safely."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
