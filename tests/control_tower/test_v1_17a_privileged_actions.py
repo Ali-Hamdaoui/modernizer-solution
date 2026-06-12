@@ -353,7 +353,7 @@ class TestPrivilegedActionService:
         self._create_job(conn)
 
         service.request_action(job_id="job-001", action_type="maven", parameters={"goal": "a"})
-        service.request_action(job_id="job-001", action_type="write", parameters={"path": "b"})
+        service.request_action(job_id="job-001", action_type="write", parameters={"path": "b", "content": "data"})
 
         all_actions = service.list_actions()
         assert len(all_actions) == 2
@@ -366,7 +366,7 @@ class TestPrivilegedActionService:
 
         service.request_action(job_id="job-001", action_type="maven", parameters={"goal": "a"})
         service.request_action(job_id="job-001", action_type="maven", parameters={"goal": "b"})
-        service.request_action(job_id="job-002", action_type="write", parameters={"path": "c"})
+        service.request_action(job_id="job-002", action_type="write", parameters={"path": "c", "content": "data"})
 
         job1_actions = service.list_actions_for_job("job-001")
         assert len(job1_actions) == 2
