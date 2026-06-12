@@ -364,6 +364,51 @@ class PlanReviewStatusDto:
 
 
 @dataclass(frozen=True, slots=True)
+class RepairClassificationDto:
+    classification_id: str
+    command_id: str
+    job_id: str
+    command_status: str
+    evidence_kind: str
+    evidence_summary: str
+    evidence_checksum: str
+    classification_code: str
+    reason_code: str
+    repairable: bool
+    attempt_limit: int
+    actor_type: str
+    actor_id: str
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class FakeRepairProposalDto:
+    proposal_id: str
+    classification_id: str
+    command_id: str
+    job_id: str
+    proposal_order: int
+    proposal_summary: str
+    proposal_checksum: str
+    actor_type: str
+    actor_id: str
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class RepairStatusDto:
+    command_id: str
+    job_id: str
+    command_status: str
+    classification: RepairClassificationDto | None
+    proposal_count: int
+    attempt_limit: int
+    remaining_attempts: int
+    eligible_for_fake_repair: bool
+    proposals: tuple[FakeRepairProposalDto, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class JobProjectionDto:
     job: MigrationJobDto
     active_command: CommandExecutionDto | None

@@ -43,6 +43,7 @@ from migration_factory.control_tower.application.plan_amendments import (
     PlanAmendmentService,
     PlanChange,
 )
+from migration_factory.control_tower.application.repairs import RepairService
 from migration_factory.control_tower.application.plan_reviews import PlanReviewService
 from migration_factory.control_tower.application.plan_proposals import (
     FakeProviderPlanProposalService,
@@ -79,6 +80,9 @@ from migration_factory.control_tower.domain.errors import (
     NotFoundError,
     PlanAdvisoryValidationError,
     PlanAmendmentValidationError,
+    RepairAttemptLimitExceededError,
+    RepairClassificationError,
+    RepairProposalValidationError,
     PlanReviewChecksumMismatchError,
     PlanReviewConflictError,
     PlanRevisionConflictError,
@@ -244,6 +248,15 @@ class CreatePlanReviewDecisionRequest(StrictRequest):
     expected_checksum: str
     decision: str
     review_summary: str = ""
+
+
+class CreateRepairClassificationRequest(StrictRequest):
+    evidence_kind: str = "command_failure"
+    failure_summary: str
+
+
+class CreateFakeRepairProposalRequest(StrictRequest):
+    proposal_summary: str
 
 
 @asynccontextmanager
@@ -853,6 +866,56 @@ def create_app(
         except ControlTowerError as exc:
             _raise_http_error(exc)
         return _plan_review_status_payload(review_status)
+
+    @app.post("/v1/commands/{command_id}/repair-classifications")
+    def classify_failed_command_for_repair(
+        command_id: str,
+        payload: CreateRepairClassificationRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = resolved_actor_provider.current_actor()
+        service = RepairService(unit_of_work_factory)
+        try:
+            classification = service.classify_failed_command(
+                command_id=command_id,
+                evidence_kind=payload.evidence_kind,
+                failure_summary=payload.failure_summary,
+                actor_type=actor.actor_type,
+                actor_id=actor.actor_id,
+                correlation_id=request.state.correlation_id,
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return _repair_classification_payload(classification)
+
+    @app.post("/v1/commands/{command_id}/fake-repair-proposals")
+    def record_fake_repair_proposal(
+        command_id: str,
+        payload: CreateFakeRepairProposalRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = resolved_actor_provider.current_actor()
+        service = RepairService(unit_of_work_factory)
+        try:
+            proposal = service.record_fake_repair_proposal(
+                command_id=command_id,
+                proposal_summary=payload.proposal_summary,
+                actor_type=actor.actor_type,
+                actor_id=actor.actor_id,
+                correlation_id=request.state.correlation_id,
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return _fake_repair_proposal_payload(proposal)
+
+    @app.get("/v1/commands/{command_id}/repair-status")
+    def get_repair_status(command_id: str) -> dict[str, Any]:
+        service = RepairService(unit_of_work_factory)
+        try:
+            repair_status = service.get_repair_status(command_id)
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return _repair_status_payload(repair_status)
 
     # ------------------------------------------------------------------
     # Approval endpoints (V1-07A)
@@ -1585,6 +1648,61 @@ def _plan_review_status_payload(review_status: Any) -> dict[str, Any]:
     })
 
 
+def _repair_classification_payload(classification: Any) -> dict[str, Any]:
+    return redact_public_data({
+        "classification_id": classification.classification_id,
+        "command_id": classification.command_id,
+        "job_id": classification.job_id,
+        "command_status": classification.command_status,
+        "evidence_kind": classification.evidence_kind,
+        "evidence_summary": classification.evidence_summary,
+        "evidence_checksum": classification.evidence_checksum,
+        "classification_code": classification.classification_code,
+        "reason_code": classification.reason_code,
+        "repairable": classification.repairable,
+        "attempt_limit": classification.attempt_limit,
+        "actor_type": classification.actor_type,
+        "actor_id": classification.actor_id,
+        "created_at": classification.created_at,
+    })
+
+
+def _fake_repair_proposal_payload(proposal: Any) -> dict[str, Any]:
+    return redact_public_data({
+        "proposal_id": proposal.proposal_id,
+        "classification_id": proposal.classification_id,
+        "command_id": proposal.command_id,
+        "job_id": proposal.job_id,
+        "proposal_order": proposal.proposal_order,
+        "proposal_summary": proposal.proposal_summary,
+        "proposal_checksum": proposal.proposal_checksum,
+        "actor_type": proposal.actor_type,
+        "actor_id": proposal.actor_id,
+        "created_at": proposal.created_at,
+    })
+
+
+def _repair_status_payload(repair_status: Any) -> dict[str, Any]:
+    return redact_public_data({
+        "command_id": repair_status.command_id,
+        "job_id": repair_status.job_id,
+        "command_status": repair_status.command_status,
+        "classification": (
+            _repair_classification_payload(repair_status.classification)
+            if repair_status.classification is not None
+            else None
+        ),
+        "proposal_count": repair_status.proposal_count,
+        "attempt_limit": repair_status.attempt_limit,
+        "remaining_attempts": repair_status.remaining_attempts,
+        "eligible_for_fake_repair": repair_status.eligible_for_fake_repair,
+        "proposals": [
+            _fake_repair_proposal_payload(proposal)
+            for proposal in repair_status.proposals
+        ],
+    })
+
+
 def _output_window_payload(window: CommandOutputWindowDto) -> dict[str, Any]:
     return {
         "command_id": window.command_id,
@@ -1716,6 +1834,12 @@ def _raise_http_error(exc: ControlTowerError) -> None:
         raise _error(status.HTTP_409_CONFLICT, "PLAN_REVIEW_CONFLICT", str(exc)) from exc
     if isinstance(exc, PlanAmendmentValidationError):
         raise _error(status.HTTP_400_BAD_REQUEST, "PLAN_AMENDMENT_INVALID", str(exc)) from exc
+    if isinstance(exc, RepairProposalValidationError):
+        raise _error(status.HTTP_400_BAD_REQUEST, "REPAIR_PROPOSAL_INVALID", str(exc)) from exc
+    if isinstance(exc, RepairClassificationError):
+        raise _error(status.HTTP_409_CONFLICT, "REPAIR_CLASSIFICATION_CONFLICT", str(exc)) from exc
+    if isinstance(exc, RepairAttemptLimitExceededError):
+        raise _error(status.HTTP_409_CONFLICT, "REPAIR_ATTEMPT_LIMIT_REACHED", str(exc)) from exc
     if isinstance(exc, StaleVersionError):
         raise _error(status.HTTP_412_PRECONDITION_FAILED, "JOB_VERSION_CONFLICT", str(exc)) from exc
     if isinstance(exc, ExpectedVersionRequiredError):

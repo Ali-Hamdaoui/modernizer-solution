@@ -35,8 +35,10 @@ from migration_factory.control_tower.domain.entities import (
     StageChainLedgerRecord,
     StageOutputRegistryRecord,
     StageRunRecord,
+    V1FakeRepairProposalRecord,
     V1PlanAmendmentRecord,
     V1PlanReviewDecisionRecord,
+    V1RepairClassificationRecord,
     V1PlanRevisionRecord,
 )
 from migration_factory.control_tower.domain.entities import V1ContextPackManifestRecord
@@ -416,6 +418,35 @@ class V1PlanReviewDecisionRepository(Protocol):
     def list_for_job(self, job_id: str) -> tuple[V1PlanReviewDecisionRecord, ...]: ...
 
 
+class V1RepairClassificationRepository(Protocol):
+    def insert(self, classification: V1RepairClassificationRecord) -> None: ...
+
+    def get_by_command_and_checksum(
+        self,
+        command_id: str,
+        evidence_checksum: str,
+    ) -> V1RepairClassificationRecord | None: ...
+
+    def get_latest_for_command(self, command_id: str) -> V1RepairClassificationRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1RepairClassificationRecord, ...]: ...
+
+
+class V1FakeRepairProposalRepository(Protocol):
+    def insert(self, proposal: V1FakeRepairProposalRecord) -> None: ...
+
+    def get_for_classification_and_checksum(
+        self,
+        classification_id: str,
+        proposal_checksum: str,
+    ) -> V1FakeRepairProposalRecord | None: ...
+
+    def list_for_classification(
+        self,
+        classification_id: str,
+    ) -> tuple[V1FakeRepairProposalRecord, ...]: ...
+
+
 class V1PrivilegedActionExecutionRepository(Protocol):
     """Append-only repository for privileged action execution records."""
 
@@ -462,6 +493,8 @@ class ControlTowerUnitOfWork(Protocol):
     v1_plan_amendments: V1PlanAmendmentRepository
     v1_plan_revisions: V1PlanRevisionRepository
     v1_plan_review_decisions: V1PlanReviewDecisionRepository
+    v1_repair_classifications: V1RepairClassificationRepository
+    v1_fake_repair_proposals: V1FakeRepairProposalRepository
     v1_privileged_action_decisions: V1PrivilegedActionDecisionRepository
     v1_privileged_action_executions: V1PrivilegedActionExecutionRepository
 

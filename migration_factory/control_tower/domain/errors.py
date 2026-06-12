@@ -237,3 +237,26 @@ class PlanReviewChecksumMismatchError(ControlTowerError):
 
     def __init__(self, revision_id: str) -> None:
         super().__init__(f"Review checksum does not match current revision payload for {revision_id!r}")
+
+
+class RepairClassificationError(ControlTowerError):
+    """Raised when repair classification cannot be created safely."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class RepairAttemptLimitExceededError(ControlTowerError):
+    """Raised when deterministic fake repair attempt limits are exhausted."""
+
+    def __init__(self, command_id: str, attempt_limit: int) -> None:
+        super().__init__(
+            f"Fake repair attempt limit reached for command {command_id!r}: {attempt_limit}"
+        )
+
+
+class RepairProposalValidationError(ControlTowerError):
+    """Raised when fake repair proposal input is unsafe or malformed."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
