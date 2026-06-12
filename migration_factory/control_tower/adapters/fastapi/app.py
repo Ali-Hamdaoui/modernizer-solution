@@ -35,6 +35,7 @@ from migration_factory.control_tower.application.dto import (
     CommandOutputWindowDto,
     JobProjectionDto,
     RunEventDto,
+    StageChainEntryDto,
 )
 from migration_factory.control_tower.application.ports import ControlTowerUnitOfWork, WorkerLauncher, WorkerTerminator
 from migration_factory.control_tower.application.queries import (
@@ -463,6 +464,18 @@ def create_app(
         response.headers["ETag"] = projection.etag
         return _projection_payload(projection)
 
+    @app.get("/v1/jobs/{job_id}/stages")
+    def list_stage_chain(job_id: str) -> dict[str, Any]:
+        query_service = ControlTowerQueryService(unit_of_work_factory)
+        try:
+            chain = query_service.get_stage_chain(job_id)
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return {
+            "job_id": job_id,
+            "stages": [_stage_chain_entry_payload(entry) for entry in chain],
+        }
+
     @app.post("/v1/jobs/{job_id}/start")
     async def start_job(
         job_id: str,
@@ -841,6 +854,22 @@ def _command_payload(command: CommandExecutionDto) -> dict[str, Any]:
         "worker_id": command.worker_id,
         "launch_attempt": command.launch_attempt,
     }
+
+
+def _stage_chain_entry_payload(entry: StageChainEntryDto) -> dict[str, Any]:
+    return redact_public_data({
+        "ledger_id": entry.ledger_id,
+        "job_id": entry.job_id,
+        "stage_index": entry.stage_index,
+        "stage_run_id": entry.stage_run_id,
+        "chain_status": entry.chain_status,
+        "input_source_kind": entry.input_source_kind,
+        "input_checksum": entry.input_checksum,
+        "output_artifact_id": entry.output_artifact_id,
+        "output_checksum": entry.output_checksum,
+        "output_registered_at": entry.output_registered_at,
+        "created_at": entry.created_at,
+    })
 
 
 def _artifact_payload(artifact: ArtifactDto) -> dict[str, Any]:

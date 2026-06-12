@@ -202,6 +202,23 @@ class IdempotencyRecordDto:
 
 
 @dataclass(frozen=True, slots=True)
+class StageChainEntryDto:
+    """Redacted, ordered stage chain projection from the V1 ledger."""
+
+    ledger_id: str
+    job_id: str
+    stage_index: int
+    stage_run_id: str
+    chain_status: str
+    input_source_kind: str
+    input_checksum: str | None
+    output_artifact_id: str | None
+    output_checksum: str | None
+    output_registered_at: str | None
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class JobProjectionDto:
     job: MigrationJobDto
     active_command: CommandExecutionDto | None
