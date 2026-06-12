@@ -33,6 +33,7 @@ from migration_factory.control_tower.domain.entities import (
     V1ContextPackManifestRecord,
     V1ModelInvocationRecord,
     V1PlanAmendmentRecord,
+    V1PlanReviewDecisionRecord,
     V1PlanRevisionRecord,
     V1PrivilegedActionDecisionRecord,
     V1PrivilegedActionExecutionRecord,
@@ -1992,6 +1993,77 @@ def _plan_revision_from_row(row: sqlite3.Row) -> V1PlanRevisionRecord:
         created_by=str(row["created_by"]),
         decided_at=str(row["decided_at"]) if row["decided_at"] is not None else None,
         decided_by=str(row["decided_by"]) if row["decided_by"] is not None else None,
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1PlanReviewDecisionRepository:
+    """SQLite repository for v1_plan_review_decisions table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, review_decision: V1PlanReviewDecisionRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_plan_review_decisions (
+                    review_decision_id, revision_id, amendment_id, job_id,
+                    decision, reviewed_checksum, review_summary,
+                    actor_type, actor_id, created_at, correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    review_decision.review_decision_id,
+                    review_decision.revision_id,
+                    review_decision.amendment_id,
+                    review_decision.job_id,
+                    review_decision.decision,
+                    review_decision.reviewed_checksum,
+                    review_decision.review_summary,
+                    review_decision.actor_type,
+                    review_decision.actor_id,
+                    review_decision.created_at,
+                    review_decision.correlation_id,
+                    review_decision.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get_for_revision(self, revision_id: str) -> V1PlanReviewDecisionRecord | None:
+        row = self._connection.execute(
+            """SELECT review_decision_id, revision_id, amendment_id, job_id,
+                      decision, reviewed_checksum, review_summary,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_plan_review_decisions WHERE revision_id = ?""",
+            (revision_id,),
+        ).fetchone()
+        return _plan_review_decision_from_row(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> tuple[V1PlanReviewDecisionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT review_decision_id, revision_id, amendment_id, job_id,
+                      decision, reviewed_checksum, review_summary,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_plan_review_decisions
+               WHERE job_id = ? ORDER BY created_at DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_plan_review_decision_from_row(row) for row in rows)
+
+
+def _plan_review_decision_from_row(row: sqlite3.Row) -> V1PlanReviewDecisionRecord:
+    return V1PlanReviewDecisionRecord(
+        review_decision_id=str(row["review_decision_id"]),
+        revision_id=str(row["revision_id"]),
+        amendment_id=str(row["amendment_id"]),
+        job_id=str(row["job_id"]),
+        decision=str(row["decision"]),
+        reviewed_checksum=str(row["reviewed_checksum"]),
+        review_summary=str(row["review_summary"]),
+        actor_type=str(row["actor_type"]),
+        actor_id=str(row["actor_id"]),
+        created_at=str(row["created_at"]),
         correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
         causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
     )

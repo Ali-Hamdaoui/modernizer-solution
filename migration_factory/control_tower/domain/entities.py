@@ -450,3 +450,21 @@ class V1PlanRevisionRecord:
     decided_by: str | None = None
     correlation_id: str | None = None
     causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class V1PlanReviewDecisionRecord:
+    """Immutable reviewer decision bound to an exact plan revision checksum."""
+
+    review_decision_id: str
+    revision_id: str
+    amendment_id: str
+    job_id: str
+    decision: str
+    reviewed_checksum: str
+    review_summary: str
+    actor_type: str
+    actor_id: str
+    created_at: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
