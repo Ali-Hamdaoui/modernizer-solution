@@ -1,0 +1,8 @@
+# Convenience install for local development and test execution.
+# The editable project install remains the primary source of truth.
+-e .[test]
+
+# TUI/test imports used by migration_factory.tui and tests/tui are not yet
+# declared in pyproject.toml, so include them here for fresh environments.
+rich==15.0.0
+textual==8.2.7

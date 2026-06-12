@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import re
 
 
 class BuildResultKind(str, Enum):
@@ -9,6 +10,7 @@ class BuildResultKind(str, Enum):
     COMPILATION_ERROR = "compilation_error"
     DEPENDENCY_ERROR = "dependency_error"
     JAVA_VERSION_MISMATCH = "java_version_mismatch"
+    JAVA_RUNTIME_MISMATCH = "java_runtime_mismatch"
     PORT_IN_USE = "port_already_in_use"
     MAIN_CLASS_NOT_FOUND = "main_class_not_found"
     MISSING_CONFIG = "missing_config"
@@ -112,6 +114,10 @@ def classify_line(line: str) -> BuildClassification | None:
     if not normalized:
         return None
 
+    enforcer = _classify_maven_enforcer_java_version(normalized)
+    if enforcer is not None:
+        return enforcer
+
     for pattern in SUCCESS_PATTERNS:
         if pattern in normalized:
             return BuildClassification(BuildResultKind.SUCCESS, "Application started successfully", normalized)
@@ -120,6 +126,28 @@ def classify_line(line: str) -> BuildClassification | None:
         if _matches(normalized, patterns):
             return BuildClassification(kind, message, normalized)
 
+    return None
+
+
+def _classify_maven_enforcer_java_version(line: str) -> BuildClassification | None:
+    match = re.search(
+        r"Detected JDK version\s+([^\s]+)\s+is not in allowed range\s+(\[[^\]]+\]|\([^)]+\)|[^\s]+)",
+        line,
+        re.IGNORECASE,
+    )
+    if match:
+        detected, expected = match.groups()
+        return BuildClassification(
+            BuildResultKind.JAVA_RUNTIME_MISMATCH,
+            f"Java runtime mismatch: detected {detected}, expected {expected}",
+            line,
+        )
+    if "RequireJavaVersion" in line and "allowed range" in line:
+        return BuildClassification(
+            BuildResultKind.JAVA_RUNTIME_MISMATCH,
+            "Java runtime mismatch from Maven Enforcer RequireJavaVersion",
+            line,
+        )
     return None
 
 
@@ -138,6 +166,13 @@ def timeout_classification(seconds: int) -> BuildClassification:
     return BuildClassification(
         BuildResultKind.TIMEOUT,
         f"Timed out after {seconds} seconds before startup was detected",
+    )
+
+
+def command_timeout_classification(seconds: int) -> BuildClassification:
+    return BuildClassification(
+        BuildResultKind.TIMEOUT,
+        f"Command timed out after {seconds} seconds before completion",
     )
 
 

@@ -2,3 +2,27 @@
 __pycache__/
 *.pyc
 .env
+.mf_runs/
+.codex/
+.codex-dev*.log
+.codex-dev.err.log
+.codex-dev.out.log
+*.log
+node_modules/
+.next/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+.tmp-tests/
+migration_factory/contracts/build/build-error-*.json
+
+.migration/
+
+# Graphify local-only outputs (not shared graph artifacts)
+graphify-out/cost.json
+graphify-out/cache/
+graphify-out/.graphify_python
+graphify-out/.graphify_analysis.json
+graphify-out/.graphify_labels.json
+graphify-out/graph.html

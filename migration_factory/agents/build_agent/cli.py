@@ -32,10 +32,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"SUCCESS: {result.message}")
         if result.matched_line:
             print(f"Matched log: {result.matched_line}")
+        for warning in result.warnings:
+            print(f"WARNING: {warning}", file=sys.stderr)
         return 0
 
     print(f"FAILURE: {result.message}", file=sys.stderr)
     print(f"Reason: {result.result_kind}", file=sys.stderr)
+    for warning in result.warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
     if result.matched_line:
         print(f"Matched log: {result.matched_line}", file=sys.stderr)
     if result.error_contract_path:
@@ -49,7 +53,7 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Run a Java/Spring Boot app and write build failure contracts as JSON.",
     )
     parser.add_argument("project_path", help="Path to a Maven or Gradle Java project")
-    parser.add_argument("--timeout", type=_positive_int, default=120)
+    parser.add_argument("--timeout", type=_positive_int)
     parser.add_argument("--module", help="Maven module to target with -f <module>/pom.xml")
     parser.add_argument("--main-class", help="Spring Boot main class override for Maven")
     parser.add_argument(

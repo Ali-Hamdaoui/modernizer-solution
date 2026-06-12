@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "analysis_report",
+  "type": "object",
+  "required": ["schema_version", "run_id", "agent", "status", "timestamp", "source_stack", "target_stack", "project_metadata", "rewrite", "ai_enrichment"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "run_id": {"type": "string"},
+    "agent": {"type": "string"},
+    "status": {"type": "string"},
+    "timestamp": {"type": "string"},
+    "source_stack": {"type": "object"},
+    "target_stack": {"type": "object"},
+    "project_metadata": {"type": "object"},
+    "rewrite": {"type": "object"},
+    "ai_enrichment": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {"type": "string", "enum": ["USED", "SKIPPED", "FAILED"]}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
