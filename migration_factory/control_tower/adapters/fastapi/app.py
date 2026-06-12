@@ -259,6 +259,10 @@ class CreateFakeRepairProposalRequest(StrictRequest):
     proposal_summary: str
 
 
+class CreateRepairAttemptRequest(StrictRequest):
+    attempt_summary: str
+
+
 @asynccontextmanager
 async def _control_tower_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Run startup reconciliation on service start."""
@@ -908,6 +912,26 @@ def create_app(
             _raise_http_error(exc)
         return _fake_repair_proposal_payload(proposal)
 
+    @app.post("/v1/commands/{command_id}/repair-attempts")
+    def record_repair_attempt(
+        command_id: str,
+        payload: CreateRepairAttemptRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = resolved_actor_provider.current_actor()
+        service = RepairService(unit_of_work_factory)
+        try:
+            attempt = service.record_repair_attempt(
+                command_id=command_id,
+                attempt_summary=payload.attempt_summary,
+                actor_type=actor.actor_type,
+                actor_id=actor.actor_id,
+                correlation_id=request.state.correlation_id,
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return _repair_attempt_payload(attempt)
+
     @app.get("/v1/commands/{command_id}/repair-status")
     def get_repair_status(command_id: str) -> dict[str, Any]:
         service = RepairService(unit_of_work_factory)
@@ -916,6 +940,18 @@ def create_app(
         except ControlTowerError as exc:
             _raise_http_error(exc)
         return _repair_status_payload(repair_status)
+
+    @app.get("/v1/commands/{command_id}/repair-attempts")
+    def list_repair_attempts(command_id: str) -> dict[str, Any]:
+        service = RepairService(unit_of_work_factory)
+        try:
+            attempts = service.list_repair_attempts(command_id)
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return redact_public_data({
+            "command_id": command_id,
+            "attempts": [_repair_attempt_payload(attempt) for attempt in attempts],
+        })
 
     # ------------------------------------------------------------------
     # Approval endpoints (V1-07A)
@@ -1682,6 +1718,22 @@ def _fake_repair_proposal_payload(proposal: Any) -> dict[str, Any]:
     })
 
 
+def _repair_attempt_payload(attempt: Any) -> dict[str, Any]:
+    return redact_public_data({
+        "attempt_id": attempt.attempt_id,
+        "classification_id": attempt.classification_id,
+        "command_id": attempt.command_id,
+        "job_id": attempt.job_id,
+        "attempt_order": attempt.attempt_order,
+        "attempt_status": attempt.attempt_status,
+        "attempt_summary": attempt.attempt_summary,
+        "attempt_checksum": attempt.attempt_checksum,
+        "actor_type": attempt.actor_type,
+        "actor_id": attempt.actor_id,
+        "created_at": attempt.created_at,
+    })
+
+
 def _repair_status_payload(repair_status: Any) -> dict[str, Any]:
     return redact_public_data({
         "command_id": repair_status.command_id,
@@ -1692,10 +1744,15 @@ def _repair_status_payload(repair_status: Any) -> dict[str, Any]:
             if repair_status.classification is not None
             else None
         ),
+        "attempts_used": repair_status.attempts_used,
         "proposal_count": repair_status.proposal_count,
         "attempt_limit": repair_status.attempt_limit,
         "remaining_attempts": repair_status.remaining_attempts,
         "eligible_for_fake_repair": repair_status.eligible_for_fake_repair,
+        "attempts": [
+            _repair_attempt_payload(attempt)
+            for attempt in repair_status.attempts
+        ],
         "proposals": [
             _fake_repair_proposal_payload(proposal)
             for proposal in repair_status.proposals

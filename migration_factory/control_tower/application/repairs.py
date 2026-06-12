@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from migration_factory.control_tower.application.dto import (
     FakeRepairProposalDto,
+    RepairAttemptDto,
     RepairClassificationDto,
     RepairStatusDto,
 )
@@ -265,11 +266,13 @@ class RepairService:
                     job_id=command.job_id,
                     command_status=command.status.value,
                     classification=None,
+                    attempts_used=0,
                     proposal_count=0,
                     attempt_limit=0,
                     remaining_attempts=0,
                     eligible_for_fake_repair=False,
                     proposals=(),
+                    attempts=(),
                 )
             proposals = tuple(
                 self._to_proposal_dto(item)
@@ -277,6 +280,7 @@ class RepairService:
                     classification.classification_id
                 )
             )
+        attempts = tuple(self._proposal_to_attempt_dto(item) for item in proposals)
         proposal_count = len(proposals)
         remaining_attempts = max(0, classification.attempt_limit - proposal_count)
         return RepairStatusDto(
@@ -284,12 +288,38 @@ class RepairService:
             job_id=classification.job_id,
             command_status=classification.command_status,
             classification=self._to_classification_dto(classification),
+            attempts_used=proposal_count,
             proposal_count=proposal_count,
             attempt_limit=classification.attempt_limit,
             remaining_attempts=remaining_attempts,
             eligible_for_fake_repair=classification.repairable and remaining_attempts > 0,
             proposals=proposals,
+            attempts=attempts,
         )
+
+    def record_repair_attempt(
+        self,
+        *,
+        command_id: str,
+        attempt_summary: str,
+        actor_type: str,
+        actor_id: str,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> RepairAttemptDto:
+        proposal = self.record_fake_repair_proposal(
+            command_id=command_id,
+            proposal_summary=attempt_summary,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+        )
+        return self._proposal_to_attempt_dto(proposal)
+
+    def list_repair_attempts(self, command_id: str) -> tuple[RepairAttemptDto, ...]:
+        status = self.get_repair_status(command_id)
+        return status.attempts
 
     def _to_classification_dto(
         self,
@@ -324,6 +354,34 @@ class RepairService:
             actor_type=record.actor_type,
             actor_id=record.actor_id,
             created_at=record.created_at,
+        )
+
+    def _proposal_to_attempt_dto(
+        self,
+        proposal: FakeRepairProposalDto | V1FakeRepairProposalRecord,
+    ) -> RepairAttemptDto:
+        proposal_id = proposal.proposal_id
+        classification_id = proposal.classification_id
+        command_id = proposal.command_id
+        job_id = proposal.job_id
+        proposal_order = proposal.proposal_order
+        proposal_summary = proposal.proposal_summary
+        proposal_checksum = proposal.proposal_checksum
+        actor_type = proposal.actor_type
+        actor_id = proposal.actor_id
+        created_at = proposal.created_at
+        return RepairAttemptDto(
+            attempt_id=proposal_id,
+            classification_id=classification_id,
+            command_id=command_id,
+            job_id=job_id,
+            attempt_order=proposal_order,
+            attempt_status="recorded",
+            attempt_summary=proposal_summary,
+            attempt_checksum=proposal_checksum,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            created_at=created_at,
         )
 
 

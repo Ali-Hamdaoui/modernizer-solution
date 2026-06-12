@@ -396,16 +396,33 @@ class FakeRepairProposalDto:
 
 
 @dataclass(frozen=True, slots=True)
+class RepairAttemptDto:
+    attempt_id: str
+    classification_id: str
+    command_id: str
+    job_id: str
+    attempt_order: int
+    attempt_status: str
+    attempt_summary: str
+    attempt_checksum: str
+    actor_type: str
+    actor_id: str
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class RepairStatusDto:
     command_id: str
     job_id: str
     command_status: str
     classification: RepairClassificationDto | None
+    attempts_used: int
     proposal_count: int
     attempt_limit: int
     remaining_attempts: int
     eligible_for_fake_repair: bool
     proposals: tuple[FakeRepairProposalDto, ...]
+    attempts: tuple[RepairAttemptDto, ...]
 
 
 @dataclass(frozen=True, slots=True)
