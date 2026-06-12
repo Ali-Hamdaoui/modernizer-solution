@@ -296,6 +296,48 @@ class V1ModelInvocationRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class V1PrivilegedActionExecutionRecord:
+    """Immutable record of a privileged action execution.
+
+    Append-only: once inserted, the record is never updated or deleted.
+    PK is action_id to prevent duplicate executions on the same action.
+    Results are stored as redacted summaries only.
+    """
+
+    action_id: str
+    job_id: str
+    action_type: str
+    parameters_checksum: str
+    status: str = "executing"  # 'executing', 'completed', 'failed'
+    started_at: str = ""
+    completed_at: str | None = None
+    result_summary: str | None = None
+    failure_reason: str | None = None
+    executed_by: str = ""
+    execution_version: str = "1.0"
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class V1PrivilegedActionDecisionRecord:
+    """Immutable record of an approve/reject decision on a privileged action.
+
+    Append-only: once inserted, the record is never updated or deleted.
+    PK is action_id to prevent duplicate decisions on the same action.
+    """
+
+    action_id: str
+    decision: str  # 'approved' or 'rejected'
+    decided_by: str
+    decided_at: str
+    parameters_checksum: str
+    rejection_reason: str | None = None
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class V1PrivilegedActionRecord:
     """Immutable record of a pending privileged action request.
 

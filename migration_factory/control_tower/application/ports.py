@@ -40,6 +40,8 @@ from migration_factory.control_tower.domain.entities import (
 )
 from migration_factory.control_tower.domain.entities import V1ContextPackManifestRecord
 from migration_factory.control_tower.domain.entities import V1ModelInvocationRecord
+from migration_factory.control_tower.domain.entities import V1PrivilegedActionDecisionRecord
+from migration_factory.control_tower.domain.entities import V1PrivilegedActionExecutionRecord
 from migration_factory.control_tower.domain.entities import V1PrivilegedActionRecord
 from migration_factory.control_tower.domain.model_profiles import V1ModelProfileRecord
 from migration_factory.control_tower.domain.manifests import CommandManifest
@@ -405,6 +407,30 @@ class V1PlanRevisionRepository(Protocol):
     def has_terminal_revision(self, amendment_id: str) -> bool: ...
 
 
+class V1PrivilegedActionExecutionRepository(Protocol):
+    """Append-only repository for privileged action execution records."""
+
+    def insert(self, execution: V1PrivilegedActionExecutionRecord) -> None: ...
+
+    def get(self, action_id: str) -> V1PrivilegedActionExecutionRecord | None: ...
+
+    def list(self) -> tuple[V1PrivilegedActionExecutionRecord, ...]: ...
+
+    def list_by_status(self, status: str) -> tuple[V1PrivilegedActionExecutionRecord, ...]: ...
+
+
+class V1PrivilegedActionDecisionRepository(Protocol):
+    """Append-only repository for privileged action decision records."""
+
+    def insert(self, decision: V1PrivilegedActionDecisionRecord) -> None: ...
+
+    def get(self, action_id: str) -> V1PrivilegedActionDecisionRecord | None: ...
+
+    def list(self) -> tuple[V1PrivilegedActionDecisionRecord, ...]: ...
+
+    def list_by_decision(self, decision: str) -> tuple[V1PrivilegedActionDecisionRecord, ...]: ...
+
+
 class ControlTowerUnitOfWork(Protocol):
     runner_profiles: RunnerProfileRepository
     pipeline_definitions: PipelineDefinitionRepository
@@ -426,6 +452,8 @@ class ControlTowerUnitOfWork(Protocol):
     v1_privileged_actions: V1PrivilegedActionRepository
     v1_plan_amendments: V1PlanAmendmentRepository
     v1_plan_revisions: V1PlanRevisionRepository
+    v1_privileged_action_decisions: V1PrivilegedActionDecisionRepository
+    v1_privileged_action_executions: V1PrivilegedActionExecutionRepository
 
     def __enter__(self) -> Self: ...
 

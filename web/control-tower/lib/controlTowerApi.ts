@@ -137,6 +137,10 @@ export function eventStreamUrl(jobId: string, afterSequence: number): string {
   return `${CONTROL_TOWER_API_BASE_URL}/v1/jobs/${encodeURIComponent(jobId)}/events/stream?${params}`;
 }
 
+export function assistantStreamUrl(jobId: string): string {
+  return `${CONTROL_TOWER_API_BASE_URL}/v1/jobs/${encodeURIComponent(jobId)}/assistant/stream`;
+}
+
 export async function postJson<TResponse>(
   path: string,
   body: unknown,
