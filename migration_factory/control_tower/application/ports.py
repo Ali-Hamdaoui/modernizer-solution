@@ -35,6 +35,8 @@ from migration_factory.control_tower.domain.entities import (
     StageChainLedgerRecord,
     StageOutputRegistryRecord,
     StageRunRecord,
+    V1PlanAmendmentRecord,
+    V1PlanRevisionRecord,
 )
 from migration_factory.control_tower.domain.entities import V1ContextPackManifestRecord
 from migration_factory.control_tower.domain.entities import V1ModelInvocationRecord
@@ -381,6 +383,28 @@ class V1PrivilegedActionRepository(Protocol):
     def list_by_status(self, status: str) -> tuple[V1PrivilegedActionRecord, ...]: ...
 
 
+class V1PlanAmendmentRepository(Protocol):
+    def insert(self, amendment: V1PlanAmendmentRecord) -> None: ...
+
+    def get(self, amendment_id: str) -> V1PlanAmendmentRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1PlanAmendmentRecord, ...]: ...
+
+
+class V1PlanRevisionRepository(Protocol):
+    def insert(self, revision: V1PlanRevisionRecord) -> None: ...
+
+    def get(self, revision_id: str) -> V1PlanRevisionRecord | None: ...
+
+    def list_for_amendment(self, amendment_id: str) -> tuple[V1PlanRevisionRecord, ...]: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1PlanRevisionRecord, ...]: ...
+
+    def next_revision_order(self, amendment_id: str) -> int: ...
+
+    def has_terminal_revision(self, amendment_id: str) -> bool: ...
+
+
 class ControlTowerUnitOfWork(Protocol):
     runner_profiles: RunnerProfileRepository
     pipeline_definitions: PipelineDefinitionRepository
@@ -400,6 +424,8 @@ class ControlTowerUnitOfWork(Protocol):
     v1_model_invocations: V1ModelInvocationRepository
     v1_context_pack_manifests: V1ContextPackManifestRepository
     v1_privileged_actions: V1PrivilegedActionRepository
+    v1_plan_amendments: V1PlanAmendmentRepository
+    v1_plan_revisions: V1PlanRevisionRepository
 
     def __enter__(self) -> Self: ...
 

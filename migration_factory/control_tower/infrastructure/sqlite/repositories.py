@@ -32,6 +32,8 @@ from migration_factory.control_tower.domain.entities import (
     StageRunRecord,
     V1ContextPackManifestRecord,
     V1ModelInvocationRecord,
+    V1PlanAmendmentRecord,
+    V1PlanRevisionRecord,
     V1PrivilegedActionRecord,
 )
 from migration_factory.control_tower.domain.checksums import utc_now_text
@@ -1808,6 +1810,187 @@ def _privileged_action_from_row(row: sqlite3.Row) -> V1PrivilegedActionRecord:
         rejected_reason=str(row["rejected_reason"]) if row["rejected_reason"] is not None else None,
         executed_at=str(row["executed_at"]) if row["executed_at"] is not None else None,
         failure_reason=str(row["failure_reason"]) if row["failure_reason"] is not None else None,
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1PlanAmendmentRepository:
+    """SQLite repository for v1_plan_amendments table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, amendment: V1PlanAmendmentRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_plan_amendments (
+                    amendment_id, job_id, source_kind, title, summary,
+                    payload_json, payload_checksum, redacted_summary_json,
+                    created_at, created_by, correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    amendment.amendment_id,
+                    amendment.job_id,
+                    amendment.source_kind,
+                    amendment.title,
+                    amendment.summary,
+                    amendment.payload_json,
+                    amendment.payload_checksum,
+                    amendment.redacted_summary_json,
+                    amendment.created_at,
+                    amendment.created_by,
+                    amendment.correlation_id,
+                    amendment.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, amendment_id: str) -> V1PlanAmendmentRecord | None:
+        row = self._connection.execute(
+            """SELECT amendment_id, job_id, source_kind, title, summary,
+                      payload_json, payload_checksum, redacted_summary_json,
+                      created_at, created_by, correlation_id, causation_id
+               FROM v1_plan_amendments WHERE amendment_id = ?""",
+            (amendment_id,),
+        ).fetchone()
+        return _plan_amendment_from_row(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> tuple[V1PlanAmendmentRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT amendment_id, job_id, source_kind, title, summary,
+                      payload_json, payload_checksum, redacted_summary_json,
+                      created_at, created_by, correlation_id, causation_id
+               FROM v1_plan_amendments
+               WHERE job_id = ? ORDER BY created_at DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_plan_amendment_from_row(row) for row in rows)
+
+
+def _plan_amendment_from_row(row: sqlite3.Row) -> V1PlanAmendmentRecord:
+    return V1PlanAmendmentRecord(
+        amendment_id=str(row["amendment_id"]),
+        job_id=str(row["job_id"]),
+        source_kind=str(row["source_kind"]),
+        title=str(row["title"]),
+        summary=str(row["summary"]),
+        payload_json=str(row["payload_json"]),
+        payload_checksum=str(row["payload_checksum"]),
+        redacted_summary_json=str(row["redacted_summary_json"]),
+        created_at=str(row["created_at"]),
+        created_by=str(row["created_by"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1PlanRevisionRepository:
+    """SQLite repository for v1_plan_revisions table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, revision: V1PlanRevisionRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_plan_revisions (
+                    revision_id, amendment_id, job_id, revision_order, revision_state,
+                    source_kind, payload_json, payload_checksum, redacted_summary_json,
+                    created_at, created_by, decided_at, decided_by,
+                    correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    revision.revision_id,
+                    revision.amendment_id,
+                    revision.job_id,
+                    revision.revision_order,
+                    revision.revision_state,
+                    revision.source_kind,
+                    revision.payload_json,
+                    revision.payload_checksum,
+                    revision.redacted_summary_json,
+                    revision.created_at,
+                    revision.created_by,
+                    revision.decided_at,
+                    revision.decided_by,
+                    revision.correlation_id,
+                    revision.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, revision_id: str) -> V1PlanRevisionRecord | None:
+        row = self._connection.execute(
+            """SELECT revision_id, amendment_id, job_id, revision_order, revision_state,
+                      source_kind, payload_json, payload_checksum, redacted_summary_json,
+                      created_at, created_by, decided_at, decided_by,
+                      correlation_id, causation_id
+               FROM v1_plan_revisions WHERE revision_id = ?""",
+            (revision_id,),
+        ).fetchone()
+        return _plan_revision_from_row(row) if row is not None else None
+
+    def list_for_amendment(self, amendment_id: str) -> tuple[V1PlanRevisionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT revision_id, amendment_id, job_id, revision_order, revision_state,
+                      source_kind, payload_json, payload_checksum, redacted_summary_json,
+                      created_at, created_by, decided_at, decided_by,
+                      correlation_id, causation_id
+               FROM v1_plan_revisions
+               WHERE amendment_id = ? ORDER BY revision_order ASC""",
+            (amendment_id,),
+        ).fetchall()
+        return tuple(_plan_revision_from_row(row) for row in rows)
+
+    def list_for_job(self, job_id: str) -> tuple[V1PlanRevisionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT revision_id, amendment_id, job_id, revision_order, revision_state,
+                      source_kind, payload_json, payload_checksum, redacted_summary_json,
+                      created_at, created_by, decided_at, decided_by,
+                      correlation_id, causation_id
+               FROM v1_plan_revisions
+               WHERE job_id = ? ORDER BY created_at DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_plan_revision_from_row(row) for row in rows)
+
+    def next_revision_order(self, amendment_id: str) -> int:
+        row = self._connection.execute(
+            "SELECT COALESCE(MAX(revision_order), 0) AS max_revision_order FROM v1_plan_revisions WHERE amendment_id = ?",
+            (amendment_id,),
+        ).fetchone()
+        return int(row["max_revision_order"]) + 1 if row is not None else 1
+
+    def has_terminal_revision(self, amendment_id: str) -> bool:
+        row = self._connection.execute(
+            """SELECT 1
+               FROM v1_plan_revisions
+               WHERE amendment_id = ?
+                 AND revision_state IN ('accepted', 'finalized')
+               LIMIT 1""",
+            (amendment_id,),
+        ).fetchone()
+        return row is not None
+
+
+def _plan_revision_from_row(row: sqlite3.Row) -> V1PlanRevisionRecord:
+    return V1PlanRevisionRecord(
+        revision_id=str(row["revision_id"]),
+        amendment_id=str(row["amendment_id"]),
+        job_id=str(row["job_id"]),
+        revision_order=int(row["revision_order"]),
+        revision_state=str(row["revision_state"]),
+        source_kind=str(row["source_kind"]),
+        payload_json=str(row["payload_json"]),
+        payload_checksum=str(row["payload_checksum"]),
+        redacted_summary_json=str(row["redacted_summary_json"]),
+        created_at=str(row["created_at"]),
+        created_by=str(row["created_by"]),
+        decided_at=str(row["decided_at"]) if row["decided_at"] is not None else None,
+        decided_by=str(row["decided_by"]) if row["decided_by"] is not None else None,
         correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
         causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
     )
