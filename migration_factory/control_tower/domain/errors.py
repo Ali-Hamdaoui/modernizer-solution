@@ -202,3 +202,17 @@ class ContinuationPolicyNotFoundError(ControlTowerError):
         super().__init__(
             f"No continuation policy entry found for job {job_id!r} stage {stage_index}"
         )
+
+
+class PlanAmendmentValidationError(ControlTowerError):
+    """Raised when a plan amendment or revision payload is invalid."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class PlanRevisionConflictError(ControlTowerError):
+    """Raised when ordered or terminal revision rules are violated."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)

@@ -39,6 +39,10 @@ from migration_factory.control_tower.application.dto import (
     StageChainEntryDto,
 )
 from migration_factory.control_tower.application.ports import ControlTowerUnitOfWork, WorkerLauncher, WorkerTerminator
+from migration_factory.control_tower.application.plan_amendments import (
+    PlanAmendmentService,
+    PlanChange,
+)
 from migration_factory.control_tower.application.queries import (
     DEFAULT_PUBLIC_EVENT_REPLAY_BATCH_SIZE,
     ControlTowerQueryService,
@@ -69,6 +73,8 @@ from migration_factory.control_tower.domain.errors import (
     InvalidEventCursorError,
     InvalidJobStateTransitionError,
     NotFoundError,
+    PlanAmendmentValidationError,
+    PlanRevisionConflictError,
     StaleVersionError,
     UnsupportedPlatformError,
 )
@@ -189,6 +195,31 @@ class TimeoutRequest(StrictRequest):
     command_id: str = ""
     timeout_seconds: int = 3600
     deadline: float = 0.0
+
+
+class PlanChangeRequest(StrictRequest):
+    stage_index: int = Field(ge=1, le=3)
+    change_type: str
+    description: str
+    rationale: str | None = None
+
+
+class CreatePlanAmendmentRequest(StrictRequest):
+    title: str
+    summary: str
+    source_kind: str = "manual"
+    notes: tuple[str, ...] = ()
+    changes: tuple[PlanChangeRequest, ...]
+
+
+class CreatePlanRevisionRequest(StrictRequest):
+    title: str
+    summary: str
+    source_kind: str = "manual"
+    notes: tuple[str, ...] = ()
+    changes: tuple[PlanChangeRequest, ...]
+    revision_order: int | None = Field(default=None, ge=1)
+    revision_state: str = "draft"
 
 
 @asynccontextmanager
@@ -666,6 +697,73 @@ def create_app(
             "created_at": m.created_at,
             "created_by": m.created_by,
         }
+
+    @app.post("/v1/jobs/{job_id}/plan-amendments", status_code=status.HTTP_201_CREATED)
+    def create_plan_amendment(
+        job_id: str,
+        payload: CreatePlanAmendmentRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = resolved_actor_provider.current_actor()
+        service = PlanAmendmentService(unit_of_work_factory)
+        try:
+            record = service.create_amendment(
+                job_id=job_id,
+                source_kind=payload.source_kind,
+                title=payload.title,
+                summary=payload.summary,
+                notes=payload.notes,
+                changes=_plan_changes_from_request(payload.changes),
+                created_by=actor.actor_id,
+                correlation_id=request.state.correlation_id,
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return _plan_amendment_payload(service.to_amendment_dto(record))
+
+    @app.post("/v1/plan-amendments/{amendment_id}/revisions", status_code=status.HTTP_201_CREATED)
+    def create_plan_revision(
+        amendment_id: str,
+        payload: CreatePlanRevisionRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = resolved_actor_provider.current_actor()
+        service = PlanAmendmentService(unit_of_work_factory)
+        try:
+            record = service.create_revision(
+                amendment_id=amendment_id,
+                source_kind=payload.source_kind,
+                title=payload.title,
+                summary=payload.summary,
+                notes=payload.notes,
+                changes=_plan_changes_from_request(payload.changes),
+                created_by=actor.actor_id,
+                revision_order=payload.revision_order,
+                revision_state=payload.revision_state,
+                correlation_id=request.state.correlation_id,
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return _plan_revision_payload(service.to_revision_dto(record))
+
+    @app.post("/v1/jobs/{job_id}/plan-amendments/preview")
+    def preview_plan_amendment(
+        job_id: str,
+        payload: CreatePlanAmendmentRequest,
+    ) -> dict[str, Any]:
+        service = PlanAmendmentService(unit_of_work_factory)
+        try:
+            preview = service.preview_amendment(
+                job_id=job_id,
+                source_kind=payload.source_kind,
+                title=payload.title,
+                summary=payload.summary,
+                notes=payload.notes,
+                changes=_plan_changes_from_request(payload.changes),
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return _plan_preview_payload(preview)
 
     # ------------------------------------------------------------------
     # Approval endpoints (V1-07A)
@@ -1283,6 +1381,63 @@ def _artifact_payload(artifact: ArtifactDto) -> dict[str, Any]:
     }
 
 
+def _plan_changes_from_request(changes: tuple[PlanChangeRequest, ...]) -> tuple[PlanChange, ...]:
+    return tuple(
+        PlanChange(
+            stage_index=change.stage_index,
+            change_type=change.change_type,
+            description=change.description,
+            rationale=change.rationale,
+        )
+        for change in changes
+    )
+
+
+def _plan_amendment_payload(amendment: Any) -> dict[str, Any]:
+    return redact_public_data({
+        "amendment_id": amendment.amendment_id,
+        "job_id": amendment.job_id,
+        "source_kind": amendment.source_kind,
+        "title": amendment.title,
+        "summary": amendment.summary,
+        "payload_checksum": amendment.payload_checksum,
+        "redacted_summary": amendment.redacted_summary,
+        "created_at": amendment.created_at,
+        "created_by": amendment.created_by,
+    })
+
+
+def _plan_revision_payload(revision: Any) -> dict[str, Any]:
+    return redact_public_data({
+        "revision_id": revision.revision_id,
+        "amendment_id": revision.amendment_id,
+        "job_id": revision.job_id,
+        "revision_order": revision.revision_order,
+        "revision_state": revision.revision_state,
+        "source_kind": revision.source_kind,
+        "payload_checksum": revision.payload_checksum,
+        "redacted_summary": revision.redacted_summary,
+        "created_at": revision.created_at,
+        "created_by": revision.created_by,
+        "decided_at": revision.decided_at,
+        "decided_by": revision.decided_by,
+    })
+
+
+def _plan_preview_payload(preview: Any) -> dict[str, Any]:
+    return redact_public_data({
+        "job_id": preview.job_id,
+        "source_kind": preview.source_kind,
+        "title": preview.title,
+        "summary": preview.summary,
+        "payload_checksum": preview.payload_checksum,
+        "change_count": preview.change_count,
+        "affected_stage_indexes": list(preview.affected_stage_indexes),
+        "change_types": list(preview.change_types),
+        "preview_applied": preview.preview_applied,
+    })
+
+
 def _output_window_payload(window: CommandOutputWindowDto) -> dict[str, Any]:
     return {
         "command_id": window.command_id,
@@ -1404,6 +1559,10 @@ def _raise_http_error(exc: ControlTowerError) -> None:
         raise _error(status.HTTP_400_BAD_REQUEST, "INVALID_EVENT_CURSOR", str(exc)) from exc
     if isinstance(exc, IdempotencyConflictError):
         raise _error(status.HTTP_409_CONFLICT, "IDEMPOTENCY_CONFLICT", str(exc)) from exc
+    if isinstance(exc, PlanRevisionConflictError):
+        raise _error(status.HTTP_409_CONFLICT, "PLAN_REVISION_CONFLICT", str(exc)) from exc
+    if isinstance(exc, PlanAmendmentValidationError):
+        raise _error(status.HTTP_400_BAD_REQUEST, "PLAN_AMENDMENT_INVALID", str(exc)) from exc
     if isinstance(exc, StaleVersionError):
         raise _error(status.HTTP_412_PRECONDITION_FAILED, "JOB_VERSION_CONFLICT", str(exc)) from exc
     if isinstance(exc, ExpectedVersionRequiredError):

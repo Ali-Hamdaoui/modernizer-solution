@@ -267,6 +267,48 @@ class ContextPackManifestDto:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanAmendmentDto:
+    amendment_id: str
+    job_id: str
+    source_kind: str
+    title: str
+    summary: str
+    payload_checksum: str
+    redacted_summary: dict[str, Any]
+    created_at: str
+    created_by: str
+
+
+@dataclass(frozen=True, slots=True)
+class PlanRevisionDto:
+    revision_id: str
+    amendment_id: str
+    job_id: str
+    revision_order: int
+    revision_state: str
+    source_kind: str
+    payload_checksum: str
+    redacted_summary: dict[str, Any]
+    created_at: str
+    created_by: str
+    decided_at: str | None = None
+    decided_by: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PlanPreviewDto:
+    job_id: str
+    source_kind: str
+    title: str
+    summary: str
+    payload_checksum: str
+    change_count: int
+    affected_stage_indexes: tuple[int, ...]
+    change_types: tuple[str, ...]
+    preview_applied: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class JobProjectionDto:
     job: MigrationJobDto
     active_command: CommandExecutionDto | None

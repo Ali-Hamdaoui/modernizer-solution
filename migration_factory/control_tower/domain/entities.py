@@ -402,3 +402,51 @@ class V1ContextPackManifestRecord:
     token_count: int | None = None
     correlation_id: str | None = None
     causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class V1PlanAmendmentRecord:
+    """Immutable record of a persisted plan amendment request.
+
+    Stores canonical amendment payload and a safe redacted summary.
+    The amendment is informational only and never applies source,
+    sandbox, or execution changes by itself.
+    """
+
+    amendment_id: str
+    job_id: str
+    source_kind: str
+    title: str
+    summary: str
+    payload_json: str
+    payload_checksum: str
+    redacted_summary_json: str
+    created_at: str
+    created_by: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class V1PlanRevisionRecord:
+    """Immutable record of a plan revision.
+
+    Revisions are append-only, ordered per amendment, checksum-bound,
+    and may become terminal once accepted/finalized.
+    """
+
+    revision_id: str
+    amendment_id: str
+    job_id: str
+    revision_order: int
+    revision_state: str
+    source_kind: str
+    payload_json: str
+    payload_checksum: str
+    redacted_summary_json: str
+    created_at: str
+    created_by: str
+    decided_at: str | None = None
+    decided_by: str | None = None
+    correlation_id: str | None = None
+    causation_id: str | None = None

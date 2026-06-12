@@ -18,6 +18,8 @@ from migration_factory.control_tower.infrastructure.sqlite.repositories import (
     SqliteStageRunRepository,
     SqliteV1ContextPackManifestRepository,
     SqliteV1ModelInvocationRepository,
+    SqliteV1PlanAmendmentRepository,
+    SqliteV1PlanRevisionRepository,
     SqliteV1PrivilegedActionDecisionRepository,
     SqliteV1PrivilegedActionExecutionRepository,
     SqliteV1PrivilegedActionRepository,
@@ -54,6 +56,8 @@ class SqliteControlTowerUnitOfWork:
         self.v1_model_invocations = SqliteV1ModelInvocationRepository(connection)
         self.v1_context_pack_manifests = SqliteV1ContextPackManifestRepository(connection)
         self.v1_privileged_actions = SqliteV1PrivilegedActionRepository(connection)
+        self.v1_plan_amendments = SqliteV1PlanAmendmentRepository(connection)
+        self.v1_plan_revisions = SqliteV1PlanRevisionRepository(connection)
         self.v1_privileged_action_decisions = SqliteV1PrivilegedActionDecisionRepository(connection)
         self.v1_privileged_action_executions = SqliteV1PrivilegedActionExecutionRepository(connection)
 
