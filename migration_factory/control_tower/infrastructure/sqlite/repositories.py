@@ -31,9 +31,11 @@ from migration_factory.control_tower.domain.entities import (
     StageOutputRegistryRecord,
     StageRunRecord,
     V1ContextPackManifestRecord,
+    V1FakeRepairProposalRecord,
     V1ModelInvocationRecord,
     V1PlanAmendmentRecord,
     V1PlanReviewDecisionRecord,
+    V1RepairClassificationRecord,
     V1PlanRevisionRecord,
     V1PrivilegedActionDecisionRecord,
     V1PrivilegedActionExecutionRecord,
@@ -2061,6 +2063,188 @@ def _plan_review_decision_from_row(row: sqlite3.Row) -> V1PlanReviewDecisionReco
         decision=str(row["decision"]),
         reviewed_checksum=str(row["reviewed_checksum"]),
         review_summary=str(row["review_summary"]),
+        actor_type=str(row["actor_type"]),
+        actor_id=str(row["actor_id"]),
+        created_at=str(row["created_at"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1RepairClassificationRepository:
+    """SQLite repository for v1_repair_classifications table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, classification: V1RepairClassificationRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_repair_classifications (
+                    classification_id, command_id, job_id, command_status,
+                    evidence_kind, evidence_summary, evidence_checksum,
+                    classification_code, reason_code, repairable, attempt_limit,
+                    actor_type, actor_id, created_at, correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    classification.classification_id,
+                    classification.command_id,
+                    classification.job_id,
+                    classification.command_status,
+                    classification.evidence_kind,
+                    classification.evidence_summary,
+                    classification.evidence_checksum,
+                    classification.classification_code,
+                    classification.reason_code,
+                    1 if classification.repairable else 0,
+                    classification.attempt_limit,
+                    classification.actor_type,
+                    classification.actor_id,
+                    classification.created_at,
+                    classification.correlation_id,
+                    classification.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get_by_command_and_checksum(
+        self,
+        command_id: str,
+        evidence_checksum: str,
+    ) -> V1RepairClassificationRecord | None:
+        row = self._connection.execute(
+            """SELECT classification_id, command_id, job_id, command_status,
+                      evidence_kind, evidence_summary, evidence_checksum,
+                      classification_code, reason_code, repairable, attempt_limit,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_repair_classifications
+               WHERE command_id = ? AND evidence_checksum = ?""",
+            (command_id, evidence_checksum),
+        ).fetchone()
+        return _repair_classification_from_row(row) if row is not None else None
+
+    def get_latest_for_command(self, command_id: str) -> V1RepairClassificationRecord | None:
+        row = self._connection.execute(
+            """SELECT classification_id, command_id, job_id, command_status,
+                      evidence_kind, evidence_summary, evidence_checksum,
+                      classification_code, reason_code, repairable, attempt_limit,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_repair_classifications
+               WHERE command_id = ?
+               ORDER BY created_at DESC, classification_id DESC
+               LIMIT 1""",
+            (command_id,),
+        ).fetchone()
+        return _repair_classification_from_row(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> tuple[V1RepairClassificationRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT classification_id, command_id, job_id, command_status,
+                      evidence_kind, evidence_summary, evidence_checksum,
+                      classification_code, reason_code, repairable, attempt_limit,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_repair_classifications
+               WHERE job_id = ?
+               ORDER BY created_at DESC, classification_id DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_repair_classification_from_row(row) for row in rows)
+
+
+def _repair_classification_from_row(row: sqlite3.Row) -> V1RepairClassificationRecord:
+    return V1RepairClassificationRecord(
+        classification_id=str(row["classification_id"]),
+        command_id=str(row["command_id"]),
+        job_id=str(row["job_id"]),
+        command_status=str(row["command_status"]),
+        evidence_kind=str(row["evidence_kind"]),
+        evidence_summary=str(row["evidence_summary"]),
+        evidence_checksum=str(row["evidence_checksum"]),
+        classification_code=str(row["classification_code"]),
+        reason_code=str(row["reason_code"]),
+        repairable=bool(row["repairable"]),
+        attempt_limit=int(row["attempt_limit"]),
+        actor_type=str(row["actor_type"]),
+        actor_id=str(row["actor_id"]),
+        created_at=str(row["created_at"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1FakeRepairProposalRepository:
+    """SQLite repository for v1_fake_repair_proposals table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, proposal: V1FakeRepairProposalRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_fake_repair_proposals (
+                    proposal_id, classification_id, command_id, job_id,
+                    proposal_order, proposal_summary, proposal_checksum,
+                    actor_type, actor_id, created_at, correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    proposal.proposal_id,
+                    proposal.classification_id,
+                    proposal.command_id,
+                    proposal.job_id,
+                    proposal.proposal_order,
+                    proposal.proposal_summary,
+                    proposal.proposal_checksum,
+                    proposal.actor_type,
+                    proposal.actor_id,
+                    proposal.created_at,
+                    proposal.correlation_id,
+                    proposal.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get_for_classification_and_checksum(
+        self,
+        classification_id: str,
+        proposal_checksum: str,
+    ) -> V1FakeRepairProposalRecord | None:
+        row = self._connection.execute(
+            """SELECT proposal_id, classification_id, command_id, job_id,
+                      proposal_order, proposal_summary, proposal_checksum,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_fake_repair_proposals
+               WHERE classification_id = ? AND proposal_checksum = ?""",
+            (classification_id, proposal_checksum),
+        ).fetchone()
+        return _fake_repair_proposal_from_row(row) if row is not None else None
+
+    def list_for_classification(
+        self,
+        classification_id: str,
+    ) -> tuple[V1FakeRepairProposalRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT proposal_id, classification_id, command_id, job_id,
+                      proposal_order, proposal_summary, proposal_checksum,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_fake_repair_proposals
+               WHERE classification_id = ?
+               ORDER BY proposal_order, proposal_id""",
+            (classification_id,),
+        ).fetchall()
+        return tuple(_fake_repair_proposal_from_row(row) for row in rows)
+
+
+def _fake_repair_proposal_from_row(row: sqlite3.Row) -> V1FakeRepairProposalRecord:
+    return V1FakeRepairProposalRecord(
+        proposal_id=str(row["proposal_id"]),
+        classification_id=str(row["classification_id"]),
+        command_id=str(row["command_id"]),
+        job_id=str(row["job_id"]),
+        proposal_order=int(row["proposal_order"]),
+        proposal_summary=str(row["proposal_summary"]),
+        proposal_checksum=str(row["proposal_checksum"]),
         actor_type=str(row["actor_type"]),
         actor_id=str(row["actor_id"]),
         created_at=str(row["created_at"]),

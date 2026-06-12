@@ -468,3 +468,43 @@ class V1PlanReviewDecisionRecord:
     created_at: str
     correlation_id: str | None = None
     causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class V1RepairClassificationRecord:
+    """Immutable repair classification for failed command evidence."""
+
+    classification_id: str
+    command_id: str
+    job_id: str
+    command_status: str
+    evidence_kind: str
+    evidence_summary: str
+    evidence_checksum: str
+    classification_code: str
+    reason_code: str
+    repairable: bool
+    attempt_limit: int
+    actor_type: str
+    actor_id: str
+    created_at: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class V1FakeRepairProposalRecord:
+    """Immutable fake repair proposal metadata. No patch content is stored."""
+
+    proposal_id: str
+    classification_id: str
+    command_id: str
+    job_id: str
+    proposal_order: int
+    proposal_summary: str
+    proposal_checksum: str
+    actor_type: str
+    actor_id: str
+    created_at: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
