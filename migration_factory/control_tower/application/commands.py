@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from migration_factory.control_tower.domain.artifacts import ArtifactHashResult
@@ -144,6 +144,56 @@ class CancelCommand:
     actor_id: str = "user"
     correlation_id: str | None = None
     causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StageCommandLaunchCommand:
+    """Command to create a stage command manifest payload without launching a process.
+
+    All argv and env values are backend-owned. The browser never chooses
+    raw paths, Maven goals, shell commands, working directories, or model
+    deployment IDs. No process is started by this command.
+    """
+
+    job_id: str
+    command_id: str
+    worker_id: str
+    operation: str
+    stage_run_id: str
+    ledger_id: str
+    jdk_id: str
+    jdk_java_home: str
+    jdk_expected_major: int
+    runner_profile_display_name: str
+    pipeline_id: str
+    pipeline_version: str
+    stage_index: int
+    stage_id: str
+    profile_id: str
+    command_jdk: str
+    sandbox_root_id: str
+    sandbox_relative_path: str
+    run_configuration_artifact_id: str
+    run_configuration_checksum: str
+    working_directory_root_id: str
+    working_directory_relative_path: str
+    stdout_relative_path: str
+    stderr_relative_path: str
+    result_relative_path: str
+    spool_relative_path: str
+    # Optional fields (positioned after all required fields)
+    timeout_seconds: int = 3600
+    max_stdout_bytes: int = 104857600
+    max_stderr_bytes: int = 104857600
+    actor_type: str = "system"
+    actor_id: str = "system"
+    correlation_id: str | None = None
+    causation_id: str | None = None
+    catalog_checksum: str | None = None
+    ledger_input_checksum: str | None = None
+    ledger_checksum_guard: str | None = None
+    argv: tuple[str, ...] = ()
+    env: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

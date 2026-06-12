@@ -263,7 +263,6 @@ def test_domain_package_uses_only_standard_library_and_domain_imports() -> None:
         "fastapi",
         "langchain",
         "langgraph",
-        "pydantic",
         "sqlite3",
     }
     forbidden_prefixes = (

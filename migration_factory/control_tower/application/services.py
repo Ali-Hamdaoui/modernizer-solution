@@ -16,6 +16,7 @@ from migration_factory.control_tower.application.commands import (
     RegisterArtifactCommand,
     RegisterPipelineDefinitionCommand,
     RegisterRunnerProfileCommand,
+    StageCommandLaunchCommand,
     StartMigrationJobCommand,
     TimeoutCommand,
     TransitionJobStateCommand,
@@ -50,8 +51,12 @@ from migration_factory.control_tower.domain.entities import (
 )
 from migration_factory.control_tower.domain.manifests import (
     CommandManifest,
+    StageCommandManifest,
+    BrowserRestrictedPayload,
     compute_manifest_checksum,
+    compute_stage_manifest_checksum,
     verify_manifest_checksum,
+    verify_stage_manifest_checksum,
 )
 from migration_factory.control_tower.domain.errors import (
     ActiveCommandConflictError,
@@ -2078,6 +2083,209 @@ class WorkerLaunchService:
             )
 
         return launch_result
+
+
+class StageCommandLaunchService:
+    """Create a stage command manifest without launching any process.
+
+    This service builds a StageCommandManifest with full checksum coverage
+    over ledger, JDK, profile, catalog, sandbox, argv, and env references.
+    The argv and env are backend-owned; the browser cannot choose raw paths,
+    Maven goals, shell commands, working directories, or model deployments.
+
+    No process is started in this issue. Actual launch happens in V1-06B2.
+    """
+
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+
+    def execute(self, command: StageCommandLaunchCommand) -> StageCommandManifest:
+        """Build and persist a stage command manifest, then queue the command.
+
+        Returns the StageCommandManifest with its checksum computed. The
+        command execution record is created in QUEUED state but no process
+        is launched.
+        """
+        with self._unit_of_work_factory() as uow:
+            job = uow.migration_jobs.get(command.job_id)
+            if job is None:
+                raise NotFoundError("migration job", command.job_id)
+
+            now = utc_now_text()
+
+            # Build the stage command manifest with full checksum coverage
+            manifest = StageCommandManifest(
+                schema_version="1.0.0",
+                job_id=command.job_id,
+                command_id=command.command_id,
+                worker_id=command.worker_id,
+                operation=command.operation,
+                run_configuration_artifact_id=command.run_configuration_artifact_id,
+                run_configuration_checksum=command.run_configuration_checksum,
+                working_directory_root_id=command.working_directory_root_id,
+                working_directory_relative_path=command.working_directory_relative_path,
+                stdout_relative_path=command.stdout_relative_path,
+                stderr_relative_path=command.stderr_relative_path,
+                result_relative_path=command.result_relative_path,
+                spool_relative_path=command.spool_relative_path,
+                timeout_seconds=command.timeout_seconds,
+                max_stdout_bytes=command.max_stdout_bytes,
+                max_stderr_bytes=command.max_stderr_bytes,
+                event_schema_version="1.0.0",
+                created_at=now,
+                manifest_checksum="",
+                # Stage-specific fields
+                stage_run_id=command.stage_run_id,
+                ledger_id=command.ledger_id,
+                ledger_input_checksum=command.ledger_input_checksum,
+                ledger_checksum_guard=command.ledger_checksum_guard,
+                jdk_id=command.jdk_id,
+                jdk_java_home=command.jdk_java_home,
+                jdk_expected_major=command.jdk_expected_major,
+                runner_profile_display_name=command.runner_profile_display_name,
+                pipeline_id=command.pipeline_id,
+                pipeline_version=command.pipeline_version,
+                stage_index=command.stage_index,
+                stage_id=command.stage_id,
+                profile_id=command.profile_id,
+                command_jdk=command.command_jdk,
+                sandbox_root_id=command.sandbox_root_id,
+                sandbox_relative_path=command.sandbox_relative_path,
+                catalog_checksum=command.catalog_checksum,
+                argv=command.argv,
+                env=command.env,
+            )
+
+            # Compute checksum over ALL fields (argv/env included)
+            manifest_checksum = compute_stage_manifest_checksum(manifest)
+            manifest = manifest.model_copy(update={"manifest_checksum": manifest_checksum})
+
+            # Verify the checksum round-trips
+            verify_stage_manifest_checksum(manifest)
+
+            # Create the command execution record in QUEUED state (no launch)
+            command_execution = CommandExecutionRecord(
+                command_id=command.command_id,
+                job_id=command.job_id,
+                operation=command.operation,
+                status=CommandState.QUEUED,
+                created_at=now,
+                updated_at=now,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+                worker_id=command.worker_id,
+            )
+            uow.command_executions.insert_queued(command_execution)
+
+            # Record audit trail for stage command manifest creation
+            audit_payload = {
+                "command_id": command.command_id,
+                "job_id": command.job_id,
+                "operation": command.operation,
+                "manifest_checksum": manifest_checksum,
+                "stage_run_id": command.stage_run_id,
+                "ledger_id": command.ledger_id,
+                "jdk_id": command.jdk_id,
+                "stage_index": command.stage_index,
+                "no_process_launch": True,
+                "argv_count": len(command.argv),
+                "env_count": len(command.env),
+            }
+            uow.audit_records.append_global_audit(
+                audit_id=f"audit-stage-cmd-{command.command_id}",
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                action="stage_command_manifest_created",
+                payload_json=canonical_json_text(audit_payload),
+                created_at=now,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+            )
+
+        return manifest
+
+
+class StageCommandManifestBuilder:
+    """Build a StageCommandManifest from backend-owned data.
+
+    Ensures:
+    - argv and env are backend-owned, never browser-supplied.
+    - Checksum coverage includes all contract fields.
+    - Browser payloads cannot choose raw paths, Maven goals, shell commands,
+      working directories, or model deployment IDs.
+    - No process is started.
+    """
+
+    @staticmethod
+    def build_restricted_payload(
+        argv: tuple[str, ...],
+        env: dict[str, str],
+    ) -> BrowserRestrictedPayload:
+        """Build a backend-owned argv/env payload."""
+        return BrowserRestrictedPayload(argv=argv, env=env)
+
+    @staticmethod
+    def build(
+        command: StageCommandLaunchCommand,
+        limited_env: dict[str, str] | None = None,
+    ) -> StageCommandManifest:
+        """Build a StageCommandManifest from backend-owned data.
+
+        The argv and env are always backend-owned. This method does not
+        start any process.
+        """
+        env = dict(command.env)
+        if limited_env is not None:
+            env.update(limited_env)
+
+        payload = BrowserRestrictedPayload(argv=command.argv, env=env)
+
+        manifest = StageCommandManifest(
+            schema_version="1.0.0",
+            job_id=command.job_id,
+            command_id=command.command_id,
+            worker_id=command.worker_id,
+            operation=command.operation,
+            run_configuration_artifact_id=command.run_configuration_artifact_id,
+            run_configuration_checksum=command.run_configuration_checksum,
+            working_directory_root_id=command.working_directory_root_id,
+            working_directory_relative_path=command.working_directory_relative_path,
+            stdout_relative_path=command.stdout_relative_path,
+            stderr_relative_path=command.stderr_relative_path,
+            result_relative_path=command.result_relative_path,
+            spool_relative_path=command.spool_relative_path,
+            timeout_seconds=command.timeout_seconds,
+            max_stdout_bytes=command.max_stdout_bytes,
+            max_stderr_bytes=command.max_stderr_bytes,
+            event_schema_version="1.0.0",
+            created_at=utc_now_text(),
+            manifest_checksum="",
+            # Stage-specific fields
+            stage_run_id=command.stage_run_id,
+            ledger_id=command.ledger_id,
+            ledger_input_checksum=command.ledger_input_checksum,
+            ledger_checksum_guard=command.ledger_checksum_guard,
+            jdk_id=command.jdk_id,
+            jdk_java_home=command.jdk_java_home,
+            jdk_expected_major=command.jdk_expected_major,
+            runner_profile_display_name=command.runner_profile_display_name,
+            pipeline_id=command.pipeline_id,
+            pipeline_version=command.pipeline_version,
+            stage_index=command.stage_index,
+            stage_id=command.stage_id,
+            profile_id=command.profile_id,
+            command_jdk=command.command_jdk,
+            sandbox_root_id=command.sandbox_root_id,
+            sandbox_relative_path=command.sandbox_relative_path,
+            catalog_checksum=command.catalog_checksum,
+            argv=payload.argv,
+            env=payload.env,
+        )
+
+        checksum = compute_stage_manifest_checksum(manifest)
+        manifest = manifest.model_copy(update={"manifest_checksum": checksum})
+
+        return manifest
 
 
 def _find_workspace_root(runner_profile, root_id: str) -> Path:
