@@ -216,3 +216,24 @@ export type AssistantErrorData = {
 export type AssistantDoneData = {
   status: string;
 };
+
+// ── Stage timeline panel types (V1-18B) ────────────────────────────────
+
+export type StageChainEntry = {
+  ledger_id: string;
+  job_id: string;
+  stage_index: number;
+  stage_run_id: string;
+  chain_status: string;
+  input_source_kind: string;
+  input_checksum: string | null;
+  output_artifact_id: string | null;
+  output_checksum: string | null;
+  output_registered_at: string | null;
+  created_at: string;
+};
+
+export type StageChainResponse = {
+  job_id: string;
+  stages: StageChainEntry[];
+};

@@ -11,7 +11,8 @@ import type {
   PlanAmendmentPreviewResponse,
   PipelineOption,
   PublicEventReplayResponse,
-  RunnerProfileOption
+  RunnerProfileOption,
+  StageChainResponse
 } from "./contracts";
 
 export const CONTROL_TOWER_FRONTEND_CLIENT_ID = "control-tower-frontend";
@@ -132,6 +133,10 @@ export async function getCommandOutput(
 
 export async function getArtifacts(jobId: string): Promise<ArtifactListResponse> {
   return getJson<ArtifactListResponse>(`/v1/jobs/${encodeURIComponent(jobId)}/artifacts`);
+}
+
+export async function getStageChain(jobId: string): Promise<StageChainResponse> {
+  return getJson<StageChainResponse>(`/v1/jobs/${encodeURIComponent(jobId)}/stages`);
 }
 
 export async function previewPlanAmendment(
