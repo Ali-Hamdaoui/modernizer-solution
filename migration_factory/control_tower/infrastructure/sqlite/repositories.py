@@ -32,6 +32,7 @@ from migration_factory.control_tower.domain.entities import (
     StageRunRecord,
     V1ContextPackManifestRecord,
     V1ModelInvocationRecord,
+    V1PrivilegedActionDecisionRecord,
     V1PrivilegedActionRecord,
 )
 from migration_factory.control_tower.domain.checksums import utc_now_text
@@ -1808,6 +1809,81 @@ def _privileged_action_from_row(row: sqlite3.Row) -> V1PrivilegedActionRecord:
         rejected_reason=str(row["rejected_reason"]) if row["rejected_reason"] is not None else None,
         executed_at=str(row["executed_at"]) if row["executed_at"] is not None else None,
         failure_reason=str(row["failure_reason"]) if row["failure_reason"] is not None else None,
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1PrivilegedActionDecisionRepository:
+    """SQLite repository for v1_privileged_action_decisions table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, decision: V1PrivilegedActionDecisionRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_privileged_action_decisions (
+                    action_id, decision, decided_by, decided_at,
+                    parameters_checksum, rejection_reason,
+                    correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    decision.action_id,
+                    decision.decision,
+                    decision.decided_by,
+                    decision.decided_at,
+                    decision.parameters_checksum,
+                    decision.rejection_reason,
+                    decision.correlation_id,
+                    decision.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, action_id: str) -> V1PrivilegedActionDecisionRecord | None:
+        row = self._connection.execute(
+            """SELECT action_id, decision, decided_by, decided_at,
+                      parameters_checksum, rejection_reason,
+                      correlation_id, causation_id
+               FROM v1_privileged_action_decisions WHERE action_id = ?""",
+            (action_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _decision_from_row(row)
+
+    def list(self) -> tuple[V1PrivilegedActionDecisionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT action_id, decision, decided_by, decided_at,
+                      parameters_checksum, rejection_reason,
+                      correlation_id, causation_id
+               FROM v1_privileged_action_decisions
+               ORDER BY decided_at DESC"""
+        ).fetchall()
+        return tuple(_decision_from_row(r) for r in rows)
+
+    def list_by_decision(self, decision: str) -> tuple[V1PrivilegedActionDecisionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT action_id, decision, decided_by, decided_at,
+                      parameters_checksum, rejection_reason,
+                      correlation_id, causation_id
+               FROM v1_privileged_action_decisions
+               WHERE decision = ? ORDER BY decided_at DESC""",
+            (decision,),
+        ).fetchall()
+        return tuple(_decision_from_row(r) for r in rows)
+
+
+def _decision_from_row(row: sqlite3.Row) -> V1PrivilegedActionDecisionRecord:
+    return V1PrivilegedActionDecisionRecord(
+        action_id=str(row["action_id"]),
+        decision=str(row["decision"]),
+        decided_by=str(row["decided_by"]),
+        decided_at=str(row["decided_at"]),
+        parameters_checksum=str(row["parameters_checksum"]),
+        rejection_reason=str(row["rejection_reason"]) if row["rejection_reason"] is not None else None,
         correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
         causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
     )

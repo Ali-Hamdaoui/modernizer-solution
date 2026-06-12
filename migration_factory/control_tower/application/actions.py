@@ -20,6 +20,7 @@ from migration_factory.control_tower.domain.checksums import (
     sha256_canonical_json,
     utc_now_text,
 )
+from migration_factory.control_tower.domain.entities import V1PrivilegedActionDecisionRecord
 from migration_factory.control_tower.domain.entities import V1PrivilegedActionRecord
 from migration_factory.control_tower.domain.errors import ControlTowerError
 
@@ -68,6 +69,17 @@ class ActionStaleError(PrivilegedActionError):
     def __init__(self, action_id: str, reason: str) -> None:
         self.action_id = action_id
         super().__init__(f"Action {action_id!r} is stale: {reason}")
+
+
+class DuplicateActionDecisionError(PrivilegedActionError):
+    """Raised when an action already has a decision recorded."""
+
+    def __init__(self, action_id: str, existing_decision: str) -> None:
+        self.action_id = action_id
+        self.existing_decision = existing_decision
+        super().__init__(
+            f"Action {action_id!r} already has a {existing_decision!r} decision"
+        )
 
 
 class InvalidActionTypeError(PrivilegedActionError):
@@ -538,3 +550,177 @@ class PrivilegedActionService:
             sha256_canonical_json,
         )
         return sha256_canonical_json(parameters)
+
+    # ── V1-17C: Approve/reject methods ────────────────────────────────
+
+    def approve_action(
+        self,
+        action_id: str,
+        *,
+        approved_by: str,
+        parameters_checksum: str,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> V1PrivilegedActionDecisionRecord:
+        """Approve a pending privileged action.
+
+        Validates:
+        - Action exists and is pending (not stale).
+        - Provided checksum matches stored parameters_checksum.
+        - No prior decision exists for this action (duplicate guard).
+
+        Args:
+            action_id: The action to approve.
+            approved_by: Actor approving the action.
+            parameters_checksum: Checksum to verify against stored value.
+
+        Returns:
+            The persisted V1PrivilegedActionDecisionRecord.
+
+        Raises:
+            ActionStaleError: If the action is not found or not pending.
+            ChecksumMismatchError: If the checksum does not match.
+            DuplicateActionDecisionError: If a decision already exists.
+        """
+        record = self.validate_action_available(action_id)
+
+        # Verify checksum
+        self.verify_checksum(
+            action_id=action_id,
+            expected_checksum=parameters_checksum,
+            actual_checksum=record.parameters_checksum,
+        )
+
+        # Check for existing decision
+        with self._unit_of_work_factory() as uow:
+            existing = uow.v1_privileged_action_decisions.get(action_id)
+            if existing is not None:
+                raise DuplicateActionDecisionError(
+                    action_id, existing.decision
+                )
+
+            now = utc_now_text()
+            decision = V1PrivilegedActionDecisionRecord(
+                action_id=action_id,
+                decision="approved",
+                decided_by=approved_by,
+                decided_at=now,
+                parameters_checksum=parameters_checksum,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+            uow.v1_privileged_action_decisions.insert(decision)
+
+            # Audit trail
+            import json as _json
+
+            audit_payload = _json.dumps(
+                {
+                    "action": "privileged_action_approved",
+                    "action_id": action_id,
+                    "job_id": record.job_id,
+                    "approved_by": approved_by,
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            uow.audit_records.append_global_audit(
+                audit_id=str(uuid4()),
+                actor_type="user",
+                actor_id=approved_by,
+                action="privileged_action_approved",
+                payload_json=audit_payload,
+                created_at=now,
+                correlation_id=correlation_id,
+                causation_id=causation_id or action_id,
+            )
+
+        return decision
+
+    def reject_action(
+        self,
+        action_id: str,
+        *,
+        rejected_by: str,
+        parameters_checksum: str,
+        rejection_reason: str | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> V1PrivilegedActionDecisionRecord:
+        """Reject a pending privileged action.
+
+        Validates:
+        - Action exists and is pending (not stale).
+        - Provided checksum matches stored parameters_checksum.
+        - No prior decision exists for this action (duplicate guard).
+
+        Args:
+            action_id: The action to reject.
+            rejected_by: Actor rejecting the action.
+            parameters_checksum: Checksum to verify against stored value.
+            rejection_reason: Optional reason for the rejection.
+
+        Returns:
+            The persisted V1PrivilegedActionDecisionRecord.
+
+        Raises:
+            ActionStaleError: If the action is not found or not pending.
+            ChecksumMismatchError: If the checksum does not match.
+            DuplicateActionDecisionError: If a decision already exists.
+        """
+        record = self.validate_action_available(action_id)
+
+        # Verify checksum
+        self.verify_checksum(
+            action_id=action_id,
+            expected_checksum=parameters_checksum,
+            actual_checksum=record.parameters_checksum,
+        )
+
+        # Check for existing decision
+        with self._unit_of_work_factory() as uow:
+            existing = uow.v1_privileged_action_decisions.get(action_id)
+            if existing is not None:
+                raise DuplicateActionDecisionError(
+                    action_id, existing.decision
+                )
+
+            now = utc_now_text()
+            decision = V1PrivilegedActionDecisionRecord(
+                action_id=action_id,
+                decision="rejected",
+                decided_by=rejected_by,
+                decided_at=now,
+                parameters_checksum=parameters_checksum,
+                rejection_reason=rejection_reason,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+            uow.v1_privileged_action_decisions.insert(decision)
+
+            # Audit trail
+            import json as _json
+
+            audit_payload = _json.dumps(
+                {
+                    "action": "privileged_action_rejected",
+                    "action_id": action_id,
+                    "job_id": record.job_id,
+                    "rejected_by": rejected_by,
+                    "rejection_reason": rejection_reason,
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            uow.audit_records.append_global_audit(
+                audit_id=str(uuid4()),
+                actor_type="user",
+                actor_id=rejected_by,
+                action="privileged_action_rejected",
+                payload_json=audit_payload,
+                created_at=now,
+                correlation_id=correlation_id,
+                causation_id=causation_id or action_id,
+            )
+
+        return decision

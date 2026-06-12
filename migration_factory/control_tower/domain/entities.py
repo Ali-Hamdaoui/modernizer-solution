@@ -296,6 +296,24 @@ class V1ModelInvocationRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class V1PrivilegedActionDecisionRecord:
+    """Immutable record of an approve/reject decision on a privileged action.
+
+    Append-only: once inserted, the record is never updated or deleted.
+    PK is action_id to prevent duplicate decisions on the same action.
+    """
+
+    action_id: str
+    decision: str  # 'approved' or 'rejected'
+    decided_by: str
+    decided_at: str
+    parameters_checksum: str
+    rejection_reason: str | None = None
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class V1PrivilegedActionRecord:
     """Immutable record of a pending privileged action request.
 
