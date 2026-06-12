@@ -2668,6 +2668,90 @@ class ApprovalService:
             return uow.v1_approvals.list_for_job(job_id)
 
 
+class ResumeCommandExecutor:
+    """Execute pending approval resume commands from the queue.
+
+    This service picks up pending resume commands and executes them.
+    Each command is executed once and marked as 'executed' or 'failed'.
+    Commands are always queued first (never executed directly) and
+    picked up by this executor.
+    """
+
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+
+    def execute_pending(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Execute pending resume commands up to the given limit.
+
+        Each command is executed atomically:
+        1. Fetch and lock the pending resume record.
+        2. Execute the resume command.
+        3. Mark as 'executed' or 'failed'.
+
+        Returns a list of execution results.
+        """
+        results: list[dict[str, Any]] = []
+
+        with self._unit_of_work_factory() as uow:
+            pending = uow.v1_approval_resume.list_pending()
+            for resume in pending[:limit]:
+                now = utc_now_text()
+                try:
+                    # Execute the resume command — for now this is a no-op
+                    # that records the execution. Actual resume logic
+                    # (e.g., invoking orchestrator resume) belongs to
+                    # downstream issues (V1-08A, V1-08B).
+                    uow.v1_approval_resume.update_status(
+                        resume_id=resume.resume_id,
+                        status="executed",
+                        executed_at=now,
+                    )
+                    results.append({
+                        "resume_id": resume.resume_id,
+                        "approval_id": resume.approval_id,
+                        "command_type": resume.command_type,
+                        "status": "executed",
+                        "executed_at": now,
+                    })
+                except Exception as exc:
+                    uow.v1_approval_resume.update_status(
+                        resume_id=resume.resume_id,
+                        status="failed",
+                        failure_reason=str(exc),
+                    )
+                    results.append({
+                        "resume_id": resume.resume_id,
+                        "approval_id": resume.approval_id,
+                        "command_type": resume.command_type,
+                        "status": "failed",
+                        "failure_reason": str(exc),
+                    })
+
+            # Audit trail
+            if results:
+                audit_payload = {
+                    "executed_count": len([r for r in results if r["status"] == "executed"]),
+                    "failed_count": len([r for r in results if r["status"] == "failed"]),
+                    "resume_ids": [r["resume_id"] for r in results],
+                }
+                uow.audit_records.append_global_audit(
+                    audit_id=f"audit-resume-exec-{uuid4().hex}",
+                    actor_type="system",
+                    actor_id="resume-executor",
+                    action="resume_commands_executed",
+                    payload_json=canonical_json_text(audit_payload),
+                    created_at=now,
+                )
+
+        return results
+
+    def list_pending(self, limit: int = 100) -> tuple[ApprovalResumeRecord, ...]:
+        """List pending resume commands without executing them."""
+        with self._unit_of_work_factory() as uow:
+            pending = uow.v1_approval_resume.list_pending()
+            return tuple(pending[:limit])
+
+
 def _find_workspace_root(runner_profile, root_id: str) -> Path:
     from pathlib import Path as _Path
 
