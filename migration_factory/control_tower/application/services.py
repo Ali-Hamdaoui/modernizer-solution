@@ -13,6 +13,8 @@ from migration_factory.control_tower.application.commands import (
     FinalizeCommandCommand,
     LaunchWorkerCommand,
     PrepareCommandWorkspaceCommand,
+    QueueApprovalResumeCommand,
+    RecordApprovalCommand,
     RegisterArtifactCommand,
     RegisterPipelineDefinitionCommand,
     RegisterRunnerProfileCommand,
@@ -38,6 +40,8 @@ from migration_factory.control_tower.domain.artifacts import ArtifactHashResult
 from migration_factory.control_tower.domain.checksums import canonical_json_text, sha256_canonical_json, utc_now_text
 from migration_factory.control_tower.domain.commands import CommandState
 from migration_factory.control_tower.domain.entities import (
+    ApprovalRecord,
+    ApprovalResumeRecord,
     ArtifactRecord,
     AuditRecord,
     CommandExecutionRecord,
@@ -2510,6 +2514,158 @@ class StageOneLaunchService:
         )
 
         return launch_result
+
+
+class ApprovalService:
+    """Record approval decisions and queue resume commands.
+
+    This service persists approval decisions with idempotency by
+    (interrupt_id, request_checksum) and queues resume commands for
+    later execution. The approval endpoint never executes anything
+    directly.
+
+    Browser payloads CANNOT choose:
+    - raw executable paths
+    - Maven goals or build commands
+    - arbitrary shell commands
+    - working directories
+    - model deployment IDs
+
+    LLM flows CANNOT execute commands, approve decisions, or write
+    files directly.
+    """
+
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+
+    def record_approval(self, command: RecordApprovalCommand) -> ApprovalRecord:
+        """Record an approval decision idempotently.
+
+        If an approval with the same (interrupt_id, request_checksum)
+        already exists, return the existing record without modification.
+
+        A resume command is queued for later execution. No direct resume
+        is performed.
+        """
+        with self._unit_of_work_factory() as uow:
+            # Idempotency check: if already exists, return existing
+            existing = uow.v1_approvals.get_by_interrupt(
+                command.interrupt_id, command.request_checksum
+            )
+            if existing is not None:
+                return existing
+
+            now = utc_now_text()
+            approval_id = f"approval-{uuid4().hex}"
+
+            # Build payload
+            payload = {
+                "job_id": command.job_id,
+                "interrupt_id": command.interrupt_id,
+                "decision": command.decision,
+                "approved_by": command.approved_by,
+                "approval_comments": command.approval_comments,
+            }
+            payload_json = canonical_json_text(payload)
+            payload_checksum = sha256_canonical_json(payload)
+
+            approval = ApprovalRecord(
+                approval_id=approval_id,
+                job_id=command.job_id,
+                interrupt_id=command.interrupt_id,
+                request_checksum=command.request_checksum,
+                decision=command.decision,
+                approved_by=command.approved_by,
+                approval_comments=command.approval_comments,
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                payload_json=payload_json,
+                payload_checksum=payload_checksum,
+                created_at=now,
+            )
+
+            uow.v1_approvals.insert(approval)
+
+            # Queue a resume command (always queued, never direct resume)
+            resume_id = f"resume-{uuid4().hex}"
+            resume_payload = {
+                "approval_id": approval_id,
+                "job_id": command.job_id,
+                "decision": command.decision,
+                "approved_by": command.approved_by,
+                "approval_comments": command.approval_comments,
+                "interrupt_id": command.interrupt_id,
+            }
+            resume = ApprovalResumeRecord(
+                resume_id=resume_id,
+                approval_id=approval_id,
+                job_id=command.job_id,
+                command_type="approval_resume",
+                command_payload_json=canonical_json_text(resume_payload),
+                status="pending",
+                created_at=now,
+                executed_at=None,
+                failure_reason=None,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+            )
+            uow.v1_approval_resume.insert(resume)
+
+            # Audit trail
+            audit_payload = {
+                "approval_id": approval_id,
+                "job_id": command.job_id,
+                "interrupt_id": command.interrupt_id,
+                "decision": command.decision,
+                "approved_by": command.approved_by,
+                "resume_id": resume_id,
+            }
+            uow.audit_records.append_global_audit(
+                audit_id=f"audit-approval-{uuid4().hex}",
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                action="approval_recorded",
+                payload_json=canonical_json_text(audit_payload),
+                created_at=now,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+            )
+
+            return approval
+
+    def queue_resume(self, command: QueueApprovalResumeCommand) -> ApprovalResumeRecord:
+        """Queue a resume command for later execution.
+
+        This is always queued, never executed directly.
+        """
+        with self._unit_of_work_factory() as uow:
+            now = utc_now_text()
+            resume_id = f"resume-{uuid4().hex}"
+
+            resume = ApprovalResumeRecord(
+                resume_id=resume_id,
+                approval_id=command.approval_id,
+                job_id=command.job_id,
+                command_type=command.command_type,
+                command_payload_json=command.command_payload_json,
+                status="pending",
+                created_at=now,
+                executed_at=None,
+                failure_reason=None,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+            )
+            uow.v1_approval_resume.insert(resume)
+
+            return resume
+
+    def get_approval(self, approval_id: str) -> ApprovalRecord | None:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_approvals.get(approval_id)
+
+    def list_approvals_for_job(self, job_id: str) -> tuple[ApprovalRecord, ...]:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_approvals.list_for_job(job_id)
 
 
 def _find_workspace_root(runner_profile, root_id: str) -> Path:
