@@ -16,7 +16,7 @@ from tests.control_tower.transition_helpers import migrated_connection, seed_job
 class TestV1PlanAmendmentsMigration:
     MIGRATION_PATH = (
         "migration_factory/control_tower/infrastructure/sqlite/migrations"
-        "/0018_v1_plan_amendments.sql"
+        "/0020_v1_plan_amendments.sql"
     )
 
     def _apply_migration(self, tmp_path) -> sqlite3.Connection:
