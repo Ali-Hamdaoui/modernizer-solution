@@ -2362,6 +2362,156 @@ class StageCommandManifestBuilder:
         return manifest
 
 
+class StageOneLaunchService:
+    """Launch Stage One (Java 11 / Spring Boot 2.7.18) as a worker-owned process.
+
+    This service:
+    - Maps Stage 1 to backend-owned argv/env with JAVA11 configuration.
+    - Builds a StageCommandManifest with full checksum coverage.
+    - Launches via WorkerLauncher with shell=False.
+    - Fails closed on unsupported platforms or runtime conditions.
+    - Browser payloads CANNOT choose raw paths, Maven goals, shell commands,
+      working directories, or model deployment IDs.
+    """
+
+    JAVA11_STAGE1_ARGV: tuple[str, ...] = (
+        "mvn",
+        "-DskipTests",
+        "-Dmaven.test.skip=true",
+        "org.openrewrite.maven:rewrite-maven-plugin:run",
+        "-Drewrite.activeRecipes=org.openrewrite.java.spring.boot2.UpgradeSpringBoot_2_7",
+        "-Drewrite.exportDatatables=true",
+        "compile",
+    )
+
+    JAVA11_STAGE1_ENV: dict[str, str] = {
+        "JAVA_HOME": "",  # Set at launch time from the JDK config
+        "MAVEN_OPTS": "-Xmx1024m",
+        "SHELL_DISABLED": "true",
+    }
+
+    def __init__(
+        self,
+        unit_of_work_factory: UnitOfWorkFactory,
+        worker_launcher: WorkerLauncher,
+    ) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+        self._worker_launcher = worker_launcher
+
+    @classmethod
+    def build_stage_one_argv(cls) -> tuple[str, ...]:
+        """Return the backend-owned argv for Stage 1 (JAVA11)."""
+        return cls.JAVA11_STAGE1_ARGV
+
+    @classmethod
+    def build_stage_one_env(cls, jdk_java_home: str) -> dict[str, str]:
+        """Return the backend-owned env for Stage 1 with JAVA_HOME set."""
+        env = dict(cls.JAVA11_STAGE1_ENV)
+        env["JAVA_HOME"] = jdk_java_home
+        return env
+
+    def execute(self, command: StageCommandLaunchCommand) -> WorkerLaunchResult:
+        """Launch Stage 1 with backend-owned argv/env and JAVA11 config.
+
+        Steps:
+        1. Build the stage command manifest with backend-owned argv/env.
+        2. Write the manifest to the workspace.
+        3. Launch the worker process via WorkerLauncher with shell=False.
+        4. Record launch result.
+
+        Raises:
+            UnsupportedPlatformError: if the platform is not supported.
+            WorkspacePathError: if workspace paths are missing.
+        """
+        # Build backend-owned argv/env for Stage 1 / JAVA11
+        backend_argv = self.build_stage_one_argv()
+        backend_env = self.build_stage_one_env(command.jdk_java_home)
+
+        # Create the launch command override with backend-owned argv/env
+        launch_cmd = StageCommandLaunchCommand(
+            job_id=command.job_id,
+            command_id=command.command_id,
+            worker_id=command.worker_id,
+            operation=command.operation,
+            stage_run_id=command.stage_run_id,
+            ledger_id=command.ledger_id,
+            jdk_id=command.jdk_id,
+            jdk_java_home=command.jdk_java_home,
+            jdk_expected_major=command.jdk_expected_major,
+            runner_profile_display_name=command.runner_profile_display_name,
+            pipeline_id=command.pipeline_id,
+            pipeline_version=command.pipeline_version,
+            stage_index=command.stage_index,
+            stage_id=command.stage_id,
+            profile_id=command.profile_id,
+            command_jdk=command.command_jdk,
+            sandbox_root_id=command.sandbox_root_id,
+            sandbox_relative_path=command.sandbox_relative_path,
+            run_configuration_artifact_id=command.run_configuration_artifact_id,
+            run_configuration_checksum=command.run_configuration_checksum,
+            working_directory_root_id=command.working_directory_root_id,
+            working_directory_relative_path=command.working_directory_relative_path,
+            stdout_relative_path=command.stdout_relative_path,
+            stderr_relative_path=command.stderr_relative_path,
+            result_relative_path=command.result_relative_path,
+            spool_relative_path=command.spool_relative_path,
+            timeout_seconds=command.timeout_seconds,
+            max_stdout_bytes=command.max_stdout_bytes,
+            max_stderr_bytes=command.max_stderr_bytes,
+            catalog_checksum=command.catalog_checksum,
+            ledger_input_checksum=command.ledger_input_checksum,
+            ledger_checksum_guard=command.ledger_checksum_guard,
+            correlation_id=command.correlation_id,
+            causation_id=command.causation_id,
+            actor_type=command.actor_type,
+            actor_id=command.actor_id,
+            argv=backend_argv,
+            env=backend_env,
+        )
+
+        # Build the manifest via StageCommandManifestBuilder
+        manifest = StageCommandManifestBuilder.build(launch_cmd)
+
+        # Determine workspace directory from runner profile
+        with self._unit_of_work_factory() as uow:
+            run_config = uow.run_configurations.get_for_job(command.job_id)
+            if run_config is None:
+                raise NotFoundError("run configuration", command.job_id)
+
+            runner = uow.runner_profiles.get_exact(
+                run_config.runner_profile_id,
+                run_config.runner_profile_version,
+            )
+            if runner is None:
+                raise NotFoundError(
+                    "runner profile",
+                    f"{run_config.runner_profile_id}/{run_config.runner_profile_version}",
+                )
+
+            working_dir = _find_workspace_working_dir(
+                runner.payload,
+                command.working_directory_root_id,
+                command.working_directory_relative_path,
+            )
+
+            python_executable = _get_python_executable(runner.payload)
+
+        # Serialize the manifest to JSON bytes for the launcher
+        manifest_bytes = manifest.model_dump_json(
+            exclude={"manifest_checksum"}
+        ).encode("utf-8")
+
+        # Launch via WorkerLauncher (shell=False is enforced by the launcher)
+        launch_result = self._worker_launcher.launch(
+            working_dir=working_dir,
+            manifest=manifest,
+            manifest_bytes=manifest_bytes,
+            python_executable=python_executable,
+        )
+
+        return launch_result
+
+
 def _find_workspace_root(runner_profile, root_id: str) -> Path:
     from pathlib import Path as _Path
 
