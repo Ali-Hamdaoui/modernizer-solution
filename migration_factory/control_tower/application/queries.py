@@ -149,6 +149,15 @@ class ControlTowerQueryService:
                 for r in records
             )
 
+    def get_continuation_policy_events(
+        self, job_id: str
+    ) -> tuple[StageChainEventRecord, ...]:
+        """Return continuation policy events for a job."""
+        from migration_factory.control_tower.domain.entities import StageChainEventRecord
+
+        with self._unit_of_work_factory() as uow:
+            return uow.stage_chain_ledger.list_events_for_job(job_id)
+
     # ── RunEvent ─────────────────────────────────────────────────
 
     def list_run_events(self, job_id: str) -> tuple[RunEventDto, ...]:

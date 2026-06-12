@@ -52,12 +52,14 @@ from migration_factory.control_tower.application.services import (
     ControlTowerRegistrationService,
     DiagnosticJobService,
     ReconciliationService,
+    StageContinuationPolicyService,
     TimeoutService,
     WorkerLaunchService,
 )
 from migration_factory.control_tower.application.runner_readiness import RunnerJdkReadinessService, ReadinessChecker
 from migration_factory.control_tower.domain.errors import (
     ActiveCommandConflictError,
+    ContinuationPolicyViolationError,
     ControlTowerError,
     ControllerOwnershipConflictError,
     ControllerOwnershipUnavailableError,
@@ -692,6 +694,57 @@ def create_app(
         return {
             "job_id": job_id,
             "stages": [_stage_chain_entry_payload(entry) for entry in chain],
+        }
+
+    @app.get("/v1/jobs/{job_id}/continuation-policy")
+    def get_continuation_policy(job_id: str) -> dict[str, Any]:
+        """Get the stage continuation policy status for a job.
+
+        Returns the policy status for each stage, including whether
+        the stage is blocked, queued, or ready to proceed.
+
+        Browser payloads CANNOT choose raw paths, Maven goals, shell
+        commands, working directories, or model deployments.
+        """
+        query_service = ControlTowerQueryService(unit_of_work_factory)
+        try:
+            chain = query_service.get_stage_chain(job_id)
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+
+        policy_service = StageContinuationPolicyService(unit_of_work_factory)
+        stages: list[dict[str, Any]] = []
+        for entry in chain:
+            allowed, reason = policy_service.check_stage_readiness(
+                job_id, entry.stage_index
+            )
+            stages.append({
+                "stage_index": entry.stage_index,
+                "stage_run_id": entry.stage_run_id,
+                "chain_status": entry.chain_status,
+                "input_source_kind": entry.input_source_kind,
+                "input_checksum": entry.input_checksum,
+                "output_checksum": entry.output_checksum,
+                "policy_allowed": allowed,
+                "policy_reason": reason,
+            })
+
+        # Collect continuation events
+        events = query_service.get_continuation_policy_events(job_id)
+        return {
+            "job_id": job_id,
+            "pipeline_id": "springboot-216-to-356-java21-three-stage",
+            "stages": stages,
+            "continuation_events": [
+                {
+                    "event_id": e.event_id,
+                    "stage_index": e.stage_index,
+                    "event_type": e.event_type,
+                    "new_status": e.new_status,
+                    "created_at": e.created_at,
+                }
+                for e in events
+            ],
         }
 
     @app.post("/v1/jobs/{job_id}/start")
