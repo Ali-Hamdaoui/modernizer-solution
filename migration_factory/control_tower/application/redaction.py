@@ -1,0 +1,253 @@
+"""Shared redaction and forbidden-path baseline for V1.
+
+This module defines the canonical redaction primitives used across
+all V1 layers (API responses, audit records, model invocation summaries,
+context packs, and evidence retrieval). It also establishes the baseline
+for forbidden path patterns that must never be exposed.
+
+Design:
+- All redaction functions are pure (no I/O, no DB access).
+- Forbidden path patterns are compile-time constants.
+- Secrets/prompts/deployment IDs are always redacted from public DTOs.
+- Raw absolute paths are redacted to path-kind placeholders.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path, PureWindowsPath
+from typing import Any
+
+
+# ── Forbidden path patterns ──────────────────────────────────────────
+
+# Pattern matches Windows absolute paths like C:\Users\... or D:/data/...
+# Does NOT match URLs (http://, https://, etc.)
+_WINDOWS_ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![A-Za-z]:)(?<![A-Za-z])[A-Za-z]:[\\/](?:[^\\/\s:]*[\\/])*[^\\/\s:]*"
+)
+
+# Pattern matches POSIX absolute paths like /home/user/.ssh/id_rsa
+# Does NOT match URLs (http://, https://)
+_POSIX_ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_:/])(?<!/)/(?:[^/\s]+/)*[^/\s]*"
+)
+
+# Pattern matches environment variable assignments like SECRET=value
+_ENV_ASSIGNMENT_RE = re.compile(r"\b[A-Z][A-Z0-9_]{2,}=[^\s]+")
+
+# Pattern matches common secret-related key names as whole words
+_SECRET_KEY_RE = re.compile(
+    r"\b(secret|token|password|credential|api[_-]?key|private_key|access_key)\b",
+    re.IGNORECASE,
+)
+
+# Pattern matches deployment/model resource identifiers
+_DEPLOYMENT_ID_RE = re.compile(
+    r"(deployment[_-]?id|model[_-]?id|endpoint[_-]?id|resource[_-]?id)"
+    r"\s*[:=]\s*\S+",
+    re.IGNORECASE,
+)
+
+# Pattern matches raw prompt content (heuristic: quoted blocks with >50 chars)
+_RAW_PROMPT_RE = re.compile(
+    r"""[("'"`]{3,}[\s\S]{50,}?[)""'"`]{3,}"""
+)
+
+# Pattern matches common home directory references (applied before POSIX path re)
+_HOME_DIR_RE = re.compile(
+    r"(?:^|(?<=\s))(?:/home/[^/\s]+)(?:/|\s|$)"
+)
+
+# Forbidden path prefixes that must never appear in public output
+FORBIDDEN_PATH_PREFIXES: tuple[str, ...] = (
+    "/etc/",
+    "/var/",
+    "/proc/",
+    "/sys/",
+    "/dev/",
+    "/boot/",
+    "/root/",
+    "/private/",
+    "c:/windows/",
+    "c:/program files/",
+    "c:/users/",
+)
+
+# Forbidden file extensions that should trigger redaction
+FORBIDDEN_FILE_EXTENSIONS: tuple[str, ...] = (
+    ".pem",
+    ".key",
+    ".pkcs8",
+    ".pfx",
+    ".p12",
+    ".keystore",
+    ".env",
+    ".env.local",
+    ".env.production",
+)
+
+# Environment variable names that should always be redacted
+SENSITIVE_ENV_VARS: tuple[str, ...] = (
+    "AZURE_OPENAI_KEY",
+    "AZURE_OPENAI_API_KEY",
+    "OPENAI_API_KEY",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "GITHUB_TOKEN",
+    "GITLAB_TOKEN",
+    "DOCKER_TOKEN",
+    "SSH_PRIVATE_KEY",
+    "DEPLOYMENT_ID",
+    "MODEL_DEPLOYMENT_ID",
+)
+
+# Pattern matches sensitive env var assignments
+_SENSITIVE_ENV_VAR_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(v) for v in SENSITIVE_ENV_VARS) + r")\s*=\s*\S+"
+)
+
+# ── Redaction functions ──────────────────────────────────────────────
+
+
+def redact_absolute_paths(text: str) -> str:
+    """Replace absolute paths with a path-kind placeholder.
+
+    Preserves URLs (http/https) from path redaction.
+    """
+    if _looks_like_url(text):
+        return text
+    text = _WINDOWS_ABSOLUTE_PATH_RE.sub("[redacted-windows-path]", text)
+    text = _POSIX_ABSOLUTE_PATH_RE.sub("[redacted-path]", text)
+    text = _HOME_DIR_RE.sub("[redacted-home-path]", text)
+    return text
+
+
+def redact_env_assignments(text: str) -> str:
+    """Replace environment variable assignments with placeholder."""
+    return _ENV_ASSIGNMENT_RE.sub("[redacted-env]", text)
+
+
+def redact_sensitive_env_vars(text: str) -> str:
+    """Replace sensitive environment variable assignments."""
+    return _SENSITIVE_ENV_VAR_RE.sub("[redacted-sensitive-env]", text)
+
+
+def redact_secret_keys(text: str) -> str:
+    """Replace secret-related key names with 'redacted'."""
+    return _SECRET_KEY_RE.sub("redacted", text)
+
+
+def redact_deployment_identifiers(text: str) -> str:
+    """Replace deployment/model identifiers with placeholder."""
+    return _DEPLOYMENT_ID_RE.sub("[redacted-deployment-id]", text)
+
+
+def redact_raw_prompts(text: str) -> str:
+    """Replace raw prompt blocks with placeholder."""
+    return _RAW_PROMPT_RE.sub("[redacted-prompt]", text)
+
+
+def redact_model_summary(summary: str) -> str:
+    """Redact a model invocation summary for public DTOs.
+
+    Applies all redaction primitives: paths, env vars, secret keys,
+    deployment IDs, and raw prompts.
+    """
+    result = summary
+    result = redact_absolute_paths(result)
+    result = redact_env_assignments(result)
+    result = redact_sensitive_env_vars(result)
+    result = redact_secret_keys(result)
+    result = redact_deployment_identifiers(result)
+    result = redact_raw_prompts(result)
+    return result
+
+
+def redact_public_value(value: Any) -> Any:
+    """Recursively redact a value for public API output.
+
+    Strings are redacted through all primitives.
+    Dict keys with secret-related names have their values replaced.
+    """
+    if isinstance(value, dict):
+        return {k: _redact_dict_value(k, v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact_public_value(item) for item in value]
+    if isinstance(value, str):
+        return redact_model_summary(value)
+    return value
+
+
+def redact_audit_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Redact an audit record payload for public exposure.
+
+    Preserves structural fields (ids, types, timestamps) while
+    redacting paths, env refs, and secret-like values.
+    """
+    return redact_public_value(payload)
+
+
+def contains_forbidden_path(path: str | Path) -> bool:
+    """Check if a path or path string contains forbidden patterns.
+
+    Returns True if the path starts with any forbidden prefix or
+    has a forbidden file extension.
+    """
+    path_str = str(path)
+
+    # Normalize separators and lowercase for comparison
+    normalized = path_str.replace("\\", "/").lower()
+
+    for ext in FORBIDDEN_FILE_EXTENSIONS:
+        if normalized.endswith(ext.lower()):
+            return True
+
+    for prefix in FORBIDDEN_PATH_PREFIXES:
+        if normalized.startswith(prefix):
+            return True
+
+        # Also check for substring match (handles mixed separators)
+        if prefix in normalized:
+            return True
+
+    return False
+
+
+def validate_not_forbidden(path: str | Path) -> None:
+    """Raise ValueError if the given path contains forbidden patterns."""
+    if contains_forbidden_path(path):
+        raise ValueError(
+            f"Path contains forbidden pattern: {path!r}"
+        )
+
+
+def is_sensitive_env_var(name: str) -> bool:
+    """Check if an environment variable name is classified as sensitive."""
+    return name.upper() in SENSITIVE_ENV_VARS
+
+
+def is_forbidden_file(path: str | Path) -> bool:
+    """Check if a file path has a forbidden extension or location."""
+    return contains_forbidden_path(path)
+
+
+# ── Internal helpers ─────────────────────────────────────────────────
+
+
+def _looks_like_url(text: str) -> bool:
+    """Check if text looks like a URL (http/https)."""
+    return bool(text.startswith(("http://", "https://")))
+
+
+def _redact_dict_value(key: str, value: Any) -> Any:
+    """Redact a dict value if the key indicates sensitive content."""
+    lowered = key.lower()
+    if _SECRET_KEY_RE.search(lowered):
+        return "[redacted]"
+    if "path" in lowered and isinstance(value, str):
+        return redact_absolute_paths(value)
+    if isinstance(value, str):
+        return redact_model_summary(value)
+    return redact_public_value(value)
