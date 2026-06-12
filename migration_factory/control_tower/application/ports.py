@@ -38,6 +38,7 @@ from migration_factory.control_tower.domain.entities import (
 )
 from migration_factory.control_tower.domain.entities import V1ContextPackManifestRecord
 from migration_factory.control_tower.domain.entities import V1ModelInvocationRecord
+from migration_factory.control_tower.domain.entities import V1PrivilegedActionDecisionRecord
 from migration_factory.control_tower.domain.entities import V1PrivilegedActionRecord
 from migration_factory.control_tower.domain.model_profiles import V1ModelProfileRecord
 from migration_factory.control_tower.domain.manifests import CommandManifest
@@ -381,6 +382,18 @@ class V1PrivilegedActionRepository(Protocol):
     def list_by_status(self, status: str) -> tuple[V1PrivilegedActionRecord, ...]: ...
 
 
+class V1PrivilegedActionDecisionRepository(Protocol):
+    """Append-only repository for privileged action decision records."""
+
+    def insert(self, decision: V1PrivilegedActionDecisionRecord) -> None: ...
+
+    def get(self, action_id: str) -> V1PrivilegedActionDecisionRecord | None: ...
+
+    def list(self) -> tuple[V1PrivilegedActionDecisionRecord, ...]: ...
+
+    def list_by_decision(self, decision: str) -> tuple[V1PrivilegedActionDecisionRecord, ...]: ...
+
+
 class ControlTowerUnitOfWork(Protocol):
     runner_profiles: RunnerProfileRepository
     pipeline_definitions: PipelineDefinitionRepository
@@ -400,6 +413,7 @@ class ControlTowerUnitOfWork(Protocol):
     v1_model_invocations: V1ModelInvocationRepository
     v1_context_pack_manifests: V1ContextPackManifestRepository
     v1_privileged_actions: V1PrivilegedActionRepository
+    v1_privileged_action_decisions: V1PrivilegedActionDecisionRepository
 
     def __enter__(self) -> Self: ...
 
