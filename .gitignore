@@ -19,6 +19,12 @@ migration_factory/contracts/build/build-error-*.json
 
 .migration/
 
+# Runtime DB and control-tower dev artifacts
+.control-tower-dev/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
 # Graphify local-only outputs (not shared graph artifacts)
 graphify-out/cost.json
 graphify-out/cache/
