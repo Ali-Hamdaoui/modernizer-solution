@@ -47,6 +47,7 @@ from migration_factory.control_tower.application.queries import (
 from migration_factory.control_tower.application.services import (
     CancelService,
     CommandFinalizationService,
+    ControlTowerRegistrationService,
     DiagnosticJobService,
     ReconciliationService,
     TimeoutService,
@@ -458,6 +459,87 @@ def create_app(
                         }
                     )
         return {"filesystem_roots": redact_public_data(roots)}
+
+    @app.get("/v1/model-profiles")
+    def list_model_profiles() -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            profiles = [
+                {
+                    "profile_id": p.profile_id,
+                    "display_name": p.display_name,
+                    "provider_kind": p.provider_kind,
+                    "is_active": p.is_active,
+                    "created_at": p.created_at,
+                }
+                for p in uow.v1_model_profiles.list()
+            ]
+        return {"model_profiles": profiles}
+
+    @app.get("/v1/model-profiles/{profile_id}")
+    def get_model_profile(profile_id: str) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            record = uow.v1_model_profiles.get(profile_id)
+        if record is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "MODEL_PROFILE_NOT_FOUND",
+                f"Model profile {profile_id!r} not found",
+            )
+        return {
+            "profile_id": record.profile_id,
+            "display_name": record.display_name,
+            "provider_kind": record.provider_kind,
+            "model_env_ref": record.model_env_ref,
+            "endpoint_env_ref": record.endpoint_env_ref,
+            "deployment_env_ref": record.deployment_env_ref,
+            "is_active": record.is_active,
+            "created_at": record.created_at,
+            "created_by": record.created_by,
+        }
+
+    @app.post("/v1/model-profiles", status_code=status.HTTP_201_CREATED)
+    async def register_model_profile(
+        request: Request,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = await request.json()
+        profile_id: str = body.get("profile_id", "")
+        display_name: str = body.get("display_name", "")
+        provider_kind: str = body.get("provider_kind", "fake")
+        model_env_ref: str = body.get("model_env_ref", "")
+        endpoint_env_ref: str = body.get("endpoint_env_ref", "")
+        deployment_env_ref: str = body.get("deployment_env_ref", "")
+        actor_id: str = body.get("actor_id", "api")
+        correlation_id: str | None = body.get("correlation_id")
+
+        if not profile_id or not display_name or not model_env_ref:
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                "INVALID_REQUEST",
+                "profile_id, display_name, and model_env_ref are required",
+            )
+
+        if provider_kind not in ("fake", "azure_openai"):
+            provider_kind = "fake"
+
+        service = ControlTowerRegistrationService(unit_of_work_factory)
+        record = service.register_model_profile(
+            profile_id=profile_id,
+            display_name=display_name,
+            provider_kind=provider_kind,
+            model_env_ref=model_env_ref,
+            endpoint_env_ref=endpoint_env_ref,
+            deployment_env_ref=deployment_env_ref,
+            actor_type="api",
+            actor_id=actor_id,
+            correlation_id=correlation_id,
+        )
+        return {
+            "profile_id": record.profile_id,
+            "display_name": record.display_name,
+            "provider_kind": record.provider_kind,
+            "is_active": record.is_active,
+            "created_at": record.created_at,
+        }
 
     @app.post("/v1/jobs", status_code=status.HTTP_201_CREATED)
     async def create_job(

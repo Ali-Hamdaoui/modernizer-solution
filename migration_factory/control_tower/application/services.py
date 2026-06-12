@@ -49,6 +49,7 @@ from migration_factory.control_tower.domain.entities import (
     StageChainLedgerRecord,
     StageRunRecord,
 )
+from migration_factory.control_tower.domain.model_profiles import V1ModelProfileRecord
 from migration_factory.control_tower.domain.manifests import (
     CommandManifest,
     StageCommandManifest,
@@ -519,6 +520,79 @@ class ControlTowerRegistrationService:
     def list_pipeline_definitions(self) -> tuple[PipelineDefinitionDto, ...]:
         with self._unit_of_work_factory() as uow:
             return uow.pipeline_definitions.list()
+
+    def register_model_profile(
+        self,
+        profile_id: str,
+        display_name: str,
+        provider_kind: str,
+        model_env_ref: str,
+        endpoint_env_ref: str,
+        deployment_env_ref: str,
+        actor_type: str,
+        actor_id: str,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> V1ModelProfileRecord:
+        created_at = utc_now_text()
+        record = V1ModelProfileRecord(
+            profile_id=profile_id,
+            display_name=display_name,
+            provider_kind=provider_kind,
+            model_env_ref=model_env_ref,
+            endpoint_env_ref=endpoint_env_ref,
+            deployment_env_ref=deployment_env_ref,
+            is_active=True,
+            created_at=created_at,
+            created_by=actor_id,
+        )
+        with self._unit_of_work_factory() as uow:
+            uow.v1_model_profiles.insert(record)
+            uow.v1_model_profile_events.insert_event(
+                event_id=str(uuid4()),
+                profile_id=profile_id,
+                event_type="runner_validation",
+                provider_kind=provider_kind,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                payload_json=canonical_json_text({
+                    "action": "model_profile_registered",
+                    "profile_id": profile_id,
+                    "display_name": display_name,
+                    "provider_kind": provider_kind,
+                    "actor_type": actor_type,
+                    "actor_id": actor_id,
+                }),
+                payload_checksum=sha256_canonical_json({
+                    "action": "model_profile_registered",
+                    "profile_id": profile_id,
+                    "display_name": display_name,
+                    "provider_kind": provider_kind,
+                    "actor_type": actor_type,
+                    "actor_id": actor_id,
+                }),
+                created_at=created_at,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+            uow.audit_records.append_global_audit(
+                audit_id=str(uuid4()),
+                actor_type=actor_type,
+                actor_id=actor_id,
+                action="model_profile_registered",
+                payload_json=canonical_json_text({
+                    "action": "model_profile_registered",
+                    "profile_id": profile_id,
+                    "display_name": display_name,
+                    "provider_kind": provider_kind,
+                    "actor_type": actor_type,
+                    "actor_id": actor_id,
+                }),
+                created_at=created_at,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        return record
 
     def transition_job_state(self, command: TransitionJobStateCommand) -> MigrationJobDto:
         if command.expected_version is None:
