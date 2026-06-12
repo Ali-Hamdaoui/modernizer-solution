@@ -43,6 +43,9 @@ from migration_factory.control_tower.application.plan_amendments import (
     PlanAmendmentService,
     PlanChange,
 )
+from migration_factory.control_tower.application.plan_proposals import (
+    FakeProviderPlanProposalService,
+)
 from migration_factory.control_tower.application.queries import (
     DEFAULT_PUBLIC_EVENT_REPLAY_BATCH_SIZE,
     ControlTowerQueryService,
@@ -73,6 +76,7 @@ from migration_factory.control_tower.domain.errors import (
     InvalidEventCursorError,
     InvalidJobStateTransitionError,
     NotFoundError,
+    PlanAdvisoryValidationError,
     PlanAmendmentValidationError,
     PlanRevisionConflictError,
     StaleVersionError,
@@ -220,6 +224,17 @@ class CreatePlanRevisionRequest(StrictRequest):
     changes: tuple[PlanChangeRequest, ...]
     revision_order: int | None = Field(default=None, ge=1)
     revision_state: str = "draft"
+
+
+class CreateFakeProviderProposalRequest(StrictRequest):
+    title: str
+    summary: str
+    notes: tuple[str, ...] = ()
+    changes: tuple[PlanChangeRequest, ...]
+    confidence_label: str | None = None
+    confidence_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    model_invocation_id: str | None = None
+    context_pack_manifest_id: str | None = None
 
 
 @asynccontextmanager
@@ -764,6 +779,40 @@ def create_app(
         except ControlTowerError as exc:
             _raise_http_error(exc)
         return _plan_preview_payload(preview)
+
+    @app.post("/v1/plan-amendments/{amendment_id}/fake-provider-proposals")
+    def create_fake_provider_plan_proposal(
+        amendment_id: str,
+        payload: CreateFakeProviderProposalRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = resolved_actor_provider.current_actor()
+        service = FakeProviderPlanProposalService(unit_of_work_factory)
+        raw_output = payload.model_dump(
+            mode="json",
+            exclude={"model_invocation_id", "context_pack_manifest_id"},
+        )
+        try:
+            report = service.create_revision_from_fake_provider(
+                amendment_id=amendment_id,
+                raw_output=raw_output,
+                created_by=actor.actor_id,
+                model_invocation_id=payload.model_invocation_id,
+                context_pack_manifest_id=payload.context_pack_manifest_id,
+                correlation_id=request.state.correlation_id,
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return _advisory_validation_payload(report)
+
+    @app.get("/v1/plan-revisions/{revision_id}/advisory-validation")
+    def get_fake_provider_plan_validation(revision_id: str) -> dict[str, Any]:
+        service = FakeProviderPlanProposalService(unit_of_work_factory)
+        try:
+            report = service.get_validation_report(revision_id)
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return _advisory_validation_payload(report)
 
     # ------------------------------------------------------------------
     # Approval endpoints (V1-07A)
@@ -1438,6 +1487,28 @@ def _plan_preview_payload(preview: Any) -> dict[str, Any]:
     })
 
 
+def _advisory_validation_payload(report: Any) -> dict[str, Any]:
+    return redact_public_data({
+        "amendment_id": report.amendment_id,
+        "job_id": report.job_id,
+        "validation_status": report.validation_status,
+        "source_kind": report.source_kind,
+        "revision_persisted": report.revision_persisted,
+        "non_authoritative": report.non_authoritative,
+        "warning_codes": list(report.warning_codes),
+        "rejection_codes": list(report.rejection_codes),
+        "confidence_label": report.confidence_label,
+        "confidence_score": report.confidence_score,
+        "payload_checksum": report.payload_checksum,
+        "model_invocation_id": report.model_invocation_id,
+        "context_pack_manifest_id": report.context_pack_manifest_id,
+        "revision_id": report.revision_id,
+        "revision_order": report.revision_order,
+        "revision_state": report.revision_state,
+        "redacted_summary": report.redacted_summary,
+    })
+
+
 def _output_window_payload(window: CommandOutputWindowDto) -> dict[str, Any]:
     return {
         "command_id": window.command_id,
@@ -1561,6 +1632,8 @@ def _raise_http_error(exc: ControlTowerError) -> None:
         raise _error(status.HTTP_409_CONFLICT, "IDEMPOTENCY_CONFLICT", str(exc)) from exc
     if isinstance(exc, PlanRevisionConflictError):
         raise _error(status.HTTP_409_CONFLICT, "PLAN_REVISION_CONFLICT", str(exc)) from exc
+    if isinstance(exc, PlanAdvisoryValidationError):
+        raise _error(status.HTTP_400_BAD_REQUEST, "PLAN_ADVISORY_INVALID", str(exc)) from exc
     if isinstance(exc, PlanAmendmentValidationError):
         raise _error(status.HTTP_400_BAD_REQUEST, "PLAN_AMENDMENT_INVALID", str(exc)) from exc
     if isinstance(exc, StaleVersionError):

@@ -309,6 +309,27 @@ class PlanPreviewDto:
 
 
 @dataclass(frozen=True, slots=True)
+class AdvisoryValidationReportDto:
+    amendment_id: str
+    job_id: str
+    validation_status: str
+    source_kind: str
+    revision_persisted: bool
+    non_authoritative: bool
+    warning_codes: tuple[str, ...]
+    rejection_codes: tuple[str, ...]
+    confidence_label: str | None
+    confidence_score: float | None
+    payload_checksum: str | None
+    model_invocation_id: str | None
+    context_pack_manifest_id: str | None
+    revision_id: str | None = None
+    revision_order: int | None = None
+    revision_state: str | None = None
+    redacted_summary: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class JobProjectionDto:
     job: MigrationJobDto
     active_command: CommandExecutionDto | None
