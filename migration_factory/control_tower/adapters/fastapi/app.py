@@ -43,6 +43,7 @@ from migration_factory.control_tower.application.plan_amendments import (
     PlanAmendmentService,
     PlanChange,
 )
+from migration_factory.control_tower.application.plan_reviews import PlanReviewService
 from migration_factory.control_tower.application.plan_proposals import (
     FakeProviderPlanProposalService,
 )
@@ -78,6 +79,8 @@ from migration_factory.control_tower.domain.errors import (
     NotFoundError,
     PlanAdvisoryValidationError,
     PlanAmendmentValidationError,
+    PlanReviewChecksumMismatchError,
+    PlanReviewConflictError,
     PlanRevisionConflictError,
     StaleVersionError,
     UnsupportedPlatformError,
@@ -235,6 +238,12 @@ class CreateFakeProviderProposalRequest(StrictRequest):
     confidence_score: float | None = Field(default=None, ge=0.0, le=1.0)
     model_invocation_id: str | None = None
     context_pack_manifest_id: str | None = None
+
+
+class CreatePlanReviewDecisionRequest(StrictRequest):
+    expected_checksum: str
+    decision: str
+    review_summary: str = ""
 
 
 @asynccontextmanager
@@ -813,6 +822,37 @@ def create_app(
         except ControlTowerError as exc:
             _raise_http_error(exc)
         return _advisory_validation_payload(report)
+
+    @app.post("/v1/plan-revisions/{revision_id}/review-decisions")
+    def record_plan_review_decision(
+        revision_id: str,
+        payload: CreatePlanReviewDecisionRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = resolved_actor_provider.current_actor()
+        service = PlanReviewService(unit_of_work_factory)
+        try:
+            decision = service.record_review_decision(
+                revision_id=revision_id,
+                expected_checksum=payload.expected_checksum,
+                decision=payload.decision,
+                review_summary=payload.review_summary,
+                actor_type=actor.actor_type,
+                actor_id=actor.actor_id,
+                correlation_id=request.state.correlation_id,
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return _plan_review_decision_payload(decision)
+
+    @app.get("/v1/plan-revisions/{revision_id}/review-status")
+    def get_plan_review_status(revision_id: str) -> dict[str, Any]:
+        service = PlanReviewService(unit_of_work_factory)
+        try:
+            review_status = service.get_review_status(revision_id)
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return _plan_review_status_payload(review_status)
 
     # ------------------------------------------------------------------
     # Approval endpoints (V1-07A)
@@ -1513,6 +1553,38 @@ def _advisory_validation_payload(report: Any) -> dict[str, Any]:
     })
 
 
+def _plan_review_decision_payload(decision: Any) -> dict[str, Any]:
+    return redact_public_data({
+        "review_decision_id": decision.review_decision_id,
+        "revision_id": decision.revision_id,
+        "amendment_id": decision.amendment_id,
+        "job_id": decision.job_id,
+        "decision": decision.decision,
+        "reviewed_checksum": decision.reviewed_checksum,
+        "review_summary": decision.review_summary,
+        "actor_type": decision.actor_type,
+        "actor_id": decision.actor_id,
+        "created_at": decision.created_at,
+    })
+
+
+def _plan_review_status_payload(review_status: Any) -> dict[str, Any]:
+    return redact_public_data({
+        "revision_id": review_status.revision_id,
+        "amendment_id": review_status.amendment_id,
+        "job_id": review_status.job_id,
+        "payload_checksum": review_status.payload_checksum,
+        "review_required": review_status.review_required,
+        "eligible_for_downstream": review_status.eligible_for_downstream,
+        "status": review_status.status,
+        "decision": review_status.decision,
+        "review_summary": review_status.review_summary,
+        "review_decision_id": review_status.review_decision_id,
+        "reviewed_checksum": review_status.reviewed_checksum,
+        "created_at": review_status.created_at,
+    })
+
+
 def _output_window_payload(window: CommandOutputWindowDto) -> dict[str, Any]:
     return {
         "command_id": window.command_id,
@@ -1638,6 +1710,10 @@ def _raise_http_error(exc: ControlTowerError) -> None:
         raise _error(status.HTTP_409_CONFLICT, "PLAN_REVISION_CONFLICT", str(exc)) from exc
     if isinstance(exc, PlanAdvisoryValidationError):
         raise _error(status.HTTP_400_BAD_REQUEST, "PLAN_ADVISORY_INVALID", str(exc)) from exc
+    if isinstance(exc, PlanReviewChecksumMismatchError):
+        raise _error(status.HTTP_409_CONFLICT, "PLAN_REVIEW_STALE_CHECKSUM", str(exc)) from exc
+    if isinstance(exc, PlanReviewConflictError):
+        raise _error(status.HTTP_409_CONFLICT, "PLAN_REVIEW_CONFLICT", str(exc)) from exc
     if isinstance(exc, PlanAmendmentValidationError):
         raise _error(status.HTTP_400_BAD_REQUEST, "PLAN_AMENDMENT_INVALID", str(exc)) from exc
     if isinstance(exc, StaleVersionError):

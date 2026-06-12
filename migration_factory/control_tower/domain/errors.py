@@ -223,3 +223,17 @@ class PlanAdvisoryValidationError(ControlTowerError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
+
+
+class PlanReviewConflictError(ControlTowerError):
+    """Raised when a revision receives a conflicting second review decision."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class PlanReviewChecksumMismatchError(ControlTowerError):
+    """Raised when reviewer approval targets a stale revision checksum."""
+
+    def __init__(self, revision_id: str) -> None:
+        super().__init__(f"Review checksum does not match current revision payload for {revision_id!r}")

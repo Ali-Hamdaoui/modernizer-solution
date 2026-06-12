@@ -334,6 +334,36 @@ class AdvisoryValidationReportDto:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanReviewDecisionDto:
+    review_decision_id: str
+    revision_id: str
+    amendment_id: str
+    job_id: str
+    decision: str
+    reviewed_checksum: str
+    review_summary: str
+    actor_type: str
+    actor_id: str
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class PlanReviewStatusDto:
+    revision_id: str
+    amendment_id: str
+    job_id: str
+    payload_checksum: str
+    review_required: bool
+    eligible_for_downstream: bool
+    status: str
+    decision: str | None = None
+    review_summary: str | None = None
+    review_decision_id: str | None = None
+    reviewed_checksum: str | None = None
+    created_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class JobProjectionDto:
     job: MigrationJobDto
     active_command: CommandExecutionDto | None

@@ -36,6 +36,7 @@ from migration_factory.control_tower.domain.entities import (
     StageOutputRegistryRecord,
     StageRunRecord,
     V1PlanAmendmentRecord,
+    V1PlanReviewDecisionRecord,
     V1PlanRevisionRecord,
 )
 from migration_factory.control_tower.domain.entities import V1ContextPackManifestRecord
@@ -407,6 +408,14 @@ class V1PlanRevisionRepository(Protocol):
     def has_terminal_revision(self, amendment_id: str) -> bool: ...
 
 
+class V1PlanReviewDecisionRepository(Protocol):
+    def insert(self, review_decision: V1PlanReviewDecisionRecord) -> None: ...
+
+    def get_for_revision(self, revision_id: str) -> V1PlanReviewDecisionRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1PlanReviewDecisionRecord, ...]: ...
+
+
 class V1PrivilegedActionExecutionRepository(Protocol):
     """Append-only repository for privileged action execution records."""
 
@@ -452,6 +461,7 @@ class ControlTowerUnitOfWork(Protocol):
     v1_privileged_actions: V1PrivilegedActionRepository
     v1_plan_amendments: V1PlanAmendmentRepository
     v1_plan_revisions: V1PlanRevisionRepository
+    v1_plan_review_decisions: V1PlanReviewDecisionRepository
     v1_privileged_action_decisions: V1PrivilegedActionDecisionRepository
     v1_privileged_action_executions: V1PrivilegedActionExecutionRepository
 
