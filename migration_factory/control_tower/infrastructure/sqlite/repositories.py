@@ -2184,17 +2184,26 @@ class SqliteV1FakeRepairProposalRepository:
             self._connection.execute(
                 """INSERT INTO v1_fake_repair_proposals (
                     proposal_id, classification_id, command_id, job_id,
-                    proposal_order, proposal_summary, proposal_checksum,
+                    proposal_order, proposal_kind, proposal_summary, proposal_checksum,
+                    recommendation_type, confidence_label, confidence_score,
+                    warning_codes_json, applicable, context_checksum,
                     actor_type, actor_id, created_at, correlation_id, causation_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     proposal.proposal_id,
                     proposal.classification_id,
                     proposal.command_id,
                     proposal.job_id,
                     proposal.proposal_order,
+                    proposal.proposal_kind,
                     proposal.proposal_summary,
                     proposal.proposal_checksum,
+                    proposal.recommendation_type,
+                    proposal.confidence_label,
+                    proposal.confidence_score,
+                    proposal.warning_codes_json,
+                    1 if proposal.applicable else 0,
+                    proposal.context_checksum,
                     proposal.actor_type,
                     proposal.actor_id,
                     proposal.created_at,
@@ -2212,7 +2221,9 @@ class SqliteV1FakeRepairProposalRepository:
     ) -> V1FakeRepairProposalRecord | None:
         row = self._connection.execute(
             """SELECT proposal_id, classification_id, command_id, job_id,
-                      proposal_order, proposal_summary, proposal_checksum,
+                      proposal_order, proposal_kind, proposal_summary, proposal_checksum,
+                      recommendation_type, confidence_label, confidence_score,
+                      warning_codes_json, applicable, context_checksum,
                       actor_type, actor_id, created_at, correlation_id, causation_id
                FROM v1_fake_repair_proposals
                WHERE classification_id = ? AND proposal_checksum = ?""",
@@ -2226,7 +2237,9 @@ class SqliteV1FakeRepairProposalRepository:
     ) -> tuple[V1FakeRepairProposalRecord, ...]:
         rows = self._connection.execute(
             """SELECT proposal_id, classification_id, command_id, job_id,
-                      proposal_order, proposal_summary, proposal_checksum,
+                      proposal_order, proposal_kind, proposal_summary, proposal_checksum,
+                      recommendation_type, confidence_label, confidence_score,
+                      warning_codes_json, applicable, context_checksum,
                       actor_type, actor_id, created_at, correlation_id, causation_id
                FROM v1_fake_repair_proposals
                WHERE classification_id = ?
@@ -2234,6 +2247,24 @@ class SqliteV1FakeRepairProposalRepository:
             (classification_id,),
         ).fetchall()
         return tuple(_fake_repair_proposal_from_row(row) for row in rows)
+
+    def get_for_classification_kind_and_context(
+        self,
+        classification_id: str,
+        proposal_kind: str,
+        context_checksum: str,
+    ) -> V1FakeRepairProposalRecord | None:
+        row = self._connection.execute(
+            """SELECT proposal_id, classification_id, command_id, job_id,
+                      proposal_order, proposal_kind, proposal_summary, proposal_checksum,
+                      recommendation_type, confidence_label, confidence_score,
+                      warning_codes_json, applicable, context_checksum,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_fake_repair_proposals
+               WHERE classification_id = ? AND proposal_kind = ? AND context_checksum = ?""",
+            (classification_id, proposal_kind, context_checksum),
+        ).fetchone()
+        return _fake_repair_proposal_from_row(row) if row is not None else None
 
 
 def _fake_repair_proposal_from_row(row: sqlite3.Row) -> V1FakeRepairProposalRecord:
@@ -2243,8 +2274,15 @@ def _fake_repair_proposal_from_row(row: sqlite3.Row) -> V1FakeRepairProposalReco
         command_id=str(row["command_id"]),
         job_id=str(row["job_id"]),
         proposal_order=int(row["proposal_order"]),
+        proposal_kind=str(row["proposal_kind"]),
         proposal_summary=str(row["proposal_summary"]),
         proposal_checksum=str(row["proposal_checksum"]),
+        recommendation_type=str(row["recommendation_type"]) if row["recommendation_type"] is not None else None,
+        confidence_label=str(row["confidence_label"]) if row["confidence_label"] is not None else None,
+        confidence_score=float(row["confidence_score"]) if row["confidence_score"] is not None else None,
+        warning_codes_json=str(row["warning_codes_json"]),
+        applicable=bool(row["applicable"]),
+        context_checksum=str(row["context_checksum"]) if row["context_checksum"] is not None else None,
         actor_type=str(row["actor_type"]),
         actor_id=str(row["actor_id"]),
         created_at=str(row["created_at"]),

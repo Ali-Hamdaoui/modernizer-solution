@@ -256,7 +256,7 @@ class CreateRepairClassificationRequest(StrictRequest):
 
 
 class CreateFakeRepairProposalRequest(StrictRequest):
-    proposal_summary: str
+    proposal_summary: str | None = None
 
 
 class CreateRepairAttemptRequest(StrictRequest):
@@ -901,16 +901,36 @@ def create_app(
         actor = resolved_actor_provider.current_actor()
         service = RepairService(unit_of_work_factory)
         try:
-            proposal = service.record_fake_repair_proposal(
-                command_id=command_id,
-                proposal_summary=payload.proposal_summary,
-                actor_type=actor.actor_type,
-                actor_id=actor.actor_id,
-                correlation_id=request.state.correlation_id,
-            )
+            if payload.proposal_summary is None:
+                proposal = service.generate_fake_repair_proposal(
+                    command_id=command_id,
+                    actor_type=actor.actor_type,
+                    actor_id=actor.actor_id,
+                    correlation_id=request.state.correlation_id,
+                )
+            else:
+                proposal = service.record_fake_repair_proposal(
+                    command_id=command_id,
+                    proposal_summary=payload.proposal_summary,
+                    actor_type=actor.actor_type,
+                    actor_id=actor.actor_id,
+                    correlation_id=request.state.correlation_id,
+                )
         except ControlTowerError as exc:
             _raise_http_error(exc)
         return _fake_repair_proposal_payload(proposal)
+
+    @app.get("/v1/commands/{command_id}/fake-repair-proposals")
+    def list_fake_repair_proposals(command_id: str) -> dict[str, Any]:
+        service = RepairService(unit_of_work_factory)
+        try:
+            proposals = service.list_fake_repair_proposals(command_id)
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return redact_public_data({
+            "command_id": command_id,
+            "proposals": [_fake_repair_proposal_payload(proposal) for proposal in proposals],
+        })
 
     @app.post("/v1/commands/{command_id}/repair-attempts")
     def record_repair_attempt(
@@ -1710,8 +1730,15 @@ def _fake_repair_proposal_payload(proposal: Any) -> dict[str, Any]:
         "command_id": proposal.command_id,
         "job_id": proposal.job_id,
         "proposal_order": proposal.proposal_order,
+        "proposal_kind": proposal.proposal_kind,
         "proposal_summary": proposal.proposal_summary,
         "proposal_checksum": proposal.proposal_checksum,
+        "recommendation_type": proposal.recommendation_type,
+        "confidence_label": proposal.confidence_label,
+        "confidence_score": proposal.confidence_score,
+        "warning_codes": list(proposal.warning_codes),
+        "applicable": proposal.applicable,
+        "context_checksum": proposal.context_checksum,
         "actor_type": proposal.actor_type,
         "actor_id": proposal.actor_id,
         "created_at": proposal.created_at,
