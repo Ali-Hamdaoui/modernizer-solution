@@ -33,6 +33,7 @@ from migration_factory.control_tower.domain.entities import (
     V1ContextPackManifestRecord,
     V1FakeRepairProposalRecord,
     V1ModelInvocationRecord,
+    V1PatchPolicyValidationRecord,
     V1PlanAmendmentRecord,
     V1PlanReviewDecisionRecord,
     V1RepairClassificationRecord,
@@ -40,6 +41,7 @@ from migration_factory.control_tower.domain.entities import (
     V1PrivilegedActionDecisionRecord,
     V1PrivilegedActionExecutionRecord,
     V1PrivilegedActionRecord,
+    V1SandboxSnapshotRecord,
 )
 from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.domain.commands import CommandState
@@ -2412,6 +2414,184 @@ def _execution_from_row(row: sqlite3.Row) -> V1PrivilegedActionExecutionRecord:
         failure_reason=str(row["failure_reason"]) if row["failure_reason"] is not None else None,
         executed_by=str(row["executed_by"]),
         execution_version=str(row["execution_version"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1PatchPolicyValidationRepository:
+    """SQLite repository for v1_patch_policy_validations table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, validation: V1PatchPolicyValidationRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_patch_policy_validations (
+                    validation_id, command_id, job_id, approved,
+                    validation_code, reason_code, target_path_hash,
+                    patch_size_bytes, metacharacter_hits, policy_version,
+                    actor_type, actor_id, created_at, correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    validation.validation_id,
+                    validation.command_id,
+                    validation.job_id,
+                    1 if validation.approved else 0,
+                    validation.validation_code,
+                    validation.reason_code,
+                    validation.target_path_hash,
+                    validation.patch_size_bytes,
+                    validation.metacharacter_hits,
+                    validation.policy_version,
+                    validation.actor_type,
+                    validation.actor_id,
+                    validation.created_at,
+                    validation.correlation_id,
+                    validation.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, validation_id: str) -> V1PatchPolicyValidationRecord | None:
+        row = self._connection.execute(
+            """SELECT validation_id, command_id, job_id, approved,
+                      validation_code, reason_code, target_path_hash,
+                      patch_size_bytes, metacharacter_hits, policy_version,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_patch_policy_validations WHERE validation_id = ?""",
+            (validation_id,),
+        ).fetchone()
+        return _patch_validation_from_row(row) if row is not None else None
+
+    def list_for_command(self, command_id: str) -> tuple[V1PatchPolicyValidationRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT validation_id, command_id, job_id, approved,
+                      validation_code, reason_code, target_path_hash,
+                      patch_size_bytes, metacharacter_hits, policy_version,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_patch_policy_validations
+               WHERE command_id = ?
+               ORDER BY created_at DESC, validation_id DESC""",
+            (command_id,),
+        ).fetchall()
+        return tuple(_patch_validation_from_row(row) for row in rows)
+
+    def get_latest_for_command(self, command_id: str) -> V1PatchPolicyValidationRecord | None:
+        row = self._connection.execute(
+            """SELECT validation_id, command_id, job_id, approved,
+                      validation_code, reason_code, target_path_hash,
+                      patch_size_bytes, metacharacter_hits, policy_version,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_patch_policy_validations
+               WHERE command_id = ?
+               ORDER BY created_at DESC, validation_id DESC
+               LIMIT 1""",
+            (command_id,),
+        ).fetchone()
+        return _patch_validation_from_row(row) if row is not None else None
+
+
+def _patch_validation_from_row(row: sqlite3.Row) -> V1PatchPolicyValidationRecord:
+    return V1PatchPolicyValidationRecord(
+        validation_id=str(row["validation_id"]),
+        command_id=str(row["command_id"]),
+        job_id=str(row["job_id"]),
+        approved=bool(row["approved"]),
+        validation_code=str(row["validation_code"]),
+        reason_code=str(row["reason_code"]),
+        target_path_hash=str(row["target_path_hash"]),
+        patch_size_bytes=int(row["patch_size_bytes"]),
+        metacharacter_hits=int(row["metacharacter_hits"]),
+        policy_version=str(row["policy_version"]),
+        actor_type=str(row["actor_type"]),
+        actor_id=str(row["actor_id"]),
+        created_at=str(row["created_at"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1SandboxSnapshotRepository:
+    """SQLite repository for v1_sandbox_snapshots table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, snapshot: V1SandboxSnapshotRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_sandbox_snapshots (
+                    snapshot_id, command_id, job_id, stage_index,
+                    sandbox_artifact_id, sandbox_checksum,
+                    actor_type, actor_id, created_at, correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    snapshot.snapshot_id,
+                    snapshot.command_id,
+                    snapshot.job_id,
+                    snapshot.stage_index,
+                    snapshot.sandbox_artifact_id,
+                    snapshot.sandbox_checksum,
+                    snapshot.actor_type,
+                    snapshot.actor_id,
+                    snapshot.created_at,
+                    snapshot.correlation_id,
+                    snapshot.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, snapshot_id: str) -> V1SandboxSnapshotRecord | None:
+        row = self._connection.execute(
+            """SELECT snapshot_id, command_id, job_id, stage_index,
+                      sandbox_artifact_id, sandbox_checksum,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_sandbox_snapshots WHERE snapshot_id = ?""",
+            (snapshot_id,),
+        ).fetchone()
+        return _sandbox_snapshot_from_row(row) if row is not None else None
+
+    def get_for_command(self, command_id: str) -> V1SandboxSnapshotRecord | None:
+        row = self._connection.execute(
+            """SELECT snapshot_id, command_id, job_id, stage_index,
+                      sandbox_artifact_id, sandbox_checksum,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_sandbox_snapshots
+               WHERE command_id = ?
+               ORDER BY created_at DESC, snapshot_id DESC
+               LIMIT 1""",
+            (command_id,),
+        ).fetchone()
+        return _sandbox_snapshot_from_row(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> tuple[V1SandboxSnapshotRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT snapshot_id, command_id, job_id, stage_index,
+                      sandbox_artifact_id, sandbox_checksum,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_sandbox_snapshots
+               WHERE job_id = ?
+               ORDER BY created_at DESC, snapshot_id DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_sandbox_snapshot_from_row(row) for row in rows)
+
+
+def _sandbox_snapshot_from_row(row: sqlite3.Row) -> V1SandboxSnapshotRecord:
+    return V1SandboxSnapshotRecord(
+        snapshot_id=str(row["snapshot_id"]),
+        command_id=str(row["command_id"]),
+        job_id=str(row["job_id"]),
+        stage_index=int(row["stage_index"]),
+        sandbox_artifact_id=str(row["sandbox_artifact_id"]),
+        sandbox_checksum=str(row["sandbox_checksum"]),
+        actor_type=str(row["actor_type"]),
+        actor_id=str(row["actor_id"]),
+        created_at=str(row["created_at"]),
         correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
         causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
     )

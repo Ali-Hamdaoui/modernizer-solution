@@ -44,6 +44,7 @@ from migration_factory.control_tower.application.plan_amendments import (
     PlanChange,
 )
 from migration_factory.control_tower.application.repairs import RepairService
+from migration_factory.control_tower.application.patch_policy import PatchPolicyService
 from migration_factory.control_tower.application.plan_reviews import PlanReviewService
 from migration_factory.control_tower.application.plan_proposals import (
     FakeProviderPlanProposalService,
@@ -78,6 +79,13 @@ from migration_factory.control_tower.domain.errors import (
     InvalidEventCursorError,
     InvalidJobStateTransitionError,
     NotFoundError,
+    PatchContentEscapeError,
+    PatchContentMismatchError,
+    PatchContentOversizeError,
+    PatchNotApprovedError,
+    PatchPolicyValidationError,
+    PatchRollbackError,
+    PatchSnapshotNotFoundError,
     PlanAdvisoryValidationError,
     PlanAmendmentValidationError,
     RepairAttemptLimitExceededError,
@@ -261,6 +269,19 @@ class CreateFakeRepairProposalRequest(StrictRequest):
 
 class CreateRepairAttemptRequest(StrictRequest):
     attempt_summary: str
+
+
+class ValidatePatchRequest(StrictRequest):
+    target_path: str
+    patch_content: str
+    patch_size_bytes: int = Field(ge=1, le=1_048_576)
+    approval_id: str | None = None
+
+
+class RecordSandboxSnapshotRequest(StrictRequest):
+    stage_index: int = Field(ge=1, le=3)
+    sandbox_artifact_id: str
+    sandbox_checksum: str
 
 
 @asynccontextmanager
@@ -952,6 +973,109 @@ def create_app(
             "command_id": command_id,
             "attempts": [_repair_attempt_payload(attempt) for attempt in attempts],
         })
+
+    # ------------------------------------------------------------------
+    # Patch policy endpoints (V1-15A)
+    # ------------------------------------------------------------------
+
+    @app.post("/v1/commands/{command_id}/patch-policy-validations", status_code=status.HTTP_201_CREATED)
+    def validate_patch_policy(
+        command_id: str,
+        payload: ValidatePatchRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = resolved_actor_provider.current_actor()
+        service = PatchPolicyService(unit_of_work_factory)
+        try:
+            validation = service.validate_patch(
+                command_id=command_id,
+                job_id="",  # resolved from command
+                target_path=payload.target_path,
+                patch_content=payload.patch_content,
+                patch_size_bytes=payload.patch_size_bytes,
+                approval_id=payload.approval_id,
+                actor_type=actor.actor_type,
+                actor_id=actor.actor_id,
+                correlation_id=request.state.correlation_id,
+            )
+        except ControlTowerError as exc:
+            # Rejections are recorded as validation records for audit
+            rejection = service.validate_patch_and_reject(
+                command_id=command_id,
+                job_id="",
+                target_path=payload.target_path,
+                patch_content=payload.patch_content,
+                patch_size_bytes=payload.patch_size_bytes,
+                rejection_reason=str(exc),
+                approval_id=payload.approval_id,
+                actor_type=actor.actor_type,
+                actor_id=actor.actor_id,
+                correlation_id=request.state.correlation_id,
+            )
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                "PATCH_POLICY_VIOLATION",
+                str(exc),
+            ) from exc
+        return _patch_policy_validation_payload(validation)
+
+    @app.get("/v1/commands/{command_id}/patch-policy-validations")
+    def list_patch_policy_validations(command_id: str) -> dict[str, Any]:
+        service = PatchPolicyService(unit_of_work_factory)
+        try:
+            validations = service.list_validations_for_command(command_id)
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return {
+            "command_id": command_id,
+            "validations": [_patch_policy_validation_payload(v) for v in validations],
+        }
+
+    @app.get("/v1/patch-policy-validations/{validation_id}")
+    def get_patch_policy_validation(validation_id: str) -> dict[str, Any]:
+        service = PatchPolicyService(unit_of_work_factory)
+        validation = service.get_validation(validation_id)
+        if validation is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "VALIDATION_NOT_FOUND",
+                f"Patch policy validation {validation_id!r} not found",
+            )
+        return _patch_policy_validation_payload(validation)
+
+    @app.post("/v1/commands/{command_id}/sandbox-snapshots", status_code=status.HTTP_201_CREATED)
+    def record_sandbox_snapshot(
+        command_id: str,
+        payload: RecordSandboxSnapshotRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = resolved_actor_provider.current_actor()
+        service = PatchPolicyService(unit_of_work_factory)
+        try:
+            snapshot = service.record_sandbox_snapshot(
+                command_id=command_id,
+                job_id="",
+                stage_index=payload.stage_index,
+                sandbox_artifact_id=payload.sandbox_artifact_id,
+                sandbox_checksum=payload.sandbox_checksum,
+                actor_type=actor.actor_type,
+                actor_id=actor.actor_id,
+                correlation_id=request.state.correlation_id,
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return _sandbox_snapshot_payload(snapshot)
+
+    @app.get("/v1/commands/{command_id}/sandbox-snapshots")
+    def get_sandbox_snapshot(command_id: str) -> dict[str, Any]:
+        service = PatchPolicyService(unit_of_work_factory)
+        snapshot = service.get_sandbox_snapshot_for_command(command_id)
+        if snapshot is None:
+            return {"command_id": command_id, "snapshot": None}
+        return {
+            "command_id": command_id,
+            "snapshot": _sandbox_snapshot_payload(snapshot),
+        }
 
     # ------------------------------------------------------------------
     # Approval endpoints (V1-07A)
@@ -1760,6 +1884,38 @@ def _repair_status_payload(repair_status: Any) -> dict[str, Any]:
     })
 
 
+def _patch_policy_validation_payload(validation: Any) -> dict[str, Any]:
+    return redact_public_data({
+        "validation_id": validation.validation_id,
+        "command_id": validation.command_id,
+        "job_id": validation.job_id,
+        "approved": validation.approved,
+        "validation_code": validation.validation_code,
+        "reason_code": validation.reason_code,
+        "target_path_hash": validation.target_path_hash,
+        "patch_size_bytes": validation.patch_size_bytes,
+        "metacharacter_hits": validation.metacharacter_hits,
+        "policy_version": validation.policy_version,
+        "actor_type": validation.actor_type,
+        "actor_id": validation.actor_id,
+        "created_at": validation.created_at,
+    })
+
+
+def _sandbox_snapshot_payload(snapshot: Any) -> dict[str, Any]:
+    return redact_public_data({
+        "snapshot_id": snapshot.snapshot_id,
+        "command_id": snapshot.command_id,
+        "job_id": snapshot.job_id,
+        "stage_index": snapshot.stage_index,
+        "sandbox_artifact_id": snapshot.sandbox_artifact_id,
+        "sandbox_checksum": snapshot.sandbox_checksum,
+        "actor_type": snapshot.actor_type,
+        "actor_id": snapshot.actor_id,
+        "created_at": snapshot.created_at,
+    })
+
+
 def _output_window_payload(window: CommandOutputWindowDto) -> dict[str, Any]:
     return {
         "command_id": window.command_id,
@@ -1897,6 +2053,20 @@ def _raise_http_error(exc: ControlTowerError) -> None:
         raise _error(status.HTTP_409_CONFLICT, "REPAIR_CLASSIFICATION_CONFLICT", str(exc)) from exc
     if isinstance(exc, RepairAttemptLimitExceededError):
         raise _error(status.HTTP_409_CONFLICT, "REPAIR_ATTEMPT_LIMIT_REACHED", str(exc)) from exc
+    if isinstance(exc, PatchContentEscapeError):
+        raise _error(status.HTTP_400_BAD_REQUEST, "PATCH_ESCAPE_DETECTED", str(exc)) from exc
+    if isinstance(exc, PatchContentMismatchError):
+        raise _error(status.HTTP_400_BAD_REQUEST, "PATCH_PATH_MISMATCH", str(exc)) from exc
+    if isinstance(exc, PatchContentOversizeError):
+        raise _error(status.HTTP_400_BAD_REQUEST, "PATCH_OVERSIZE", str(exc)) from exc
+    if isinstance(exc, PatchNotApprovedError):
+        raise _error(status.HTTP_400_BAD_REQUEST, "PATCH_NOT_APPROVED", str(exc)) from exc
+    if isinstance(exc, PatchSnapshotNotFoundError):
+        raise _error(status.HTTP_400_BAD_REQUEST, "PATCH_SNAPSHOT_NOT_FOUND", str(exc)) from exc
+    if isinstance(exc, PatchRollbackError):
+        raise _error(status.HTTP_500_INTERNAL_SERVER_ERROR, "PATCH_ROLLBACK_FAILED", str(exc)) from exc
+    if isinstance(exc, PatchPolicyValidationError):
+        raise _error(status.HTTP_400_BAD_REQUEST, "PATCH_POLICY_VIOLATION", str(exc)) from exc
     if isinstance(exc, StaleVersionError):
         raise _error(status.HTTP_412_PRECONDITION_FAILED, "JOB_VERSION_CONFLICT", str(exc)) from exc
     if isinstance(exc, ExpectedVersionRequiredError):

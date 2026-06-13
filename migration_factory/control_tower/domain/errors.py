@@ -260,3 +260,37 @@ class RepairProposalValidationError(ControlTowerError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
+
+
+class PatchPolicyValidationError(ControlTowerError):
+    """Raised when patch content fails policy validation."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class PatchContentEscapeError(PatchPolicyValidationError):
+    """Raised when patch content contains escape or shell metacharacters."""
+
+
+class PatchContentMismatchError(PatchPolicyValidationError):
+    """Raised when patch content does not match the expected target path or context."""
+
+
+class PatchContentOversizeError(PatchPolicyValidationError):
+    """Raised when patch content exceeds allowed size limits."""
+
+
+class PatchNotApprovedError(PatchPolicyValidationError):
+    """Raised when an unapproved patch is submitted for application."""
+
+
+class PatchSnapshotNotFoundError(PatchPolicyValidationError):
+    """Raised when no snapshot exists before patch application."""
+
+
+class PatchRollbackError(ControlTowerError):
+    """Raised when sandbox rollback fails."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)

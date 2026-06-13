@@ -38,8 +38,10 @@ from migration_factory.control_tower.domain.entities import (
     V1FakeRepairProposalRecord,
     V1PlanAmendmentRecord,
     V1PlanReviewDecisionRecord,
+    V1PatchPolicyValidationRecord,
     V1RepairClassificationRecord,
     V1PlanRevisionRecord,
+    V1SandboxSnapshotRecord,
 )
 from migration_factory.control_tower.domain.entities import V1ContextPackManifestRecord
 from migration_factory.control_tower.domain.entities import V1ModelInvocationRecord
@@ -471,6 +473,30 @@ class V1PrivilegedActionDecisionRepository(Protocol):
     def list_by_decision(self, decision: str) -> tuple[V1PrivilegedActionDecisionRecord, ...]: ...
 
 
+class V1PatchPolicyValidationRepository(Protocol):
+    """Append-only repository for patch policy validation records."""
+
+    def insert(self, validation: V1PatchPolicyValidationRecord) -> None: ...
+
+    def get(self, validation_id: str) -> V1PatchPolicyValidationRecord | None: ...
+
+    def list_for_command(self, command_id: str) -> tuple[V1PatchPolicyValidationRecord, ...]: ...
+
+    def get_latest_for_command(self, command_id: str) -> V1PatchPolicyValidationRecord | None: ...
+
+
+class V1SandboxSnapshotRepository(Protocol):
+    """Append-only repository for sandbox snapshot records."""
+
+    def insert(self, snapshot: V1SandboxSnapshotRecord) -> None: ...
+
+    def get(self, snapshot_id: str) -> V1SandboxSnapshotRecord | None: ...
+
+    def get_for_command(self, command_id: str) -> V1SandboxSnapshotRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1SandboxSnapshotRecord, ...]: ...
+
+
 class ControlTowerUnitOfWork(Protocol):
     runner_profiles: RunnerProfileRepository
     pipeline_definitions: PipelineDefinitionRepository
@@ -497,6 +523,8 @@ class ControlTowerUnitOfWork(Protocol):
     v1_fake_repair_proposals: V1FakeRepairProposalRepository
     v1_privileged_action_decisions: V1PrivilegedActionDecisionRepository
     v1_privileged_action_executions: V1PrivilegedActionExecutionRepository
+    v1_patch_policy_validations: V1PatchPolicyValidationRepository
+    v1_sandbox_snapshots: V1SandboxSnapshotRepository
 
     def __enter__(self) -> Self: ...
 

@@ -508,3 +508,51 @@ class V1FakeRepairProposalRecord:
     created_at: str
     correlation_id: str | None = None
     causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class V1PatchPolicyValidationRecord:
+    """Immutable record of a patch policy validation.
+
+    Append-only: once inserted, the record is never updated or deleted.
+    PK is validation_id. Stores redacted metadata about the validation;
+    actual patch content is never persisted.
+    """
+
+    validation_id: str
+    command_id: str
+    job_id: str
+    approved: bool
+    validation_code: str
+    reason_code: str
+    target_path_hash: str
+    patch_size_bytes: int
+    metacharacter_hits: int
+    policy_version: str
+    actor_type: str
+    actor_id: str
+    created_at: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class V1SandboxSnapshotRecord:
+    """Immutable record of a sandbox snapshot taken before patch application.
+
+    Append-only: stores metadata about the snapshot (artifact ref, checksum)
+    so rollback can target the exact pre-patch state. Actual snapshot
+    content is stored as an artifact elsewhere.
+    """
+
+    snapshot_id: str
+    command_id: str
+    job_id: str
+    stage_index: int
+    sandbox_artifact_id: str
+    sandbox_checksum: str
+    actor_type: str
+    actor_id: str
+    created_at: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
