@@ -120,6 +120,9 @@ from migration_factory.control_tower.application.v2_azure_health_service import 
 from migration_factory.control_tower.application.v2_job_service import (
     V2MigrationJobService,
 )
+from migration_factory.control_tower.application.v2_worker_stage import (
+    V2WorkerStageService,
+)
 from migration_factory.control_tower.application.v2_setup_service import (
     CreateSetupRequest,
     V2SetupService,
@@ -350,6 +353,12 @@ class PreflightRequest(BaseModel):
 
 class CreateV2JobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    setup_id: str
+
+
+class StartV2JobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    job_id: str
     setup_id: str
 
 
@@ -788,6 +797,34 @@ def create_app(
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,
                     "JOB_CREATION_FAILED",
+                    str(exc),
+                ) from exc
+        return service.result_to_dict(result)
+
+    # ------------------------------------------------------------------
+    # V2 Worker Stage 1 execution endpoint (A7)
+    # ------------------------------------------------------------------
+
+    @app.post("/v1/v2/migration-jobs/start-stage1")
+    def start_v2_stage1(
+        payload: StartV2JobRequest,
+    ) -> dict[str, Any]:
+        """Start Stage 1 for a V2 migration job.
+
+        Builds a backend-owned command manifest from the V2 setup.
+        Browser cannot supply argv or env values.
+        """
+        with unit_of_work_factory() as uow:
+            service = V2WorkerStageService(uow.v2_setups)
+            try:
+                result = service.build_stage1_manifest(
+                    job_id=payload.job_id,
+                    setup_id=payload.setup_id,
+                )
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "STAGE1_START_FAILED",
                     str(exc),
                 ) from exc
         return service.result_to_dict(result)
