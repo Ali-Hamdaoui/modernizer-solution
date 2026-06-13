@@ -55,6 +55,54 @@ git switch -c amf/<issue-id>-short-title
 
 If the branch already exists, switch to it. Do not reset, rebase, force-update, clean, or resolve divergence without approval.
 
+## V2IMPROVMENT Branch and Subagent Workflow
+
+`DEMO2` is the stable V1 baseline. Do not merge V2 subagent work directly to `DEMO2`.
+
+`V2IMPROVMENT` is the V2 integration branch and the only target branch for V2 subagent pull requests. Every V2 subagent must start from latest `origin/V2IMPROVMENT`, create one dedicated branch for one mission, and target its PR back to `V2IMPROVMENT`, not `DEMO2`.
+
+Required V2 branch pattern:
+
+```text
+v2/<agent-id>-<short-title>
+```
+
+Example:
+
+```text
+v2/a2-local-env-parser
+```
+
+V2 subagent rules:
+
+* One branch = one subagent mission.
+* Do not batch unrelated subagent missions.
+* Read `V2_IMPLEMENTATION_SUBAGENT_PLAN.md` before editing.
+* Read `improvmentV2.md` for product vision.
+* Follow the dossier for your agent.
+* Stage explicit files only; never `git add .`.
+* Never stage `web/control-tower/next-env.d.ts` unless the subagent task explicitly owns it.
+* Never print secrets/tokens.
+* Do not expose Azure secrets or deployment IDs to frontend.
+* Azure model health does not block deterministic migration start.
+* Backend owns Stage 1 -> Stage 2 -> Stage 3.
+* Chatbot cannot execute, approve, write files, change route, or change stages.
+* Every subagent must run focused tests plus affected regression tests.
+* Every subagent handoff must include branch, commit, tests, files changed, risks, and next dependency.
+
+Recommended V2 commands:
+
+```powershell
+git fetch --prune origin
+git switch V2IMPROVMENT
+git pull --ff-only origin V2IMPROVMENT
+git switch -c v2/<agent-id>-<short-title>
+
+# after work
+git push -u origin v2/<agent-id>-<short-title>
+gh pr create --repo Ali-Hamdaoui/modernizer-solution --base V2IMPROVMENT --head v2/<agent-id>-<short-title> --title "<title>" --body "<summary/tests/risks>"
+```
+
 ## Issue File Workflow
 
 The assigned work must include a V1 ID, for example `V1-06B1`.
