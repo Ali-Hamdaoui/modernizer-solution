@@ -56,11 +56,16 @@
 - ✅ Frontend: cockpit contract, no execution controls
 
 ### Gaps (residual, non-blocking):
-1. **No end-to-end integration tests** — Each agent tested in isolation. Full flow test requires running backend + frontend together.
-2. **No performance/load tests** — SQLite is local-only, so this is acceptable.
-3. **No live Azure call tests** — Health checks use env var configuration checking, not actual Azure API calls.
-4. **No snapshot tests for UI** — Frontend tests are contract-focused, not visual.
+1. **No performance/load tests** — SQLite is local-only, so this is acceptable.
+2. **No live Azure call tests** — Health checks use env var configuration checking, not actual Azure API calls.
+3. **No snapshot tests for UI** — Frontend tests are contract-focused, not visual.
+
+### P2 Fixes Verified
+| Fix | Status | Evidence |
+|-----|--------|----------|
+| P2-001 (E2E integration tests) | ✅ Fixed | `test_v2_e2e.py` covers full form→setup→preflight→job→stage1→approval→progression path. `test_v2_assistant_adversarial.py` validates FORBIDDEN_CAPABILITIES. `test_v2_checksum_api.py` tests checksum mismatch rejection. `test_v2_persistence_durability.py` tests data survival across UoW cycles. |
+| P2-002 (Real JDK/Maven preflight checks) | ✅ Fixed | `v2_setup_service.py` now uses `subprocess.run` with `shell=False`, timeout, and version parsing for Java major 11/17/21 validation and Maven `--version` check. Tests mock subprocess. |
 
 ## Verdict
 
-**CLEAN** — All required V2 tests are implemented and passing. No regressions in existing tests. Test coverage is thorough for the defined scope.
+**CLEAN** — All required V2 tests are implemented and passing. No regressions in existing tests. E2E, adversarial, checksum, and persistence durability tests are present. Schema validation is runtime-wired. JDK/Maven checks use real subprocess validation. Test coverage is thorough for the defined scope. No production-readiness claim.

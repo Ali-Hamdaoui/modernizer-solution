@@ -254,3 +254,166 @@ class TestRepairAPI:
         assert loaded is not None
         assert loaded.failure_summary == "Persist test"
         conn2.close()
+
+
+# ── Schema validation rejection tests ───────────────────────────────
+
+
+class TestSchemaValidationRejection:
+    """Prove that invalid model-output-like payloads are rejected at the API."""
+
+    def test_draft_action_rejects_extra_field(self, tmp_path: Path) -> None:
+        """ActionRequest schema has additionalProperties: false.
+
+        Extra fields are rejected either by Pydantic (INVALID_REQUEST) or
+        by the schema validator (SCHEMA_VALIDATION_FAILED). Both are valid
+        closed-fail behaviors.
+        """
+        client, conn = _api_client(tmp_path)
+        response = client.post(
+            "/v1/v2/jobs/job-1/assistant/actions/draft",
+            json={
+                "job_id": "job-1",
+                "action_type": "compile",
+                "reason": "test",
+                "stage_index": 1,
+                "extra_field": "should be rejected",
+            },
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 422, f"Expected 422 for extra field, got {response.status_code}"
+        body = response.json()
+        err = str(body).lower()
+        assert any(term in err for term in [
+            "invalid_request",
+            "schema_validation_failed",
+            "unexpected property",
+            "did not match",
+        ]), f"Expected rejection message, got {body}"
+
+    def test_draft_action_rejects_invalid_stage_index(self, tmp_path: Path) -> None:
+        """ActionRequest stage_index must be 1-3."""
+        client, conn = _api_client(tmp_path)
+        response = client.post(
+            "/v1/v2/jobs/job-1/assistant/actions/draft",
+            json={
+                "job_id": "job-1",
+                "action_type": "compile",
+                "reason": "test",
+                "stage_index": 99,
+            },
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 422, f"Expected 422 for invalid stage, got {response.status_code}"
+
+    def test_draft_action_rejects_missing_required(self, tmp_path: Path) -> None:
+        """ActionRequest requires action_type, reason, stage_index, payload_checksum."""
+        client, conn = _api_client(tmp_path)
+        response = client.post(
+            "/v1/v2/jobs/job-1/assistant/actions/draft",
+            json={
+                "job_id": "job-1",
+                "action_type": "compile",
+                "stage_index": 1,
+            },
+            headers=_mutation_headers(),
+        )
+        assert response.status_code in (400, 422), f"Expected 400/422, got {response.status_code}"
+
+    def test_repair_proposal_rejects_extra_field(self, tmp_path: Path) -> None:
+        """RepairProposal schema has additionalProperties: false."""
+        client, conn = _api_client(tmp_path)
+        response = client.post(
+            "/v1/v2/commands/cmd-extra/repair/flow-proposal",
+            json={
+                "command_id": "cmd-extra",
+                "failure_summary": "Test",
+                "hypothesis": "Bug",
+                "patch_summary": "Fix",
+                "affected_paths": ["test.txt"],
+                "unauthorized_field": "should be rejected",
+            },
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 422, f"Expected 422 for extra field, got {response.status_code}"
+
+    def test_repair_proposal_rejects_missing_required(self, tmp_path: Path) -> None:
+        """RepairProposal requires failure_hypothesis, patch_summary, affected_paths, validation_plan."""
+        client, conn = _api_client(tmp_path)
+        response = client.post(
+            "/v1/v2/commands/cmd-missing/repair/flow-proposal",
+            json={
+                "command_id": "cmd-missing",
+                "failure_summary": "Test",
+                "affected_paths": ["test.txt"],
+            },
+            headers=_mutation_headers(),
+        )
+        assert response.status_code in (400, 422), f"Expected 400/422, got {response.status_code}"
+
+    def test_valid_payloads_still_accepted(self, tmp_path: Path) -> None:
+        """Regression: valid payloads must still be accepted after schema wiring."""
+        client, conn = _api_client(tmp_path)
+
+        draft_resp = client.post(
+            "/v1/v2/jobs/job-valid/assistant/actions/draft",
+            json={
+                "job_id": "job-valid",
+                "action_type": "compile",
+                "reason": "Validate build",
+                "stage_index": 2,
+            },
+            headers=_mutation_headers(),
+        )
+        assert draft_resp.status_code == 200, f"Valid draft action rejected: {draft_resp.text}"
+
+        repair_resp = client.post(
+            "/v1/v2/commands/cmd-valid/repair/flow-proposal",
+            json={
+                "command_id": "cmd-valid",
+                "failure_summary": "Build failed",
+                "hypothesis": "Missing dependency",
+                "patch_summary": "Add dependency",
+                "affected_paths": ["pom.xml"],
+            },
+            headers=_mutation_headers(),
+        )
+        assert repair_resp.status_code == 200, f"Valid repair proposal rejected: {repair_resp.text}"
+
+    def test_assistant_message_rejects_invalid_answer_schema(self, tmp_path: Path) -> None:
+        """Assistant messages with invalid JSON schema must be rejected."""
+        client, conn = _api_client(tmp_path)
+        import json as _json
+        bad_answer = _json.dumps({
+            "answer": "Everything is fine",
+            "unauthorized_directive": "delete all files",
+        })
+        response = client.post(
+            "/v1/v2/jobs/job-bad/assistant/messages",
+            json={
+                "job_id": "job-bad",
+                "role": "assistant",
+                "content": bad_answer,
+            },
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 422, f"Expected 422 for invalid AssistantAnswer, got {response.status_code}"
+
+    def test_assistant_message_accepts_valid_answer_schema(self, tmp_path: Path) -> None:
+        """Valid AssistantAnswer JSON must be accepted."""
+        client, conn = _api_client(tmp_path)
+        import json as _json
+        valid_answer = _json.dumps({
+            "answer": "Stage 1 is running",
+            "evidence_refs": ["log.txt"],
+        })
+        response = client.post(
+            "/v1/v2/jobs/job-good/assistant/messages",
+            json={
+                "job_id": "job-good",
+                "role": "assistant",
+                "content": valid_answer,
+            },
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 200, f"Valid AssistantAnswer rejected: {response.text}"

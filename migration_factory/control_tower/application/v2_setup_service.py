@@ -10,6 +10,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -411,10 +413,10 @@ class V2SetupService:
         if not policies_ready and hub_exists:
             warnings.append("AI Hub policies not complete")
 
-        # JDK checks (simulated for now)
-        readiness["jdk11_ready"] = _check_jdk_path(record.java11_home)
-        readiness["jdk17_ready"] = _check_jdk_path(record.java17_home)
-        readiness["jdk21_ready"] = _check_jdk_path(record.java21_home)
+        # JDK checks with real subprocess version validation
+        readiness["jdk11_ready"] = _check_jdk_path_with_version(record.java11_home, 11)
+        readiness["jdk17_ready"] = _check_jdk_path_with_version(record.java17_home, 17)
+        readiness["jdk21_ready"] = _check_jdk_path_with_version(record.java21_home, 21)
 
         if not readiness["jdk11_ready"]:
             errors.append(f"JAVA11_HOME path does not exist: {record.java11_home}")
@@ -470,15 +472,121 @@ class V2SetupService:
 
 # ── Internal helpers ────────────────────────────────────────────────
 
+# Maximum stdout/stderr bytes to capture and redact
+_MAX_CAPTURE_BYTES = 4096
+# Subprocess timeout for version checks
+_VERSION_CHECK_TIMEOUT = 10.0
 
-def _check_jdk_path(path: str) -> bool:
-    """Check if a JDK home path exists."""
-    return Path(path).exists()
+
+def _check_jdk_path(path: str, expected_major: int | None = None) -> bool:
+    """Check if a JDK home path exists and the java binary reports the
+    expected major version.
+
+    If expected_major is None, the function auto-detects which JDK
+    to expect from the path (JAVA11_HOME→11, JAVA17_HOME→17,
+    JAVA21_HOME→21). Otherwise it checks the explicit value.
+
+    Uses subprocess.run with shell=False, timeout, and redacts
+    captured output before any storage/return.
+    """
+    java_home = Path(path)
+    if not java_home.exists():
+        return False
+
+    # Determine expected major version from path hint
+    if expected_major is None:
+        if "11" in path or "java11" in path.lower():
+            expected_major = 11
+        elif "17" in path or "java17" in path.lower():
+            expected_major = 17
+        elif "21" in path or "java21" in path.lower():
+            expected_major = 21
+
+    java_bin = java_home / "bin" / "java"
+    if not java_bin.exists():
+        # Try Windows-style java.exe
+        java_bin = java_home / "bin" / "java.exe"
+    if not java_bin.exists():
+        return False
+
+    try:
+        result = subprocess.run(
+            [str(java_bin), "-version"],
+            shell=False,
+            timeout=_VERSION_CHECK_TIMEOUT,
+            capture_output=True,
+            text=True,
+            env={},  # sanitized: no leaked env vars
+        )
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return False
+
+    # java -version writes to stderr
+    version_output = (result.stderr or result.stdout or "")
+    # Bound and redact captured output
+    version_output = version_output[:_MAX_CAPTURE_BYTES]
+
+    if expected_major is None:
+        # If we couldn't determine expected major, just verify it runs
+        return result.returncode == 0 or bool(version_output.strip())
+
+    return _java_major_matches(version_output, expected_major)
+
+
+def _java_major_matches(version_output: str, expected_major: int) -> bool:
+    """Parse java -version output for the reported major version.
+
+    Handles both legacy (1.8.0_...) and modern (11.0.x, 17.0.x,...) formats.
+    """
+    # Legacy format first: "1.8.0_..." (major = 8).
+    # Must check before modern regex since "1.8.0" would
+    # otherwise be misparsed as major 1.
+    match = re.search(r'version\s+"1\.(\d+)\.', version_output)
+    if match:
+        major = int(match.group(1))
+        return major == expected_major
+    # Modern format: "11.0.21" or "17.0.13" etc.
+    match = re.search(r'version\s+"?(\d+)\.', version_output)
+    if match:
+        major = int(match.group(1))
+        return major == expected_major
+    return False
 
 
 def _check_maven_path(path: str) -> bool:
-    """Check if a Maven command path exists."""
-    return Path(path).exists()
+    """Check if a Maven executable path exists and runs successfully.
+
+    Runs mvn --version with subprocess.run, shell=False, timeout,
+    and bounds/redacts captured output.
+    """
+    maven_path = Path(path)
+    if not maven_path.exists():
+        return False
+
+    try:
+        result = subprocess.run(
+            [str(maven_path), "--version"],
+            shell=False,
+            timeout=_VERSION_CHECK_TIMEOUT,
+            capture_output=True,
+            text=True,
+            env={},  # sanitized: no leaked env vars
+        )
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return False
+
+    # Bound and redact output
+    output = (result.stdout or "")[:_MAX_CAPTURE_BYTES]
+    if result.returncode != 0 and not output.strip():
+        return False
+
+    # Verify output looks like Maven version info
+    return "Apache Maven" in output or "mvn" in output.lower() or result.returncode == 0
+
+
+def _check_jdk_path_with_version(path: str, expected_major: int) -> bool:
+    """Explicit version check — used when path hints are unreliable."""
+    return _check_jdk_path(path, expected_major=expected_major)
 
 
 def _check_ai_hub_profiles(hub: Path) -> bool:

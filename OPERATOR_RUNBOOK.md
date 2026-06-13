@@ -1344,7 +1344,7 @@ npm run dev
 - [ ] Azure health check returns status without secrets
 - [ ] Frontend form has no Azure secret fields
 - [ ] Frontend cockpit has no stage-start buttons
-- [ ] All migrations applied (28 total)
+- [ ] All migrations applied (33 total: 0001–0033)
 
 ### Troubleshooting
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -11,6 +12,8 @@ from migration_factory.control_tower.application.redaction import redact_model_s
 from migration_factory.control_tower.application.v2_model_schemas import (
     ContextPackBuilder,
     ContextPack,
+    validate_against_schema,
+    SchemaValidationError,
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_assistant_repository import (
     SqliteV2AssistantRepository,
@@ -91,6 +94,18 @@ class V2AssistantService:
         content: str,
         correlation_id: str | None = None,
     ) -> AssistantMessage:
+        # Validate assistant structured outputs against AssistantAnswer schema
+        if role == "assistant":
+            try:
+                data = json.loads(content)
+                if isinstance(data, dict):
+                    validate_against_schema("AssistantAnswer", data)
+            except (json.JSONDecodeError, TypeError):
+                # Plain-text assistant messages are allowed
+                pass
+            except SchemaValidationError:
+                raise  # Fail closed on schema violation
+
         msg = AssistantMessage(
             message_id=uuid4().hex,
             job_id=job_id,

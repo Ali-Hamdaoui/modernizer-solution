@@ -141,6 +141,10 @@ from migration_factory.control_tower.application.v2_stage_progression import (
 from migration_factory.control_tower.application.v2_assistant_service import (
     V2AssistantService,
 )
+from migration_factory.control_tower.application.v2_model_schemas import (
+    validate_against_schema,
+    SchemaValidationError,
+)
 from migration_factory.control_tower.application.v2_repair_flow import (
     V2RepairFlowService,
 )
@@ -982,12 +986,19 @@ def create_app(
             service = V2AssistantService(
                 assistant_repo=uow.v2_assistant,
             )
-            msg = service.add_message(
-                job_id=payload.job_id,
-                role=payload.role,
-                content=payload.content,
-                correlation_id=payload.correlation_id,
-            )
+            try:
+                msg = service.add_message(
+                    job_id=payload.job_id,
+                    role=payload.role,
+                    content=payload.content,
+                    correlation_id=payload.correlation_id,
+                )
+            except SchemaValidationError as exc:
+                raise _error(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "SCHEMA_VALIDATION_FAILED",
+                    str(exc),
+                ) from exc
         return service.message_to_dict(msg)
 
     @app.get("/v1/v2/jobs/{job_id}/assistant/messages")
@@ -1015,6 +1026,22 @@ def create_app(
         The assistant CANNOT execute, approve, write files,
         change route, or override proof.
         """
+        # Validate against ActionRequest schema at the model-output boundary
+        action_data = {
+            "action_type": payload.action_type,
+            "reason": payload.reason,
+            "stage_index": payload.stage_index,
+            "payload_checksum": f"draft-{payload.job_id[:8]}",
+        }
+        try:
+            validate_against_schema("ActionRequest", action_data)
+        except SchemaValidationError as exc:
+            raise _error(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "SCHEMA_VALIDATION_FAILED",
+                str(exc),
+            ) from exc
+
         with unit_of_work_factory() as uow:
             service = V2AssistantService(
                 assistant_repo=uow.v2_assistant,
@@ -1037,6 +1064,22 @@ def create_app(
         payload: CreateRepairProposalRequest,
     ) -> dict[str, Any]:
         """Create a repair proposal from failed command evidence."""
+        # Validate against RepairProposal schema at the model-output boundary
+        repair_data = {
+            "failure_hypothesis": payload.hypothesis,
+            "patch_summary": payload.patch_summary,
+            "affected_paths": payload.affected_paths,
+            "validation_plan": f"Verify repair for {payload.command_id}",
+        }
+        try:
+            validate_against_schema("RepairProposal", repair_data)
+        except SchemaValidationError as exc:
+            raise _error(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "SCHEMA_VALIDATION_FAILED",
+                str(exc),
+            ) from exc
+
         with unit_of_work_factory() as uow:
             service = V2RepairFlowService(
                 repair_repo=uow.v2_repairs,

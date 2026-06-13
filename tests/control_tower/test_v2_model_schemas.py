@@ -260,3 +260,72 @@ class TestSchemaValidator:
         }
         for name, data in valid_data.items():
             SchemaValidator.validate(name, data)
+
+
+# ── validate_model_output boundary tests ────────────────────────────
+
+from migration_factory.control_tower.application.v2_model_schemas import (
+    validate_model_output,
+    validate_against_schema,
+)
+
+
+class TestValidateModelOutput:
+    """Tests for validate_model_output boundary function."""
+
+    def test_valid_model_output_passes(self) -> None:
+        data = validate_model_output("PlanProposal", {
+            "summary": "test",
+            "stage_impacts": [{"stage_index": 1, "impact": "test"}],
+            "risks": [],
+            "approval_checksum": "abc",
+        })
+        assert data["summary"] == "test"
+
+    def test_invalid_plan_proposal_rejected(self) -> None:
+        with pytest.raises(SchemaValidationError, match="Missing required"):
+            validate_model_output("PlanProposal", {"summary": "test"})
+
+    def test_invalid_reviewer_critique_rejected(self) -> None:
+        with pytest.raises(SchemaValidationError):
+            validate_model_output("ReviewerCritique", {
+                "decision": "destroy",  # invalid enum
+                "reasoning": "none",
+            })
+
+    def test_extra_fields_rejected(self) -> None:
+        with pytest.raises(SchemaValidationError, match="Unexpected property"):
+            validate_model_output("AssistantAnswer", {
+                "answer": "ok",
+                "malicious": "delete all",
+            })
+
+    def test_wrong_type_rejected(self) -> None:
+        with pytest.raises(SchemaValidationError, match="Expected string"):
+            validate_model_output("PlanProposal", {
+                "summary": 123,  # not a string
+                "stage_impacts": [],
+                "risks": [],
+                "approval_checksum": "abc",
+            })
+
+    def test_returns_validated_data(self) -> None:
+        original = {
+            "action_type": "compile",
+            "reason": "test",
+            "stage_index": 1,
+            "payload_checksum": "chk",
+        }
+        result = validate_model_output("ActionRequest", original)
+        assert result == original  # validated data is returned unchanged
+
+    def test_unknown_schema_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown schema"):
+            validate_model_output("BogusSchema", {})
+
+
+def test_validate_against_schema_convenience() -> None:
+    """validate_against_schema delegates to SchemaValidator."""
+    validate_against_schema("AssistantAnswer", {"answer": "hello"})
+    with pytest.raises(SchemaValidationError):
+        validate_against_schema("AssistantAnswer", {"extra": "field"})

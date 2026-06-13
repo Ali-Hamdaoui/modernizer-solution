@@ -126,6 +126,42 @@ class SchemaValidationError(Exception):
     """Raised when data does not match the expected schema."""
 
 
+def validate_against_schema(schema_name: str, data: Any) -> None:
+    """Convenience wrapper to validate data against a registered schema.
+
+    Args:
+        schema_name: One of the REQUIRED_SCHEMAS names.
+        data: The data dict to validate.
+
+    Raises:
+        SchemaValidationError: If validation fails.
+        ValueError: If schema_name is unknown.
+    """
+    SchemaValidator.validate(schema_name, data)
+
+
+def validate_model_output(schema_name: str, data: Any) -> dict[str, Any]:
+    """Validate model output at the service boundary.
+
+    Call this on every structured model output before it enters
+    the V2 runtime. Fails closed on any validation error; does
+    not fall back to free-form execution.
+
+    Args:
+        schema_name: One of REQUIRED_SCHEMAS.
+        data: The model output dict to validate.
+
+    Returns:
+        The validated data dict (unchanged).
+
+    Raises:
+        SchemaValidationError: If the model output violates the schema.
+        ValueError: If schema_name is unknown.
+    """
+    validate_against_schema(schema_name, data)
+    return data
+
+
 class SchemaValidator:
     """Lightweight JSON Schema validator for V2 model schemas.
 

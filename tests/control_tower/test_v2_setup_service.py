@@ -446,3 +446,219 @@ def test_preflight_table_is_append_only(connection: sqlite3.Connection) -> None:
     trigger_names = [t["name"] for t in triggers]
     assert "v2_preflight_results_no_update" in trigger_names
     assert "v2_preflight_results_no_delete" in trigger_names
+
+
+# ── JDK/Maven subprocess validation tests (mocked) ──────────────────
+
+
+class TestJdkSubprocessValidation:
+    """Tests that _check_jdk_path validates Java major versions via subprocess.
+
+    All subprocess calls are mocked — no real Java/Maven required on CI.
+    """
+
+    @staticmethod
+    def _fake_subprocess_java11(*args, **kwargs):
+        from subprocess import CompletedProcess
+        return CompletedProcess(
+            args=list(args),
+            returncode=0,
+            stdout="",
+            stderr='openjdk version "11.0.21" 2023-10-17\nOpenJDK Runtime Environment (build 11.0.21+9)\n',
+        )
+
+    @staticmethod
+    def _fake_subprocess_java17(*args, **kwargs):
+        from subprocess import CompletedProcess
+        return CompletedProcess(
+            args=list(args),
+            returncode=0,
+            stdout="",
+            stderr='openjdk version "17.0.13" 2024-10-21\nOpenJDK Runtime Environment Temurin-17.0.13+11\n',
+        )
+
+    @staticmethod
+    def _fake_subprocess_java21(*args, **kwargs):
+        from subprocess import CompletedProcess
+        return CompletedProcess(
+            args=list(args),
+            returncode=0,
+            stdout="",
+            stderr='openjdk version "21.0.7" 2025-04-15\nOpenJDK Runtime Environment (build 21.0.7+7)\n',
+        )
+
+    @staticmethod
+    def _fake_subprocess_java_wrong_version(*args, **kwargs):
+        from subprocess import CompletedProcess
+        return CompletedProcess(
+            args=list(args),
+            returncode=0,
+            stdout="",
+            stderr='openjdk version "1.8.0_432" 2024-10-21\nOpenJDK Runtime Environment (build 1.8.0_432-b07)\n',
+        )
+
+    @staticmethod
+    def _fake_subprocess_timeout(*args, **kwargs):
+        from subprocess import TimeoutExpired
+        raise TimeoutExpired(cmd=args, timeout=10.0)
+
+    def test_jdk11_correct_version(self, monkeypatch, tmp_path: Path) -> None:
+        """JDK 11 path verified to report major 11."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _check_jdk_path_with_version,
+        )
+        # Create a fake java home structure so Path.exists() passes
+        jdk_home = tmp_path / "jdk-11"
+        bin_dir = jdk_home / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "java").touch()
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, "run", self._fake_subprocess_java11)
+
+        assert _check_jdk_path_with_version(str(jdk_home), 11)
+
+    def test_jdk17_correct_version(self, monkeypatch, tmp_path: Path) -> None:
+        """JDK 17 path verified to report major 17."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _check_jdk_path_with_version,
+        )
+        jdk_home = tmp_path / "jdk-17"
+        bin_dir = jdk_home / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "java").touch()
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, "run", self._fake_subprocess_java17)
+
+        assert _check_jdk_path_with_version(str(jdk_home), 17)
+
+    def test_jdk21_correct_version(self, monkeypatch, tmp_path: Path) -> None:
+        """JDK 21 path verified to report major 21."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _check_jdk_path_with_version,
+        )
+        jdk_home = tmp_path / "jdk-21"
+        bin_dir = jdk_home / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "java").touch()
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, "run", self._fake_subprocess_java21)
+
+        assert _check_jdk_path_with_version(str(jdk_home), 21)
+
+    def test_jdk_wrong_version_rejected(self, monkeypatch, tmp_path: Path) -> None:
+        """JDK 11 path reporting Java 8 must be rejected."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _check_jdk_path_with_version,
+        )
+        jdk_home = tmp_path / "jdk-11"
+        bin_dir = jdk_home / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "java").touch()
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, "run", self._fake_subprocess_java_wrong_version)
+
+        assert not _check_jdk_path_with_version(str(jdk_home), 11)
+
+    def test_jdk_subprocess_timeout_fails_safe(self, monkeypatch, tmp_path: Path) -> None:
+        """Timeout must return False, not crash."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _check_jdk_path_with_version,
+        )
+        jdk_home = tmp_path / "jdk-11"
+        bin_dir = jdk_home / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "java").touch()
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, "run", self._fake_subprocess_timeout)
+
+        assert not _check_jdk_path_with_version(str(jdk_home), 11)
+
+    def test_jdk_path_missing_fails_fast(self) -> None:
+        """Non-existent path fails before subprocess is called."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _check_jdk_path_with_version,
+        )
+        assert not _check_jdk_path_with_version("/nonexistent/jdk/path", 11)
+
+
+class TestMavenSubprocessValidation:
+    """Tests that _check_maven_path validates via mvn --version.
+
+    All subprocess calls are mocked — no real Maven required on CI.
+    """
+
+    @staticmethod
+    def _fake_subprocess_maven_ok(*args, **kwargs):
+        from subprocess import CompletedProcess
+        return CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout='Apache Maven 3.9.15\nMaven home: /opt/maven\nJava version: 21.0.7\n',
+            stderr="",
+        )
+
+    @staticmethod
+    def _fake_subprocess_maven_fail(*args, **kwargs):
+        from subprocess import CompletedProcess
+        return CompletedProcess(
+            args=args,
+            returncode=1,
+            stdout="",
+            stderr="Error: Unable to access jarfile",
+        )
+
+    @staticmethod
+    def _fake_maven_subprocess_timeout(*args, **kwargs):
+        from subprocess import TimeoutExpired
+        raise TimeoutExpired(cmd=args, timeout=10.0)
+
+    def test_maven_version_ok(self, monkeypatch, tmp_path: Path) -> None:
+        """Maven path verified to report Apache Maven in output."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _check_maven_path,
+        )
+        mvn_path = tmp_path / "mvn"
+        mvn_path.touch()
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, "run", self._fake_subprocess_maven_ok)
+
+        assert _check_maven_path(str(mvn_path))
+
+    def test_maven_execution_fails(self, monkeypatch, tmp_path: Path) -> None:
+        """Maven that returns non-zero with no output must fail."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _check_maven_path,
+        )
+        mvn_path = tmp_path / "mvn"
+        mvn_path.touch()
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, "run", self._fake_subprocess_maven_fail)
+
+        assert not _check_maven_path(str(mvn_path))
+
+    def test_maven_timeout_fails_safe(self, monkeypatch, tmp_path: Path) -> None:
+        """Timeout must return False, not crash."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _check_maven_path,
+        )
+        mvn_path = tmp_path / "mvn"
+        mvn_path.touch()
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, "run", self._fake_maven_subprocess_timeout)
+
+        assert not _check_maven_path(str(mvn_path))
+
+    def test_maven_path_missing_fails_fast(self) -> None:
+        """Non-existent path fails before subprocess is called."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _check_maven_path,
+        )
+        assert not _check_maven_path("/nonexistent/mvn")
