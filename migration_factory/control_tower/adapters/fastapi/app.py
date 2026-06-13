@@ -109,6 +109,11 @@ from migration_factory.control_tower.infrastructure.singleton import (
     create_controller_ownership,
 )
 from migration_factory.control_tower.schemas.run_configuration import RunPolicy
+from migration_factory.control_tower.application.env_parser import (
+    EnvParseResult,
+    parse_env_block,
+    parse_result_to_dict,
+)
 from migration_factory.control_tower.application.v2_settings import (
     ControlTowerSettings,
     build_settings_projection,
@@ -305,6 +310,11 @@ class RecordMavenValidationRequest(StrictRequest):
     maven_goal: str = Field(..., pattern="^(compile|test-compile)$")
     passed: bool
     result_summary: str = ""
+
+
+class ParseEnvRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    env_block: str
 
 
 @asynccontextmanager
@@ -591,6 +601,23 @@ def create_app(
         settings: ControlTowerSettings = app.state.v2_settings
         projection = build_settings_projection(settings)
         return settings_projection_to_dict(projection)
+
+    # ------------------------------------------------------------------
+    # V2 Setup parser endpoint (A2)
+    # ------------------------------------------------------------------
+
+    @app.post("/v1/migration-setups/parse-env")
+    async def parse_env(
+        payload: ParseEnvRequest,
+    ) -> dict[str, Any]:
+        """Parse a pasted PowerShell env block into typed local setup fields.
+
+        The parser is pure: no execution, no I/O, no persistence. It
+        extracts only allowlisted keys, returns ignored/blocked key sets,
+        and maps known flags to typed options.
+        """
+        result = parse_env_block(payload.env_block)
+        return parse_result_to_dict(result)
 
     @app.get("/v1/model-profiles")
     def list_model_profiles() -> dict[str, Any]:
