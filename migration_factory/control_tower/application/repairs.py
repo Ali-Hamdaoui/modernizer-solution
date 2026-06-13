@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from uuid import uuid4
 
@@ -200,57 +201,106 @@ class RepairService:
                 raise RepairClassificationError(
                     f"Command {command_id!r} is not repairable"
                 )
-
-            existing_proposals = uow.v1_fake_repair_proposals.list_for_classification(
-                classification.classification_id
-            )
             proposal_checksum = sha256_canonical_json(
                 {
                     "classification_id": classification.classification_id,
                     "proposal_summary": public_summary,
                 }
             )
-            existing = uow.v1_fake_repair_proposals.get_for_classification_and_checksum(
+            record = self._persist_proposal_record(
+                uow=uow,
+                classification=classification,
+                proposal_summary=public_summary,
+                proposal_checksum=proposal_checksum,
+                proposal_kind="manual",
+                recommendation_type=None,
+                confidence_label=None,
+                confidence_score=None,
+                warning_codes=(),
+                applicable=True,
+                context_checksum=None,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                created_at=now,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+                audit_action="fake_repair_proposal_recorded",
+            )
+        return self._to_proposal_dto(record)
+
+    def generate_fake_repair_proposal(
+        self,
+        *,
+        command_id: str,
+        actor_type: str,
+        actor_id: str,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> FakeRepairProposalDto:
+        now = utc_now_text()
+        with self._unit_of_work_factory() as uow:
+            command = uow.command_executions.get(command_id)
+            if command is None:
+                raise NotFoundError("command execution", command_id)
+            classification = uow.v1_repair_classifications.get_latest_for_command(command_id)
+            if classification is None:
+                raise RepairClassificationError(
+                    f"Command {command_id!r} has no repair classification"
+                )
+            if not classification.repairable:
+                raise RepairClassificationError(
+                    f"Command {command_id!r} is not repairable"
+                )
+
+            existing_proposals = uow.v1_fake_repair_proposals.list_for_classification(
+                classification.classification_id
+            )
+            context_checksum = self._generated_context_checksum(classification, existing_proposals)
+            existing = uow.v1_fake_repair_proposals.get_for_classification_kind_and_context(
                 classification.classification_id,
-                proposal_checksum,
+                "generated",
+                context_checksum,
             )
             if existing is not None:
                 return self._to_proposal_dto(existing)
             if len(existing_proposals) >= classification.attempt_limit:
                 raise RepairAttemptLimitExceededError(command_id, classification.attempt_limit)
 
-            record = V1FakeRepairProposalRecord(
-                proposal_id=f"fpr-{uuid4().hex}",
-                classification_id=classification.classification_id,
-                command_id=classification.command_id,
-                job_id=classification.job_id,
-                proposal_order=len(existing_proposals) + 1,
-                proposal_summary=public_summary,
-                proposal_checksum=proposal_checksum,
-                actor_type=actor_type,
-                actor_id=actor_id,
-                created_at=now,
-                correlation_id=correlation_id,
-                causation_id=causation_id,
+            generated = _generate_fake_provider_metadata(
+                classification=classification,
+                existing_proposals=existing_proposals,
             )
-            uow.v1_fake_repair_proposals.insert(record)
-            uow.audit_records.append_global_audit(
-                audit_id=uuid4().hex,
+            proposal_checksum = sha256_canonical_json(
+                {
+                    "classification_id": classification.classification_id,
+                    "proposal_kind": "generated",
+                    "context_checksum": context_checksum,
+                    "recommendation_type": generated["recommendation_type"],
+                    "proposal_summary": generated["proposal_summary"],
+                    "confidence_label": generated["confidence_label"],
+                    "confidence_score": generated["confidence_score"],
+                    "warning_codes": generated["warning_codes"],
+                    "applicable": True,
+                }
+            )
+            record = self._persist_proposal_record(
+                uow=uow,
+                classification=classification,
+                proposal_summary=generated["proposal_summary"],
+                proposal_checksum=proposal_checksum,
+                proposal_kind="generated",
+                recommendation_type=str(generated["recommendation_type"]),
+                confidence_label=str(generated["confidence_label"]),
+                confidence_score=float(generated["confidence_score"]),
+                warning_codes=tuple(str(item) for item in generated["warning_codes"]),
+                applicable=True,
+                context_checksum=context_checksum,
                 actor_type=actor_type,
                 actor_id=actor_id,
-                action="fake_repair_proposal_recorded",
-                payload_json=canonical_json_text(
-                    {
-                        "proposal_id": record.proposal_id,
-                        "classification_id": record.classification_id,
-                        "command_id": record.command_id,
-                        "proposal_order": record.proposal_order,
-                        "proposal_checksum": record.proposal_checksum,
-                    }
-                ),
                 created_at=now,
                 correlation_id=correlation_id,
                 causation_id=causation_id,
+                audit_action="fake_repair_proposal_generated",
             )
         return self._to_proposal_dto(record)
 
@@ -280,7 +330,11 @@ class RepairService:
                     classification.classification_id
                 )
             )
-        attempts = tuple(self._proposal_to_attempt_dto(item) for item in proposals)
+        attempts = tuple(
+            self._proposal_to_attempt_dto(item)
+            for item in proposals
+            if item.proposal_kind != "generated"
+        )
         proposal_count = len(proposals)
         remaining_attempts = max(0, classification.attempt_limit - proposal_count)
         return RepairStatusDto(
@@ -307,19 +361,164 @@ class RepairService:
         correlation_id: str | None = None,
         causation_id: str | None = None,
     ) -> RepairAttemptDto:
-        proposal = self.record_fake_repair_proposal(
-            command_id=command_id,
-            proposal_summary=attempt_summary,
-            actor_type=actor_type,
-            actor_id=actor_id,
-            correlation_id=correlation_id,
-            causation_id=causation_id,
-        )
-        return self._proposal_to_attempt_dto(proposal)
+        raw_summary = attempt_summary.strip()
+        _validate_fake_proposal_summary(raw_summary)
+        public_summary = _sanitize_public_summary(redact_model_summary(raw_summary))
+        now = utc_now_text()
+        with self._unit_of_work_factory() as uow:
+            command = uow.command_executions.get(command_id)
+            if command is None:
+                raise NotFoundError("command execution", command_id)
+            classification = uow.v1_repair_classifications.get_latest_for_command(command_id)
+            if classification is None:
+                raise RepairClassificationError(
+                    f"Command {command_id!r} has no repair classification"
+                )
+            if not classification.repairable:
+                raise RepairClassificationError(
+                    f"Command {command_id!r} is not repairable"
+                )
+            proposal_checksum = sha256_canonical_json(
+                {
+                    "classification_id": classification.classification_id,
+                    "proposal_summary": public_summary,
+                }
+            )
+            record = self._persist_proposal_record(
+                uow=uow,
+                classification=classification,
+                proposal_summary=public_summary,
+                proposal_checksum=proposal_checksum,
+                proposal_kind="repair_attempt",
+                recommendation_type=None,
+                confidence_label=None,
+                confidence_score=None,
+                warning_codes=(),
+                applicable=True,
+                context_checksum=None,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                created_at=now,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+                audit_action="repair_attempt_recorded",
+            )
+        return self._proposal_to_attempt_dto(record)
 
     def list_repair_attempts(self, command_id: str) -> tuple[RepairAttemptDto, ...]:
         status = self.get_repair_status(command_id)
-        return status.attempts
+        return tuple(
+            attempt
+            for attempt in status.attempts
+            if attempt.attempt_status in {"recorded", "manual"}
+        )
+
+    def list_fake_repair_proposals(self, command_id: str) -> tuple[FakeRepairProposalDto, ...]:
+        status = self.get_repair_status(command_id)
+        return status.proposals
+
+    def _persist_proposal_record(
+        self,
+        *,
+        uow,
+        classification: V1RepairClassificationRecord,
+        proposal_summary: str,
+        proposal_checksum: str,
+        proposal_kind: str,
+        recommendation_type: str | None,
+        confidence_label: str | None,
+        confidence_score: float | None,
+        warning_codes: tuple[str, ...],
+        applicable: bool,
+        context_checksum: str | None,
+        actor_type: str,
+        actor_id: str,
+        created_at: str,
+        correlation_id: str | None,
+        causation_id: str | None,
+        audit_action: str,
+    ) -> V1FakeRepairProposalRecord:
+        existing_proposals = uow.v1_fake_repair_proposals.list_for_classification(
+            classification.classification_id
+        )
+        existing = uow.v1_fake_repair_proposals.get_for_classification_and_checksum(
+            classification.classification_id,
+            proposal_checksum,
+        )
+        if existing is not None:
+            return existing
+        if len(existing_proposals) >= classification.attempt_limit:
+            raise RepairAttemptLimitExceededError(classification.command_id, classification.attempt_limit)
+
+        record = V1FakeRepairProposalRecord(
+            proposal_id=f"fpr-{uuid4().hex}",
+            classification_id=classification.classification_id,
+            command_id=classification.command_id,
+            job_id=classification.job_id,
+            proposal_order=len(existing_proposals) + 1,
+            proposal_summary=proposal_summary,
+            proposal_checksum=proposal_checksum,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            created_at=created_at,
+            proposal_kind=proposal_kind,
+            recommendation_type=recommendation_type,
+            confidence_label=confidence_label,
+            confidence_score=confidence_score,
+            warning_codes_json=canonical_json_text(list(warning_codes)),
+            applicable=applicable,
+            context_checksum=context_checksum,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+        )
+        uow.v1_fake_repair_proposals.insert(record)
+        uow.audit_records.append_global_audit(
+            audit_id=uuid4().hex,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            action=audit_action,
+            payload_json=canonical_json_text(
+                {
+                    "proposal_id": record.proposal_id,
+                    "classification_id": record.classification_id,
+                    "command_id": record.command_id,
+                    "proposal_order": record.proposal_order,
+                    "proposal_kind": record.proposal_kind,
+                    "proposal_checksum": record.proposal_checksum,
+                    "recommendation_type": record.recommendation_type,
+                    "warning_codes": list(warning_codes),
+                    "applicable": record.applicable,
+                }
+            ),
+            created_at=created_at,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+        )
+        return record
+
+    def _generated_context_checksum(
+        self,
+        classification: V1RepairClassificationRecord,
+        existing_proposals: tuple[V1FakeRepairProposalRecord, ...],
+    ) -> str:
+        context_rows = [
+            {
+                "proposal_kind": proposal.proposal_kind,
+                "proposal_checksum": proposal.proposal_checksum,
+                "proposal_order": proposal.proposal_order,
+            }
+            for proposal in existing_proposals
+            if proposal.proposal_kind != "generated"
+        ]
+        return sha256_canonical_json(
+            {
+                "classification_id": classification.classification_id,
+                "classification_code": classification.classification_code,
+                "reason_code": classification.reason_code,
+                "evidence_checksum": classification.evidence_checksum,
+                "context_rows": context_rows,
+            }
+        )
 
     def _to_classification_dto(
         self,
@@ -343,14 +542,25 @@ class RepairService:
         )
 
     def _to_proposal_dto(self, record: V1FakeRepairProposalRecord) -> FakeRepairProposalDto:
+        warning_codes = tuple(
+            str(item)
+            for item in json.loads(record.warning_codes_json)
+        )
         return FakeRepairProposalDto(
             proposal_id=record.proposal_id,
             classification_id=record.classification_id,
             command_id=record.command_id,
             job_id=record.job_id,
             proposal_order=record.proposal_order,
+            proposal_kind=record.proposal_kind,
             proposal_summary=record.proposal_summary,
             proposal_checksum=record.proposal_checksum,
+            recommendation_type=record.recommendation_type,
+            confidence_label=record.confidence_label,
+            confidence_score=record.confidence_score,
+            warning_codes=warning_codes,
+            applicable=record.applicable,
+            context_checksum=record.context_checksum,
             actor_type=record.actor_type,
             actor_id=record.actor_id,
             created_at=record.created_at,
@@ -370,13 +580,14 @@ class RepairService:
         actor_type = proposal.actor_type
         actor_id = proposal.actor_id
         created_at = proposal.created_at
+        attempt_status = "generated" if getattr(proposal, "proposal_kind", "manual") == "generated" else "recorded"
         return RepairAttemptDto(
             attempt_id=proposal_id,
             classification_id=classification_id,
             command_id=command_id,
             job_id=job_id,
             attempt_order=proposal_order,
-            attempt_status="recorded",
+            attempt_status=attempt_status,
             attempt_summary=proposal_summary,
             attempt_checksum=proposal_checksum,
             actor_type=actor_type,
@@ -428,3 +639,50 @@ def _validate_fake_proposal_summary(summary: str) -> None:
         raise RepairProposalValidationError(
             "proposal_summary contains unsafe raw content that must be redacted"
         )
+
+
+def _generate_fake_provider_metadata(
+    *,
+    classification: V1RepairClassificationRecord,
+    existing_proposals: tuple[V1FakeRepairProposalRecord, ...],
+) -> dict[str, object]:
+    remaining_attempts = max(0, classification.attempt_limit - len(existing_proposals) - 1)
+    if classification.classification_code == "repairable_dependency_or_import":
+        recommendation_type = "dependency_alignment"
+        proposal_summary = (
+            "Review missing dependency and import references, then prepare next repair attempt "
+            "to align package declarations and resolved symbols."
+        )
+        confidence_label = "medium"
+    elif classification.classification_code == "repairable_compile_error":
+        recommendation_type = "compile_fixup"
+        proposal_summary = (
+            "Review compile-time type or signature mismatches, then prepare next repair attempt "
+            "to align code references with current build contracts."
+        )
+        confidence_label = "medium"
+    elif classification.classification_code == "repairable_test_failure":
+        recommendation_type = "test_expectation_review"
+        proposal_summary = (
+            "Review failing assertions and expected outputs, then prepare next repair attempt "
+            "to narrow changes to affected test behavior."
+        )
+        confidence_label = "low"
+    else:
+        raise RepairClassificationError(
+            f"Command {classification.command_id!r} is not repairable"
+        )
+
+    warning_codes = ["manual_review_required", "non_authoritative"]
+    if remaining_attempts == 0:
+        warning_codes.append("limit_reached_after_this_proposal")
+    elif remaining_attempts == 1:
+        warning_codes.append("limit_nearly_reached")
+
+    return {
+        "recommendation_type": recommendation_type,
+        "proposal_summary": proposal_summary,
+        "confidence_label": confidence_label,
+        "confidence_score": 0.6 if confidence_label == "medium" else 0.4,
+        "warning_codes": tuple(warning_codes),
+    }

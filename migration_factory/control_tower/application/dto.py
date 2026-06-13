@@ -388,8 +388,15 @@ class FakeRepairProposalDto:
     command_id: str
     job_id: str
     proposal_order: int
+    proposal_kind: str
     proposal_summary: str
     proposal_checksum: str
+    recommendation_type: str | None
+    confidence_label: str | None
+    confidence_score: float | None
+    warning_codes: tuple[str, ...]
+    applicable: bool
+    context_checksum: str | None
     actor_type: str
     actor_id: str
     created_at: str

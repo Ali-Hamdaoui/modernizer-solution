@@ -506,6 +506,13 @@ class V1FakeRepairProposalRecord:
     actor_type: str
     actor_id: str
     created_at: str
+    proposal_kind: str = "manual"
+    recommendation_type: str | None = None
+    confidence_label: str | None = None
+    confidence_score: float | None = None
+    warning_codes_json: str = "[]"
+    applicable: bool = True
+    context_checksum: str | None = None
     correlation_id: str | None = None
     causation_id: str | None = None
 

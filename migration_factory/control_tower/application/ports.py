@@ -448,6 +448,13 @@ class V1FakeRepairProposalRepository(Protocol):
         classification_id: str,
     ) -> tuple[V1FakeRepairProposalRecord, ...]: ...
 
+    def get_for_classification_kind_and_context(
+        self,
+        classification_id: str,
+        proposal_kind: str,
+        context_checksum: str,
+    ) -> V1FakeRepairProposalRecord | None: ...
+
 
 class V1PrivilegedActionExecutionRepository(Protocol):
     """Append-only repository for privileged action execution records."""
