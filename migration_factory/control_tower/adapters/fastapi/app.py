@@ -132,6 +132,12 @@ from migration_factory.control_tower.application.v2_settings import (
     build_settings_projection,
     settings_projection_to_dict,
 )
+from migration_factory.control_tower.application.v2_approval_mapping import (
+    V2ApprovalMappingService,
+)
+from migration_factory.control_tower.application.v2_stage_progression import (
+    V2StageProgressionService,
+)
 from migration_factory.control_tower.adapters.fastapi.security import (
     MUTATION_METHODS,
     ActorProvider,
@@ -360,6 +366,18 @@ class StartV2JobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     job_id: str
     setup_id: str
+
+
+class ApproveCardRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_checksum: str
+
+
+class StageProgressRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    setup_id: str
+    current_stage: int
+    sandbox_path: str
 
 
 @asynccontextmanager
@@ -834,6 +852,116 @@ def create_app(
                     str(exc),
                 ) from exc
         return service.result_to_dict(result)
+
+    # ------------------------------------------------------------------
+    # V2 Approval mapping endpoints (A9/P0-005)
+    # ------------------------------------------------------------------
+
+    @app.post("/v1/v2/jobs/{job_id}/approvals/{card_id}/approve")
+    def approve_decision_card(
+        job_id: str,
+        card_id: str,
+        payload: ApproveCardRequest,
+    ) -> dict[str, Any]:
+        """Approve a decision card with checksum validation.
+
+        Validates the expected checksum against the stored card.
+        On success, queues a resume command. LLM cannot approve.
+        """
+        with unit_of_work_factory() as uow:
+            service = V2ApprovalMappingService(
+                approval_repo=uow.v2_approvals,
+            )
+            try:
+                resume = service.approve(
+                    card_id=card_id,
+                    expected_checksum=payload.expected_checksum,
+                    job_id=job_id,
+                )
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "APPROVAL_FAILED",
+                    str(exc),
+                ) from exc
+        return service.resume_to_dict(resume)
+
+    @app.post("/v1/v2/jobs/{job_id}/approvals/{card_id}/reject")
+    def reject_decision_card(
+        job_id: str,
+        card_id: str,
+    ) -> dict[str, Any]:
+        """Reject a decision card, pausing the stage."""
+        with unit_of_work_factory() as uow:
+            service = V2ApprovalMappingService(
+                approval_repo=uow.v2_approvals,
+            )
+            try:
+                card = service.reject(
+                    card_id=card_id,
+                    job_id=job_id,
+                )
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "REJECTION_FAILED",
+                    str(exc),
+                ) from exc
+        return service.card_to_dict(card)
+
+    @app.get("/v1/v2/jobs/{job_id}/approvals/{card_id}")
+    def get_decision_card(
+        job_id: str,
+        card_id: str,
+    ) -> dict[str, Any]:
+        """Get a decision card by ID."""
+        with unit_of_work_factory() as uow:
+            service = V2ApprovalMappingService(
+                approval_repo=uow.v2_approvals,
+            )
+            card = service.get_card(card_id)
+        if card is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "CARD_NOT_FOUND",
+                f"Decision card {card_id!r} not found",
+            )
+        return service.card_to_dict(card)
+
+    # ------------------------------------------------------------------
+    # V2 Stage progression endpoint (A8/P0-005)
+    # ------------------------------------------------------------------
+
+    @app.post("/v1/v2/jobs/{job_id}/stages/progress")
+    def progress_to_next_stage(
+        job_id: str,
+        payload: StageProgressRequest,
+    ) -> dict[str, Any]:
+        """Auto-queue the next stage from the current stage sandbox.
+
+        Stage 2 input = Stage 1 sandbox.
+        Stage 3 input = Stage 2 sandbox.
+        No Boot 4 path. No user-selected stage inputs.
+        """
+        with unit_of_work_factory() as uow:
+            service = V2StageProgressionService(
+                setup_repo=uow.v2_setups,
+                command_repo=uow.v2_commands,
+            )
+            try:
+                result = service.queue_next_stage(
+                    job_id=job_id,
+                    setup_id=payload.setup_id,
+                    current_stage=payload.current_stage,
+                    sandbox_path=payload.sandbox_path,
+                )
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "STAGE_PROGRESSION_FAILED",
+                    str(exc),
+                ) from exc
+        return service.continuation_to_dict(result)
 
     @app.get("/v1/model-profiles")
     def list_model_profiles() -> dict[str, Any]:

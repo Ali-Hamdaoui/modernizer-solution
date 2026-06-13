@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -10,6 +11,10 @@ from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
     SqliteV2SetupRepository,
     V2MigrationSetupRecord,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
+    SqliteV2CommandRepository,
+    V2StageCommandRecord,
 )
 
 
@@ -46,8 +51,13 @@ class StageContinuationResult:
 class V2StageProgressionService:
     """Auto-queue Stage 2 and Stage 3 from previous stage sandbox."""
 
-    def __init__(self, setup_repo: SqliteV2SetupRepository) -> None:
+    def __init__(
+        self,
+        setup_repo: SqliteV2SetupRepository,
+        command_repo: SqliteV2CommandRepository | None = None,
+    ) -> None:
         self._setup_repo = setup_repo
+        self._command_repo = command_repo
 
     def queue_next_stage(
         self,
@@ -96,6 +106,27 @@ class V2StageProgressionService:
             "--profile", config["profile"],
             "--mode", "full_sandbox_migration",
         )
+
+        # Persist the next stage command if repo available
+        if self._command_repo is not None:
+            command_id = uuid4().hex
+            now = utc_now_text()
+            command_record = V2StageCommandRecord(
+                command_id=command_id,
+                job_id=job_id,
+                stage_index=next_stage,
+                manifest_checksum=f"v2-stage{next_stage}",
+                argv_json=json.dumps(list(argv), separators=(",", ":")),
+                env_json=json.dumps({
+                    "JAVA_HOME": f"${{{config['jdk_env']}}}",
+                    "PATH_PREPEND": f"${{{config['jdk_env']}}}/bin",
+                }, separators=(",", ":")),
+                status="manifest_ready",
+                created_at=now,
+                updated_at=now,
+                result_json=None,
+            )
+            self._command_repo.save(command_record)
 
         return StageContinuationResult(
             continuation_id=uuid4().hex,

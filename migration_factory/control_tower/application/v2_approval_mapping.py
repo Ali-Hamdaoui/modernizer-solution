@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
 from migration_factory.control_tower.domain.checksums import utc_now_text
-from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
-    SqliteV2SetupRepository,
+from migration_factory.control_tower.infrastructure.sqlite.v2_approval_repository import (
+    SqliteV2ApprovalRepository,
+    V2ApprovalDecisionRecord,
+    V2ResumeCommandRecord,
 )
 
 
@@ -31,6 +34,7 @@ class ResumeCommand:
     job_id: str
     stage_index: int
     command: tuple[str, ...]
+    created_at: str = ""
 
 
 class V2ApprovalMappingService:
@@ -42,9 +46,13 @@ class V2ApprovalMappingService:
     - Stale checksum/version rejection
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        approval_repo: SqliteV2ApprovalRepository | None = None,
+    ) -> None:
         self._decisions: dict[str, ApprovalDecisionCard] = {}
         self._resumes: dict[str, ResumeCommand] = {}
+        self._repo = approval_repo
 
     def create_decision_card(
         self,
@@ -64,6 +72,18 @@ class V2ApprovalMappingService:
             created_at=utc_now_text(),
         )
         self._decisions[card.card_id] = card
+        # Persist if repo available
+        if self._repo is not None:
+            record = V2ApprovalDecisionRecord(
+                card_id=card.card_id,
+                interrupt_id=card.interrupt_id,
+                request_checksum=card.request_checksum,
+                stage_index=card.stage_index,
+                summary=card.summary,
+                status=card.status,
+                created_at=card.created_at,
+            )
+            self._repo.save_card(record)
         return card
 
     def approve(
@@ -77,6 +97,19 @@ class V2ApprovalMappingService:
         Validates the expected checksum before approving.
         """
         card = self._decisions.get(card_id)
+        if card is None and self._repo is not None:
+            record = self._repo.get_card(card_id)
+            if record is not None:
+                card = ApprovalDecisionCard(
+                    card_id=record.card_id,
+                    interrupt_id=record.interrupt_id,
+                    request_checksum=record.request_checksum,
+                    stage_index=record.stage_index,
+                    summary=record.summary,
+                    status=record.status,
+                    created_at=record.created_at,
+                )
+                self._decisions[card_id] = card
         if card is None:
             raise ValueError(f"Decision card {card_id!r} not found")
 
@@ -100,25 +133,58 @@ class V2ApprovalMappingService:
             created_at=card.created_at,
         )
         self._decisions[card_id] = updated
+        # Persist status if repo available
+        if self._repo is not None:
+            self._repo.update_card_status(card_id, "approved")
 
         # Create resume command
+        resume_command = (
+            "python", "-m", "migration_factory.orchestrator.resume",
+            "--run-id", job_id,
+            "--decision", "approved",
+            "--approved-by", "human",
+        )
+        now = utc_now_text()
         resume = ResumeCommand(
             resume_id=uuid4().hex,
             card_id=card_id,
             decision="approved",
             job_id=job_id,
             stage_index=card.stage_index,
-            command=("python", "-m", "migration_factory.orchestrator.resume",
-                     "--run-id", job_id,
-                     "--decision", "approved",
-                     "--approved-by", "human"),
+            command=resume_command,
+            created_at=now,
         )
         self._resumes[resume.resume_id] = resume
+        # Persist resume if repo available
+        if self._repo is not None:
+            resume_record = V2ResumeCommandRecord(
+                resume_id=resume.resume_id,
+                card_id=resume.card_id,
+                decision=resume.decision,
+                job_id=resume.job_id,
+                stage_index=resume.stage_index,
+                command_json=json.dumps(list(resume.command), separators=(",", ":")),
+                created_at=resume.created_at,
+            )
+            self._repo.save_resume(resume_record)
         return resume
 
     def reject(self, card_id: str, job_id: str) -> ApprovalDecisionCard:
         """Reject a decision card, pausing the stage."""
         card = self._decisions.get(card_id)
+        if card is None and self._repo is not None:
+            record = self._repo.get_card(card_id)
+            if record is not None:
+                card = ApprovalDecisionCard(
+                    card_id=record.card_id,
+                    interrupt_id=record.interrupt_id,
+                    request_checksum=record.request_checksum,
+                    stage_index=record.stage_index,
+                    summary=record.summary,
+                    status=record.status,
+                    created_at=record.created_at,
+                )
+                self._decisions[card_id] = card
         if card is None:
             raise ValueError(f"Decision card {card_id!r} not found")
         if card.status != "pending":
@@ -134,10 +200,28 @@ class V2ApprovalMappingService:
             created_at=card.created_at,
         )
         self._decisions[card_id] = updated
+        # Persist status if repo available
+        if self._repo is not None:
+            self._repo.update_card_status(card_id, "rejected")
         return updated
 
     def get_card(self, card_id: str) -> ApprovalDecisionCard | None:
-        return self._decisions.get(card_id)
+        # Try in-memory first, then repo
+        card = self._decisions.get(card_id)
+        if card is None and self._repo is not None:
+            record = self._repo.get_card(card_id)
+            if record is not None:
+                card = ApprovalDecisionCard(
+                    card_id=record.card_id,
+                    interrupt_id=record.interrupt_id,
+                    request_checksum=record.request_checksum,
+                    stage_index=record.stage_index,
+                    summary=record.summary,
+                    status=record.status,
+                    created_at=record.created_at,
+                )
+                self._decisions[card_id] = card
+        return card
 
     def card_to_dict(self, card: ApprovalDecisionCard) -> dict[str, Any]:
         return {
