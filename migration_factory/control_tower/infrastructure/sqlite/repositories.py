@@ -35,6 +35,7 @@ from migration_factory.control_tower.domain.entities import (
     V1ModelInvocationRecord,
     V1PatchApplicationRecord,
     V1PatchPolicyValidationRecord,
+    V1PatchRollbackRecord,
     V1PlanAmendmentRecord,
     V1PlanReviewDecisionRecord,
     V1RepairClassificationRecord,
@@ -2811,6 +2812,113 @@ def _maven_validation_from_row(row: sqlite3.Row) -> V1PatchMavenValidationRecord
         actor_type=str(row["actor_type"]),
         actor_id=str(row["actor_id"]),
         created_at=str(row["created_at"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1PatchRollbackRepository:
+    """SQLite repository for v1_patch_rollbacks table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, rollback: V1PatchRollbackRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_patch_rollbacks (
+                    rollback_id, command_id, job_id, application_id,
+                    snapshot_id, maven_validation_id, stage_index, target_path_hash,
+                    rolled_back_by, rolled_back_at, reason_code, redacted_summary,
+                    correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    rollback.rollback_id,
+                    rollback.command_id,
+                    rollback.job_id,
+                    rollback.application_id,
+                    rollback.snapshot_id,
+                    rollback.maven_validation_id,
+                    rollback.stage_index,
+                    rollback.target_path_hash,
+                    rollback.rolled_back_by,
+                    rollback.rolled_back_at,
+                    rollback.reason_code,
+                    rollback.redacted_summary,
+                    rollback.correlation_id,
+                    rollback.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, rollback_id: str) -> V1PatchRollbackRecord | None:
+        row = self._connection.execute(
+            """SELECT rollback_id, command_id, job_id, application_id,
+                      snapshot_id, maven_validation_id, stage_index, target_path_hash,
+                      rolled_back_by, rolled_back_at, reason_code, redacted_summary,
+                      correlation_id, causation_id
+               FROM v1_patch_rollbacks WHERE rollback_id = ?""",
+            (rollback_id,),
+        ).fetchone()
+        return _patch_rollback_from_row(row) if row is not None else None
+
+    def get_for_command(self, command_id: str) -> V1PatchRollbackRecord | None:
+        row = self._connection.execute(
+            """SELECT rollback_id, command_id, job_id, application_id,
+                      snapshot_id, maven_validation_id, stage_index, target_path_hash,
+                      rolled_back_by, rolled_back_at, reason_code, redacted_summary,
+                      correlation_id, causation_id
+               FROM v1_patch_rollbacks
+               WHERE command_id = ?
+               ORDER BY rolled_back_at DESC, rollback_id DESC
+               LIMIT 1""",
+            (command_id,),
+        ).fetchone()
+        return _patch_rollback_from_row(row) if row is not None else None
+
+    def get_for_application(self, application_id: str) -> V1PatchRollbackRecord | None:
+        row = self._connection.execute(
+            """SELECT rollback_id, command_id, job_id, application_id,
+                      snapshot_id, maven_validation_id, stage_index, target_path_hash,
+                      rolled_back_by, rolled_back_at, reason_code, redacted_summary,
+                      correlation_id, causation_id
+               FROM v1_patch_rollbacks
+               WHERE application_id = ?
+               ORDER BY rolled_back_at DESC, rollback_id DESC
+               LIMIT 1""",
+            (application_id,),
+        ).fetchone()
+        return _patch_rollback_from_row(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> tuple[V1PatchRollbackRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT rollback_id, command_id, job_id, application_id,
+                      snapshot_id, maven_validation_id, stage_index, target_path_hash,
+                      rolled_back_by, rolled_back_at, reason_code, redacted_summary,
+                      correlation_id, causation_id
+               FROM v1_patch_rollbacks
+               WHERE job_id = ?
+               ORDER BY rolled_back_at DESC, rollback_id DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_patch_rollback_from_row(row) for row in rows)
+
+
+def _patch_rollback_from_row(row: sqlite3.Row) -> V1PatchRollbackRecord:
+    return V1PatchRollbackRecord(
+        rollback_id=str(row["rollback_id"]),
+        command_id=str(row["command_id"]),
+        job_id=str(row["job_id"]),
+        application_id=str(row["application_id"]),
+        snapshot_id=str(row["snapshot_id"]),
+        maven_validation_id=str(row["maven_validation_id"]),
+        stage_index=int(row["stage_index"]),
+        target_path_hash=str(row["target_path_hash"]),
+        rolled_back_by=str(row["rolled_back_by"]),
+        rolled_back_at=str(row["rolled_back_at"]),
+        reason_code=str(row["reason_code"]),
+        redacted_summary=str(row["redacted_summary"]),
         correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
         causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
     )

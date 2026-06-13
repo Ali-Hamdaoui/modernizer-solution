@@ -590,6 +590,31 @@ class V1PatchApplicationRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class V1PatchRollbackRecord:
+    """Immutable record of a patch rollback.
+
+    Append-only: records that a failed patch application was rolled back
+    to the prior sandbox snapshot. Actual file operations are handled by
+    downstream privileged actions.
+    """
+
+    rollback_id: str
+    command_id: str
+    job_id: str
+    application_id: str
+    snapshot_id: str
+    maven_validation_id: str
+    stage_index: int
+    target_path_hash: str
+    rolled_back_by: str
+    rolled_back_at: str
+    reason_code: str  # 'maven_validation_failed' or 'patch_application_failed'
+    redacted_summary: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class V1PatchMavenValidationRecord:
     """Immutable record of a typed Maven validation after patch application.
 
