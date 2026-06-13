@@ -391,3 +391,137 @@ export type ProofReportEntry = {
   generated_at: string;
   generated_by: string;
 };
+
+// ── V2 migration cockpit types ──────────────────────────────────────
+
+export type V2MigrationJobResponse = {
+  job_id: string;
+  setup_id: string;
+  setup_checksum: string;
+  pipeline_id: string;
+  stages: V2StageEntry[];
+  created_at: string;
+};
+
+export type V2StageEntry = {
+  stage_index: number;
+  stage_run_id: string;
+  pipeline_stage: string;
+  input_source_kind: string;
+  chain_status: string;
+};
+
+export type V2StageCommandResponse = {
+  command_id: string;
+  job_id: string;
+  stage_index: number;
+  manifest_checksum: string;
+  argv: string[];
+  created_at: string;
+};
+
+export type V2ApprovalResponse = {
+  card_id: string;
+  interrupt_id: string;
+  request_checksum: string;
+  stage_index: number;
+  summary: string;
+  status: string;
+  created_at: string;
+};
+
+export type V2ResumeCommandResponse = {
+  resume_id: string;
+  card_id: string;
+  decision: string;
+  job_id: string;
+  stage_index: number;
+  command: string[];
+};
+
+export type V2AssistantMessageResponse = {
+  message_id: string;
+  job_id: string;
+  role: string;
+  content: string;
+  correlation_id: string | null;
+  created_at: string;
+};
+
+export type V2AssistantMessagesListResponse = {
+  job_id: string;
+  messages: V2AssistantMessageResponse[];
+};
+
+export type V2DraftActionResponse = {
+  action_id: string;
+  job_id: string;
+  action_type: string;
+  reason: string;
+  stage_index: number;
+  payload_checksum: string;
+  status: string;
+  created_at: string;
+};
+
+export type V2StageContinuationResponse = {
+  continuation_id: string;
+  job_id: string;
+  from_stage: number;
+  to_stage: number;
+  sandbox_path: string;
+  argv: string[];
+  status: string;
+  reason: string;
+};
+
+export type V2SettingsResponse = {
+  azure: {
+    profile_id: string;
+    provider: string;
+    endpoint: { env_ref: string; configured: boolean };
+    roles: Record<string, {
+      env_ref: string;
+      configured: boolean;
+      deployment_label: string;
+      enabled: boolean;
+    }>;
+  };
+  local_mode: {
+    enabled: boolean;
+    allowed_source_roots: string[];
+    allowed_output_roots: string[];
+  };
+};
+
+export type V2SetupResponse = {
+  setup_id: string;
+  run_name: string;
+  legacy_app_path: string;
+  output_parent_path: string;
+  ai_hub_path: string;
+  java_homes: Record<string, string>;
+  maven_cmd: string;
+  proof_level: string;
+  skip_endpoint_smoke: boolean;
+  migration_flags: Record<string, unknown>;
+  setup_checksum: string;
+  created_at: string;
+};
+
+export type V2PreflightResponse = {
+  preflight_id: string;
+  setup_id: string;
+  all_ready: boolean;
+  readiness: Record<string, boolean>;
+  warnings: string[];
+  errors: string[];
+  checked_at: string;
+};
+
+export type V2ReadinessResponse = {
+  ready: boolean;
+  setup_checksum: string;
+  preflight_checksum_match: boolean;
+  gates: Record<string, boolean>;
+};

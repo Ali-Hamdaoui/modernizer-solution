@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
 
 interface Stage {
   stage_index: number;
@@ -12,8 +13,8 @@ interface Stage {
 interface CockpitData {
   job_id: string;
   stages: Stage[];
-  approvals: Array<{ id: string; status: string }>;
-  messages: Array<{ id: string; role: string; content: string }>;
+  approvals: Array<{ card_id: string; status: string; summary: string; request_checksum: string }>;
+  messages: Array<{ message_id: string; role: string; content: string }>;
 }
 
 export function MigrationCockpit({ jobId }: { jobId: string }) {
@@ -21,17 +22,51 @@ export function MigrationCockpit({ jobId }: { jobId: string }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Simulated data load — real API integration follows
-    setData({
-      job_id: jobId,
-      stages: [
-        { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "queued", input_source_kind: "legacy_source" },
-        { stage_index: 2, pipeline_stage: "Stage 2", chain_status: "pending", input_source_kind: "stage_1_sandbox" },
-        { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "pending", input_source_kind: "stage_2_sandbox" },
-      ],
-      approvals: [],
-      messages: [],
-    });
+    let cancelled = false;
+    async function loadCockpit() {
+      try {
+        // Fetch real V2 data
+        const [messagesRes, approvalsRes, commandsRes] = await Promise.allSettled([
+          fetch(`${API_BASE}/v1/v2/jobs/${encodeURIComponent(jobId)}/assistant/messages`, {
+            headers: { Host: "127.0.0.1:8000" },
+          }),
+          fetch(`${API_BASE}/v1/v2/jobs/${encodeURIComponent(jobId)}/approvals`, {
+            headers: { Host: "127.0.0.1:8000" },
+          }),
+          fetch(`${API_BASE}/v1/v2/migration-jobs/${encodeURIComponent(jobId)}/stages`, {
+            headers: { Host: "127.0.0.1:8000" },
+          }),
+        ]);
+
+        if (cancelled) return;
+
+        // Parse responses (gracefully handle missing endpoints)
+        let messages: Array<{ message_id: string; role: string; content: string }> = [];
+        let approvals: Array<{ card_id: string; status: string; summary: string; request_checksum: string }> = [];
+        let stages: Stage[] = [
+          { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "queued", input_source_kind: "legacy_source" },
+          { stage_index: 2, pipeline_stage: "Stage 2", chain_status: "pending", input_source_kind: "stage_1_sandbox" },
+          { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "pending", input_source_kind: "stage_2_sandbox" },
+        ];
+
+        if (messagesRes.status === "fulfilled" && messagesRes.value.ok) {
+          const body = await messagesRes.value.json();
+          messages = body.messages || [];
+        }
+        if (approvalsRes.status === "fulfilled" && approvalsRes.value.ok) {
+          const body = await approvalsRes.value.json();
+          approvals = body.approvals || [];
+        }
+
+        setData({ job_id: jobId, stages, approvals, messages });
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Failed to load cockpit");
+        }
+      }
+    }
+    loadCockpit();
+    return () => { cancelled = true; };
   }, [jobId]);
 
   if (error) return <div className="error-box">{error}</div>;
@@ -74,7 +109,7 @@ export function MigrationCockpit({ jobId }: { jobId: string }) {
           <p className="meta">No pending decisions.</p>
         ) : (
           data.approvals.map((a) => (
-            <div key={a.id} className="approval-card">
+            <div key={a.card_id} className="approval-card">
               <span>Status: {a.status}</span>
             </div>
           ))
@@ -89,7 +124,7 @@ export function MigrationCockpit({ jobId }: { jobId: string }) {
           <p className="meta">No messages yet. The assistant can explain status and draft instructions.</p>
         ) : (
           data.messages.map((m) => (
-            <div key={m.id} className="message">
+            <div key={m.message_id} className="message">
               <strong>{m.role}:</strong> {m.content}
             </div>
           ))
