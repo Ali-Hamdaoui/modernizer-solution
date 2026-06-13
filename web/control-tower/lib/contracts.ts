@@ -358,3 +358,36 @@ export type RepairProposalListResponse = {
   command_id: string;
   proposals: FakeRepairProposalEntry[];
 };
+
+// ── Proof and final report panel types (V1-18G) ───────────────────
+
+export type ProofGateEntry = {
+  stage_index: number;
+  output_checksum: string;
+  proof_gate_checksum: string;
+  chain_status: string;
+};
+
+export type ProofGatesResponse = {
+  job_id: string;
+  gates: Record<string, string>;
+  gate_count: number;
+  required_gates: number;
+  algorithm: string;
+};
+
+export type ProofReportEntry = {
+  report_id: string;
+  job_id: string;
+  report_version: number;
+  report_checksum: string;
+  gate_count: number;
+  all_gates_present: boolean;
+  proof_complete: boolean;
+  target_proof_level: string;
+  pipeline_id: string;
+  summary: Record<string, unknown>;
+  gates: ProofGateEntry[];
+  generated_at: string;
+  generated_by: string;
+};
