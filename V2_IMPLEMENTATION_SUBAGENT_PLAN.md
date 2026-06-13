@@ -6,6 +6,47 @@ Stable V1 baseline: `DEMO2` at `1b84b60`
 Product source of truth: `improvmentV2.md`
 Do not replace or rewrite `improvmentV2.md`.
 
+## 0. How to Use This Document
+
+If you are A1-A14, read only these sections before editing:
+
+- `1. Global Idea`
+- `2. Final Product Vision`
+- `3. Non-Negotiable Rules`
+- `5. Full Dependency Map`
+- `6. Subagent Roster`
+- your own `A<N>` dossier under `7. Detailed Dossiers`
+- `8. Integration Gates`
+- `9. Testing Strategy`
+- `10. Review Gates`
+
+If you are A15 Security Review Agent, read all dossiers and all changed code.
+
+If you are A16 Test Discipline Agent, read all dossiers, all test sections, `9. Testing Strategy`, and `11. Final V2 Acceptance`.
+
+Do not read or implement adjacent agent dossiers unless your own dossier says it depends on them. Dependency names tell you merge order and contract shape; they do not grant scope to implement dependency work.
+
+### Subagent Direct Map
+
+| Agent ID | Agent name | Direct dossier heading | Must-read shared sections | Must-not-read/implement | Branch | PR base | Primary tests |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| A1 | Backend Settings & Redaction Agent | `### A1 Backend Settings & Redaction Agent` | 1, 2, 3, 5, 6, 8, 9, 10 | A2-A16 dossiers; Azure calls; UI | `v2/a1-backend-settings-redaction` | `V2IMPROVMENT` | API security and settings redaction tests |
+| A2 | Local Env Parser Agent | `### A2 Local Env Parser Agent` | 1, 2, 3, 5, 6, 8, 9, 10 | A3-A16 dossiers; path validation; persistence | `v2/a2-local-env-parser` | `V2IMPROVMENT` | parser and API contract tests |
+| A3 | Setup Persistence & Preflight Agent | `### A3 Setup Persistence & Preflight Agent` | 1, 2, 3, 5, 6, 8, 9, 10 | A4-A16 dossiers; Azure health; job start | `v2/a3-setup-preflight` | `V2IMPROVMENT` | setup/preflight and create job regressions |
+| A4 | Azure Readiness Agent | `### A4 Azure Readiness Agent` | 1, 2, 3, 5, 6, 8, 9, 10 | A5-A16 dossiers; migration start gating | `v2/a4-azure-readiness` | `V2IMPROVMENT` | model profile, health, security tests |
+| A5 | New Migration Frontend Agent | `### A5 New Migration Frontend Agent` | 1, 2, 3, 5, 6, 8, 9, 10 | A6-A16 dossiers; backend execution; cockpit | `v2/a5-new-migration-frontend` | `V2IMPROVMENT` | frontend parser/readiness/start gating tests |
+| A6 | Migration Job Creation Agent | `### A6 Migration Job Creation Agent` | 1, 2, 3, 5, 6, 8, 9, 10 | A7-A16 dossiers; worker launch | `v2/a6-migration-job-creation` | `V2IMPROVMENT` | job creation and command/query tests |
+| A7 | Worker Stage Execution Agent | `### A7 Worker Stage Execution Agent` | 1, 2, 3, 5, 6, 8, 9, 10 | A8-A16 dossiers; approval resume; Stage 2/3 auto-progression | `v2/a7-worker-stage-execution` | `V2IMPROVMENT` | worker launch and command manifest tests |
+| A8 | Stage Auto-Progression Agent | `### A8 Stage Auto-Progression Agent` | 1, 2, 3, 5, 6, 8, 9, 10 | A10-A16 dossiers; manual stage controls | `v2/a8-stage-auto-progression` | `V2IMPROVMENT` | V1-08 continuation and proof gate tests |
+| A9 | LangGraph Approval Mapping Agent | `### A9 LangGraph Approval Mapping Agent` | 1, 2, 3, 5, 6, 8, 9, 10 | A8, A10-A16 dossiers unless needed for dependency contract; direct graph execution | `v2/a9-langgraph-approval-mapping` | `V2IMPROVMENT` | approval/resume checksum and idempotency tests |
+| A10 | Assistant Chat Instruction Agent | `### A10 Assistant Chat Instruction Agent` | 1, 2, 3, 5, 6, 8, 9, 10 | A12-A16 dossiers; direct execution/model provider work unless A11 exists | `v2/a10-assistant-chat-instruction` | `V2IMPROVMENT` | assistant and pending action tests |
+| A11 | Azure Model Calls & Structured Outputs Agent | `### A11 Azure Model Calls & Structured Outputs Agent` | 1, 2, 3, 5, 6, 8, 9, 10 | A10, A12-A16 dossiers; frontend cockpit | `v2/a11-model-calls-structured-outputs` | `V2IMPROVMENT` | schema, audit, redaction, provider error tests |
+| A12 | Repair/Proposal Flow Agent | `### A12 Repair/Proposal Flow Agent` | 1, 2, 3, 5, 6, 8, 9, 10 | A13-A16 dossiers; legacy source mutation; arbitrary shell | `v2/a12-repair-proposal-flow` | `V2IMPROVMENT` | V1-14/V1-15/V1-17 repair/action tests |
+| A13 | Cockpit Frontend Agent | `### A13 Cockpit Frontend Agent` | 1, 2, 3, 5, 6, 8, 9, 10 | A14-A16 dossiers; backend implementation; stage-start buttons | `v2/a13-cockpit-frontend` | `V2IMPROVMENT` | cockpit, SSE, approval UI, accessibility tests |
+| A14 | UAT/Operator Runbook Agent | `### A14 UAT/Operator Runbook Agent` | 1, 2, 3, 5, 6, 8, 9, 10 | A15-A16 dossiers; product code | `v2/a14-uat-operator-runbook` | `V2IMPROVMENT` | docs checks and `git diff --check` |
+| A15 | Security Review Agent | `### A15 Security Review Agent` | all sections, all A1-A13 dossiers, all changed code | broad refactors; feature implementation beyond focused fixes | `v2/a15-security-review` | `V2IMPROVMENT` | targeted security, redaction, approval, worker, frontend env scans |
+| A16 | Test Discipline Agent | `### A16 Test Discipline Agent` | all sections, all dossiers, all test sections, final acceptance | feature implementation; weakened skips | `v2/a16-test-discipline` | `V2IMPROVMENT` | backend suite, frontend suite, V2 acceptance gaps |
+
 ## 1. Global Idea
 
 V2 turns the Control Tower from a diagnostic job UI into a local migration cockpit. Work is split into small subagent missions so backend settings, local setup parsing, preflight, Azure readiness, migration job creation, worker execution, approvals, assistant, repair, cockpit UI, UAT, security, and tests can advance independently and merge through one integration branch.
@@ -108,6 +149,18 @@ Observed baseline:
 ### A1 Backend Settings & Redaction Agent
 
 - Mission: Add backend settings primitives and V2 redaction rules for local mode and Azure env refs.
+- Read first: `1. Global Idea`, `2. Final Product Vision`, `3. Non-Negotiable Rules`, `5. Full Dependency Map`, `6. Subagent Roster`, this `A1` dossier, `8. Integration Gates`, `9. Testing Strategy`, `10. Review Gates`.
+- Context boundary: inspect only A1-listed files and direct call sites. Do not inspect or implement A2-A16 dossiers, Azure live calls, setup parsing, or UI.
+- Implementation entrypoint: open `migration_factory/control_tower/application/redaction.py`, `migration_factory/control_tower/application/context_pack_redaction.py`, `migration_factory/control_tower/adapters/fastapi/app.py`, and `tests/control_tower/test_api_security.py` first.
+- Web/official docs to check: OpenAI Codex AGENTS.md `https://developers.openai.com/codex/guides/agents-md`, OpenAI Codex Subagents `https://developers.openai.com/codex/subagents`, OpenAI Codex Skills `https://developers.openai.com/codex/skills`, FastAPI settings `https://fastapi.tiangolo.com/advanced/settings/`, Microsoft Foundry Agent Service `https://learn.microsoft.com/en-us/azure/foundry/agents/overview`, Azure OpenAI structured outputs `https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/structured-outputs`.
+- Prompt starter for this subagent:
+  ```text
+  /goal Implement A1 Backend Settings & Redaction Agent.
+  Branch: v2/a1-backend-settings-redaction
+  Base: V2IMPROVMENT
+  Read: sections 1, 2, 3, 5, 6, A1 dossier, 8, 9, 10.
+  Do not implement: Azure live calls, setup parser, UI.
+  ```
 - Source context: `improvmentV2.md:275-368`, `342-353`, `1106-1143`.
 - Repo files to inspect: `migration_factory/control_tower/application/redaction.py`, `context_pack_redaction.py`, `adapters/fastapi/app.py`, `adapters/fastapi/security.py`, `infrastructure/sqlite/migrations`, `tests/control_tower/test_api_security.py`.
 - Likely files to change: new settings module, redaction helpers, FastAPI dependency wiring, focused tests.
@@ -126,6 +179,18 @@ Observed baseline:
 ### A2 Local Env Parser Agent
 
 - Mission: Parse pasted PowerShell env blocks into typed local setup fields without execution.
+- Read first: `1. Global Idea`, `2. Final Product Vision`, `3. Non-Negotiable Rules`, `5. Full Dependency Map`, `6. Subagent Roster`, this `A2` dossier, `8. Integration Gates`, `9. Testing Strategy`, `10. Review Gates`.
+- Context boundary: inspect only parser/API contract paths named here plus A1 redaction interfaces as needed. Do not inspect or implement A3-A16 dossiers, path validation, persistence, or migration start.
+- Implementation entrypoint: open `migration_factory/control_tower/adapters/fastapi/app.py`, `migration_factory/control_tower/application/dto.py`, and focused `tests/control_tower` parser/API tests first.
+- Web/official docs to check: OpenAI Codex AGENTS.md `https://developers.openai.com/codex/guides/agents-md`, OpenAI Codex Subagents `https://developers.openai.com/codex/subagents`, OpenAI Codex Skills `https://developers.openai.com/codex/skills`, FastAPI request bodies `https://fastapi.tiangolo.com/tutorial/body/`.
+- Prompt starter for this subagent:
+  ```text
+  /goal Implement A2 Local Env Parser Agent.
+  Branch: v2/a2-local-env-parser
+  Base: V2IMPROVMENT
+  Read: sections 1, 2, 3, 5, 6, A2 dossier, 8, 9, 10.
+  Do not implement: path validation, persistence, migration start.
+  ```
 - Source context: `improvmentV2.md:190-274`, `1011-1051`.
 - Repo files to inspect: FastAPI request schemas in `adapters/fastapi/app.py`, contracts in `application/dto.py`, tests in `tests/control_tower`.
 - Likely files to change: parser service, API schemas/endpoints, parser tests.
@@ -144,6 +209,18 @@ Observed baseline:
 ### A3 Setup Persistence & Preflight Agent
 
 - Mission: Persist local migration setup drafts and compute deterministic readiness.
+- Read first: `1. Global Idea`, `2. Final Product Vision`, `3. Non-Negotiable Rules`, `5. Full Dependency Map`, `6. Subagent Roster`, this `A3` dossier, `8. Integration Gates`, `9. Testing Strategy`, `10. Review Gates`.
+- Context boundary: inspect only setup/preflight persistence and readiness paths named here, plus A1/A2 public contracts as needed. Do not inspect or implement A4-A16 dossiers, Azure health, job start, or UI.
+- Implementation entrypoint: open SQLite migrations/repositories, `migration_factory/control_tower/application/runner_readiness.py`, `migration_factory/control_tower/application/v1_route_lock.py`, `migration_factory/control_tower/application/services.py`, and `tests/control_tower/test_create_migration_job.py` first.
+- Web/official docs to check: OpenAI Codex AGENTS.md `https://developers.openai.com/codex/guides/agents-md`, OpenAI Codex Subagents `https://developers.openai.com/codex/subagents`, OpenAI Codex Skills `https://developers.openai.com/codex/skills`, FastAPI request bodies `https://fastapi.tiangolo.com/tutorial/body/`.
+- Prompt starter for this subagent:
+  ```text
+  /goal Implement A3 Setup Persistence & Preflight Agent.
+  Branch: v2/a3-setup-preflight
+  Base: V2IMPROVMENT
+  Read: sections 1, 2, 3, 5, 6, A3 dossier, 8, 9, 10.
+  Do not implement: Azure health, job start, UI.
+  ```
 - Source context: `improvmentV2.md:369-478`, `705-792`, `1011-1051`.
 - Repo files to inspect: SQLite repositories/migrations, `runner_readiness.py`, `v1_route_lock.py`, `services.py`, `tests/control_tower/test_create_migration_job.py`.
 - Likely files to change: append-only migration, setup/preflight repositories, application service, FastAPI endpoints, tests.
@@ -162,6 +239,18 @@ Observed baseline:
 ### A4 Azure Readiness Agent
 
 - Mission: Add redacted Azure model profile and role health checks that do not block deterministic start.
+- Read first: `1. Global Idea`, `2. Final Product Vision`, `3. Non-Negotiable Rules`, `5. Full Dependency Map`, `6. Subagent Roster`, this `A4` dossier, `8. Integration Gates`, `9. Testing Strategy`, `10. Review Gates`.
+- Context boundary: inspect only model profile/readiness paths and A1 settings/redaction contracts. Do not inspect or implement A5-A16 dossiers, setup persistence, migration start gating, or assistant/model proposal flows.
+- Implementation entrypoint: open `migration_factory/control_tower/domain/model_profiles.py`, `migration_factory/control_tower/infrastructure/sqlite/v1_model_profile_repository.py`, model invocation tests, and `migration_factory/control_tower/adapters/fastapi/app.py` first.
+- Web/official docs to check: OpenAI Codex AGENTS.md `https://developers.openai.com/codex/guides/agents-md`, OpenAI Codex Subagents `https://developers.openai.com/codex/subagents`, OpenAI Codex Skills `https://developers.openai.com/codex/skills`, FastAPI settings `https://fastapi.tiangolo.com/advanced/settings/`, Microsoft Foundry Agent Service `https://learn.microsoft.com/en-us/azure/foundry/agents/overview`, Azure OpenAI structured outputs `https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/structured-outputs`.
+- Prompt starter for this subagent:
+  ```text
+  /goal Implement A4 Azure Readiness Agent.
+  Branch: v2/a4-azure-readiness
+  Base: V2IMPROVMENT
+  Read: sections 1, 2, 3, 5, 6, A4 dossier, 8, 9, 10.
+  Do not implement: full proposal generation, assistant chat, migration start gating.
+  ```
 - Source context: `improvmentV2.md:275-368`, `479-607`, `793-846`.
 - Repo files to inspect: `domain/model_profiles.py`, `v1_model_profile_repository.py`, model invocation tests, FastAPI app.
 - Likely files to change: model profile service/repository, health check service, API endpoints, tests.
@@ -180,6 +269,18 @@ Observed baseline:
 ### A5 New Migration Frontend Agent
 
 - Mission: Replace diagnostic form experience with `/migrations/new` setup, parser, readiness, and start gating UI.
+- Read first: `1. Global Idea`, `2. Final Product Vision`, `3. Non-Negotiable Rules`, `5. Full Dependency Map`, `6. Subagent Roster`, this `A5` dossier, `8. Integration Gates`, `9. Testing Strategy`, `10. Review Gates`.
+- Context boundary: inspect only frontend routes/contracts/tests named here and backend API contracts from A2/A3/A4. Do not inspect or implement A6-A16 dossiers, backend execution, Azure secret inputs, or cockpit.
+- Implementation entrypoint: open `web/control-tower/app/jobs/new`, `web/control-tower/lib/contracts.ts`, `web/control-tower/lib/controlTowerApi.ts`, and related frontend tests first.
+- Web/official docs to check: OpenAI Codex AGENTS.md `https://developers.openai.com/codex/guides/agents-md`, OpenAI Codex Subagents `https://developers.openai.com/codex/subagents`, OpenAI Codex Skills `https://developers.openai.com/codex/skills`, Next.js environment variables `https://nextjs.org/docs/app/guides/environment-variables`, Next.js Server and Client Components `https://nextjs.org/docs/app/getting-started/server-and-client-components`.
+- Prompt starter for this subagent:
+  ```text
+  /goal Implement A5 New Migration Frontend Agent.
+  Branch: v2/a5-new-migration-frontend
+  Base: V2IMPROVMENT
+  Read: sections 1, 2, 3, 5, 6, A5 dossier, 8, 9, 10.
+  Do not implement: cockpit, backend execution, Azure secret inputs.
+  ```
 - Source context: `improvmentV2.md:111-189`, `190-274`, `1052-1105`.
 - Repo files to inspect: `web/control-tower/app/jobs/new`, `lib/contracts.ts`, `lib/controlTowerApi.ts`, frontend tests.
 - Likely files to change: new route/components/tests/contracts; possibly preserve old route compatibility.
@@ -198,6 +299,18 @@ Observed baseline:
 ### A6 Migration Job Creation Agent
 
 - Mission: Create V2 parent migration job from a ready setup snapshot.
+- Read first: `1. Global Idea`, `2. Final Product Vision`, `3. Non-Negotiable Rules`, `5. Full Dependency Map`, `6. Subagent Roster`, this `A6` dossier, `8. Integration Gates`, `9. Testing Strategy`, `10. Review Gates`.
+- Context boundary: inspect job creation and stage ledger paths named here plus A3 setup/preflight contracts. Do not inspect or implement A7-A16 dossiers, worker launch, or auto-progression.
+- Implementation entrypoint: open `migration_factory/control_tower/application/commands.py`, `migration_factory/control_tower/application/services.py`, `migration_factory/control_tower/domain/entities.py`, and stage chain ledger tests first.
+- Web/official docs to check: OpenAI Codex AGENTS.md `https://developers.openai.com/codex/guides/agents-md`, OpenAI Codex Subagents `https://developers.openai.com/codex/subagents`, OpenAI Codex Skills `https://developers.openai.com/codex/skills`, FastAPI request bodies `https://fastapi.tiangolo.com/tutorial/body/`.
+- Prompt starter for this subagent:
+  ```text
+  /goal Implement A6 Migration Job Creation Agent.
+  Branch: v2/a6-migration-job-creation
+  Base: V2IMPROVMENT
+  Read: sections 1, 2, 3, 5, 6, A6 dossier, 8, 9, 10.
+  Do not implement: launch worker, auto-progression.
+  ```
 - Source context: `improvmentV2.md:608-704`, `932-970`, `1011-1051`.
 - Repo files to inspect: `application/commands.py`, `services.py`, `domain/entities.py`, stage chain ledger repos/tests.
 - Likely files to change: job creation command/service, setup binding, stage ledger rows, API endpoint tests.
@@ -216,6 +329,18 @@ Observed baseline:
 ### A7 Worker Stage Execution Agent
 
 - Mission: Queue and execute backend-owned Stage 1 orchestrator command manifest.
+- Read first: `1. Global Idea`, `2. Final Product Vision`, `3. Non-Negotiable Rules`, `5. Full Dependency Map`, `6. Subagent Roster`, this `A7` dossier, `8. Integration Gates`, `9. Testing Strategy`, `10. Review Gates`.
+- Context boundary: inspect worker launch/manifest paths named here plus A6 job contracts. Do not inspect or implement A8-A16 dossiers, approval resume, Stage 2/3 auto-progression, or UI.
+- Implementation entrypoint: open `migration_factory/control_tower/domain/manifests.py`, `migration_factory/control_tower/infrastructure/worker_launcher.py`, `migration_factory/control_tower/application/commands.py`, and worker launch tests first.
+- Web/official docs to check: OpenAI Codex AGENTS.md `https://developers.openai.com/codex/guides/agents-md`, OpenAI Codex Subagents `https://developers.openai.com/codex/subagents`, OpenAI Codex Skills `https://developers.openai.com/codex/skills`, LangGraph interrupts `https://docs.langchain.com/oss/python/langgraph/interrupts`, LangGraph persistence `https://docs.langchain.com/oss/python/langgraph/persistence`, GitHub PR checks `https://docs.github.com/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-pull-requests`.
+- Prompt starter for this subagent:
+  ```text
+  /goal Implement A7 Worker Stage Execution Agent.
+  Branch: v2/a7-worker-stage-execution
+  Base: V2IMPROVMENT
+  Read: sections 1, 2, 3, 5, 6, A7 dossier, 8, 9, 10.
+  Do not implement: approval resume, Stage 2/3 auto-progression.
+  ```
 - Source context: `improvmentV2.md:608-704`, especially `610-672`, `694-704`.
 - Repo files to inspect: `domain/manifests.py`, `infrastructure/worker_launcher.py`, `application/commands.py`, worker launch tests.
 - Likely files to change: command manifest type, worker argv/env builder, stage launch service/tests.
@@ -234,6 +359,18 @@ Observed baseline:
 ### A8 Stage Auto-Progression Agent
 
 - Mission: Automatically queue Stage 2 and Stage 3 from previous stage sandbox after gates pass.
+- Read first: `1. Global Idea`, `2. Final Product Vision`, `3. Non-Negotiable Rules`, `5. Full Dependency Map`, `6. Subagent Roster`, this `A8` dossier, `8. Integration Gates`, `9. Testing Strategy`, `10. Review Gates`.
+- Context boundary: inspect continuation/proof/ledger paths named here plus A7/A9 contracts. Do not inspect or implement A10-A16 dossiers, worker process implementation, proof report UI, or manual stage controls.
+- Implementation entrypoint: open stage continuation policy, ledger repositories, proof services, and V1-08 tests first.
+- Web/official docs to check: OpenAI Codex AGENTS.md `https://developers.openai.com/codex/guides/agents-md`, OpenAI Codex Subagents `https://developers.openai.com/codex/subagents`, OpenAI Codex Skills `https://developers.openai.com/codex/skills`, LangGraph interrupts `https://docs.langchain.com/oss/python/langgraph/interrupts`, LangGraph persistence `https://docs.langchain.com/oss/python/langgraph/persistence`, GitHub PR checks `https://docs.github.com/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-pull-requests`.
+- Prompt starter for this subagent:
+  ```text
+  /goal Implement A8 Stage Auto-Progression Agent.
+  Branch: v2/a8-stage-auto-progression
+  Base: V2IMPROVMENT
+  Read: sections 1, 2, 3, 5, 6, A8 dossier, 8, 9, 10.
+  Do not implement: worker process implementation, proof report UI.
+  ```
 - Source context: `improvmentV2.md:674-704`, `932-970`, `1348-1377`.
 - Repo files to inspect: stage continuation policy, ledger repos, proof services, V1-08 tests.
 - Likely files to change: continuation service, ledger status updates, queueing logic/tests.
@@ -252,6 +389,18 @@ Observed baseline:
 ### A9 LangGraph Approval Mapping Agent
 
 - Mission: Map orchestrator approval interrupts to Control Tower approvals and resume commands.
+- Read first: `1. Global Idea`, `2. Final Product Vision`, `3. Non-Negotiable Rules`, `5. Full Dependency Map`, `6. Subagent Roster`, this `A9` dossier, `8. Integration Gates`, `9. Testing Strategy`, `10. Review Gates`.
+- Context boundary: inspect approval/resume paths named here plus A7 command contracts. Do not inspect or implement A8/A10-A16 dossiers unless needed only for dependency shape; do not run graph execution in HTTP handlers.
+- Implementation entrypoint: open `orchestrator/resume.py`, approval repositories, action approval tests, and FastAPI approval endpoints first.
+- Web/official docs to check: OpenAI Codex AGENTS.md `https://developers.openai.com/codex/guides/agents-md`, OpenAI Codex Subagents `https://developers.openai.com/codex/subagents`, OpenAI Codex Skills `https://developers.openai.com/codex/skills`, LangGraph interrupts `https://docs.langchain.com/oss/python/langgraph/interrupts`, LangGraph persistence `https://docs.langchain.com/oss/python/langgraph/persistence`, GitHub PR checks `https://docs.github.com/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-pull-requests`.
+- Prompt starter for this subagent:
+  ```text
+  /goal Implement A9 LangGraph Approval Mapping Agent.
+  Branch: v2/a9-langgraph-approval-mapping
+  Base: V2IMPROVMENT
+  Read: sections 1, 2, 3, 5, 6, A9 dossier, 8, 9, 10.
+  Do not implement: direct graph execution in HTTP handler, UI implementation.
+  ```
 - Source context: `improvmentV2.md:608-704`, `971-991`, `1144-1189`.
 - Repo files to inspect: `orchestrator/resume.py`, approval repositories, action approval tests, FastAPI approval endpoints.
 - Likely files to change: interrupt artifact parser, approval service, resume command queue, tests.
@@ -270,6 +419,18 @@ Observed baseline:
 ### A10 Assistant Chat Instruction Agent
 
 - Mission: Add durable assistant messages, user instructions, and typed pending action drafts without execution.
+- Read first: `1. Global Idea`, `2. Final Product Vision`, `3. Non-Negotiable Rules`, `5. Full Dependency Map`, `6. Subagent Roster`, this `A10` dossier, `8. Integration Gates`, `9. Testing Strategy`, `10. Review Gates`.
+- Context boundary: inspect assistant/action paths named here plus A11 public contracts if merged. Do not inspect or implement A12-A16 dossiers, direct execution, approval, or real model provider work unless A11 exists.
+- Implementation entrypoint: open `assistant_message_service.py`, `assistant_tools.py`, assistant tests, and privileged action services/tests first.
+- Web/official docs to check: OpenAI Codex AGENTS.md `https://developers.openai.com/codex/guides/agents-md`, OpenAI Codex Subagents `https://developers.openai.com/codex/subagents`, OpenAI Codex Skills `https://developers.openai.com/codex/skills`, FastAPI request bodies `https://fastapi.tiangolo.com/tutorial/body/`.
+- Prompt starter for this subagent:
+  ```text
+  /goal Implement A10 Assistant Chat Instruction Agent.
+  Branch: v2/a10-assistant-chat-instruction
+  Base: V2IMPROVMENT
+  Read: sections 1, 2, 3, 5, 6, A10 dossier, 8, 9, 10.
+  Do not implement: direct execution, approval authority, real model provider work unless A11 exists.
+  ```
 - Source context: `improvmentV2.md:479-607`, `910-931`, `1011-1051`, `1052-1105`.
 - Repo files to inspect: `assistant_message_service.py`, `assistant_tools.py`, assistant tests, privileged actions.
 - Likely files to change: assistant message/action services, API endpoints, frontend chat component/tests if scoped.
@@ -288,6 +449,18 @@ Observed baseline:
 ### A11 Azure Model Calls & Structured Outputs Agent
 
 - Mission: Build context packs, model-call audit, and strict structured output schema flow.
+- Read first: `1. Global Idea`, `2. Final Product Vision`, `3. Non-Negotiable Rules`, `5. Full Dependency Map`, `6. Subagent Roster`, this `A11` dossier, `8. Integration Gates`, `9. Testing Strategy`, `10. Review Gates`.
+- Context boundary: inspect model/context/audit paths named here plus A1/A4 settings and health contracts. Do not inspect or implement A10/A12-A16 dossiers, frontend cockpit, or repair application.
+- Implementation entrypoint: open `context_packs.py`, `context_pack_redaction.py`, `plan_proposals.py`, `plan_reviews.py`, `repairs.py`, and model invocation audit tests first.
+- Web/official docs to check: OpenAI Codex AGENTS.md `https://developers.openai.com/codex/guides/agents-md`, OpenAI Codex Subagents `https://developers.openai.com/codex/subagents`, OpenAI Codex Skills `https://developers.openai.com/codex/skills`, FastAPI settings `https://fastapi.tiangolo.com/advanced/settings/`, Microsoft Foundry Agent Service `https://learn.microsoft.com/en-us/azure/foundry/agents/overview`, Azure OpenAI structured outputs `https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/structured-outputs`.
+- Prompt starter for this subagent:
+  ```text
+  /goal Implement A11 Azure Model Calls & Structured Outputs Agent.
+  Branch: v2/a11-model-calls-structured-outputs
+  Base: V2IMPROVMENT
+  Read: sections 1, 2, 3, 5, 6, A11 dossier, 8, 9, 10.
+  Do not implement: frontend cockpit, repair application.
+  ```
 - Source context: `improvmentV2.md:479-607`, `847-909`, `1011-1051`.
 - Repo files to inspect: `context_packs.py`, `context_pack_redaction.py`, `plan_proposals.py`, `plan_reviews.py`, `repairs.py`, model invocation audit.
 - Likely files to change: schema definitions, model provider adapter, audit repositories, tests.
@@ -306,6 +479,18 @@ Observed baseline:
 ### A12 Repair/Proposal Flow Agent
 
 - Mission: Convert failed stage evidence into bounded repair proposals and approved sandbox actions.
+- Read first: `1. Global Idea`, `2. Final Product Vision`, `3. Non-Negotiable Rules`, `5. Full Dependency Map`, `6. Subagent Roster`, this `A12` dossier, `8. Integration Gates`, `9. Testing Strategy`, `10. Review Gates`.
+- Context boundary: inspect repair/proposal/action paths named here plus A10/A11 contracts. Do not inspect or implement A13-A16 dossiers, legacy source mutation, arbitrary shell, or unapproved writes.
+- Implementation entrypoint: open `repairs.py`, `patch_policy.py`, patch apply/validate/rollback services, and repair panel/action approval tests first.
+- Web/official docs to check: OpenAI Codex AGENTS.md `https://developers.openai.com/codex/guides/agents-md`, OpenAI Codex Subagents `https://developers.openai.com/codex/subagents`, OpenAI Codex Skills `https://developers.openai.com/codex/skills`, Azure OpenAI structured outputs `https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/structured-outputs`.
+- Prompt starter for this subagent:
+  ```text
+  /goal Implement A12 Repair/Proposal Flow Agent.
+  Branch: v2/a12-repair-proposal-flow
+  Base: V2IMPROVMENT
+  Read: sections 1, 2, 3, 5, 6, A12 dossier, 8, 9, 10.
+  Do not implement: legacy source mutation, arbitrary shell.
+  ```
 - Source context: `improvmentV2.md:1144-1189`, `971-991`, `992-1010`.
 - Repo files to inspect: `repairs.py`, `patch_policy.py`, patch apply/validate/rollback services, repair panel tests.
 - Likely files to change: repair workflow services, proposal storage, action approval integration, tests.
@@ -324,6 +509,18 @@ Observed baseline:
 ### A13 Cockpit Frontend Agent
 
 - Mission: Build migration cockpit UI for stage progress, decisions, assistant, evidence, repairs, proof, and report.
+- Read first: `1. Global Idea`, `2. Final Product Vision`, `3. Non-Negotiable Rules`, `5. Full Dependency Map`, `6. Subagent Roster`, this `A13` dossier, `8. Integration Gates`, `9. Testing Strategy`, `10. Review Gates`.
+- Context boundary: inspect cockpit frontend routes/contracts/tests named here plus public API contracts from A6-A12. Do not inspect or implement A14-A16 dossiers, backend implementation, direct execution buttons, or stage-start controls.
+- Implementation entrypoint: open `web/control-tower/app/jobs/[jobId]`, existing panels/tests, `web/control-tower/lib/contracts.ts`, and `web/control-tower/lib/controlTowerApi.ts` first.
+- Web/official docs to check: OpenAI Codex AGENTS.md `https://developers.openai.com/codex/guides/agents-md`, OpenAI Codex Subagents `https://developers.openai.com/codex/subagents`, OpenAI Codex Skills `https://developers.openai.com/codex/skills`, Next.js environment variables `https://nextjs.org/docs/app/guides/environment-variables`, Next.js Server and Client Components `https://nextjs.org/docs/app/getting-started/server-and-client-components`.
+- Prompt starter for this subagent:
+  ```text
+  /goal Implement A13 Cockpit Frontend Agent.
+  Branch: v2/a13-cockpit-frontend
+  Base: V2IMPROVMENT
+  Read: sections 1, 2, 3, 5, 6, A13 dossier, 8, 9, 10.
+  Do not implement: backend implementation, direct execution buttons, stage-start controls.
+  ```
 - Source context: `improvmentV2.md:160-189`, `1052-1105`, `1218-1264`.
 - Repo files to inspect: `web/control-tower/app/jobs/[jobId]`, panels/tests, `lib/contracts.ts`, `lib/controlTowerApi.ts`.
 - Likely files to change: `/migrations/[jobId]` route, cockpit components, API client/contracts, tests.
@@ -342,6 +539,18 @@ Observed baseline:
 ### A14 UAT/Operator Runbook Agent
 
 - Mission: Create operator runbook and UAT checklist for local V2 flow.
+- Read first: `1. Global Idea`, `2. Final Product Vision`, `3. Non-Negotiable Rules`, `5. Full Dependency Map`, `6. Subagent Roster`, this `A14` dossier, `8. Integration Gates`, `9. Testing Strategy`, `10. Review Gates`.
+- Context boundary: inspect only operator/runbook docs and current endpoint/UI paths needed for accurate instructions. Do not inspect or implement A15-A16 dossiers or product code.
+- Implementation entrypoint: open `docs/system/09-how-to-run.md`, README docs, and existing operator docs first.
+- Web/official docs to check: OpenAI Codex AGENTS.md `https://developers.openai.com/codex/guides/agents-md`, OpenAI Codex Subagents `https://developers.openai.com/codex/subagents`, OpenAI Codex Skills `https://developers.openai.com/codex/skills`, Next.js environment variables `https://nextjs.org/docs/app/guides/environment-variables`, FastAPI settings `https://fastapi.tiangolo.com/advanced/settings/`.
+- Prompt starter for this subagent:
+  ```text
+  /goal Implement A14 UAT/Operator Runbook Agent.
+  Branch: v2/a14-uat-operator-runbook
+  Base: V2IMPROVMENT
+  Read: sections 1, 2, 3, 5, 6, A14 dossier, 8, 9, 10.
+  Do not implement: product code, tests beyond docs checks.
+  ```
 - Source context: `improvmentV2.md:1190-1264`, `1265-1290`, `1348-1377`.
 - Repo files to inspect: `docs/system/09-how-to-run.md`, README docs, any operator docs.
 - Likely files to change: new `OPERATOR_RUNBOOK.md` or docs path agreed by branch, UAT docs.
@@ -360,6 +569,18 @@ Observed baseline:
 ### A15 Security Review Agent
 
 - Mission: Review V2 integration for trust boundaries, redaction, approval, worker, model, and frontend secret exposure.
+- Read first: all sections in this document, all A1-A13 dossiers, `11. Final V2 Acceptance`, and all changed code in merged V2 branches under review.
+- Context boundary: inspect broadly for security only. Do not do broad refactors or feature implementation beyond focused blocker fixes and missing security regression tests.
+- Implementation entrypoint: open V2-touched files from git history, security tests, redaction helpers, approval/action services, worker launch code, model/context code, and frontend env usage first.
+- Web/official docs to check: OpenAI Codex AGENTS.md `https://developers.openai.com/codex/guides/agents-md`, OpenAI Codex Subagents `https://developers.openai.com/codex/subagents`, OpenAI Codex Skills `https://developers.openai.com/codex/skills`, FastAPI settings `https://fastapi.tiangolo.com/advanced/settings/`, Next.js environment variables `https://nextjs.org/docs/app/guides/environment-variables`, Microsoft Foundry Agent Service `https://learn.microsoft.com/en-us/azure/foundry/agents/overview`, Azure OpenAI structured outputs `https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/structured-outputs`, LangGraph interrupts `https://docs.langchain.com/oss/python/langgraph/interrupts`, LangGraph persistence `https://docs.langchain.com/oss/python/langgraph/persistence`.
+- Prompt starter for this subagent:
+  ```text
+  /goal Implement A15 Security Review Agent.
+  Branch: v2/a15-security-review
+  Base: V2IMPROVMENT
+  Read: all sections, A1-A13 dossiers, final acceptance, and all V2 changed code.
+  Do not implement: broad refactors or new features beyond focused security fixes.
+  ```
 - Source context: `improvmentV2.md:1106-1143`, plus all implementation sections.
 - Repo files to inspect: all V2-touched files, security tests, redaction helpers, frontend env usage.
 - Likely files to change: only focused fixes; otherwise review report docs/comments if requested.
@@ -378,6 +599,18 @@ Observed baseline:
 ### A16 Test Discipline Agent
 
 - Mission: Harden cross-cutting tests and verify V2 integration readiness.
+- Read first: all sections in this document, all dossiers, all `Tests to write` and `Commands` fields, `9. Testing Strategy`, and `11. Final V2 Acceptance`.
+- Context boundary: inspect broadly for test coverage and baseline classification only. Do not implement product features, weaken tests, or hide skips.
+- Implementation entrypoint: open `tests/control_tower`, `web/control-tower/tests`, V2 changed files, and existing V1 focused tests first.
+- Web/official docs to check: OpenAI Codex AGENTS.md `https://developers.openai.com/codex/guides/agents-md`, OpenAI Codex Subagents `https://developers.openai.com/codex/subagents`, OpenAI Codex Skills `https://developers.openai.com/codex/skills`, GitHub PR checks `https://docs.github.com/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-pull-requests`, Next.js Server and Client Components `https://nextjs.org/docs/app/getting-started/server-and-client-components`, FastAPI request bodies `https://fastapi.tiangolo.com/tutorial/body/`.
+- Prompt starter for this subagent:
+  ```text
+  /goal Implement A16 Test Discipline Agent.
+  Branch: v2/a16-test-discipline
+  Base: V2IMPROVMENT
+  Read: all sections, all dossiers, all test sections, testing strategy, final acceptance.
+  Do not implement: product features or weakened skips.
+  ```
 - Source context: `improvmentV2.md:1093-1105`, `1190-1264`, `1348-1377`.
 - Repo files to inspect: `tests/control_tower`, `web/control-tower/tests`, V2 changed files.
 - Likely files to change: missing or flaky tests only.

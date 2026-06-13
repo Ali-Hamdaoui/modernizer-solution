@@ -1,23 +1,22 @@
-# Modernizer Solution — Agent Instructions
+# Modernizer Solution Agent Instructions
 
 ## Purpose
 
 This repository builds the AI Migration Control Tower and modernization platform.
 
-Work is issue-driven:
+Work is branch-scoped and source-of-truth driven:
 
-* One issue = one branch = one local commit unless blocked.
-* The local issue file under `docs/full-implementation/` is the implementation source of truth.
-* Jira is tracking only. Do not require Jira access.
-* Do not implement adjacent issues, future issues, or cleanup work not explicitly owned by the assigned issue.
+* One assigned issue or V2 subagent mission = one branch = one local commit unless blocked or a review fix is required.
+* Jira is tracking only. Do not require Jira access or create Jira issues.
+* Do not implement adjacent issues, future issues, or cleanup work not explicitly owned by the assigned task.
 
 ## Output Limit
 
-Keep normal agent responses under **1500 tokens**. Be direct. Do not print long analysis, full files, or broad search logs unless asked.
+Keep normal agent responses under **1500 tokens**. Be direct. Do not print long analysis, full files, broad search logs, secrets, or tokens unless explicitly asked and safe.
 
 ## Required Skills
 
-Before implementation, read and use local skills from `.agents/skills/`:
+Before implementation, read and use local skills from `.agents/skills/` when present:
 
 * use `caveman` for simple, direct, low-token execution discipline
 * use `test-discipline` before planning, running, or reporting tests
@@ -27,7 +26,17 @@ Before implementation, read and use local skills from `.agents/skills/`:
 * use `subagent-driven-development` only for complex implementation tasks
 * use `to-issues` only for backlog splitting, not normal implementation
 
-## Start Workflow
+## Choose Work Mode First
+
+Use **Standard V1/AMF mode** when the task names a V1 issue ID such as `V1-06B1`, references `docs/full-implementation/`, or does not explicitly say it is V2 subagent work.
+
+Use **V2 subagent mode** when the task names a V2 agent such as `A5`, a `v2/<agent-id>-...` branch, `V2IMPROVMENT`, or `V2_IMPLEMENTATION_SUBAGENT_PLAN.md`.
+
+If the mode is unclear, stop and ask one concise question. Do not mix V1 and V2 workflows.
+
+## Standard V1/AMF Mode
+
+### V1 Start Workflow
 
 Always start from latest `DEMO2`.
 
@@ -55,55 +64,7 @@ git switch -c amf/<issue-id>-short-title
 
 If the branch already exists, switch to it. Do not reset, rebase, force-update, clean, or resolve divergence without approval.
 
-## V2IMPROVMENT Branch and Subagent Workflow
-
-`DEMO2` is the stable V1 baseline. Do not merge V2 subagent work directly to `DEMO2`.
-
-`V2IMPROVMENT` is the V2 integration branch and the only target branch for V2 subagent pull requests. Every V2 subagent must start from latest `origin/V2IMPROVMENT`, create one dedicated branch for one mission, and target its PR back to `V2IMPROVMENT`, not `DEMO2`.
-
-Required V2 branch pattern:
-
-```text
-v2/<agent-id>-<short-title>
-```
-
-Example:
-
-```text
-v2/a2-local-env-parser
-```
-
-V2 subagent rules:
-
-* One branch = one subagent mission.
-* Do not batch unrelated subagent missions.
-* Read `V2_IMPLEMENTATION_SUBAGENT_PLAN.md` before editing.
-* Read `improvmentV2.md` for product vision.
-* Follow the dossier for your agent.
-* Stage explicit files only; never `git add .`.
-* Never stage `web/control-tower/next-env.d.ts` unless the subagent task explicitly owns it.
-* Never print secrets/tokens.
-* Do not expose Azure secrets or deployment IDs to frontend.
-* Azure model health does not block deterministic migration start.
-* Backend owns Stage 1 -> Stage 2 -> Stage 3.
-* Chatbot cannot execute, approve, write files, change route, or change stages.
-* Every subagent must run focused tests plus affected regression tests.
-* Every subagent handoff must include branch, commit, tests, files changed, risks, and next dependency.
-
-Recommended V2 commands:
-
-```powershell
-git fetch --prune origin
-git switch V2IMPROVMENT
-git pull --ff-only origin V2IMPROVMENT
-git switch -c v2/<agent-id>-<short-title>
-
-# after work
-git push -u origin v2/<agent-id>-<short-title>
-gh pr create --repo Ali-Hamdaoui/modernizer-solution --base V2IMPROVMENT --head v2/<agent-id>-<short-title> --title "<title>" --body "<summary/tests/risks>"
-```
-
-## Issue File Workflow
+### V1 Issue File Workflow
 
 The assigned work must include a V1 ID, for example `V1-06B1`.
 
@@ -113,19 +74,9 @@ First locate the matching local issue file:
 Get-ChildItem docs/full-implementation -Filter "<V1-ID>*"
 ```
 
-Examples:
+Open the matching file first. Do not search the whole docs tree first. If no matching issue file exists, stop and report.
 
-```powershell
-Get-ChildItem docs/full-implementation -Filter "V1-06B1*"
-Get-ChildItem docs/full-implementation -Filter "V1-17D*"
-Get-ChildItem docs/full-implementation -Filter "V1-18G*"
-```
-
-Open the matching file first. Do not search the whole docs tree first.
-
-If no matching issue file exists, stop and report.
-
-## Source of Truth
+### V1 Source Of Truth
 
 Use this order:
 
@@ -139,56 +90,98 @@ Use this order:
 
 If sources conflict, stop and report. Do not guess.
 
+### V1 Branch Pattern
+
+Use:
+
+```text
+amf/<issue-id>-short-title
+```
+
+## V2 Subagent Mode
+
+`DEMO2` is the stable V1 baseline. Do not merge V2 subagent work directly to `DEMO2`.
+
+`V2IMPROVMENT` is the V2 integration branch and the only PR target for V2 subagent work. Every V2 subagent starts from latest `origin/V2IMPROVMENT`, creates one dedicated branch for one mission, and targets its PR back to `V2IMPROVMENT`.
+
+### V2 Quick Start
+
+```powershell
+git fetch --prune origin
+git switch V2IMPROVMENT
+git pull --ff-only origin V2IMPROVMENT
+git switch -c v2/<agent-id>-<short-title>
+```
+
+If the branch already exists, switch to it. Do not reset, rebase, force-update, clean, or resolve divergence without approval.
+
+### V2 Branch And PR Rules
+
+* Branch pattern: `v2/<agent-id>-<short-title>`.
+* PR base: `V2IMPROVMENT`, never `DEMO2`.
+* One subagent mission per branch.
+* One local commit per branch unless a review fix is required.
+* Do not batch unrelated subagent missions.
+* Do not create Jira issues.
+
+### V2 Source Documents
+
+Read in this order:
+
+1. `V2_IMPLEMENTATION_SUBAGENT_PLAN.md`
+2. the assigned agent dossier only
+3. `improvmentV2.md` only for product vision/context
+4. targeted repo files named by the dossier
+5. relevant `.agents/skills/` files
+
+Do not read all dossiers unless acting as A15 Security Review Agent, A16 Test Discipline Agent, or explicit V2 integration owner. Do not implement adjacent agent dossiers unless the assigned dossier says it depends on them.
+
+### V2 Non-Negotiables
+
+* Stage explicit files only; never `git add .`.
+* Never stage `web/control-tower/next-env.d.ts` unless explicitly owned.
+* Never print secrets/tokens.
+* Do not expose Azure secrets, endpoints, or deployment IDs to frontend.
+* Azure model health does not block deterministic migration start.
+* Backend owns the locked route and Stage 1 -> Stage 2 -> Stage 3.
+* Browser cannot choose commands, Maven goals, working dirs, model deployments, or Stage 2/3 inputs.
+* Chatbot cannot execute, approve, write files, change route, change stages, or override proof.
+* Worker executes backend-owned command manifests only.
+* Model outputs are proposals/evidence only; Maven/tests/proof artifacts are technical truth.
+
+### V2 Final Report
+
+Every V2 subagent final report must include:
+
+* branch
+* commit hash
+* PR target
+* files changed
+* tests with exact results
+* risks/deviations
+* next dependency
+* pushed or not pushed
+
 ## Token Discipline
 
-Before editing, read only:
+Before editing, read only the assigned source-of-truth documents, direct dependencies, targeted source/test files, and Graphify output only when needed.
 
-* assigned issue file
-* `00_IMPLEMENTATION_RULES.md` only if needed
-* `00_INDEX.md` only if file/dependency lookup is unclear
-* direct dependency issue files only if readiness is unclear
-* targeted source/test files named by the issue
-* Graphify output only when needed
+Avoid broad docs scans, recursive source scans before reading the assigned source, speculative architecture exploration, and implementation from memory.
 
-Avoid:
-
-* reading all issue files
-* recursive docs scans
-* broad source scans before reading the issue file
-* speculative architecture exploration
-* implementing from memory
-
-Use targeted `rg` only after understanding the assigned issue.
+Use targeted `rg` only after understanding the assigned task.
 
 ## Required Plan Before Editing
 
-Before any code change, produce a short plan:
+Before any code or doc change, produce a short plan:
 
-1. Issue contract:
-
-   * V1 ID
-   * issue file path
-   * goal
-   * owned scope
-   * acceptance criteria
-   * constraints
-   * dependencies
-
-2. Code target:
-
-   * exact files/classes/endpoints likely to change
-   * tests likely to add or update
-
-3. Test plan:
-
-   * focused tests from the issue
-   * affected regression tests
-   * hygiene checks
+1. Contract: ID/agent, source file, goal, owned scope, acceptance criteria, constraints, dependencies.
+2. Target: exact files/classes/endpoints/docs likely to change.
+3. Test plan: focused tests/checks, affected regression tests when relevant, hygiene checks.
 
 ## Scope Rules
 
-* Change only files required by the assigned issue.
-* Do not implement adjacent issues.
+* Change only files required by the assigned task.
+* Do not implement adjacent work.
 * Do not touch unrelated deleted docs.
 * Never use `git add .`.
 * Stage explicit issue-owned paths only.
@@ -220,20 +213,15 @@ No direct long-running work in API handlers.
 
 Persist commands before launch. Worker argv/env must be backend-owned. Approval/resume must be checksum/version guarded.
 
-Do not add dependencies unless the issue explicitly requires it.
+Do not add dependencies unless the assigned task explicitly requires it.
 
-Do not edit applied migrations. Add append-only migrations only when the issue requires persistence changes.
+Do not edit applied migrations. Add append-only migrations only when the assigned task requires persistence changes.
 
 ## Testing
 
 Use `.agents/skills/test-discipline` before test planning and final evidence.
 
-After editing, run:
-
-* focused tests from the issue file
-* affected regression tests
-* broader suite when practical
-* hygiene checks:
+After editing, run the focused checks from the assigned task plus hygiene checks:
 
 ```powershell
 git diff --check
@@ -241,7 +229,7 @@ git diff --cached --check
 git status --short
 ```
 
-Use real output. Do not weaken tests. Report unrelated baseline failures separately.
+Use real output. Do not weaken tests. Report unrelated baseline failures separately, with evidence.
 
 ## Commit Policy
 
@@ -256,14 +244,14 @@ git status --short
 git log -1 --oneline
 ```
 
-Do not push unless requested.
+Do not push unless requested. For V2 work, push only to the V2 branch or `V2IMPROVMENT` when the user explicitly requested direct integration-branch docs work.
 
 ## Stop Rules
 
 Stop and report if:
 
-* assigned issue file is missing
-* dependency work is incomplete or not merged into `DEMO2`
+* assigned issue file or V2 dossier is missing
+* dependency work is incomplete or not merged into the required base branch
 * acceptance cannot be met after 3 focused attempts
 * V1 invariants must change
 * arbitrary shell is needed
@@ -278,7 +266,8 @@ Stop and report if:
 Report only:
 
 * base branch and commit
-* issue branch
+* work branch
+* PR target when applicable
 * local commit hash
 * changed files
 * summary
@@ -286,4 +275,5 @@ Report only:
 * acceptance status
 * final `git status --short`
 * risks/deviations
+* next dependency when applicable
 * pushed or not pushed
