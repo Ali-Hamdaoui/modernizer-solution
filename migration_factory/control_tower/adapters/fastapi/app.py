@@ -117,6 +117,9 @@ from migration_factory.control_tower.application.env_parser import (
 from migration_factory.control_tower.application.v2_azure_health_service import (
     V2AzureHealthService,
 )
+from migration_factory.control_tower.application.v2_job_service import (
+    V2MigrationJobService,
+)
 from migration_factory.control_tower.application.v2_setup_service import (
     CreateSetupRequest,
     V2SetupService,
@@ -341,6 +344,11 @@ class CreateSetupRequestSchema(BaseModel):
 
 
 class PreflightRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    setup_id: str
+
+
+class CreateV2JobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     setup_id: str
 
@@ -758,6 +766,31 @@ def create_app(
             service = V2SetupService(uow.v2_setups)
             readiness = service.get_readiness(setup_id)
         return service.readiness_to_dict(readiness)
+
+    # ------------------------------------------------------------------
+    # V2 Migration job creation endpoint (A6)
+    # ------------------------------------------------------------------
+
+    @app.post("/v1/v2/migration-jobs", status_code=status.HTTP_201_CREATED)
+    def create_v2_job(
+        payload: CreateV2JobRequest,
+    ) -> dict[str, Any]:
+        """Create a V2 parent migration job from a ready setup.
+
+        Requires a setup with a current READY preflight. Azure-only
+        failures do not block job creation.
+        """
+        with unit_of_work_factory() as uow:
+            service = V2MigrationJobService(uow.v2_setups)
+            try:
+                result = service.create_job(payload.setup_id)
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "JOB_CREATION_FAILED",
+                    str(exc),
+                ) from exc
+        return service.result_to_dict(result)
 
     @app.get("/v1/model-profiles")
     def list_model_profiles() -> dict[str, Any]:
