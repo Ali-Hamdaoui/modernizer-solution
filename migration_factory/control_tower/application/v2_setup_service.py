@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -425,11 +426,13 @@ class V2SetupService:
         if not readiness["jdk21_ready"]:
             errors.append(f"JAVA21_HOME path does not exist: {record.java21_home}")
 
-        # Maven check (simulated for now)
-        maven_ready = _check_maven_path(record.maven_cmd)
-        readiness["maven_ready"] = maven_ready
-        if not maven_ready:
-            errors.append(f"Maven command path does not exist: {record.maven_cmd}")
+        maven_result = _validate_maven_command(record.maven_cmd)
+        readiness["maven_ready"] = maven_result.ready
+        if not maven_result.ready:
+            if maven_result.status == _ToolCheckStatus.PATH_MISSING:
+                errors.append(f"Maven command path does not exist: {record.maven_cmd}")
+            else:
+                errors.append(f"Maven command failed: {maven_result.message}")
 
         # Pipeline route (always ready for V2)
         readiness["pipeline_route_ready"] = True
@@ -476,6 +479,19 @@ class V2SetupService:
 _MAX_CAPTURE_BYTES = 4096
 # Subprocess timeout for version checks
 _VERSION_CHECK_TIMEOUT = 10.0
+
+
+class _ToolCheckStatus(str, Enum):
+    READY = "ready"
+    PATH_MISSING = "path_missing"
+    COMMAND_FAILED = "command_failed"
+
+
+@dataclass(frozen=True)
+class _ToolCheckResult:
+    ready: bool
+    status: _ToolCheckStatus
+    message: str = ""
 
 
 def _check_jdk_path(path: str, expected_major: int | None = None) -> bool:
@@ -559,10 +575,18 @@ def _check_maven_path(path: str) -> bool:
     Runs mvn --version with subprocess.run, shell=False, timeout,
     and bounds/redacts captured output.
     """
-    maven_path = Path(path)
-    if not maven_path.exists():
-        return False
+    return _validate_maven_command(path).ready
 
+
+def _validate_maven_command(path: str) -> _ToolCheckResult:
+    """Validate an explicit Maven executable path and version command."""
+    cleaned = _clean_operator_path(path)
+    maven_path = Path(cleaned)
+    if not maven_path.exists() or not maven_path.is_file():
+        return _ToolCheckResult(
+            ready=False,
+            status=_ToolCheckStatus.PATH_MISSING,
+        )
     try:
         result = subprocess.run(
             [str(maven_path), "--version"],
@@ -570,18 +594,65 @@ def _check_maven_path(path: str) -> bool:
             timeout=_VERSION_CHECK_TIMEOUT,
             capture_output=True,
             text=True,
-            env={},  # sanitized: no leaked env vars
+            env=_sanitized_subprocess_env(),
         )
-    except (subprocess.TimeoutExpired, OSError, ValueError):
-        return False
+    except subprocess.TimeoutExpired:
+        return _ToolCheckResult(
+            ready=False,
+            status=_ToolCheckStatus.COMMAND_FAILED,
+            message="mvn --version timed out",
+        )
+    except (OSError, ValueError) as exc:
+        return _ToolCheckResult(
+            ready=False,
+            status=_ToolCheckStatus.COMMAND_FAILED,
+            message=_bounded_redacted_text(str(exc)),
+        )
 
-    # Bound and redact output
-    output = (result.stdout or "")[:_MAX_CAPTURE_BYTES]
-    if result.returncode != 0 and not output.strip():
-        return False
+    output = _bounded_redacted_text("\n".join(
+        part for part in (result.stdout, result.stderr) if part
+    ))
+    if result.returncode != 0:
+        return _ToolCheckResult(
+            ready=False,
+            status=_ToolCheckStatus.COMMAND_FAILED,
+            message=output or f"mvn --version exited with code {result.returncode}",
+        )
 
-    # Verify output looks like Maven version info
-    return "Apache Maven" in output or "mvn" in output.lower() or result.returncode == 0
+    if "Apache Maven" in output or "mvn" in output.lower() or output.strip():
+        return _ToolCheckResult(ready=True, status=_ToolCheckStatus.READY)
+
+    return _ToolCheckResult(
+        ready=False,
+        status=_ToolCheckStatus.COMMAND_FAILED,
+        message="mvn --version returned no version output",
+    )
+
+
+def _clean_operator_path(path: str) -> str:
+    return path.strip().strip("\"'")
+
+
+def _sanitized_subprocess_env() -> dict[str, str]:
+    allowed_keys = (
+        "ComSpec",
+        "JAVA_HOME",
+        "M2_HOME",
+        "MAVEN_HOME",
+        "PATH",
+        "PATHEXT",
+        "SystemDrive",
+        "SystemRoot",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "windir",
+    )
+    return {key: value for key, value in os.environ.items() if key in allowed_keys}
+
+
+def _bounded_redacted_text(value: str) -> str:
+    return redact_absolute_paths(value[:_MAX_CAPTURE_BYTES])
 
 
 def _check_jdk_path_with_version(path: str, expected_major: int) -> bool:
@@ -592,35 +663,65 @@ def _check_jdk_path_with_version(path: str, expected_major: int) -> bool:
 def _check_ai_hub_profiles(hub: Path) -> bool:
     """Check for required AI Hub profiles."""
     profiles_dir = hub / "profiles"
-    if not profiles_dir.exists():
+    if not profiles_dir.is_dir():
         return False
-    required = [
+    required = (
         "springboot-2.1.6-to-2.7-java11",
         "springboot-2.7-to-3.5-java17",
         "springboot-3.5-java17-to-java21",
-    ]
-    return any(p.name in required for p in profiles_dir.iterdir()) if profiles_dir.is_dir() else False
+    )
+    return all((profiles_dir / f"{profile}.yaml").is_file() for profile in required)
 
 
 def _check_ai_hub_catalogs(hub: Path) -> bool:
     """Check for required AI Hub catalogs."""
-    catalogs_dir = hub / "catalogs"
-    if not catalogs_dir.exists():
+    profiles_dir = hub / "profiles"
+    catalogs_dir = hub / "catalogs" / "openrewrite"
+    if not profiles_dir.is_dir() or not catalogs_dir.is_dir():
         return False
-    required = [
-        "springboot-2.1.6-to-2.7-java11.yaml",
-        "springboot-2.7-to-3.5-java17.yaml",
-        "springboot-3.5-java17-to-java21.yaml",
-    ]
-    existing = [c.name for c in catalogs_dir.iterdir()] if catalogs_dir.is_dir() else []
-    return all(req in existing for req in required)
+    required_profiles = (
+        "springboot-2.1.6-to-2.7-java11",
+        "springboot-2.7-to-3.5-java17",
+        "springboot-3.5-java17-to-java21",
+    )
+    for profile in required_profiles:
+        profile_path = profiles_dir / f"{profile}.yaml"
+        catalog_path = _catalog_path_declared_by_profile(profile_path)
+        if catalog_path is None:
+            return False
+        if catalog_path.parts[:2] != ("catalogs", "openrewrite"):
+            return False
+        declared_catalog = hub.joinpath(*catalog_path.parts)
+        if declared_catalog.is_file():
+            continue
+        if profile == "springboot-2.7-to-3.5-java17" and catalog_path.name == "springboot-3.5-java17.yaml":
+            fallback_catalog = catalogs_dir / "springboot-3.5-java17.yaml"
+            if fallback_catalog.is_file():
+                continue
+        return False
+    return True
 
 
 def _check_ai_hub_policies(hub: Path) -> bool:
     """Check for required AI Hub policies."""
     policies_dir = hub / "policies"
-    if not policies_dir.exists():
+    if not policies_dir.is_dir():
         return False
-    required = ["planning", "safety", "transformation"]
-    existing = [p.name for p in policies_dir.iterdir()] if policies_dir.is_dir() else []
-    return any(req in existing for req in required)
+    required = ("planning", "safety", "transformation")
+    return all((policies_dir / f"{policy}.yaml").is_file() for policy in required)
+
+
+def _catalog_path_declared_by_profile(profile_path: Path) -> Path | None:
+    if not profile_path.is_file():
+        return None
+    try:
+        text = profile_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r"(?m)^\s*catalog_path:\s*[\"']?([^\"'\r\n#]+)", text)
+    if not match:
+        return None
+    raw = match.group(1).strip()
+    if not raw:
+        return None
+    return Path(raw)

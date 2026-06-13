@@ -83,6 +83,35 @@ def _api_client(tmp_path, app=None):
     return client, conn
 
 
+def _create_ai_hub_layout(root: Path) -> Path:
+    (root / "profiles").mkdir(parents=True)
+    (root / "catalogs" / "openrewrite").mkdir(parents=True)
+    (root / "policies").mkdir(parents=True)
+
+    profiles = {
+        "springboot-2.1.6-to-2.7-java11": "catalogs/openrewrite/springboot-2.1.6-to-2.7-java11.yaml",
+        "springboot-2.7-to-3.5-java17": "catalogs/openrewrite/springboot-3.5-java17.yaml",
+        "springboot-3.5-java17-to-java21": "catalogs/openrewrite/springboot-3.5-java17-to-java21.yaml",
+    }
+    for profile, catalog_path in profiles.items():
+        (root / "profiles" / f"{profile}.yaml").write_text(
+            f"id: {profile}\nopenrewrite:\n  catalog_path: {catalog_path}\n",
+            encoding="utf-8",
+        )
+
+    for catalog in (
+        "springboot-2.1.6-to-2.7-java11.yaml",
+        "springboot-3.5-java17.yaml",
+        "springboot-3.5-java17-to-java21.yaml",
+    ):
+        (root / "catalogs" / "openrewrite" / catalog).write_text("recipes: []\n", encoding="utf-8")
+
+    for policy in ("planning", "safety", "transformation"):
+        (root / "policies" / f"{policy}.yaml").write_text("rules: []\n", encoding="utf-8")
+
+    return root
+
+
 # ── Checksum tests ───────────────────────────────────────────────────
 
 
@@ -170,6 +199,40 @@ def test_run_preflight(service: V2SetupService, sample_request: CreateSetupReque
 def test_run_preflight_setup_not_found(service: V2SetupService) -> None:
     with pytest.raises(ValueError, match="not found"):
         service.run_preflight("nonexistent-setup")
+
+
+def test_preflight_reports_maven_command_failure_not_missing(
+    service: V2SetupService,
+    sample_request: CreateSetupRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from subprocess import CompletedProcess
+
+    def fake_run(*args, **kwargs):
+        return CompletedProcess(args=args, returncode=1, stdout="", stderr="bad maven")
+
+    maven_cmd = tmp_path / "mvn.cmd"
+    maven_cmd.touch()
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    request = CreateSetupRequest(
+        run_name=sample_request.run_name,
+        legacy_app_path=sample_request.legacy_app_path,
+        output_parent_path=sample_request.output_parent_path,
+        ai_hub_path=sample_request.ai_hub_path,
+        java11_home=sample_request.java11_home,
+        java17_home=sample_request.java17_home,
+        java21_home=sample_request.java21_home,
+        maven_cmd=f' "{maven_cmd}" ',
+    )
+    setup = service.create_setup(request)
+
+    preflight = service.run_preflight(setup.setup_id)
+
+    assert preflight.maven_ready is False
+    assert any("Maven command failed:" in error for error in preflight.errors)
+    assert not any("Maven command path does not exist" in error for error in preflight.errors)
 
 
 def test_get_readiness_no_preflight(service: V2SetupService, sample_request: CreateSetupRequest) -> None:
@@ -448,6 +511,50 @@ def test_preflight_table_is_append_only(connection: sqlite3.Connection) -> None:
     assert "v2_preflight_results_no_delete" in trigger_names
 
 
+# AI Hub readiness tests
+
+
+def test_ai_hub_accepts_profiles_openrewrite_catalogs_and_policies(tmp_path: Path) -> None:
+    from migration_factory.control_tower.application.v2_setup_service import (
+        _check_ai_hub_catalogs,
+        _check_ai_hub_policies,
+        _check_ai_hub_profiles,
+    )
+
+    hub = _create_ai_hub_layout(tmp_path / "ai-hub")
+
+    assert _check_ai_hub_profiles(hub)
+    assert _check_ai_hub_catalogs(hub)
+    assert _check_ai_hub_policies(hub)
+
+
+def test_ai_hub_rejects_missing_required_profile(tmp_path: Path) -> None:
+    from migration_factory.control_tower.application.v2_setup_service import _check_ai_hub_profiles
+
+    hub = _create_ai_hub_layout(tmp_path / "ai-hub")
+    (hub / "profiles" / "springboot-2.7-to-3.5-java17.yaml").unlink()
+
+    assert not _check_ai_hub_profiles(hub)
+
+
+def test_ai_hub_rejects_missing_declared_catalog(tmp_path: Path) -> None:
+    from migration_factory.control_tower.application.v2_setup_service import _check_ai_hub_catalogs
+
+    hub = _create_ai_hub_layout(tmp_path / "ai-hub")
+    (hub / "catalogs" / "openrewrite" / "springboot-2.1.6-to-2.7-java11.yaml").unlink()
+
+    assert not _check_ai_hub_catalogs(hub)
+
+
+def test_ai_hub_rejects_missing_required_policy(tmp_path: Path) -> None:
+    from migration_factory.control_tower.application.v2_setup_service import _check_ai_hub_policies
+
+    hub = _create_ai_hub_layout(tmp_path / "ai-hub")
+    (hub / "policies" / "safety.yaml").unlink()
+
+    assert not _check_ai_hub_policies(hub)
+
+
 # ── JDK/Maven subprocess validation tests (mocked) ──────────────────
 
 
@@ -623,6 +730,47 @@ class TestMavenSubprocessValidation:
             _check_maven_path,
         )
         mvn_path = tmp_path / "mvn"
+        mvn_path.touch()
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, "run", self._fake_subprocess_maven_ok)
+
+        assert _check_maven_path(str(mvn_path))
+
+    def test_maven_windows_cmd_path_ok(self, monkeypatch, tmp_path: Path) -> None:
+        """Quoted Windows mvn.cmd path is preserved and executed directly."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _check_maven_path,
+        )
+
+        mvn_path = tmp_path / "apache-maven" / "bin" / "mvn.cmd"
+        mvn_path.parent.mkdir(parents=True)
+        mvn_path.touch()
+        calls = []
+
+        def fake_run(*args, **kwargs):
+            calls.append((args, kwargs))
+            return self._fake_subprocess_maven_ok(*args, **kwargs)
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, "run", fake_run)
+
+        assert _check_maven_path(f' "{mvn_path}" ')
+        assert calls[0][0][0] == [str(mvn_path), "--version"]
+        assert calls[0][1]["shell"] is False
+        assert calls[0][1]["timeout"] == 10.0
+        assert calls[0][1]["capture_output"] is True
+        assert calls[0][1]["text"] is True
+        assert isinstance(calls[0][1]["env"], dict)
+
+    def test_maven_extensionless_path_ok(self, monkeypatch, tmp_path: Path) -> None:
+        """Extensionless mvn executable paths are accepted."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _check_maven_path,
+        )
+
+        mvn_path = tmp_path / "apache-maven" / "bin" / "mvn"
+        mvn_path.parent.mkdir(parents=True)
         mvn_path.touch()
 
         import subprocess as sp
