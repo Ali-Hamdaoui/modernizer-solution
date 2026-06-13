@@ -48,6 +48,12 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_azure_health_repos
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
     SqliteV2SetupRepository,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository import (
+    SqliteV2JobRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
+    SqliteV2CommandRepository,
+)
 
 
 class SqliteControlTowerUnitOfWork:
@@ -86,6 +92,8 @@ class SqliteControlTowerUnitOfWork:
         self.v1_patch_rollbacks = SqliteV1PatchRollbackRepository(connection)
         self.v2_setups = SqliteV2SetupRepository(connection)
         self.v2_azure_health = SqliteV2AzureHealthRepository(connection)
+        self.v2_jobs = SqliteV2JobRepository(connection)
+        self.v2_commands = SqliteV2CommandRepository(connection)
         self.v1_proof_reports = SqliteV1ProofReportRepository(connection)
         self.v1_proof_report_gates = SqliteV1ProofReportGateRepository(connection)
 
