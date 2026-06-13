@@ -138,6 +138,12 @@ from migration_factory.control_tower.application.v2_approval_mapping import (
 from migration_factory.control_tower.application.v2_stage_progression import (
     V2StageProgressionService,
 )
+from migration_factory.control_tower.application.v2_assistant_service import (
+    V2AssistantService,
+)
+from migration_factory.control_tower.application.v2_repair_flow import (
+    V2RepairFlowService,
+)
 from migration_factory.control_tower.adapters.fastapi.security import (
     MUTATION_METHODS,
     ActorProvider,
@@ -378,6 +384,36 @@ class StageProgressRequest(BaseModel):
     setup_id: str
     current_stage: int
     sandbox_path: str
+
+
+class AssistantMessageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    job_id: str
+    role: str
+    content: str
+    correlation_id: str | None = None
+
+
+class DraftActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    job_id: str
+    action_type: str
+    reason: str
+    stage_index: int = 1
+
+
+class CreateRepairProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    command_id: str
+    failure_summary: str
+    hypothesis: str
+    patch_summary: str
+    affected_paths: list[str]
+
+
+class ApproveRepairProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    approval_checksum: str
 
 
 @asynccontextmanager
@@ -931,6 +967,112 @@ def create_app(
     # ------------------------------------------------------------------
     # V2 Stage progression endpoint (A8/P0-005)
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # V2 Assistant endpoints (A10/P0-006)
+    # ------------------------------------------------------------------
+
+    @app.post("/v1/v2/jobs/{job_id}/assistant/messages")
+    def add_assistant_message(
+        job_id: str,
+        payload: AssistantMessageRequest,
+    ) -> dict[str, Any]:
+        """Add an assistant message. Does not execute anything."""
+        with unit_of_work_factory() as uow:
+            service = V2AssistantService(
+                assistant_repo=uow.v2_assistant,
+            )
+            msg = service.add_message(
+                job_id=payload.job_id,
+                role=payload.role,
+                content=payload.content,
+                correlation_id=payload.correlation_id,
+            )
+        return service.message_to_dict(msg)
+
+    @app.get("/v1/v2/jobs/{job_id}/assistant/messages")
+    def list_assistant_messages(
+        job_id: str,
+    ) -> dict[str, Any]:
+        """List assistant messages for a job."""
+        with unit_of_work_factory() as uow:
+            service = V2AssistantService(
+                assistant_repo=uow.v2_assistant,
+            )
+            messages = service.get_messages(job_id)
+        return {
+            "job_id": job_id,
+            "messages": [service.message_to_dict(m) for m in messages],
+        }
+
+    @app.post("/v1/v2/jobs/{job_id}/assistant/actions/draft")
+    def draft_assistant_action(
+        job_id: str,
+        payload: DraftActionRequest,
+    ) -> dict[str, Any]:
+        """Draft a pending action (does NOT execute).
+
+        The assistant CANNOT execute, approve, write files,
+        change route, or override proof.
+        """
+        with unit_of_work_factory() as uow:
+            service = V2AssistantService(
+                assistant_repo=uow.v2_assistant,
+            )
+            draft = service.draft_action(
+                job_id=payload.job_id,
+                action_type=payload.action_type,
+                reason=payload.reason,
+                stage_index=payload.stage_index,
+            )
+        return service.draft_to_dict(draft)
+
+    # ------------------------------------------------------------------
+    # V2 Repair flow endpoints (A12/P0-007)
+    # ------------------------------------------------------------------
+
+    @app.post("/v1/v2/commands/{command_id}/repair/flow-proposal")
+    def create_repair_proposal(
+        command_id: str,
+        payload: CreateRepairProposalRequest,
+    ) -> dict[str, Any]:
+        """Create a repair proposal from failed command evidence."""
+        with unit_of_work_factory() as uow:
+            service = V2RepairFlowService(
+                repair_repo=uow.v2_repairs,
+            )
+            proposal = service.create_proposal(
+                command_id=payload.command_id,
+                failure_summary=payload.failure_summary,
+                hypothesis=payload.hypothesis,
+                patch_summary=payload.patch_summary,
+                affected_paths=tuple(payload.affected_paths),
+            )
+        return service.proposal_to_dict(proposal)
+
+    @app.post("/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/approve")
+    def approve_repair_proposal(
+        command_id: str,
+        proposal_id: str,
+        payload: ApproveRepairProposalRequest,
+    ) -> dict[str, Any]:
+        """Approve a repair proposal with checksum."""
+        with unit_of_work_factory() as uow:
+            service = V2RepairFlowService(
+                repair_repo=uow.v2_repairs,
+            )
+            try:
+                proposal = service.approve_proposal(
+                    proposal_id=proposal_id,
+                    approval_checksum=payload.approval_checksum,
+                )
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "REPAIR_APPROVAL_FAILED",
+                    str(exc),
+                ) from exc
+        return service.proposal_to_dict(proposal)
 
     @app.post("/v1/v2/jobs/{job_id}/stages/progress")
     def progress_to_next_stage(
