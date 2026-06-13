@@ -161,6 +161,15 @@ class V2OrchestratorRunner:
         env_manifest: dict[str, Any],
         resume: bool = False,
     ) -> None:
+        if resume:
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="approval_started",
+                status="running",
+                message="Approval accepted; orchestrator resume process starting.",
+                payload={"command_id": command_id},
+            )
         self._event(
             job_id=job_id,
             stage=stage_index,
@@ -311,10 +320,22 @@ class V2OrchestratorRunner:
                 message=str(payload.get("message") or f"{phase} {status}"),
                 payload={"command_id": command_id, "source_phase": phase},
             )
+        # Map known orchestrator phases to canonical event types
+        canonical_type = _canonical_event_type(phase, suffix)
+        # When transform phase starts, emit approval_completed
+        if phase in ("sandbox_transform", "transform") and suffix == "started":
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="approval_completed",
+                status="completed",
+                message="Human approval phase complete; sandbox transform has started.",
+                payload={"command_id": command_id},
+            )
         self._event(
             job_id=job_id,
             stage=stage_index,
-            event_type=f"{phase}_{suffix}",
+            event_type=canonical_type,
             status=status,
             message=str(payload.get("message") or f"{phase} {status}"),
             payload={"command_id": command_id, **payload},
@@ -333,6 +354,7 @@ class V2OrchestratorRunner:
     ) -> None:
         if result:
             self._emit_artifacts(job_id=job_id, stage_index=stage_index, command_id=command_id, result=result)
+            self._emit_failure_repair_events(job_id=job_id, stage_index=stage_index, command_id=command_id, result=result)
 
         if exit_code != 0:
             self._event(
@@ -343,6 +365,9 @@ class V2OrchestratorRunner:
                 message=f"Orchestrator exited with code {exit_code}.",
                 payload={"command_id": command_id, "exit_code": exit_code, "stderr": _bounded(stderr)},
             )
+            # Emit build/transform failure events if result has diagnostics
+            if result:
+                self._emit_diagnostic_failure_events(job_id=job_id, stage_index=stage_index, command_id=command_id, result=result)
             return
 
         if result and result.get("status") == "human_approval_required":
@@ -373,14 +398,24 @@ class V2OrchestratorRunner:
             )
             return
 
+        # Check if result indicates a failure that didn't return non-zero exit code
+        final_status = str((result or {}).get("final_status", ""))
+        if final_status in ("FALLBACK_REPAIR_PLAN", "BUILD_FAILED_IN_SANDBOX", "TEST_FAILED"):
+            self._emit_diagnostic_failure_events(job_id=job_id, stage_index=stage_index, command_id=command_id, result=result or {})
+            # Don't proceed to completion if stage is clearly in failure state
+            if final_status == "BUILD_FAILED_IN_SANDBOX" or (result or {}).get("build_status") == "BUILD_FAILED_IN_SANDBOX":
+                return
+
         self._event(
             job_id=job_id,
             stage=stage_index,
             event_type="proof_updated",
             status="completed",
             message="Orchestrator result parsed into deterministic evidence.",
-            payload={"command_id": command_id, "final_status": (result or {}).get("final_status", "")},
+            payload={"command_id": command_id, "final_status": final_status},
         )
+
+        sandbox_path = (result or {}).get("sandbox_path", "")
         self._event(
             job_id=job_id,
             stage=stage_index,
@@ -389,10 +424,152 @@ class V2OrchestratorRunner:
             message=f"Stage {stage_index} real orchestrator completed.",
             payload={
                 "command_id": command_id,
-                "sandbox_path": (result or {}).get("sandbox_path", ""),
+                "sandbox_path": sandbox_path,
                 "exit_code": exit_code,
             },
         )
+
+        # Auto-progression: on success, queue next stage
+        if sandbox_path and stage_index in (1, 2):
+            self._auto_queue_next_stage(
+                job_id=job_id,
+                stage_index=stage_index,
+                sandbox_path=sandbox_path,
+            )
+
+    def _emit_failure_repair_events(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        result: dict[str, Any],
+    ) -> None:
+        """Emit structured events for failure/repair fields in orchestrator result."""
+        repair_status = str(result.get("repair_loop_status", ""))
+        copilot_status = str(result.get("copilot_invocation_status", ""))
+        fallback = result.get("repair_fallback_generated")
+
+        if repair_status == "FALLBACK_REPAIR_PLAN" or repair_status:
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="repair_started",
+                status="running",
+                message=f"Repair loop active: {repair_status}",
+                payload={"command_id": command_id, "repair_loop_status": repair_status},
+            )
+        if fallback in (True, "true", "True", 1, "yes"):
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="repair_fallback_generated",
+                status="completed",
+                message="Fallback repair plan generated.",
+                payload={"command_id": command_id},
+            )
+        if copilot_status == "INVALID_RESPONSE":
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="copilot_repair_invalid_response",
+                status="failed",
+                message="Copilot repair response was invalid.",
+                payload={"command_id": command_id, "copilot_invocation_status": copilot_status},
+            )
+
+    def _emit_diagnostic_failure_events(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        result: dict[str, Any],
+    ) -> None:
+        """Emit structured diagnostic events when stage build/transform fails."""
+        build_status = str(result.get("build_status", ""))
+        test_status = str(result.get("test_status", ""))
+        final_status = str(result.get("final_status", ""))
+        final_proof = str(result.get("final_proof_level", ""))
+        copilot_status = str(result.get("copilot_invocation_status", ""))
+        fallback = result.get("repair_fallback_generated")
+
+        if "BUILD_FAIL" in build_status or build_status:
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="build_failed",
+                status="failed",
+                message=f"Build result: {build_status}",
+                payload={
+                    "command_id": command_id,
+                    "build_status": build_status,
+                    "test_status": test_status,
+                },
+            )
+        if "FAIL" in final_status or "FALLBACK" in final_status:
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="transform_failed",
+                status="failed",
+                message=f"Transform/build failed: {final_status}",
+                payload={
+                    "command_id": command_id,
+                    "final_status": final_status,
+                    "final_proof_level": final_proof,
+                    "build_status": build_status,
+                    "copilot_invocation_status": copilot_status,
+                    "repair_fallback_generated": bool(fallback),
+                },
+            )
+
+    def _auto_queue_next_stage(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        sandbox_path: str,
+    ) -> None:
+        """On successful stage completion, queue and start the next stage."""
+        from migration_factory.control_tower.application.v2_stage_progression import V2StageProgressionService
+        next_stage = stage_index + 1
+        try:
+            with self._unit_of_work_factory() as uow:
+                job = uow.v2_jobs.get(job_id)
+                if job is None:
+                    return
+                service = V2StageProgressionService(
+                    setup_repo=uow.v2_setups,
+                    command_repo=uow.v2_commands,
+                )
+                result = service.queue_next_stage(
+                    job_id=job_id,
+                    setup_id=job.setup_id,
+                    current_stage=stage_index,
+                    sandbox_path=sandbox_path,
+                )
+                # Persist the next_stage_queued event
+                uow.v2_events.save(
+                    job_id=job_id,
+                    stage=next_stage,
+                    event_type="next_stage_queued",
+                    status="queued",
+                    message=f"Stage {next_stage} command manifest queued for real orchestrator execution.",
+                    payload={"from_stage": stage_index, "to_stage": next_stage, "sandbox_path": sandbox_path},
+                )
+                # Find the command we just persisted to start it
+                commands = uow.v2_commands.list_by_job(job_id)
+                next_command = None
+                for cmd in commands:
+                    if int(getattr(cmd, "stage_index", 0)) == next_stage:
+                        next_command = cmd
+                        break
+                if next_command:
+                    self.start(job_id=job_id, command_id=next_command.command_id)
+        except ValueError:
+            # Stage progression not possible (already at Stage 3 or missing setup)
+            pass
 
     def _emit_artifacts(
         self,
@@ -521,6 +698,22 @@ def _safe_artifact_ref(value: Any) -> str:
     if marker in text:
         return text[text.index(marker):]
     return _bounded(str(redact_public_value(text)))
+
+
+def _canonical_event_type(phase: str, suffix: str) -> str:
+    """Map orchestrator phase+status to canonical event type."""
+    # Explicit mapping for known phases
+    mapping = {
+        "transform": f"sandbox_transform_{suffix}",
+        "build": f"build_{suffix}",
+        "test": f"test_{suffix}",
+        "final_report": f"final_report_{suffix}",
+        "repair": f"repair_{suffix}",
+        "copilot_repair": f"copilot_repair_{suffix}",
+    }
+    if phase in mapping:
+        return mapping[phase]
+    return f"{phase}_{suffix}"
 
 
 def _bounded(value: str) -> str:

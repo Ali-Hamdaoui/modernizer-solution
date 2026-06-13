@@ -294,3 +294,148 @@ def test_openapi_json_includes_v2_paths(tmp_path: Path) -> None:
     assert "/v1/v2/jobs/{job_id}/approvals" in paths
     assert "/v1/v2/migration-jobs/{job_id}/events" in paths
     assert "/v1/v2/migration-jobs/{job_id}/pipeline" in paths
+    assert "/v1/v2/migration-jobs/{job_id}/failure-summary" in paths
+
+
+def test_v2_failure_summary_endpoint_when_no_failures(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_started_job(client, setup_id)
+
+    response = client.get(f"/v1/v2/migration-jobs/{job_id}/failure-summary")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["job_id"] == job_id
+    assert body["has_failures"] is False
+    assert body["repair_loop_active"] is False
+
+
+def test_v2_failure_summary_endpoint_with_failures(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_started_job(client, setup_id)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=1,
+            event_type="build_failed",
+            status="failed",
+            message="Build result kind: dependency_error",
+            payload={
+                "build_status": "BUILD_FAILED_IN_SANDBOX",
+                "final_status": "FALLBACK_REPAIR_PLAN",
+                "final_proof_level": "not_verified",
+                "repair_loop_status": "FALLBACK_REPAIR_PLAN",
+                "copilot_invocation_status": "INVALID_RESPONSE",
+                "repair_fallback_generated": True,
+            },
+        )
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=1,
+            event_type="repair_started",
+            status="running",
+            message="Repair loop active",
+            payload={"repair_loop_status": "FALLBACK_REPAIR_PLAN"},
+        )
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=1,
+            event_type="copilot_repair_invalid_response",
+            status="failed",
+            message="Copilot response invalid",
+            payload={"copilot_invocation_status": "INVALID_RESPONSE"},
+        )
+
+    response = client.get(f"/v1/v2/migration-jobs/{job_id}/failure-summary")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["has_failures"] is True
+    assert body["repair_loop_active"] is True
+    assert len(body["failures"]) >= 1
+    assert any(f["build_status"] == "BUILD_FAILED_IN_SANDBOX" for f in body["failures"])
+    assert any(f["copilot_status"] == "INVALID_RESPONSE" for f in body["failures"])
+    assert any(f["final_proof_level"] == "not_verified" for f in body["failures"])
+
+
+def test_v2_approval_lifecycle_pipeline_transitions(tmp_path: Path) -> None:
+    """Human Approval must show pass/approved after approval events, not blocked."""
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_started_job(client, setup_id)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=1,
+            event_type="approval_required",
+            status="blocked",
+            message="Human approval required",
+            payload={"card_id": "card-1"},
+        )
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=1,
+            event_type="stage_blocked_for_approval",
+            status="blocked",
+            message="Stage blocked",
+            payload={"card_id": "card-1"},
+        )
+
+    # At this point, approval should be blocked
+    pipeline1 = client.get(f"/v1/v2/migration-jobs/{job_id}/pipeline").json()
+    approval_row1 = [r for r in pipeline1["rows"] if r["key"] == "human_approval"][0]
+    assert approval_row1["status"] == "blocked"
+
+    # After approval_resume_queued, approval should be pass
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=1,
+            event_type="approval_resume_queued",
+            status="queued",
+            message="Approval accepted",
+            payload={"card_id": "card-1"},
+        )
+
+    pipeline2 = client.get(f"/v1/v2/migration-jobs/{job_id}/pipeline").json()
+    approval_row2 = [r for r in pipeline2["rows"] if r["key"] == "human_approval"][0]
+    assert approval_row2["status"] == "pass", f"Expected pass but got {approval_row2['status']}"
+
+    # After transform starts, approval must still be pass (not reverted)
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=1,
+            event_type="sandbox_transform_started",
+            status="running",
+            message="Transform started",
+            payload={},
+        )
+
+    pipeline3 = client.get(f"/v1/v2/migration-jobs/{job_id}/pipeline").json()
+    approval_row3 = [r for r in pipeline3["rows"] if r["key"] == "human_approval"][0]
+    assert approval_row3["status"] == "pass", f"Expected pass after transform but got {approval_row3['status']}"
+    transform_row = [r for r in pipeline3["rows"] if r["key"] == "sandbox_transform"][0]
+    assert transform_row["status"] == "running"
+
+
+def test_v2_approval_lifecycle_with_failure_after_approval(tmp_path: Path) -> None:
+    """Transform failure must not revert Human Approval back to blocked."""
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_started_job(client, setup_id)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="approval_required", status="blocked", message="blocked", payload={})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="approval_resume_queued", status="queued", message="resume queued", payload={})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="sandbox_transform_started", status="running", message="transform started", payload={})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="sandbox_transform_failed", status="failed", message="transform failed", payload={})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="build_failed", status="failed", message="Build result: dependency_error", payload={"build_status": "BUILD_FAILED_IN_SANDBOX"})
+
+    pipeline = client.get(f"/v1/v2/migration-jobs/{job_id}/pipeline").json()
+    approval_row = [r for r in pipeline["rows"] if r["key"] == "human_approval"][0]
+    assert approval_row["status"] == "pass", f"Expected pass but got {approval_row['status']}"
+    transform_row = [r for r in pipeline["rows"] if r["key"] == "sandbox_transform"][0]
+    assert transform_row["status"] == "failed"

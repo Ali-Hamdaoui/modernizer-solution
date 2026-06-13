@@ -13,6 +13,10 @@ from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
 from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import V2StageCommandRecord
+from migration_factory.control_tower.infrastructure.sqlite.v2_approval_repository import (
+    V2ApprovalDecisionRecord,
+    V2ResumeCommandRecord,
+)
 
 
 class _FakeProcess:
@@ -192,3 +196,100 @@ def test_v2_runner_passes_non_secret_copilot_env_and_excludes_secrets(monkeypatc
     assert "GITHUB_TOKEN" not in env
     event_types = [event.type for event in SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")]
     assert "copilot_status_checked" in event_types
+
+
+def test_v2_runner_emits_failure_repair_events_from_result(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    result = {
+        "final_status": "FALLBACK_REPAIR_PLAN",
+        "build_status": "BUILD_FAILED_IN_SANDBOX",
+        "final_proof_level": "not_verified",
+        "repair_loop_status": "FALLBACK_REPAIR_PLAN",
+        "copilot_invocation_status": "INVALID_RESPONSE",
+        "repair_fallback_generated": True,
+        "sandbox_path": "/tmp/sandbox",
+        "artifact_refs": {"analysis_report": "C:/out/.migration/runs/run-1/report.json"},
+    }
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[json.dumps(result) + "\n"], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "build_failed")
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [event.type for event in events]
+    assert "build_failed" in event_types
+    assert "transform_failed" in event_types
+    assert "repair_started" in event_types
+    assert "repair_fallback_generated" in event_types
+    assert "copilot_repair_invalid_response" in event_types
+
+
+def test_v2_runner_does_not_auto_queue_next_stage_on_failure(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    result = {
+        "final_status": "BUILD_FAILED_IN_SANDBOX",
+        "build_status": "BUILD_FAILED_IN_SANDBOX",
+        "sandbox_path": "/tmp/sandbox",
+    }
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[json.dumps(result) + "\n"], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "build_failed")
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [event.type for event in events]
+    # Must not have next_stage_queued on failure
+    assert "next_stage_queued" not in event_types
+
+
+def test_v2_runner_emits_approval_started_on_resume(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    # Save a resume command
+    now = utc_now_text()
+    SqliteUnitOfWork(conn).v2_approvals.save_card(
+        V2ApprovalDecisionRecord(
+            card_id="card-1",
+            job_id="job-1",
+            interrupt_id="run-1",
+            request_checksum="chk",
+            stage_index=1,
+            summary="test",
+            status="approved",
+            created_at=now,
+        )
+    )
+    SqliteUnitOfWork(conn).v2_approvals.save_resume(
+        V2ResumeCommandRecord(
+            resume_id="resume-1",
+            card_id="card-1",
+            decision="approved",
+            job_id="job-1",
+            stage_index=1,
+            command_json=json.dumps(["python", "-m", "resume"]),
+            created_at=now,
+        )
+    )
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[json.dumps({"final_status": "DONE"}) + "\n"], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+
+    runner.start_resume(job_id="job-1", resume_id="resume-1")
+    _wait_for_event(conn, "job-1", "approval_started")
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [event.type for event in events]
+    assert "approval_started" in event_types
+    assert "resume_started" in event_types

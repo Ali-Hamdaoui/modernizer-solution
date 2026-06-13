@@ -498,6 +498,7 @@ export type V2AssistantAskResponse = {
     source: string;
     provider: string;
     role: string;
+    failure_reason?: string;
   };
   guardrails: Record<string, boolean>;
 };
@@ -573,4 +574,26 @@ export type V2ReadinessResponse = {
   setup_checksum: string;
   preflight_checksum_match: boolean;
   gates: Record<string, boolean>;
+};
+
+export type V2FailureSummaryItem = {
+  type: string;
+  stage: number | null;
+  message: string;
+  build_status: string;
+  test_status: string;
+  final_status: string;
+  final_proof_level: string;
+  repair_loop_status: string;
+  copilot_status: string;
+  repair_fallback: string;
+};
+
+export type V2FailureSummaryResponse = {
+  job_id: string;
+  has_failures: boolean;
+  failures: V2FailureSummaryItem[];
+  repair_loop_active: boolean;
+  repair_events: { type: string; message: string }[];
+  artifact_kinds: string[];
 };

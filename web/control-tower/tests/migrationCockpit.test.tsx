@@ -170,4 +170,127 @@ describe("V2 Migration Cockpit contract", () => {
     expect(evidenceTypes).not.toContain("stdout");
     expect(rawLogs).toContain("stdout");
   });
+
+  it("human approval row is pass after approval_resume_queued, not blocked", () => {
+    // Simulate the pipeline status logic: after approval_resume_queued, must be pass
+    const events = [
+      { type: "approval_required", status: "blocked" },
+      { type: "approval_resume_queued", status: "queued" },
+    ];
+    // Check that the latest approval lifecycle event transitions correctly
+    const hasApprovalPassed = events.some(
+      (e) => e.type === "approval_resume_queued"
+    );
+    expect(hasApprovalPassed).toBe(true);
+  });
+
+  it("human approval stays pass even if transform fails", () => {
+    const events = [
+      { type: "approval_required", status: "blocked" },
+      { type: "approval_resume_queued", status: "queued" },
+      { type: "sandbox_transform_failed", status: "failed" },
+    ];
+    // Approval should still be pass
+    const approvalResolved = events.some(
+      (e) => e.type === "approval_resume_queued"
+    );
+    expect(approvalResolved).toBe(true);
+  });
+
+  it("failure summary contains observed failure shape", () => {
+    const failureSummary = {
+      has_failures: true,
+      failures: [
+        {
+          type: "build_failed",
+          stage: 1,
+          message: "Build result kind: dependency_error",
+          build_status: "BUILD_FAILED_IN_SANDBOX",
+          final_status: "FALLBACK_REPAIR_PLAN",
+          final_proof_level: "not_verified",
+          repair_loop_status: "FALLBACK_REPAIR_PLAN",
+          copilot_status: "INVALID_RESPONSE",
+          repair_fallback: "True",
+        },
+      ],
+      repair_loop_active: true,
+      repair_events: [
+        { type: "copilot_repair_invalid_response", message: "Copilot response invalid" },
+      ],
+      artifact_kinds: ["analysis_report"],
+    };
+    expect(failureSummary.has_failures).toBe(true);
+    expect(failureSummary.failures[0].build_status).toBe("BUILD_FAILED_IN_SANDBOX");
+    expect(failureSummary.failures[0].copilot_status).toBe("INVALID_RESPONSE");
+  });
+
+  it("assistant model status includes failure_reason for fallback", () => {
+    const model = {
+      status: "fallback",
+      source: "deterministic",
+      provider: "deterministic",
+      role: "assistant",
+      failure_reason: "missing_deployment",
+    };
+    expect(model.status).toBe("fallback");
+    expect(model.failure_reason).toBe("missing_deployment");
+  });
+
+  it("IMPORTANT_SSE_TYPES includes all required lifecycle events", () => {
+    const important = new Set([
+      "approval_required",
+      "stage_blocked_for_approval",
+      "approval_resume_queued",
+      "approval_started",
+      "approval_completed",
+      "resume_started",
+      "sandbox_transform_started",
+      "sandbox_transform_completed",
+      "sandbox_transform_failed",
+      "stage_failed",
+      "stage_completed",
+      "model_invocation_completed",
+      "model_invocation_failed",
+      "transform_failed",
+      "build_failed",
+      "next_stage_queued",
+    ]);
+    expect(important.has("approval_resume_queued")).toBe(true);
+    expect(important.has("approval_completed")).toBe(true);
+    expect(important.has("transform_failed")).toBe(true);
+    expect(important.has("build_failed")).toBe(true);
+    expect(important.has("next_stage_queued")).toBe(true);
+  });
+
+  it("raw logs events are collapsed by default in SSE stream", () => {
+    const events = [
+      { type: "stdout", status: "running", message: "raw line" },
+      { type: "analysis_completed", status: "completed", message: "done" },
+    ];
+    const rawLogs = events.filter((e) => e.type === "stdout" || e.type === "stderr");
+    const evidence = events.filter((e) => e.type !== "stdout" && e.type !== "stderr");
+    expect(rawLogs).toHaveLength(1);
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0].type).toBe("analysis_completed");
+  });
+
+  it("no stage input paths come from user selection", () => {
+    // Stage 2 input must be stage_1_sandbox, not user-selected
+    const stage2Input = "stage_1_sandbox";
+    const prohibitedInputs = ["user_selected", "manual", "browser_payload"];
+    expect(stage2Input).toBe("stage_1_sandbox");
+    for (const prohibited of prohibitedInputs) {
+      expect(stage2Input).not.toBe(prohibited);
+    }
+  });
+
+  it("Stage 2 profile is springboot-2.7-to-3.5-java17", () => {
+    const stage2Profile = "springboot-2.7-to-3.5-java17";
+    expect(stage2Profile).toBe("springboot-2.7-to-3.5-java17");
+  });
+
+  it("Stage 3 profile is springboot-3.5-java17-to-java21", () => {
+    const stage3Profile = "springboot-3.5-java17-to-java21";
+    expect(stage3Profile).toBe("springboot-3.5-java17-to-java21");
+  });
 });

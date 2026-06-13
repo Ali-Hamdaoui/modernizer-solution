@@ -67,11 +67,12 @@ def test_assistant_uses_model_client_and_does_not_return_key(tmp_path: Path) -> 
         V2AssistantModelResult(
             content="Azure-backed status answer.",
             source="azure_openai",
-            model_status="configured",
+            model_status="live_ok",
             provider="azure_openai",
             role="assistant",
             success=True,
             redacted_summary="ok",
+            failure_reason="",
         )
     )
     client, conn = _client(tmp_path, fake)
@@ -85,7 +86,7 @@ def test_assistant_uses_model_client_and_does_not_return_key(tmp_path: Path) -> 
     assert response.status_code == 200, response.text
     body = response.json()
     assert fake.calls
-    assert body["model"]["status"] == "configured"
+    assert body["model"]["status"] == "live_ok"
     assert body["model"]["source"] == "azure_openai"
     serialized = response.text.lower()
     assert "api_key" not in serialized
@@ -94,6 +95,33 @@ def test_assistant_uses_model_client_and_does_not_return_key(tmp_path: Path) -> 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-model")
     assert events[-1].type == "model_invocation_completed"
     assert events[-1].message == "ok"
+
+
+def test_assistant_deterministic_fallback_reason_surfaces_missing_key(tmp_path: Path) -> None:
+    fake = _FakeModelClient(
+        V2AssistantModelResult(
+            content="fallback content with stage summary",
+            source="deterministic",
+            model_status="fallback",
+            provider="deterministic",
+            role="assistant",
+            success=False,
+            redacted_summary="Azure OpenAI API key not configured.",
+            failure_reason="missing_key",
+        )
+    )
+    client, _conn = _client(tmp_path, fake)
+
+    response = client.post(
+        "/v1/v2/jobs/job-model/assistant/ask",
+        json={"question": "status?"},
+        headers=_mutation_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["model"]["failure_reason"] == "missing_key"
+    assert body["model"]["source"] == "deterministic"
 
 
 def test_assistant_fallback_is_labeled_and_read_only(tmp_path: Path) -> None:
@@ -106,6 +134,7 @@ def test_assistant_fallback_is_labeled_and_read_only(tmp_path: Path) -> None:
             role="assistant",
             success=False,
             redacted_summary="fallback",
+            failure_reason="missing_deployment",
         )
     )
     client, _conn = _client(tmp_path, fake)
@@ -121,6 +150,7 @@ def test_assistant_fallback_is_labeled_and_read_only(tmp_path: Path) -> None:
     assert body["model"]["status"] == "fallback"
     assert body["model"]["source"] == "deterministic"
     assert "fallback" in body["assistant_message"]["content"].lower()
+    assert body["model"]["failure_reason"] == "missing_deployment"
     assert body["guardrails"]["cannot_execute"] is True
     assert body["guardrails"]["cannot_approve"] is True
     assert body["guardrails"]["cannot_write_files"] is True
