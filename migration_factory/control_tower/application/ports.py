@@ -37,6 +37,7 @@ from migration_factory.control_tower.domain.entities import (
     StageRunRecord,
     V1FakeRepairProposalRecord,
     V1PatchApplicationRecord,
+    V1PatchMavenValidationRecord,
     V1PlanAmendmentRecord,
     V1PlanReviewDecisionRecord,
     V1PatchPolicyValidationRecord,
@@ -517,6 +518,18 @@ class V1PatchApplicationRepository(Protocol):
     def list_for_job(self, job_id: str) -> tuple[V1PatchApplicationRecord, ...]: ...
 
 
+class V1PatchMavenValidationRepository(Protocol):
+    """Append-only repository for Maven validation records."""
+
+    def insert(self, validation: V1PatchMavenValidationRecord) -> None: ...
+
+    def get(self, maven_validation_id: str) -> V1PatchMavenValidationRecord | None: ...
+
+    def get_for_application(self, application_id: str) -> V1PatchMavenValidationRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1PatchMavenValidationRecord, ...]: ...
+
+
 class ControlTowerUnitOfWork(Protocol):
     runner_profiles: RunnerProfileRepository
     pipeline_definitions: PipelineDefinitionRepository
@@ -546,6 +559,7 @@ class ControlTowerUnitOfWork(Protocol):
     v1_patch_policy_validations: V1PatchPolicyValidationRepository
     v1_sandbox_snapshots: V1SandboxSnapshotRepository
     v1_patch_applications: V1PatchApplicationRepository
+    v1_patch_maven_validations: V1PatchMavenValidationRepository
 
     def __enter__(self) -> Self: ...
 

@@ -493,6 +493,24 @@ class PatchApplicationDto:
 
 
 @dataclass(frozen=True, slots=True)
+class PatchMavenValidationDto:
+    """DTO for typed Maven validation after patch application."""
+
+    maven_validation_id: str
+    application_id: str
+    command_id: str
+    job_id: str
+    maven_goal: str
+    passed: bool
+    result_summary: str
+    actor_type: str
+    actor_id: str
+    created_at: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class JobProjectionDto:
     job: MigrationJobDto
     active_command: CommandExecutionDto | None

@@ -2725,3 +2725,92 @@ def _patch_application_from_row(row: sqlite3.Row) -> V1PatchApplicationRecord:
         correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
         causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
     )
+
+
+class SqliteV1PatchMavenValidationRepository:
+    """SQLite repository for v1_patch_maven_validations table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, validation: V1PatchMavenValidationRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_patch_maven_validations (
+                    maven_validation_id, application_id, command_id, job_id,
+                    maven_goal, passed, result_summary,
+                    actor_type, actor_id, created_at,
+                    correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    validation.maven_validation_id,
+                    validation.application_id,
+                    validation.command_id,
+                    validation.job_id,
+                    validation.maven_goal,
+                    1 if validation.passed else 0,
+                    validation.result_summary,
+                    validation.actor_type,
+                    validation.actor_id,
+                    validation.created_at,
+                    validation.correlation_id,
+                    validation.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, maven_validation_id: str) -> V1PatchMavenValidationRecord | None:
+        row = self._connection.execute(
+            """SELECT maven_validation_id, application_id, command_id, job_id,
+                      maven_goal, passed, result_summary,
+                      actor_type, actor_id, created_at,
+                      correlation_id, causation_id
+               FROM v1_patch_maven_validations WHERE maven_validation_id = ?""",
+            (maven_validation_id,),
+        ).fetchone()
+        return _maven_validation_from_row(row) if row is not None else None
+
+    def get_for_application(self, application_id: str) -> V1PatchMavenValidationRecord | None:
+        row = self._connection.execute(
+            """SELECT maven_validation_id, application_id, command_id, job_id,
+                      maven_goal, passed, result_summary,
+                      actor_type, actor_id, created_at,
+                      correlation_id, causation_id
+               FROM v1_patch_maven_validations
+               WHERE application_id = ?
+               ORDER BY created_at DESC, maven_validation_id DESC
+               LIMIT 1""",
+            (application_id,),
+        ).fetchone()
+        return _maven_validation_from_row(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> tuple[V1PatchMavenValidationRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT maven_validation_id, application_id, command_id, job_id,
+                      maven_goal, passed, result_summary,
+                      actor_type, actor_id, created_at,
+                      correlation_id, causation_id
+               FROM v1_patch_maven_validations
+               WHERE job_id = ?
+               ORDER BY created_at DESC, maven_validation_id DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_maven_validation_from_row(row) for row in rows)
+
+
+def _maven_validation_from_row(row: sqlite3.Row) -> V1PatchMavenValidationRecord:
+    return V1PatchMavenValidationRecord(
+        maven_validation_id=str(row["maven_validation_id"]),
+        application_id=str(row["application_id"]),
+        command_id=str(row["command_id"]),
+        job_id=str(row["job_id"]),
+        maven_goal=str(row["maven_goal"]),
+        passed=bool(row["passed"]),
+        result_summary=str(row["result_summary"]),
+        actor_type=str(row["actor_type"]),
+        actor_id=str(row["actor_id"]),
+        created_at=str(row["created_at"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )

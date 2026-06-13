@@ -292,6 +292,12 @@ class ApplyApprovedPatchRequest(StrictRequest):
     approval_id: str | None = None
 
 
+class RecordMavenValidationRequest(StrictRequest):
+    maven_goal: str = Field(..., pattern="^(compile|test-compile)$")
+    passed: bool
+    result_summary: str = ""
+
+
 @asynccontextmanager
 async def _control_tower_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Run startup reconciliation on service start."""
@@ -1153,6 +1159,55 @@ def create_app(
             "patch_application": _patch_application_payload(application),
         }
 
+    @app.post("/v1/commands/{command_id}/maven-validations", status_code=status.HTTP_201_CREATED)
+    def record_maven_validation(
+        command_id: str,
+        payload: RecordMavenValidationRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = resolved_actor_provider.current_actor()
+        service = PatchPolicyService(unit_of_work_factory)
+        try:
+            validation = service.validate_patch_with_maven(
+                command_id=command_id,
+                job_id="",
+                maven_goal=payload.maven_goal,
+                passed=payload.passed,
+                result_summary=payload.result_summary,
+                actor_type=actor.actor_type,
+                actor_id=actor.actor_id,
+                correlation_id=request.state.correlation_id,
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return _maven_validation_payload(validation)
+
+    @app.get("/v1/maven-validations/{maven_validation_id}")
+    def get_maven_validation(maven_validation_id: str) -> dict[str, Any]:
+        service = PatchPolicyService(unit_of_work_factory)
+        validation = service.get_maven_validation(maven_validation_id)
+        if validation is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "MAVEN_VALIDATION_NOT_FOUND",
+                f"Maven validation {maven_validation_id!r} not found",
+            )
+        return _maven_validation_payload(validation)
+
+    @app.get("/v1/commands/{command_id}/maven-validations")
+    def get_maven_validation_for_command(command_id: str) -> dict[str, Any]:
+        service = PatchPolicyService(unit_of_work_factory)
+        application = service.get_patch_application_for_command(command_id)
+        if application is None:
+            return {"command_id": command_id, "maven_validation": None}
+        validation = service.get_maven_validation_for_application(application.application_id)
+        if validation is None:
+            return {"command_id": command_id, "maven_validation": None}
+        return {
+            "command_id": command_id,
+            "maven_validation": _maven_validation_payload(validation),
+        }
+
     # ------------------------------------------------------------------
     # Approval endpoints (V1-07A)
     # ------------------------------------------------------------------
@@ -1996,6 +2051,21 @@ def _sandbox_snapshot_payload(snapshot: Any) -> dict[str, Any]:
         "actor_type": snapshot.actor_type,
         "actor_id": snapshot.actor_id,
         "created_at": snapshot.created_at,
+    })
+
+
+def _maven_validation_payload(validation: Any) -> dict[str, Any]:
+    return redact_public_data({
+        "maven_validation_id": validation.maven_validation_id,
+        "application_id": validation.application_id,
+        "command_id": validation.command_id,
+        "job_id": validation.job_id,
+        "maven_goal": validation.maven_goal,
+        "passed": validation.passed,
+        "result_summary": validation.result_summary,
+        "actor_type": validation.actor_type,
+        "actor_id": validation.actor_id,
+        "created_at": validation.created_at,
     })
 
 

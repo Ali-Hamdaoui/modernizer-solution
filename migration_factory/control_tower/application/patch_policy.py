@@ -19,6 +19,7 @@ from uuid import uuid4
 
 from migration_factory.control_tower.application.dto import (
     PatchApplicationDto,
+    PatchMavenValidationDto,
     PatchPolicyValidationDto,
     SandboxSnapshotDto,
 )
@@ -29,6 +30,7 @@ from migration_factory.control_tower.domain.checksums import (
 )
 from migration_factory.control_tower.domain.entities import (
     V1PatchApplicationRecord,
+    V1PatchMavenValidationRecord,
     V1PatchPolicyValidationRecord,
     V1SandboxSnapshotRecord,
 )
@@ -612,6 +614,140 @@ class PatchPolicyService:
             applied_by=record.applied_by,
             applied_at=record.applied_at,
             status=record.status,
+            correlation_id=record.correlation_id,
+            causation_id=record.causation_id,
+        )
+
+    # ------------------------------------------------------------------
+    # Typed Maven validation (V1-15D)
+    # ------------------------------------------------------------------
+
+    _ALLOWED_MAVEN_GOALS: tuple[str, ...] = ("compile", "test-compile")
+
+    def validate_patch_with_maven(
+        self,
+        *,
+        command_id: str,
+        job_id: str,
+        maven_goal: str,
+        passed: bool,
+        result_summary: str = "",
+        actor_type: str = "system",
+        actor_id: str = "controller",
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> PatchMavenValidationDto:
+        """Record a typed Maven validation result for an applied patch.
+
+        Only 'compile' and 'test-compile' goals are allowed.
+        This method does NOT execute Maven. It records the result of
+        a typed Maven operation that was executed elsewhere.
+        """
+        # Validate Maven goal is typed and allowed
+        clean_goal = maven_goal.strip().lower()
+        if clean_goal not in self._ALLOWED_MAVEN_GOALS:
+            raise PatchContentMismatchError(
+                f"Maven goal {maven_goal!r} is not allowed. "
+                f"Only {self._ALLOWED_MAVEN_GOALS} are permitted."
+            )
+
+        now = utc_now_text()
+
+        with self._unit_of_work_factory() as uow:
+            # Find the patch application for this command
+            application = uow.v1_patch_applications.get_for_command(command_id)
+            if application is None:
+                raise NotFoundError(
+                    "patch application",
+                    f"No patch application found for command {command_id!r}",
+                )
+
+            maven_validation_id = f"pmv-{uuid4().hex}"
+            record = V1PatchMavenValidationRecord(
+                maven_validation_id=maven_validation_id,
+                application_id=application.application_id,
+                command_id=command_id,
+                job_id=job_id,
+                maven_goal=clean_goal,
+                passed=passed,
+                result_summary=result_summary,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                created_at=now,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+            uow.v1_patch_maven_validations.insert(record)
+            uow.audit_records.append_global_audit(
+                audit_id=uuid4().hex,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                action="patch_maven_validation_recorded",
+                payload_json=canonical_json_text(
+                    {
+                        "maven_validation_id": maven_validation_id,
+                        "application_id": application.application_id,
+                        "command_id": command_id,
+                        "job_id": job_id,
+                        "maven_goal": clean_goal,
+                        "passed": passed,
+                    }
+                ),
+                created_at=now,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+
+        return PatchMavenValidationDto(
+            maven_validation_id=maven_validation_id,
+            application_id=application.application_id,
+            command_id=command_id,
+            job_id=job_id,
+            maven_goal=clean_goal,
+            passed=passed,
+            result_summary=result_summary,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            created_at=now,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+        )
+
+    def get_maven_validation(
+        self, maven_validation_id: str
+    ) -> PatchMavenValidationDto | None:
+        """Get a specific Maven validation record."""
+        with self._unit_of_work_factory() as uow:
+            record = uow.v1_patch_maven_validations.get(maven_validation_id)
+            if record is None:
+                return None
+            return self._to_maven_validation_dto(record)
+
+    def get_maven_validation_for_application(
+        self, application_id: str
+    ) -> PatchMavenValidationDto | None:
+        """Get the latest Maven validation for an application."""
+        with self._unit_of_work_factory() as uow:
+            record = uow.v1_patch_maven_validations.get_for_application(application_id)
+            if record is None:
+                return None
+            return self._to_maven_validation_dto(record)
+
+    @staticmethod
+    def _to_maven_validation_dto(
+        record: V1PatchMavenValidationRecord,
+    ) -> PatchMavenValidationDto:
+        return PatchMavenValidationDto(
+            maven_validation_id=record.maven_validation_id,
+            application_id=record.application_id,
+            command_id=record.command_id,
+            job_id=record.job_id,
+            maven_goal=record.maven_goal,
+            passed=record.passed,
+            result_summary=record.result_summary,
+            actor_type=record.actor_type,
+            actor_id=record.actor_id,
+            created_at=record.created_at,
             correlation_id=record.correlation_id,
             causation_id=record.causation_id,
         )
