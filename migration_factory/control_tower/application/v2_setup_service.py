@@ -426,7 +426,15 @@ class V2SetupService:
         if not readiness["jdk21_ready"]:
             errors.append(f"JAVA21_HOME path does not exist: {record.java21_home}")
 
-        maven_result = _validate_maven_command(record.maven_cmd)
+        maven_result = _validate_maven_command(
+            record.maven_cmd,
+            java_home=record.java21_home,
+            java_homes={
+                "JAVA11_HOME": record.java11_home,
+                "JAVA17_HOME": record.java17_home,
+                "JAVA21_HOME": record.java21_home,
+            },
+        )
         readiness["maven_ready"] = maven_result.ready
         if not maven_result.ready:
             if maven_result.status == _ToolCheckStatus.PATH_MISSING:
@@ -578,7 +586,12 @@ def _check_maven_path(path: str) -> bool:
     return _validate_maven_command(path).ready
 
 
-def _validate_maven_command(path: str) -> _ToolCheckResult:
+def _validate_maven_command(
+    path: str,
+    *,
+    java_home: str | None = None,
+    java_homes: dict[str, str] | None = None,
+) -> _ToolCheckResult:
     """Validate an explicit Maven executable path and version command."""
     cleaned = _clean_operator_path(path)
     maven_path = Path(cleaned)
@@ -594,7 +607,7 @@ def _validate_maven_command(path: str) -> _ToolCheckResult:
             timeout=_VERSION_CHECK_TIMEOUT,
             capture_output=True,
             text=True,
-            env=_sanitized_subprocess_env(),
+            env=_maven_subprocess_env(maven_path, java_home=java_home, java_homes=java_homes),
         )
     except subprocess.TimeoutExpired:
         return _ToolCheckResult(
@@ -633,22 +646,78 @@ def _clean_operator_path(path: str) -> str:
     return path.strip().strip("\"'")
 
 
-def _sanitized_subprocess_env() -> dict[str, str]:
-    allowed_keys = (
-        "ComSpec",
-        "JAVA_HOME",
-        "M2_HOME",
-        "MAVEN_HOME",
-        "PATH",
-        "PATHEXT",
-        "SystemDrive",
+def _maven_subprocess_env(
+    maven_path: Path,
+    *,
+    java_home: str | None = None,
+    java_homes: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Build the minimal Windows-safe environment Maven needs to start."""
+    env: dict[str, str] = {}
+
+    selected_java_home = _clean_operator_path(
+        java_home
+        or os.environ.get("JAVA21_HOME")
+        or os.environ.get("JAVA_HOME")
+        or "",
+    )
+    if selected_java_home:
+        env["JAVA_HOME"] = selected_java_home
+
+    for key in ("JAVA11_HOME", "JAVA17_HOME", "JAVA21_HOME"):
+        value = (java_homes or {}).get(key) or os.environ.get(key)
+        if value:
+            env[key] = _clean_operator_path(value)
+
+    path_entries: list[str] = []
+    if selected_java_home:
+        path_entries.append(str(Path(selected_java_home) / "bin"))
+    path_entries.append(str(maven_path.parent))
+    existing_path = os.environ.get("PATH")
+    if existing_path:
+        path_entries.append(existing_path)
+    env["PATH"] = os.pathsep.join(path_entries)
+
+    for key in (
         "SystemRoot",
+        "ComSpec",
+        "PATHEXT",
         "TEMP",
         "TMP",
         "USERPROFILE",
-        "windir",
+        "HOMEDRIVE",
+        "HOMEPATH",
+    ):
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+
+    for key in ("MAVEN_OPTS", "MAVEN_USER_HOME"):
+        value = os.environ.get(key)
+        if value and not _is_secret_like_env(key, value):
+            env[key] = value
+
+    return env
+
+
+def _is_secret_like_env(key: str, value: str) -> bool:
+    marker = f"{key}={value}".lower()
+    return any(
+        token in marker
+        for token in (
+            "api_key",
+            "apikey",
+            "authorization",
+            "bearer",
+            "client_secret",
+            "connectionstring",
+            "credential",
+            "password",
+            "secret",
+            "sas",
+            "token",
+        )
     )
-    return {key: value for key, value in os.environ.items() if key in allowed_keys}
 
 
 def _bounded_redacted_text(value: str) -> str:
