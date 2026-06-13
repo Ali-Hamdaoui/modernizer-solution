@@ -587,3 +587,26 @@ class V1PatchApplicationRecord:
     status: str = "applied"  # 'applied', 'validated', 'rolled_back'
     correlation_id: str | None = None
     causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class V1PatchMavenValidationRecord:
+    """Immutable record of a typed Maven validation after patch application.
+
+    Append-only: records that a typed Maven compile check was performed
+    on an applied patch. Only compile and test-compile goals are allowed.
+    Raw Maven goals, shell commands, and arbitrary execution are rejected.
+    """
+
+    maven_validation_id: str
+    application_id: str
+    command_id: str
+    job_id: str
+    maven_goal: str  # 'compile' or 'test-compile' only
+    passed: bool
+    result_summary: str
+    actor_type: str
+    actor_id: str
+    created_at: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
