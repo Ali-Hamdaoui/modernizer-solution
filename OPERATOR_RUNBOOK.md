@@ -1229,13 +1229,15 @@ This does **not** delete source code.
 
 ## V2 Addendum — Local Migration Cockpit
 
-**Status:** Implemented (A1-A13 merged to `V2IMPROVMENT`)  
+****Status:** Implemented and wired (P0 fixes complete)
 **Integration Branch:** `V2IMPROVMENT`  
 **PR Target:** `V2IMPROVMENT` (never `DEMO2`)
 
 ### V2 Architecture Changes
 
 V2 turns the Control Tower from a diagnostic job UI into a local migration cockpit.
+
+All V2 services (A1-A13) are now implemented, persisted to SQLite, and exposed via REST API endpoints.
 
 Key changes:
 
@@ -1247,19 +1249,21 @@ Key changes:
 
 4. **Preflight** (`POST /v1/migration-setups/preflight`): Deterministic readiness checks. Azure status is non-blocking.
 
-5. **Job Creation** (`POST /v1/v2/migration-jobs`): Creates parent job from ready setup with three fixed-stage chain.
+5. **Job Creation** (`POST /v1/v2/migration-jobs`): Persists parent job from ready setup with three fixed-stage chain.
 
-6. **Stage 1 Start** (`POST /v1/v2/migration-jobs/start-stage1`): Backend-owned command manifest. Browser cannot supply argv/env.
+6. **Stage 1 Start** (`POST /v1/v2/migration-jobs/start-stage1`): Backend-owned command manifest. Persisted to `v2_stage_commands`. Browser cannot supply argv/env.
 
-7. **Stage Auto-Progression** (A8): Stage 2 from Stage 1 sandbox, Stage 3 from Stage 2 sandbox. No manual stage buttons.
+7. **Stage Auto-Progression** (`POST /v1/v2/jobs/{job_id}/stages/progress`): Stage 2 from Stage 1 sandbox, Stage 3 from Stage 2 sandbox. No manual stage buttons.
 
-8. **Approval Mapping** (A9): Interrupts become durable decision cards with checksum gating. LLM cannot approve.
+8. **Approval Mapping** (`POST /v1/v2/jobs/{job_id}/approvals/{card_id}/approve|reject`): Durable decision cards with checksum gating. LLM cannot approve.
 
-9. **Assistant** (A10): Read-only guidance. Drafts instructions and pending actions. Cannot execute/approve/write/change route.
+9. **Assistant** (`POST/GET /v1/v2/jobs/{job_id}/assistant/messages`, `POST .../actions/draft`): Read-only guidance. Drafts instructions and pending actions. Cannot execute/approve/write/change route.
 
-10. **Repair Flow** (A12): Failed command evidence → bounded repair proposal → approval → sandbox patch.
+10. **Repair Flow** (`POST /v1/v2/commands/{cmd}/repair/flow-proposal`, `POST .../proposal/{id}/approve`): Failed command evidence → bounded repair proposal → approval → sandbox patch.
 
 11. **Cockpit** (`/migrations/[jobId]`): Stage timeline, evidence, decisions, assistant, proof panels. No execution controls.
+
+12. **Schema Validation**: `SchemaValidator` class validates model output against strict JSON schemas at runtime. Covers PlanProposal, RepairProposal, ReviewerCritique, ActionRequest, AssistantAnswer.
 
 ### V2 Backend Endpoints
 
@@ -1270,10 +1274,19 @@ Key changes:
 | POST | `/v1/migration-setups` | Create setup draft |
 | GET | `/v1/migration-setups` | List setups |
 | GET | `/v1/migration-setups/{id}` | Get setup |
-| POST | `/v1/migration-setups/preflight` | Run preflight |
+| POST | `/v1/migration-setups/preflight` | Run preflight (persisted) |
 | GET | `/v1/migration-setups/{id}/readiness` | Get readiness |
-| POST | `/v1/v2/migration-jobs` | Create job from setup |
-| POST | `/v1/v2/migration-jobs/start-stage1` | Start Stage 1 |
+| POST | `/v1/v2/migration-jobs` | Create job from setup (persisted to v2_migration_jobs) |
+| POST | `/v1/v2/migration-jobs/start-stage1` | Start Stage 1 (persisted to v2_stage_commands) |
+| POST | `/v1/v2/jobs/{job_id}/approvals/{card_id}/approve` | Approve decision card (checksum gated) |
+| POST | `/v1/v2/jobs/{job_id}/approvals/{card_id}/reject` | Reject decision card |
+| GET | `/v1/v2/jobs/{job_id}/approvals/{card_id}` | Get decision card |
+| POST | `/v1/v2/jobs/{job_id}/stages/progress` | Auto-queue next stage |
+| POST | `/v1/v2/jobs/{job_id}/assistant/messages` | Add assistant message |
+| GET | `/v1/v2/jobs/{job_id}/assistant/messages` | List assistant messages |
+| POST | `/v1/v2/jobs/{job_id}/assistant/actions/draft` | Draft pending action (no execution) |
+| POST | `/v1/v2/commands/{cmd}/repair/flow-proposal` | Create repair proposal |
+| POST | `/v1/v2/commands/{cmd}/repair/proposal/{id}/approve` | Approve repair proposal |
 | POST | `/v1/model-profiles/{id}/health-check` | Azure health check |
 | GET | `/v1/model-profiles/{id}/health` | Latest health |
 

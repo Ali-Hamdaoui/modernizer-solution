@@ -79,6 +79,13 @@ Review all V2 changes for trust boundaries, redaction, approval, worker, model, 
 2. **Path validation**: Preflight checks path existence but does not enforce strict containment beyond self-check. Production deployments should add stricter path validation.
 3. **No authentication**: API is local-only (127.0.0.1 binding). No user auth layer.
 
+## Post-P0 Risk Status
+
+Following the P0 persistence fix series:
+- ❌ **In-memory data loss (A9, A10, A12)**: RESOLVED. All services now persist to SQLite.
+- ❌ **Job/command data loss (A6, A7)**: RESOLVED. Both persisted in dedicated tables.
+- All P0-priority security/integrity risks have been addressed.
+
 ## Verdict
 
-**CLEAN** — No high or critical security findings. All V2 non-negotiable security rules are enforced.
+**CLEAN** — No high or critical security findings. All V2 non-negotiable security rules are enforced. In-memory data loss risk resolved by P0 persistence layer (P0-001 through P0-008).
