@@ -105,3 +105,158 @@ def test_token_budgets_defined() -> None:
     assert "reviewer_critique" in TOKEN_BUDGETS
     assert "action_request" in TOKEN_BUDGETS
     assert "assistant_answer" in TOKEN_BUDGETS
+
+
+# ── Schema validation tests ─────────────────────────────────────────
+
+from migration_factory.control_tower.application.v2_model_schemas import (
+    SchemaValidator,
+    SchemaValidationError,
+)
+
+
+class TestSchemaValidator:
+
+    def test_validate_valid_plan_proposal(self) -> None:
+        data = {
+            "summary": "Migrate to Java 21",
+            "stage_impacts": [
+                {"stage_index": 1, "impact": "Update pom.xml"},
+            ],
+            "risks": ["Breaking changes"],
+            "approval_checksum": "sha256:abc123",
+        }
+        # Should not raise
+        SchemaValidator.validate("PlanProposal", data)
+
+    def test_validate_plan_proposal_missing_required(self) -> None:
+        data = {"summary": "test"}
+        with pytest.raises(SchemaValidationError, match="Missing required"):
+            SchemaValidator.validate("PlanProposal", data)
+
+    def test_validate_plan_proposal_extra_field(self) -> None:
+        data = {
+            "summary": "test",
+            "stage_impacts": [],
+            "risks": [],
+            "approval_checksum": "abc",
+            "extra_field": "should be rejected",
+        }
+        with pytest.raises(SchemaValidationError, match="Unexpected property"):
+            SchemaValidator.validate("PlanProposal", data)
+
+    def test_validate_valid_repair_proposal(self) -> None:
+        data = {
+            "failure_hypothesis": "Null pointer in Service.java",
+            "patch_summary": "Add null check",
+            "affected_paths": ["src/main/java/Service.java"],
+            "validation_plan": "Compile and test",
+            "rollback_note": "Revert patch if fails",
+        }
+        SchemaValidator.validate("RepairProposal", data)
+
+    def test_validate_repair_missing_required(self) -> None:
+        data = {"failure_hypothesis": "test"}
+        with pytest.raises(SchemaValidationError, match="Missing required"):
+            SchemaValidator.validate("RepairProposal", data)
+
+    def test_validate_reviewer_critique_accept(self) -> None:
+        data = {"decision": "accept", "reasoning": "Looks good"}
+        SchemaValidator.validate("ReviewerCritique", data)
+
+    def test_validate_reviewer_critique_invalid_decision(self) -> None:
+        data = {"decision": "invalid", "reasoning": "test"}
+        with pytest.raises(SchemaValidationError, match="not one of"):
+            SchemaValidator.validate("ReviewerCritique", data)
+
+    def test_validate_action_request(self) -> None:
+        data = {
+            "action_type": "compile",
+            "reason": "Validate build",
+            "stage_index": 2,
+            "payload_checksum": "chk:def456",
+        }
+        SchemaValidator.validate("ActionRequest", data)
+
+    def test_validate_action_request_invalid_stage(self) -> None:
+        data = {
+            "action_type": "test",
+            "reason": "reason",
+            "stage_index": 5,
+            "payload_checksum": "chk",
+        }
+        with pytest.raises(SchemaValidationError, match="greater than maximum"):
+            SchemaValidator.validate("ActionRequest", data)
+
+    def test_validate_assistant_answer(self) -> None:
+        data = {
+            "answer": "Stage 1 is running",
+            "evidence_refs": ["log.txt"],
+            "follow_up_action": {"action_type": "review", "reason": "Check logs"},
+        }
+        SchemaValidator.validate("AssistantAnswer", data)
+
+    def test_validate_unknown_schema(self) -> None:
+        with pytest.raises(ValueError, match="Unknown schema"):
+            SchemaValidator.validate("UnknownSchema", {})
+
+    def test_validate_plan_proposal_wrong_type(self) -> None:
+        data = {
+            "summary": True,  # Should be a string
+            "stage_impacts": [],
+            "risks": [],
+            "approval_checksum": "abc",
+        }
+        with pytest.raises(SchemaValidationError, match="Expected string"):
+            SchemaValidator.validate("PlanProposal", data)
+
+    def test_validate_stage_impacts_item_type(self) -> None:
+        data = {
+            "summary": "test",
+            "stage_impacts": ["not an object"],  # invalid item type
+            "risks": [],
+            "approval_checksum": "abc",
+        }
+        with pytest.raises(SchemaValidationError, match="Expected object"):
+            SchemaValidator.validate("PlanProposal", data)
+
+    def test_validate_action_request_type_is_strings(self) -> None:
+        data = {
+            "action_type": "compile",
+            "reason": "Validate",
+            "stage_index": 1,
+            "payload_checksum": "chk",
+        }
+        SchemaValidator.validate("ActionRequest", data)
+
+    def test_all_schemas_pass_with_valid_data(self) -> None:
+        """Each schema should accept at least one valid data payload."""
+        valid_data = {
+            "PlanProposal": {
+                "summary": "test",
+                "stage_impacts": [{"stage_index": 1, "impact": "test"}],
+                "risks": [],
+                "approval_checksum": "abc",
+            },
+            "RepairProposal": {
+                "failure_hypothesis": "test",
+                "patch_summary": "test",
+                "affected_paths": [],
+                "validation_plan": "test",
+            },
+            "ReviewerCritique": {
+                "decision": "accept",
+                "reasoning": "test",
+            },
+            "ActionRequest": {
+                "action_type": "test",
+                "reason": "test",
+                "stage_index": 1,
+                "payload_checksum": "abc",
+            },
+            "AssistantAnswer": {
+                "answer": "test",
+            },
+        }
+        for name, data in valid_data.items():
+            SchemaValidator.validate(name, data)
