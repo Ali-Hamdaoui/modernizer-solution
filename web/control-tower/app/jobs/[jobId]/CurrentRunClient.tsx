@@ -17,6 +17,7 @@ import {
   getCommands
 } from "../../../lib/controlTowerApi";
 import { ApprovalPanel } from "./ApprovalPanel";
+import { ProofReportPanel } from "./ProofReportPanel";
 import { RepairPanel } from "./RepairPanel";
 import {
   applyPublicEvent,
@@ -256,6 +257,8 @@ export function CurrentRunClient({ initialEvents, initialJob }: Props) {
           ))}
         </div>
       </section>
+
+      <ProofReportPanel jobId={jobId} />
 
       <RepairPanel commandId={activeCommand?.command_id ?? null} />
 

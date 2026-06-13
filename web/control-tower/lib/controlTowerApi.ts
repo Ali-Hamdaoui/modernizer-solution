@@ -14,6 +14,8 @@ import type {
   PlanAmendmentPreviewResponse,
   PipelineOption,
   PrivilegedActionListResponse,
+  ProofGatesResponse,
+  ProofReportEntry,
   PublicEventReplayResponse,
   RepairProposalListResponse,
   RunnerProfileOption,
@@ -179,6 +181,14 @@ export async function getPrivilegedActions(jobId: string): Promise<PrivilegedAct
 
 export async function getRepairProposals(commandId: string): Promise<RepairProposalListResponse> {
   return getJson<RepairProposalListResponse>(`/v1/commands/${encodeURIComponent(commandId)}/fake-repair-proposals`);
+}
+
+export async function getProofGates(jobId: string): Promise<ProofGatesResponse> {
+  return getJson<ProofGatesResponse>(`/v1/jobs/${encodeURIComponent(jobId)}/proof-gates`);
+}
+
+export async function getProofReport(jobId: string): Promise<ProofReportEntry> {
+  return getJson<ProofReportEntry>(`/v1/jobs/${encodeURIComponent(jobId)}/proof-report`);
 }
 
 export async function previewPlanAmendment(
