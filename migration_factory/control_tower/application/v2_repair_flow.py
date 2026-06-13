@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
 from migration_factory.control_tower.domain.checksums import utc_now_text
+from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
+    SqliteV2RepairRepository,
+    V2RepairProposalRecord,
+    V2SandboxActionRecord,
+)
 
 
 @dataclass(frozen=True)
@@ -42,9 +48,13 @@ class V2RepairFlowService:
     - Rollback on failure
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        repair_repo: SqliteV2RepairRepository | None = None,
+    ) -> None:
         self._proposals: dict[str, RepairProposal] = {}
         self._actions: dict[str, SandboxAction] = {}
+        self._repo = repair_repo
 
     def create_proposal(
         self,
@@ -66,6 +76,20 @@ class V2RepairFlowService:
             created_at=utc_now_text(),
         )
         self._proposals[proposal.proposal_id] = proposal
+        # Persist if repo available
+        if self._repo is not None:
+            record = V2RepairProposalRecord(
+                proposal_id=proposal.proposal_id,
+                command_id=proposal.command_id,
+                failure_summary=proposal.failure_summary,
+                hypothesis=proposal.hypothesis,
+                patch_summary=proposal.patch_summary,
+                affected_paths_json=json.dumps(list(proposal.affected_paths), separators=(",", ":")),
+                status=proposal.status,
+                approval_checksum=proposal.approval_checksum,
+                created_at=proposal.created_at,
+            )
+            self._repo.save_proposal(record)
         return proposal
 
     def approve_proposal(
@@ -91,6 +115,9 @@ class V2RepairFlowService:
             created_at=proposal.created_at,
         )
         self._proposals[proposal_id] = updated
+        # Persist if repo available
+        if self._repo is not None:
+            self._repo.update_proposal_status(proposal_id, "approved", approval_checksum)
         return updated
 
     def apply_patch(
@@ -128,6 +155,20 @@ class V2RepairFlowService:
             approval_checksum=proposal.approval_checksum,
             created_at=proposal.created_at,
         )
+        # Persist action if repo available
+        if self._repo is not None:
+            action_record = V2SandboxActionRecord(
+                action_id=action.action_id,
+                proposal_id=action.proposal_id,
+                target_path=action.target_path,
+                patch_content=action.patch_content,
+                status=action.status,
+                result_summary=action.result_summary,
+                created_at=action.created_at,
+            )
+            self._repo.save_action(action_record)
+            # Also update proposal status
+            self._repo.update_proposal_status(proposal_id, "applied")
         self._proposals[proposal_id] = updated
         return action
 
