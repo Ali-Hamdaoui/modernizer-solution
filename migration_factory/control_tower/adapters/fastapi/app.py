@@ -818,7 +818,10 @@ def create_app(
         Browser cannot supply argv or env values.
         """
         with unit_of_work_factory() as uow:
-            service = V2WorkerStageService(uow.v2_setups)
+            service = V2WorkerStageService(
+                setup_repo=uow.v2_setups,
+                command_repo=uow.v2_commands,
+            )
             try:
                 result = service.build_stage1_manifest(
                     job_id=payload.job_id,

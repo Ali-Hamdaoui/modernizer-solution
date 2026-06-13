@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -10,6 +11,10 @@ from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
     SqliteV2SetupRepository,
     V2MigrationSetupRecord,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
+    SqliteV2CommandRepository,
+    V2StageCommandRecord,
 )
 
 
@@ -41,8 +46,13 @@ class V2WorkerStageService:
     cannot supply argv or env values.
     """
 
-    def __init__(self, setup_repo: SqliteV2SetupRepository) -> None:
+    def __init__(
+        self,
+        setup_repo: SqliteV2SetupRepository,
+        command_repo: SqliteV2CommandRepository | None = None,
+    ) -> None:
         self._setup_repo = setup_repo
+        self._command_repo = command_repo
 
     def build_stage1_manifest(
         self,
@@ -78,6 +88,25 @@ class V2WorkerStageService:
             "--mode", "full_sandbox_migration",
         )
 
+        # Persist to database
+        if self._command_repo is not None:
+            record = V2StageCommandRecord(
+                command_id=command_id,
+                job_id=job_id,
+                stage_index=1,
+                manifest_checksum="v2-stage1",  # Simplified for now
+                argv_json=json.dumps(list(argv), separators=(",", ":")),
+                env_json=json.dumps({
+                    "JAVA_HOME": jdk_home,
+                    "PATH_PREPEND": f"{jdk_home}/bin",
+                }, separators=(",", ":")),
+                status="manifest_ready",
+                created_at=now,
+                updated_at=now,
+                result_json=None,
+            )
+            self._command_repo.save(record)
+
         return V2StageCommandResult(
             command_id=command_id,
             job_id=job_id,
@@ -85,6 +114,26 @@ class V2WorkerStageService:
             manifest_checksum="v2-stage1",  # Simplified for now
             argv=argv,
             created_at=now,
+        )
+
+    def get_command(self, command_id: str) -> V2StageCommandResult | None:
+        """Retrieve a persisted command by ID."""
+        if self._command_repo is None:
+            return None
+        record = self._command_repo.get(command_id)
+        if record is None:
+            return None
+        try:
+            argv = tuple(json.loads(record.argv_json))
+        except (json.JSONDecodeError, TypeError):
+            argv = ()
+        return V2StageCommandResult(
+            command_id=record.command_id,
+            job_id=record.job_id,
+            stage_index=record.stage_index,
+            manifest_checksum=record.manifest_checksum,
+            argv=argv,
+            created_at=record.created_at,
         )
 
     def result_to_dict(self, result: V2StageCommandResult) -> dict[str, Any]:

@@ -21,6 +21,9 @@ from migration_factory.control_tower.infrastructure.sqlite.migrations import app
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
     SqliteV2SetupRepository,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
+    SqliteV2CommandRepository,
+)
 
 
 def _mutation_headers():
@@ -65,6 +68,13 @@ def _create_test_setup(repo: SqliteV2SetupRepository) -> str:
     return dto.setup_id
 
 
+def _make_worker_service(conn: sqlite3.Connection) -> V2WorkerStageService:
+    return V2WorkerStageService(
+        setup_repo=SqliteV2SetupRepository(conn),
+        command_repo=SqliteV2CommandRepository(conn),
+    )
+
+
 def test_stage1_manifest_built_from_setup(tmp_path: Path) -> None:
     conn = sqlite3.connect(
         tmp_path / "test1.sqlite3",
@@ -77,7 +87,7 @@ def test_stage1_manifest_built_from_setup(tmp_path: Path) -> None:
     repo = SqliteV2SetupRepository(conn)
     setup_id = _create_test_setup(repo)
 
-    service = V2WorkerStageService(repo)
+    service = _make_worker_service(conn)
     result = service.build_stage1_manifest(
         job_id="test-job-id",
         setup_id=setup_id,
@@ -105,7 +115,7 @@ def test_stage1_manifest_argv_backend_owned(tmp_path: Path) -> None:
     repo = SqliteV2SetupRepository(conn)
     setup_id = _create_test_setup(repo)
 
-    service = V2WorkerStageService(repo)
+    service = _make_worker_service(conn)
     result = service.build_stage1_manifest(
         job_id="test-job-id",
         setup_id=setup_id,
@@ -134,7 +144,7 @@ def test_stage1_manifest_uses_setup_paths(tmp_path: Path) -> None:
     repo = SqliteV2SetupRepository(conn)
     setup_id = _create_test_setup(repo)
 
-    service = V2WorkerStageService(repo)
+    service = _make_worker_service(conn)
     result = service.build_stage1_manifest(
         job_id="test-job-id",
         setup_id=setup_id,
@@ -159,7 +169,7 @@ def test_stage1_manifest_no_browser_paths(tmp_path: Path) -> None:
     repo = SqliteV2SetupRepository(conn)
     setup_id = _create_test_setup(repo)
 
-    service = V2WorkerStageService(repo)
+    service = _make_worker_service(conn)
     result = service.build_stage1_manifest(
         job_id="test-job-id",
         setup_id=setup_id,
@@ -179,9 +189,8 @@ def test_stage1_manifest_not_found(tmp_path: Path) -> None:
     )
     conn.row_factory = sqlite3.Row
     apply_pending_migrations(conn)
-    repo = SqliteV2SetupRepository(conn)
 
-    service = V2WorkerStageService(repo)
+    service = _make_worker_service(conn)
     with pytest.raises(ValueError, match="not found"):
         service.build_stage1_manifest(
             job_id="test-job-id",
@@ -213,8 +222,7 @@ def test_result_to_dict_shape(tmp_path: Path) -> None:
     )
     conn.row_factory = sqlite3.Row
     apply_pending_migrations(conn)
-    repo = SqliteV2SetupRepository(conn)
-    service = V2WorkerStageService(repo)
+    service = _make_worker_service(conn)
 
     result = V2StageCommandResult(
         command_id="cmd1",
@@ -232,8 +240,6 @@ def test_result_to_dict_shape(tmp_path: Path) -> None:
 
 def test_start_stage1_endpoint(tmp_path: Path) -> None:
     client, conn = _api_client(tmp_path)
-    from migration_factory.control_tower.application.v2_setup_service import V2SetupService
-    from migration_factory.control_tower.application.v2_setup_service import CreateSetupRequest
 
     # Create setup
     repo = SqliteV2SetupRepository(conn)
@@ -250,3 +256,52 @@ def test_start_stage1_endpoint(tmp_path: Path) -> None:
     assert body["stage_index"] == 1
     assert isinstance(body["argv"], list)
     assert len(body["argv"]) > 0
+
+
+def test_manifest_persistence_across_connections(tmp_path: Path) -> None:
+    """Built manifest should survive connection close/reopen."""
+    db_path = tmp_path / "persist_test.sqlite3"
+
+    # First connection — create setup and manifest
+    conn1 = sqlite3.connect(
+        db_path, check_same_thread=False, isolation_level=None, timeout=5.0
+    )
+    conn1.row_factory = sqlite3.Row
+    conn1.execute("PRAGMA foreign_keys = ON")
+    apply_pending_migrations(conn1)
+    repo1 = SqliteV2SetupRepository(conn1)
+    setup_id = _create_test_setup(repo1)
+    service1 = _make_worker_service(conn1)
+    result = service1.build_stage1_manifest(
+        job_id="persist-test-job",
+        setup_id=setup_id,
+    )
+    saved_command_id = result.command_id
+    conn1.close()
+
+    # Second connection — verify it's still there
+    conn2 = sqlite3.connect(
+        db_path, check_same_thread=False, isolation_level=None, timeout=5.0
+    )
+    conn2.row_factory = sqlite3.Row
+    conn2.execute("PRAGMA foreign_keys = ON")
+    service2 = _make_worker_service(conn2)
+    loaded = service2.get_command(saved_command_id)
+    assert loaded is not None
+    assert loaded.command_id == saved_command_id
+    assert loaded.stage_index == 1
+    assert "--legacy" in loaded.argv
+    conn2.close()
+
+
+def test_get_command_returns_none_for_missing(tmp_path: Path) -> None:
+    conn = sqlite3.connect(
+        tmp_path / "test_get.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    service = _make_worker_service(conn)
+    assert service.get_command("nonexistent") is None
