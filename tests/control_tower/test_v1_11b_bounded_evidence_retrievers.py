@@ -333,6 +333,69 @@ class TestRetrievalEdgeCases:
                 evidence_paths=("/etc/passwd",),
             )
 
+    def test_absolute_path_windows_rooted_rejected(self, retriever: BoundedEvidenceRetriever) -> None:
+        """Windows-rooted path like \\foo\bar is rejected."""
+        with pytest.raises(EvidenceBoundsError, match="Absolute path"):
+            retriever.retrieve_evidence(
+                source_type="artifact",
+                source_id="art-001",
+                evidence_paths=("\\windows\\system32\\config",),
+            )
+
+    def test_absolute_path_windows_drive_backslash_rejected(self, retriever: BoundedEvidenceRetriever) -> None:
+        """Windows absolute path C:\foo\bar is rejected."""
+        with pytest.raises(EvidenceBoundsError, match="Absolute path"):
+            retriever.retrieve_evidence(
+                source_type="artifact",
+                source_id="art-001",
+                evidence_paths=("C:\\Users\\evil\\secrets.txt",),
+            )
+
+    def test_absolute_path_windows_drive_forwardslash_rejected(self, retriever: BoundedEvidenceRetriever) -> None:
+        """Windows absolute path C:/foo/bar is rejected."""
+        with pytest.raises(EvidenceBoundsError, match="Absolute path"):
+            retriever.retrieve_evidence(
+                source_type="artifact",
+                source_id="art-001",
+                evidence_paths=("C:/Users/evil/secrets.txt",),
+            )
+
+    def test_absolute_path_unc_backslash_rejected(self, retriever: BoundedEvidenceRetriever) -> None:
+        """UNC path \\\\server\\share is rejected."""
+        with pytest.raises(EvidenceBoundsError, match="Absolute path"):
+            retriever.retrieve_evidence(
+                source_type="artifact",
+                source_id="art-001",
+                evidence_paths=("\\\\server\\share\\malicious.exe",),
+            )
+
+    def test_absolute_path_unc_forwardslash_rejected(self, retriever: BoundedEvidenceRetriever) -> None:
+        """UNC path //server/share is rejected."""
+        with pytest.raises(EvidenceBoundsError, match="Absolute path"):
+            retriever.retrieve_evidence(
+                source_type="artifact",
+                source_id="art-001",
+                evidence_paths=("//server/share/malicious.exe",),
+            )
+
+    def test_absolute_path_file_uri_rejected(self, retriever: BoundedEvidenceRetriever) -> None:
+        """file:// URI scheme is rejected."""
+        with pytest.raises(EvidenceBoundsError, match="Absolute path"):
+            retriever.retrieve_evidence(
+                source_type="artifact",
+                source_id="art-001",
+                evidence_paths=("file:///etc/passwd",),
+            )
+
+    def test_safe_relative_path_accepted(self, retriever: BoundedEvidenceRetriever) -> None:
+        """Plain relative paths still pass validation."""
+        refs = retriever.retrieve_evidence(
+            source_type="artifact",
+            source_id="art-001",
+            evidence_paths=("src/main/App.java",),
+        )
+        assert refs == ()  # no exception = accepted (source missing = empty)
+
     def test_empty_path_skipped(self, retriever: BoundedEvidenceRetriever) -> None:
         refs = retriever.retrieve_evidence(
             source_type="artifact",
