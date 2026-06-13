@@ -304,3 +304,57 @@ export type PrivilegedActionListResponse = {
   job_id: string;
   actions: PrivilegedActionEntry[];
 };
+
+// ── Repair panel types (V1-18E) ───────────────────────────────────
+
+export type RepairClassificationEntry = {
+  classification_id: string;
+  command_id: string;
+  job_id: string;
+  command_status: string;
+  evidence_kind: string;
+  evidence_summary: string;
+  evidence_checksum: string;
+  classification_code: string;
+  reason_code: string;
+  repairable: boolean;
+  attempt_limit: number;
+  actor_type: string;
+  actor_id: string;
+  created_at: string;
+};
+
+export type FakeRepairProposalEntry = {
+  proposal_id: string;
+  classification_id: string;
+  command_id: string;
+  job_id: string;
+  proposal_order: number;
+  proposal_kind: string;
+  proposal_summary: string;
+  proposal_checksum: string;
+  recommendation_type: string;
+  confidence_label: string;
+  confidence_score: number;
+  warning_codes: string[];
+  applicable: boolean;
+  context_checksum: string;
+  actor_type: string;
+  actor_id: string;
+  created_at: string;
+};
+
+export type RepairStatusEntry = {
+  command_id: string;
+  job_id: string;
+  classification: RepairClassificationEntry | null;
+  proposals: FakeRepairProposalEntry[];
+  attempts: unknown[];
+  repairable: boolean;
+  created_at: string;
+};
+
+export type RepairProposalListResponse = {
+  command_id: string;
+  proposals: FakeRepairProposalEntry[];
+};

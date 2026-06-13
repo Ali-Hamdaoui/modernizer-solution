@@ -15,6 +15,7 @@ import type {
   PipelineOption,
   PrivilegedActionListResponse,
   PublicEventReplayResponse,
+  RepairProposalListResponse,
   RunnerProfileOption,
   StageChainResponse
 } from "./contracts";
@@ -174,6 +175,10 @@ export async function getApprovals(jobId: string): Promise<ApprovalListResponse>
 
 export async function getPrivilegedActions(jobId: string): Promise<PrivilegedActionListResponse> {
   return getJson<PrivilegedActionListResponse>(`/v1/jobs/${encodeURIComponent(jobId)}/privileged-actions`);
+}
+
+export async function getRepairProposals(commandId: string): Promise<RepairProposalListResponse> {
+  return getJson<RepairProposalListResponse>(`/v1/commands/${encodeURIComponent(commandId)}/fake-repair-proposals`);
 }
 
 export async function previewPlanAmendment(
