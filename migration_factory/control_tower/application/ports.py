@@ -38,6 +38,7 @@ from migration_factory.control_tower.domain.entities import (
     V1FakeRepairProposalRecord,
     V1PatchApplicationRecord,
     V1PatchMavenValidationRecord,
+    V1PatchRollbackRecord,
     V1PlanAmendmentRecord,
     V1PlanReviewDecisionRecord,
     V1PatchPolicyValidationRecord,
@@ -518,6 +519,20 @@ class V1PatchApplicationRepository(Protocol):
     def list_for_job(self, job_id: str) -> tuple[V1PatchApplicationRecord, ...]: ...
 
 
+class V1PatchRollbackRepository(Protocol):
+    """Append-only repository for patch rollback records."""
+
+    def insert(self, rollback: V1PatchRollbackRecord) -> None: ...
+
+    def get(self, rollback_id: str) -> V1PatchRollbackRecord | None: ...
+
+    def get_for_command(self, command_id: str) -> V1PatchRollbackRecord | None: ...
+
+    def get_for_application(self, application_id: str) -> V1PatchRollbackRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1PatchRollbackRecord, ...]: ...
+
+
 class V1PatchMavenValidationRepository(Protocol):
     """Append-only repository for Maven validation records."""
 
@@ -560,6 +575,7 @@ class ControlTowerUnitOfWork(Protocol):
     v1_sandbox_snapshots: V1SandboxSnapshotRepository
     v1_patch_applications: V1PatchApplicationRepository
     v1_patch_maven_validations: V1PatchMavenValidationRepository
+    v1_patch_rollbacks: V1PatchRollbackRepository
 
     def __enter__(self) -> Self: ...
 

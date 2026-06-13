@@ -493,6 +493,30 @@ class PatchApplicationDto:
 
 
 @dataclass(frozen=True, slots=True)
+class PatchRollbackDto:
+    """DTO for a patch rollback result.
+
+    All public output is redacted. Never contains raw patch content,
+    paths, or shell commands.
+    """
+
+    rollback_id: str
+    command_id: str
+    job_id: str
+    application_id: str
+    snapshot_id: str
+    maven_validation_id: str
+    stage_index: int
+    target_path_hash: str
+    rolled_back_by: str
+    rolled_back_at: str
+    reason_code: str
+    redacted_summary: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PatchMavenValidationDto:
     """DTO for typed Maven validation after patch application."""
 

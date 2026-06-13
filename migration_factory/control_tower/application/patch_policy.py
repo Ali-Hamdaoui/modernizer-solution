@@ -21,6 +21,7 @@ from migration_factory.control_tower.application.dto import (
     PatchApplicationDto,
     PatchMavenValidationDto,
     PatchPolicyValidationDto,
+    PatchRollbackDto,
     SandboxSnapshotDto,
 )
 from migration_factory.control_tower.domain.checksums import (
@@ -32,6 +33,7 @@ from migration_factory.control_tower.domain.entities import (
     V1PatchApplicationRecord,
     V1PatchMavenValidationRecord,
     V1PatchPolicyValidationRecord,
+    V1PatchRollbackRecord,
     V1SandboxSnapshotRecord,
 )
 from migration_factory.control_tower.domain.errors import (
@@ -748,6 +750,185 @@ class PatchPolicyService:
             actor_type=record.actor_type,
             actor_id=record.actor_id,
             created_at=record.created_at,
+            correlation_id=record.correlation_id,
+            causation_id=record.causation_id,
+        )
+
+    # ------------------------------------------------------------------
+    # Roll back failed repair (V1-15E)
+    # ------------------------------------------------------------------
+
+    def rollback_failed_repair(
+        self,
+        *,
+        command_id: str,
+        job_id: str,
+        actor_type: str = "system",
+        actor_id: str = "controller",
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> PatchRollbackDto:
+        """Roll back a failed repair by restoring the prior sandbox snapshot.
+
+        Requirements for rollback:
+        1. An approved sandbox snapshot must exist for the command.
+        2. A patch application must exist for the command.
+        3. A Maven validation must exist for the application and have
+           passed=False (failed).
+        4. The target path must not escape the sandbox (enforced by policy).
+
+        This method only records the rollback as an append-only audit record.
+        Actual file operations are handled by downstream privileged actions.
+        The public output is redacted (no raw paths, content, or commands).
+        """
+        now = utc_now_text()
+
+        with self._unit_of_work_factory() as uow:
+            # 1. Require a sandbox snapshot
+            snapshot = uow.v1_sandbox_snapshots.get_for_command(command_id)
+            if snapshot is None:
+                raise PatchRollbackError(
+                    f"Cannot roll back command {command_id!r}: "
+                    "no sandbox snapshot exists"
+                )
+
+            # 2. Require a patch application
+            application = uow.v1_patch_applications.get_for_command(command_id)
+            if application is None:
+                raise PatchRollbackError(
+                    f"Cannot roll back command {command_id!r}: "
+                    "no patch application exists"
+                )
+
+            # 3. Require a failed Maven validation
+            maven_validation = uow.v1_patch_maven_validations.get_for_application(
+                application.application_id
+            )
+            if maven_validation is None:
+                raise PatchRollbackError(
+                    f"Cannot roll back command {command_id!r}: "
+                    "no Maven validation exists for the patch application"
+                )
+            if maven_validation.passed:
+                raise PatchRollbackError(
+                    f"Cannot roll back command {command_id!r}: "
+                    f"Maven validation {maven_validation.maven_validation_id!r} "
+                    "passed; rollback requires a failed validation"
+                )
+
+            # 4. Produce a deterministic redacted summary
+            redacted_summary = (
+                f"Rolled back patch application {application.application_id} "
+                f"for command {command_id} on stage {application.stage_index}. "
+                f"Maven goal {maven_validation.maven_goal} failed. "
+                f"Snapshot {snapshot.snapshot_id} was recorded "
+                f"at {snapshot.created_at}."
+            )
+
+            # 5. Persist the rollback record
+            rollback_id = f"prb-{uuid4().hex}"
+            record = V1PatchRollbackRecord(
+                rollback_id=rollback_id,
+                command_id=command_id,
+                job_id=job_id,
+                application_id=application.application_id,
+                snapshot_id=snapshot.snapshot_id,
+                maven_validation_id=maven_validation.maven_validation_id,
+                stage_index=application.stage_index,
+                target_path_hash=application.target_path_hash,
+                rolled_back_by=actor_id,
+                rolled_back_at=now,
+                reason_code="maven_validation_failed",
+                redacted_summary=redacted_summary,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+            uow.v1_patch_rollbacks.insert(record)
+
+            # 6. Audit event
+            uow.audit_records.append_global_audit(
+                audit_id=uuid4().hex,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                action="patch_rollback_recorded",
+                payload_json=canonical_json_text(
+                    {
+                        "rollback_id": rollback_id,
+                        "command_id": command_id,
+                        "job_id": job_id,
+                        "application_id": application.application_id,
+                        "snapshot_id": snapshot.snapshot_id,
+                        "maven_validation_id": maven_validation.maven_validation_id,
+                        "reason_code": "maven_validation_failed",
+                    }
+                ),
+                created_at=now,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+
+        return PatchRollbackDto(
+            rollback_id=rollback_id,
+            command_id=command_id,
+            job_id=job_id,
+            application_id=application.application_id,
+            snapshot_id=snapshot.snapshot_id,
+            maven_validation_id=maven_validation.maven_validation_id,
+            stage_index=application.stage_index,
+            target_path_hash=application.target_path_hash,
+            rolled_back_by=actor_id,
+            rolled_back_at=now,
+            reason_code="maven_validation_failed",
+            redacted_summary=redacted_summary,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+        )
+
+    def get_rollback(self, rollback_id: str) -> PatchRollbackDto | None:
+        """Get a specific rollback record."""
+        with self._unit_of_work_factory() as uow:
+            record = uow.v1_patch_rollbacks.get(rollback_id)
+            if record is None:
+                return None
+            return self._to_rollback_dto(record)
+
+    def get_rollback_for_command(
+        self, command_id: str
+    ) -> PatchRollbackDto | None:
+        """Get the latest rollback for a command."""
+        with self._unit_of_work_factory() as uow:
+            record = uow.v1_patch_rollbacks.get_for_command(command_id)
+            if record is None:
+                return None
+            return self._to_rollback_dto(record)
+
+    def get_rollback_for_application(
+        self, application_id: str
+    ) -> PatchRollbackDto | None:
+        """Get the latest rollback for an application."""
+        with self._unit_of_work_factory() as uow:
+            record = uow.v1_patch_rollbacks.get_for_application(application_id)
+            if record is None:
+                return None
+            return self._to_rollback_dto(record)
+
+    @staticmethod
+    def _to_rollback_dto(
+        record: V1PatchRollbackRecord,
+    ) -> PatchRollbackDto:
+        return PatchRollbackDto(
+            rollback_id=record.rollback_id,
+            command_id=record.command_id,
+            job_id=record.job_id,
+            application_id=record.application_id,
+            snapshot_id=record.snapshot_id,
+            maven_validation_id=record.maven_validation_id,
+            stage_index=record.stage_index,
+            target_path_hash=record.target_path_hash,
+            rolled_back_by=record.rolled_back_by,
+            rolled_back_at=record.rolled_back_at,
+            reason_code=record.reason_code,
+            redacted_summary=record.redacted_summary,
             correlation_id=record.correlation_id,
             causation_id=record.causation_id,
         )
