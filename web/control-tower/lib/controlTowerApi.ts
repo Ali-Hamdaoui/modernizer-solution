@@ -15,6 +15,7 @@ import type {
   V2ApprovalResponse,
   V2ResumeCommandResponse,
   V2StageContinuationResponse,
+  V2AssistantAskResponse,
   V2AssistantMessagesListResponse,
   V2AssistantMessageResponse,
   V2DraftActionResponse,
@@ -334,6 +335,17 @@ export async function addV2AssistantMessage(
   return postJson<V2AssistantMessageResponse>(
     `/v1/v2/jobs/${encodeURIComponent(jobId)}/assistant/messages`,
     { job_id: jobId, role, content }
+  );
+}
+
+export async function askV2Assistant(
+  jobId: string,
+  question: string
+): Promise<V2AssistantAskResponse> {
+  const safeJobId = requireJobId(jobId);
+  return postJson<V2AssistantAskResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/assistant/ask`,
+    { question }
   );
 }
 

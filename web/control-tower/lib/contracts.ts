@@ -472,6 +472,13 @@ export type V2AssistantMessagesListResponse = {
   messages: V2AssistantMessageResponse[];
 };
 
+export type V2AssistantAskResponse = {
+  job_id: string;
+  user_message: V2AssistantMessageResponse;
+  assistant_message: V2AssistantMessageResponse;
+  guardrails: Record<string, boolean>;
+};
+
 export type V2DraftActionResponse = {
   action_id: string;
   job_id: string;

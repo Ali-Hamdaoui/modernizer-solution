@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import MigrationCockpitPage from "../app/migrations/[jobId]/page";
 import { MigrationCockpit } from "../app/migrations/[jobId]/MigrationCockpit";
-import { requireJobId, v2EventStreamUrl } from "../lib/controlTowerApi";
+import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, requireJobId, v2EventStreamUrl } from "../lib/controlTowerApi";
 
 describe("V2 Migration Cockpit contract", () => {
   it("passes the awaited route job id into MigrationCockpit", async () => {
@@ -118,5 +118,29 @@ describe("V2 Migration Cockpit contract", () => {
       stage.stage_index === event.stage ? { ...stage, chain_status: event.status } : stage,
     );
     expect(updated[0].chain_status).toBe("running");
+  });
+
+  it("posts assistant questions to the read-only V2 ask endpoint", async () => {
+    const originalFetch = global.fetch;
+    const calls: { url: string; body: string | null }[] = [];
+    global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: typeof init?.body === "string" ? init.body : null });
+      return new Response(JSON.stringify({
+        job_id: "job-123",
+        user_message: { message_id: "u1", job_id: "job-123", role: "user", content: "What happened so far?", correlation_id: null, created_at: "now" },
+        assistant_message: { message_id: "a1", job_id: "job-123", role: "assistant", content: "Latest event: stage 1 analysis_started.", correlation_id: "u1", created_at: "now" },
+        guardrails: { read_only: true, cannot_execute: true, cannot_approve: true },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    try {
+      const response = await askV2Assistant("job-123", "What happened so far?");
+      expect(calls[0].url).toBe(`${CONTROL_TOWER_API_BASE_URL}/v1/v2/jobs/job-123/assistant/ask`);
+      expect(calls[0].url).not.toContain("undefined");
+      expect(JSON.parse(calls[0].body ?? "{}")).toEqual({ question: "What happened so far?" });
+      expect(response.assistant_message.content).toContain("Latest event");
+      expect(response.guardrails.cannot_execute).toBe(true);
+    } finally {
+      global.fetch = originalFetch;
+    }
   });
 });

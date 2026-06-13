@@ -53,9 +53,18 @@ def _api_client(tmp_path):
     )
     conn.row_factory = sqlite3.Row
     apply_pending_migrations(conn)
-    app = create_app(lambda: SqliteUnitOfWork(conn))
+    app = create_app(lambda: SqliteUnitOfWork(conn), v2_orchestrator_runner=_RecordingV2Runner())
     client = TestClient(app, base_url="http://127.0.0.1:8000")
     return client, conn
+
+
+class _RecordingV2Runner:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def start(self, *, job_id: str, command_id: str):
+        self.calls.append((job_id, command_id))
+        return None
 
 
 def _create_test_setup(repo: SqliteV2SetupRepository) -> str:

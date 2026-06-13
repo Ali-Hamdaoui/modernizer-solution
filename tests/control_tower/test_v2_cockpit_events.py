@@ -40,8 +40,22 @@ def _api_client(tmp_path: Path) -> tuple[TestClient, sqlite3.Connection]:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     apply_pending_migrations(conn)
-    app = create_app(lambda: SqliteUnitOfWork(conn))
+    app = create_app(lambda: SqliteUnitOfWork(conn), v2_orchestrator_runner=_FakeV2Runner(lambda: SqliteUnitOfWork(conn)))
     return TestClient(app, base_url="http://127.0.0.1:8000"), conn
+
+
+class _FakeV2Runner:
+    def __init__(self, uow_factory):
+        self._uow_factory = uow_factory
+
+    def start(self, *, job_id: str, command_id: str):
+        with self._uow_factory() as uow:
+            uow.v2_events.save(job_id=job_id, stage=1, event_type="stage_started", status="running", message="fake runner started", payload={"command_id": command_id})
+            uow.v2_events.save(job_id=job_id, stage=1, event_type="command_started", status="running", message="fake command started", payload={"command_id": command_id})
+            uow.v2_events.save(job_id=job_id, stage=1, event_type="artifact_written", status="completed", message="fake artifact", payload={"artifact_kind": "analysis_report"})
+            uow.v2_events.save(job_id=job_id, stage=1, event_type="proof_updated", status="completed", message="fake proof", payload={})
+            uow.v2_events.save(job_id=job_id, stage=1, event_type="stage_completed", status="completed", message="fake complete", payload={"command_id": command_id})
+        return None
 
 
 def _ready_setup(conn: sqlite3.Connection) -> str:

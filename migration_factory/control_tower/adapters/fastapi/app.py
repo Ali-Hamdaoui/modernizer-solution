@@ -148,6 +148,9 @@ from migration_factory.control_tower.application.v2_model_schemas import (
 from migration_factory.control_tower.application.v2_repair_flow import (
     V2RepairFlowService,
 )
+from migration_factory.control_tower.application.v2_orchestrator_runner import (
+    V2OrchestratorRunner,
+)
 from migration_factory.control_tower.adapters.fastapi.security import (
     MUTATION_METHODS,
     ActorProvider,
@@ -407,6 +410,12 @@ class AssistantMessageRequest(BaseModel):
     correlation_id: str | None = None
 
 
+class AssistantAskRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    question: str = Field(min_length=1, max_length=4000)
+    correlation_id: str | None = None
+
+
 class DraftActionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     job_id: str
@@ -461,6 +470,7 @@ def create_app(
     *,
     worker_launcher: WorkerLauncher | None = None,
     worker_terminator: WorkerTerminator | None = None,
+    v2_orchestrator_runner: Any | None = None,
     event_replay_config: EventReplayConfig | None = None,
     security_settings: LocalApiSecuritySettings | None = None,
     actor_provider: ActorProvider | None = None,
@@ -482,6 +492,10 @@ def create_app(
     app.state.v2_settings = ControlTowerSettings()
     app.state.worker_launcher = worker_launcher
     app.state.worker_terminator = worker_terminator
+    app.state.v2_orchestrator_runner = v2_orchestrator_runner or V2OrchestratorRunner(
+        unit_of_work_factory=unit_of_work_factory,
+        notifier=app.state.public_event_notifier,
+    )
     app.state.controller_ownership = resolved_controller_ownership
     app.state.controller_services_started = False
     app.state.reconciliation_results = []
@@ -957,7 +971,16 @@ def create_app(
                     "STAGE1_START_FAILED",
                     str(exc),
                 ) from exc
-            _emit_v2_stage1_uat_events(uow, job_id=payload.job_id, command_id=result.command_id)
+            _append_v2_event(
+                uow,
+                job_id=payload.job_id,
+                stage=1,
+                event_type="stage_queued",
+                status="queued",
+                message="Stage 1 command manifest queued for real orchestrator execution.",
+                payload={"command_id": result.command_id},
+            )
+        app.state.v2_orchestrator_runner.start(job_id=payload.job_id, command_id=result.command_id)
         asyncio.run(app.state.public_event_notifier.notify())
         return service.result_to_dict(result)
 
@@ -1125,6 +1148,50 @@ def create_app(
         return {
             "job_id": job_id,
             "messages": [service.message_to_dict(m) for m in messages],
+        }
+
+    @app.post("/v1/v2/jobs/{job_id}/assistant/ask")
+    def ask_v2_assistant(
+        job_id: str,
+        payload: AssistantAskRequest,
+    ) -> dict[str, Any]:
+        """Ask the V2 assistant for read-only status guidance."""
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            events = uow.v2_events.list_by_job(job_id)
+            approvals = uow.v2_approvals.list_cards_by_job(job_id)
+            commands = uow.v2_commands.list_by_job(job_id)
+            service = V2AssistantService(assistant_repo=uow.v2_assistant)
+            user_msg = service.add_message(
+                job_id=job_id,
+                role="user",
+                content=payload.question,
+                correlation_id=payload.correlation_id,
+            )
+            answer = _build_v2_assistant_answer(
+                question=payload.question,
+                events=events,
+                approvals=approvals,
+                commands=commands,
+            )
+            assistant_msg = service.add_message(
+                job_id=job_id,
+                role="assistant",
+                content=answer,
+                correlation_id=user_msg.message_id,
+            )
+        return {
+            "job_id": job_id,
+            "user_message": service.message_to_dict(user_msg),
+            "assistant_message": service.message_to_dict(assistant_msg),
+            "guardrails": {
+                "read_only": True,
+                "cannot_execute": True,
+                "cannot_approve": True,
+                "cannot_write_files": True,
+                "cannot_change_route_or_stage": True,
+                "cannot_override_proof": True,
+            },
         }
 
     @app.post("/v1/v2/jobs/{job_id}/assistant/actions/draft")
@@ -2924,6 +2991,50 @@ def _emit_v2_stage1_uat_events(uow: Any, *, job_id: str, command_id: str) -> Non
         )
 
 
+def _build_v2_assistant_answer(
+    *,
+    question: str,
+    events: tuple[Any, ...],
+    approvals: tuple[Any, ...],
+    commands: tuple[Any, ...],
+) -> str:
+    latest = events[-1] if events else None
+    failures = [event for event in events if event.status == "failed" or event.type == "stage_failed"]
+    pending_approvals = [card for card in approvals if card.status == "pending"]
+    running = [event for event in events if event.status == "running"]
+    if failures:
+        action = "Review the latest failure evidence and decide whether to create a bounded repair proposal."
+    elif pending_approvals:
+        action = "Review the approval card checksum in the decisions panel. Only a human can approve it."
+    elif latest is None:
+        action = "Start migration or wait for the backend to emit Stage 1 events."
+    elif latest.type == "stage_completed":
+        action = "Wait for backend-owned progression. Stage 2/3 inputs must come from the previous sandbox."
+    elif running:
+        action = "Wait for the running backend-owned orchestrator command to finish or request more evidence."
+    else:
+        action = "Inspect the evidence stream for the next operator action."
+
+    latest_text = "No evidence events have been recorded yet."
+    if latest is not None:
+        latest_text = f"Latest event: stage {latest.stage or '-'} {latest.type} ({latest.status}) - {latest.message}"
+    command_text = f"{len(commands)} backend-owned command manifest(s) are persisted."
+    approval_text = (
+        f"{len(pending_approvals)} approval card(s) are pending."
+        if pending_approvals
+        else "No approval card is currently pending."
+    )
+    answer = (
+        f"Question: {_bounded_event_text(question)}\n"
+        f"{latest_text}\n"
+        f"{command_text} {approval_text}\n"
+        f"Next operator action: {action}\n"
+        "Guardrails: I can explain status and summarize evidence only. I cannot execute, approve, write files, "
+        "change route/stage, choose Maven goals, choose deployments, or override proof."
+    )
+    return str(redact_public_data(answer))
+
+
 def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, ...]) -> list[dict[str, Any]]:
     try:
         stages = json.loads(job.stage_chain_json)
@@ -2956,7 +3067,7 @@ def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, 
 
     command_stages = {command.stage_index for command in commands}
     status_by_stage: dict[int, str] = {}
-    precedence = {"pending": 0, "queued": 1, "running": 2, "completed": 3, "failed": 4}
+    precedence = {"pending": 0, "queued": 1, "running": 2, "blocked": 3, "completed": 4, "failed": 5}
     for event in events:
         if event.stage is None:
             continue
@@ -2982,7 +3093,9 @@ def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, 
 def _stage_status_from_event(event_type: str, event_status: str) -> str:
     if event_type == "stage_failed" or event_status == "failed":
         return "failed"
-    if event_type == "stage_completed" or event_status == "completed":
+    if event_type in {"approval_required", "stage_blocked_for_approval"} or event_status == "blocked":
+        return "blocked"
+    if event_type == "stage_completed":
         return "completed"
     if event_type in {"stage_started", "command_started", "stdout", "stderr"} or event_status == "running":
         return "running"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -77,7 +78,7 @@ class V2WorkerStageService:
         jdk_home = _get_jdk_home(setup, stage_info["env_var"])
 
         argv = (
-            "python",
+            sys.executable,
             "-m",
             RUNNER_MODULE,
             "--run-id", effective_run_id,
@@ -98,6 +99,10 @@ class V2WorkerStageService:
                 argv_json=json.dumps(list(argv), separators=(",", ":")),
                 env_json=json.dumps({
                     "JAVA_HOME": jdk_home,
+                    "JAVA11_HOME": setup.java11_home,
+                    "JAVA17_HOME": setup.java17_home,
+                    "JAVA21_HOME": setup.java21_home,
+                    "MAVEN_CMD": setup.maven_cmd,
                     "PATH_PREPEND": f"{jdk_home}/bin",
                 }, separators=(",", ":")),
                 status="manifest_ready",
