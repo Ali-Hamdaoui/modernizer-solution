@@ -42,6 +42,9 @@ from migration_factory.control_tower.infrastructure.sqlite.v1_approval_repositor
     SqliteV1ApprovalRepository,
     SqliteV1ApprovalResumeRepository,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_azure_health_repository import (
+    SqliteV2AzureHealthRepository,
+)
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
     SqliteV2SetupRepository,
 )
@@ -82,6 +85,7 @@ class SqliteControlTowerUnitOfWork:
         self.v1_patch_maven_validations = SqliteV1PatchMavenValidationRepository(connection)
         self.v1_patch_rollbacks = SqliteV1PatchRollbackRepository(connection)
         self.v2_setups = SqliteV2SetupRepository(connection)
+        self.v2_azure_health = SqliteV2AzureHealthRepository(connection)
         self.v1_proof_reports = SqliteV1ProofReportRepository(connection)
         self.v1_proof_report_gates = SqliteV1ProofReportGateRepository(connection)
 
