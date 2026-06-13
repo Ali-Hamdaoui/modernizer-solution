@@ -54,6 +54,15 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository imp
 from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
     SqliteV2CommandRepository,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_approval_repository import (
+    SqliteV2ApprovalRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_assistant_repository import (
+    SqliteV2AssistantRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
+    SqliteV2RepairRepository,
+)
 
 
 class SqliteControlTowerUnitOfWork:
@@ -94,6 +103,9 @@ class SqliteControlTowerUnitOfWork:
         self.v2_azure_health = SqliteV2AzureHealthRepository(connection)
         self.v2_jobs = SqliteV2JobRepository(connection)
         self.v2_commands = SqliteV2CommandRepository(connection)
+        self.v2_approvals = SqliteV2ApprovalRepository(connection)
+        self.v2_assistant = SqliteV2AssistantRepository(connection)
+        self.v2_repairs = SqliteV2RepairRepository(connection)
         self.v1_proof_reports = SqliteV1ProofReportRepository(connection)
         self.v1_proof_report_gates = SqliteV1ProofReportGateRepository(connection)
 
