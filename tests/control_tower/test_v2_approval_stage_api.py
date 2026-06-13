@@ -29,7 +29,9 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_approval_repositor
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
     SqliteV2CommandRepository,
+    V2StageCommandRecord,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository import V2MigrationJobRecord
 
 
 def _mutation_headers():
@@ -52,9 +54,17 @@ def _api_client(tmp_path: Path):
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     apply_pending_migrations(conn)
-    app = create_app(lambda: SqliteUnitOfWork(conn))
+    app = create_app(lambda: SqliteUnitOfWork(conn), v2_orchestrator_runner=_FakeResumeRunner())
     client = TestClient(app, base_url="http://127.0.0.1:8000")
     return client, conn
+
+
+class _FakeResumeRunner:
+    def start_resume(self, *, job_id: str, resume_id: str):
+        return None
+
+    def start(self, *, job_id: str, command_id: str):
+        return None
 
 
 def _create_setup(conn: sqlite3.Connection) -> str:
@@ -76,8 +86,44 @@ def _create_setup(conn: sqlite3.Connection) -> str:
 def _create_pending_card(conn: sqlite3.Connection) -> str:
     repo = SqliteV2ApprovalRepository(conn)
     now = utc_now_text()
+    SqliteUnitOfWork(conn).v2_jobs.save(
+        V2MigrationJobRecord(
+            job_id="job-1",
+            setup_id="setup-1",
+            setup_checksum="setup-checksum",
+            pipeline_id="springboot-216-to-356-java21-three-stage",
+            stage_chain_json="[]",
+            status="running",
+            created_at=now,
+            updated_at=now,
+            correlation_id=None,
+        )
+    )
+    SqliteUnitOfWork(conn).v2_commands.save(
+        V2StageCommandRecord(
+            command_id="cmd-approval",
+            job_id="job-1",
+            stage_index=1,
+            manifest_checksum="manifest",
+            argv_json=json.dumps([
+                "python",
+                "-m",
+                "migration_factory.orchestrator.runner",
+                "--run-id",
+                "int-test",
+                "--modernized",
+                "/tmp/output",
+            ]),
+            env_json="{}",
+            status="manifest_ready",
+            created_at=now,
+            updated_at=now,
+            result_json=None,
+        )
+    )
     card = V2ApprovalDecisionRecord(
         card_id=uuid4().hex,
+        job_id="job-1",
         interrupt_id="int-test",
         request_checksum="chk-123",
         stage_index=1,

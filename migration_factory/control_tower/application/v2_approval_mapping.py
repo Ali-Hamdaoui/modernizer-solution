@@ -18,6 +18,7 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_approval_repositor
 @dataclass(frozen=True)
 class ApprovalDecisionCard:
     card_id: str
+    job_id: str
     interrupt_id: str
     request_checksum: str
     stage_index: int
@@ -56,6 +57,8 @@ class V2ApprovalMappingService:
 
     def create_decision_card(
         self,
+        *,
+        job_id: str,
         interrupt_id: str,
         request_checksum: str,
         stage_index: int = 1,
@@ -64,6 +67,7 @@ class V2ApprovalMappingService:
         """Create a durable decision card from an orchestrator interrupt."""
         card = ApprovalDecisionCard(
             card_id=uuid4().hex,
+            job_id=job_id,
             interrupt_id=interrupt_id,
             request_checksum=request_checksum,
             stage_index=stage_index,
@@ -76,6 +80,7 @@ class V2ApprovalMappingService:
         if self._repo is not None:
             record = V2ApprovalDecisionRecord(
                 card_id=card.card_id,
+                job_id=card.job_id,
                 interrupt_id=card.interrupt_id,
                 request_checksum=card.request_checksum,
                 stage_index=card.stage_index,
@@ -91,6 +96,7 @@ class V2ApprovalMappingService:
         card_id: str,
         expected_checksum: str,
         job_id: str,
+        run_dir: str = "",
     ) -> ResumeCommand:
         """Approve a decision card and queue a resume command.
 
@@ -102,6 +108,7 @@ class V2ApprovalMappingService:
             if record is not None:
                 card = ApprovalDecisionCard(
                     card_id=record.card_id,
+                    job_id=record.job_id,
                     interrupt_id=record.interrupt_id,
                     request_checksum=record.request_checksum,
                     stage_index=record.stage_index,
@@ -112,6 +119,8 @@ class V2ApprovalMappingService:
                 self._decisions[card_id] = card
         if card is None:
             raise ValueError(f"Decision card {card_id!r} not found")
+        if card.job_id and card.job_id != job_id:
+            raise ValueError(f"Decision card {card_id!r} does not belong to job {job_id!r}")
 
         if card.request_checksum != expected_checksum:
             raise ValueError(
@@ -125,6 +134,7 @@ class V2ApprovalMappingService:
         # Update card
         updated = ApprovalDecisionCard(
             card_id=card.card_id,
+            job_id=card.job_id or job_id,
             interrupt_id=card.interrupt_id,
             request_checksum=card.request_checksum,
             stage_index=card.stage_index,
@@ -138,12 +148,7 @@ class V2ApprovalMappingService:
             self._repo.update_card_status(card_id, "approved")
 
         # Create resume command
-        resume_command = (
-            "python", "-m", "migration_factory.orchestrator.resume",
-            "--run-id", job_id,
-            "--decision", "approved",
-            "--approved-by", "human",
-        )
+        resume_command = _resume_command_for_card(updated, decision="approved", run_dir=run_dir)
         now = utc_now_text()
         resume = ResumeCommand(
             resume_id=uuid4().hex,
@@ -177,6 +182,7 @@ class V2ApprovalMappingService:
             if record is not None:
                 card = ApprovalDecisionCard(
                     card_id=record.card_id,
+                    job_id=record.job_id,
                     interrupt_id=record.interrupt_id,
                     request_checksum=record.request_checksum,
                     stage_index=record.stage_index,
@@ -187,11 +193,14 @@ class V2ApprovalMappingService:
                 self._decisions[card_id] = card
         if card is None:
             raise ValueError(f"Decision card {card_id!r} not found")
+        if card.job_id and card.job_id != job_id:
+            raise ValueError(f"Decision card {card_id!r} does not belong to job {job_id!r}")
         if card.status != "pending":
             raise ValueError(f"Decision card {card_id!r} is already {card.status}")
 
         updated = ApprovalDecisionCard(
             card_id=card.card_id,
+            job_id=card.job_id or job_id,
             interrupt_id=card.interrupt_id,
             request_checksum=card.request_checksum,
             stage_index=card.stage_index,
@@ -213,6 +222,7 @@ class V2ApprovalMappingService:
             if record is not None:
                 card = ApprovalDecisionCard(
                     card_id=record.card_id,
+                    job_id=record.job_id,
                     interrupt_id=record.interrupt_id,
                     request_checksum=record.request_checksum,
                     stage_index=record.stage_index,
@@ -226,6 +236,7 @@ class V2ApprovalMappingService:
     def card_to_dict(self, card: ApprovalDecisionCard) -> dict[str, Any]:
         return {
             "card_id": card.card_id,
+            "job_id": card.job_id,
             "interrupt_id": card.interrupt_id,
             "request_checksum": card.request_checksum,
             "stage_index": card.stage_index,
@@ -243,3 +254,19 @@ class V2ApprovalMappingService:
             "stage_index": resume.stage_index,
             "command": list(resume.command),
         }
+
+
+def _resume_command_for_card(card: ApprovalDecisionCard, *, decision: str, run_dir: str) -> tuple[str, ...]:
+    return (
+        "python",
+        "-m",
+        "migration_factory.orchestrator.resume",
+        "--run-id",
+        card.interrupt_id,
+        "--run-dir",
+        run_dir,
+        "--decision",
+        decision,
+        "--approved-by",
+        "human",
+    )

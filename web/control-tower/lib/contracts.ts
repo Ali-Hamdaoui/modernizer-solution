@@ -422,6 +422,22 @@ export type V2JobEventSnapshotResponse = {
   latest_sequence: number;
 };
 
+export type V2PipelineRow = {
+  key: string;
+  label: string;
+  status: "pending" | "running" | "pass" | "blocked" | "failed" | string;
+  latest_message: string;
+  artifact_count: number;
+  last_updated: string;
+};
+
+export type V2PipelineResponse = {
+  job_id: string;
+  rows: V2PipelineRow[];
+  evidence: V2JobEvent[];
+  raw_logs: V2JobEvent[];
+};
+
 export type V2StageEntry = {
   stage_index: number;
   stage_run_id: string;
@@ -441,6 +457,7 @@ export type V2StageCommandResponse = {
 
 export type V2ApprovalResponse = {
   card_id: string;
+  job_id?: string;
   interrupt_id: string;
   request_checksum: string;
   stage_index: number;
@@ -476,6 +493,12 @@ export type V2AssistantAskResponse = {
   job_id: string;
   user_message: V2AssistantMessageResponse;
   assistant_message: V2AssistantMessageResponse;
+  model: {
+    status: string;
+    source: string;
+    provider: string;
+    role: string;
+  };
   guardrails: Record<string, boolean>;
 };
 

@@ -141,6 +141,9 @@ from migration_factory.control_tower.application.v2_stage_progression import (
 from migration_factory.control_tower.application.v2_assistant_service import (
     V2AssistantService,
 )
+from migration_factory.control_tower.application.v2_assistant_model_client import (
+    V2AssistantModelClient,
+)
 from migration_factory.control_tower.application.v2_model_schemas import (
     validate_against_schema,
     SchemaValidationError,
@@ -471,6 +474,7 @@ def create_app(
     worker_launcher: WorkerLauncher | None = None,
     worker_terminator: WorkerTerminator | None = None,
     v2_orchestrator_runner: Any | None = None,
+    v2_assistant_model_client: Any | None = None,
     event_replay_config: EventReplayConfig | None = None,
     security_settings: LocalApiSecuritySettings | None = None,
     actor_provider: ActorProvider | None = None,
@@ -490,6 +494,7 @@ def create_app(
     app.state.security_settings = local_security
     app.state.actor_provider = resolved_actor_provider
     app.state.v2_settings = ControlTowerSettings()
+    app.state.v2_assistant_model_client = v2_assistant_model_client or V2AssistantModelClient()
     app.state.worker_launcher = worker_launcher
     app.state.worker_terminator = worker_terminator
     app.state.v2_orchestrator_runner = v2_orchestrator_runner or V2OrchestratorRunner(
@@ -1000,6 +1005,14 @@ def create_app(
             "latest_sequence": events[-1].sequence if events else after,
         }
 
+    @app.get("/v1/v2/migration-jobs/{job_id}/pipeline")
+    def get_v2_job_pipeline(job_id: str) -> dict[str, Any]:
+        """Return operator-facing pipeline state derived from V2 events."""
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            events = uow.v2_events.list_by_job(job_id)
+        return _v2_pipeline_projection(job_id, events)
+
     @app.get("/v1/v2/migration-jobs/{job_id}/events")
     async def stream_v2_job_events(
         job_id: str,
@@ -1043,6 +1056,16 @@ def create_app(
         On success, queues a resume command. LLM cannot approve.
         """
         with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            card = uow.v2_approvals.get_card(card_id)
+            if card is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "CARD_NOT_FOUND",
+                    f"Decision card {card_id!r} not found",
+                )
+            commands = uow.v2_commands.list_by_job(job_id)
+            run_dir = _v2_resume_run_dir_from_commands(commands, card.stage_index, card.interrupt_id)
             service = V2ApprovalMappingService(
                 approval_repo=uow.v2_approvals,
             )
@@ -1051,6 +1074,7 @@ def create_app(
                     card_id=card_id,
                     expected_checksum=payload.expected_checksum,
                     job_id=job_id,
+                    run_dir=run_dir,
                 )
             except ValueError as exc:
                 raise _error(
@@ -1058,6 +1082,17 @@ def create_app(
                     "APPROVAL_FAILED",
                     str(exc),
                 ) from exc
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=resume.stage_index,
+                event_type="approval_resume_queued",
+                status="queued",
+                message="Approval accepted; backend-owned resume command queued.",
+                payload={"card_id": card_id, "resume_id": resume.resume_id},
+            )
+        app.state.v2_orchestrator_runner.start_resume(job_id=job_id, resume_id=resume.resume_id)
+        asyncio.run(app.state.public_event_notifier.notify())
         return service.resume_to_dict(resume)
 
     @app.post("/v1/v2/jobs/{job_id}/approvals/{card_id}/reject")
@@ -1067,6 +1102,7 @@ def create_app(
     ) -> dict[str, Any]:
         """Reject a decision card, pausing the stage."""
         with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
             service = V2ApprovalMappingService(
                 approval_repo=uow.v2_approvals,
             )
@@ -1090,6 +1126,7 @@ def create_app(
     ) -> dict[str, Any]:
         """Get a decision card by ID."""
         with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
             service = V2ApprovalMappingService(
                 approval_repo=uow.v2_approvals,
             )
@@ -1157,10 +1194,11 @@ def create_app(
     ) -> dict[str, Any]:
         """Ask the V2 assistant for read-only status guidance."""
         with unit_of_work_factory() as uow:
-            _require_v2_job(uow, job_id)
+            job = _require_v2_job(uow, job_id)
             events = uow.v2_events.list_by_job(job_id)
             approvals = uow.v2_approvals.list_cards_by_job(job_id)
             commands = uow.v2_commands.list_by_job(job_id)
+            pipeline = _v2_pipeline_projection(job_id, events)
             service = V2AssistantService(assistant_repo=uow.v2_assistant)
             user_msg = service.add_message(
                 job_id=job_id,
@@ -1168,22 +1206,53 @@ def create_app(
                 content=payload.question,
                 correlation_id=payload.correlation_id,
             )
-            answer = _build_v2_assistant_answer(
+            fallback_answer = _build_v2_assistant_answer(
                 question=payload.question,
                 events=events,
                 approvals=approvals,
                 commands=commands,
             )
+            model_result = app.state.v2_assistant_model_client.answer(
+                prompt=_build_v2_assistant_prompt(
+                    question=payload.question,
+                    job=job,
+                    pipeline=pipeline,
+                    events=events,
+                    approvals=approvals,
+                ),
+                fallback=fallback_answer,
+            )
             assistant_msg = service.add_message(
                 job_id=job_id,
                 role="assistant",
-                content=answer,
+                content=model_result.content,
                 correlation_id=user_msg.message_id,
+            )
+        with unit_of_work_factory() as uow:
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=None,
+                event_type="model_invocation_completed" if model_result.success else "model_invocation_failed",
+                status="completed" if model_result.success else "failed",
+                message=model_result.redacted_summary,
+                payload={
+                    "provider": model_result.provider,
+                    "role": model_result.role,
+                    "source": model_result.source,
+                    "success": model_result.success,
+                },
             )
         return {
             "job_id": job_id,
             "user_message": service.message_to_dict(user_msg),
             "assistant_message": service.message_to_dict(assistant_msg),
+            "model": {
+                "status": model_result.model_status,
+                "source": model_result.source,
+                "provider": model_result.provider,
+                "role": model_result.role,
+            },
             "guardrails": {
                 "read_only": True,
                 "cannot_execute": True,
@@ -3033,6 +3102,158 @@ def _build_v2_assistant_answer(
         "change route/stage, choose Maven goals, choose deployments, or override proof."
     )
     return str(redact_public_data(answer))
+
+
+def _build_v2_assistant_prompt(
+    *,
+    question: str,
+    job: Any,
+    pipeline: dict[str, Any],
+    events: tuple[Any, ...],
+    approvals: tuple[Any, ...],
+) -> str:
+    latest_events = [_v2_event_payload(event) for event in events[-12:] if event.type not in _RAW_EVENT_TYPES]
+    pending_approvals = [
+        {
+            "card_id": card.card_id,
+            "stage_index": card.stage_index,
+            "status": card.status,
+            "summary": card.summary,
+            "request_checksum": card.request_checksum,
+        }
+        for card in approvals
+        if card.status == "pending"
+    ]
+    prompt = {
+        "question": question,
+        "job": {
+            "job_id": getattr(job, "job_id", ""),
+            "setup_id": getattr(job, "setup_id", ""),
+            "pipeline_id": getattr(job, "pipeline_id", ""),
+        },
+        "pipeline_rows": pipeline.get("rows", []),
+        "latest_events": latest_events,
+        "pending_approvals": pending_approvals,
+        "guardrails": {
+            "read_only": True,
+            "cannot_execute": True,
+            "cannot_approve": True,
+            "cannot_write_files": True,
+            "cannot_change_route_or_stage": True,
+            "cannot_override_proof": True,
+            "llm_cannot_approve_exact_checksum_required": True,
+        },
+    }
+    return json.dumps(redact_public_data(prompt), separators=(",", ":"), sort_keys=True)
+
+
+def _v2_resume_run_dir_from_commands(commands: tuple[Any, ...], stage_index: int, run_id: str) -> str:
+    for command in commands:
+        if int(getattr(command, "stage_index", 0)) != int(stage_index):
+            continue
+        try:
+            argv = json.loads(command.argv_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(argv, list):
+            continue
+        modernized = _argv_value(argv, "--modernized")
+        if modernized:
+            return str(Path(str(modernized)) / ".migration" / "runs" / run_id)
+    raise _error(
+        status.HTTP_400_BAD_REQUEST,
+        "RESUME_RUN_DIR_UNAVAILABLE",
+        "Backend could not derive approval resume run directory from persisted command manifest.",
+    )
+
+
+def _argv_value(argv: list[Any], option: str) -> str:
+    for index, value in enumerate(argv[:-1]):
+        if value == option:
+            return str(argv[index + 1])
+    return ""
+
+
+_PIPELINE_PHASES = (
+    ("preflight", "Preflight", {"job_created", "stage_queued"}),
+    ("analysis", "Analysis Agent", {"analysis_started", "analysis_completed", "analysis_failed"}),
+    ("planning", "Planning Agent", {"planning_started", "planning_completed", "planning_failed"}),
+    ("assessment", "Assessment Agent", {"assessment_started", "assessment_completed", "assessment_failed"}),
+    ("human_approval", "Human Approval", {"approval_blocked", "approval_required", "stage_blocked_for_approval", "approval_resume_queued", "resume_started"}),
+    ("sandbox_transform", "Transform Agent", {"sandbox_transform_started", "sandbox_transform_completed", "sandbox_transform_failed"}),
+    ("build_validation", "Build Agent", {"build_started", "build_completed", "build_failed"}),
+    ("test_validation", "Test Validation", {"test_started", "test_completed", "test_failed"}),
+    ("final_report", "Final Report", {"final_report_started", "final_report_completed", "final_report_failed", "proof_updated", "stage_completed"}),
+)
+_RAW_EVENT_TYPES = {"stdout", "stderr"}
+_IMPORTANT_EVENT_TYPES = {
+    "approval_required",
+    "stage_blocked_for_approval",
+    "approval_resume_queued",
+    "artifact_written",
+    "proof_updated",
+    "stage_failed",
+    "model_invocation_started",
+    "model_invocation_completed",
+    "model_invocation_failed",
+    "copilot_status_checked",
+}
+
+
+def _v2_pipeline_projection(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for key, label, event_types in _PIPELINE_PHASES:
+        matching = [event for event in events if event.type in event_types]
+        latest = matching[-1] if matching else None
+        rows.append(
+            {
+                "key": key,
+                "label": label,
+                "status": _pipeline_row_status(key, matching),
+                "latest_message": latest.message if latest is not None else "Waiting for backend-owned evidence.",
+                "artifact_count": sum(1 for event in events if event.type == "artifact_written" and _event_phase_key(event) == key),
+                "last_updated": latest.created_at if latest is not None else "",
+            }
+        )
+    important = [
+        _v2_event_payload(event)
+        for event in events
+        if event.type in _IMPORTANT_EVENT_TYPES
+        or event.status in {"blocked", "failed"}
+        or (event.type not in _RAW_EVENT_TYPES and event.type.endswith(("_started", "_completed", "_failed")))
+    ]
+    raw = [_v2_event_payload(event) for event in events if event.type in _RAW_EVENT_TYPES]
+    return {
+        "job_id": job_id,
+        "rows": rows,
+        "evidence": important[-100:],
+        "raw_logs": raw[-200:],
+    }
+
+
+def _pipeline_row_status(key: str, events: list[Any]) -> str:
+    if not events:
+        return "pending"
+    if any(event.status == "failed" or event.type.endswith("_failed") for event in events):
+        return "failed"
+    latest = events[-1]
+    if latest.status == "blocked":
+        return "blocked"
+    if latest.status == "running" or latest.type.endswith("_started"):
+        return "running"
+    if key == "human_approval" and latest.type == "approval_resume_queued":
+        return "pass"
+    if any(event.status == "completed" or event.type.endswith("_completed") for event in events):
+        return "pass"
+    return "pending"
+
+
+def _event_phase_key(event: Any) -> str:
+    event_type = str(event.type)
+    for key, _label, event_types in _PIPELINE_PHASES:
+        if event_type in event_types:
+            return key
+    return ""
 
 
 def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, ...]) -> list[dict[str, Any]]:

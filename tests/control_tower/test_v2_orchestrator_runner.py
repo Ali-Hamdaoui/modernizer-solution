@@ -163,4 +163,32 @@ def test_v2_runner_maps_approval_interrupt_to_card_and_blocked_events(tmp_path: 
     assert "approval_required" in [event.type for event in events]
     cards = uow.v2_approvals.list_cards_by_status("pending")
     assert len(cards) == 1
+    assert cards[0].job_id == "job-1"
     assert cards[0].request_checksum
+    assert len(uow.v2_approvals.list_cards_by_job("job-1")) == 1
+
+
+def test_v2_runner_passes_non_secret_copilot_env_and_excludes_secrets(monkeypatch, tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    monkeypatch.setenv("AI_MIGRATION_COPILOT_PROVIDER", "copilot_cli")
+    monkeypatch.setenv("AI_MIGRATION_COPILOT_MODEL", "gpt-test")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "secret")
+    popen = _FakePopen(stdout=[json.dumps({"final_status": "DONE"}) + "\n"], stderr=[], exit_code=0)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "stage_completed")
+
+    env = popen.calls[0]["env"]
+    assert env["AI_MIGRATION_COPILOT_PROVIDER"] == "copilot_cli"
+    assert env["AI_MIGRATION_COPILOT_MODEL"] == "gpt-test"
+    assert "AZURE_OPENAI_API_KEY" not in env
+    assert "GITHUB_TOKEN" not in env
+    event_types = [event.type for event in SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")]
+    assert "copilot_status_checked" in event_types

@@ -17,6 +17,7 @@ class V2ApprovalDecisionRecord:
     summary: str
     status: str
     created_at: str
+    job_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -40,8 +41,8 @@ class SqliteV2ApprovalRepository:
         self._connection.execute(
             """INSERT INTO v2_approval_decisions (
                 card_id, interrupt_id, request_checksum, stage_index,
-                summary, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                summary, status, created_at, job_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 record.card_id,
                 record.interrupt_id,
@@ -50,6 +51,7 @@ class SqliteV2ApprovalRepository:
                 record.summary,
                 record.status,
                 record.created_at,
+                record.job_id,
             ),
         )
 
@@ -70,12 +72,11 @@ class SqliteV2ApprovalRepository:
         return self._row_to_card(row)
 
     def list_cards_by_job(self, job_id: str) -> tuple[V2ApprovalDecisionRecord, ...]:
-        """List cards by looking up resume commands for the job."""
+        """List decision cards directly by job, including pending cards."""
         rows = self._connection.execute(
-            """SELECT d.* FROM v2_approval_decisions d
-               INNER JOIN v2_resume_commands r ON d.card_id = r.card_id
-               WHERE r.job_id = ?
-               ORDER BY d.created_at DESC""",
+            """SELECT * FROM v2_approval_decisions
+               WHERE job_id = ?
+               ORDER BY created_at DESC""",
             (job_id,),
         ).fetchall()
         return tuple(self._row_to_card(row) for row in rows)
@@ -129,6 +130,7 @@ class SqliteV2ApprovalRepository:
             summary=str(row["summary"]),
             status=str(row["status"]),
             created_at=str(row["created_at"]),
+            job_id=str(row["job_id"]) if "job_id" in row.keys() else "",
         )
 
     def _row_to_resume(self, row: sqlite3.Row) -> V2ResumeCommandRecord:

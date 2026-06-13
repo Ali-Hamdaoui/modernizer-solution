@@ -16,6 +16,7 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository i
     SqliteV2SetupRepository,
     V2PreflightResultRecord,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_approval_repository import V2ApprovalDecisionRecord
 
 
 def _mutation_headers() -> dict[str, str]:
@@ -52,6 +53,11 @@ class _FakeV2Runner:
         with self._uow_factory() as uow:
             uow.v2_events.save(job_id=job_id, stage=1, event_type="stage_started", status="running", message="fake runner started", payload={"command_id": command_id})
             uow.v2_events.save(job_id=job_id, stage=1, event_type="command_started", status="running", message="fake command started", payload={"command_id": command_id})
+            uow.v2_events.save(job_id=job_id, stage=1, event_type="stdout", status="running", message="raw log spam", payload={"command_id": command_id})
+            uow.v2_events.save(job_id=job_id, stage=1, event_type="analysis_started", status="running", message="analysis started", payload={})
+            uow.v2_events.save(job_id=job_id, stage=1, event_type="analysis_completed", status="completed", message="analysis completed", payload={})
+            uow.v2_events.save(job_id=job_id, stage=1, event_type="planning_completed", status="completed", message="planning completed", payload={})
+            uow.v2_events.save(job_id=job_id, stage=1, event_type="assessment_completed", status="completed", message="assessment completed", payload={})
             uow.v2_events.save(job_id=job_id, stage=1, event_type="artifact_written", status="completed", message="fake artifact", payload={"artifact_kind": "analysis_report"})
             uow.v2_events.save(job_id=job_id, stage=1, event_type="proof_updated", status="completed", message="fake proof", payload={})
             uow.v2_events.save(job_id=job_id, stage=1, event_type="stage_completed", status="completed", message="fake complete", payload={"command_id": command_id})
@@ -164,6 +170,49 @@ def test_v2_job_read_stages_and_empty_approvals(tmp_path: Path) -> None:
     assert approvals_response.json()["approvals"] == []
 
 
+def test_valid_job_with_pending_approval_returns_card(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_started_job(client, setup_id)
+    now = utc_now_text()
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_approvals.save_card(
+            V2ApprovalDecisionRecord(
+                card_id="card-visible",
+                job_id=job_id,
+                interrupt_id="run-visible",
+                request_checksum="checksum-visible",
+                stage_index=1,
+                summary="Human approval required before sandbox transform.",
+                status="pending",
+                created_at=now,
+            )
+        )
+
+    approvals_response = client.get(f"/v1/v2/jobs/{job_id}/approvals")
+    assert approvals_response.status_code == 200
+    approvals = approvals_response.json()["approvals"]
+    assert len(approvals) == 1
+    assert approvals[0]["card_id"] == "card-visible"
+    assert approvals[0]["request_checksum"] == "checksum-visible"
+
+
+def test_v2_pipeline_projection_groups_phases_and_raw_logs(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_started_job(client, setup_id)
+
+    response = client.get(f"/v1/v2/migration-jobs/{job_id}/pipeline")
+    assert response.status_code == 200
+    body = response.json()
+    labels = [row["label"] for row in body["rows"]]
+    assert "Analysis Agent" in labels
+    assert "Planning Agent" in labels
+    assert "Assessment Agent" in labels
+    assert any(event["type"] == "stdout" for event in body["raw_logs"])
+    assert all(event["type"] != "stdout" for event in body["evidence"])
+
+
 def test_v2_nonexistent_reads_return_404(tmp_path: Path) -> None:
     client, _ = _api_client(tmp_path)
     assert client.get("/v1/v2/migration-jobs/missing").status_code == 404
@@ -244,3 +293,4 @@ def test_openapi_json_includes_v2_paths(tmp_path: Path) -> None:
     assert "/v1/v2/migration-jobs/{job_id}/stages" in paths
     assert "/v1/v2/jobs/{job_id}/approvals" in paths
     assert "/v1/v2/migration-jobs/{job_id}/events" in paths
+    assert "/v1/v2/migration-jobs/{job_id}/pipeline" in paths

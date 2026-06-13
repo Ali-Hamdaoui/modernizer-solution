@@ -129,6 +129,7 @@ describe("V2 Migration Cockpit contract", () => {
         job_id: "job-123",
         user_message: { message_id: "u1", job_id: "job-123", role: "user", content: "What happened so far?", correlation_id: null, created_at: "now" },
         assistant_message: { message_id: "a1", job_id: "job-123", role: "assistant", content: "Latest event: stage 1 analysis_started.", correlation_id: "u1", created_at: "now" },
+        model: { status: "configured", source: "azure_openai", provider: "azure_openai", role: "assistant" },
         guardrails: { read_only: true, cannot_execute: true, cannot_approve: true },
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     }) as typeof fetch;
@@ -138,9 +139,35 @@ describe("V2 Migration Cockpit contract", () => {
       expect(calls[0].url).not.toContain("undefined");
       expect(JSON.parse(calls[0].body ?? "{}")).toEqual({ question: "What happened so far?" });
       expect(response.assistant_message.content).toContain("Latest event");
+      expect(response.model.source).toBe("azure_openai");
       expect(response.guardrails.cannot_execute).toBe(true);
     } finally {
       global.fetch = originalFetch;
     }
+  });
+
+  it("approval card exposes checksum controls", () => {
+    const approval = {
+      card_id: "card-1",
+      stage_index: 1,
+      summary: "Human approval required before sandbox transform.",
+      status: "pending",
+      request_checksum: "checksum-123",
+    };
+    const labels = ["Approve", "Reject", approval.request_checksum, "LLM cannot approve; exact checksum required."];
+    expect(labels).toContain("Approve");
+    expect(labels).toContain("Reject");
+    expect(labels).toContain("checksum-123");
+  });
+
+  it("pipeline projection shows agent phases before raw logs", () => {
+    const rows = ["Preflight", "Analysis Agent", "Planning Agent", "Assessment Agent", "Human Approval"];
+    const evidenceTypes = ["analysis_started", "planning_completed", "approval_required"];
+    const rawLogs = ["stdout"];
+    expect(rows).toContain("Analysis Agent");
+    expect(rows).toContain("Planning Agent");
+    expect(rows).toContain("Assessment Agent");
+    expect(evidenceTypes).not.toContain("stdout");
+    expect(rawLogs).toContain("stdout");
   });
 });

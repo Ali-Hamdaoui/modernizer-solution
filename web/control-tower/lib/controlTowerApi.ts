@@ -10,6 +10,7 @@ import type {
   JobRepresentation,
   V2MigrationJobResponse,
   V2JobEventSnapshotResponse,
+  V2PipelineResponse,
   V2StageEntry,
   V2StageCommandResponse,
   V2ApprovalResponse,
@@ -267,6 +268,13 @@ export async function getV2JobEventSnapshot(
   const params = new URLSearchParams({ after: String(after) });
   return getJson<V2JobEventSnapshotResponse>(
     `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/events/snapshot?${params}`
+  );
+}
+
+export async function getV2JobPipeline(jobId: string): Promise<V2PipelineResponse> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<V2PipelineResponse>(
+    `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/pipeline`
   );
 }
 

@@ -44,6 +44,23 @@ _MANIFEST_ENV_KEYS = (
     "JAVA21_HOME",
     "MAVEN_CMD",
 )
+_COPILOT_ENV_KEYS = (
+    "AI_MIGRATION_COPILOT_PROVIDER",
+    "AI_MIGRATION_COPILOT_MODEL",
+    "AI_MIGRATION_COPILOT_ASSIST",
+    "AI_MIGRATION_ENABLE_COPILOT_REPORT",
+    "AI_MIGRATION_COPILOT_REQUIRED",
+    "AI_MIGRATION_COPILOT_FAILURE_AGENT_ENABLED",
+    "AI_MIGRATION_AUTO_APPLY_SAFE_REPAIRS",
+    "AI_MIGRATION_SKIP_ENDPOINT_SMOKE",
+    "AI_MIGRATION_PROOF_LEVEL",
+    "AI_MIGRATION_H2_STARTUP_REQUIRED",
+    "AI_MIGRATION_COPILOT_TIMEOUT_SECONDS",
+    "AI_MIGRATION_COPILOT_REPAIR_MAX_ATTEMPTS",
+    "AI_MIGRATION_COPILOT_REPAIR_STRICT_CONTAINMENT",
+    "AI_MIGRATION_COPILOT_LOG_LEVEL",
+)
+_SECRET_ENV_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL", "AUTHORIZATION")
 
 
 @dataclass(frozen=True)
@@ -102,6 +119,38 @@ class V2OrchestratorRunner:
             status="started",
         )
 
+    def start_resume(self, *, job_id: str, resume_id: str) -> V2OrchestratorStart:
+        with self._unit_of_work_factory() as uow:
+            resume = uow.v2_approvals.get_resume(resume_id)
+            if resume is None:
+                raise ValueError(f"V2 resume command {resume_id!r} not found")
+            if resume.job_id != job_id:
+                raise ValueError(f"V2 resume command {resume_id!r} does not belong to job {job_id!r}")
+            argv = _load_json_list(resume.command_json)
+            stage_index = resume.stage_index
+
+        thread = threading.Thread(
+            target=self._run_process,
+            kwargs={
+                "job_id": job_id,
+                "command_id": resume_id,
+                "stage_index": stage_index,
+                "argv": argv,
+                "env_manifest": {},
+                "resume": True,
+            },
+            name=f"v2-orchestrator-resume-{resume_id[:8]}",
+            daemon=True,
+        )
+        thread.start()
+        return V2OrchestratorStart(
+            command_id=resume_id,
+            job_id=job_id,
+            stage_index=stage_index,
+            pid=None,
+            status="started",
+        )
+
     def _run_process(
         self,
         *,
@@ -110,13 +159,14 @@ class V2OrchestratorRunner:
         stage_index: int,
         argv: list[str],
         env_manifest: dict[str, Any],
+        resume: bool = False,
     ) -> None:
         self._event(
             job_id=job_id,
             stage=stage_index,
-            event_type="stage_started",
+            event_type="resume_started" if resume else "stage_started",
             status="running",
-            message=f"Stage {stage_index} real orchestrator started.",
+            message=f"Stage {stage_index} real orchestrator {'resume ' if resume else ''}started.",
             payload={"command_id": command_id},
         )
         self._event(
@@ -124,7 +174,7 @@ class V2OrchestratorRunner:
             stage=stage_index,
             event_type="command_started",
             status="running",
-            message="Backend-owned orchestrator manifest launched.",
+            message="Backend-owned approval resume command launched." if resume else "Backend-owned orchestrator manifest launched.",
             payload={"command_id": command_id, "shell": False, "cwd": str(self._cwd)},
         )
 
@@ -132,10 +182,25 @@ class V2OrchestratorRunner:
         stderr_lines: list[str] = []
         final_json: dict[str, Any] | None = None
         try:
+            process_env = _build_env(env_manifest)
+            copilot_enabled = bool(process_env.get("AI_MIGRATION_COPILOT_PROVIDER") or process_env.get("AI_MIGRATION_COPILOT_MODEL"))
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="copilot_status_checked",
+                status="completed",
+                message="Copilot/model runtime configuration checked for orchestrator subprocess.",
+                payload={
+                    "command_id": command_id,
+                    "copilot_config_present": copilot_enabled,
+                    "provider_configured": bool(process_env.get("AI_MIGRATION_COPILOT_PROVIDER")),
+                    "model_configured": bool(process_env.get("AI_MIGRATION_COPILOT_MODEL")),
+                },
+            )
             process = self._popen_factory(
                 _normalized_argv(argv),
                 cwd=str(self._cwd),
-                env=_build_env(env_manifest),
+                env=process_env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -176,6 +241,7 @@ class V2OrchestratorRunner:
                 exit_code=exit_code,
                 result=final_json,
                 stderr="\n".join(stderr_lines),
+                resume=resume,
             )
         except Exception as exc:
             self._event(
@@ -236,6 +302,15 @@ class V2OrchestratorRunner:
         phase = str(payload.get("phase") or "orchestrator")
         status = str(payload.get("status") or "running").lower()
         suffix = "started" if status == "running" else "completed" if status == "completed" else status
+        if phase.startswith("copilot") or phase.startswith("model"):
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type=f"model_invocation_{suffix}",
+                status=status,
+                message=str(payload.get("message") or f"{phase} {status}"),
+                payload={"command_id": command_id, "source_phase": phase},
+            )
         self._event(
             job_id=job_id,
             stage=stage_index,
@@ -254,6 +329,7 @@ class V2OrchestratorRunner:
         exit_code: int,
         result: dict[str, Any] | None,
         stderr: str,
+        resume: bool = False,
     ) -> None:
         if result:
             self._emit_artifacts(job_id=job_id, stage_index=stage_index, command_id=command_id, result=result)
@@ -273,6 +349,7 @@ class V2OrchestratorRunner:
             checksum = sha256_canonical_json(result)
             with self._unit_of_work_factory() as uow:
                 card = V2ApprovalMappingService(uow.v2_approvals).create_decision_card(
+                    job_id=job_id,
                     interrupt_id=str(result.get("run_id") or command_id),
                     request_checksum=checksum,
                     stage_index=stage_index,
@@ -387,12 +464,23 @@ def _build_env(manifest: dict[str, Any]) -> dict[str, str]:
         value = manifest.get(key)
         if isinstance(value, str) and value:
             env[key] = value
+    for key in _COPILOT_ENV_KEYS:
+        if _is_secret_env_key(key):
+            continue
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
     path_prepend = manifest.get("PATH_PREPEND")
     if isinstance(path_prepend, str) and path_prepend:
         current_path = env.get("PATH", "")
         env["PATH"] = path_prepend + (os.pathsep + current_path if current_path else "")
     env["AI_MIGRATION_CONTROL_TOWER_EVENTS"] = "jsonl"
     return env
+
+
+def _is_secret_env_key(key: str) -> bool:
+    upper = key.upper()
+    return any(marker in upper for marker in _SECRET_ENV_MARKERS)
 
 
 def _load_json_list(text: str) -> list[str]:
