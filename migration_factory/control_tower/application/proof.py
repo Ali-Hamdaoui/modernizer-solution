@@ -28,7 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 from typing import Any
-from uuid import uuid4
+from uuid import uuid4 as _uuid4
 
 from migration_factory.control_tower.application.ports import (
     ControlTowerUnitOfWork,
@@ -44,6 +44,8 @@ from migration_factory.control_tower.domain.entities import (
     StageChainEventRecord,
     RunEventRecord,
     AuditRecord,
+    V1ProofReportRecord,
+    V1ProofReportGateRecord,
 )
 from migration_factory.control_tower.domain.states import TargetProofLevel
 from migration_factory.control_tower.domain.errors import (
@@ -285,3 +287,167 @@ class DeterministicProofGateService:
             + (input_checksum or "").encode("utf-8")
         )
         return hashlib.sha256(gate_input).hexdigest()
+
+
+class FinalReportService:
+    """Generate deterministic final report artifacts from proof gates.
+
+    A final report is generated when all three deterministic proof gates
+    are present and verified. The report is a deterministic summary of
+    the proof gates, stage chain ledger entries, and pipeline metadata.
+
+    Model summaries CANNOT create or override proof reports.
+    Reports are computed from proof gates and stage chain data only.
+    """
+
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+        self._gate_service = DeterministicProofGateService(unit_of_work_factory)
+
+    def generate_final_report(
+        self,
+        job_id: str,
+        generated_by: str = "system",
+    ) -> dict[str, Any]:
+        """Generate a deterministic final report artifact.
+
+        Returns the report dict. Raises ValueError if proof gates are
+        not complete.
+        """
+        # Compute proof gates first (this opens its own UOW)
+        gates = self._gate_service.compute_proof_gates(job_id, computed_by=generated_by)
+
+        if len(gates) < 3:
+            raise ValueError(
+                f"Cannot generate final report: only {len(gates)} of 3 proof gates computed"
+            )
+
+        with self._unit_of_work_factory() as uow:
+            job = uow.migration_jobs.get(job_id)
+            if job is None:
+                raise NotFoundError("migration job", job_id)
+
+            now = utc_now_text()
+            report_id = f"report-{_uuid4().hex[:12]}"
+
+            # Get ledger entries for stage details
+            ledger_entries = uow.stage_chain_ledger.list_for_job(job_id)
+
+            # Build stage details
+            stage_details = []
+            for stage_index in (1, 2, 3):
+                gate_checksum = gates.get(stage_index, "")
+                entry = None
+                for e in ledger_entries:
+                    if e.stage_index == stage_index:
+                        entry = e
+                        break
+
+                stage_details.append({
+                    "stage_index": stage_index,
+                    "output_checksum": entry.output_checksum if entry else None,
+                    "proof_gate_checksum": gate_checksum,
+                    "chain_status": entry.chain_status if entry else "unknown",
+                    "input_checksum": entry.input_checksum if entry else None,
+                })
+
+            summary = {
+                "job_id": job_id,
+                "pipeline_id": "springboot-216-to-356-java21-three-stage",
+                "stage_count": 3,
+                "gate_count": len(gates),
+                "proof_complete": True,
+                "target_proof_level": TargetProofLevel.BUILD_TEST_VERIFIED.value,
+                "stages": stage_details,
+                "generated_at": now,
+                "generated_by": generated_by,
+            }
+
+            summary_json_str = json.dumps(summary, sort_keys=True)
+            report_checksum = sha256_canonical_json(summary)
+
+            # Insert report
+            report = V1ProofReportRecord(
+                report_id=report_id,
+                job_id=job_id,
+                report_version=1,
+                report_checksum=report_checksum,
+                gate_count=len(gates),
+                all_gates_present=1,
+                proof_complete=1,
+                target_proof_level=TargetProofLevel.BUILD_TEST_VERIFIED.value,
+                pipeline_id="springboot-216-to-356-java21-three-stage",
+                stage_count=3,
+                summary_json=summary_json_str,
+                generated_at=now,
+                generated_by=generated_by,
+            )
+            uow.v1_proof_reports.insert(report)
+
+            # Insert gate details
+            for stage_detail in stage_details:
+                report_gate_id = f"rpt-gate-{report_id}-s{stage_detail['stage_index']:04d}"
+                gate = V1ProofReportGateRecord(
+                    report_gate_id=report_gate_id,
+                    report_id=report_id,
+                    job_id=job_id,
+                    stage_index=stage_detail["stage_index"],
+                    output_checksum=stage_detail["output_checksum"] or "",
+                    proof_gate_checksum=stage_detail["proof_gate_checksum"],
+                    chain_status=stage_detail["chain_status"],
+                )
+                uow.v1_proof_report_gates.insert(gate)
+
+            # Record audit event
+            uow.audit_records.append_global_audit(
+                audit_id=f"audit-proof-report-{_uuid4().hex[:12]}",
+                actor_type="system",
+                actor_id=generated_by,
+                action="proof_report_generated",
+                payload_json=canonical_json_text({
+                    "job_id": job_id,
+                    "report_id": report_id,
+                    "report_checksum": report_checksum,
+                    "gate_count": len(gates),
+                    "proof_complete": True,
+                }),
+                created_at=now,
+            )
+
+        return summary
+
+    def get_report(
+        self,
+        job_id: str,
+    ) -> dict[str, Any] | None:
+        """Get the most recent final report for a job."""
+        with self._unit_of_work_factory() as uow:
+            report = uow.v1_proof_reports.get_latest_for_job(job_id)
+            if report is None:
+                return None
+
+            gates = uow.v1_proof_report_gates.list_for_report(report.report_id)
+
+            return {
+                "report_id": report.report_id,
+                "job_id": report.job_id,
+                "report_version": report.report_version,
+                "report_checksum": report.report_checksum,
+                "gate_count": report.gate_count,
+                "all_gates_present": bool(report.all_gates_present),
+                "proof_complete": bool(report.proof_complete),
+                "target_proof_level": report.target_proof_level,
+                "pipeline_id": report.pipeline_id,
+                "summary": json.loads(report.summary_json) if report.summary_json else {},
+                "gates": [
+                    {
+                        "stage_index": g.stage_index,
+                        "output_checksum": g.output_checksum,
+                        "proof_gate_checksum": g.proof_gate_checksum,
+                        "chain_status": g.chain_status,
+                    }
+                    for g in gates
+                ],
+                "generated_at": report.generated_at,
+                "generated_by": report.generated_by,
+            }

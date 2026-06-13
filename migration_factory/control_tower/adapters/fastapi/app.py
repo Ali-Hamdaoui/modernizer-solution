@@ -43,6 +43,10 @@ from migration_factory.control_tower.application.plan_amendments import (
     PlanAmendmentService,
     PlanChange,
 )
+from migration_factory.control_tower.application.proof import (
+    DeterministicProofGateService,
+    FinalReportService,
+)
 from migration_factory.control_tower.application.repairs import RepairService
 from migration_factory.control_tower.application.patch_policy import PatchPolicyService
 from migration_factory.control_tower.application.plan_reviews import PlanReviewService
@@ -1290,6 +1294,40 @@ def create_app(
                 for a in approvals
             ],
         }
+
+    @app.get("/v1/jobs/{job_id}/proof-report")
+    def get_proof_report(job_id: str) -> dict[str, Any]:
+        service = FinalReportService(unit_of_work_factory)
+        report = service.get_report(job_id)
+        if report is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "PROOF_REPORT_NOT_FOUND",
+                f"No proof report found for job {job_id!r}.",
+            )
+        return report
+
+    @app.post("/v1/jobs/{job_id}/proof-report", status_code=status.HTTP_201_CREATED)
+    def generate_proof_report(
+        job_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = resolved_actor_provider.current_actor()
+        service = FinalReportService(unit_of_work_factory)
+        try:
+            report = service.generate_final_report(
+                job_id=job_id,
+                generated_by=actor.actor_id,
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        except ValueError as exc:
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                "PROOF_GATES_INCOMPLETE",
+                str(exc),
+            )
+        return report
 
     @app.post("/v1/jobs", status_code=status.HTTP_201_CREATED)
     async def create_job(

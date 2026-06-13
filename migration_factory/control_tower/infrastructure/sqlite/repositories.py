@@ -43,6 +43,8 @@ from migration_factory.control_tower.domain.entities import (
     V1PrivilegedActionDecisionRecord,
     V1PrivilegedActionExecutionRecord,
     V1PrivilegedActionRecord,
+    V1ProofReportGateRecord,
+    V1ProofReportRecord,
     V1SandboxSnapshotRecord,
 )
 from migration_factory.control_tower.domain.checksums import utc_now_text
@@ -2921,4 +2923,150 @@ def _patch_rollback_from_row(row: sqlite3.Row) -> V1PatchRollbackRecord:
         redacted_summary=str(row["redacted_summary"]),
         correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
         causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1ProofReportRepository:
+    """SQLite repository for v1_proof_reports table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, report: V1ProofReportRecord) -> None:
+        self._connection.execute(
+            """INSERT INTO v1_proof_reports (
+                report_id, job_id, report_version, report_checksum,
+                gate_count, all_gates_present, proof_complete,
+                target_proof_level, pipeline_id, stage_count,
+                summary_json, generated_at, generated_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                report.report_id,
+                report.job_id,
+                report.report_version,
+                report.report_checksum,
+                report.gate_count,
+                report.all_gates_present,
+                report.proof_complete,
+                report.target_proof_level,
+                report.pipeline_id,
+                report.stage_count,
+                report.summary_json,
+                report.generated_at,
+                report.generated_by,
+            ),
+        )
+
+    def get(self, report_id: str) -> V1ProofReportRecord | None:
+        row = self._connection.execute(
+            """SELECT report_id, job_id, report_version, report_checksum,
+                      gate_count, all_gates_present, proof_complete,
+                      target_proof_level, pipeline_id, stage_count,
+                      summary_json, generated_at, generated_by
+               FROM v1_proof_reports WHERE report_id = ?""",
+            (report_id,),
+        ).fetchone()
+        return _proof_report_from_row(row) if row is not None else None
+
+    def get_latest_for_job(self, job_id: str) -> V1ProofReportRecord | None:
+        row = self._connection.execute(
+            """SELECT report_id, job_id, report_version, report_checksum,
+                      gate_count, all_gates_present, proof_complete,
+                      target_proof_level, pipeline_id, stage_count,
+                      summary_json, generated_at, generated_by
+               FROM v1_proof_reports
+               WHERE job_id = ?
+               ORDER BY generated_at DESC, report_id DESC
+               LIMIT 1""",
+            (job_id,),
+        ).fetchone()
+        return _proof_report_from_row(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> tuple[V1ProofReportRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT report_id, job_id, report_version, report_checksum,
+                      gate_count, all_gates_present, proof_complete,
+                      target_proof_level, pipeline_id, stage_count,
+                      summary_json, generated_at, generated_by
+               FROM v1_proof_reports
+               WHERE job_id = ?
+               ORDER BY generated_at DESC, report_id DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_proof_report_from_row(row) for row in rows)
+
+
+class SqliteV1ProofReportGateRepository:
+    """SQLite repository for v1_proof_report_gates table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, gate: V1ProofReportGateRecord) -> None:
+        self._connection.execute(
+            """INSERT INTO v1_proof_report_gates (
+                report_gate_id, report_id, job_id, stage_index,
+                output_checksum, proof_gate_checksum, chain_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                gate.report_gate_id,
+                gate.report_id,
+                gate.job_id,
+                gate.stage_index,
+                gate.output_checksum,
+                gate.proof_gate_checksum,
+                gate.chain_status,
+            ),
+        )
+
+    def list_for_report(self, report_id: str) -> tuple[V1ProofReportGateRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT report_gate_id, report_id, job_id, stage_index,
+                      output_checksum, proof_gate_checksum, chain_status
+               FROM v1_proof_report_gates
+               WHERE report_id = ?
+               ORDER BY stage_index ASC""",
+            (report_id,),
+        ).fetchall()
+        return tuple(_proof_report_gate_from_row(row) for row in rows)
+
+    def list_for_job(self, job_id: str) -> tuple[V1ProofReportGateRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT report_gate_id, report_id, job_id, stage_index,
+                      output_checksum, proof_gate_checksum, chain_status
+               FROM v1_proof_report_gates
+               WHERE job_id = ?
+               ORDER BY stage_index ASC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_proof_report_gate_from_row(row) for row in rows)
+
+
+def _proof_report_from_row(row: sqlite3.Row) -> V1ProofReportRecord:
+    return V1ProofReportRecord(
+        report_id=str(row["report_id"]),
+        job_id=str(row["job_id"]),
+        report_version=int(row["report_version"]),
+        report_checksum=str(row["report_checksum"]),
+        gate_count=int(row["gate_count"]),
+        all_gates_present=int(row["all_gates_present"]),
+        proof_complete=int(row["proof_complete"]),
+        target_proof_level=str(row["target_proof_level"]),
+        pipeline_id=str(row["pipeline_id"]),
+        stage_count=int(row["stage_count"]),
+        summary_json=str(row["summary_json"]),
+        generated_at=str(row["generated_at"]),
+        generated_by=str(row["generated_by"]),
+    )
+
+
+def _proof_report_gate_from_row(row: sqlite3.Row) -> V1ProofReportGateRecord:
+    return V1ProofReportGateRecord(
+        report_gate_id=str(row["report_gate_id"]),
+        report_id=str(row["report_id"]),
+        job_id=str(row["job_id"]),
+        stage_index=int(row["stage_index"]),
+        output_checksum=str(row["output_checksum"]),
+        proof_gate_checksum=str(row["proof_gate_checksum"]),
+        chain_status=str(row["chain_status"]),
     )

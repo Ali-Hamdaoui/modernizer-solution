@@ -51,6 +51,8 @@ from migration_factory.control_tower.domain.entities import V1ModelInvocationRec
 from migration_factory.control_tower.domain.entities import V1PrivilegedActionDecisionRecord
 from migration_factory.control_tower.domain.entities import V1PrivilegedActionExecutionRecord
 from migration_factory.control_tower.domain.entities import V1PrivilegedActionRecord
+from migration_factory.control_tower.domain.entities import V1ProofReportRecord
+from migration_factory.control_tower.domain.entities import V1ProofReportGateRecord
 from migration_factory.control_tower.domain.model_profiles import V1ModelProfileRecord
 from migration_factory.control_tower.domain.manifests import CommandManifest
 from migration_factory.control_tower.domain.states import JobState
@@ -545,6 +547,28 @@ class V1PatchMavenValidationRepository(Protocol):
     def list_for_job(self, job_id: str) -> tuple[V1PatchMavenValidationRecord, ...]: ...
 
 
+class V1ProofReportRepository(Protocol):
+    """Append-only repository for proof report artifacts."""
+
+    def insert(self, report: V1ProofReportRecord) -> None: ...
+
+    def get(self, report_id: str) -> V1ProofReportRecord | None: ...
+
+    def get_latest_for_job(self, job_id: str) -> V1ProofReportRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1ProofReportRecord, ...]: ...
+
+
+class V1ProofReportGateRepository(Protocol):
+    """Append-only repository for proof report gate associations."""
+
+    def insert(self, gate: V1ProofReportGateRecord) -> None: ...
+
+    def list_for_report(self, report_id: str) -> tuple[V1ProofReportGateRecord, ...]: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1ProofReportGateRecord, ...]: ...
+
+
 class ControlTowerUnitOfWork(Protocol):
     runner_profiles: RunnerProfileRepository
     pipeline_definitions: PipelineDefinitionRepository
@@ -576,6 +600,8 @@ class ControlTowerUnitOfWork(Protocol):
     v1_patch_applications: V1PatchApplicationRepository
     v1_patch_maven_validations: V1PatchMavenValidationRepository
     v1_patch_rollbacks: V1PatchRollbackRepository
+    v1_proof_reports: V1ProofReportRepository
+    v1_proof_report_gates: V1ProofReportGateRepository
 
     def __enter__(self) -> Self: ...
 
