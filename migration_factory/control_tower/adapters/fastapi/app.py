@@ -141,12 +141,18 @@ from migration_factory.control_tower.application.v2_stage_progression import (
 from migration_factory.control_tower.application.v2_assistant_service import (
     V2AssistantService,
 )
+from migration_factory.control_tower.application.v2_assistant_model_client import (
+    V2AssistantModelClient,
+)
 from migration_factory.control_tower.application.v2_model_schemas import (
     validate_against_schema,
     SchemaValidationError,
 )
 from migration_factory.control_tower.application.v2_repair_flow import (
     V2RepairFlowService,
+)
+from migration_factory.control_tower.application.v2_orchestrator_runner import (
+    V2OrchestratorRunner,
 )
 from migration_factory.control_tower.adapters.fastapi.security import (
     MUTATION_METHODS,
@@ -407,6 +413,12 @@ class AssistantMessageRequest(BaseModel):
     correlation_id: str | None = None
 
 
+class AssistantAskRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    question: str = Field(min_length=1, max_length=4000)
+    correlation_id: str | None = None
+
+
 class DraftActionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     job_id: str
@@ -461,6 +473,8 @@ def create_app(
     *,
     worker_launcher: WorkerLauncher | None = None,
     worker_terminator: WorkerTerminator | None = None,
+    v2_orchestrator_runner: Any | None = None,
+    v2_assistant_model_client: Any | None = None,
     event_replay_config: EventReplayConfig | None = None,
     security_settings: LocalApiSecuritySettings | None = None,
     actor_provider: ActorProvider | None = None,
@@ -480,8 +494,13 @@ def create_app(
     app.state.security_settings = local_security
     app.state.actor_provider = resolved_actor_provider
     app.state.v2_settings = ControlTowerSettings()
+    app.state.v2_assistant_model_client = v2_assistant_model_client or V2AssistantModelClient()
     app.state.worker_launcher = worker_launcher
     app.state.worker_terminator = worker_terminator
+    app.state.v2_orchestrator_runner = v2_orchestrator_runner or V2OrchestratorRunner(
+        unit_of_work_factory=unit_of_work_factory,
+        notifier=app.state.public_event_notifier,
+    )
     app.state.controller_ownership = resolved_controller_ownership
     app.state.controller_services_started = False
     app.state.reconciliation_results = []
@@ -957,7 +976,16 @@ def create_app(
                     "STAGE1_START_FAILED",
                     str(exc),
                 ) from exc
-            _emit_v2_stage1_uat_events(uow, job_id=payload.job_id, command_id=result.command_id)
+            _append_v2_event(
+                uow,
+                job_id=payload.job_id,
+                stage=1,
+                event_type="stage_queued",
+                status="queued",
+                message="Stage 1 command manifest queued for real orchestrator execution.",
+                payload={"command_id": result.command_id},
+            )
+        app.state.v2_orchestrator_runner.start(job_id=payload.job_id, command_id=result.command_id)
         asyncio.run(app.state.public_event_notifier.notify())
         return service.result_to_dict(result)
 
@@ -976,6 +1004,25 @@ def create_app(
             "events": [_v2_event_payload(event) for event in events],
             "latest_sequence": events[-1].sequence if events else after,
         }
+
+    @app.get("/v1/v2/migration-jobs/{job_id}/pipeline")
+    def get_v2_job_pipeline(job_id: str) -> dict[str, Any]:
+        """Return operator-facing pipeline state derived from V2 events."""
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            events = uow.v2_events.list_by_job(job_id)
+        return _v2_pipeline_projection(job_id, events)
+
+    @app.get("/v1/v2/migration-jobs/{job_id}/failure-summary")
+    def get_v2_job_failure_summary(job_id: str) -> dict[str, Any]:
+        """Return redacted failure/repair summary for the cockpit.
+
+        Never returns absolute paths, secrets, or raw token data.
+        """
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            events = uow.v2_events.list_by_job(job_id)
+        return _v2_failure_summary(job_id, events)
 
     @app.get("/v1/v2/migration-jobs/{job_id}/events")
     async def stream_v2_job_events(
@@ -1020,6 +1067,16 @@ def create_app(
         On success, queues a resume command. LLM cannot approve.
         """
         with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            card = uow.v2_approvals.get_card(card_id)
+            if card is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "CARD_NOT_FOUND",
+                    f"Decision card {card_id!r} not found",
+                )
+            commands = uow.v2_commands.list_by_job(job_id)
+            run_dir = _v2_resume_run_dir_from_commands(commands, card.stage_index, card.interrupt_id)
             service = V2ApprovalMappingService(
                 approval_repo=uow.v2_approvals,
             )
@@ -1028,6 +1085,7 @@ def create_app(
                     card_id=card_id,
                     expected_checksum=payload.expected_checksum,
                     job_id=job_id,
+                    run_dir=run_dir,
                 )
             except ValueError as exc:
                 raise _error(
@@ -1035,6 +1093,17 @@ def create_app(
                     "APPROVAL_FAILED",
                     str(exc),
                 ) from exc
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=resume.stage_index,
+                event_type="approval_resume_queued",
+                status="queued",
+                message="Approval accepted; backend-owned resume command queued.",
+                payload={"card_id": card_id, "resume_id": resume.resume_id},
+            )
+        app.state.v2_orchestrator_runner.start_resume(job_id=job_id, resume_id=resume.resume_id)
+        asyncio.run(app.state.public_event_notifier.notify())
         return service.resume_to_dict(resume)
 
     @app.post("/v1/v2/jobs/{job_id}/approvals/{card_id}/reject")
@@ -1044,6 +1113,7 @@ def create_app(
     ) -> dict[str, Any]:
         """Reject a decision card, pausing the stage."""
         with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
             service = V2ApprovalMappingService(
                 approval_repo=uow.v2_approvals,
             )
@@ -1067,6 +1137,7 @@ def create_app(
     ) -> dict[str, Any]:
         """Get a decision card by ID."""
         with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
             service = V2ApprovalMappingService(
                 approval_repo=uow.v2_approvals,
             )
@@ -1125,6 +1196,83 @@ def create_app(
         return {
             "job_id": job_id,
             "messages": [service.message_to_dict(m) for m in messages],
+        }
+
+    @app.post("/v1/v2/jobs/{job_id}/assistant/ask")
+    def ask_v2_assistant(
+        job_id: str,
+        payload: AssistantAskRequest,
+    ) -> dict[str, Any]:
+        """Ask the V2 assistant for read-only status guidance."""
+        with unit_of_work_factory() as uow:
+            job = _require_v2_job(uow, job_id)
+            events = uow.v2_events.list_by_job(job_id)
+            approvals = uow.v2_approvals.list_cards_by_job(job_id)
+            commands = uow.v2_commands.list_by_job(job_id)
+            pipeline = _v2_pipeline_projection(job_id, events)
+            service = V2AssistantService(assistant_repo=uow.v2_assistant)
+            user_msg = service.add_message(
+                job_id=job_id,
+                role="user",
+                content=payload.question,
+                correlation_id=payload.correlation_id,
+            )
+            fallback_answer = _build_v2_assistant_answer(
+                question=payload.question,
+                events=events,
+                approvals=approvals,
+                commands=commands,
+            )
+            model_result = app.state.v2_assistant_model_client.answer(
+                prompt=_build_v2_assistant_prompt(
+                    question=payload.question,
+                    job=job,
+                    pipeline=pipeline,
+                    events=events,
+                    approvals=approvals,
+                ),
+                fallback=fallback_answer,
+            )
+            assistant_msg = service.add_message(
+                job_id=job_id,
+                role="assistant",
+                content=model_result.content,
+                correlation_id=user_msg.message_id,
+            )
+        with unit_of_work_factory() as uow:
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=None,
+                event_type="model_invocation_completed" if model_result.success else "model_invocation_failed",
+                status="completed" if model_result.success else "failed",
+                message=model_result.redacted_summary,
+                payload={
+                    "provider": model_result.provider,
+                    "role": model_result.role,
+                    "source": model_result.source,
+                    "success": model_result.success,
+                },
+            )
+        return {
+            "job_id": job_id,
+            "user_message": service.message_to_dict(user_msg),
+            "assistant_message": service.message_to_dict(assistant_msg),
+            "model": {
+                "status": model_result.model_status,
+                "source": model_result.source,
+                "provider": model_result.provider,
+                "role": model_result.role,
+                "failure_reason": model_result.failure_reason,
+            },
+            "guardrails": {
+                "read_only": True,
+                "cannot_execute": True,
+                "cannot_approve": True,
+                "cannot_write_files": True,
+                "cannot_change_route_or_stage": True,
+                "cannot_override_proof": True,
+            },
         }
 
     @app.post("/v1/v2/jobs/{job_id}/assistant/actions/draft")
@@ -2924,6 +3072,399 @@ def _emit_v2_stage1_uat_events(uow: Any, *, job_id: str, command_id: str) -> Non
         )
 
 
+def _build_v2_assistant_answer(
+    *,
+    question: str,
+    events: tuple[Any, ...],
+    approvals: tuple[Any, ...],
+    commands: tuple[Any, ...],
+) -> str:
+    latest = events[-1] if events else None
+    failures = [event for event in events if event.status == "failed" or event.type in {"stage_failed", "transform_failed", "build_failed"}]
+    pending_approvals = [card for card in approvals if card.status == "pending"]
+    approved_cards = [card for card in approvals if card.status == "approved"]
+    running = [event for event in events if event.status == "running"]
+    completed = [event for event in events if event.type == "stage_completed"]
+    repair_events = [event for event in events if event.type in {"repair_started", "repair_fallback_generated"}]
+
+    # Build a rich stage status summary
+    stage_lines: list[str] = []
+    stage_status_events = {}
+    for event in events:
+        if event.type == "stage_completed" and event.stage:
+            stage_status_events[event.stage] = "completed"
+        elif event.type == "stage_failed" and event.stage:
+            stage_status_events[event.stage] = "failed"
+        elif event.status == "running" and event.stage:
+            stage_status_events.setdefault(event.stage, "running")
+        elif event.type in {"stage_queued", "next_stage_queued"} and event.stage:
+            stage_status_events.setdefault(event.stage, "queued")
+
+    for stage_idx in sorted(stage_status_events):
+        stage_lines.append(f"  Stage {stage_idx}: {stage_status_events[stage_idx]}")
+    stage_summary = "\n".join(stage_lines) if stage_lines else "  No stage events recorded yet."
+
+    # Determine action
+    if failures:
+        failure_msgs = [f"{event.type}: {event.message}" for event in failures[-3:]]
+        action = f"Failed: {'; '.join(failure_msgs)}. Review failure evidence and decide whether to create a bounded repair proposal."
+    elif pending_approvals:
+        card = pending_approvals[-1]
+        action = f"Approval required at Stage {card.stage_index}. Review the approval card checksum ({card.request_checksum[:12]}...) in the decisions panel. Only a human can approve it."
+    elif approved_cards:
+        action = "Approval accepted. Backend-owned orchestrator should resume. Wait for transform/build events."
+    elif latest is None:
+        action = "Start migration or wait for the backend to emit Stage 1 events."
+    elif completed:
+        action = "All stages completed. Wait for backend-owned proof report generation."
+    elif running:
+        action = "Wait for the running backend-owned orchestrator command to finish or request more evidence."
+    else:
+        action = "Inspect the evidence stream for the next operator action."
+
+    latest_text = "No evidence events have been recorded yet."
+    if latest is not None:
+        latest_text = f"Latest event: stage {latest.stage or '-'} {latest.type} ({latest.status}) - {latest.message}"
+    command_text = f"{len(commands)} backend-owned command manifest(s) are persisted."
+    approval_state = (
+        f"{len(pending_approvals)} approval pending, {len(approved_cards)} approved."
+        if pending_approvals or approved_cards
+        else "No approval cards."
+    )
+    repair_state = (
+        f"Repair loop active ({len(repair_events)} repair events)." if repair_events
+        else "No repair loop active."
+    )
+    answer = (
+        f"Question: {_bounded_event_text(question)}\n\n"
+        f"Stage Status:\n{stage_summary}\n\n"
+        f"{latest_text}\n"
+        f"{command_text} {approval_state} {repair_state}\n"
+        f"Next operator action: {action}\n\n"
+        "Guardrails: I can explain status and summarize evidence only. I cannot execute, approve, write files, "
+        "change route/stage, choose Maven goals, choose deployments, or override proof. "
+        "All migration execution is backend-owned."
+    )
+    return str(redact_public_data(answer))
+
+
+def _build_v2_assistant_prompt(
+    *,
+    question: str,
+    job: Any,
+    pipeline: dict[str, Any],
+    events: tuple[Any, ...],
+    approvals: tuple[Any, ...],
+) -> str:
+    latest_events = [_v2_event_payload(event) for event in events[-12:] if event.type not in _RAW_EVENT_TYPES]
+    pending_approvals = [
+        {
+            "card_id": card.card_id,
+            "stage_index": card.stage_index,
+            "status": card.status,
+            "summary": card.summary,
+            "request_checksum": card.request_checksum,
+        }
+        for card in approvals
+        if card.status == "pending"
+    ]
+    approved_cards = [
+        {"card_id": card.card_id, "stage_index": card.stage_index, "status": card.status}
+        for card in approvals
+        if card.status == "approved"
+    ]
+    # Build failure summary from events
+    failure_events = [
+        _v2_event_payload(event)
+        for event in events
+        if event.type in {"stage_failed", "transform_failed", "build_failed", "sandbox_transform_failed"}
+        or event.status == "failed"
+    ]
+    repair_events = [
+        _v2_event_payload(event)
+        for event in events
+        if event.type in {"repair_started", "repair_fallback_generated", "copilot_repair_invalid_response"}
+    ]
+    # Build stage status summary
+    stage_statuses: dict[str, str] = {}
+    for event in events:
+        if event.stage is None:
+            continue
+        stage_key = f"stage_{event.stage}"
+        if event.type == "stage_completed":
+            stage_statuses[stage_key] = "completed"
+        elif event.type == "stage_failed":
+            stage_statuses[stage_key] = "failed"
+        elif event.status == "running" and stage_key not in stage_statuses:
+            stage_statuses.setdefault(stage_key, "running")
+    prompt = {
+        "question": question,
+        "job": {
+            "job_id": getattr(job, "job_id", ""),
+            "setup_id": getattr(job, "setup_id", ""),
+            "pipeline_id": getattr(job, "pipeline_id", ""),
+        },
+        "pipeline_rows": pipeline.get("rows", []),
+        "stage_statuses": stage_statuses,
+        "latest_events": latest_events,
+        "pending_approvals": pending_approvals,
+        "approved_approvals": approved_cards,
+        "failure_summary": {
+            "failures": failure_events[-5:],
+            "repair": repair_events[-5:],
+        },
+        "guardrails": {
+            "read_only": True,
+            "cannot_execute": True,
+            "cannot_approve": True,
+            "cannot_write_files": True,
+            "cannot_change_route_or_stage": True,
+            "cannot_override_proof": True,
+            "llm_cannot_approve_exact_checksum_required": True,
+        },
+    }
+    return json.dumps(redact_public_data(prompt), separators=(",", ":"), sort_keys=True)
+
+
+def _v2_resume_run_dir_from_commands(commands: tuple[Any, ...], stage_index: int, run_id: str) -> str:
+    for command in commands:
+        if int(getattr(command, "stage_index", 0)) != int(stage_index):
+            continue
+        try:
+            argv = json.loads(command.argv_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(argv, list):
+            continue
+        modernized = _argv_value(argv, "--modernized")
+        if modernized:
+            return str(Path(str(modernized)) / ".migration" / "runs" / run_id)
+    raise _error(
+        status.HTTP_400_BAD_REQUEST,
+        "RESUME_RUN_DIR_UNAVAILABLE",
+        "Backend could not derive approval resume run directory from persisted command manifest.",
+    )
+
+
+def _argv_value(argv: list[Any], option: str) -> str:
+    for index, value in enumerate(argv[:-1]):
+        if value == option:
+            return str(argv[index + 1])
+    return ""
+
+
+_PIPELINE_PHASES = (
+    ("preflight", "Preflight", {"job_created", "stage_queued"}),
+    ("analysis", "Analysis Agent", {"analysis_started", "analysis_completed", "analysis_failed"}),
+    ("planning", "Planning Agent", {"planning_started", "planning_completed", "planning_failed"}),
+    ("assessment", "Assessment Agent", {"assessment_started", "assessment_completed", "assessment_failed"}),
+    ("human_approval", "Human Approval", {
+        "approval_required", "approval_blocked", "stage_blocked_for_approval",
+        "approval_started", "approval_completed", "approval_resume_queued", "resume_started",
+    }),
+    ("sandbox_transform", "Transform Agent", {
+        "sandbox_transform_started", "sandbox_transform_completed", "sandbox_transform_failed",
+        "transform_started", "transform_failed", "build_started", "build_completed", "build_failed",
+    }),
+    ("build_validation", "Build Agent", {"build_started", "build_completed", "build_failed"}),
+    ("test_validation", "Test Validation", {"test_started", "test_completed", "test_failed"}),
+    ("failure_repair", "Repair/Failure", {
+        "repair_started", "repair_fallback_generated", "repair_completed",
+        "copilot_repair_invalid_response", "copilot_availability_checked",
+    }),
+    ("final_report", "Final Report", {
+        "final_report_started", "final_report_completed", "final_report_failed",
+        "proof_updated", "stage_completed",
+    }),
+)
+_RAW_EVENT_TYPES = {"stdout", "stderr"}
+_IMPORTANT_EVENT_TYPES = {
+    "approval_required",
+    "approval_started",
+    "approval_completed",
+    "stage_blocked_for_approval",
+    "approval_resume_queued",
+    "artifact_written",
+    "proof_updated",
+    "stage_failed",
+    "stage_completed",
+    "model_invocation_started",
+    "model_invocation_completed",
+    "model_invocation_failed",
+    "copilot_status_checked",
+    "sandbox_transform_started",
+    "sandbox_transform_completed",
+    "sandbox_transform_failed",
+    "transform_failed",
+    "build_failed",
+    "repair_started",
+    "repair_fallback_generated",
+    "copilot_repair_invalid_response",
+    "next_stage_queued",
+}
+
+
+def _v2_pipeline_projection(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for key, label, event_types in _PIPELINE_PHASES:
+        matching = [event for event in events if event.type in event_types]
+        latest = matching[-1] if matching else None
+        # Deduplicate artifact counts by relative_path per phase
+        seen_paths: set[str] = set()
+        for event in events:
+            if event.type == "artifact_written" and _event_phase_key(event) == key:
+                try:
+                    payload = json.loads(event.payload_json or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    payload = {}
+                path = str(payload.get("relative_path", ""))
+                if path and path not in seen_paths:
+                    seen_paths.add(path)
+        rows.append(
+            {
+                "key": key,
+                "label": label,
+                "status": _pipeline_row_status(key, matching),
+                "latest_message": latest.message if latest is not None else "Waiting for backend-owned evidence.",
+                "artifact_count": len(seen_paths),
+                "last_updated": latest.created_at if latest is not None else "",
+            }
+        )
+    important = [
+        _v2_event_payload(event)
+        for event in events
+        if event.type in _IMPORTANT_EVENT_TYPES
+        or event.status in {"blocked", "failed"}
+        or (event.type not in _RAW_EVENT_TYPES and event.type.endswith(("_started", "_completed", "_failed")))
+    ]
+    raw = [_v2_event_payload(event) for event in events if event.type in _RAW_EVENT_TYPES]
+    return {
+        "job_id": job_id,
+        "rows": rows,
+        "evidence": important[-100:],
+        "raw_logs": raw[-200:],
+    }
+
+
+def _pipeline_row_status(key: str, events: list[Any]) -> str:
+    if not events:
+        return "pending"
+    # Failure supersedes everything
+    if any(event.status == "failed" or event.type.endswith("_failed") for event in events):
+        return "failed"
+    # Approval-specific: once accepted/completed or transform started, it's pass
+    if key == "human_approval":
+        approval_passed_types = {
+            "approval_completed", "approval_resume_queued", "resume_started",
+            "sandbox_transform_started", "sandbox_transform_completed",
+        }
+        if any(event.type in approval_passed_types for event in events):
+            return "pass"
+        if any(event.type == "approval_started" for event in events):
+            return "running"
+        if any(event.status == "blocked" or event.type in {"approval_required", "stage_blocked_for_approval"} for event in events):
+            return "blocked"
+        return "pending"
+    latest = events[-1]
+    if latest.status == "blocked":
+        return "blocked"
+    if latest.status == "running" or latest.type.endswith("_started"):
+        return "running"
+    if any(event.status == "completed" or event.type.endswith("_completed") for event in events):
+        return "pass"
+    return "pending"
+
+
+def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
+    """Build a redacted failure/repair summary from V2 events."""
+    failures: list[dict[str, Any]] = []
+    for event in events:
+        if event.status == "failed" or event.type.endswith("_failed"):
+            try:
+                payload = json.loads(event.payload_json or "{}")
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+            failures.append({
+                "type": event.type,
+                "stage": event.stage,
+                "message": _bounded_event_text(event.message),
+                "build_status": str(payload.get("build_status", "")),
+                "test_status": str(payload.get("test_status", "")),
+                "final_status": str(payload.get("final_status", "")),
+                "final_proof_level": str(payload.get("final_proof_level", "")),
+                "repair_loop_status": str(payload.get("repair_loop_status", "")),
+                "copilot_status": str(payload.get("copilot_invocation_status", "")),
+                "repair_fallback": str(payload.get("repair_fallback_generated", "")),
+            })
+    repair_events_typed = [
+        event for event in events
+        if event.type in {"repair_started", "repair_fallback_generated", "copilot_repair_invalid_response"}
+    ]
+    repair_summary = [
+        {"type": event.type, "message": _bounded_event_text(event.message)}
+        for event in repair_events_typed
+    ]
+    artifact_kinds: list[str] = []
+    for event in events:
+        if event.type == "artifact_written":
+            try:
+                payload = json.loads(event.payload_json or "{}")
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+            kind = str(payload.get("artifact_kind", ""))
+            if kind and kind not in artifact_kinds:
+                artifact_kinds.append(kind)
+    return {
+        "job_id": job_id,
+        "has_failures": len(failures) > 0,
+        "failures": failures,
+        "repair_loop_active": len(repair_events_typed) > 0,
+        "repair_events": repair_summary,
+        "artifact_kinds": artifact_kinds,
+    }
+
+
+def _event_phase_key(event: Any) -> str:
+    """Map an artifact_written event to its pipeline phase.
+
+    Looks at the event's artifact_kind/relative_path in payload first,
+    then falls back to event type matching.
+    """
+    event_type = str(event.type)
+    # Phase events are directly mapped
+    for key, _label, event_types in _PIPELINE_PHASES:
+        if event_type in event_types:
+            return key
+    # For artifact_written, derive phase from payload
+    if event_type == "artifact_written":
+        try:
+            payload = json.loads(event.payload_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        kind = str(payload.get("artifact_kind", "")).lower()
+        path = str(payload.get("relative_path", "")).lower()
+        # Map by artifact_kind
+        if any(k in kind for k in ("analysis", "analyze")) or "analysis" in path:
+            return "analysis"
+        if any(k in kind for k in ("plan", "planning")) or "planning" in path:
+            return "planning"
+        if any(k in kind for k in ("assessment", "assess")) or "assessment" in path:
+            return "assessment"
+        if any(k in kind for k in ("approval", "decision")):
+            return "human_approval"
+        if any(k in kind for k in ("transform", "openrewrite", "migration_ledger", "phase2")):
+            return "sandbox_transform"
+        if any(k in kind for k in ("build", "compile")) or "build" in path:
+            return "build_validation"
+        if any(k in kind for k in ("test", "validation")) or "test" in path:
+            return "test_validation"
+        if any(k in kind for k in ("final", "proof", "orchestration", "report")):
+            return "final_report"
+        if any(k in kind for k in ("repair", "copilot", "fallback")):
+            return "failure_repair"
+    return ""
+
+
 def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, ...]) -> list[dict[str, Any]]:
     try:
         stages = json.loads(job.stage_chain_json)
@@ -2956,7 +3497,7 @@ def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, 
 
     command_stages = {command.stage_index for command in commands}
     status_by_stage: dict[int, str] = {}
-    precedence = {"pending": 0, "queued": 1, "running": 2, "completed": 3, "failed": 4}
+    precedence = {"pending": 0, "queued": 1, "running": 2, "blocked": 3, "completed": 4, "failed": 5}
     for event in events:
         if event.stage is None:
             continue
@@ -2982,7 +3523,9 @@ def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, 
 def _stage_status_from_event(event_type: str, event_status: str) -> str:
     if event_type == "stage_failed" or event_status == "failed":
         return "failed"
-    if event_type == "stage_completed" or event_status == "completed":
+    if event_type in {"approval_required", "stage_blocked_for_approval"} or event_status == "blocked":
+        return "blocked"
+    if event_type == "stage_completed":
         return "completed"
     if event_type in {"stage_started", "command_started", "stdout", "stderr"} or event_status == "running":
         return "running"

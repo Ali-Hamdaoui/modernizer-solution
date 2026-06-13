@@ -10,6 +10,7 @@ import time
 from typing import Any
 
 from migration_factory.orchestrator.state import MigrationState
+from migration_factory.orchestrator.events import emit_control_tower_event
 from migration_factory.orchestrator.timing import record_phase_duration
 
 
@@ -67,6 +68,7 @@ def record_approval_decision_phase(state: MigrationState) -> MigrationState:
     run_dir = Path(state.get("run_dir", ""))
     if decision not in {"approved", "rejected", "replan_required"}:
         message = f"Cannot record approval decision: {decision!r}"
+        emit_control_tower_event(phase="approval", status="failed", message=message)
         return _with_phase_failure(
             state,
             phase="approval",
@@ -74,6 +76,7 @@ def record_approval_decision_phase(state: MigrationState) -> MigrationState:
             message=message,
         )
 
+    emit_control_tower_event(phase="approval", status="running", message="Recording approval decision.")
     started = time.monotonic()
     try:
         result = record_approval_decision_for_run(
@@ -85,6 +88,7 @@ def record_approval_decision_phase(state: MigrationState) -> MigrationState:
             source="orchestrator_resume",
         )
     except Exception as exc:
+        emit_control_tower_event(phase="approval", status="failed", message=f"approval recording failed: {exc}")
         return _with_phase_failure(
             state,
             phase="approval",
@@ -104,6 +108,7 @@ def record_approval_decision_phase(state: MigrationState) -> MigrationState:
         stop_reason = f"Approval decision '{decision}' recorded; stopping."
         final_status = decision.upper()
 
+    emit_control_tower_event(phase="approval", status="completed", message="Approval decision recorded.")
     return {
         "approval_status": "COMPLETED",
         "approval_decision": decision,
@@ -121,6 +126,11 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         apply_approved_sandbox_transform,
     )
 
+    emit_control_tower_event(
+        phase="sandbox_transform",
+        status="running",
+        message="Sandbox transform started.",
+    )
     started = time.monotonic()
     try:
         result = apply_approved_sandbox_transform(
@@ -135,6 +145,11 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
             error_writer=None,
         )
     except Exception as exc:
+        emit_control_tower_event(
+            phase="sandbox_transform",
+            status="failed",
+            message=f"sandbox transform failed: {exc}",
+        )
         return _with_phase_failure(
             state,
             phase="sandbox_transform",
@@ -166,6 +181,13 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
 
     if result.exit_code != 0 or result.status != STATUS_APPLIED or result.sandbox_path is None:
         message = result.message or f"sandbox transform failed with status {result.status}"
+        emit_control_tower_event(
+            phase="sandbox_transform",
+            status="failed",
+            message=message,
+            build_status=result.build_status or "",
+            test_status=result.test_status or "",
+        )
         failed = _with_phase_failure(
             state,
             phase="sandbox_transform",
@@ -245,6 +267,14 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
             )
             return _merge_repair_updates(failed, h2_startup_report=h2_report)
 
+    emit_control_tower_event(
+        phase="sandbox_transform",
+        status="completed",
+        message="Sandbox transform completed.",
+        sandbox_path=str(result.sandbox_path),
+        build_status=result.build_status or "",
+        test_status=result.test_status or "",
+    )
     return {
         "current_phase": "sandbox_transform",
         "orchestration_status": "PASS",
@@ -325,12 +355,14 @@ def _run_phase(
     status_key: str,
     service: PhaseCallable,
 ) -> MigrationState:
+    emit_control_tower_event(phase=phase, status="running", message=f"{phase} phase started.")
     running_state = _with_phase_status(state, phase=phase, status_key=status_key, status="RUNNING")
     started = time.monotonic()
     try:
         service_result = service(running_state)
     except Exception as exc:
         message = f"{phase} phase failed: {exc}"
+        emit_control_tower_event(phase=phase, status="failed", message=message)
         return _with_phase_failure(
             running_state,
             phase=phase,
@@ -342,6 +374,7 @@ def _run_phase(
     record_phase_duration(result, phase=phase, duration_seconds=time.monotonic() - started)
     if result.get(status_key) == "FAIL":
         message = f"{phase} phase failed"
+        emit_control_tower_event(phase=phase, status="failed", message=message)
         return _ensure_failure_details(
             result,
             phase=phase,
@@ -351,6 +384,7 @@ def _run_phase(
 
     result[status_key] = "PASS"  # type: ignore[literal-required]
     result["current_phase"] = phase  # type: ignore[typeddict-unknown-key]
+    emit_control_tower_event(phase=phase, status="completed", message=f"{phase} phase completed.")
     return result
 
 

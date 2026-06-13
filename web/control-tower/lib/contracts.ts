@@ -422,6 +422,22 @@ export type V2JobEventSnapshotResponse = {
   latest_sequence: number;
 };
 
+export type V2PipelineRow = {
+  key: string;
+  label: string;
+  status: "pending" | "running" | "pass" | "blocked" | "failed" | string;
+  latest_message: string;
+  artifact_count: number;
+  last_updated: string;
+};
+
+export type V2PipelineResponse = {
+  job_id: string;
+  rows: V2PipelineRow[];
+  evidence: V2JobEvent[];
+  raw_logs: V2JobEvent[];
+};
+
 export type V2StageEntry = {
   stage_index: number;
   stage_run_id: string;
@@ -441,6 +457,7 @@ export type V2StageCommandResponse = {
 
 export type V2ApprovalResponse = {
   card_id: string;
+  job_id?: string;
   interrupt_id: string;
   request_checksum: string;
   stage_index: number;
@@ -470,6 +487,20 @@ export type V2AssistantMessageResponse = {
 export type V2AssistantMessagesListResponse = {
   job_id: string;
   messages: V2AssistantMessageResponse[];
+};
+
+export type V2AssistantAskResponse = {
+  job_id: string;
+  user_message: V2AssistantMessageResponse;
+  assistant_message: V2AssistantMessageResponse;
+  model: {
+    status: string;
+    source: string;
+    provider: string;
+    role: string;
+    failure_reason?: string;
+  };
+  guardrails: Record<string, boolean>;
 };
 
 export type V2DraftActionResponse = {
@@ -543,4 +574,26 @@ export type V2ReadinessResponse = {
   setup_checksum: string;
   preflight_checksum_match: boolean;
   gates: Record<string, boolean>;
+};
+
+export type V2FailureSummaryItem = {
+  type: string;
+  stage: number | null;
+  message: string;
+  build_status: string;
+  test_status: string;
+  final_status: string;
+  final_proof_level: string;
+  repair_loop_status: string;
+  copilot_status: string;
+  repair_fallback: string;
+};
+
+export type V2FailureSummaryResponse = {
+  job_id: string;
+  has_failures: boolean;
+  failures: V2FailureSummaryItem[];
+  repair_loop_active: boolean;
+  repair_events: { type: string; message: string }[];
+  artifact_kinds: string[];
 };

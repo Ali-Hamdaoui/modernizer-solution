@@ -10,11 +10,14 @@ import type {
   JobRepresentation,
   V2MigrationJobResponse,
   V2JobEventSnapshotResponse,
+  V2PipelineResponse,
+  V2FailureSummaryResponse,
   V2StageEntry,
   V2StageCommandResponse,
   V2ApprovalResponse,
   V2ResumeCommandResponse,
   V2StageContinuationResponse,
+  V2AssistantAskResponse,
   V2AssistantMessagesListResponse,
   V2AssistantMessageResponse,
   V2DraftActionResponse,
@@ -269,6 +272,20 @@ export async function getV2JobEventSnapshot(
   );
 }
 
+export async function getV2JobPipeline(jobId: string): Promise<V2PipelineResponse> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<V2PipelineResponse>(
+    `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/pipeline`
+  );
+}
+
+export async function getV2FailureSummary(jobId: string): Promise<V2FailureSummaryResponse> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<V2FailureSummaryResponse>(
+    `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/failure-summary`
+  );
+}
+
 export function v2EventStreamUrl(jobId: string, after: number = 0): string {
   const safeJobId = requireJobId(jobId);
   const params = new URLSearchParams({ after: String(after) });
@@ -334,6 +351,17 @@ export async function addV2AssistantMessage(
   return postJson<V2AssistantMessageResponse>(
     `/v1/v2/jobs/${encodeURIComponent(jobId)}/assistant/messages`,
     { job_id: jobId, role, content }
+  );
+}
+
+export async function askV2Assistant(
+  jobId: string,
+  question: string
+): Promise<V2AssistantAskResponse> {
+  const safeJobId = requireJobId(jobId);
+  return postJson<V2AssistantAskResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/assistant/ask`,
+    { question }
   );
 }
 

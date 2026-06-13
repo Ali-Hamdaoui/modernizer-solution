@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -95,8 +96,10 @@ class V2StageProgressionService:
         config = STAGE_CONFIG[next_stage]
 
         # Build backend-owned argv for next stage
+        jdk_home = _get_jdk_home(setup, config["jdk_env"])
+
         argv = (
-            "python",
+            sys.executable,
             "-m",
             RUNNER_MODULE,
             "--run-id", f"v2-{job_id[:8]}-s{next_stage}",
@@ -118,8 +121,12 @@ class V2StageProgressionService:
                 manifest_checksum=f"v2-stage{next_stage}",
                 argv_json=json.dumps(list(argv), separators=(",", ":")),
                 env_json=json.dumps({
-                    "JAVA_HOME": f"${{{config['jdk_env']}}}",
-                    "PATH_PREPEND": f"${{{config['jdk_env']}}}/bin",
+                    "JAVA_HOME": jdk_home,
+                    "JAVA11_HOME": setup.java11_home,
+                    "JAVA17_HOME": setup.java17_home,
+                    "JAVA21_HOME": setup.java21_home,
+                    "MAVEN_CMD": setup.maven_cmd,
+                    "PATH_PREPEND": f"{jdk_home}/bin",
                 }, separators=(",", ":")),
                 status="manifest_ready",
                 created_at=now,
@@ -149,3 +156,12 @@ class V2StageProgressionService:
             "status": result.status,
             "reason": result.reason,
         }
+
+
+def _get_jdk_home(setup: V2MigrationSetupRecord, env_var: str) -> str:
+    mapping = {
+        "JAVA11_HOME": setup.java11_home,
+        "JAVA17_HOME": setup.java17_home,
+        "JAVA21_HOME": setup.java21_home,
+    }
+    return mapping.get(env_var, "")

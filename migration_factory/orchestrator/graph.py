@@ -23,6 +23,7 @@ from migration_factory.orchestrator.phase_services import (
 )
 from migration_factory.orchestrator.state import MigrationState
 from migration_factory.orchestrator.state import FULL_SANDBOX_MIGRATION_MODE
+from migration_factory.orchestrator.events import emit_control_tower_event
 from migration_factory.orchestrator.summary import finalize_orchestration_state
 
 
@@ -240,7 +241,10 @@ def _route_after_approval_record(state: MigrationState) -> str:
 
 
 def _deterministic_final_report_node(state: MigrationState) -> MigrationState:
-    return finalize_orchestration_state(state)
+    emit_control_tower_event(phase="final_report", status="running", message="Final report generation started.")
+    result = finalize_orchestration_state(state)
+    emit_control_tower_event(phase="final_report", status="completed", message="Final report written.")
+    return result
 
 
 def _route_after_final_report(state: MigrationState) -> str:

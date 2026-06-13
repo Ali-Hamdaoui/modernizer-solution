@@ -2,19 +2,26 @@
 
 import { useState, useEffect } from "react";
 import {
+  askV2Assistant,
+  approveV2Card,
   getV2AssistantMessages,
+  getV2FailureSummary,
   getV2JobEventSnapshot,
   getV2JobApprovals,
   getV2MigrationJob,
+  getV2JobPipeline,
   getV2MigrationJobStages,
+  rejectV2Card,
   requireJobId,
   v2EventStreamUrl,
 } from "../../../lib/controlTowerApi";
 import type {
   V2ApprovalResponse,
   V2AssistantMessageResponse,
+  V2FailureSummaryResponse,
   V2JobEvent,
   V2MigrationJobResponse,
+  V2PipelineResponse,
 } from "../../../lib/contracts";
 
 interface Stage {
@@ -30,11 +37,17 @@ interface CockpitData {
   approvals: V2ApprovalResponse[];
   messages: V2AssistantMessageResponse[];
   events: V2JobEvent[];
+  pipeline: V2PipelineResponse;
+  failureSummary: V2FailureSummaryResponse | null;
+  assistantModel: { status: string; source: string; provider: string; role: string; failure_reason?: string } | null;
 }
 
 export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [data, setData] = useState<CockpitData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [assistantQuestion, setAssistantQuestion] = useState("");
+  const [assistantBusy, setAssistantBusy] = useState(false);
+  const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "connected" | "reconnecting">("connecting");
   const normalizedJobId = jobId?.trim() ?? "";
 
@@ -49,12 +62,14 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     async function loadCockpit() {
       try {
         const safeJobId = requireJobId(normalizedJobId);
-        const [job, messagesResponse, approvalsResponse, stagesResponse, eventsResponse] = await Promise.all([
+        const [job, messagesResponse, approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary] = await Promise.all([
           getV2MigrationJob(safeJobId),
           getV2AssistantMessages(safeJobId),
           getV2JobApprovals(safeJobId),
           getV2MigrationJobStages(safeJobId),
           getV2JobEventSnapshot(safeJobId),
+          getV2JobPipeline(safeJobId),
+          getV2FailureSummary(safeJobId).catch(() => null),
         ]);
 
         if (cancelled) return;
@@ -65,6 +80,9 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           approvals: approvalsResponse.approvals,
           messages: messagesResponse.messages,
           events: eventsResponse.events,
+          pipeline: pipelineResponse,
+          failureSummary: failureSummary as V2FailureSummaryResponse | null,
+          assistantModel: null,
         });
         setError(null);
       } catch (e) {
@@ -90,7 +108,40 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     source.onopen = () => setStreamState("connected");
     source.onerror = () => setStreamState("reconnecting");
     source.onmessage = (event) => appendEventFromSse(event.data);
-    for (const type of ["job_created", "stage_queued", "stage_started", "command_started", "stdout", "stderr", "artifact_written", "approval_required", "stage_completed", "stage_failed", "next_stage_queued", "job_completed", "proof_updated"]) {
+    for (const type of [
+      "job_created",
+      "stage_queued",
+      "stage_started",
+      "command_started",
+      "process_started",
+      "stdout",
+      "stderr",
+      "analysis_started",
+      "analysis_completed",
+      "planning_started",
+      "planning_completed",
+      "assessment_started",
+      "assessment_completed",
+      "approval_blocked",
+      "approval_required",
+      "stage_blocked_for_approval",
+      "sandbox_transform_started",
+      "sandbox_transform_completed",
+      "final_report_started",
+      "final_report_completed",
+      "artifact_written",
+      "stage_completed",
+      "stage_failed",
+      "next_stage_queued",
+      "job_completed",
+      "proof_updated",
+      "approval_resume_queued",
+      "resume_started",
+      "copilot_status_checked",
+      "model_invocation_started",
+      "model_invocation_completed",
+      "model_invocation_failed",
+    ]) {
       source.addEventListener(type, (event) => {
         appendEventFromSse((event as MessageEvent).data);
       });
@@ -108,14 +159,94 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         if (!current || current.events.some((existing) => existing.sequence === event.sequence)) {
           return current;
         }
+        const updatedEvents = [...current.events, event].sort((a, b) => a.sequence - b.sequence);
+        const updatedStages = applyEventToStages(current.stages, event);
         return {
           ...current,
-          events: [...current.events, event].sort((a, b) => a.sequence - b.sequence),
-          stages: applyEventToStages(current.stages, event),
+          events: updatedEvents,
+          stages: updatedStages,
+          // Do NOT locally derive pipeline on every SSE event.
+          // Backend refresh on important events is authoritative.
         };
       });
+      // On important events, refresh from backend (async, non-blocking)
+      if (IMPORTANT_SSE_TYPES.has(event.type)) {
+        void refreshLiveState();
+      }
     } catch {
       setStreamState("reconnecting");
+    }
+  }
+
+  async function askAssistant() {
+    const question = assistantQuestion.trim();
+    if (!question || !normalizedJobId) return;
+    setAssistantBusy(true);
+    try {
+      const response = await askV2Assistant(normalizedJobId, question);
+      setData((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          messages: [
+            ...current.messages,
+            response.user_message,
+            response.assistant_message,
+          ],
+          assistantModel: response.model,
+        };
+      });
+      setAssistantQuestion("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Assistant request failed");
+    } finally {
+      setAssistantBusy(false);
+    }
+  }
+
+  async function refreshLiveState() {
+    if (!normalizedJobId) return;
+    const safeJobId = requireJobId(normalizedJobId);
+    const [approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary] = await Promise.all([
+      getV2JobApprovals(safeJobId),
+      getV2MigrationJobStages(safeJobId),
+      getV2JobEventSnapshot(safeJobId),
+      getV2JobPipeline(safeJobId),
+      getV2FailureSummary(safeJobId).catch(() => null),
+    ]);
+    setData((current) => current ? {
+      ...current,
+      approvals: approvalsResponse.approvals,
+      stages: stagesResponse.stages,
+      events: eventsResponse.events,
+      pipeline: pipelineResponse,
+      failureSummary: failureSummary as V2FailureSummaryResponse | null,
+    } : current);
+  }
+
+  async function approveCard(card: V2ApprovalResponse) {
+    if (!normalizedJobId) return;
+    setApprovalBusy(card.card_id);
+    try {
+      await approveV2Card(normalizedJobId, card.card_id, card.request_checksum);
+      await refreshLiveState();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Approval failed");
+    } finally {
+      setApprovalBusy(null);
+    }
+  }
+
+  async function rejectCard(card: V2ApprovalResponse) {
+    if (!normalizedJobId) return;
+    setApprovalBusy(card.card_id);
+    try {
+      await rejectV2Card(normalizedJobId, card.card_id);
+      await refreshLiveState();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Rejection failed");
+    } finally {
+      setApprovalBusy(null);
     }
   }
 
@@ -146,15 +277,29 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
 
       {/* Evidence Panel */}
       <section className="panel">
-        <h2>Evidence</h2>
+        <h2>Pipeline Status</h2>
         <p className="meta">Stream: {streamState}</p>
-        {data.events.length === 0 ? (
+        <div className="pipeline-list">
+          {data.pipeline.rows.map((row) => (
+            <div key={row.key} className="pipeline-row">
+              <span className={`status-badge ${row.status}`}>{row.status.toUpperCase()}</span>
+              <strong>{row.label}</strong>
+              <span>{row.latest_message}</span>
+              <span className="meta">{row.artifact_count} artifacts</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel">
+        <h2>Evidence</h2>
+        {data.pipeline.evidence.length === 0 ? (
           <div className="evidence-placeholder">
             <p>Evidence will appear as stages execute.</p>
           </div>
         ) : (
           <div className="event-list">
-            {data.events.map((event) => (
+            {data.pipeline.evidence.map((event) => (
               <div key={event.sequence} className="event-row">
                 <span className={`status-badge ${event.status}`}>{event.status.toUpperCase()}</span>
                 <strong>{event.type}</strong>
@@ -163,6 +308,16 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
             ))}
           </div>
         )}
+        <details className="raw-logs">
+          <summary>Raw logs</summary>
+          {data.pipeline.raw_logs.length === 0 ? (
+            <p className="meta">No raw stdout/stderr captured.</p>
+          ) : (
+            data.pipeline.raw_logs.map((event) => (
+              <pre key={event.sequence} className="raw-log-line">{event.message}</pre>
+            ))
+          )}
+        </details>
       </section>
 
       {/* Decisions Panel */}
@@ -173,16 +328,70 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         ) : (
           data.approvals.map((a) => (
             <div key={a.card_id} className="approval-card">
-              <span>Status: {a.status}</span>
+              <div className="stage-header">
+                <strong>Stage {a.stage_index}</strong>
+                <span className={`status-badge ${a.status}`}>{a.status.toUpperCase()}</span>
+              </div>
+              <p>{a.summary}</p>
+              <p className="checksum">Checksum: {a.request_checksum}</p>
+              <div className="approval-actions">
+                <button type="button" disabled={a.status !== "pending" || approvalBusy === a.card_id} onClick={() => void approveCard(a)}>
+                  Approve
+                </button>
+                <button type="button" disabled={a.status !== "pending" || approvalBusy === a.card_id} onClick={() => void rejectCard(a)}>
+                  Reject
+                </button>
+              </div>
             </div>
           ))
         )}
-        <p className="meta">Exact checksum required for approval. LLM cannot approve.</p>
+        <p className="meta">LLM cannot approve; exact checksum required.</p>
       </section>
+
+      {/* Failure Summary Panel */}
+      {data.failureSummary?.has_failures && (
+        <section className="panel failure-panel">
+          <h2>Failure & Repair</h2>
+          {data.failureSummary.failures.map((f, i) => (
+            <div key={i} className="failure-card">
+              <div className="stage-header">
+                <strong>{f.type}</strong>
+                <span className="status-badge failed">FAILED</span>
+              </div>
+              <p>{f.message}</p>
+              {f.build_status && <p className="meta">Build: {f.build_status}</p>}
+              {f.final_status && <p className="meta">Final: {f.final_status}</p>}
+              {f.final_proof_level && <p className="meta">Proof level: {f.final_proof_level}</p>}
+              {f.repair_loop_status && <p className="meta">Repair: {f.repair_loop_status}</p>}
+              {f.copilot_status && <p className="meta">Copilot: {f.copilot_status}</p>}
+            </div>
+          ))}
+          {data.failureSummary.repair_loop_active && (
+            <div className="repair-card">
+              <strong>Repair Active</strong>
+              {data.failureSummary.repair_events.map((r, i) => (
+                <p key={i} className="meta">{r.type}: {r.message}</p>
+              ))}
+            </div>
+          )}
+          {data.failureSummary.artifact_kinds.length > 0 && (
+            <div className="artifact-kinds">
+              <strong>Generated artifact kinds:</strong>
+              <ul className="meta">
+                {data.failureSummary.artifact_kinds.map((k, i) => <li key={i}>{k}</li>)}
+              </ul>
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Assistant Panel */}
       <section className="panel">
         <h2>Assistant</h2>
+        <p className="meta">
+          Model: {data.assistantModel?.status ?? "unavailable"} | Source: {data.assistantModel?.source ?? "deterministic"}
+          {data.assistantModel?.failure_reason ? ` | Reason: ${data.assistantModel.failure_reason}` : ""}
+        </p>
         {data.messages.length === 0 ? (
           <p className="meta">No messages yet. The assistant can explain status and draft instructions.</p>
         ) : (
@@ -192,6 +401,20 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
             </div>
           ))
         )}
+        <div className="assistant-composer">
+          <input
+            aria-label="Ask assistant"
+            value={assistantQuestion}
+            onChange={(event) => setAssistantQuestion(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void askAssistant();
+            }}
+            placeholder="Ask what happened so far"
+          />
+          <button type="button" disabled={assistantBusy || !assistantQuestion.trim()} onClick={() => void askAssistant()}>
+            Ask
+          </button>
+        </div>
         <p className="meta">
           Assistant cannot execute, approve, write files, change route, or override proof.
         </p>
@@ -216,7 +439,9 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .status-badge.queued { background: #e0f0ff; color: #0066cc; }
         .status-badge.running { background: #fff4cc; color: #886600; }
         .status-badge.completed { background: #e4f7e8; color: #146c2e; }
+        .status-badge.pass { background: #e4f7e8; color: #146c2e; }
         .status-badge.failed { background: #ffe3e3; color: #a40000; }
+        .status-badge.blocked { background: #f5e8ff; color: #5a248a; }
         .status-badge.pending { background: #eee; color: #666; }
         .meta { font-size: 0.85rem; color: #666; }
         .error-box { border: 1px solid #cc0000; background: #fff0f0; padding: 1rem; border-radius: 6px; }
@@ -224,8 +449,25 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .evidence-placeholder { border: 1px dashed #ccc; padding: 1rem; text-align: center; color: #888; }
         .event-list { display: flex; flex-direction: column; gap: 0.4rem; }
         .event-row { display: grid; grid-template-columns: 6rem 10rem 1fr; gap: 0.5rem; align-items: center; border-bottom: 1px solid #eee; padding: 0.35rem 0; }
+        .pipeline-list { display: flex; flex-direction: column; gap: 0.45rem; }
+        .pipeline-row { display: grid; grid-template-columns: 6rem 10rem 1fr 5rem; gap: 0.5rem; align-items: center; border-bottom: 1px solid #eee; padding: 0.45rem 0; }
         .approval-card { border: 1px solid #eee; padding: 0.5rem; margin: 0.25rem 0; }
+        .approval-actions { display: flex; gap: 0.5rem; }
+        .approval-actions button { padding: 0.45rem 0.7rem; border: 1px solid #333; border-radius: 4px; background: #fff; }
+        .approval-actions button:disabled { color: #777; border-color: #bbb; }
+        .checksum { font-family: monospace; overflow-wrap: anywhere; font-size: 0.82rem; }
+        .raw-logs { margin-top: 0.75rem; }
+        .raw-log-line { white-space: pre-wrap; overflow-wrap: anywhere; border-bottom: 1px solid #eee; margin: 0; padding: 0.35rem 0; }
         .message { border-bottom: 1px solid #eee; padding: 0.5rem 0; }
+        .assistant-composer { display: grid; grid-template-columns: 1fr auto; gap: 0.5rem; margin-top: 0.75rem; }
+        .assistant-composer input { min-width: 0; padding: 0.5rem; border: 1px solid #aaa; border-radius: 4px; }
+        .assistant-composer button { padding: 0.5rem 0.75rem; border: 1px solid #333; border-radius: 4px; background: #fff; }
+        .assistant-composer button:disabled { color: #777; border-color: #bbb; }
+        .failure-panel { border-color: #a40000; background: #fffafa; }
+        .failure-card { border: 1px solid #ffcccc; padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; }
+        .failure-card .meta { margin: 0.2rem 0; }
+        .repair-card { border: 1px solid #ffcc66; background: #fffdf0; padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; }
+        .artifact-kinds { border: 1px solid #ddd; padding: 0.5rem; margin: 0.5rem 0; }
       `}</style>
     </div>
   );
@@ -241,10 +483,34 @@ function applyEventToStages(stages: Stage[], event: V2JobEvent): Stage[] {
 
 function stageStatusFromEvent(event: V2JobEvent): string {
   if (event.type === "stage_failed" || event.status === "failed") return "failed";
-  if (event.type === "stage_completed" || event.status === "completed") return "completed";
+  if (event.type === "approval_required" || event.type === "stage_blocked_for_approval" || event.status === "blocked") return "blocked";
+  if (event.type === "stage_completed") return "completed";
   if (["stage_started", "command_started", "stdout", "stderr"].includes(event.type) || event.status === "running") {
     return "running";
   }
   if (["stage_queued", "next_stage_queued"].includes(event.type) || event.status === "queued") return "queued";
   return "pending";
 }
+
+const IMPORTANT_SSE_TYPES = new Set([
+  "approval_required",
+  "stage_blocked_for_approval",
+  "approval_resume_queued",
+  "approval_started",
+  "approval_completed",
+  "resume_started",
+  "sandbox_transform_started",
+  "sandbox_transform_completed",
+  "sandbox_transform_failed",
+  "stage_failed",
+  "stage_completed",
+  "model_invocation_completed",
+  "model_invocation_failed",
+  "transform_failed",
+  "build_failed",
+  "repair_started",
+  "repair_fallback_generated",
+  "copilot_repair_invalid_response",
+  "proof_updated",
+  "next_stage_queued",
+]);
