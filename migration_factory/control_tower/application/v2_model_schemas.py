@@ -119,6 +119,123 @@ SCHEMA_REGISTRY = {
 }
 
 
+# ── Schema validation ────────────────────────────────────────────────
+
+
+class SchemaValidationError(Exception):
+    """Raised when data does not match the expected schema."""
+
+
+class SchemaValidator:
+    """Lightweight JSON Schema validator for V2 model schemas.
+
+    Validates data against the registered schemas without requiring
+    an external jsonschema library. Covers the subset of JSON Schema
+    used by the V2 structured output schemas.
+    """
+
+    @staticmethod
+    def validate(schema_name: str, data: Any) -> None:
+        """Validate data against the named schema.
+
+        Args:
+            schema_name: One of the REQUIRED_SCHEMAS names.
+            data: The data dict to validate.
+
+        Raises:
+            SchemaValidationError: If validation fails.
+            ValueError: If schema_name is unknown.
+        """
+        schema = SCHEMA_REGISTRY.get(schema_name)
+        if schema is None:
+            raise ValueError(f"Unknown schema: {schema_name!r}")
+
+        SchemaValidator._validate_value(data, schema, [schema_name])
+
+    @staticmethod
+    def _validate_value(value: Any, schema: dict[str, Any], path: list[str]) -> None:
+        """Validate a single value against a schema fragment."""
+        if not isinstance(schema, dict):
+            return
+
+        schema_type = schema.get("type")
+
+        # Check additionalProperties
+        if schema.get("additionalProperties") is False and isinstance(value, dict):
+            allowed = set(schema.get("properties", {}).keys())
+            for key in value:
+                if key not in allowed:
+                    raise SchemaValidationError(
+                        f"Unexpected property {'.'.join(path + [key])!r}. "
+                        f"Allowed: {sorted(allowed)}"
+                    )
+
+        # Check type constraints
+        if schema_type == "object" and not isinstance(value, dict):
+            raise SchemaValidationError(
+                f"Expected object at {'.'.join(path)!r}, got {type(value).__name__}"
+            )
+        if schema_type == "array" and not isinstance(value, (list, tuple)):
+            raise SchemaValidationError(
+                f"Expected array at {'.'.join(path)!r}, got {type(value).__name__}"
+            )
+        if schema_type == "string" and not isinstance(value, str):
+            raise SchemaValidationError(
+                f"Expected string at {'.'.join(path)!r}, got {type(value).__name__}"
+            )
+        if schema_type == "integer" and not isinstance(value, int):
+            raise SchemaValidationError(
+                f"Expected integer at {'.'.join(path)!r}, got {type(value).__name__}"
+            )
+
+        # Check required fields
+        if schema_type == "object" and isinstance(value, dict):
+            required = schema.get("required", [])
+            for field in required:
+                if field not in value:
+                    raise SchemaValidationError(
+                        f"Missing required field {'.'.join(path + [field])!r}"
+                    )
+
+        # Check enum constraint
+        enum_values = schema.get("enum")
+        if enum_values is not None and value not in enum_values:
+            raise SchemaValidationError(
+                f"Value {value!r} at {'.'.join(path)!r} is not one of {enum_values}"
+            )
+
+        # Check numeric constraints
+        if isinstance(value, (int, float)):
+            minimum = schema.get("minimum")
+            maximum = schema.get("maximum")
+            if minimum is not None and value < minimum:
+                raise SchemaValidationError(
+                    f"Value {value} at {'.'.join(path)!r} is less than minimum {minimum}"
+                )
+            if maximum is not None and value > maximum:
+                raise SchemaValidationError(
+                    f"Value {value} at {'.'.join(path)!r} is greater than maximum {maximum}"
+                )
+
+        # Check array items
+        if schema_type == "array" and isinstance(value, (list, tuple)):
+            items_schema = schema.get("items")
+            if items_schema:
+                for i, item in enumerate(value):
+                    SchemaValidator._validate_value(
+                        item, items_schema, path + [str(i)]
+                    )
+
+        # Check property values
+        if schema_type == "object" and isinstance(value, dict):
+            properties = schema.get("properties", {})
+            for key, prop_schema in properties.items():
+                if key in value:
+                    SchemaValidator._validate_value(
+                        value[key], prop_schema, path + [key]
+                    )
+
+
 # ── Context pack ────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
