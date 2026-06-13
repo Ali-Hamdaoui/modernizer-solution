@@ -1,4 +1,5 @@
 import type {
+  ApprovalListResponse,
   ArtifactListResponse,
   Catalog,
   CommandListResponse,
@@ -12,6 +13,7 @@ import type {
   PlanAmendmentPreviewRequest,
   PlanAmendmentPreviewResponse,
   PipelineOption,
+  PrivilegedActionListResponse,
   PublicEventReplayResponse,
   RunnerProfileOption,
   StageChainResponse
@@ -164,6 +166,14 @@ export async function getModelActivity(jobId: string): Promise<ModelActivityResp
   }));
 
   return { job_id: jobId, invocations };
+}
+
+export async function getApprovals(jobId: string): Promise<ApprovalListResponse> {
+  return getJson<ApprovalListResponse>(`/v1/jobs/${encodeURIComponent(jobId)}/approvals`);
+}
+
+export async function getPrivilegedActions(jobId: string): Promise<PrivilegedActionListResponse> {
+  return getJson<PrivilegedActionListResponse>(`/v1/jobs/${encodeURIComponent(jobId)}/privileged-actions`);
 }
 
 export async function previewPlanAmendment(
