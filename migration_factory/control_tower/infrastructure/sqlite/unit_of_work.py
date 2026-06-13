@@ -19,6 +19,7 @@ from migration_factory.control_tower.infrastructure.sqlite.repositories import (
     SqliteV1ContextPackManifestRepository,
     SqliteV1FakeRepairProposalRepository,
     SqliteV1ModelInvocationRepository,
+    SqliteV1PatchPolicyValidationRepository,
     SqliteV1PlanAmendmentRepository,
     SqliteV1PlanReviewDecisionRepository,
     SqliteV1RepairClassificationRepository,
@@ -26,6 +27,7 @@ from migration_factory.control_tower.infrastructure.sqlite.repositories import (
     SqliteV1PrivilegedActionDecisionRepository,
     SqliteV1PrivilegedActionExecutionRepository,
     SqliteV1PrivilegedActionRepository,
+    SqliteV1SandboxSnapshotRepository,
 )
 from migration_factory.control_tower.infrastructure.sqlite.v1_model_profile_repository import (
     SqliteV1ModelProfileEventRepository,
@@ -66,6 +68,8 @@ class SqliteControlTowerUnitOfWork:
         self.v1_fake_repair_proposals = SqliteV1FakeRepairProposalRepository(connection)
         self.v1_privileged_action_decisions = SqliteV1PrivilegedActionDecisionRepository(connection)
         self.v1_privileged_action_executions = SqliteV1PrivilegedActionExecutionRepository(connection)
+        self.v1_patch_policy_validations = SqliteV1PatchPolicyValidationRepository(connection)
+        self.v1_sandbox_snapshots = SqliteV1SandboxSnapshotRepository(connection)
 
     def __enter__(self) -> "SqliteControlTowerUnitOfWork":
         self.connection.execute("BEGIN IMMEDIATE")

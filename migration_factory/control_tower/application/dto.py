@@ -426,6 +426,47 @@ class RepairStatusDto:
 
 
 @dataclass(frozen=True, slots=True)
+class PatchPolicyValidationDto:
+    """DTO for patch policy validation results.
+
+    Never contains raw patch content. Only redacted metadata.
+    """
+
+    validation_id: str
+    command_id: str
+    job_id: str
+    approved: bool
+    validation_code: str
+    reason_code: str
+    target_path_hash: str
+    patch_size_bytes: int
+    metacharacter_hits: int
+    policy_version: str
+    actor_type: str
+    actor_id: str
+    created_at: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxSnapshotDto:
+    """DTO for sandbox snapshot metadata."""
+
+    snapshot_id: str
+    command_id: str
+    job_id: str
+    stage_index: int
+    sandbox_artifact_id: str
+    sandbox_checksum: str
+    actor_type: str
+    actor_id: str
+    created_at: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class JobProjectionDto:
     job: MigrationJobDto
     active_command: CommandExecutionDto | None
