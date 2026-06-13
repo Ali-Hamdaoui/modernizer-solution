@@ -114,6 +114,9 @@ from migration_factory.control_tower.application.env_parser import (
     parse_env_block,
     parse_result_to_dict,
 )
+from migration_factory.control_tower.application.v2_azure_health_service import (
+    V2AzureHealthService,
+)
 from migration_factory.control_tower.application.v2_setup_service import (
     CreateSetupRequest,
     V2SetupService,
@@ -626,6 +629,35 @@ def create_app(
         settings: ControlTowerSettings = app.state.v2_settings
         projection = build_settings_projection(settings)
         return settings_projection_to_dict(projection)
+
+    # ------------------------------------------------------------------
+    # V2 Azure health check endpoint (A4)
+    # ------------------------------------------------------------------
+
+    @app.post("/v1/model-profiles/{profile_id}/health-check")
+    def run_model_health_check(
+        profile_id: str,
+    ) -> dict[str, Any]:
+        """Run a redacted Azure model health check.
+
+        Health checks are non-blocking: Azure BLOCKED/DEGRADED does
+        not prevent deterministic migration start. It only affects AI
+        assistant features.
+        """
+        settings: ControlTowerSettings = app.state.v2_settings
+        with unit_of_work_factory() as uow:
+            service = V2AzureHealthService(uow.v2_azure_health, settings)
+            result = service.run_health_check(profile_id=profile_id)
+        return service.health_to_dict(result)
+
+    @app.get("/v1/model-profiles/{profile_id}/health")
+    def get_model_health(profile_id: str) -> dict[str, Any]:
+        """Get the latest health check for a model profile."""
+        settings: ControlTowerSettings = app.state.v2_settings
+        with unit_of_work_factory() as uow:
+            service = V2AzureHealthService(uow.v2_azure_health, settings)
+            result = service.get_latest_health(profile_id)
+        return service.health_to_dict(result)
 
     # ------------------------------------------------------------------
     # V2 Setup parser endpoint (A2)
