@@ -16,6 +16,7 @@ import {
   getCommandOutput,
   getCommands
 } from "../../../lib/controlTowerApi";
+import { ApprovalPanel } from "./ApprovalPanel";
 import {
   applyPublicEvent,
   jobStatusCopy,
@@ -254,6 +255,8 @@ export function CurrentRunClient({ initialEvents, initialJob }: Props) {
           ))}
         </div>
       </section>
+
+      <ApprovalPanel jobId={jobId} />
     </section>
   );
 }

@@ -269,3 +269,38 @@ export type StageChainResponse = {
   job_id: string;
   stages: StageChainEntry[];
 };
+
+// ── Approvals panel types (V1-18C) ────────────────────────────────
+
+export type ApprovalEntry = {
+  approval_id: string;
+  interrupt_id: string;
+  decision: "approved" | "rejected" | "replan_required";
+  approved_by: string;
+  approval_comments: string;
+  created_at: string;
+};
+
+export type ApprovalListResponse = {
+  job_id: string;
+  approvals: ApprovalEntry[];
+};
+
+export type PrivilegedActionEntry = {
+  action_id: string;
+  job_id: string;
+  action_type: string;
+  parameters: Record<string, unknown>;
+  parameters_checksum: string;
+  requested_by: string;
+  status: string;
+  requested_at: string;
+  decided_at: string | null;
+  decision: string | null;
+  decided_by: string | null;
+};
+
+export type PrivilegedActionListResponse = {
+  job_id: string;
+  actions: PrivilegedActionEntry[];
+};
