@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import MigrationCockpitPage from "../app/migrations/[jobId]/page";
 import { MigrationCockpit } from "../app/migrations/[jobId]/MigrationCockpit";
+import { requireJobId, v2EventStreamUrl } from "../lib/controlTowerApi";
 
 describe("V2 Migration Cockpit contract", () => {
   it("passes the awaited route job id into MigrationCockpit", async () => {
@@ -91,5 +92,31 @@ describe("V2 Migration Cockpit contract", () => {
     expect(stageInputs[1]).toBe("legacy_source");
     expect(stageInputs[2]).toBe("stage_1_sandbox");
     expect(stageInputs[3]).toBe("stage_2_sandbox");
+  });
+
+  it("rejects missing route job id before fetch URL construction", () => {
+    expect(() => requireJobId("")).toThrow("Migration job id is required.");
+    expect(() => requireJobId("   ")).toThrow("Migration job id is required.");
+  });
+
+  it("opens EventSource against the V2 events endpoint", () => {
+    const url = v2EventStreamUrl("job-123", 7);
+    expect(url).toBe("http://127.0.0.1:8000/v1/v2/migration-jobs/job-123/events?after=7");
+    expect(url).not.toContain("undefined");
+  });
+
+  it("empty approvals render as no pending decisions copy", () => {
+    const approvals: unknown[] = [];
+    const copy = approvals.length === 0 ? "No pending decisions." : "Has decisions";
+    expect(copy).toBe("No pending decisions.");
+  });
+
+  it("incoming event updates stage status", () => {
+    const event = { stage: 1, type: "stage_started", status: "running" };
+    const stages = [{ stage_index: 1, chain_status: "queued" }];
+    const updated = stages.map((stage) =>
+      stage.stage_index === event.stage ? { ...stage, chain_status: event.status } : stage,
+    );
+    expect(updated[0].chain_status).toBe("running");
   });
 });

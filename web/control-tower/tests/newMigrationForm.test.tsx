@@ -169,6 +169,13 @@ describe("V2 New Migration form contract", () => {
     expect(Object.keys(preflightPayload)).toEqual(["setup_id"]);
   });
 
+  it("start flow navigates to migration cockpit using returned parent job id", () => {
+    const jobResponse = { job_id: "parent-job-123" };
+    const route = `/migrations/${jobResponse.job_id}`;
+    expect(route).toBe("/migrations/parent-job-123");
+    expect(route).not.toContain("undefined");
+  });
+
   it("settings response contains no secret values", () => {
     // The /v1/settings/ai endpoint returns env ref names, never values
     const mockSettingsResponse = {

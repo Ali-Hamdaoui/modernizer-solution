@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,11 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository i
 from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
     SqliteV2CommandRepository,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository import (
+    SqliteV2JobRepository,
+    V2MigrationJobRecord,
+)
+from migration_factory.control_tower.domain.checksums import utc_now_text
 
 
 def _mutation_headers():
@@ -244,6 +250,44 @@ def test_start_stage1_endpoint(tmp_path: Path) -> None:
     # Create setup
     repo = SqliteV2SetupRepository(conn)
     setup_id = _create_test_setup(repo)
+    setup = repo.get(setup_id)
+    assert setup is not None
+    now = utc_now_text()
+    SqliteV2JobRepository(conn).save(
+        V2MigrationJobRecord(
+            job_id="test-job-123",
+            setup_id=setup_id,
+            setup_checksum=setup.setup_checksum,
+            pipeline_id=PIPELINE_ID,
+            stage_chain_json=json.dumps([
+                {
+                    "stage_index": 1,
+                    "stage_run_id": "stage-1",
+                    "pipeline_stage": "Stage 1",
+                    "input_source_kind": "legacy_source",
+                    "chain_status": "queued",
+                },
+                {
+                    "stage_index": 2,
+                    "stage_run_id": "stage-2",
+                    "pipeline_stage": "Stage 2",
+                    "input_source_kind": "stage_1_sandbox",
+                    "chain_status": "pending",
+                },
+                {
+                    "stage_index": 3,
+                    "stage_run_id": "stage-3",
+                    "pipeline_stage": "Stage 3",
+                    "input_source_kind": "stage_2_sandbox",
+                    "chain_status": "pending",
+                },
+            ]),
+            status="created",
+            created_at=now,
+            updated_at=now,
+            correlation_id=None,
+        )
+    )
 
     response = client.post(
         "/v1/v2/migration-jobs/start-stage1",

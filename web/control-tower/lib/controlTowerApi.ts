@@ -9,6 +9,7 @@ import type {
   FilesystemRootOption,
   JobRepresentation,
   V2MigrationJobResponse,
+  V2JobEventSnapshotResponse,
   V2StageEntry,
   V2StageCommandResponse,
   V2ApprovalResponse,
@@ -243,11 +244,35 @@ export async function startV2Stage1(jobId: string, setupId: string): Promise<V2S
   );
 }
 
+export async function getV2MigrationJob(jobId: string): Promise<V2MigrationJobResponse> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<V2MigrationJobResponse>(
+    `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}`
+  );
+}
+
 export async function getV2JobApprovals(jobId: string): Promise<{ approvals: V2ApprovalResponse[] }> {
   const safeJobId = requireJobId(jobId);
   return getJson<{ approvals: V2ApprovalResponse[] }>(
     `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/approvals`
   );
+}
+
+export async function getV2JobEventSnapshot(
+  jobId: string,
+  after: number = 0
+): Promise<V2JobEventSnapshotResponse> {
+  const safeJobId = requireJobId(jobId);
+  const params = new URLSearchParams({ after: String(after) });
+  return getJson<V2JobEventSnapshotResponse>(
+    `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/events/snapshot?${params}`
+  );
+}
+
+export function v2EventStreamUrl(jobId: string, after: number = 0): string {
+  const safeJobId = requireJobId(jobId);
+  const params = new URLSearchParams({ after: String(after) });
+  return `${CONTROL_TOWER_API_BASE_URL}/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/events?${params}`;
 }
 
 export async function getV2MigrationJobStages(jobId: string): Promise<{ job_id: string; stages: V2StageEntry[] }> {

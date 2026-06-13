@@ -403,6 +403,25 @@ export type V2MigrationJobResponse = {
   created_at: string;
 };
 
+export type V2JobEvent = {
+  event_id: string;
+  job_id: string;
+  stage: number | null;
+  type: string;
+  status: string;
+  message: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+  sequence: number;
+};
+
+export type V2JobEventSnapshotResponse = {
+  job_id: string;
+  after: number;
+  events: V2JobEvent[];
+  latest_sequence: number;
+};
+
 export type V2StageEntry = {
   stage_index: number;
   stage_run_id: string;
