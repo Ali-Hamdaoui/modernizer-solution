@@ -377,6 +377,87 @@ class PatchPolicyService:
                 return None
             return self._to_snapshot_dto(record)
 
+    def take_and_record_sandbox_snapshot(
+        self,
+        *,
+        command_id: str,
+        job_id: str,
+        stage_index: int,
+        sandbox_artifact_id: str,
+        sandbox_checksum: str,
+        actor_type: str = "system",
+        actor_id: str = "controller",
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> SandboxSnapshotDto:
+        """Orchestrate taking a sandbox snapshot before patch application.
+
+        Validates:
+        1. Stage index is in valid range (1-3).
+        2. Command exists.
+        3. No existing snapshot for this command (idempotency guard).
+
+        Records the snapshot metadata after validation passes.
+        """
+        self._validate_stage_index(stage_index)
+
+        with self._unit_of_work_factory() as uow:
+            # Validate command exists
+            command = uow.command_executions.get(command_id)
+            if command is None:
+                raise NotFoundError("command execution", command_id)
+
+            # Check that no snapshot already exists for this command
+            existing = uow.v1_sandbox_snapshots.get_for_command(command_id)
+            if existing is not None:
+                # Already snapshotted; return existing (idempotent)
+                return self._to_snapshot_dto(existing)
+
+        # Proceed to record snapshot
+        return self.record_sandbox_snapshot(
+            command_id=command_id,
+            job_id=job_id,
+            stage_index=stage_index,
+            sandbox_artifact_id=sandbox_artifact_id,
+            sandbox_checksum=sandbox_checksum,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+        )
+
+    def ensure_snapshot_exists_before_write(
+        self,
+        *,
+        command_id: str,
+        job_id: str,
+        stage_index: int,
+    ) -> SandboxSnapshotDto:
+        """Enforce snapshot-before-write invariant.
+
+        Raises PatchSnapshotNotFoundError if no snapshot is recorded
+        for this command. Returns the snapshot if it exists.
+        """
+        snapshot = self.get_sandbox_snapshot_for_command(command_id)
+        if snapshot is None:
+            raise PatchSnapshotNotFoundError(
+                f"No sandbox snapshot found for command {command_id!r}. "
+                f"Snapshot must be taken before writes on stage {stage_index}."
+            )
+        if snapshot.stage_index != stage_index:
+            raise PatchContentMismatchError(
+                f"Sandbox snapshot stage {snapshot.stage_index} does not match "
+                f"expected stage {stage_index} for command {command_id!r}"
+            )
+        return snapshot
+
+    def _validate_stage_index(self, stage_index: int) -> None:
+        """Validate stage index is within V1 range (1-3)."""
+        if not (1 <= stage_index <= 3):
+            raise PatchContentMismatchError(
+                f"Stage index {stage_index} is out of valid range (1-3)"
+            )
+
     # ------------------------------------------------------------------
     # Internal validation helpers
     # ------------------------------------------------------------------
