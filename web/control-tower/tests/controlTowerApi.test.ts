@@ -5,9 +5,13 @@ import {
   allowedStatusCopy,
   createDiagnosticJobPayload,
   eventStreamUrl,
+  getV2AssistantMessages,
+  getV2JobApprovals,
+  getV2MigrationJobStages,
   getJob,
   previewPlanAmendment,
   postJson,
+  requireJobId,
   resolveControlTowerApiBaseUrl
 } from "../lib/controlTowerApi";
 import { applyPublicEvent, latestAppliedSequence, shouldRefetchJobProjection } from "../lib/eventReplay";
@@ -115,6 +119,49 @@ describe("M2-01 frontend diagnostic contracts", () => {
         })
       })
     );
+  });
+
+  it("calls V2 cockpit endpoints with the actual migration route job id", async () => {
+    const fetchMock = vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () => {
+        if (url.includes("/assistant/messages")) {
+          return { job_id: "429a9bb2154b4be7a99a32867780d744", messages: [] };
+        }
+        if (url.includes("/approvals")) {
+          return { approvals: [] };
+        }
+        return { job_id: "429a9bb2154b4be7a99a32867780d744", stages: [] };
+      },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const jobId = "429a9bb2154b4be7a99a32867780d744";
+    await Promise.all([
+      getV2JobApprovals(jobId),
+      getV2MigrationJobStages(jobId),
+      getV2AssistantMessages(jobId),
+    ]);
+
+    const urls = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(urls).toEqual([
+      expect.stringContaining(`/v1/v2/jobs/${jobId}/approvals`),
+      expect.stringContaining(`/v1/v2/migration-jobs/${jobId}/stages`),
+      expect.stringContaining(`/v1/v2/jobs/${jobId}/assistant/messages`),
+    ]);
+    expect(urls.some((url) => url.includes("undefined"))).toBe(false);
+  });
+
+  it("does not fetch V2 cockpit endpoints when job id is missing", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(() => requireJobId(" ")).toThrow(/job id is required/i);
+    await expect(getV2JobApprovals("")).rejects.toThrow(/job id is required/i);
+    await expect(getV2MigrationJobStages("")).rejects.toThrow(/job id is required/i);
+    await expect(getV2AssistantMessages("")).rejects.toThrow(/job id is required/i);
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("preview helper uses preview endpoint and safe preview contract", async () => {

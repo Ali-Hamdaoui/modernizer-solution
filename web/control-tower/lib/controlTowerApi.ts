@@ -9,6 +9,7 @@ import type {
   FilesystemRootOption,
   JobRepresentation,
   V2MigrationJobResponse,
+  V2StageEntry,
   V2StageCommandResponse,
   V2ApprovalResponse,
   V2ResumeCommandResponse,
@@ -51,6 +52,14 @@ export function resolveControlTowerApiBaseUrl(
 }
 
 export const CONTROL_TOWER_API_BASE_URL = resolveControlTowerApiBaseUrl();
+
+export function requireJobId(jobId: string): string {
+  const trimmedJobId = jobId.trim();
+  if (!trimmedJobId) {
+    throw new Error("Migration job id is required.");
+  }
+  return trimmedJobId;
+}
 
 export const allowedStatusCopy = {
   cancelled: "Foundation diagnostic cancelled",
@@ -235,8 +244,16 @@ export async function startV2Stage1(jobId: string, setupId: string): Promise<V2S
 }
 
 export async function getV2JobApprovals(jobId: string): Promise<{ approvals: V2ApprovalResponse[] }> {
+  const safeJobId = requireJobId(jobId);
   return getJson<{ approvals: V2ApprovalResponse[] }>(
-    `/v1/v2/jobs/${encodeURIComponent(jobId)}/approvals`
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/approvals`
+  );
+}
+
+export async function getV2MigrationJobStages(jobId: string): Promise<{ job_id: string; stages: V2StageEntry[] }> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<{ job_id: string; stages: V2StageEntry[] }>(
+    `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/stages`
   );
 }
 
@@ -278,8 +295,9 @@ export async function progressV2Stage(
 }
 
 export async function getV2AssistantMessages(jobId: string): Promise<V2AssistantMessagesListResponse> {
+  const safeJobId = requireJobId(jobId);
   return getJson<V2AssistantMessagesListResponse>(
-    `/v1/v2/jobs/${encodeURIComponent(jobId)}/assistant/messages`
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/assistant/messages`
   );
 }
 

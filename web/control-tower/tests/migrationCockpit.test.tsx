@@ -1,6 +1,20 @@
 import { describe, expect, it } from "vitest";
+import MigrationCockpitPage from "../app/migrations/[jobId]/page";
+import { MigrationCockpit } from "../app/migrations/[jobId]/MigrationCockpit";
 
 describe("V2 Migration Cockpit contract", () => {
+  it("passes the awaited route job id into MigrationCockpit", async () => {
+    const page = await MigrationCockpitPage({
+      params: Promise.resolve({ jobId: "429a9bb2154b4be7a99a32867780d744" }),
+    });
+
+    const children = page.props.children;
+    const cockpit = children[1];
+
+    expect(cockpit.type).toBe(MigrationCockpit);
+    expect(cockpit.props.jobId).toBe("429a9bb2154b4be7a99a32867780d744");
+  });
+
   it("displays three stages in order", () => {
     const stages = [
       { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "queued", input_source_kind: "legacy_source" },

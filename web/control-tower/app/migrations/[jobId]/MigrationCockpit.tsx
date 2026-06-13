@@ -1,7 +1,13 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
+import { useState, useEffect } from "react";
+import {
+  getV2AssistantMessages,
+  getV2JobApprovals,
+  getV2MigrationJobStages,
+  requireJobId,
+} from "../../../lib/controlTowerApi";
+import type { V2ApprovalResponse, V2AssistantMessageResponse } from "../../../lib/contracts";
 
 interface Stage {
   stage_index: number;
@@ -13,52 +19,41 @@ interface Stage {
 interface CockpitData {
   job_id: string;
   stages: Stage[];
-  approvals: Array<{ card_id: string; status: string; summary: string; request_checksum: string }>;
-  messages: Array<{ message_id: string; role: string; content: string }>;
+  approvals: V2ApprovalResponse[];
+  messages: V2AssistantMessageResponse[];
 }
 
-export function MigrationCockpit({ jobId }: { jobId: string }) {
+export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [data, setData] = useState<CockpitData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const normalizedJobId = jobId?.trim() ?? "";
 
   useEffect(() => {
+    if (!normalizedJobId) {
+      setData(null);
+      setError("Migration job id is missing from the route.");
+      return;
+    }
+
     let cancelled = false;
     async function loadCockpit() {
       try {
-        // Fetch real V2 data
-        const [messagesRes, approvalsRes, commandsRes] = await Promise.allSettled([
-          fetch(`${API_BASE}/v1/v2/jobs/${encodeURIComponent(jobId)}/assistant/messages`, {
-            headers: { Host: "127.0.0.1:8000" },
-          }),
-          fetch(`${API_BASE}/v1/v2/jobs/${encodeURIComponent(jobId)}/approvals`, {
-            headers: { Host: "127.0.0.1:8000" },
-          }),
-          fetch(`${API_BASE}/v1/v2/migration-jobs/${encodeURIComponent(jobId)}/stages`, {
-            headers: { Host: "127.0.0.1:8000" },
-          }),
+        const safeJobId = requireJobId(normalizedJobId);
+        const [messagesResponse, approvalsResponse, stagesResponse] = await Promise.all([
+          getV2AssistantMessages(safeJobId),
+          getV2JobApprovals(safeJobId),
+          getV2MigrationJobStages(safeJobId),
         ]);
 
         if (cancelled) return;
 
-        // Parse responses (gracefully handle missing endpoints)
-        let messages: Array<{ message_id: string; role: string; content: string }> = [];
-        let approvals: Array<{ card_id: string; status: string; summary: string; request_checksum: string }> = [];
-        let stages: Stage[] = [
-          { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "queued", input_source_kind: "legacy_source" },
-          { stage_index: 2, pipeline_stage: "Stage 2", chain_status: "pending", input_source_kind: "stage_1_sandbox" },
-          { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "pending", input_source_kind: "stage_2_sandbox" },
-        ];
-
-        if (messagesRes.status === "fulfilled" && messagesRes.value.ok) {
-          const body = await messagesRes.value.json();
-          messages = body.messages || [];
-        }
-        if (approvalsRes.status === "fulfilled" && approvalsRes.value.ok) {
-          const body = await approvalsRes.value.json();
-          approvals = body.approvals || [];
-        }
-
-        setData({ job_id: jobId, stages, approvals, messages });
+        setData({
+          job_id: safeJobId,
+          stages: stagesResponse.stages,
+          approvals: approvalsResponse.approvals,
+          messages: messagesResponse.messages,
+        });
+        setError(null);
       } catch (e) {
         if (!cancelled) {
           setError(e instanceof Error ? e.message : "Failed to load cockpit");
@@ -67,7 +62,7 @@ export function MigrationCockpit({ jobId }: { jobId: string }) {
     }
     loadCockpit();
     return () => { cancelled = true; };
-  }, [jobId]);
+  }, [normalizedJobId]);
 
   if (error) return <div className="error-box">{error}</div>;
   if (!data) return <div className="info-box">Loading cockpit...</div>;
