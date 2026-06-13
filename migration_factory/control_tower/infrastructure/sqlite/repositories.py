@@ -33,6 +33,7 @@ from migration_factory.control_tower.domain.entities import (
     V1ContextPackManifestRecord,
     V1FakeRepairProposalRecord,
     V1ModelInvocationRecord,
+    V1PatchApplicationRecord,
     V1PatchPolicyValidationRecord,
     V1PlanAmendmentRecord,
     V1PlanReviewDecisionRecord,
@@ -2592,6 +2593,97 @@ def _sandbox_snapshot_from_row(row: sqlite3.Row) -> V1SandboxSnapshotRecord:
         actor_type=str(row["actor_type"]),
         actor_id=str(row["actor_id"]),
         created_at=str(row["created_at"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1PatchApplicationRepository:
+    """SQLite repository for v1_patch_applications table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, application: V1PatchApplicationRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_patch_applications (
+                    application_id, command_id, job_id, validation_id,
+                    snapshot_id, stage_index, target_path_hash,
+                    patch_size_bytes, applied_by, applied_at, status,
+                    correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    application.application_id,
+                    application.command_id,
+                    application.job_id,
+                    application.validation_id,
+                    application.snapshot_id,
+                    application.stage_index,
+                    application.target_path_hash,
+                    application.patch_size_bytes,
+                    application.applied_by,
+                    application.applied_at,
+                    application.status,
+                    application.correlation_id,
+                    application.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, application_id: str) -> V1PatchApplicationRecord | None:
+        row = self._connection.execute(
+            """SELECT application_id, command_id, job_id, validation_id,
+                      snapshot_id, stage_index, target_path_hash,
+                      patch_size_bytes, applied_by, applied_at, status,
+                      correlation_id, causation_id
+               FROM v1_patch_applications WHERE application_id = ?""",
+            (application_id,),
+        ).fetchone()
+        return _patch_application_from_row(row) if row is not None else None
+
+    def get_for_command(self, command_id: str) -> V1PatchApplicationRecord | None:
+        row = self._connection.execute(
+            """SELECT application_id, command_id, job_id, validation_id,
+                      snapshot_id, stage_index, target_path_hash,
+                      patch_size_bytes, applied_by, applied_at, status,
+                      correlation_id, causation_id
+               FROM v1_patch_applications
+               WHERE command_id = ?
+               ORDER BY applied_at DESC, application_id DESC
+               LIMIT 1""",
+            (command_id,),
+        ).fetchone()
+        return _patch_application_from_row(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> tuple[V1PatchApplicationRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT application_id, command_id, job_id, validation_id,
+                      snapshot_id, stage_index, target_path_hash,
+                      patch_size_bytes, applied_by, applied_at, status,
+                      correlation_id, causation_id
+               FROM v1_patch_applications
+               WHERE job_id = ?
+               ORDER BY applied_at DESC, application_id DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_patch_application_from_row(row) for row in rows)
+
+
+def _patch_application_from_row(row: sqlite3.Row) -> V1PatchApplicationRecord:
+    return V1PatchApplicationRecord(
+        application_id=str(row["application_id"]),
+        command_id=str(row["command_id"]),
+        job_id=str(row["job_id"]),
+        validation_id=str(row["validation_id"]),
+        snapshot_id=str(row["snapshot_id"]),
+        stage_index=int(row["stage_index"]),
+        target_path_hash=str(row["target_path_hash"]),
+        patch_size_bytes=int(row["patch_size_bytes"]),
+        applied_by=str(row["applied_by"]),
+        applied_at=str(row["applied_at"]),
+        status=str(row["status"]),
         correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
         causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
     )

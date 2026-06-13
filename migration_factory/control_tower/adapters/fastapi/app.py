@@ -284,6 +284,14 @@ class RecordSandboxSnapshotRequest(StrictRequest):
     sandbox_checksum: str
 
 
+class ApplyApprovedPatchRequest(StrictRequest):
+    target_path: str
+    patch_content: str
+    patch_size_bytes: int = Field(ge=1, le=1_048_576)
+    stage_index: int = Field(ge=1, le=3)
+    approval_id: str | None = None
+
+
 @asynccontextmanager
 async def _control_tower_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Run startup reconciliation on service start."""
@@ -1075,6 +1083,54 @@ def create_app(
         return {
             "command_id": command_id,
             "snapshot": _sandbox_snapshot_payload(snapshot),
+        }
+
+    @app.post("/v1/commands/{command_id}/patch-applications", status_code=status.HTTP_201_CREATED)
+    def apply_approved_patch(
+        command_id: str,
+        payload: ApplyApprovedPatchRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = resolved_actor_provider.current_actor()
+        service = PatchPolicyService(unit_of_work_factory)
+        try:
+            application = service.apply_approved_patch(
+                command_id=command_id,
+                job_id="",
+                target_path=payload.target_path,
+                patch_content=payload.patch_content,
+                patch_size_bytes=payload.patch_size_bytes,
+                stage_index=payload.stage_index,
+                approval_id=payload.approval_id,
+                actor_type=actor.actor_type,
+                actor_id=actor.actor_id,
+                correlation_id=request.state.correlation_id,
+            )
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        return _patch_application_payload(application)
+
+    @app.get("/v1/patch-applications/{application_id}")
+    def get_patch_application(application_id: str) -> dict[str, Any]:
+        service = PatchPolicyService(unit_of_work_factory)
+        application = service.get_patch_application(application_id)
+        if application is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "PATCH_APPLICATION_NOT_FOUND",
+                f"Patch application {application_id!r} not found",
+            )
+        return _patch_application_payload(application)
+
+    @app.get("/v1/commands/{command_id}/patch-applications")
+    def get_patch_application_for_command(command_id: str) -> dict[str, Any]:
+        service = PatchPolicyService(unit_of_work_factory)
+        application = service.get_patch_application_for_command(command_id)
+        if application is None:
+            return {"command_id": command_id, "patch_application": None}
+        return {
+            "command_id": command_id,
+            "patch_application": _patch_application_payload(application),
         }
 
     # ------------------------------------------------------------------
@@ -1913,6 +1969,22 @@ def _sandbox_snapshot_payload(snapshot: Any) -> dict[str, Any]:
         "actor_type": snapshot.actor_type,
         "actor_id": snapshot.actor_id,
         "created_at": snapshot.created_at,
+    })
+
+
+def _patch_application_payload(application: Any) -> dict[str, Any]:
+    return redact_public_data({
+        "application_id": application.application_id,
+        "command_id": application.command_id,
+        "job_id": application.job_id,
+        "validation_id": application.validation_id,
+        "snapshot_id": application.snapshot_id,
+        "stage_index": application.stage_index,
+        "target_path_hash": application.target_path_hash,
+        "patch_size_bytes": application.patch_size_bytes,
+        "applied_by": application.applied_by,
+        "applied_at": application.applied_at,
+        "status": application.status,
     })
 
 
