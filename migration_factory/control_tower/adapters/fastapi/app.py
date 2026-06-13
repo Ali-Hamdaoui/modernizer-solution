@@ -114,6 +114,10 @@ from migration_factory.control_tower.application.env_parser import (
     parse_env_block,
     parse_result_to_dict,
 )
+from migration_factory.control_tower.application.v2_setup_service import (
+    CreateSetupRequest,
+    V2SetupService,
+)
 from migration_factory.control_tower.application.v2_settings import (
     ControlTowerSettings,
     build_settings_projection,
@@ -315,6 +319,27 @@ class RecordMavenValidationRequest(StrictRequest):
 class ParseEnvRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     env_block: str
+
+
+class CreateSetupRequestSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    run_name: str
+    legacy_app_path: str
+    output_parent_path: str
+    ai_hub_path: str
+    java11_home: str
+    java17_home: str
+    java21_home: str
+    maven_cmd: str
+    proof_level: str = "build_test_verified"
+    skip_endpoint_smoke: bool = False
+    migration_flags: dict[str, Any] = {}
+    correlation_id: str | None = None
+
+
+class PreflightRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    setup_id: str
 
 
 @asynccontextmanager
@@ -618,6 +643,89 @@ def create_app(
         """
         result = parse_env_block(payload.env_block)
         return parse_result_to_dict(result)
+
+    # ------------------------------------------------------------------
+    # V2 Setup persistence and preflight endpoints (A3)
+    # ------------------------------------------------------------------
+
+    @app.post("/v1/migration-setups", status_code=status.HTTP_201_CREATED)
+    def create_setup(
+        payload: CreateSetupRequestSchema,
+        request: Request,
+    ) -> dict[str, Any]:
+        """Create a new V2 migration setup draft."""
+        with unit_of_work_factory() as uow:
+            service = V2SetupService(uow.v2_setups)
+            req = CreateSetupRequest(
+                run_name=payload.run_name,
+                legacy_app_path=payload.legacy_app_path,
+                output_parent_path=payload.output_parent_path,
+                ai_hub_path=payload.ai_hub_path,
+                java11_home=payload.java11_home,
+                java17_home=payload.java17_home,
+                java21_home=payload.java21_home,
+                maven_cmd=payload.maven_cmd,
+                proof_level=payload.proof_level,
+                skip_endpoint_smoke=payload.skip_endpoint_smoke,
+                migration_flags=payload.migration_flags,
+                created_by="operator",
+                correlation_id=payload.correlation_id or request.state.correlation_id,
+            )
+            dto = service.create_setup(req)
+        return service.setup_to_dict(dto)
+
+    @app.get("/v1/migration-setups")
+    def list_setups() -> dict[str, Any]:
+        """List all V2 migration setup drafts."""
+        with unit_of_work_factory() as uow:
+            service = V2SetupService(uow.v2_setups)
+            dtos = service.list_setups()
+        return {
+            "setups": [service.setup_to_dict(dto) for dto in dtos],
+        }
+
+    @app.get("/v1/migration-setups/{setup_id}")
+    def get_setup(setup_id: str) -> dict[str, Any]:
+        """Get a V2 migration setup draft by ID."""
+        with unit_of_work_factory() as uow:
+            service = V2SetupService(uow.v2_setups)
+            dto = service.get_setup(setup_id)
+        if dto is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "SETUP_NOT_FOUND",
+                f"Setup {setup_id!r} not found",
+            )
+        return service.setup_to_dict(dto)
+
+    @app.post("/v1/migration-setups/preflight", status_code=status.HTTP_201_CREATED)
+    def run_preflight(
+        payload: PreflightRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        """Run preflight readiness checks for a setup."""
+        with unit_of_work_factory() as uow:
+            service = V2SetupService(uow.v2_setups)
+            try:
+                dto = service.run_preflight(
+                    setup_id=payload.setup_id,
+                    checked_by="operator",
+                )
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "SETUP_NOT_FOUND",
+                    str(exc),
+                ) from exc
+        return service.preflight_to_dict(dto)
+
+    @app.get("/v1/migration-setups/{setup_id}/readiness")
+    def get_readiness(setup_id: str) -> dict[str, Any]:
+        """Get the latest preflight readiness for a setup."""
+        with unit_of_work_factory() as uow:
+            service = V2SetupService(uow.v2_setups)
+            readiness = service.get_readiness(setup_id)
+        return service.readiness_to_dict(readiness)
 
     @app.get("/v1/model-profiles")
     def list_model_profiles() -> dict[str, Any]:
