@@ -18,6 +18,7 @@ import re
 from uuid import uuid4
 
 from migration_factory.control_tower.application.dto import (
+    PatchApplicationDto,
     PatchPolicyValidationDto,
     SandboxSnapshotDto,
 )
@@ -27,6 +28,7 @@ from migration_factory.control_tower.domain.checksums import (
     utc_now_text,
 )
 from migration_factory.control_tower.domain.entities import (
+    V1PatchApplicationRecord,
     V1PatchPolicyValidationRecord,
     V1SandboxSnapshotRecord,
 )
@@ -457,6 +459,162 @@ class PatchPolicyService:
             raise PatchContentMismatchError(
                 f"Stage index {stage_index} is out of valid range (1-3)"
             )
+
+    def apply_approved_patch(
+        self,
+        *,
+        command_id: str,
+        job_id: str,
+        target_path: str,
+        patch_content: str,
+        patch_size_bytes: int,
+        stage_index: int,
+        approval_id: str | None = None,
+        actor_type: str = "system",
+        actor_id: str = "controller",
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> PatchApplicationDto:
+        """Apply an approved patch to the sandbox.
+
+        Orchestration:
+        1. Validate patch policy.
+        2. Ensure sandbox snapshot exists.
+        3. Record the patch application.
+
+        This method does NOT execute shell commands or Maven goals.
+        It only records that an approved, snapshotted patch was
+        logically applied. The actual file write is handled by a
+        downstream privileged action execution.
+        """
+        now = utc_now_text()
+
+        # Step 0: Validate stage index (raises on failure)
+        self._validate_stage_index(stage_index)
+
+        # Step 1: Validate patch policy (raises on failure)
+        validation = self.validate_patch(
+            command_id=command_id,
+            job_id=job_id,
+            target_path=target_path,
+            patch_content=patch_content,
+            patch_size_bytes=patch_size_bytes,
+            approval_id=approval_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+        )
+        if not validation.approved:
+            raise PatchNotApprovedError(
+                f"Patch policy validation failed for command {command_id!r}: "
+                f"{validation.reason_code}"
+            )
+
+        # Step 2: Ensure snapshot exists
+        snapshot = self.ensure_snapshot_exists_before_write(
+            command_id=command_id,
+            job_id=job_id,
+            stage_index=stage_index,
+        )
+
+        # Step 3: Record the patch application
+        target_path_hash = self._hash_path(target_path)
+        application_id = f"ppa-{uuid4().hex}"
+
+        record = V1PatchApplicationRecord(
+            application_id=application_id,
+            command_id=command_id,
+            job_id=job_id,
+            validation_id=validation.validation_id,
+            snapshot_id=snapshot.snapshot_id,
+            stage_index=stage_index,
+            target_path_hash=target_path_hash,
+            patch_size_bytes=patch_size_bytes,
+            applied_by=actor_id,
+            applied_at=now,
+            status="applied",
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+        )
+
+        with self._unit_of_work_factory() as uow:
+            uow.v1_patch_applications.insert(record)
+            uow.audit_records.append_global_audit(
+                audit_id=uuid4().hex,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                action="patch_applied",
+                payload_json=canonical_json_text(
+                    {
+                        "application_id": application_id,
+                        "command_id": command_id,
+                        "job_id": job_id,
+                        "validation_id": validation.validation_id,
+                        "snapshot_id": snapshot.snapshot_id,
+                        "stage_index": stage_index,
+                        "target_path_hash": target_path_hash,
+                        "patch_size_bytes": patch_size_bytes,
+                    }
+                ),
+                created_at=now,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+
+        return PatchApplicationDto(
+            application_id=application_id,
+            command_id=command_id,
+            job_id=job_id,
+            validation_id=validation.validation_id,
+            snapshot_id=snapshot.snapshot_id,
+            stage_index=stage_index,
+            target_path_hash=target_path_hash,
+            patch_size_bytes=patch_size_bytes,
+            applied_by=actor_id,
+            applied_at=now,
+            status="applied",
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+        )
+
+    def get_patch_application(
+        self, application_id: str
+    ) -> PatchApplicationDto | None:
+        """Get a specific patch application record."""
+        with self._unit_of_work_factory() as uow:
+            record = uow.v1_patch_applications.get(application_id)
+            if record is None:
+                return None
+            return self._to_application_dto(record)
+
+    def get_patch_application_for_command(
+        self, command_id: str
+    ) -> PatchApplicationDto | None:
+        """Get the latest patch application for a command."""
+        with self._unit_of_work_factory() as uow:
+            record = uow.v1_patch_applications.get_for_command(command_id)
+            if record is None:
+                return None
+            return self._to_application_dto(record)
+
+    @staticmethod
+    def _to_application_dto(record: V1PatchApplicationRecord) -> PatchApplicationDto:
+        return PatchApplicationDto(
+            application_id=record.application_id,
+            command_id=record.command_id,
+            job_id=record.job_id,
+            validation_id=record.validation_id,
+            snapshot_id=record.snapshot_id,
+            stage_index=record.stage_index,
+            target_path_hash=record.target_path_hash,
+            patch_size_bytes=record.patch_size_bytes,
+            applied_by=record.applied_by,
+            applied_at=record.applied_at,
+            status=record.status,
+            correlation_id=record.correlation_id,
+            causation_id=record.causation_id,
+        )
 
     # ------------------------------------------------------------------
     # Internal validation helpers

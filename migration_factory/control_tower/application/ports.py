@@ -36,6 +36,7 @@ from migration_factory.control_tower.domain.entities import (
     StageOutputRegistryRecord,
     StageRunRecord,
     V1FakeRepairProposalRecord,
+    V1PatchApplicationRecord,
     V1PlanAmendmentRecord,
     V1PlanReviewDecisionRecord,
     V1PatchPolicyValidationRecord,
@@ -504,6 +505,18 @@ class V1SandboxSnapshotRepository(Protocol):
     def list_for_job(self, job_id: str) -> tuple[V1SandboxSnapshotRecord, ...]: ...
 
 
+class V1PatchApplicationRepository(Protocol):
+    """Append-only repository for patch application records."""
+
+    def insert(self, application: V1PatchApplicationRecord) -> None: ...
+
+    def get(self, application_id: str) -> V1PatchApplicationRecord | None: ...
+
+    def get_for_command(self, command_id: str) -> V1PatchApplicationRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1PatchApplicationRecord, ...]: ...
+
+
 class ControlTowerUnitOfWork(Protocol):
     runner_profiles: RunnerProfileRepository
     pipeline_definitions: PipelineDefinitionRepository
@@ -532,6 +545,7 @@ class ControlTowerUnitOfWork(Protocol):
     v1_privileged_action_executions: V1PrivilegedActionExecutionRepository
     v1_patch_policy_validations: V1PatchPolicyValidationRepository
     v1_sandbox_snapshots: V1SandboxSnapshotRepository
+    v1_patch_applications: V1PatchApplicationRepository
 
     def __enter__(self) -> Self: ...
 

@@ -474,6 +474,25 @@ class SandboxSnapshotDto:
 
 
 @dataclass(frozen=True, slots=True)
+class PatchApplicationDto:
+    """DTO for an approved patch application result."""
+
+    application_id: str
+    command_id: str
+    job_id: str
+    validation_id: str
+    snapshot_id: str
+    stage_index: int
+    target_path_hash: str
+    patch_size_bytes: int
+    applied_by: str
+    applied_at: str
+    status: str = "applied"
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class JobProjectionDto:
     job: MigrationJobDto
     active_command: CommandExecutionDto | None

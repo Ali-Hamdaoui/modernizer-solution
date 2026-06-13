@@ -563,3 +563,27 @@ class V1SandboxSnapshotRecord:
     created_at: str
     correlation_id: str | None = None
     causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class V1PatchApplicationRecord:
+    """Immutable record of an approved patch application.
+
+    Append-only: records that an approved patch was applied to a sandbox.
+    Ties together the policy validation and sandbox snapshot that
+    preceded the application.
+    """
+
+    application_id: str
+    command_id: str
+    job_id: str
+    validation_id: str
+    snapshot_id: str
+    stage_index: int
+    target_path_hash: str
+    patch_size_bytes: int
+    applied_by: str
+    applied_at: str
+    status: str = "applied"  # 'applied', 'validated', 'rolled_back'
+    correlation_id: str | None = None
+    causation_id: str | None = None

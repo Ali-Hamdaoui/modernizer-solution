@@ -19,6 +19,7 @@ from migration_factory.control_tower.infrastructure.sqlite.repositories import (
     SqliteV1ContextPackManifestRepository,
     SqliteV1FakeRepairProposalRepository,
     SqliteV1ModelInvocationRepository,
+    SqliteV1PatchApplicationRepository,
     SqliteV1PatchPolicyValidationRepository,
     SqliteV1PlanAmendmentRepository,
     SqliteV1PlanReviewDecisionRepository,
@@ -70,6 +71,7 @@ class SqliteControlTowerUnitOfWork:
         self.v1_privileged_action_executions = SqliteV1PrivilegedActionExecutionRepository(connection)
         self.v1_patch_policy_validations = SqliteV1PatchPolicyValidationRepository(connection)
         self.v1_sandbox_snapshots = SqliteV1SandboxSnapshotRepository(connection)
+        self.v1_patch_applications = SqliteV1PatchApplicationRepository(connection)
 
     def __enter__(self) -> "SqliteControlTowerUnitOfWork":
         self.connection.execute("BEGIN IMMEDIATE")
