@@ -38,6 +38,55 @@ class EvidenceRetrievalError(ControlTowerError):
         super().__init__(f"Evidence retrieval failed from {source!r}: {reason}")
 
 
+# ── Path validation helpers ───────────────────────────────────────
+
+
+def _looks_absolute_or_rooted_path(raw: str) -> bool:
+    """Check if a path looks absolute or rooted on any platform.
+
+    Returns True for:
+    - POSIX absolute paths (/foo/bar)
+    - Windows rooted paths (\\foo\\bar)
+    - Windows drive absolute paths (C:\\foo\\bar, C:/foo/bar)
+    - UNC paths (\\\\server\\share, //server/share)
+    - URI file scheme (file:///path)
+    """
+    stripped = raw.strip()
+    if not stripped:
+        return False
+
+    # URI/file scheme
+    if stripped.lower().startswith("file://"):
+        return True
+
+    # UNC (backslash): \\server\share
+    if stripped.startswith("\\\\"):
+        return True
+
+    # UNC (forward slash): //server/share
+    if stripped.startswith("//"):
+        return True
+
+    # POSIX absolute: /foo
+    if stripped.startswith("/"):
+        return True
+
+    # Windows rooted (single backslash at start): \foo
+    if stripped.startswith("\\"):
+        return True
+
+    # Windows drive absolute: C:\foo or C:/foo
+    if (
+        len(stripped) >= 3
+        and stripped[0].isalpha()
+        and stripped[1] == ":"
+        and stripped[2] in ("\\", "/")
+    ):
+        return True
+
+    return False
+
+
 # ── Bounds configuration ──────────────────────────────────────────
 
 
@@ -260,8 +309,9 @@ class BoundedEvidenceRetriever:
 
             p = Path(cleaned)
 
-            # Reject absolute paths
-            if not bounds.allow_absolute_paths and p.is_absolute():
+            # Reject absolute/rooted paths (cross-platform: POSIX /foo,
+            # Windows \foo, C:\foo, C:/foo, UNC, file://)
+            if not bounds.allow_absolute_paths and _looks_absolute_or_rooted_path(cleaned):
                 raise EvidenceBoundsError(
                     f"Absolute path not allowed: {cleaned!r}"
                 )
