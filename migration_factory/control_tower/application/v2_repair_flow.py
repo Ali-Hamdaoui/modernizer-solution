@@ -98,6 +98,21 @@ class V2RepairFlowService:
         approval_checksum: str,
     ) -> RepairProposal:
         proposal = self._proposals.get(proposal_id)
+        if proposal is None and self._repo is not None:
+            record = self._repo.get_proposal(proposal_id)
+            if record is not None:
+                proposal = RepairProposal(
+                    proposal_id=record.proposal_id,
+                    command_id=record.command_id,
+                    failure_summary=record.failure_summary,
+                    hypothesis=record.hypothesis,
+                    patch_summary=record.patch_summary,
+                    affected_paths=tuple(json.loads(record.affected_paths_json)),
+                    status=record.status,
+                    approval_checksum=record.approval_checksum,
+                    created_at=record.created_at,
+                )
+                self._proposals[proposal_id] = proposal
         if proposal is None:
             raise ValueError(f"Proposal {proposal_id!r} not found")
         if proposal.status != "draft":
@@ -127,6 +142,21 @@ class V2RepairFlowService:
         patch_content: str,
     ) -> SandboxAction:
         proposal = self._proposals.get(proposal_id)
+        if proposal is None and self._repo is not None:
+            record = self._repo.get_proposal(proposal_id)
+            if record is not None:
+                proposal = RepairProposal(
+                    proposal_id=record.proposal_id,
+                    command_id=record.command_id,
+                    failure_summary=record.failure_summary,
+                    hypothesis=record.hypothesis,
+                    patch_summary=record.patch_summary,
+                    affected_paths=tuple(json.loads(record.affected_paths_json)),
+                    status=record.status,
+                    approval_checksum=record.approval_checksum,
+                    created_at=record.created_at,
+                )
+                self._proposals[proposal_id] = proposal
         if proposal is None:
             raise ValueError(f"Proposal {proposal_id!r} not found")
         if proposal.status != "approved":
