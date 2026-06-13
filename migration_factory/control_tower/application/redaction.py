@@ -233,6 +233,34 @@ def is_forbidden_file(path: str | Path) -> bool:
     return contains_forbidden_path(path)
 
 
+# ── V2 display helpers for local operator mode ───────────────────────
+
+
+def redact_local_mode_path(path: str) -> str:
+    """Redact a local absolute path for safe public display.
+
+    In local operator mode, the frontend may display absolute paths
+    using a placeholder for the user-specific prefix while preserving
+    the rest of the path for orientation (e.g., "[user-home]/apps/my-app").
+    Forbidden paths (secrets, env, etc.) are fully redacted.
+    """
+    if contains_forbidden_path(path):
+        return "[redacted-path]"
+    return redact_absolute_paths(path)
+
+
+def redact_allowed_roots_for_display(roots: tuple[str, ...]) -> tuple[str, ...]:
+    """Redact a tuple of allowed roots for safe public display."""
+    return tuple(redact_local_mode_path(r) if r else r for r in roots)
+
+
+def env_ref_or_none(env_var_name: str | None) -> str:
+    """Return the env ref name for display, or empty string if None."""
+    if not env_var_name:
+        return ""
+    return env_var_name
+
+
 # ── Internal helpers ─────────────────────────────────────────────────
 
 

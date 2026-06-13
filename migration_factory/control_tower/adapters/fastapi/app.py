@@ -109,6 +109,11 @@ from migration_factory.control_tower.infrastructure.singleton import (
     create_controller_ownership,
 )
 from migration_factory.control_tower.schemas.run_configuration import RunPolicy
+from migration_factory.control_tower.application.v2_settings import (
+    ControlTowerSettings,
+    build_settings_projection,
+    settings_projection_to_dict,
+)
 from migration_factory.control_tower.adapters.fastapi.security import (
     MUTATION_METHODS,
     ActorProvider,
@@ -352,6 +357,7 @@ def create_app(
     app.state.unit_of_work_factory = unit_of_work_factory
     app.state.security_settings = local_security
     app.state.actor_provider = resolved_actor_provider
+    app.state.v2_settings = ControlTowerSettings()
     app.state.worker_launcher = worker_launcher
     app.state.worker_terminator = worker_terminator
     app.state.controller_ownership = resolved_controller_ownership
@@ -574,6 +580,17 @@ def create_app(
                         }
                     )
         return {"filesystem_roots": redact_public_data(roots)}
+
+    @app.get("/v1/settings/ai")
+    def get_ai_settings() -> dict[str, Any]:
+        """Return redacted Azure Foundry settings with env refs only.
+
+        Never returns endpoint URLs, API keys, deployment IDs, or any
+        secret values. The UI receives env ref names and booleans only.
+        """
+        settings: ControlTowerSettings = app.state.v2_settings
+        projection = build_settings_projection(settings)
+        return settings_projection_to_dict(projection)
 
     @app.get("/v1/model-profiles")
     def list_model_profiles() -> dict[str, Any]:
