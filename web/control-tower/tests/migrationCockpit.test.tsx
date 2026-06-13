@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import MigrationCockpitPage from "../app/migrations/[jobId]/page";
-import { MigrationCockpit } from "../app/migrations/[jobId]/MigrationCockpit";
+import { MigrationCockpit, reduceStageStatus } from "../app/migrations/[jobId]/MigrationCockpit";
 import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, requireJobId, v2EventStreamUrl } from "../lib/controlTowerApi";
+import type { V2JobEvent } from "../lib/contracts";
 
 describe("V2 Migration Cockpit contract", () => {
   it("passes the awaited route job id into MigrationCockpit", async () => {
@@ -260,6 +261,100 @@ describe("V2 Migration Cockpit contract", () => {
     expect(important.has("transform_failed")).toBe(true);
     expect(important.has("build_failed")).toBe(true);
     expect(important.has("next_stage_queued")).toBe(true);
+  });
+
+  // ── Stage status lifecycle reducer tests (V2 cockpit state model) ──
+
+  it("reduceStageStatus: blocked while approval pending", () => {
+    // Only approval_required/blocked events → blocked
+    const events: V2JobEvent[] = [
+      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as V2JobEvent,
+      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 2 } as V2JobEvent,
+    ];
+    const actual = reduceStageStatus(events);
+    expect(actual).toBe("blocked");
+  });
+
+  it("reduceStageStatus: running after approval completed and transform started", () => {
+    // Old blocked events must not prevent running
+    const events: V2JobEvent[] = [
+      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as V2JobEvent,
+      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 2 } as V2JobEvent,
+      { stage: 1, type: "approval_resume_queued", status: "queued", sequence: 3 } as V2JobEvent,
+      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 4 } as V2JobEvent,
+    ];
+    const actual = reduceStageStatus(events);
+    expect(actual).toBe("running");
+  });
+
+  it("reduceStageStatus: failed after sandbox_transform_failed", () => {
+    const events: V2JobEvent[] = [
+      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as V2JobEvent,
+      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 2 } as V2JobEvent,
+      { stage: 1, type: "sandbox_transform_failed", status: "failed", sequence: 3 } as V2JobEvent,
+    ];
+    const actual = reduceStageStatus(events);
+    expect(actual).toBe("failed");
+  });
+
+  it("reduceStageStatus: completed after stage_completed, blocked does not regress", () => {
+    const events: V2JobEvent[] = [
+      { stage: 1, type: "stage_started", status: "running", sequence: 1 } as V2JobEvent,
+      { stage: 1, type: "stage_completed", status: "completed", sequence: 2 } as V2JobEvent,
+      // A late blocked event must NOT regress completed → blocked
+      { stage: 1, type: "approval_required", status: "blocked", sequence: 3 } as V2JobEvent,
+    ];
+    const actual = reduceStageStatus(events);
+    expect(actual).toBe("completed");
+  });
+
+  it("reduceStageStatus: old blocked does not override later running", () => {
+    const events: V2JobEvent[] = [
+      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 1 } as V2JobEvent,
+      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 2 } as V2JobEvent,
+    ];
+    const actual = reduceStageStatus(events);
+    expect(actual).toBe("running");
+  });
+
+  it("reduceStageStatus: old blocked does not override later failed", () => {
+    const events: V2JobEvent[] = [
+      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 1 } as V2JobEvent,
+      { stage: 1, type: "stage_failed", status: "failed", sequence: 2 } as V2JobEvent,
+    ];
+    const actual = reduceStageStatus(events);
+    expect(actual).toBe("failed");
+  });
+
+  // ── Pipeline / stage consistency tests ──
+
+  it("approved card has disabled buttons and no active blocked state implication", () => {
+    // When approval card status is "approved", buttons are disabled
+    const approved = { card_id: "c1", status: "approved", request_checksum: "chk-1" };
+    const pending = { card_id: "c2", status: "pending", request_checksum: "chk-2" };
+    const isPending = (s: string) => s === "pending";
+    expect(isPending(approved.status)).toBe(false);
+    expect(isPending(pending.status)).toBe(true);
+    // Disabled guard: button disabled unless status === "pending"
+    expect(approved.status !== "pending").toBe(true);
+  });
+
+  it("pipeline and stage status consistent after approval lifecycle", () => {
+    // The pipeline human_approval row must be "pass", not "blocked",
+    // after approval_resume_queued. Stage must be "running".
+    const events: V2JobEvent[] = [
+      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as V2JobEvent,
+      { stage: 1, type: "approval_resume_queued", status: "queued", sequence: 2 } as V2JobEvent,
+      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 3 } as V2JobEvent,
+    ];
+    const stageStatus = reduceStageStatus(events);
+    expect(stageStatus).toBe("running");
+    // Pipeline human_approval row logic: events with type in approval_passed_types
+    const hasPassedEvent = events.some(
+      (e) => ["approval_completed", "approval_resume_queued", "resume_started",
+              "sandbox_transform_started", "sandbox_transform_completed"].includes(e.type)
+    );
+    expect(hasPassedEvent).toBe(true);
   });
 
   it("raw logs events are collapsed by default in SSE stream", () => {

@@ -439,3 +439,174 @@ def test_v2_approval_lifecycle_with_failure_after_approval(tmp_path: Path) -> No
     assert approval_row["status"] == "pass", f"Expected pass but got {approval_row['status']}"
     transform_row = [r for r in pipeline["rows"] if r["key"] == "sandbox_transform"][0]
     assert transform_row["status"] == "failed"
+
+
+# ── Stage status lifecycle regression tests (V2 cockpit state model) ──
+
+
+def _create_job_only(client: TestClient, setup_id: str, conn: sqlite3.Connection) -> str:
+    """Create a V2 migration job WITHOUT triggering the fake runner start."""
+    job_response = client.post(
+        "/v1/v2/migration-jobs",
+        json={"setup_id": setup_id},
+        headers=_mutation_headers(),
+    )
+    assert job_response.status_code == 201, job_response.text
+    return job_response.json()["job_id"]
+
+
+def _stages_status(client: TestClient, job_id: str) -> dict[int, str]:
+    """Return {stage_index: chain_status} from the stages endpoint."""
+    response = client.get(f"/v1/v2/migration-jobs/{job_id}/stages")
+    assert response.status_code == 200, response.text
+    return {s["stage_index"]: s["chain_status"] for s in response.json()["stages"]}
+
+
+def _pipeline_row(client: TestClient, job_id: str, key: str) -> dict[str, str]:
+    """Return a specific pipeline row (status, label, etc.)."""
+    response = client.get(f"/v1/v2/migration-jobs/{job_id}/pipeline")
+    assert response.status_code == 200, response.text
+    matches = [r for r in response.json()["rows"] if r["key"] == key]
+    assert len(matches) == 1, f"Expected 1 pipeline row key={key}, got {len(matches)}"
+    return matches[0]
+
+
+def test_stage_blocked_while_approval_pending(tmp_path: Path) -> None:
+    """Stage 1 must be BLOCKED when only approval events exist (no resume/transform)."""
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job_only(client, setup_id, conn)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="approval_required", status="blocked", message="blocked", payload={"card_id": "c1"})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="stage_blocked_for_approval", status="blocked", message="stage blocked", payload={"card_id": "c1"})
+
+    stages = _stages_status(client, job_id)
+    assert stages[1] == "blocked", f"Expected blocked, got {stages[1]}"
+    approval_row = _pipeline_row(client, job_id, "human_approval")
+    assert approval_row["status"] == "blocked", f"Expected blocked, got {approval_row['status']}"
+
+
+def test_stage_running_after_approval_completed(tmp_path: Path) -> None:
+    """Stage 1 must be RUNNING after approval_completed (not stuck on blocked)."""
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job_only(client, setup_id, conn)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="approval_required", status="blocked", message="blocked", payload={"card_id": "c1"})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="approval_completed", status="completed", message="approved", payload={"card_id": "c1"})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="resume_started", status="running", message="resumed", payload={})
+
+    stages = _stages_status(client, job_id)
+    assert stages[1] == "running", f"Expected running, got {stages[1]}"
+    approval_row = _pipeline_row(client, job_id, "human_approval")
+    assert approval_row["status"] == "pass", f"Expected pass, got {approval_row['status']}"
+
+
+def test_stage_running_after_sandbox_transform_started(tmp_path: Path) -> None:
+    """Stage 1 must be RUNNING after sandbox transform starts."""
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job_only(client, setup_id, conn)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="approval_required", status="blocked", message="blocked", payload={"card_id": "c1"})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="approval_resume_queued", status="queued", message="accepted", payload={"card_id": "c1"})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="sandbox_transform_started", status="running", message="transform started", payload={})
+
+    stages = _stages_status(client, job_id)
+    assert stages[1] == "running", f"Expected running, got {stages[1]}"
+    approval_row = _pipeline_row(client, job_id, "human_approval")
+    assert approval_row["status"] == "pass", f"Expected pass, got {approval_row['status']}"
+    transform_row = _pipeline_row(client, job_id, "sandbox_transform")
+    assert transform_row["status"] == "running", f"Expected running, got {transform_row['status']}"
+
+
+def test_stage_failed_after_sandbox_transform_failed(tmp_path: Path) -> None:
+    """Stage 1 must be FAILED after sandbox transform fails."""
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job_only(client, setup_id, conn)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="approval_required", status="blocked", message="blocked", payload={"card_id": "c1"})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="approval_resume_queued", status="queued", message="accepted", payload={"card_id": "c1"})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="sandbox_transform_started", status="running", message="transform started", payload={})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="sandbox_transform_failed", status="failed", message="transform failed", payload={})
+
+    stages = _stages_status(client, job_id)
+    assert stages[1] == "failed", f"Expected failed, got {stages[1]}"
+    approval_row = _pipeline_row(client, job_id, "human_approval")
+    assert approval_row["status"] == "pass", f"Expected pass, got {approval_row['status']}"
+    transform_row = _pipeline_row(client, job_id, "sandbox_transform")
+    assert transform_row["status"] == "failed", f"Expected failed, got {transform_row['status']}"
+
+
+def test_stage_completed_after_stage_completed(tmp_path: Path) -> None:
+    """Stage 1 must be COMPLETED after a stage_completed event."""
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job_only(client, setup_id, conn)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="stage_started", status="running", message="started", payload={})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="stage_completed", status="completed", message="completed", payload={})
+
+    stages = _stages_status(client, job_id)
+    assert stages[1] == "completed", f"Expected completed, got {stages[1]}"
+
+
+def test_old_blocked_event_does_not_override_later_transform_started(tmp_path: Path) -> None:
+    """An early blocked event must NOT prevent Stage 1 from becoming RUNNING."""
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job_only(client, setup_id, conn)
+
+    with SqliteUnitOfWork(conn) as uow:
+        # approval_blocked first (precedence "blocked")
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="approval_required", status="blocked", message="blocked", payload={"card_id": "c1"})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="stage_blocked_for_approval", status="blocked", message="stage blocked", payload={"card_id": "c1"})
+        # Then approval and transform — these must NOT be suppressed by old blocked
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="approval_resume_queued", status="queued", message="accepted", payload={"card_id": "c1"})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="sandbox_transform_started", status="running", message="transform started", payload={})
+
+    stages = _stages_status(client, job_id)
+    assert stages[1] == "running", f"Expected running, got {stages[1]}"
+
+
+def test_old_blocked_event_does_not_override_later_stage_failed(tmp_path: Path) -> None:
+    """An early blocked event must NOT prevent Stage 1 from becoming FAILED."""
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job_only(client, setup_id, conn)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="approval_required", status="blocked", message="blocked", payload={"card_id": "c1"})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="stage_blocked_for_approval", status="blocked", message="stage blocked", payload={"card_id": "c1"})
+        # Later — stage fails (must win over old blocked)
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="stage_failed", status="failed", message="failed", payload={})
+
+    stages = _stages_status(client, job_id)
+    assert stages[1] == "failed", f"Expected failed, got {stages[1]}"
+
+
+def test_pipeline_and_stage_status_are_consistent_after_approval(tmp_path: Path) -> None:
+    """After full approval→resume→transform→complete cycle, Stage 1 must be COMPLETED
+    and Human Approval must still be pass (not blocked)."""
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job_only(client, setup_id, conn)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="approval_required", status="blocked", message="blocked", payload={"card_id": "c1"})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="approval_resume_queued", status="queued", message="accepted", payload={"card_id": "c1"})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="sandbox_transform_started", status="running", message="transform started", payload={})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="stage_completed", status="completed", message="done", payload={})
+
+    stages = _stages_status(client, job_id)
+    assert stages[1] == "completed", f"Expected completed, got {stages[1]}"
+    approval_row = _pipeline_row(client, job_id, "human_approval")
+    assert approval_row["status"] == "pass", f"Expected pass, got {approval_row['status']}"
+    transform_row = _pipeline_row(client, job_id, "sandbox_transform")
+    assert transform_row["status"] == "running", f"Expected running, got {transform_row['status']}"
