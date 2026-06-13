@@ -160,7 +160,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           return current;
         }
         const updatedEvents = [...current.events, event].sort((a, b) => a.sequence - b.sequence);
-        const updatedStages = applyEventToStages(current.stages, event);
+        const updatedStages = reduceAllStageStatuses(current.stages, updatedEvents);
         return {
           ...current,
           events: updatedEvents,
@@ -473,23 +473,64 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   );
 }
 
-function applyEventToStages(stages: Stage[], event: V2JobEvent): Stage[] {
-  if (!event.stage) return stages;
+/** Recompute stage status for every stage using ALL events so far
+ *  (chronological reducer), instead of deriving from a single incoming event.
+ *  This guarantees the frontend never shows a contradiction. */
+function reduceAllStageStatuses(stages: Stage[], allEvents: V2JobEvent[]): Stage[] {
   return stages.map((stage) => {
-    if (stage.stage_index !== event.stage) return stage;
-    return { ...stage, chain_status: stageStatusFromEvent(event) };
+    const stageEvents = allEvents
+      .filter((e) => e.stage === stage.stage_index)
+      .sort((a, b) => a.sequence - b.sequence);
+    return { ...stage, chain_status: reduceStageStatus(stageEvents) };
   });
 }
 
-function stageStatusFromEvent(event: V2JobEvent): string {
+/** Map a single (event.type, event.status) to a stage status *label*.
+ *  This is an *input* to the chronological reducer; the label alone does
+ *  NOT determine the final stage status (see reduceStageStatus). */
+export function stageStatusFromEvent(event: V2JobEvent): string {
   if (event.type === "stage_failed" || event.status === "failed") return "failed";
-  if (event.type === "approval_required" || event.type === "stage_blocked_for_approval" || event.status === "blocked") return "blocked";
   if (event.type === "stage_completed") return "completed";
-  if (["stage_started", "command_started", "stdout", "stderr"].includes(event.type) || event.status === "running") {
+  if (["stage_started", "command_started", "sandbox_transform_started",
+       "sandbox_transform_completed", "resume_started", "approval_resume_queued",
+       "approval_completed", "build_started", "test_started"].includes(event.type) || event.status === "running") {
     return "running";
   }
+  if (event.type === "approval_required" || event.type === "stage_blocked_for_approval" || event.status === "blocked") return "blocked";
   if (["stage_queued", "next_stage_queued"].includes(event.type) || event.status === "queued") return "queued";
   return "pending";
+}
+
+/** State-transition helper: given current status and mapped label,
+ *  return the new status respecting lifecycle rules.
+ *  * failed       → terminal (highest priority)
+ *  * completed    → terminal unless a later failure arrives
+ *  * running      → overrides blocked/pending/queued
+ *  * blocked      → applies only if not already running/completed/failed
+ *  * queued       → applies only if not already past it
+ *  * pending      → no change */
+export function transitionStageStatus(current: string, mapped: string): string {
+  if (mapped === "failed") return "failed";
+  if (mapped === "completed") return "completed";
+  if (mapped === "running") return "running";
+  if (mapped === "blocked") {
+    if (current === "running" || current === "completed" || current === "failed") return current;
+    return "blocked";
+  }
+  if (mapped === "queued") {
+    if (current === "running" || current === "completed" || current === "failed" || current === "blocked") return current;
+    return "queued";
+  }
+  return current;
+}
+
+/** Reduce chronologically-ordered events to a single stage status. */
+export function reduceStageStatus(events: V2JobEvent[]): string {
+  let current = "pending";
+  for (const event of events) {
+    current = transitionStageStatus(current, stageStatusFromEvent(event));
+  }
+  return current;
 }
 
 const IMPORTANT_SSE_TYPES = new Set([

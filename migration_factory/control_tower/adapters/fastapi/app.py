@@ -3496,14 +3496,18 @@ def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, 
         ]
 
     command_stages = {command.stage_index for command in commands}
-    status_by_stage: dict[int, str] = {}
-    precedence = {"pending": 0, "queued": 1, "running": 2, "blocked": 3, "completed": 4, "failed": 5}
+    # Chronological lifecycle reducer — processes events in sequence order.
+    # Each event transitions the state; later running/terminal events override
+    # earlier blocked/pending.  This is *not* a max-precedence scan.
+    from collections import defaultdict
+    stage_events: dict[int, list[Any]] = defaultdict(list)
     for event in events:
         if event.stage is None:
             continue
-        mapped = _stage_status_from_event(event.type, event.status)
-        if precedence.get(mapped, 0) >= precedence.get(status_by_stage.get(event.stage, "pending"), 0):
-            status_by_stage[event.stage] = mapped
+        stage_events[event.stage].append(event)
+    status_by_stage: dict[int, str] = {
+        idx: _reduce_stage_status(evts) for idx, evts in stage_events.items()
+    }
     for stage_index in command_stages:
         status_by_stage.setdefault(stage_index, "queued")
 
@@ -3521,17 +3525,69 @@ def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, 
 
 
 def _stage_status_from_event(event_type: str, event_status: str) -> str:
+    """Map a single (event_type, event_status) to a stage status label.
+
+    This is an *input* to the chronological reducer; the label alone does
+    NOT determine the final stage status (see ``_reduce_stage_status``).
+    """
     if event_type == "stage_failed" or event_status == "failed":
         return "failed"
-    if event_type in {"approval_required", "stage_blocked_for_approval"} or event_status == "blocked":
-        return "blocked"
     if event_type == "stage_completed":
         return "completed"
-    if event_type in {"stage_started", "command_started", "stdout", "stderr"} or event_status == "running":
+    if event_type in {
+        "stage_started", "command_started",
+        "sandbox_transform_started", "sandbox_transform_completed",
+        "resume_started", "approval_resume_queued", "approval_completed",
+        "build_started", "test_started",
+    } or event_status == "running":
         return "running"
+    if event_type in {"approval_required", "stage_blocked_for_approval"} or event_status == "blocked":
+        return "blocked"
     if event_type in {"stage_queued", "next_stage_queued"} or event_status == "queued":
         return "queued"
     return "pending"
+
+
+def _reduce_stage_status(events: list[Any]) -> str:
+    """Reduce chronologically-ordered events to a single stage status.
+
+    Applies a state transition for each event so that later active/terminal
+    events override earlier blocked/pending states.  This replaces the old
+    max-precedence scan that could never un-block a stage after approval.
+    """
+    current = "pending"
+    for event in events:
+        mapped = _stage_status_from_event(event.type, event.status)
+        current = _transition_stage_status(current, mapped)
+    return current
+
+
+def _transition_stage_status(current: str, mapped: str) -> str:
+    """State-transition helper: given current status and mapped label,
+    return the new status respecting lifecycle rules.
+
+    * failed         → terminal (highest priority)
+    * completed      → terminal unless a later failure arrives
+    * running        → overrides blocked/pending/queued
+    * blocked        → applies only if not already running/completed/failed
+    * queued         → applies only if not already past it
+    * pending        → no change
+    """
+    if mapped == "failed":
+        return "failed"
+    if mapped == "completed":
+        return "completed"
+    if mapped == "running":
+        return "running"
+    if mapped == "blocked":
+        if current in ("running", "completed", "failed"):
+            return current
+        return "blocked"
+    if mapped == "queued":
+        if current in ("running", "completed", "failed", "blocked"):
+            return current
+        return "queued"
+    return current
 
 
 def _v2_event_payload(event: Any) -> dict[str, Any]:
