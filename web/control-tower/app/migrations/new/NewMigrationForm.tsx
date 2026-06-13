@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import { useRouter } from "next/navigation";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -155,6 +156,7 @@ const EMPTY_FIELDS: FormFields = {
 // ── Component ──────────────────────────────────────────────────────
 
 export function NewMigrationForm() {
+  const router = useRouter();
   const [fields, setFields] = useState<FormFields>(EMPTY_FIELDS);
   const [parseResult, setParseResult] = useState<ParsedEnvResult | null>(null);
   const [setupResult, setSetupResult] = useState<SetupResponse | null>(null);
@@ -522,9 +524,38 @@ export function NewMigrationForm() {
                   ? "Fix errors above"
                   : "Start migration"
             }
-            onClick={() => {
-              // Start will be wired by A6
-              alert("Migration start will be available in the next update.");
+            onClick={async () => {
+              if (!setupResult) return;
+              setLoading("Starting migration...");
+              setError(null);
+              try {
+                // 1. Create V2 job
+                const jobRes = await fetch(`${API_BASE}/v1/v2/migration-jobs`, {
+                  method: "POST",
+                  headers: mutationHeaders(),
+                  body: JSON.stringify({ setup_id: setupResult.setup_id }),
+                });
+                if (!jobRes.ok) throw new Error(`Job creation failed: ${jobRes.status}`);
+                const jobData = await jobRes.json();
+
+                // 2. Start Stage 1
+                const stageRes = await fetch(`${API_BASE}/v1/v2/migration-jobs/start-stage1`, {
+                  method: "POST",
+                  headers: mutationHeaders(),
+                  body: JSON.stringify({
+                    job_id: jobData.job_id,
+                    setup_id: setupResult.setup_id,
+                  }),
+                });
+                if (!stageRes.ok) throw new Error(`Stage 1 start failed: ${stageRes.status}`);
+
+                // 3. Navigate to cockpit
+                router.push(`/migrations/${jobData.job_id}`);
+              } catch (e) {
+                setError(e instanceof Error ? e.message : "Start failed");
+              } finally {
+                setLoading(null);
+              }
             }}
           >
             {startEnabled ? "Start Migration" : "Cannot Start"}

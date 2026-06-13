@@ -8,6 +8,14 @@ import type {
   CreateDiagnosticJobRequest,
   FilesystemRootOption,
   JobRepresentation,
+  V2MigrationJobResponse,
+  V2StageCommandResponse,
+  V2ApprovalResponse,
+  V2ResumeCommandResponse,
+  V2StageContinuationResponse,
+  V2AssistantMessagesListResponse,
+  V2AssistantMessageResponse,
+  V2DraftActionResponse,
   ModelActivityRawResponse,
   ModelActivityResponse,
   PlanAmendmentPreviewRequest,
@@ -209,6 +217,96 @@ export function eventStreamUrl(jobId: string, afterSequence: number): string {
 export function assistantStreamUrl(jobId: string): string {
   return `${CONTROL_TOWER_API_BASE_URL}/v1/jobs/${encodeURIComponent(jobId)}/assistant/stream`;
 }
+
+// ── V2 migration cockpit API methods ──────────────────────────────────
+
+export async function createV2Job(setupId: string): Promise<V2MigrationJobResponse> {
+  return postJson<V2MigrationJobResponse>(
+    "/v1/v2/migration-jobs",
+    { setup_id: setupId }
+  );
+}
+
+export async function startV2Stage1(jobId: string, setupId: string): Promise<V2StageCommandResponse> {
+  return postJson<V2StageCommandResponse>(
+    "/v1/v2/migration-jobs/start-stage1",
+    { job_id: jobId, setup_id: setupId }
+  );
+}
+
+export async function getV2JobApprovals(jobId: string): Promise<{ approvals: V2ApprovalResponse[] }> {
+  return getJson<{ approvals: V2ApprovalResponse[] }>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/approvals`
+  );
+}
+
+export async function approveV2Card(
+  jobId: string,
+  cardId: string,
+  expectedChecksum: string
+): Promise<V2ResumeCommandResponse> {
+  return postJson<V2ResumeCommandResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/approvals/${encodeURIComponent(cardId)}/approve`,
+    { expected_checksum: expectedChecksum }
+  );
+}
+
+export async function rejectV2Card(
+  jobId: string,
+  cardId: string
+): Promise<V2ApprovalResponse> {
+  return postJson<V2ApprovalResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/approvals/${encodeURIComponent(cardId)}/reject`,
+    {}
+  );
+}
+
+export async function progressV2Stage(
+  jobId: string,
+  setupId: string,
+  currentStage: number,
+  sandboxPath: string
+): Promise<V2StageContinuationResponse> {
+  return postJson<V2StageContinuationResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stages/progress`,
+    {
+      setup_id: setupId,
+      current_stage: currentStage,
+      sandbox_path: sandboxPath,
+    }
+  );
+}
+
+export async function getV2AssistantMessages(jobId: string): Promise<V2AssistantMessagesListResponse> {
+  return getJson<V2AssistantMessagesListResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/assistant/messages`
+  );
+}
+
+export async function addV2AssistantMessage(
+  jobId: string,
+  role: string,
+  content: string
+): Promise<V2AssistantMessageResponse> {
+  return postJson<V2AssistantMessageResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/assistant/messages`,
+    { job_id: jobId, role, content }
+  );
+}
+
+export async function draftV2Action(
+  jobId: string,
+  actionType: string,
+  reason: string,
+  stageIndex: number = 1
+): Promise<V2DraftActionResponse> {
+  return postJson<V2DraftActionResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/assistant/actions/draft`,
+    { job_id: jobId, action_type: actionType, reason, stage_index: stageIndex }
+  );
+}
+
+
 
 export async function postJson<TResponse>(
   path: string,
