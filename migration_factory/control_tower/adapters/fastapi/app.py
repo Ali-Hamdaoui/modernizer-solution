@@ -1019,11 +1019,12 @@ def create_app(
         request: Request,
     ) -> dict[str, Any]:
         actor = resolved_actor_provider.current_actor()
+        job_id = _resolve_job_id(command_id, unit_of_work_factory)
         service = PatchPolicyService(unit_of_work_factory)
         try:
             validation = service.validate_patch(
                 command_id=command_id,
-                job_id="",  # resolved from command
+                job_id=job_id,
                 target_path=payload.target_path,
                 patch_content=payload.patch_content,
                 patch_size_bytes=payload.patch_size_bytes,
@@ -1036,7 +1037,7 @@ def create_app(
             # Rejections are recorded as validation records for audit
             rejection = service.validate_patch_and_reject(
                 command_id=command_id,
-                job_id="",
+                job_id=job_id,
                 target_path=payload.target_path,
                 patch_content=payload.patch_content,
                 patch_size_bytes=payload.patch_size_bytes,
@@ -1084,11 +1085,12 @@ def create_app(
         request: Request,
     ) -> dict[str, Any]:
         actor = resolved_actor_provider.current_actor()
+        job_id = _resolve_job_id(command_id, unit_of_work_factory)
         service = PatchPolicyService(unit_of_work_factory)
         try:
             snapshot = service.record_sandbox_snapshot(
                 command_id=command_id,
-                job_id="",
+                job_id=job_id,
                 stage_index=payload.stage_index,
                 sandbox_artifact_id=payload.sandbox_artifact_id,
                 sandbox_checksum=payload.sandbox_checksum,
@@ -1118,11 +1120,12 @@ def create_app(
         request: Request,
     ) -> dict[str, Any]:
         actor = resolved_actor_provider.current_actor()
+        job_id = _resolve_job_id(command_id, unit_of_work_factory)
         service = PatchPolicyService(unit_of_work_factory)
         try:
             application = service.apply_approved_patch(
                 command_id=command_id,
-                job_id="",
+                job_id=job_id,
                 target_path=payload.target_path,
                 patch_content=payload.patch_content,
                 patch_size_bytes=payload.patch_size_bytes,
@@ -1166,11 +1169,12 @@ def create_app(
         request: Request,
     ) -> dict[str, Any]:
         actor = resolved_actor_provider.current_actor()
+        job_id = _resolve_job_id(command_id, unit_of_work_factory)
         service = PatchPolicyService(unit_of_work_factory)
         try:
             validation = service.validate_patch_with_maven(
                 command_id=command_id,
-                job_id="",
+                job_id=job_id,
                 maven_goal=payload.maven_goal,
                 passed=payload.passed,
                 result_summary=payload.result_summary,
@@ -2245,6 +2249,25 @@ def _raise_http_error(exc: ControlTowerError) -> None:
     if isinstance(exc, (InvalidJobStateTransitionError, ActiveCommandConflictError)):
         raise _error(status.HTTP_409_CONFLICT, "ACTIVE_COMMAND_CONFLICT", str(exc)) from exc
     raise _error(status.HTTP_400_BAD_REQUEST, "CONTROL_TOWER_ERROR", str(exc)) from exc
+
+
+def _resolve_job_id(command_id: str, uow_factory: UnitOfWorkFactory) -> str:
+    """Resolve job_id from command_id using the command_executions repository."""
+    with uow_factory() as uow:
+        command = uow.command_executions.get(command_id)
+    if command is None:
+        raise _error(
+            status.HTTP_404_NOT_FOUND,
+            "COMMAND_NOT_FOUND",
+            f"Command {command_id!r} not found.",
+        )
+    if not command.job_id:
+        raise _error(
+            status.HTTP_400_BAD_REQUEST,
+            "COMMAND_HAS_NO_JOB",
+            f"Command {command_id!r} has no associated job.",
+        )
+    return command.job_id
 
 
 def _error(status_code: int, code: str, message: str) -> HTTPException:
