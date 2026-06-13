@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import os
 from pathlib import Path
 
 import pytest
@@ -81,6 +82,35 @@ def _api_client(tmp_path, app=None):
     app = app or create_app(lambda: SqliteUnitOfWork(conn))
     client = TestClient(app, base_url="http://127.0.0.1:8000")
     return client, conn
+
+
+def _create_ai_hub_layout(root: Path) -> Path:
+    (root / "profiles").mkdir(parents=True)
+    (root / "catalogs" / "openrewrite").mkdir(parents=True)
+    (root / "policies").mkdir(parents=True)
+
+    profiles = {
+        "springboot-2.1.6-to-2.7-java11": "catalogs/openrewrite/springboot-2.1.6-to-2.7-java11.yaml",
+        "springboot-2.7-to-3.5-java17": "catalogs/openrewrite/springboot-3.5-java17.yaml",
+        "springboot-3.5-java17-to-java21": "catalogs/openrewrite/springboot-3.5-java17-to-java21.yaml",
+    }
+    for profile, catalog_path in profiles.items():
+        (root / "profiles" / f"{profile}.yaml").write_text(
+            f"id: {profile}\nopenrewrite:\n  catalog_path: {catalog_path}\n",
+            encoding="utf-8",
+        )
+
+    for catalog in (
+        "springboot-2.1.6-to-2.7-java11.yaml",
+        "springboot-3.5-java17.yaml",
+        "springboot-3.5-java17-to-java21.yaml",
+    ):
+        (root / "catalogs" / "openrewrite" / catalog).write_text("recipes: []\n", encoding="utf-8")
+
+    for policy in ("planning", "safety", "transformation"):
+        (root / "policies" / f"{policy}.yaml").write_text("rules: []\n", encoding="utf-8")
+
+    return root
 
 
 # ── Checksum tests ───────────────────────────────────────────────────
@@ -170,6 +200,40 @@ def test_run_preflight(service: V2SetupService, sample_request: CreateSetupReque
 def test_run_preflight_setup_not_found(service: V2SetupService) -> None:
     with pytest.raises(ValueError, match="not found"):
         service.run_preflight("nonexistent-setup")
+
+
+def test_preflight_reports_maven_command_failure_not_missing(
+    service: V2SetupService,
+    sample_request: CreateSetupRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from subprocess import CompletedProcess
+
+    def fake_run(*args, **kwargs):
+        return CompletedProcess(args=args, returncode=1, stdout="", stderr="bad maven")
+
+    maven_cmd = tmp_path / "mvn.cmd"
+    maven_cmd.touch()
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    request = CreateSetupRequest(
+        run_name=sample_request.run_name,
+        legacy_app_path=sample_request.legacy_app_path,
+        output_parent_path=sample_request.output_parent_path,
+        ai_hub_path=sample_request.ai_hub_path,
+        java11_home=sample_request.java11_home,
+        java17_home=sample_request.java17_home,
+        java21_home=sample_request.java21_home,
+        maven_cmd=f' "{maven_cmd}" ',
+    )
+    setup = service.create_setup(request)
+
+    preflight = service.run_preflight(setup.setup_id)
+
+    assert preflight.maven_ready is False
+    assert any("Maven command failed:" in error for error in preflight.errors)
+    assert not any("Maven command path does not exist" in error for error in preflight.errors)
 
 
 def test_get_readiness_no_preflight(service: V2SetupService, sample_request: CreateSetupRequest) -> None:
@@ -448,6 +512,50 @@ def test_preflight_table_is_append_only(connection: sqlite3.Connection) -> None:
     assert "v2_preflight_results_no_delete" in trigger_names
 
 
+# AI Hub readiness tests
+
+
+def test_ai_hub_accepts_profiles_openrewrite_catalogs_and_policies(tmp_path: Path) -> None:
+    from migration_factory.control_tower.application.v2_setup_service import (
+        _check_ai_hub_catalogs,
+        _check_ai_hub_policies,
+        _check_ai_hub_profiles,
+    )
+
+    hub = _create_ai_hub_layout(tmp_path / "ai-hub")
+
+    assert _check_ai_hub_profiles(hub)
+    assert _check_ai_hub_catalogs(hub)
+    assert _check_ai_hub_policies(hub)
+
+
+def test_ai_hub_rejects_missing_required_profile(tmp_path: Path) -> None:
+    from migration_factory.control_tower.application.v2_setup_service import _check_ai_hub_profiles
+
+    hub = _create_ai_hub_layout(tmp_path / "ai-hub")
+    (hub / "profiles" / "springboot-2.7-to-3.5-java17.yaml").unlink()
+
+    assert not _check_ai_hub_profiles(hub)
+
+
+def test_ai_hub_rejects_missing_declared_catalog(tmp_path: Path) -> None:
+    from migration_factory.control_tower.application.v2_setup_service import _check_ai_hub_catalogs
+
+    hub = _create_ai_hub_layout(tmp_path / "ai-hub")
+    (hub / "catalogs" / "openrewrite" / "springboot-2.1.6-to-2.7-java11.yaml").unlink()
+
+    assert not _check_ai_hub_catalogs(hub)
+
+
+def test_ai_hub_rejects_missing_required_policy(tmp_path: Path) -> None:
+    from migration_factory.control_tower.application.v2_setup_service import _check_ai_hub_policies
+
+    hub = _create_ai_hub_layout(tmp_path / "ai-hub")
+    (hub / "policies" / "safety.yaml").unlink()
+
+    assert not _check_ai_hub_policies(hub)
+
+
 # ── JDK/Maven subprocess validation tests (mocked) ──────────────────
 
 
@@ -623,6 +731,197 @@ class TestMavenSubprocessValidation:
             _check_maven_path,
         )
         mvn_path = tmp_path / "mvn"
+        mvn_path.touch()
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, "run", self._fake_subprocess_maven_ok)
+
+        assert _check_maven_path(str(mvn_path))
+
+    def test_maven_windows_cmd_path_ok(self, monkeypatch, tmp_path: Path) -> None:
+        """Quoted Windows mvn.cmd path is preserved and executed directly."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _check_maven_path,
+        )
+
+        mvn_path = tmp_path / "apache-maven" / "bin" / "mvn.cmd"
+        mvn_path.parent.mkdir(parents=True)
+        mvn_path.touch()
+        calls = []
+
+        def fake_run(*args, **kwargs):
+            calls.append((args, kwargs))
+            return self._fake_subprocess_maven_ok(*args, **kwargs)
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, "run", fake_run)
+
+        assert _check_maven_path(f' "{mvn_path}" ')
+        assert calls[0][0][0] == [str(mvn_path), "--version"]
+        assert calls[0][1]["shell"] is False
+        assert calls[0][1]["timeout"] == 10.0
+        assert calls[0][1]["capture_output"] is True
+        assert calls[0][1]["text"] is True
+        assert isinstance(calls[0][1]["env"], dict)
+
+    def test_maven_windows_cmd_uses_shell_false_and_direct_argv(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """A .cmd Maven path must still be invoked without shell expansion."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _validate_maven_command,
+        )
+
+        mvn_path = tmp_path / "apache-maven" / "bin" / "mvn.cmd"
+        mvn_path.parent.mkdir(parents=True)
+        mvn_path.touch()
+        call = {}
+
+        def fake_run(args, **kwargs):
+            call["args"] = args
+            call["kwargs"] = kwargs
+            return self._fake_subprocess_maven_ok(args, **kwargs)
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, "run", fake_run)
+
+        result = _validate_maven_command(str(mvn_path))
+
+        assert result.ready is True
+        assert call["args"] == [str(mvn_path), "--version"]
+        assert call["kwargs"]["shell"] is False
+
+    def test_maven_env_includes_minimal_windows_process_requirements(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Maven receives Java, Maven bin, and Windows process env essentials."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _validate_maven_command,
+        )
+
+        mvn_path = tmp_path / "apache-maven" / "bin" / "mvn.cmd"
+        mvn_path.parent.mkdir(parents=True)
+        mvn_path.touch()
+        java21_home = tmp_path / "jdk-21"
+        java21_home.mkdir()
+        monkeypatch.setenv("PATH", "C:\\Windows\\System32")
+        monkeypatch.setenv("SystemRoot", "C:\\Windows")
+        monkeypatch.setenv("ComSpec", "C:\\Windows\\System32\\cmd.exe")
+        monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        monkeypatch.setenv("TEMP", "C:\\Temp")
+        monkeypatch.setenv("TMP", "C:\\Temp")
+        monkeypatch.setenv("USERPROFILE", "C:\\Users\\operator")
+        monkeypatch.setenv("HOMEDRIVE", "C:")
+        monkeypatch.setenv("HOMEPATH", "\\Users\\operator")
+        captured_env = {}
+
+        def fake_run(*args, **kwargs):
+            captured_env.update(kwargs["env"])
+            return self._fake_subprocess_maven_ok(*args, **kwargs)
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, "run", fake_run)
+
+        result = _validate_maven_command(str(mvn_path), java_home=str(java21_home))
+
+        assert result.ready is True
+        assert captured_env["JAVA_HOME"] == str(java21_home)
+        path_entries = captured_env["PATH"].split(os.pathsep)
+        assert path_entries[0] == str(java21_home / "bin")
+        assert path_entries[1] == str(mvn_path.parent)
+        assert captured_env["SystemRoot"] == "C:\\Windows"
+        assert captured_env["ComSpec"] == "C:\\Windows\\System32\\cmd.exe"
+        assert captured_env["PATHEXT"] == ".COM;.EXE;.BAT;.CMD"
+        assert captured_env["TEMP"] == "C:\\Temp"
+        assert captured_env["TMP"] == "C:\\Temp"
+        assert captured_env["USERPROFILE"] == "C:\\Users\\operator"
+        assert captured_env["HOMEDRIVE"] == "C:"
+        assert captured_env["HOMEPATH"] == "\\Users\\operator"
+
+    def test_maven_env_passes_java_homes_and_safe_maven_vars(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _validate_maven_command,
+        )
+
+        mvn_path = tmp_path / "mvn.cmd"
+        mvn_path.touch()
+        monkeypatch.setenv("MAVEN_OPTS", "-Xmx512m")
+        monkeypatch.setenv("MAVEN_USER_HOME", "C:\\Users\\operator\\.m2")
+        captured_env = {}
+
+        def fake_run(*args, **kwargs):
+            captured_env.update(kwargs["env"])
+            return self._fake_subprocess_maven_ok(*args, **kwargs)
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, "run", fake_run)
+
+        _validate_maven_command(
+            str(mvn_path),
+            java_home="C:\\Tools\\jdk-21",
+            java_homes={
+                "JAVA11_HOME": "C:\\Tools\\jdk-11",
+                "JAVA17_HOME": "C:\\Tools\\jdk-17",
+                "JAVA21_HOME": "C:\\Tools\\jdk-21",
+            },
+        )
+
+        assert captured_env["JAVA11_HOME"] == "C:\\Tools\\jdk-11"
+        assert captured_env["JAVA17_HOME"] == "C:\\Tools\\jdk-17"
+        assert captured_env["JAVA21_HOME"] == "C:\\Tools\\jdk-21"
+        assert captured_env["MAVEN_OPTS"] == "-Xmx512m"
+        assert captured_env["MAVEN_USER_HOME"] == "C:\\Users\\operator\\.m2"
+
+    def test_maven_env_excludes_secret_like_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Azure and secret-like process env vars must not reach Maven."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _validate_maven_command,
+        )
+
+        mvn_path = tmp_path / "mvn.cmd"
+        mvn_path.touch()
+        monkeypatch.setenv("AZURE_OPENAI_API_KEY", "secret-value")
+        monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.invalid")
+        monkeypatch.setenv("GITHUB_TOKEN", "token-value")
+        monkeypatch.setenv("MAVEN_OPTS", "-Dpassword=secret")
+        monkeypatch.setenv("MAVEN_USER_HOME", "C:\\Users\\operator\\.m2")
+        captured_env = {}
+
+        def fake_run(*args, **kwargs):
+            captured_env.update(kwargs["env"])
+            return self._fake_subprocess_maven_ok(*args, **kwargs)
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, "run", fake_run)
+
+        _validate_maven_command(str(mvn_path), java_home="C:\\Tools\\jdk-21")
+
+        assert "AZURE_OPENAI_API_KEY" not in captured_env
+        assert "AZURE_OPENAI_ENDPOINT" not in captured_env
+        assert "GITHUB_TOKEN" not in captured_env
+        assert "MAVEN_OPTS" not in captured_env
+        assert captured_env["MAVEN_USER_HOME"] == "C:\\Users\\operator\\.m2"
+
+    def test_maven_extensionless_path_ok(self, monkeypatch, tmp_path: Path) -> None:
+        """Extensionless mvn executable paths are accepted."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _check_maven_path,
+        )
+
+        mvn_path = tmp_path / "apache-maven" / "bin" / "mvn"
+        mvn_path.parent.mkdir(parents=True)
         mvn_path.touch()
 
         import subprocess as sp

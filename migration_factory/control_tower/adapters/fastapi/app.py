@@ -341,6 +341,15 @@ class RecordMavenValidationRequest(StrictRequest):
     result_summary: str = ""
 
 
+class RecordApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    interrupt_id: str
+    request_checksum: str
+    decision: str = Field(..., pattern="^(approved|rejected|replan_required)$")
+    approved_by: str = Field(default="human", min_length=1)
+    approval_comments: str = ""
+
+
 class ParseEnvRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     env_block: str
@@ -860,7 +869,57 @@ def create_app(
                     "JOB_CREATION_FAILED",
                     str(exc),
                 ) from exc
+            _append_v2_event(
+                uow,
+                job_id=result.job_id,
+                stage=None,
+                event_type="job_created",
+                status="created",
+                message="V2 migration job created.",
+                payload={"setup_id": result.setup_id, "pipeline_id": result.pipeline_id},
+            )
         return service.result_to_dict(result)
+
+    @app.get("/v1/v2/migration-jobs/{job_id}")
+    def get_v2_job(job_id: str) -> dict[str, Any]:
+        """Return persisted V2 parent job projection."""
+        with unit_of_work_factory() as uow:
+            service = V2MigrationJobService(
+                setup_repo=uow.v2_setups,
+                job_repo=uow.v2_jobs,
+            )
+            result = service.get_job(job_id)
+        if result is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "JOB_NOT_FOUND",
+                f"V2 migration job {job_id!r} not found.",
+            )
+        return service.result_to_dict(result)
+
+    @app.get("/v1/v2/migration-jobs/{job_id}/stages")
+    def get_v2_job_stages(job_id: str) -> dict[str, Any]:
+        """Return three fixed V2 stages with state derived from commands/events."""
+        with unit_of_work_factory() as uow:
+            job = _require_v2_job(uow, job_id)
+            commands = uow.v2_commands.list_by_job(job_id)
+            events = uow.v2_events.list_by_job(job_id)
+        return {
+            "job_id": job_id,
+            "stages": _v2_stages_from_job(job, commands, events),
+        }
+
+    @app.get("/v1/v2/jobs/{job_id}/approvals")
+    def list_v2_job_approvals(job_id: str) -> dict[str, Any]:
+        """Return V2 approval cards, or [] for valid jobs with no cards."""
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            cards = uow.v2_approvals.list_cards_by_job(job_id)
+            service = V2ApprovalMappingService(approval_repo=uow.v2_approvals)
+        return {
+            "job_id": job_id,
+            "approvals": [service.card_to_dict(card) for card in cards],
+        }
 
     # ------------------------------------------------------------------
     # V2 Worker Stage 1 execution endpoint (A7)
@@ -876,6 +935,13 @@ def create_app(
         Browser cannot supply argv or env values.
         """
         with unit_of_work_factory() as uow:
+            job = _require_v2_job(uow, payload.job_id)
+            if job.setup_id != payload.setup_id:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "JOB_SETUP_MISMATCH",
+                    "Stage start setup_id must match the persisted job.",
+                )
             service = V2WorkerStageService(
                 setup_repo=uow.v2_setups,
                 command_repo=uow.v2_commands,
@@ -891,7 +957,52 @@ def create_app(
                     "STAGE1_START_FAILED",
                     str(exc),
                 ) from exc
+            _emit_v2_stage1_uat_events(uow, job_id=payload.job_id, command_id=result.command_id)
+        asyncio.run(app.state.public_event_notifier.notify())
         return service.result_to_dict(result)
+
+    @app.get("/v1/v2/migration-jobs/{job_id}/events/snapshot")
+    def get_v2_job_event_snapshot(
+        job_id: str,
+        after: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
+        """Return ordered V2 cockpit events for tests/fallback clients."""
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            events = uow.v2_events.list_after_sequence(job_id, after)
+        return {
+            "job_id": job_id,
+            "after": after,
+            "events": [_v2_event_payload(event) for event in events],
+            "latest_sequence": events[-1].sequence if events else after,
+        }
+
+    @app.get("/v1/v2/migration-jobs/{job_id}/events")
+    async def stream_v2_job_events(
+        job_id: str,
+        request: Request,
+        after: int = Query(default=0, ge=0),
+        once: bool = Query(default=False),
+        last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    ):
+        """Stream V2 cockpit events as EventSource-compatible SSE."""
+        try:
+            cursor = int(last_event_id) if last_event_id else after
+        except ValueError as exc:
+            raise _error(status.HTTP_400_BAD_REQUEST, "INVALID_EVENT_CURSOR", "Last-Event-ID must be an integer.") from exc
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+        return EventSourceResponse(
+            _v2_event_stream(
+                job_id=job_id,
+                initial_after_sequence=cursor,
+                request=request,
+                unit_of_work_factory=unit_of_work_factory,
+                notifier=app.state.public_event_notifier,
+                config=app.state.event_replay_config,
+                once=once,
+            )
+        )
 
     # ------------------------------------------------------------------
     # V2 Approval mapping endpoints (A9/P0-005)
@@ -1792,14 +1903,6 @@ def create_app(
     # ------------------------------------------------------------------
     # Approval endpoints (V1-07A)
     # ------------------------------------------------------------------
-
-    class RecordApprovalRequest(BaseModel):
-        model_config = ConfigDict(extra="forbid")
-        interrupt_id: str
-        request_checksum: str
-        decision: str = Field(..., pattern="^(approved|rejected|replan_required)$")
-        approved_by: str = Field(default="human", min_length=1)
-        approval_comments: str = ""
 
     @app.post("/v1/approvals", status_code=status.HTTP_201_CREATED)
     async def record_approval(
@@ -2764,6 +2867,190 @@ def _output_window_payload(window: CommandOutputWindowDto) -> dict[str, Any]:
         "terminal": window.terminal,
         "max_bytes": window.max_bytes,
     }
+
+
+def _require_v2_job(uow: Any, job_id: str) -> Any:
+    job = uow.v2_jobs.get(job_id)
+    if job is None:
+        raise _error(
+            status.HTTP_404_NOT_FOUND,
+            "JOB_NOT_FOUND",
+            f"V2 migration job {job_id!r} not found.",
+        )
+    return job
+
+
+def _append_v2_event(
+    uow: Any,
+    *,
+    job_id: str,
+    stage: int | None,
+    event_type: str,
+    status: str,
+    message: str,
+    payload: dict[str, Any] | None = None,
+) -> Any:
+    redacted_payload = redact_public_data(payload or {})
+    return uow.v2_events.save(
+        job_id=job_id,
+        stage=stage,
+        event_type=event_type,
+        status=status,
+        message=_bounded_event_text(str(redact_public_data(message))),
+        payload=redacted_payload if isinstance(redacted_payload, dict) else {},
+    )
+
+
+def _emit_v2_stage1_uat_events(uow: Any, *, job_id: str, command_id: str) -> None:
+    """Emit deterministic UAT adapter events for manifest-only Stage 1 starts."""
+    events = (
+        (1, "stage_queued", "queued", "Stage 1 command manifest queued.", {"command_id": command_id}),
+        (1, "stage_started", "running", "Stage 1 deterministic UAT adapter started.", {"adapter": "deterministic_uat"}),
+        (1, "command_started", "running", "Backend-owned Stage 1 manifest accepted.", {"command_id": command_id}),
+        (1, "stdout", "running", "UAT adapter verifying backend-owned manifest and evidence stream.", {"command_id": command_id}),
+        (1, "artifact_written", "completed", "UAT evidence artifact registered.", {"artifact_kind": "uat-stage1-evidence"}),
+        (1, "proof_updated", "completed", "Stage 1 deterministic proof evidence updated.", {"proof_source": "uat-adapter"}),
+        (1, "stage_completed", "completed", "Stage 1 deterministic UAT adapter completed.", {"command_id": command_id}),
+    )
+    for stage, event_type, event_status, message, payload in events:
+        _append_v2_event(
+            uow,
+            job_id=job_id,
+            stage=stage,
+            event_type=event_type,
+            status=event_status,
+            message=message,
+            payload=payload,
+        )
+
+
+def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, ...]) -> list[dict[str, Any]]:
+    try:
+        stages = json.loads(job.stage_chain_json)
+    except (json.JSONDecodeError, TypeError):
+        stages = []
+    if not stages:
+        stages = [
+            {
+                "stage_index": 1,
+                "stage_run_id": "",
+                "pipeline_stage": "Stage 1",
+                "input_source_kind": "legacy_source",
+                "chain_status": "pending",
+            },
+            {
+                "stage_index": 2,
+                "stage_run_id": "",
+                "pipeline_stage": "Stage 2",
+                "input_source_kind": "stage_1_sandbox",
+                "chain_status": "pending",
+            },
+            {
+                "stage_index": 3,
+                "stage_run_id": "",
+                "pipeline_stage": "Stage 3",
+                "input_source_kind": "stage_2_sandbox",
+                "chain_status": "pending",
+            },
+        ]
+
+    command_stages = {command.stage_index for command in commands}
+    status_by_stage: dict[int, str] = {}
+    precedence = {"pending": 0, "queued": 1, "running": 2, "completed": 3, "failed": 4}
+    for event in events:
+        if event.stage is None:
+            continue
+        mapped = _stage_status_from_event(event.type, event.status)
+        if precedence.get(mapped, 0) >= precedence.get(status_by_stage.get(event.stage, "pending"), 0):
+            status_by_stage[event.stage] = mapped
+    for stage_index in command_stages:
+        status_by_stage.setdefault(stage_index, "queued")
+
+    normalized = []
+    for stage in sorted(stages, key=lambda item: int(item["stage_index"])):
+        stage_index = int(stage["stage_index"])
+        normalized.append({
+            "stage_index": stage_index,
+            "stage_run_id": stage.get("stage_run_id", ""),
+            "pipeline_stage": stage.get("pipeline_stage", f"Stage {stage_index}"),
+            "input_source_kind": stage.get("input_source_kind", ""),
+            "chain_status": status_by_stage.get(stage_index, stage.get("chain_status", "pending")),
+        })
+    return normalized
+
+
+def _stage_status_from_event(event_type: str, event_status: str) -> str:
+    if event_type == "stage_failed" or event_status == "failed":
+        return "failed"
+    if event_type == "stage_completed" or event_status == "completed":
+        return "completed"
+    if event_type in {"stage_started", "command_started", "stdout", "stderr"} or event_status == "running":
+        return "running"
+    if event_type in {"stage_queued", "next_stage_queued"} or event_status == "queued":
+        return "queued"
+    return "pending"
+
+
+def _v2_event_payload(event: Any) -> dict[str, Any]:
+    try:
+        payload = json.loads(event.payload_json)
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    return redact_public_data({
+        "event_id": event.event_id,
+        "job_id": event.job_id,
+        "stage": event.stage,
+        "type": event.type,
+        "status": event.status,
+        "message": _bounded_event_text(event.message),
+        "payload": payload,
+        "created_at": event.created_at,
+        "sequence": event.sequence,
+    })
+
+
+def _bounded_event_text(value: str, *, limit: int = 4096) -> str:
+    if len(value) <= limit:
+        return value
+    return value[:limit] + "...[truncated]"
+
+
+async def _v2_event_stream(
+    *,
+    job_id: str,
+    initial_after_sequence: int,
+    request: Request,
+    unit_of_work_factory: UnitOfWorkFactory,
+    notifier: PublicEventNotifier,
+    config: EventReplayConfig,
+    once: bool = False,
+) -> AsyncIterator[str]:
+    last_sent_sequence = initial_after_sequence
+    last_keepalive = time.monotonic()
+    notifier_version = notifier.version
+    while True:
+        if await request.is_disconnected():
+            break
+        with unit_of_work_factory() as uow:
+            events = uow.v2_events.list_after_sequence(job_id, last_sent_sequence)
+        if events:
+            for event in events:
+                last_sent_sequence = event.sequence
+                yield _sse_frame(
+                    id=str(event.sequence),
+                    event=event.type,
+                    data=_v2_event_payload(event),
+                    retry=config.reconnect_delay_ms,
+                )
+            last_keepalive = time.monotonic()
+            if once:
+                break
+            continue
+        now = time.monotonic()
+        if now - last_keepalive >= config.keepalive_interval_seconds:
+            last_keepalive = now
+            yield ": keepalive\n\n"
+        notifier_version = await notifier.wait(notifier_version, config.poll_interval_seconds)
 
 
 async def _event_stream(
