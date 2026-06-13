@@ -1295,6 +1295,55 @@ def create_app(
             ],
         }
 
+    @app.get("/v1/jobs/{job_id}/proof-gates")
+    def get_proof_gates(job_id: str) -> dict[str, Any]:
+        service = DeterministicProofGateService(unit_of_work_factory)
+        try:
+            gates = service.compute_proof_gates(job_id)
+            return {
+                "job_id": job_id,
+                "gates": {str(k): v for k, v in gates.items()},
+                "gate_count": len(gates),
+                "required_gates": 3,
+                "algorithm": "sha256",
+            }
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        except ValueError as exc:
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                "PROOF_GATES_INCOMPLETE",
+                str(exc),
+            )
+
+    @app.post("/v1/jobs/{job_id}/proof-gates", status_code=status.HTTP_201_CREATED)
+    def compute_proof_gates(
+        job_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = resolved_actor_provider.current_actor()
+        service = DeterministicProofGateService(unit_of_work_factory)
+        try:
+            gates = service.compute_proof_gates(
+                job_id,
+                computed_by=actor.actor_id,
+            )
+            return {
+                "job_id": job_id,
+                "gates": {str(k): v for k, v in gates.items()},
+                "gate_count": len(gates),
+                "required_gates": 3,
+                "algorithm": "sha256",
+            }
+        except ControlTowerError as exc:
+            _raise_http_error(exc)
+        except ValueError as exc:
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                "PROOF_GATES_INCOMPLETE",
+                str(exc),
+            )
+
     @app.get("/v1/jobs/{job_id}/proof-report")
     def get_proof_report(job_id: str) -> dict[str, Any]:
         service = FinalReportService(unit_of_work_factory)
