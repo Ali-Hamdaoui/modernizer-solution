@@ -790,7 +790,10 @@ def create_app(
         failures do not block job creation.
         """
         with unit_of_work_factory() as uow:
-            service = V2MigrationJobService(uow.v2_setups)
+            service = V2MigrationJobService(
+                setup_repo=uow.v2_setups,
+                job_repo=uow.v2_jobs,
+            )
             try:
                 result = service.create_job(payload.setup_id)
             except ValueError as exc:
