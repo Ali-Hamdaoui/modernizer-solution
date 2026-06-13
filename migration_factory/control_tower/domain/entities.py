@@ -635,3 +635,40 @@ class V1PatchMavenValidationRecord:
     created_at: str
     correlation_id: str | None = None
     causation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class V1ProofReportRecord:
+    """Immutable record of a final proof report artifact.
+
+    Append-only: once generated, the report is never modified.
+    Reports are computed from proof gates and stage chain data.
+    Model summaries CANNOT create or override proof reports.
+    """
+
+    report_id: str
+    job_id: str
+    report_version: int = 1
+    report_checksum: str = ""
+    gate_count: int = 0
+    all_gates_present: int = 0
+    proof_complete: int = 0
+    target_proof_level: str = "BUILD_TEST_VERIFIED"
+    pipeline_id: str = "springboot-216-to-356-java21-three-stage"
+    stage_count: int = 3
+    summary_json: str = "{}"
+    generated_at: str = ""
+    generated_by: str = "system"
+
+
+@dataclass(frozen=True, slots=True)
+class V1ProofReportGateRecord:
+    """Immutable record of a proof gate associated with a report."""
+
+    report_gate_id: str
+    report_id: str
+    job_id: str
+    stage_index: int
+    output_checksum: str
+    proof_gate_checksum: str
+    chain_status: str
