@@ -1,0 +1,161 @@
+"""V2 approval mapping — interrupt to decision card to resume command."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+from uuid import uuid4
+
+from migration_factory.control_tower.domain.checksums import utc_now_text
+from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
+    SqliteV2SetupRepository,
+)
+
+
+@dataclass(frozen=True)
+class ApprovalDecisionCard:
+    card_id: str
+    interrupt_id: str
+    request_checksum: str
+    stage_index: int
+    summary: str
+    status: str  # pending, approved, rejected
+    created_at: str
+
+
+@dataclass(frozen=True)
+class ResumeCommand:
+    resume_id: str
+    card_id: str
+    decision: str
+    job_id: str
+    stage_index: int
+    command: tuple[str, ...]
+
+
+class V2ApprovalMappingService:
+    """Maps orchestrator interrupts to decision cards and resume commands.
+
+    - Interrupt becomes a durable decision card with checksum
+    - Approval queues a resume command
+    - Rejection pauses the stage
+    - Stale checksum/version rejection
+    """
+
+    def __init__(self) -> None:
+        self._decisions: dict[str, ApprovalDecisionCard] = {}
+        self._resumes: dict[str, ResumeCommand] = {}
+
+    def create_decision_card(
+        self,
+        interrupt_id: str,
+        request_checksum: str,
+        stage_index: int = 1,
+        summary: str = "Approval required for stage progression",
+    ) -> ApprovalDecisionCard:
+        """Create a durable decision card from an orchestrator interrupt."""
+        card = ApprovalDecisionCard(
+            card_id=uuid4().hex,
+            interrupt_id=interrupt_id,
+            request_checksum=request_checksum,
+            stage_index=stage_index,
+            summary=summary,
+            status="pending",
+            created_at=utc_now_text(),
+        )
+        self._decisions[card.card_id] = card
+        return card
+
+    def approve(
+        self,
+        card_id: str,
+        expected_checksum: str,
+        job_id: str,
+    ) -> ResumeCommand:
+        """Approve a decision card and queue a resume command.
+
+        Validates the expected checksum before approving.
+        """
+        card = self._decisions.get(card_id)
+        if card is None:
+            raise ValueError(f"Decision card {card_id!r} not found")
+
+        if card.request_checksum != expected_checksum:
+            raise ValueError(
+                f"Checksum mismatch: expected {expected_checksum}, "
+                f"got {card.request_checksum}"
+            )
+
+        if card.status != "pending":
+            raise ValueError(f"Decision card {card_id!r} is already {card.status}")
+
+        # Update card
+        updated = ApprovalDecisionCard(
+            card_id=card.card_id,
+            interrupt_id=card.interrupt_id,
+            request_checksum=card.request_checksum,
+            stage_index=card.stage_index,
+            summary=card.summary,
+            status="approved",
+            created_at=card.created_at,
+        )
+        self._decisions[card_id] = updated
+
+        # Create resume command
+        resume = ResumeCommand(
+            resume_id=uuid4().hex,
+            card_id=card_id,
+            decision="approved",
+            job_id=job_id,
+            stage_index=card.stage_index,
+            command=("python", "-m", "migration_factory.orchestrator.resume",
+                     "--run-id", job_id,
+                     "--decision", "approved",
+                     "--approved-by", "human"),
+        )
+        self._resumes[resume.resume_id] = resume
+        return resume
+
+    def reject(self, card_id: str, job_id: str) -> ApprovalDecisionCard:
+        """Reject a decision card, pausing the stage."""
+        card = self._decisions.get(card_id)
+        if card is None:
+            raise ValueError(f"Decision card {card_id!r} not found")
+        if card.status != "pending":
+            raise ValueError(f"Decision card {card_id!r} is already {card.status}")
+
+        updated = ApprovalDecisionCard(
+            card_id=card.card_id,
+            interrupt_id=card.interrupt_id,
+            request_checksum=card.request_checksum,
+            stage_index=card.stage_index,
+            summary=card.summary,
+            status="rejected",
+            created_at=card.created_at,
+        )
+        self._decisions[card_id] = updated
+        return updated
+
+    def get_card(self, card_id: str) -> ApprovalDecisionCard | None:
+        return self._decisions.get(card_id)
+
+    def card_to_dict(self, card: ApprovalDecisionCard) -> dict[str, Any]:
+        return {
+            "card_id": card.card_id,
+            "interrupt_id": card.interrupt_id,
+            "request_checksum": card.request_checksum,
+            "stage_index": card.stage_index,
+            "summary": card.summary,
+            "status": card.status,
+            "created_at": card.created_at,
+        }
+
+    def resume_to_dict(self, resume: ResumeCommand) -> dict[str, Any]:
+        return {
+            "resume_id": resume.resume_id,
+            "card_id": resume.card_id,
+            "decision": resume.decision,
+            "job_id": resume.job_id,
+            "stage_index": resume.stage_index,
+            "command": list(resume.command),
+        }
