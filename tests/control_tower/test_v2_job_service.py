@@ -19,6 +19,9 @@ from migration_factory.control_tower.infrastructure.sqlite.migrations import app
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
     SqliteV2SetupRepository,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository import (
+    SqliteV2JobRepository,
+)
 
 
 def _mutation_headers():
@@ -63,6 +66,13 @@ def _make_ready_setup(repo: SqliteV2SetupRepository) -> str:
     return dto.setup_id
 
 
+def _make_job_service(conn: sqlite3.Connection) -> V2MigrationJobService:
+    return V2MigrationJobService(
+        setup_repo=SqliteV2SetupRepository(conn),
+        job_repo=SqliteV2JobRepository(conn),
+    )
+
+
 def test_create_job_requires_setup(tmp_path: Path) -> None:
     conn = sqlite3.connect(
         tmp_path / "test1.sqlite3",
@@ -72,8 +82,7 @@ def test_create_job_requires_setup(tmp_path: Path) -> None:
     )
     conn.row_factory = sqlite3.Row
     apply_pending_migrations(conn)
-    repo = SqliteV2SetupRepository(conn)
-    service = V2MigrationJobService(repo)
+    service = _make_job_service(conn)
 
     with pytest.raises(ValueError, match="not found"):
         service.create_job("nonexistent-setup")
@@ -91,7 +100,7 @@ def test_create_job_requires_preflight(tmp_path: Path) -> None:
     repo = SqliteV2SetupRepository(conn)
     setup_id = _make_ready_setup(repo)
 
-    job_service = V2MigrationJobService(repo)
+    job_service = _make_job_service(conn)
     with pytest.raises(ValueError, match="No preflight"):
         job_service.create_job(setup_id)
 
@@ -114,7 +123,7 @@ def test_create_job_with_preflight_and_readiness(tmp_path: Path) -> None:
     setup_service.run_preflight(setup_id)
 
     # Job creation should fail because preflight returns all_ready=False
-    job_service = V2MigrationJobService(repo)
+    job_service = _make_job_service(conn)
     with pytest.raises(ValueError, match="not ready"):
         job_service.create_job(setup_id)
 
@@ -155,8 +164,7 @@ def test_create_job_requires_valid_setup_id(tmp_path: Path) -> None:
     )
     conn.row_factory = sqlite3.Row
     apply_pending_migrations(conn)
-    repo = SqliteV2SetupRepository(conn)
-    service = V2MigrationJobService(repo)
+    service = _make_job_service(conn)
 
     with pytest.raises(ValueError):
         service.create_job("")
@@ -196,7 +204,16 @@ def test_create_job_endpoint_rejects_wrong_payload(tmp_path: Path) -> None:
 
 def test_result_to_dict_has_correct_shape(tmp_path: Path) -> None:
     from migration_factory.control_tower.application.v2_job_service import V2MigrationJobResult
-    service = V2MigrationJobService(SqliteV2SetupRepository.__new__(SqliteV2SetupRepository))
+    conn = sqlite3.connect(
+        tmp_path / "test_shape.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    apply_pending_migrations(conn)
+    service = _make_job_service(conn)
 
     result = V2MigrationJobResult(
         job_id="test-job-id",
@@ -220,3 +237,88 @@ def test_result_to_dict_has_correct_shape(tmp_path: Path) -> None:
     assert d["stages"][0]["chain_status"] == "queued"
     assert d["stages"][1]["chain_status"] == "pending"
     assert d["stages"][2]["input_source_kind"] == "stage_2_sandbox"
+
+
+def test_create_job_persistence_across_connections(tmp_path: Path) -> None:
+    """Created job should survive connection close/reopen."""
+    import json
+    db_path = tmp_path / "persist_test.sqlite3"
+
+    # First connection — create setup and job
+    conn1 = sqlite3.connect(
+        db_path, check_same_thread=False, isolation_level=None, timeout=5.0
+    )
+    conn1.row_factory = sqlite3.Row
+    conn1.execute("PRAGMA foreign_keys = ON")
+    apply_pending_migrations(conn1)
+    repo1 = SqliteV2SetupRepository(conn1)
+    setup_id = _make_ready_setup(repo1)
+    # We need a setup that exists but will fail preflight - manually mark readiness
+    conn1.close()
+
+    # For persistence verification, directly save a job via the repository
+    from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository import V2MigrationJobRecord
+    from migration_factory.control_tower.domain.checksums import utc_now_text
+
+    conn2 = sqlite3.connect(
+        db_path, check_same_thread=False, isolation_level=None, timeout=5.0
+    )
+    conn2.row_factory = sqlite3.Row
+    conn2.execute("PRAGMA foreign_keys = ON")
+    now = utc_now_text()
+    job_repo = SqliteV2JobRepository(conn2)
+    setup_repo = SqliteV2SetupRepository(conn2)
+    setup = setup_repo.get(setup_id)
+    assert setup is not None
+    job_record = V2MigrationJobRecord(
+        job_id="persist-test-job",
+        setup_id=setup_id,
+        setup_checksum=setup.setup_checksum,
+        pipeline_id="springboot-216-to-356-java21-three-stage",
+        stage_chain_json=json.dumps([{"stage_index": 1, "chain_status": "queued"}]),
+        status="created",
+        created_at=now,
+        updated_at=now,
+        correlation_id=setup_id,
+    )
+    job_repo.save(job_record)
+    conn2.close()
+
+    # Third connection — verify it's still there
+    conn3 = sqlite3.connect(
+        db_path, check_same_thread=False, isolation_level=None, timeout=5.0
+    )
+    conn3.row_factory = sqlite3.Row
+    conn3.execute("PRAGMA foreign_keys = ON")
+    job_repo3 = SqliteV2JobRepository(conn3)
+    loaded = job_repo3.get("persist-test-job")
+    assert loaded is not None
+    assert loaded.job_id == "persist-test-job"
+    assert loaded.status == "created"
+    conn3.close()
+
+
+def test_get_job_returns_none_for_missing(tmp_path: Path) -> None:
+    conn = sqlite3.connect(
+        tmp_path / "test_get.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    service = _make_job_service(conn)
+    assert service.get_job("nonexistent") is None
+
+
+def test_list_jobs_returns_empty(tmp_path: Path) -> None:
+    conn = sqlite3.connect(
+        tmp_path / "test_list.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    service = _make_job_service(conn)
+    assert service.list_jobs() == ()
