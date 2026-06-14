@@ -38,6 +38,10 @@ interface PreflightResponse {
   preflight_id: string;
   setup_id: string;
   all_ready: boolean;
+  azure_model_ready?: boolean;
+  azure_model_failure_reason?: string;
+  azure_model_response_snippet?: string;
+  azure_model_checked_at?: string;
   readiness: Record<string, boolean>;
   warnings: string[];
   errors: string[];
@@ -62,6 +66,57 @@ interface SettingsResponse {
     enabled: boolean;
     allowed_source_roots: string[];
     allowed_output_roots: string[];
+  };
+}
+
+function sanitizeSmokeSnippet(value: string): string {
+  return value
+    .replace(/sk-[A-Za-z0-9_-]+/g, "[redacted-token]")
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted-token]")
+    .slice(0, 240);
+}
+
+export function getStartReadinessCopy(
+  readiness: ReadinessResponse | null,
+): { label: string; ready: boolean } {
+  const ready = readiness?.ready === true && readiness?.preflight_checksum_match === true;
+  return {
+    label: ready ? "READY" : "NOT READY",
+    ready,
+  };
+}
+
+export function getAzureSmokeCopy(
+  preflight: PreflightResponse | null,
+): { label: string; checkedAt: string; failureReason: string; snippet: string } {
+  if (!preflight || preflight.azure_model_ready === undefined) {
+    return {
+      label: "Azure model smoke: not run",
+      checkedAt: "",
+      failureReason: "",
+      snippet: "",
+    };
+  }
+
+  if (preflight.azure_model_ready) {
+    return {
+      label: preflight.azure_model_checked_at ? "Azure model smoke: PASS" : "Azure model smoke: PASS (skipped)",
+      checkedAt: preflight.checked_at,
+      failureReason: "",
+      snippet: "",
+    };
+  }
+
+  const reason = preflight.azure_model_failure_reason || "invalid_response";
+  const snippet = preflight.azure_model_response_snippet
+    ? sanitizeSmokeSnippet(preflight.azure_model_response_snippet)
+    : "";
+  const suffix = snippet ? ` — ${snippet}` : "";
+  return {
+    label: `Azure model smoke: FAIL — ${reason}${suffix}`,
+    checkedAt: preflight.checked_at,
+    failureReason: reason,
+    snippet,
   };
 }
 
@@ -261,7 +316,9 @@ export function NewMigrationForm() {
 
   // ── Render ──────────────────────────────────────────────────────
 
-  const startEnabled = readiness?.ready === true && readiness?.preflight_checksum_match === true;
+  const startState = getStartReadinessCopy(readiness);
+  const azureSmokeCopy = getAzureSmokeCopy(preflight);
+  const startEnabled = startState.ready;
 
   return (
     <div className="stack" style={{ maxWidth: "800px" }}>
@@ -447,8 +504,7 @@ export function NewMigrationForm() {
             </code>
           </p>
           <p className="meta">
-            Azure model health is non-blocking. Migration can start even if
-            Azure is unavailable (AI features will be degraded).
+            Endpoint configured is not smoke evidence. Run preflight to get a PASS or FAIL verdict.
           </p>
         </fieldset>
       )}
@@ -497,6 +553,22 @@ export function NewMigrationForm() {
               </ul>
             </div>
           )}
+          <div className="info-box">
+            <p>{azureSmokeCopy.label}</p>
+            <p className="meta">
+              Smoke checked at: <code>{azureSmokeCopy.checkedAt || preflight.checked_at}</code>
+            </p>
+            {azureSmokeCopy.failureReason && (
+              <p className="warning">
+                Failure reason: <code>{azureSmokeCopy.failureReason}</code>
+              </p>
+            )}
+            {azureSmokeCopy.snippet && (
+              <p className="meta">
+                Evidence: <code>{azureSmokeCopy.snippet}</code>
+              </p>
+            )}
+          </div>
         </fieldset>
       )}
 
@@ -511,7 +583,7 @@ export function NewMigrationForm() {
           <p>
             Ready:{" "}
             <strong className={startEnabled ? "text-green" : "text-red"}>
-              {startEnabled ? "READY" : "NOT READY"}
+              {startState.label}
             </strong>
           </p>
           <button

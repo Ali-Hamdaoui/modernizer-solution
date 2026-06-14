@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { getAzureSmokeCopy, getStartReadinessCopy } from "../app/migrations/new/NewMigrationForm";
+
 // Frontend contract tests for the New Migration form
 // These test the parsing/shape of env blocks without relying on mock API.
 
@@ -65,8 +67,7 @@ describe("V2 New Migration form contract", () => {
   });
 
   it("start is only enabled when deterministic gates are READY", () => {
-    // Readiness formula from V2 plan
-    const requiredGates = [
+    const baseRequiredGates = [
       "backend_ready",
       "local_setup_ready",
       "ai_hub_ready",
@@ -76,18 +77,16 @@ describe("V2 New Migration form contract", () => {
       "legacy_app_marker_ready",
     ];
 
-    // Azure is NOT in the required gates
-    expect(requiredGates).not.toContain("azure_ready");
-    expect(requiredGates).not.toContain("azure_model_ready");
+    const aiRequiredGates = [...baseRequiredGates, "azure_model_ready"];
 
-    // All required gates must be true for start
-    const allReady = requiredGates.every(() => true);
-    expect(allReady).toBe(true);
+    expect(baseRequiredGates).not.toContain("azure_ready");
+    expect(baseRequiredGates).not.toContain("azure_model_ready");
+    expect(aiRequiredGates).toContain("azure_model_ready");
 
-    // If any gate is false, start should be disabled
-    const oneMissing = [true, true, false, true, true, true, true];
-    const allReadyCheck = oneMissing.every((v) => v === true);
-    expect(allReadyCheck).toBe(false);
+    const baseReady = baseRequiredGates.every(() => true);
+    const aiBlocked = aiRequiredGates.every((gate) => gate !== "azure_model_ready");
+    expect(baseReady).toBe(true);
+    expect(aiBlocked).toBe(false);
   });
 
   it("Azure health does NOT block deterministic migration start", () => {
@@ -98,6 +97,56 @@ describe("V2 New Migration form contract", () => {
     const canStart = deterministicReady; // Azure not required
     expect(canStart).toBe(true);
     expect(azureDegraded).toBe(true); // Azure can be degraded
+  });
+
+  it("Azure model smoke PASS/FAIL copy is explicit and bounded", () => {
+    const passed = getAzureSmokeCopy({
+      preflight_id: "pf-1",
+      setup_id: "setup-1",
+      all_ready: true,
+      azure_model_ready: true,
+      azure_model_checked_at: "2026-06-14T12:34:56Z",
+      readiness: {},
+      warnings: [],
+      errors: [],
+      checked_at: "2026-06-14T12:34:56Z",
+    });
+    expect(passed.label).toBe("Azure model smoke: PASS");
+
+    const failed = getAzureSmokeCopy({
+      preflight_id: "pf-2",
+      setup_id: "setup-2",
+      all_ready: false,
+      azure_model_ready: false,
+      azure_model_failure_reason: "http_400",
+      azure_model_response_snippet: '{"error":"Authorization: Bearer sk-abc123"}',
+      azure_model_checked_at: "2026-06-14T12:35:56Z",
+      readiness: {},
+      warnings: [],
+      errors: [],
+      checked_at: "2026-06-14T12:35:56Z",
+    });
+
+    expect(failed.label).toContain("Azure model smoke: FAIL — http_400");
+    expect(failed.label).not.toContain("sk-abc123");
+    expect(failed.label).not.toContain("Bearer sk-abc123");
+    expect(failed.snippet).not.toContain("sk-abc123");
+    expect(failed.snippet).toContain("Bearer [redacted-token]");
+  });
+
+  it("Start Readiness shows NOT READY when the smoke fails", () => {
+    const readiness = {
+      ready: false,
+      setup_checksum: "checksum-1",
+      preflight_checksum_match: true,
+      gates: {
+        azure_model_ready: false,
+      },
+    };
+
+    const startState = getStartReadinessCopy(readiness);
+    expect(startState.label).toBe("NOT READY");
+    expect(startState.ready).toBe(false);
   });
 
   it("env block parser contract matches backend expectations", () => {

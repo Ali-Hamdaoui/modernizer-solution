@@ -35,6 +35,7 @@ class _FakeSmokeClient:
             redacted_summary="Azure OpenAI smoke failed: Authorization bearer sk-abc123.",
             response_snippet="Bearer sk-abc123 secret-deployment",
             latency_ms=1.0,
+            checked_at="2026-06-14T00:00:00Z",
         )
 
 
@@ -258,6 +259,7 @@ def test_azure_smoke_response_omits_deployment_and_redacts_snippets(tmp_path: Pa
     assert "secret-deployment" not in response.text
     assert "sk-abc123" not in response.text
     assert body["provider"] == "azure_openai"
+    assert body["checked_at"] == "2026-06-14T00:00:00Z"
 
 
 def test_public_errors_follow_contract_and_include_correlation_id(tmp_path: Path) -> None:

@@ -90,6 +90,7 @@ class PreflightDto:
     azure_model_ready: bool
     azure_model_failure_reason: str
     azure_model_response_snippet: str
+    azure_model_checked_at: str
     readiness: dict[str, Any]
     warnings: tuple[str, ...]
     errors: tuple[str, ...]
@@ -125,6 +126,13 @@ def compute_setup_checksum(request: CreateSetupRequest) -> str:
     }
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def is_ai_smoke_required(skip_endpoint_smoke: bool) -> bool:
+    """Return True when AI smoke must pass before migration can start."""
+    flag = os.environ.get("AI_MIGRATION_COPILOT_REQUIRED", "").strip().lower()
+    env_required = flag in {"1", "true", "yes", "on"}
+    return env_required or not skip_endpoint_smoke
 
 
 # ── Setup service ────────────────────────────────────────────────────
@@ -187,9 +195,10 @@ class V2SetupService:
 
         readiness, warnings, errors, azure_meta = self._compute_readiness(record)
 
+        ai_smoke_required = is_ai_smoke_required(record.skip_endpoint_smoke)
         all_ready = all(
             v for k, v in readiness.items()
-            if k not in ("azure_model_ready",)
+            if k != "azure_model_ready" or ai_smoke_required
         )
 
         preflight_id = uuid4().hex
@@ -247,6 +256,7 @@ class V2SetupService:
             azure_model_ready=readiness.get("azure_model_ready", True),
             azure_model_failure_reason=azure_meta["failure_reason"],
             azure_model_response_snippet=azure_meta["snippet"],
+            azure_model_checked_at=azure_meta["checked_at"],
             readiness=readiness,
             warnings=tuple(warnings),
             errors=tuple(errors),
@@ -337,6 +347,7 @@ class V2SetupService:
             "azure_model_ready": dto.azure_model_ready,
             "azure_model_failure_reason": dto.azure_model_failure_reason,
             "azure_model_response_snippet": dto.azure_model_response_snippet,
+            "azure_model_checked_at": dto.azure_model_checked_at,
             "readiness": dto.readiness,
             "warnings": list(dto.warnings),
             "errors": list(dto.errors),
@@ -467,29 +478,36 @@ class V2SetupService:
 
         # Azure model readiness — perform real smoke if model client is available
         # and endpoint smoke is not explicitly skipped.
-        azure_smoke_ready = True
+        azure_required = is_ai_smoke_required(record.skip_endpoint_smoke)
+        azure_smoke_ready = not azure_required
         azure_deployment = ""
         azure_failure_reason = ""
         azure_snippet = ""
-        if self._model_client is not None and not record.skip_endpoint_smoke:
+        azure_checked_at = ""
+        if self._model_client is not None and azure_required:
             try:
                 smoke_result = self._model_client.smoke()
                 azure_smoke_ready = smoke_result.success
                 azure_deployment = smoke_result.deployment
                 azure_failure_reason = smoke_result.failure_reason
                 azure_snippet = redact_model_summary(smoke_result.response_snippet)
+                azure_checked_at = getattr(smoke_result, "checked_at", "")
                 if not smoke_result.success:
                     warnings.append(f"Azure model smoke failed: {redact_model_summary(smoke_result.redacted_summary)}")
             except Exception as exc:
                 azure_smoke_ready = False
                 azure_failure_reason = "invalid_response"
                 warnings.append(f"Azure model smoke error: {redact_model_summary(str(exc))}")
+        elif azure_required and self._model_client is None:
+            azure_failure_reason = "missing_model_client"
+            warnings.append("Azure model smoke unavailable: no model client configured.")
         readiness["azure_model_ready"] = azure_smoke_ready
 
         azure_meta = {
             "deployment": azure_deployment,
             "failure_reason": azure_failure_reason,
             "snippet": azure_snippet,
+            "checked_at": azure_checked_at,
         }
         return readiness, warnings, errors, azure_meta
 

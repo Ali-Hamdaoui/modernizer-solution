@@ -93,12 +93,14 @@ class _FakeModelClient:
         failure_reason: str,
         redacted_summary: str,
         response_snippet: str,
+        checked_at: str = "2026-06-14T00:00:00Z",
     ) -> None:
         self.success = success
         self.deployment = deployment
         self.failure_reason = failure_reason
         self.redacted_summary = redacted_summary
         self.response_snippet = response_snippet
+        self.checked_at = checked_at
         self.calls = 0
 
     def smoke(self):
@@ -114,6 +116,7 @@ class _FakeModelClient:
             redacted_summary=self.redacted_summary,
             response_snippet=self.response_snippet,
             latency_ms=1.0,
+            checked_at=self.checked_at,
         )
 
 
@@ -233,6 +236,135 @@ def test_run_preflight(service: V2SetupService, sample_request: CreateSetupReque
 def test_run_preflight_setup_not_found(service: V2SetupService) -> None:
     with pytest.raises(ValueError, match="not found"):
         service.run_preflight("nonexistent-setup")
+
+
+def test_run_preflight_ai_required_blocks_when_smoke_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from migration_factory.control_tower.application import v2_setup_service as setup_module
+
+    monkeypatch.setenv("AI_MIGRATION_COPILOT_REQUIRED", "true")
+    monkeypatch.setattr(setup_module, "_check_jdk_path_with_version", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        setup_module,
+        "_validate_maven_command",
+        lambda *args, **kwargs: SimpleNamespace(ready=True, status=setup_module._ToolCheckStatus.READY, message=""),
+    )
+
+    legacy = tmp_path / "legacy-app"
+    output = tmp_path / "out"
+    hub = _create_ai_hub_layout(tmp_path / "ai-hub")
+    legacy.mkdir()
+    (legacy / "pom.xml").write_text("<project />", encoding="utf-8")
+    output.mkdir()
+    for jdk_name in ("jdk-11", "jdk-17", "jdk-21"):
+        (tmp_path / jdk_name).mkdir()
+    maven_cmd = tmp_path / "mvn.cmd"
+    maven_cmd.write_text("@echo off", encoding="utf-8")
+
+    connection = sqlite3.connect(
+        tmp_path / "required_ai.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    connection.row_factory = sqlite3.Row
+    apply_pending_migrations(connection)
+    service = V2SetupService(SqliteV2SetupRepository(connection), model_client=_FakeModelClient(
+        success=False,
+        deployment="secret-deployment",
+        failure_reason="http_400",
+        redacted_summary="Azure OpenAI smoke failed (HTTP 400).",
+        response_snippet='{"error":"Authorization: Bearer sk-abc123"}',
+    ))
+    setup = service.create_setup(
+        CreateSetupRequest(
+            run_name="legacy-service-v2",
+            legacy_app_path=str(legacy),
+            output_parent_path=str(output),
+            ai_hub_path=str(hub),
+            java11_home=str(tmp_path / "jdk-11"),
+            java17_home=str(tmp_path / "jdk-17"),
+            java21_home=str(tmp_path / "jdk-21"),
+            maven_cmd=str(maven_cmd),
+            skip_endpoint_smoke=True,
+        )
+    )
+
+    preflight = service.run_preflight(setup.setup_id)
+
+    assert preflight.azure_model_ready is False
+    assert preflight.azure_model_failure_reason == "http_400"
+    assert preflight.all_ready is False
+    assert "azure_model_ready" in preflight.readiness
+    assert any("Azure model smoke failed" in warning for warning in preflight.warnings)
+
+
+def test_run_preflight_ai_required_succeeds_when_smoke_passes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from migration_factory.control_tower.application import v2_setup_service as setup_module
+
+    monkeypatch.setenv("AI_MIGRATION_COPILOT_REQUIRED", "true")
+    monkeypatch.setattr(setup_module, "_check_jdk_path_with_version", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        setup_module,
+        "_validate_maven_command",
+        lambda *args, **kwargs: SimpleNamespace(ready=True, status=setup_module._ToolCheckStatus.READY, message=""),
+    )
+
+    legacy = tmp_path / "legacy-app"
+    output = tmp_path / "out"
+    hub = _create_ai_hub_layout(tmp_path / "ai-hub")
+    legacy.mkdir()
+    (legacy / "pom.xml").write_text("<project />", encoding="utf-8")
+    output.mkdir()
+    for jdk_name in ("jdk-11", "jdk-17", "jdk-21"):
+        (tmp_path / jdk_name).mkdir()
+    maven_cmd = tmp_path / "mvn.cmd"
+    maven_cmd.write_text("@echo off", encoding="utf-8")
+
+    connection = sqlite3.connect(
+        tmp_path / "required_ai_success.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    connection.row_factory = sqlite3.Row
+    apply_pending_migrations(connection)
+    service = V2SetupService(SqliteV2SetupRepository(connection), model_client=_FakeModelClient(
+        success=True,
+        deployment="gpt-5-mini",
+        failure_reason="",
+        redacted_summary="Azure OpenAI smoke succeeded.",
+        response_snippet="OK",
+    ))
+    setup = service.create_setup(
+        CreateSetupRequest(
+            run_name="legacy-service-v2",
+            legacy_app_path=str(legacy),
+            output_parent_path=str(output),
+            ai_hub_path=str(hub),
+            java11_home=str(tmp_path / "jdk-11"),
+            java17_home=str(tmp_path / "jdk-17"),
+            java21_home=str(tmp_path / "jdk-21"),
+            maven_cmd=str(maven_cmd),
+            skip_endpoint_smoke=True,
+        )
+    )
+
+    preflight = service.run_preflight(setup.setup_id)
+
+    assert preflight.azure_model_ready is True
+    assert preflight.all_ready is True
+    assert preflight.azure_model_failure_reason == ""
+    assert preflight.azure_model_checked_at
 
 
 def test_preflight_reports_maven_command_failure_not_missing(
@@ -375,7 +507,10 @@ def test_preflight_redacts_model_smoke_warning_and_snippet(
     assert "sk-abc123" not in str(d)
     assert "C:\\Users\\admin" not in str(d)
     assert "azure_model_deployment" not in d
-    assert "Bearer" not in d["azure_model_response_snippet"]
+    assert "Bearer sk-abc123" not in d["azure_model_response_snippet"]
+    assert d["azure_model_checked_at"] == "2026-06-14T00:00:00Z"
+    assert all("sk-abc123" not in warning for warning in d["warnings"])
+    assert all("Bearer" not in warning for warning in d["warnings"])
 
 
 def test_readiness_to_dict_none(service: V2SetupService) -> None:

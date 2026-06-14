@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from migration_factory.control_tower.application.v2_setup_service import (
+    is_ai_smoke_required,
     V2SetupService,
 )
 from migration_factory.control_tower.domain.checksums import utc_now_text
@@ -78,7 +79,11 @@ class V2MigrationJobService:
             )
 
         if not readiness.all_ready:
-            blocked = [k for k, v in readiness.gates.items() if not v and k != "azure_model_ready"]
+            blocked = [
+                k
+                for k, v in readiness.gates.items()
+                if not v and (k != "azure_model_ready" or is_ai_smoke_required(setup.skip_endpoint_smoke))
+            ]
             raise ValueError(
                 f"Setup {setup_id!r} is not ready. Blocked gates: {blocked}"
             )

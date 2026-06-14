@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from migration_factory.control_tower.application.redaction import redact_model_summary, redact_public_value
+from migration_factory.control_tower.domain.checksums import utc_now_text
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class V2ModelSmokeResult:
     redacted_summary: str
     response_snippet: str
     latency_ms: float
+    checked_at: str
 
 
 class V2AssistantModelClient:
@@ -48,37 +50,36 @@ class V2AssistantModelClient:
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip().rstrip("/")
         api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
         deployment = os.environ.get("AZURE_OPENAI_ASSISTANT_DEPLOYMENT", "").strip()
+        checked_at = utc_now_text()
 
         if not endpoint:
             return V2ModelSmokeResult(
                 success=False, deployment="", provider=self.provider,
                 failure_reason="missing_endpoint",
                 redacted_summary="Azure OpenAI endpoint not configured.",
-                response_snippet="", latency_ms=0,
+                response_snippet="", latency_ms=0, checked_at=checked_at,
             )
         if not api_key:
             return V2ModelSmokeResult(
                 success=False, deployment=deployment, provider=self.provider,
                 failure_reason="missing_key",
                 redacted_summary="Azure OpenAI API key not configured.",
-                response_snippet="", latency_ms=0,
+                response_snippet="", latency_ms=0, checked_at=checked_at,
             )
         if not deployment:
             return V2ModelSmokeResult(
                 success=False, deployment="", provider=self.provider,
                 failure_reason="missing_deployment",
                 redacted_summary="Azure OpenAI deployment name not configured.",
-                response_snippet="", latency_ms=0,
+                response_snippet="", latency_ms=0, checked_at=checked_at,
             )
 
         t0 = _time.monotonic()
         try:
-            self._chat_completion(
+            content = self._smoke_completion_v1(
                 endpoint=endpoint,
                 api_key=api_key,
                 deployment=deployment,
-                prompt="Reply with OK.",
-                max_tokens=10,
                 timeout=15,
             )
         except urllib.error.HTTPError as exc:
@@ -91,8 +92,9 @@ class V2AssistantModelClient:
                 success=False, deployment=deployment, provider=self.provider,
                 failure_reason=reason,
                 redacted_summary=f"Azure OpenAI smoke failed (HTTP {code}).",
-                response_snippet=str(redact_model_summary(snippet)),
+                response_snippet=_redact_smoke_text(snippet, endpoint=endpoint, deployment=deployment, api_key=api_key),
                 latency_ms=round(latency, 1),
+                checked_at=checked_at,
             )
         except urllib.error.URLError as exc:
             latency = (_time.monotonic() - t0) * 1000
@@ -103,6 +105,7 @@ class V2AssistantModelClient:
                 failure_reason="timeout" if is_timeout else "invalid_response",
                 redacted_summary="Azure OpenAI smoke timed out." if is_timeout else f"Azure OpenAI smoke failed: {redact_model_summary(reason_str)}.",
                 response_snippet="", latency_ms=round(latency, 1),
+                checked_at=checked_at,
             )
         except Exception as exc:
             latency = (_time.monotonic() - t0) * 1000
@@ -111,14 +114,25 @@ class V2AssistantModelClient:
                 failure_reason="invalid_response",
                 redacted_summary=redact_model_summary(f"Azure OpenAI smoke failed ({type(exc).__name__})."),
                 response_snippet="", latency_ms=round(latency, 1),
+                checked_at=checked_at,
             )
 
         latency = (_time.monotonic() - t0) * 1000
+        if str(content).strip() != "OK":
+            return V2ModelSmokeResult(
+                success=False, deployment=deployment, provider=self.provider,
+                failure_reason="invalid_response",
+                redacted_summary="Azure OpenAI smoke returned unexpected content.",
+                response_snippet=_redact_smoke_text(str(content), endpoint=endpoint, deployment=deployment, api_key=api_key),
+                latency_ms=round(latency, 1),
+                checked_at=checked_at,
+            )
         return V2ModelSmokeResult(
             success=True, deployment=deployment, provider=self.provider,
             failure_reason="",
             redacted_summary="Azure OpenAI smoke succeeded.",
             response_snippet="", latency_ms=round(latency, 1),
+            checked_at=checked_at,
         )
 
     def answer(self, *, prompt: str, fallback: str) -> V2AssistantModelResult:
@@ -207,15 +221,38 @@ class V2AssistantModelClient:
             "temperature": 0.2,
             "max_tokens": max_tokens,
         }
-        headers = {"Content-Type": "application/json"}
-        if self._prefer_bearer_header(api_key):
-            headers["Authorization"] = f"Bearer {api_key}"
-        else:
-            headers["api-key"] = api_key
+        headers = {"Content-Type": "application/json", "api-key": api_key}
         request = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
             headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        choices = data.get("choices") if isinstance(data, dict) else None
+        if not choices:
+            raise RuntimeError("missing choices")
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str):
+            raise RuntimeError("missing assistant content")
+        return content
+
+    def _smoke_completion_v1(self, *, endpoint: str, api_key: str, deployment: str, timeout: int = 15) -> str:
+        url = f"{endpoint}/chat/completions" if self._is_v1_endpoint(endpoint) else f"{endpoint}/openai/v1/chat/completions"
+        payload = {
+            "model": deployment,
+            "messages": [
+                {"role": "user", "content": "Reply with OK."},
+            ],
+            "max_completion_tokens": 100,
+            "reasoning_effort": "minimal",
+        }
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "api-key": api_key},
             method="POST",
         )
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -272,11 +309,6 @@ class V2AssistantModelClient:
             raise RuntimeError("missing assistant content")
         return content
 
-    @staticmethod
-    def _prefer_bearer_header(api_key: str) -> bool:
-        return bool(api_key) and not api_key.startswith("sk-")
-
-
 def _sanitize_body_snippet(http_error: urllib.error.HTTPError) -> str:
     """Return a bounded, sanitised snippet from an HTTPError response body.
 
@@ -296,6 +328,15 @@ def _sanitize_body_snippet(http_error: urllib.error.HTTPError) -> str:
     text = _re.sub(r'(?i)(api[_-]?key|bearer\s+)[^\s"]+', r'\1[REDACTED]', text)
     text = _re.sub(r'"access_token"\s*:\s*"[^"]*"', '"access_token":"[REDACTED]"', text)
     return text
+
+
+def _redact_smoke_text(text: str, *, endpoint: str, deployment: str, api_key: str) -> str:
+    """Redact smoke-body text with deployment, endpoint, and token guards."""
+    result = redact_model_summary(text)
+    for secret in (api_key, deployment, endpoint):
+        if secret:
+            result = result.replace(secret, "[redacted]")
+    return result
 
 
 def _fallback_result(fallback: str, summary: str, failure_reason: str = "") -> V2AssistantModelResult:

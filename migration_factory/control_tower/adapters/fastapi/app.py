@@ -125,6 +125,7 @@ from migration_factory.control_tower.application.v2_worker_stage import (
 )
 from migration_factory.control_tower.application.v2_setup_service import (
     CreateSetupRequest,
+    is_ai_smoke_required,
     V2SetupService,
 )
 from migration_factory.control_tower.application.v2_settings import (
@@ -886,6 +887,7 @@ def create_app(
             "redacted_summary": redact_model_summary(result.redacted_summary),
             "response_snippet": redact_model_summary(result.response_snippet),
             "latency_ms": result.latency_ms,
+            "checked_at": result.checked_at,
         }
 
     # ------------------------------------------------------------------
@@ -990,7 +992,7 @@ def create_app(
                 )
             # Check AI readiness from the latest persisted preflight
             setup = uow.v2_setups.get(job.setup_id)
-            if setup is not None and not setup.skip_endpoint_smoke:
+            if setup is not None and is_ai_smoke_required(setup.skip_endpoint_smoke):
                 preflight_svc = V2SetupService(uow.v2_setups)
                 readiness = preflight_svc.get_readiness(job.setup_id)
                 if readiness is None:

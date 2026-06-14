@@ -563,9 +563,23 @@ export type V2PreflightResponse = {
   preflight_id: string;
   setup_id: string;
   all_ready: boolean;
+  azure_model_ready?: boolean;
+  azure_model_failure_reason?: string;
+  azure_model_response_snippet?: string;
+  azure_model_checked_at?: string;
   readiness: Record<string, boolean>;
   warnings: string[];
   errors: string[];
+  checked_at: string;
+};
+
+export type V2AzureSmokeResponse = {
+  success: boolean;
+  provider: string;
+  failure_reason: string;
+  redacted_summary: string;
+  response_snippet: string;
+  latency_ms: number;
   checked_at: string;
 };
 
