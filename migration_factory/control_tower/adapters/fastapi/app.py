@@ -3428,6 +3428,7 @@ _PIPELINE_PHASES = (
         "repair_started", "repair_fallback_generated", "repair_completed",
         "copilot_repair_invalid_response", "copilot_availability_checked",
     }),
+    ("result_contract", "Result Contract", {"result_contract_failed"}),
     ("final_report", "Final Report", {
         "final_report_started", "final_report_completed", "final_report_failed",
         "proof_updated", "stage_completed",
@@ -3460,6 +3461,7 @@ _IMPORTANT_EVENT_TYPES = {
     "final_report_started",
     "final_report_completed",
     "final_report_failed",
+    "result_contract_failed",
 }
 
 
@@ -3538,16 +3540,26 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
     """Build a redacted failure/repair summary from V2 events.
 
     Includes BuildErrorContract diagnostic fields forwarded by build_failed
-    and transform_failed events.
+    and transform_failed events. Also handles result_contract_failed events
+    (orchestrator completed but Control Tower could not parse its final JSON).
     """
     failures: list[dict[str, Any]] = []
     for event in events:
-        if event.status == "failed" or event.type.endswith("_failed"):
+        if event.status == "failed" or event.type.endswith("_failed") or event.type == "result_contract_failed":
             try:
                 payload = json.loads(event.payload_json or "{}")
             except (json.JSONDecodeError, TypeError):
                 payload = {}
             result_kind = str(payload.get("result_kind", ""))
+
+            if event.type == "result_contract_failed":
+                next_action = (
+                    "Inspect orchestrator stdout/stderr and orchestration_summary.json. "
+                    "The subprocess exited but Control Tower could not parse its final result contract."
+                )
+            else:
+                next_action = _next_operator_action(result_kind)
+
             failures.append({
                 "type": event.type,
                 "stage": event.stage,
@@ -3571,7 +3583,13 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
                 "java_home": _safe_failure_str(payload.get("java_home")),
                 "detected_version": _safe_failure_str(payload.get("detected_version")),
                 "required_minimum": _safe_failure_str(payload.get("required_minimum")),
-                "next_operator_action": _next_operator_action(result_kind),
+                # ── Result contract diagnostic fields ──
+                "exit_code": payload.get("exit_code"),
+                "final_json_found": payload.get("final_json_found"),
+                "parse_strategy": str(payload.get("parse_strategy", "")),
+                "stdout_tail": _safe_failure_str(payload.get("stdout_tail")),
+                "stderr_tail": _safe_failure_str(payload.get("stderr_tail")),
+                "next_operator_action": next_action,
             })
     repair_events_typed = [
         event for event in events

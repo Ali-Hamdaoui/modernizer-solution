@@ -80,7 +80,9 @@ def main(argv: list[str] | None = None) -> int:
             summary_writer=write_orchestration_summary,
         )
 
-    print(json.dumps(_render_result(result), indent=2, sort_keys=True))
+    final_json = json.dumps(_render_result(result), sort_keys=True, separators=(",", ":"))
+    sys.stdout.write("CONTROL_TOWER_FINAL_JSON " + final_json + "\n")
+    sys.stdout.flush()
     return 0
 
 

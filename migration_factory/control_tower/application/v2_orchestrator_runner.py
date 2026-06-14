@@ -22,6 +22,7 @@ from migration_factory.control_tower.domain.checksums import sha256_canonical_js
 UnitOfWorkFactory = Callable[[], Any]
 
 _EVENT_PREFIX = "CONTROL_TOWER_EVENT "
+_FINAL_JSON_PREFIX = "CONTROL_TOWER_FINAL_JSON "
 _MAX_TEXT = 4096
 
 _SAFE_ENV_KEYS = (
@@ -113,6 +114,7 @@ class V2OrchestratorRunner:
         self._popen_factory = popen_factory
         self._cwd = cwd or Path(__file__).resolve().parents[3]
         self._event_lock = threading.Lock()
+        self._last_stdout_lines: list[str] = []
 
     def start(self, *, job_id: str, command_id: str) -> V2OrchestratorStart:
         with self._unit_of_work_factory() as uow:
@@ -294,9 +296,10 @@ class V2OrchestratorRunner:
 
             exit_code = process.wait()
 
-            out_thread.join(timeout=2)
-            err_thread.join(timeout=2)
+            out_thread.join(timeout=5)
+            err_thread.join(timeout=5)
 
+            self._last_stdout_lines = list(stdout_lines)
             final_json = _extract_final_json("\n".join(stdout_lines))
 
             self._handle_exit(
@@ -416,6 +419,10 @@ class V2OrchestratorRunner:
         stderr: str,
         resume: bool = False,
     ) -> None:
+        stdout_tail = _bounded("\n".join(self._last_stdout_lines) if hasattr(self, "_last_stdout_lines") else "")
+        stderr_tail = _bounded(stderr)
+        parse_strategy = "sentinel" if result is not None and "CONTROL_TOWER_FINAL_JSON" in ("".join(getattr(self, "_last_stdout_lines", []))) else "generic_scan"
+
         if exit_code != 0:
             if result is not None:
                 self._emit_diagnostic_failure_events(
@@ -427,7 +434,10 @@ class V2OrchestratorRunner:
             payload: dict[str, Any] = {
                 "command_id": command_id,
                 "exit_code": exit_code,
-                "stderr": _bounded(stderr),
+                "stderr": stderr_tail,
+                "stdout_tail": stdout_tail,
+                "final_json_found": result is not None,
+                "parse_strategy": parse_strategy,
             }
             if result is None:
                 payload["result_parse_status"] = "missing_final_json"
@@ -442,13 +452,37 @@ class V2OrchestratorRunner:
             return
 
         if result is None:
+            payload: dict[str, Any] = {
+                "command_id": command_id,
+                "exit_code": exit_code,
+                "stdout_tail": stdout_tail,
+                "stderr_tail": stderr_tail,
+                "final_json_found": False,
+                "parse_strategy": parse_strategy,
+            }
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="result_contract_failed",
+                status="failed",
+                message="Orchestrator result contract could not be parsed.",
+                payload=payload,
+            )
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="stage_failed",
                 status="failed",
-                message="Orchestrator completed without a parseable final JSON result.",
-                payload={"command_id": command_id, "exit_code": exit_code, "stderr": _bounded(stderr)},
+                message="Orchestrator completed without a parseable final JSON result. Inspect orchestrator stdout/stderr and orchestration_summary.json. The subprocess exited but Control Tower could not parse its final result contract.",
+                payload={
+                    "command_id": command_id,
+                    "exit_code": exit_code,
+                    "stderr": stderr_tail,
+                    "stdout_tail": stdout_tail,
+                    "final_json_found": False,
+                    "parse_strategy": parse_strategy,
+                    "result_contract_failed": True,
+                },
             )
             return
 
@@ -604,24 +638,30 @@ class V2OrchestratorRunner:
             },
         )
 
+        # Emit report completion events based on stage index
         if stage_index == 3:
-            self._event(
-                job_id=job_id,
-                stage=None,
-                event_type="final_report_started",
-                status="running",
-                message="All three migration stages completed; final proof report is available.",
-                payload={"command_id": command_id, "sandbox_path": sandbox_path},
-            )
-            self._event(
-                job_id=job_id,
-                stage=None,
-                event_type="final_report_completed",
-                status="completed",
-                message="Final migration proof report completed.",
-                payload={"command_id": command_id, "final_status": final_status},
-            )
-            return
+            report_type = "final_report"
+            report_label = "Final migration proof report"
+        else:
+            report_type = "stage_report"
+            report_label = f"Stage {stage_index} report"
+
+        self._event(
+            job_id=job_id,
+            stage=stage_index,
+            event_type=f"{report_type}_started",
+            status="running",
+            message=f"{report_label} generation started.",
+            payload={"command_id": command_id, "sandbox_path": sandbox_path},
+        )
+        self._event(
+            job_id=job_id,
+            stage=stage_index,
+            event_type=f"{report_type}_completed",
+            status="completed",
+            message=f"{report_label} completed.",
+            payload={"command_id": command_id, "final_status": final_status},
+        )
 
         self._auto_queue_next_stage(
             job_id=job_id,
@@ -1014,7 +1054,25 @@ def _load_env_manifest_for_stage(uow: Any, job_id: str, stage_index: int) -> dic
 
 
 def _extract_final_json(stdout: str) -> dict[str, Any] | None:
-    """Extract the last top-level orchestrator result JSON object from stdout."""
+    """Extract the orchestrator result JSON from stdout.
+
+    Strategy (in order of priority):
+    1. Look for a line starting with CONTROL_TOWER_FINAL_JSON prefix.
+    2. Fall back to scanning for the last JSON object that looks like an
+       orchestrator result (backward-compatible).
+    """
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if line.startswith(_FINAL_JSON_PREFIX):
+            payload = line[len(_FINAL_JSON_PREFIX):]
+            try:
+                value = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict) and _looks_like_orchestrator_result(value):
+                return value
+
+    # Fallback: generic scan over non-event lines
     lines = [line for line in stdout.splitlines() if not line.startswith(_EVENT_PREFIX)]
     text = "\n".join(lines).strip()
     if not text:
@@ -1116,6 +1174,9 @@ def _canonical_event_type(phase: str, suffix: str, *, stage_index: int) -> str:
     }
 
     if phase == "final_report":
+        # Only Stage 3 gets final_report events; earlier stages get stage_report events
+        if stage_index == 3:
+            return f"final_report_{suffix}"
         return f"stage_report_{suffix}"
 
     if phase in mapping:

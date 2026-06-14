@@ -56,7 +56,9 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
-    print(json.dumps(_to_json_safe(result), indent=2, sort_keys=True))
+    final_json = json.dumps(_to_json_safe(result), sort_keys=True, separators=(",", ":"))
+    sys.stdout.write("CONTROL_TOWER_FINAL_JSON " + final_json + "\n")
+    sys.stdout.flush()
     return 0
 
 

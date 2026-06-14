@@ -613,6 +613,12 @@ export type V2FailureSummaryItem = {
   java_home: string;
   detected_version: string;
   required_minimum: string;
+  // ── Result contract diagnostic fields ──
+  exit_code?: number | null;
+  final_json_found?: boolean | null;
+  parse_strategy?: string;
+  stdout_tail?: string;
+  stderr_tail?: string;
   next_operator_action: string;
 };
 

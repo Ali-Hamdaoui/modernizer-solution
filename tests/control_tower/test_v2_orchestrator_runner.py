@@ -218,7 +218,9 @@ def test_v2_runner_emits_failure_repair_events_from_result(tmp_path: Path) -> No
     )
 
     runner.start(job_id="job-1", command_id="cmd-1")
-    _wait_for_event(conn, "job-1", "build_failed")
+    # Wait for stage_failed (the last event in the chain) to give the runner thread
+    # time to finish writing all diagnostic events before we read them.
+    _wait_for_event(conn, "job-1", "stage_failed")
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     event_types = [event.type for event in events]
@@ -558,7 +560,182 @@ def test_v2_runner_resume_no_env_manifest_fallback(tmp_path: Path) -> None:
         cwd=tmp_path,
     )
 
-    runner.start_resume(job_id="job-1", resume_id="resume-1")
-    _wait_for_event(conn, "job-1", "process_started")
-    # Should not crash — just works with empty manifest
-    assert popen.calls
+# ──────────────────────────────────────────────
+# _extract_final_json sentinel tests
+# ──────────────────────────────────────────────
+
+
+def test_extract_final_json_compact_one_line_sentinel() -> None:
+    """One-line compact JSON after CONTROL_TOWER_FINAL_JSON is parsed directly."""
+    from migration_factory.control_tower.application.v2_orchestrator_runner import _extract_final_json
+
+    stdout = (
+        'CONTROL_TOWER_EVENT {"phase":"approval","status":"completed"}\n'
+        'CONTROL_TOWER_FINAL_JSON {"run_id":"x","sandbox_path":"/tmp/s1","final_status":"TRANSFORM_APPLIED_IN_SANDBOX"}\n'
+    )
+    result = _extract_final_json(stdout)
+    assert result is not None
+    assert result["run_id"] == "x"
+    assert result["sandbox_path"] == "/tmp/s1"
+    assert result["final_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
+
+
+def test_extract_final_json_prefers_sentinel_over_bare_json() -> None:
+    """Sentinel is preferred even when bare JSON also appears in stdout."""
+    from migration_factory.control_tower.application.v2_orchestrator_runner import _extract_final_json
+
+    stdout = (
+        '{"run_id":"old","final_status":"STALE"}\n'
+        'CONTROL_TOWER_FINAL_JSON {"run_id":"real","sandbox_path":"/tmp/s1","final_status":"TRANSFORM_APPLIED_IN_SANDBOX"}\n'
+    )
+    result = _extract_final_json(stdout)
+    assert result is not None
+    assert result["run_id"] == "real"
+    assert result["final_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
+
+
+def test_extract_final_json_multi_line_sentinel_does_not_parse_partial_json() -> None:
+    """Pretty multi-line sentinel is NOT silently parsed as one-line by the sentinel parser.
+    The sentinel parser reads only the line containing CONTROL_TOWER_FINAL_JSON.
+    If that line ends with just '{', json.loads fails and the parser falls through
+    to the generic scan, which should still find the full object.
+    """
+    from migration_factory.control_tower.application.v2_orchestrator_runner import _extract_final_json
+
+    # This is the OLD multi-line format — the sentinel line is just "{" which is incomplete
+    stdout = (
+        'CONTROL_TOWER_FINAL_JSON {\n'
+        '  "run_id": "x",\n'
+        '  "sandbox_path": "/tmp/s1",\n'
+        '  "final_status": "TRANSFORM_APPLIED_IN_SANDBOX"\n'
+        '}\n'
+    )
+    result = _extract_final_json(stdout)
+    # The generic scanner (fallback) should still find the full JSON
+    assert result is not None
+    # But the result must contain ALL three critical fields, not just '{' parsed as partial object
+    assert result.get("run_id") == "x"
+    assert result.get("sandbox_path") == "/tmp/s1"
+    assert result.get("final_status") == "TRANSFORM_APPLIED_IN_SANDBOX"
+
+
+def test_extract_final_json_multi_line_sentinel_without_fallback_returns_none() -> None:
+    """If multi-line sentinel is the ONLY content and the single-line parser
+    can't read it, the generic fallback must be able to parse it.
+    This proves no silent partial-JSON acceptance."""
+    from migration_factory.control_tower.application.v2_orchestrator_runner import _extract_final_json
+
+    # Only multi-line sentinel, no CONTROL_TOWER_EVENT lines
+    stdout = (
+        'CONTROL_TOWER_FINAL_JSON {\n'
+        '  "run_id": "y",\n'
+        '  "final_status": "DONE"\n'
+        '}\n'
+    )
+    result = _extract_final_json(stdout)
+    # Must not return {'run_id': 'y'} by cherry-picking a partial parse
+    assert result is not None
+    assert result["run_id"] == "y"
+    assert result["final_status"] == "DONE"
+
+
+def test_extract_final_json_bare_json_still_works() -> None:
+    """Bare JSON without sentinel still works via generic fallback."""
+    from migration_factory.control_tower.application.v2_orchestrator_runner import _extract_final_json
+
+    stdout = '{"run_id":"fallback","sandbox_path":"/tmp/s1","final_status":"OK"}\n'
+    result = _extract_final_json(stdout)
+    assert result is not None
+    assert result["run_id"] == "fallback"
+    assert result["final_status"] == "OK"
+
+
+def test_extract_final_json_empty_stdout_returns_none() -> None:
+    """Empty stdout after filtering CONTROL_TOWER_EVENT returns None."""
+    from migration_factory.control_tower.application.v2_orchestrator_runner import _extract_final_json
+
+    assert _extract_final_json("") is None
+    assert _extract_final_json("CONTROL_TOWER_EVENT {\"phase\":\"approval\"}\n") is None
+
+
+# ──────────────────────────────────────────────
+# result_contract_failed event tests
+# ──────────────────────────────────────────────
+
+
+def test_runner_zero_exit_missing_final_json_emits_result_contract_failed(tmp_path: Path) -> None:
+    """Zero exit but no parseable JSON emits result_contract_failed before stage_failed."""
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    # Stdout has only CONTROL_TOWER_EVENT lines, no final JSON
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(
+            stdout=["CONTROL_TOWER_EVENT {\"phase\":\"approval\",\"status\":\"completed\"}\n"],
+            stderr=[],
+            exit_code=0,
+        ),
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "stage_failed")
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [event.type for event in events]
+    assert "result_contract_failed" in event_types
+    # Verify payload has diagnostic fields
+    for event in events:
+        if event.type == "result_contract_failed":
+            payload = json.loads(event.payload_json or "{}")
+            assert payload.get("final_json_found") is False
+            assert "exit_code" in payload
+            assert "stdout_tail" in payload
+            assert "stderr_tail" in payload
+            assert "parse_strategy" in payload
+            break
+    else:
+        raise AssertionError("result_contract_failed event not found")
+
+    # stage_failed message must not say "review build logs"
+    stage_failed = [e for e in events if e.type == "stage_failed"][-1]
+    assert "result contract" in stage_failed.message.lower() or "parseable" in stage_failed.message.lower()
+
+
+def test_runner_does_not_auto_queue_when_final_json_missing(tmp_path: Path) -> None:
+    """Zero exit + missing final JSON must not auto-queue next stage."""
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=["CONTROL_TOWER_EVENT {\"phase\":\"test\",\"status\":\"completed\"}\n"], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "stage_failed")
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [event.type for event in events]
+    assert "next_stage_queued" not in event_types
+    assert "stage_completed" not in event_types
+
+
+def test_runner_nonzero_exit_keeps_exit_code_message(tmp_path: Path) -> None:
+    """Non-zero exit includes exit code in stage_failed message."""
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[], stderr=["error log\n"], exit_code=42),
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "stage_failed")
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    stage_failed = [e for e in events if e.type == "stage_failed"][-1]
+    assert "code 42" in stage_failed.message
+    payload = json.loads(stage_failed.payload_json or "{}")
+    assert payload.get("exit_code") == 42

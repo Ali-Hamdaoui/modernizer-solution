@@ -141,6 +141,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       "model_invocation_started",
       "model_invocation_completed",
       "model_invocation_failed",
+      "result_contract_failed",
     ]) {
       source.addEventListener(type, (event) => {
         appendEventFromSse((event as MessageEvent).data);
@@ -353,41 +354,60 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         <section className="panel failure-panel">
           <h2>Failure & Repair</h2>
           {data.failureSummary.failures.map((f, i) => (
-            <div key={i} className="failure-card">
+            <div key={i} className={`failure-card ${f.type === "result_contract_failed" ? "contract-failure-card" : ""}`}>
               <div className="stage-header">
-                <strong>{f.type}</strong>
+                <strong>{f.type === "result_contract_failed" ? "Control Tower Contract Failure" : f.type}</strong>
                 <span className="meta">Stage {f.stage ?? "?"}</span>
                 <span className="status-badge failed">FAILED</span>
               </div>
               <p>{f.message}</p>
-              {f.result_kind && (
+              {f.result_kind && f.type !== "result_contract_failed" && (
                 <p className="meta">
                   <strong>Root cause:</strong>{" "}
                   {f.result_kind.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
                 </p>
               )}
-              {f.matched_line && (
+              {f.type === "result_contract_failed" && (
+                <>
+                  {f.exit_code != null && <p className="meta"><strong>Exit code:</strong> {f.exit_code}</p>}
+                  {f.final_json_found != null && <p className="meta"><strong>Final JSON found:</strong> {String(f.final_json_found)}</p>}
+                  {f.parse_strategy && <p className="meta"><strong>Parse strategy:</strong> {f.parse_strategy}</p>}
+                  {f.stdout_tail && (
+                    <details>
+                      <summary>stdout tail</summary>
+                      <pre className="raw-log-line">{f.stdout_tail}</pre>
+                    </details>
+                  )}
+                  {f.stderr_tail && (
+                    <details>
+                      <summary>stderr tail</summary>
+                      <pre className="raw-log-line">{f.stderr_tail}</pre>
+                    </details>
+                  )}
+                </>
+              )}
+              {f.matched_line && f.type !== "result_contract_failed" && (
                 <pre className="raw-log-line">{f.matched_line}</pre>
               )}
-              {f.command.length > 0 && (
+              {f.command.length > 0 && f.type !== "result_contract_failed" && (
                 <p className="meta">Command: <code>{f.command.join(" ")}</code></p>
               )}
-              {f.build_tool && <p className="meta">Tool: {f.build_tool}</p>}
-              {f.module && <p className="meta">Module: {f.module}</p>}
-              {f.main_class && <p className="meta">Main: {f.main_class}</p>}
-              {f.unit_id && <p className="meta">Unit: {f.unit_id}</p>}
-              {f.java_home && <p className="meta">JAVA_HOME: {f.java_home}</p>}
-              {(f.detected_version || f.required_minimum) && (
+              {f.build_tool && f.type !== "result_contract_failed" && <p className="meta">Tool: {f.build_tool}</p>}
+              {f.module && f.type !== "result_contract_failed" && <p className="meta">Module: {f.module}</p>}
+              {f.main_class && f.type !== "result_contract_failed" && <p className="meta">Main: {f.main_class}</p>}
+              {f.unit_id && f.type !== "result_contract_failed" && <p className="meta">Unit: {f.unit_id}</p>}
+              {f.java_home && f.type !== "result_contract_failed" && <p className="meta">JAVA_HOME: {f.java_home}</p>}
+              {(f.detected_version || f.required_minimum) && f.type !== "result_contract_failed" && (
                 <p className="meta">
                   Java: {f.detected_version || "?"} → required {f.required_minimum || "?"}
                 </p>
               )}
-              {f.build_status && <p className="meta">Build: {f.build_status}</p>}
-              {f.final_status && <p className="meta">Final: {f.final_status}</p>}
-              {f.final_proof_level && <p className="meta">Proof level: {f.final_proof_level}</p>}
-              {f.repair_loop_status && <p className="meta">Repair: {f.repair_loop_status}</p>}
-              {f.copilot_status && <p className="meta">Copilot: {f.copilot_status}</p>}
-              {f.test_status && <p className="meta">Test: {f.test_status}</p>}
+              {f.build_status && f.type !== "result_contract_failed" && <p className="meta">Build: {f.build_status}</p>}
+              {f.final_status && f.type !== "result_contract_failed" && <p className="meta">Final: {f.final_status}</p>}
+              {f.final_proof_level && f.type !== "result_contract_failed" && <p className="meta">Proof level: {f.final_proof_level}</p>}
+              {f.repair_loop_status && f.type !== "result_contract_failed" && <p className="meta">Repair: {f.repair_loop_status}</p>}
+              {f.copilot_status && f.type !== "result_contract_failed" && <p className="meta">Copilot: {f.copilot_status}</p>}
+              {f.test_status && f.type !== "result_contract_failed" && <p className="meta">Test: {f.test_status}</p>}
               {f.next_operator_action && (
                 <div className="operator-action">
                   <strong>Next action:</strong>
@@ -421,6 +441,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         <p className="meta">
           Model: {data.assistantModel?.status ?? "unavailable"} | Source: {data.assistantModel?.source ?? "deterministic"}
           {data.assistantModel?.failure_reason ? ` | Reason: ${data.assistantModel.failure_reason}` : ""}
+          {data.assistantModel?.status === "live_ok" ? " | Live Azure OpenAI" : ""}
         </p>
         {data.messages.length === 0 ? (
           <p className="meta">No messages yet. The assistant can explain status and draft instructions.</p>
@@ -496,6 +517,8 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .failure-panel { border-color: #a40000; background: #fffafa; }
         .failure-card { border: 1px solid #ffcccc; padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; }
         .failure-card .meta { margin: 0.2rem 0; }
+        .contract-failure-card { border: 1px solid #cc8800; background: #fffaf0; }
+        .contract-failure-card .meta { margin: 0.2rem 0; }
         .repair-card { border: 1px solid #ffcc66; background: #fffdf0; padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; }
         .artifact-kinds { border: 1px solid #ddd; padding: 0.5rem; margin: 0.5rem 0; }
       `}</style>
@@ -584,4 +607,5 @@ const IMPORTANT_SSE_TYPES = new Set([
   "copilot_repair_invalid_response",
   "proof_updated",
   "next_stage_queued",
+  "result_contract_failed",
 ]);
