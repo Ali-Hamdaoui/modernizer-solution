@@ -1,5 +1,4 @@
 """Run V2 backend-owned orchestrator manifests and persist live events."""
-
 from __future__ import annotations
 
 import asyncio
@@ -12,7 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from migration_factory.control_tower.application.redaction import redact_model_summary, redact_public_value
+from migration_factory.control_tower.application.redaction import (
+    redact_model_summary,
+    redact_public_value,
+)
 from migration_factory.control_tower.application.v2_approval_mapping import V2ApprovalMappingService
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json
 
@@ -21,6 +23,7 @@ UnitOfWorkFactory = Callable[[], Any]
 
 _EVENT_PREFIX = "CONTROL_TOWER_EVENT "
 _MAX_TEXT = 4096
+
 _SAFE_ENV_KEYS = (
     "COMSPEC",
     "HOME",
@@ -37,6 +40,7 @@ _SAFE_ENV_KEYS = (
     "USERPROFILE",
     "WINDIR",
 )
+
 _MANIFEST_ENV_KEYS = (
     "JAVA_HOME",
     "JAVA11_HOME",
@@ -44,6 +48,7 @@ _MANIFEST_ENV_KEYS = (
     "JAVA21_HOME",
     "MAVEN_CMD",
 )
+
 _COPILOT_ENV_KEYS = (
     "AI_MIGRATION_COPILOT_PROVIDER",
     "AI_MIGRATION_COPILOT_MODEL",
@@ -60,7 +65,27 @@ _COPILOT_ENV_KEYS = (
     "AI_MIGRATION_COPILOT_REPAIR_STRICT_CONTAINMENT",
     "AI_MIGRATION_COPILOT_LOG_LEVEL",
 )
+
 _SECRET_ENV_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL", "AUTHORIZATION")
+
+_TERMINAL_FAILURES = {
+    "BUILD_FAILED_IN_SANDBOX",
+    "TEST_FAILED",
+    "TEST_FAILED_IN_SANDBOX",
+    "FALLBACK_REPAIR_PLAN",
+    "TRANSFORM_FAILED",
+    "FAILED",
+    "FAIL",
+}
+
+_NON_ACTIVE_REPAIR_STATUSES = {
+    "",
+    "SKIPPED",
+    "PENDING",
+    "NOT_IMPLEMENTED",
+    "NONE",
+    "NO_REPAIR",
+}
 
 
 @dataclass(frozen=True)
@@ -111,6 +136,7 @@ class V2OrchestratorRunner:
             daemon=True,
         )
         thread.start()
+
         return V2OrchestratorStart(
             command_id=command_id,
             job_id=job_id,
@@ -126,9 +152,9 @@ class V2OrchestratorRunner:
                 raise ValueError(f"V2 resume command {resume_id!r} not found")
             if resume.job_id != job_id:
                 raise ValueError(f"V2 resume command {resume_id!r} does not belong to job {job_id!r}")
+
             argv = _load_json_list(resume.command_json)
             stage_index = resume.stage_index
-            # Load env manifest from the original stage command for this job+stage
             env_manifest = _load_env_manifest_for_stage(uow, job_id, stage_index)
 
         thread = threading.Thread(
@@ -145,6 +171,7 @@ class V2OrchestratorRunner:
             daemon=True,
         )
         thread.start()
+
         return V2OrchestratorStart(
             command_id=resume_id,
             job_id=job_id,
@@ -172,6 +199,7 @@ class V2OrchestratorRunner:
                 message="Approval accepted; orchestrator resume process starting.",
                 payload={"command_id": command_id},
             )
+
         self._event(
             job_id=job_id,
             stage=stage_index,
@@ -185,16 +213,24 @@ class V2OrchestratorRunner:
             stage=stage_index,
             event_type="command_started",
             status="running",
-            message="Backend-owned approval resume command launched." if resume else "Backend-owned orchestrator manifest launched.",
+            message=(
+                "Backend-owned approval resume command launched."
+                if resume
+                else "Backend-owned orchestrator manifest launched."
+            ),
             payload={"command_id": command_id, "shell": False, "cwd": str(self._cwd)},
         )
 
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
-        final_json: dict[str, Any] | None = None
+
         try:
             process_env = _build_env(env_manifest)
-            copilot_enabled = bool(process_env.get("AI_MIGRATION_COPILOT_PROVIDER") or process_env.get("AI_MIGRATION_COPILOT_MODEL"))
+            copilot_enabled = bool(
+                process_env.get("AI_MIGRATION_COPILOT_PROVIDER")
+                or process_env.get("AI_MIGRATION_COPILOT_MODEL")
+            )
+
             self._event(
                 job_id=job_id,
                 stage=stage_index,
@@ -208,6 +244,7 @@ class V2OrchestratorRunner:
                     "model_configured": bool(process_env.get("AI_MIGRATION_COPILOT_MODEL")),
                 },
             )
+
             process = self._popen_factory(
                 _normalized_argv(argv),
                 cwd=str(self._cwd),
@@ -219,6 +256,7 @@ class V2OrchestratorRunner:
                 errors="replace",
                 shell=False,
             )
+
             self._event(
                 job_id=job_id,
                 stage=stage_index,
@@ -227,24 +265,40 @@ class V2OrchestratorRunner:
                 message="Orchestrator subprocess is running.",
                 payload={"command_id": command_id, "pid": getattr(process, "pid", None)},
             )
+
             out_thread = threading.Thread(
                 target=self._read_stream,
                 args=(process.stdout, stdout_lines),
-                kwargs={"job_id": job_id, "stage_index": stage_index, "command_id": command_id, "stream": "stdout"},
+                kwargs={
+                    "job_id": job_id,
+                    "stage_index": stage_index,
+                    "command_id": command_id,
+                    "stream": "stdout",
+                },
                 daemon=True,
             )
             err_thread = threading.Thread(
                 target=self._read_stream,
                 args=(process.stderr, stderr_lines),
-                kwargs={"job_id": job_id, "stage_index": stage_index, "command_id": command_id, "stream": "stderr"},
+                kwargs={
+                    "job_id": job_id,
+                    "stage_index": stage_index,
+                    "command_id": command_id,
+                    "stream": "stderr",
+                },
                 daemon=True,
             )
+
             out_thread.start()
             err_thread.start()
+
             exit_code = process.wait()
+
             out_thread.join(timeout=2)
             err_thread.join(timeout=2)
+
             final_json = _extract_final_json("\n".join(stdout_lines))
+
             self._handle_exit(
                 job_id=job_id,
                 stage_index=stage_index,
@@ -276,11 +330,14 @@ class V2OrchestratorRunner:
     ) -> None:
         if stream_handle is None:
             return
+
         for raw_line in stream_handle:
             line = raw_line.rstrip("\r\n")
             captured.append(line)
+
             if not line:
                 continue
+
             if stream == "stdout" and line.startswith(_EVENT_PREFIX):
                 self._event_from_orchestrator(
                     job_id=job_id,
@@ -289,6 +346,7 @@ class V2OrchestratorRunner:
                     line=line[len(_EVENT_PREFIX):],
                 )
                 continue
+
             self._event(
                 job_id=job_id,
                 stage=stage_index,
@@ -310,10 +368,12 @@ class V2OrchestratorRunner:
             payload = json.loads(line)
         except json.JSONDecodeError:
             return
+
         phase = str(payload.get("phase") or "orchestrator")
         status = str(payload.get("status") or "running").lower()
-        suffix = "started" if status == "running" else "completed" if status == "completed" else status
-        if phase.startswith("copilot") or phase.startswith("model"):
+        suffix = _status_suffix(status)
+
+        if phase.startswith("model") or phase == "assistant_model":
             self._event(
                 job_id=job_id,
                 stage=stage_index,
@@ -322,9 +382,10 @@ class V2OrchestratorRunner:
                 message=str(payload.get("message") or f"{phase} {status}"),
                 payload={"command_id": command_id, "source_phase": phase},
             )
-        # Map known orchestrator phases to canonical event types
-        canonical_type = _canonical_event_type(phase, suffix)
-        # When transform phase starts, emit approval_completed
+            return
+
+        canonical_type = _canonical_event_type(phase, suffix, stage_index=stage_index)
+
         if phase in ("sandbox_transform", "transform") and suffix == "started":
             self._event(
                 job_id=job_id,
@@ -334,6 +395,7 @@ class V2OrchestratorRunner:
                 message="Human approval phase complete; sandbox transform has started.",
                 payload={"command_id": command_id},
             )
+
         self._event(
             job_id=job_id,
             stage=stage_index,
@@ -354,25 +416,68 @@ class V2OrchestratorRunner:
         stderr: str,
         resume: bool = False,
     ) -> None:
-        if result:
-            self._emit_artifacts(job_id=job_id, stage_index=stage_index, command_id=command_id, result=result)
-            self._emit_failure_repair_events(job_id=job_id, stage_index=stage_index, command_id=command_id, result=result)
-
         if exit_code != 0:
+            if result is not None:
+                self._emit_diagnostic_failure_events(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    command_id=command_id,
+                    result=result,
+                )
+            payload: dict[str, Any] = {
+                "command_id": command_id,
+                "exit_code": exit_code,
+                "stderr": _bounded(stderr),
+            }
+            if result is None:
+                payload["result_parse_status"] = "missing_final_json"
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="stage_failed",
                 status="failed",
                 message=f"Orchestrator exited with code {exit_code}.",
-                payload={"command_id": command_id, "exit_code": exit_code, "stderr": _bounded(stderr)},
+                payload=payload,
             )
-            # Emit build/transform failure events if result has diagnostics
-            if result:
-                self._emit_diagnostic_failure_events(job_id=job_id, stage_index=stage_index, command_id=command_id, result=result)
             return
 
-        if result and result.get("status") == "human_approval_required":
+        if result is None:
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="stage_failed",
+                status="failed",
+                message="Orchestrator completed without a parseable final JSON result.",
+                payload={"command_id": command_id, "exit_code": exit_code, "stderr": _bounded(stderr)},
+            )
+            return
+
+        result = dict(result)
+        sandbox_path = _result_sandbox_path(result)
+
+        if sandbox_path:
+            result["sandbox_path"] = sandbox_path
+
+        self._emit_artifacts(
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            result=result,
+        )
+        self._emit_phase_outcome_events(
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            result=result,
+        )
+        self._emit_failure_repair_events(
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            result=result,
+        )
+
+        if result.get("status") == "human_approval_required":
             checksum = sha256_canonical_json(result)
             with self._unit_of_work_factory() as uow:
                 card = V2ApprovalMappingService(uow.v2_approvals).create_decision_card(
@@ -382,6 +487,7 @@ class V2OrchestratorRunner:
                     stage_index=stage_index,
                     summary="Human approval required before sandbox transform.",
                 )
+
             self._event(
                 job_id=job_id,
                 stage=stage_index,
@@ -400,52 +506,47 @@ class V2OrchestratorRunner:
             )
             return
 
-        # Check if result indicates a failure that didn't return non-zero exit code
-        final_status = str((result or {}).get("final_status", ""))
-        build_status = str((result or {}).get("build_status", ""))
-        test_status = str((result or {}).get("test_status", ""))
-        transform_status = str((result or {}).get("transform_status", ""))
-        repair_status = str((result or {}).get("repair_loop_status", ""))
+        final_status = str(result.get("final_status", ""))
+        build_status = str(result.get("build_status", ""))
+        test_status = str(result.get("test_status", ""))
+        transform_status = str(result.get("transform_status", ""))
+        repair_status = str(result.get("repair_loop_status", ""))
+        orchestration_status = str(result.get("orchestration_status", ""))
 
-        # Classify the terminal outcome before emitting events
-        _TERMINAL_FAILURES = {
-            "BUILD_FAILED_IN_SANDBOX",
-            "TEST_FAILED",
-            "FALLBACK_REPAIR_PLAN",
-            "TRANSFORM_FAILED",
-        }
-        is_terminal_failure = (
-            (final_status in _TERMINAL_FAILURES)
-            or (build_status in _TERMINAL_FAILURES)
-            or (test_status in _TERMINAL_FAILURES)
-            or (transform_status in _TERMINAL_FAILURES)
-        )
-
-        if is_terminal_failure:
+        if _is_terminal_failure_result(result):
             self._emit_diagnostic_failure_events(
-                job_id=job_id, stage_index=stage_index, command_id=command_id, result=result or {}
+                job_id=job_id,
+                stage_index=stage_index,
+                command_id=command_id,
+                result=result,
+            )
+            terminal_value = (
+                final_status
+                or build_status
+                or test_status
+                or transform_status
+                or repair_status
+                or orchestration_status
+                or "FAILED"
             )
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="stage_failed",
                 status="failed",
-                message=(
-                    f"Stage {stage_index} real orchestrator completed with "
-                    f"terminal failure: {final_status or build_status or test_status or transform_status}."
-                ),
+                message=f"Stage {stage_index} real orchestrator completed with terminal failure: {terminal_value}.",
                 payload={
                     "command_id": command_id,
                     "final_status": final_status,
                     "build_status": build_status,
                     "test_status": test_status,
+                    "transform_status": transform_status,
+                    "repair_loop_status": repair_status,
+                    "orchestration_status": orchestration_status,
                 },
             )
             return
 
-        sandbox_path = (result or {}).get("sandbox_path", "")
-
-        # Guard: never auto-progress without a sandbox output
         if stage_index in (1, 2) and not sandbox_path:
             self._event(
                 job_id=job_id,
@@ -457,15 +558,16 @@ class V2OrchestratorRunner:
             )
             return
 
-        # Guard: if a non-approved card still exists for this stage, do not
-        # progress (approval was never granted or was rejected).
         if stage_index in (1, 2):
             with self._unit_of_work_factory() as uow:
                 cards = uow.v2_approvals.list_cards_by_job(job_id)
+
             unapproved = [
-                c for c in cards
+                c
+                for c in cards
                 if c.stage_index == stage_index and c.status != "approved"
             ]
+
             if unapproved:
                 card = unapproved[0]
                 self._event(
@@ -489,7 +591,6 @@ class V2OrchestratorRunner:
             message="Orchestrator result parsed into deterministic evidence.",
             payload={"command_id": command_id, "final_status": final_status},
         )
-
         self._event(
             job_id=job_id,
             stage=stage_index,
@@ -503,7 +604,6 @@ class V2OrchestratorRunner:
             },
         )
 
-        # ── Stage 3 completion: emit final-report lifecycle events ──────
         if stage_index == 3:
             self._event(
                 job_id=job_id,
@@ -518,17 +618,85 @@ class V2OrchestratorRunner:
                 stage=None,
                 event_type="final_report_completed",
                 status="completed",
-                message=f"Final migration proof report completed for Stage {stage_index}.",
+                message="Final migration proof report completed.",
                 payload={"command_id": command_id, "final_status": final_status},
             )
             return
 
-        # Auto-progression: on success, queue next stage (Stage 1 → 2, Stage 2 → 3)
         self._auto_queue_next_stage(
             job_id=job_id,
             stage_index=stage_index,
             sandbox_path=sandbox_path,
         )
+
+    def _emit_phase_outcome_events(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        result: dict[str, Any],
+    ) -> None:
+        transform_status = str(result.get("transform_status", ""))
+        build_status = str(result.get("build_status", ""))
+        test_status = str(result.get("test_status", ""))
+
+        if transform_status == "TRANSFORM_APPLIED_IN_SANDBOX":
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="sandbox_transform_completed",
+                status="completed",
+                message="Sandbox transform completed.",
+                payload={"command_id": command_id, "transform_status": transform_status},
+            )
+        elif _is_failure_status(transform_status):
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="sandbox_transform_failed",
+                status="failed",
+                message=f"Sandbox transform failed: {transform_status}",
+                payload={"command_id": command_id, "transform_status": transform_status},
+            )
+
+        if build_status == "BUILD_PASSED_IN_SANDBOX":
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="build_completed",
+                status="completed",
+                message="Sandbox build completed.",
+                payload={"command_id": command_id, "build_status": build_status},
+            )
+        elif _is_failure_status(build_status):
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="build_failed",
+                status="failed",
+                message=f"Sandbox build failed: {build_status}",
+                payload={"command_id": command_id, "build_status": build_status},
+            )
+
+        if test_status == "TEST_PASSED":
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="test_completed",
+                status="completed",
+                message="Sandbox test validation completed.",
+                payload={"command_id": command_id, "test_status": test_status},
+            )
+        elif _is_failure_status(test_status):
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="test_failed",
+                status="failed",
+                message=f"Sandbox test validation failed: {test_status}",
+                payload={"command_id": command_id, "test_status": test_status},
+            )
 
     def _emit_failure_repair_events(
         self,
@@ -538,20 +706,20 @@ class V2OrchestratorRunner:
         command_id: str,
         result: dict[str, Any],
     ) -> None:
-        """Emit structured events for failure/repair fields in orchestrator result."""
         repair_status = str(result.get("repair_loop_status", ""))
         copilot_status = str(result.get("copilot_invocation_status", ""))
         fallback = result.get("repair_fallback_generated")
 
-        if repair_status == "FALLBACK_REPAIR_PLAN" or repair_status:
+        if repair_status.upper() not in _NON_ACTIVE_REPAIR_STATUSES:
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="repair_started",
-                status="running",
-                message=f"Repair loop active: {repair_status}",
+                status="running" if not _is_failure_status(repair_status) else "failed",
+                message=f"Repair loop status: {repair_status}",
                 payload={"command_id": command_id, "repair_loop_status": repair_status},
             )
+
         if fallback in (True, "true", "True", 1, "yes"):
             self._event(
                 job_id=job_id,
@@ -561,6 +729,7 @@ class V2OrchestratorRunner:
                 message="Fallback repair plan generated.",
                 payload={"command_id": command_id},
             )
+
         if copilot_status == "INVALID_RESPONSE":
             self._event(
                 job_id=job_id,
@@ -579,15 +748,14 @@ class V2OrchestratorRunner:
         command_id: str,
         result: dict[str, Any],
     ) -> None:
-        """Emit structured diagnostic events when stage build/transform fails."""
         build_status = str(result.get("build_status", ""))
         test_status = str(result.get("test_status", ""))
         final_status = str(result.get("final_status", ""))
         final_proof = str(result.get("final_proof_level", ""))
+        transform_status = str(result.get("transform_status", ""))
         copilot_status = str(result.get("copilot_invocation_status", ""))
         fallback = result.get("repair_fallback_generated")
 
-        # Extract BuildErrorContract-style fields from the orchestrator result
         build_validation = result.get("build_validation") or {}
         build_contract = {
             "matched_line": _str_or_none(build_validation.get("matched_line") or result.get("matched_line")),
@@ -604,8 +772,9 @@ class V2OrchestratorRunner:
             "detected_version": _str_or_none(build_validation.get("detected_version") or result.get("detected_version")),
             "required_minimum": _str_or_none(build_validation.get("required_minimum") or result.get("required_minimum")),
         }
+        public_contract = {k: v for k, v in build_contract.items() if v is not None}
 
-        if "BUILD_FAIL" in build_status or build_status:
+        if _is_failure_status(build_status):
             self._event(
                 job_id=job_id,
                 stage=stage_index,
@@ -616,24 +785,40 @@ class V2OrchestratorRunner:
                     "command_id": command_id,
                     "build_status": build_status,
                     "test_status": test_status,
-                    **{k: v for k, v in build_contract.items() if v is not None},
+                    **public_contract,
                 },
             )
-        if "FAIL" in final_status or "FALLBACK" in final_status:
+
+        if _is_failure_status(test_status):
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="test_failed",
+                status="failed",
+                message=f"Test result: {test_status}",
+                payload={
+                    "command_id": command_id,
+                    "test_status": test_status,
+                    **public_contract,
+                },
+            )
+
+        if _is_failure_status(final_status) or _is_failure_status(transform_status):
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="transform_failed",
                 status="failed",
-                message=f"Transform/build failed: {final_status}",
+                message=f"Transform/build failed: {final_status or transform_status}",
                 payload={
                     "command_id": command_id,
                     "final_status": final_status,
+                    "transform_status": transform_status,
                     "final_proof_level": final_proof,
                     "build_status": build_status,
                     "copilot_invocation_status": copilot_status,
                     "repair_fallback_generated": bool(fallback),
-                    **{k: v for k, v in build_contract.items() if v is not None},
+                    **public_contract,
                 },
             )
 
@@ -644,45 +829,60 @@ class V2OrchestratorRunner:
         stage_index: int,
         sandbox_path: str,
     ) -> None:
-        """On successful stage completion, queue and start the next stage."""
-        from migration_factory.control_tower.application.v2_stage_progression import V2StageProgressionService
+        from migration_factory.control_tower.application.v2_stage_progression import (
+            V2StageProgressionService,
+        )
+
         next_stage = stage_index + 1
+        next_command_id: str | None = None
+
         try:
             with self._unit_of_work_factory() as uow:
                 job = uow.v2_jobs.get(job_id)
                 if job is None:
                     return
+
                 service = V2StageProgressionService(
                     setup_repo=uow.v2_setups,
                     command_repo=uow.v2_commands,
                 )
-                result = service.queue_next_stage(
+                queued = service.queue_next_stage(
                     job_id=job_id,
                     setup_id=job.setup_id,
                     current_stage=stage_index,
                     sandbox_path=sandbox_path,
                 )
-                # Persist the next_stage_queued event
+
                 uow.v2_events.save(
                     job_id=job_id,
                     stage=next_stage,
                     event_type="next_stage_queued",
                     status="queued",
                     message=f"Stage {next_stage} command manifest queued for real orchestrator execution.",
-                    payload={"from_stage": stage_index, "to_stage": next_stage, "sandbox_path": sandbox_path},
+                    payload={
+                        "from_stage": stage_index,
+                        "to_stage": next_stage,
+                        "sandbox_path": sandbox_path,
+                    },
                 )
-                # Find the command we just persisted to start it
-                commands = uow.v2_commands.list_by_job(job_id)
-                next_command = None
-                for cmd in commands:
-                    if int(getattr(cmd, "stage_index", 0)) == next_stage:
-                        next_command = cmd
-                        break
-                if next_command:
-                    self.start(job_id=job_id, command_id=next_command.command_id)
+
+                next_command_id = _queued_command_id(queued)
+
+                if not next_command_id:
+                    commands = uow.v2_commands.list_by_job(job_id)
+                    stage_commands = [
+                        cmd
+                        for cmd in commands
+                        if int(getattr(cmd, "stage_index", 0)) == next_stage
+                    ]
+                    if stage_commands:
+                        next_command_id = str(getattr(stage_commands[-1], "command_id", ""))
+
         except ValueError:
-            # Stage progression not possible (already at Stage 3 or missing setup)
-            pass
+            return
+
+        if next_command_id:
+            self.start(job_id=job_id, command_id=next_command_id)
 
     def _emit_artifacts(
         self,
@@ -700,16 +900,26 @@ class V2OrchestratorRunner:
                 event_type="artifact_written",
                 status="completed",
                 message=f"Artifact written: {kind}",
-                payload={"command_id": command_id, "artifact_kind": str(kind), "relative_path": _safe_artifact_ref(path)},
+                payload={
+                    "command_id": command_id,
+                    "artifact_kind": str(kind),
+                    "relative_path": _safe_artifact_ref(path),
+                },
             )
-        if result.get("sandbox_path"):
+
+        sandbox_path = _result_sandbox_path(result)
+        if sandbox_path:
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="artifact_written",
                 status="completed",
                 message="Stage sandbox output registered.",
-                payload={"command_id": command_id, "artifact_kind": "sandbox", "relative_path": _safe_artifact_ref(result["sandbox_path"])},
+                payload={
+                    "command_id": command_id,
+                    "artifact_kind": "sandbox",
+                    "relative_path": _safe_artifact_ref(sandbox_path),
+                },
             )
 
     def _event(
@@ -733,6 +943,7 @@ class V2OrchestratorRunner:
                     message=_bounded(str(redact_public_value(message))),
                     payload=redacted_payload if isinstance(redacted_payload, dict) else {},
                 )
+
         if self._notifier is not None:
             asyncio.run(self._notifier.notify())
 
@@ -750,20 +961,24 @@ def _build_env(manifest: dict[str, Any]) -> dict[str, str]:
         if (value := os.environ.get(key)) is not None
     }
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[3])
+
     for key in _MANIFEST_ENV_KEYS:
         value = manifest.get(key)
         if isinstance(value, str) and value:
             env[key] = value
+
     for key in _COPILOT_ENV_KEYS:
         if _is_secret_env_key(key):
             continue
         value = os.environ.get(key)
         if value:
             env[key] = value
+
     path_prepend = manifest.get("PATH_PREPEND")
     if isinstance(path_prepend, str) and path_prepend:
         current_path = env.get("PATH", "")
         env["PATH"] = path_prepend + (os.pathsep + current_path if current_path else "")
+
     env["AI_MIGRATION_CONTROL_TOWER_EVENTS"] = "jsonl"
     return env
 
@@ -788,7 +1003,6 @@ def _load_json_dict(text: str) -> dict[str, Any]:
 
 
 def _load_env_manifest_for_stage(uow: Any, job_id: str, stage_index: int) -> dict[str, Any]:
-    """Find the original stage command for the given job+stage and return its env manifest."""
     commands = uow.v2_commands.list_by_job(job_id)
     for cmd in commands:
         if int(getattr(cmd, "stage_index", -1)) == stage_index:
@@ -800,21 +1014,87 @@ def _load_env_manifest_for_stage(uow: Any, job_id: str, stage_index: int) -> dic
 
 
 def _extract_final_json(stdout: str) -> dict[str, Any] | None:
+    """Extract the last top-level orchestrator result JSON object from stdout."""
     lines = [line for line in stdout.splitlines() if not line.startswith(_EVENT_PREFIX)]
     text = "\n".join(lines).strip()
     if not text:
         return None
+
     decoder = json.JSONDecoder()
-    for index, char in enumerate(text):
-        if char != "{":
-            continue
+    index = 0
+    last_result: dict[str, Any] | None = None
+
+    while index < len(text):
+        start = text.find("{", index)
+        if start < 0:
+            break
+
         try:
-            value, _ = decoder.raw_decode(text[index:])
+            value, consumed = decoder.raw_decode(text[start:])
         except json.JSONDecodeError:
+            index = start + 1
             continue
-        if isinstance(value, dict):
-            return value
-    return None
+
+        if isinstance(value, dict) and _looks_like_orchestrator_result(value):
+            last_result = value
+
+        index = start + max(consumed, 1)
+
+    return last_result
+
+
+def _looks_like_orchestrator_result(value: dict[str, Any]) -> bool:
+    return any(
+        key in value
+        for key in (
+            "run_id",
+            "final_status",
+            "approval_status",
+            "transform_status",
+            "build_status",
+            "test_status",
+            "artifact_refs",
+            "sandbox_path",
+            "modernized_app_path",
+        )
+    )
+
+
+def _result_sandbox_path(result: dict[str, Any]) -> str:
+    artifact_refs = result.get("artifact_refs") if isinstance(result.get("artifact_refs"), dict) else {}
+
+    direct = _first_text(
+        result.get("sandbox_path"),
+        result.get("modernized_app_path"),
+        result.get("output_app_path"),
+        artifact_refs.get("sandbox"),
+        artifact_refs.get("sandbox_path"),
+        artifact_refs.get("modernized_app"),
+        artifact_refs.get("modernized_app_path"),
+    )
+    if direct:
+        return direct
+
+    summary_ref = _first_text(
+        artifact_refs.get("orchestration_summary"),
+        result.get("orchestration_summary"),
+    )
+    if summary_ref:
+        try:
+            summary_path = Path(summary_ref)
+            if summary_path.is_file():
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                return _first_text(
+                    summary.get("sandbox_path"),
+                    summary.get("modernized_app_path"),
+                    (summary.get("artifact_refs") or {}).get("sandbox")
+                    if isinstance(summary.get("artifact_refs"), dict)
+                    else "",
+                )
+        except Exception:
+            return ""
+
+    return ""
 
 
 def _safe_artifact_ref(value: Any) -> str:
@@ -825,20 +1105,67 @@ def _safe_artifact_ref(value: Any) -> str:
     return _bounded(str(redact_public_value(text)))
 
 
-def _canonical_event_type(phase: str, suffix: str) -> str:
-    """Map orchestrator phase+status to canonical event type."""
-    # Explicit mapping for known phases
+def _canonical_event_type(phase: str, suffix: str, *, stage_index: int) -> str:
     mapping = {
         "transform": f"sandbox_transform_{suffix}",
+        "sandbox_transform": f"sandbox_transform_{suffix}",
         "build": f"build_{suffix}",
         "test": f"test_{suffix}",
-        "final_report": f"final_report_{suffix}",
         "repair": f"repair_{suffix}",
         "copilot_repair": f"copilot_repair_{suffix}",
     }
+
+    if phase == "final_report":
+        return f"stage_report_{suffix}"
+
     if phase in mapping:
         return mapping[phase]
+
     return f"{phase}_{suffix}"
+
+
+def _status_suffix(status: str) -> str:
+    normalized = str(status or "").lower()
+    if normalized == "running":
+        return "started"
+    if normalized == "completed":
+        return "completed"
+    return normalized or "running"
+
+
+def _is_terminal_failure_result(result: dict[str, Any]) -> bool:
+    statuses = [
+        str(result.get("final_status", "")),
+        str(result.get("build_status", "")),
+        str(result.get("test_status", "")),
+        str(result.get("transform_status", "")),
+        str(result.get("repair_loop_status", "")),
+        str(result.get("orchestration_status", "")),
+    ]
+    if any(_is_failure_status(value) for value in statuses):
+        return True
+    if result.get("errors") or result.get("blockers"):
+        return True
+    return False
+
+
+def _is_failure_status(value: Any) -> bool:
+    text = str(value or "").strip().upper()
+    if not text:
+        return False
+    if text in _TERMINAL_FAILURES:
+        return True
+    if "FAILED" in text or text.endswith("_FAIL") or text == "FAIL":
+        return True
+    if "FALLBACK_REPAIR_PLAN" in text:
+        return True
+    return False
+
+
+def _queued_command_id(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(value.get("command_id") or "")
+    return str(getattr(value, "command_id", "") or "")
 
 
 def _bounded(value: str) -> str:
@@ -848,10 +1175,19 @@ def _bounded(value: str) -> str:
     return redacted[:_MAX_TEXT] + "...[truncated]"
 
 
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
 def _str_or_none(value: Any) -> str | None:
     if value is None:
         return None
-    return str(value) if str(value) else None
+    text = str(value)
+    return text if text else None
 
 
 def _list_or_none(value: Any) -> list[str] | None:

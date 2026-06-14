@@ -143,6 +143,10 @@ def test_v1_smoke_uses_openai_v1_path_for_resource_root(monkeypatch) -> None:
     assert url == "https://example.openai.azure.com/openai/v1/chat/completions"
     assert headers["api-key"] == "test-api-key"
     assert body["model"] == "gpt-5-mini"
+    assert body["max_completion_tokens"] == 100
+    assert body["reasoning_effort"] == "minimal"
+    assert "max_tokens" not in body
+    assert "temperature" not in body
 
 
 def test_v1_smoke_http_400_sets_failure_reason_and_redacts_body(monkeypatch) -> None:
@@ -201,7 +205,11 @@ def test_answer_uses_api_key_header_for_v1_endpoint(monkeypatch) -> None:
     assert url == "https://example.openai.azure.com/openai/v1/chat/completions"
     assert headers["api-key"] == "test-api-key"
     assert "authorization" not in headers
-    assert body["max_tokens"] == 700
+    assert body["model"] == "gpt-5-mini"
+    assert body["max_completion_tokens"] == 700
+    assert body["reasoning_effort"] == "minimal"
+    assert "max_tokens" not in body
+    assert "temperature" not in body
 
 
 def test_assistant_uses_model_client_and_does_not_return_key(tmp_path: Path) -> None:
