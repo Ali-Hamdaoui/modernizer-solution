@@ -297,6 +297,51 @@ def test_start_stage1_endpoint(tmp_path: Path) -> None:
             correlation_id=None,
         )
     )
+    conn.execute(
+        """INSERT INTO v2_preflight_results (
+            preflight_id, setup_id, setup_checksum, all_ready,
+            legacy_app_exists, legacy_app_has_project_file, legacy_app_not_in_output_parent,
+            output_parent_writable, ai_hub_root_exists, ai_hub_profiles_ready,
+            ai_hub_catalogs_ready, ai_hub_policies_ready,
+            jdk11_ready, jdk17_ready, jdk21_ready, maven_ready,
+            pipeline_route_ready, legacy_marker_ready, output_parent_gate_ready,
+            readiness_json, warnings_json, errors_json, checked_at, checked_by, correlation_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "pf-ready",
+            setup_id,
+            setup.setup_checksum,
+            1,
+            1, 1, 1,
+            1, 1, 1,
+            1, 1,
+            1, 1, 1, 1,
+            1, 1, 1,
+            json.dumps({
+                "legacy_app_exists": True,
+                "legacy_app_has_project_file": True,
+                "legacy_app_not_in_output_parent": True,
+                "output_parent_writable": True,
+                "ai_hub_root_exists": True,
+                "ai_hub_profiles_ready": True,
+                "ai_hub_catalogs_ready": True,
+                "ai_hub_policies_ready": True,
+                "jdk11_ready": True,
+                "jdk17_ready": True,
+                "jdk21_ready": True,
+                "maven_ready": True,
+                "pipeline_route_ready": True,
+                "legacy_marker_ready": True,
+                "output_parent_gate_ready": True,
+                "azure_model_ready": True,
+            }),
+            json.dumps([]),
+            json.dumps([]),
+            now,
+            "test",
+            None,
+        ),
+    )
 
     response = client.post(
         "/v1/v2/migration-jobs/start-stage1",
@@ -309,6 +354,158 @@ def test_start_stage1_endpoint(tmp_path: Path) -> None:
     assert body["stage_index"] == 1
     assert isinstance(body["argv"], list)
     assert len(body["argv"]) > 0
+
+
+def test_start_stage1_requires_preflight_when_ai_smoke_is_required(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+
+    repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_test_setup(repo)
+    setup = repo.get(setup_id)
+    assert setup is not None
+    now = utc_now_text()
+    SqliteV2JobRepository(conn).save(
+        V2MigrationJobRecord(
+            job_id="job-no-preflight",
+            setup_id=setup_id,
+            setup_checksum=setup.setup_checksum,
+            pipeline_id=PIPELINE_ID,
+            stage_chain_json=json.dumps([
+                {
+                    "stage_index": 1,
+                    "stage_run_id": "stage-1",
+                    "pipeline_stage": "Stage 1",
+                    "input_source_kind": "legacy_source",
+                    "chain_status": "queued",
+                },
+                {
+                    "stage_index": 2,
+                    "stage_run_id": "stage-2",
+                    "pipeline_stage": "Stage 2",
+                    "input_source_kind": "stage_1_sandbox",
+                    "chain_status": "pending",
+                },
+                {
+                    "stage_index": 3,
+                    "stage_run_id": "stage-3",
+                    "pipeline_stage": "Stage 3",
+                    "input_source_kind": "stage_2_sandbox",
+                    "chain_status": "pending",
+                },
+            ]),
+            status="created",
+            created_at=now,
+            updated_at=now,
+            correlation_id=None,
+        )
+    )
+    response = client.post(
+        "/v1/v2/migration-jobs/start-stage1",
+        json={"job_id": "job-no-preflight", "setup_id": setup_id},
+        headers=_mutation_headers(),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "AI_MODEL_SMOKE_REQUIRED"
+
+
+def test_start_stage1_blocks_when_ai_smoke_failed(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+
+    repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_test_setup(repo)
+    setup = repo.get(setup_id)
+    assert setup is not None
+    now = utc_now_text()
+    SqliteV2JobRepository(conn).save(
+        V2MigrationJobRecord(
+            job_id="job-failed-smoke",
+            setup_id=setup_id,
+            setup_checksum=setup.setup_checksum,
+            pipeline_id=PIPELINE_ID,
+            stage_chain_json=json.dumps([
+                {
+                    "stage_index": 1,
+                    "stage_run_id": "stage-1",
+                    "pipeline_stage": "Stage 1",
+                    "input_source_kind": "legacy_source",
+                    "chain_status": "queued",
+                },
+                {
+                    "stage_index": 2,
+                    "stage_run_id": "stage-2",
+                    "pipeline_stage": "Stage 2",
+                    "input_source_kind": "stage_1_sandbox",
+                    "chain_status": "pending",
+                },
+                {
+                    "stage_index": 3,
+                    "stage_run_id": "stage-3",
+                    "pipeline_stage": "Stage 3",
+                    "input_source_kind": "stage_2_sandbox",
+                    "chain_status": "pending",
+                },
+            ]),
+            status="created",
+            created_at=now,
+            updated_at=now,
+            correlation_id=None,
+        )
+    )
+    conn.execute(
+        """INSERT INTO v2_preflight_results (
+            preflight_id, setup_id, setup_checksum, all_ready,
+            legacy_app_exists, legacy_app_has_project_file, legacy_app_not_in_output_parent,
+            output_parent_writable, ai_hub_root_exists, ai_hub_profiles_ready,
+            ai_hub_catalogs_ready, ai_hub_policies_ready,
+            jdk11_ready, jdk17_ready, jdk21_ready, maven_ready,
+            pipeline_route_ready, legacy_marker_ready, output_parent_gate_ready,
+            readiness_json, warnings_json, errors_json, checked_at, checked_by, correlation_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "pf-failed",
+            setup_id,
+            setup.setup_checksum,
+            0,
+            1, 1, 1,
+            1, 1, 1,
+            1, 1,
+            1, 1, 1, 1,
+            1, 1, 1,
+            json.dumps({
+                "legacy_app_exists": True,
+                "legacy_app_has_project_file": True,
+                "legacy_app_not_in_output_parent": True,
+                "output_parent_writable": True,
+                "ai_hub_root_exists": True,
+                "ai_hub_profiles_ready": True,
+                "ai_hub_catalogs_ready": True,
+                "ai_hub_policies_ready": True,
+                "jdk11_ready": True,
+                "jdk17_ready": True,
+                "jdk21_ready": True,
+                "maven_ready": True,
+                "pipeline_route_ready": True,
+                "legacy_marker_ready": True,
+                "output_parent_gate_ready": True,
+                "azure_model_ready": False,
+            }),
+            json.dumps(["Azure model smoke failed: [redacted]"]),
+            json.dumps([]),
+            now,
+            "test",
+            None,
+        ),
+    )
+
+    response = client.post(
+        "/v1/v2/migration-jobs/start-stage1",
+        json={"job_id": "job-failed-smoke", "setup_id": setup_id},
+        headers=_mutation_headers(),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "AI_MODEL_NOT_READY"
 
 
 def test_manifest_persistence_across_connections(tmp_path: Path) -> None:
@@ -358,3 +555,139 @@ def test_get_command_returns_none_for_missing(tmp_path: Path) -> None:
     apply_pending_migrations(conn)
     service = _make_worker_service(conn)
     assert service.get_command("nonexistent") is None
+
+
+# ── SA4: Terminal migration parity tests ───────────────────────────
+
+def test_stage1_profile_matches_terminal_path(tmp_path: Path) -> None:
+    """Stage 1 must use springboot-2.1.6-to-2.7-java11 profile."""
+    conn = sqlite3.connect(
+        tmp_path / "sa4_profile.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_test_setup(repo)
+    service = _make_worker_service(conn)
+    result = service.build_stage1_manifest(job_id="j1", setup_id=setup_id)
+
+    argv_str = " ".join(result.argv)
+    assert "--profile" in argv_str
+    profile_idx = result.argv.index("--profile") + 1
+    assert result.argv[profile_idx] == "springboot-2.1.6-to-2.7-java11"
+
+
+def test_stage1_manifest_matches_terminal_runner_args(tmp_path: Path) -> None:
+    """Cockpit command manifest must match terminal python -m runner args."""
+    conn = sqlite3.connect(
+        tmp_path / "sa4_terminal.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_test_setup(repo)
+    service = _make_worker_service(conn)
+    result = service.build_stage1_manifest(job_id="j1", setup_id=setup_id)
+
+    # Must match: python -m migration_factory.orchestrator.runner
+    #             --run-id ... --legacy ... --modernized ... --ai-hub ... --profile ... --mode ...
+    assert result.argv[0].endswith("python") or "python" in result.argv[0].lower()
+    assert result.argv[1:3] == ("-m", RUNNER_MODULE)
+    mandatory_flags = {"--run-id", "--legacy", "--modernized", "--ai-hub", "--profile", "--mode"}
+    actual_flags = {flag for flag in result.argv if flag.startswith("--")}
+    assert mandatory_flags.issubset(actual_flags), f"Missing flags: {mandatory_flags - actual_flags}"
+    assert "--mode" in result.argv
+    mode_idx = result.argv.index("--mode") + 1
+    assert result.argv[mode_idx] == "full_sandbox_migration"
+
+
+def test_stage2_and_stage3_profiles_are_correct() -> None:
+    """Stage 2 and Stage 3 profiles must match the terminal path."""
+    from migration_factory.control_tower.application.v2_stage_progression import STAGE_CONFIG
+    assert STAGE_CONFIG[2]["profile"] == "springboot-2.7-to-3.5-java17"
+    assert STAGE_CONFIG[2]["jdk_id"] == "java17"
+    assert STAGE_CONFIG[3]["profile"] == "springboot-3.5-java17-to-java21"
+    assert STAGE_CONFIG[3]["jdk_id"] == "java21"
+
+
+def test_stage_run_ids_are_unique(tmp_path: Path) -> None:
+    """Each stage must have a unique run-id to avoid output path collision."""
+    conn = sqlite3.connect(
+        tmp_path / "sa4_runid.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_test_setup(repo)
+    service = _make_worker_service(conn)
+    r1 = service.build_stage1_manifest(job_id="j1", setup_id=setup_id)
+
+    # Extract --run-id value from each
+    run_id_idx = r1.argv.index("--run-id") + 1
+    assert r1.argv[run_id_idx].startswith("v2-"), f"Stage 1 run-id must start with v2-, got {r1.argv[run_id_idx]}"
+
+    # Different job IDs must produce different run-ids
+    r2 = service.build_stage1_manifest(job_id="j2", setup_id=setup_id)
+    run_id_idx2 = r2.argv.index("--run-id") + 1
+    assert r1.argv[run_id_idx] != r2.argv[run_id_idx2], "Different jobs must have unique run-ids"
+
+
+def test_stage_env_includes_all_required_java_maven_vars(tmp_path: Path) -> None:
+    """Stage env manifest must include JAVA_HOME, JAVA11/17/21_HOME, and MAVEN_CMD."""
+    conn = sqlite3.connect(
+        tmp_path / "sa4_env.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_test_setup(repo)
+    service = _make_worker_service(conn)
+    result = service.build_stage1_manifest(job_id="j1", setup_id=setup_id)
+
+    # Fetch the persisted command env
+    cmd_repo = SqliteV2CommandRepository(conn)
+    record = cmd_repo.get(result.command_id)
+    assert record is not None
+    env = json.loads(record.env_json)
+    assert env.get("JAVA_HOME") == "/usr/lib/jvm/java-11"
+    assert env.get("JAVA11_HOME") == "/usr/lib/jvm/java-11"
+    assert env.get("JAVA17_HOME") == "/usr/lib/jvm/java-17"
+    assert env.get("JAVA21_HOME") == "/usr/lib/jvm/java-21"
+    assert env.get("MAVEN_CMD") == "/usr/bin/mvn"
+
+
+def test_stage_env_excludes_secret_keys(tmp_path: Path) -> None:
+    """Sanitized env manifest must never contain secret keys."""
+    conn = sqlite3.connect(
+        tmp_path / "sa4_secret.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_test_setup(repo)
+    service = _make_worker_service(conn)
+    result = service.build_stage1_manifest(job_id="j1", setup_id=setup_id)
+
+    cmd_repo = SqliteV2CommandRepository(conn)
+    record = cmd_repo.get(result.command_id)
+    assert record is not None
+    env = json.loads(record.env_json)
+    secret_markers = ("KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL")
+    for key in env:
+        assert not any(marker in key.upper() for marker in secret_markers), \
+            f"Secret-like key leaked in manifest: {key!r}"

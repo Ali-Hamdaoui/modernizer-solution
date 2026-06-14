@@ -84,6 +84,39 @@ def _api_client(tmp_path, app=None):
     return client, conn
 
 
+class _FakeModelClient:
+    def __init__(
+        self,
+        *,
+        success: bool,
+        deployment: str,
+        failure_reason: str,
+        redacted_summary: str,
+        response_snippet: str,
+    ) -> None:
+        self.success = success
+        self.deployment = deployment
+        self.failure_reason = failure_reason
+        self.redacted_summary = redacted_summary
+        self.response_snippet = response_snippet
+        self.calls = 0
+
+    def smoke(self):
+        self.calls += 1
+
+        from migration_factory.control_tower.application.v2_assistant_model_client import V2ModelSmokeResult
+
+        return V2ModelSmokeResult(
+            success=self.success,
+            deployment=self.deployment,
+            provider="azure_openai",
+            failure_reason=self.failure_reason,
+            redacted_summary=self.redacted_summary,
+            response_snippet=self.response_snippet,
+            latency_ms=1.0,
+        )
+
+
 def _create_ai_hub_layout(root: Path) -> Path:
     (root / "profiles").mkdir(parents=True)
     (root / "catalogs" / "openrewrite").mkdir(parents=True)
@@ -305,6 +338,44 @@ def test_preflight_to_dict(service: V2SetupService, sample_request: CreateSetupR
     assert isinstance(d["readiness"], dict)
     assert isinstance(d["warnings"], list)
     assert isinstance(d["errors"], list)
+    assert "azure_model_deployment" not in d
+
+
+def test_preflight_redacts_model_smoke_warning_and_snippet(
+    service: V2SetupService,
+    sample_request: CreateSetupRequest,
+) -> None:
+    request = CreateSetupRequest(
+        run_name=sample_request.run_name,
+        legacy_app_path=sample_request.legacy_app_path,
+        output_parent_path=sample_request.output_parent_path,
+        ai_hub_path=sample_request.ai_hub_path,
+        java11_home=sample_request.java11_home,
+        java17_home=sample_request.java17_home,
+        java21_home=sample_request.java21_home,
+        maven_cmd=sample_request.maven_cmd,
+        proof_level=sample_request.proof_level,
+        skip_endpoint_smoke=False,
+        migration_flags=sample_request.migration_flags,
+    )
+    fake_client = _FakeModelClient(
+        success=False,
+        deployment="secret-deployment",
+        failure_reason="http_401",
+        redacted_summary="Azure OpenAI smoke failed: C:\\Users\\admin\\secrets.txt bearer token sk-abc123.",
+        response_snippet='{"error":"Authorization: Bearer sk-abc123"}',
+    )
+    service_with_model = V2SetupService(service._repo, model_client=fake_client)  # type: ignore[attr-defined]
+    dto = service_with_model.create_setup(request)
+    preflight = service_with_model.run_preflight(dto.setup_id)
+    d = service_with_model.preflight_to_dict(preflight)
+
+    assert fake_client.calls == 1
+    assert "secret-deployment" not in str(d)
+    assert "sk-abc123" not in str(d)
+    assert "C:\\Users\\admin" not in str(d)
+    assert "azure_model_deployment" not in d
+    assert "Bearer" not in d["azure_model_response_snippet"]
 
 
 def test_readiness_to_dict_none(service: V2SetupService) -> None:

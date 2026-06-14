@@ -15,7 +15,7 @@ from uuid import uuid4
 
 MUTATION_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 DEFAULT_FRONTEND_CLIENT_ID = "control-tower-frontend"
-_WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\\s]*")
+_WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z]:)(?<![A-Za-z])[A-Za-z]:[\\/](?:[^\\/\s:]*[\\/])*[^\\/\s:]*")
 _POSIX_ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_])/(?:[^/\s]+/)*[^/\s]*")
 _ENV_ASSIGNMENT_RE = re.compile(r"\b[A-Z][A-Z0-9_]{1,}=[^\s]+")
 _SECRET_KEY_RE = re.compile(r"(secret|token|password|credential|api[_-]?key)", re.IGNORECASE)

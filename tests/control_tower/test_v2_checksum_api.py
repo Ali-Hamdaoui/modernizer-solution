@@ -171,7 +171,7 @@ class TestChecksumAPI:
         assert "checksum" in response.text.lower() or "mismatch" in response.text.lower()
 
     def test_approval_idempotency(self, tmp_path: Path) -> None:
-        """Approving the same card twice should fail on second attempt."""
+        """Duplicate approve must succeed idempotently."""
         client, conn = _api_client(tmp_path)
         card_id = _create_pending_card(conn, "idempotent")
 
@@ -183,11 +183,11 @@ class TestChecksumAPI:
         )
         assert resp1.status_code == 200
 
-        # Second approve — should fail
+        # Second approve — idempotent, must succeed
         resp2 = client.post(
             f"/v1/v2/jobs/j-1/approvals/{card_id}/approve",
             json={"expected_checksum": "idempotent"},
             headers=_mutation_headers(),
         )
-        assert resp2.status_code == 400
-        assert "already" in resp2.text.lower()
+        assert resp2.status_code == 200
+        assert resp2.json()["decision"] == "approved"

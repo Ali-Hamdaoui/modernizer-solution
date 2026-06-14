@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from migration_factory.control_tower.application.redaction import (
     redact_absolute_paths,
+    redact_model_summary,
 )
 from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
@@ -86,6 +87,9 @@ class PreflightDto:
     pipeline_route_ready: bool
     legacy_marker_ready: bool
     output_parent_gate_ready: bool
+    azure_model_ready: bool
+    azure_model_failure_reason: str
+    azure_model_response_snippet: str
     readiness: dict[str, Any]
     warnings: tuple[str, ...]
     errors: tuple[str, ...]
@@ -129,8 +133,13 @@ def compute_setup_checksum(request: CreateSetupRequest) -> str:
 class V2SetupService:
     """Application service for V2 migration setup drafts."""
 
-    def __init__(self, repo: SqliteV2SetupRepository) -> None:
+    def __init__(
+        self,
+        repo: SqliteV2SetupRepository,
+        model_client: Any | None = None,
+    ) -> None:
         self._repo = repo
+        self._model_client = model_client
 
     def create_setup(self, request: CreateSetupRequest) -> SetupDto:
         """Create a new migration setup draft."""
@@ -176,7 +185,7 @@ class V2SetupService:
         if record is None:
             raise ValueError(f"Setup {setup_id!r} not found")
 
-        readiness, warnings, errors = self._compute_readiness(record)
+        readiness, warnings, errors, azure_meta = self._compute_readiness(record)
 
         all_ready = all(
             v for k, v in readiness.items()
@@ -235,6 +244,9 @@ class V2SetupService:
             pipeline_route_ready=readiness.get("pipeline_route_ready", True),
             legacy_marker_ready=readiness.get("legacy_marker_ready", True),
             output_parent_gate_ready=readiness.get("output_parent_gate_ready", True),
+            azure_model_ready=readiness.get("azure_model_ready", True),
+            azure_model_failure_reason=azure_meta["failure_reason"],
+            azure_model_response_snippet=azure_meta["snippet"],
             readiness=readiness,
             warnings=tuple(warnings),
             errors=tuple(errors),
@@ -322,6 +334,9 @@ class V2SetupService:
             "pipeline_route_ready": dto.pipeline_route_ready,
             "legacy_marker_ready": dto.legacy_marker_ready,
             "output_parent_gate_ready": dto.output_parent_gate_ready,
+            "azure_model_ready": dto.azure_model_ready,
+            "azure_model_failure_reason": dto.azure_model_failure_reason,
+            "azure_model_response_snippet": dto.azure_model_response_snippet,
             "readiness": dto.readiness,
             "warnings": list(dto.warnings),
             "errors": list(dto.errors),
@@ -343,12 +358,11 @@ class V2SetupService:
     def _compute_readiness(
         self,
         record: V2MigrationSetupRecord,
-    ) -> tuple[dict[str, bool], list[str], list[str]]:
+    ) -> tuple[dict[str, bool], list[str], list[str], dict[str, str]]:
         """Compute deterministic readiness checks.
 
-        In the current version, these are simulated checks that verify
-        path existence and structure. Real subprocess checks (JDK version,
-        Maven version) are added by A4/A7.
+        Returns (readiness_dict, warnings, errors, azure_smoke_meta).
+        azure_smoke_meta contains keys: deployment, failure_reason, snippet.
         """
         readiness: dict[str, bool] = {}
         warnings: list[str] = []
@@ -451,10 +465,33 @@ class V2SetupService:
         # Output parent gate
         readiness["output_parent_gate_ready"] = output_parent_writable
 
-        # Azure model readiness is NOT a deterministic gate
-        readiness["azure_model_ready"] = True  # Not blocking
+        # Azure model readiness — perform real smoke if model client is available
+        # and endpoint smoke is not explicitly skipped.
+        azure_smoke_ready = True
+        azure_deployment = ""
+        azure_failure_reason = ""
+        azure_snippet = ""
+        if self._model_client is not None and not record.skip_endpoint_smoke:
+            try:
+                smoke_result = self._model_client.smoke()
+                azure_smoke_ready = smoke_result.success
+                azure_deployment = smoke_result.deployment
+                azure_failure_reason = smoke_result.failure_reason
+                azure_snippet = redact_model_summary(smoke_result.response_snippet)
+                if not smoke_result.success:
+                    warnings.append(f"Azure model smoke failed: {redact_model_summary(smoke_result.redacted_summary)}")
+            except Exception as exc:
+                azure_smoke_ready = False
+                azure_failure_reason = "invalid_response"
+                warnings.append(f"Azure model smoke error: {redact_model_summary(str(exc))}")
+        readiness["azure_model_ready"] = azure_smoke_ready
 
-        return readiness, warnings, errors
+        azure_meta = {
+            "deployment": azure_deployment,
+            "failure_reason": azure_failure_reason,
+            "snippet": azure_snippet,
+        }
+        return readiness, warnings, errors, azure_meta
 
     def _record_to_dto(self, record: V2MigrationSetupRecord) -> SetupDto:
         try:

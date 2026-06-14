@@ -226,6 +226,109 @@ class TestApprovalEndpoints:
         assert loaded.status == "approved"
         conn2.close()
 
+    def test_duplicate_approve_is_idempotent(self, tmp_path: Path) -> None:
+        """Duplicate approve clicks must succeed with 200."""
+        client, conn = _api_client(tmp_path)
+        card_id = _create_pending_card(conn)
+
+        # First approve
+        r1 = client.post(
+            f"/v1/v2/jobs/job-1/approvals/{card_id}/approve",
+            json={"expected_checksum": "chk-123"},
+            headers=_mutation_headers(),
+        )
+        assert r1.status_code == 200
+        assert r1.json()["decision"] == "approved"
+
+        # Second approve (idempotent)
+        r2 = client.post(
+            f"/v1/v2/jobs/job-1/approvals/{card_id}/approve",
+            json={"expected_checksum": "chk-123"},
+            headers=_mutation_headers(),
+        )
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["decision"] == "approved"
+
+    def test_duplicate_approve_wrong_checksum_still_fails(self, tmp_path: Path) -> None:
+        """Even after approval, wrong checksum must fail."""
+        client, conn = _api_client(tmp_path)
+        card_id = _create_pending_card(conn)
+
+        # First approve
+        client.post(
+            f"/v1/v2/jobs/job-1/approvals/{card_id}/approve",
+            json={"expected_checksum": "chk-123"},
+            headers=_mutation_headers(),
+        )
+
+        # Retry with wrong checksum
+        r = client.post(
+            f"/v1/v2/jobs/job-1/approvals/{card_id}/approve",
+            json={"expected_checksum": "wrong"},
+            headers=_mutation_headers(),
+        )
+        assert r.status_code == 400
+        assert "checksum" in r.text.lower()
+
+    def test_duplicate_reject_is_idempotent(self, tmp_path: Path) -> None:
+        """Duplicate reject clicks must succeed with 200."""
+        client, conn = _api_client(tmp_path)
+        card_id = _create_pending_card(conn)
+
+        # First reject
+        r1 = client.post(
+            f"/v1/v2/jobs/job-1/approvals/{card_id}/reject",
+            json={},
+            headers=_mutation_headers(),
+        )
+        assert r1.status_code == 200
+        assert r1.json()["status"] == "rejected"
+
+        # Second reject (idempotent)
+        r2 = client.post(
+            f"/v1/v2/jobs/job-1/approvals/{card_id}/reject",
+            json={},
+            headers=_mutation_headers(),
+        )
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["status"] == "rejected"
+
+    def test_reject_fails_after_approve(self, tmp_path: Path) -> None:
+        """Cannot reject an already-approved card."""
+        client, conn = _api_client(tmp_path)
+        card_id = _create_pending_card(conn)
+
+        client.post(
+            f"/v1/v2/jobs/job-1/approvals/{card_id}/approve",
+            json={"expected_checksum": "chk-123"},
+            headers=_mutation_headers(),
+        )
+
+        r = client.post(
+            f"/v1/v2/jobs/job-1/approvals/{card_id}/reject",
+            json={},
+            headers=_mutation_headers(),
+        )
+        assert r.status_code == 400
+
+    def test_approve_fails_after_reject(self, tmp_path: Path) -> None:
+        """Cannot approve an already-rejected card."""
+        client, conn = _api_client(tmp_path)
+        card_id = _create_pending_card(conn)
+
+        client.post(
+            f"/v1/v2/jobs/job-1/approvals/{card_id}/reject",
+            json={},
+            headers=_mutation_headers(),
+        )
+
+        r = client.post(
+            f"/v1/v2/jobs/job-1/approvals/{card_id}/approve",
+            json={"expected_checksum": "chk-123"},
+            headers=_mutation_headers(),
+        )
+        assert r.status_code == 400
+
 
 # ── Stage progression endpoint tests ────────────────────────────────
 

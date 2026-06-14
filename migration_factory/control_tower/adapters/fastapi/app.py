@@ -165,6 +165,7 @@ from migration_factory.control_tower.adapters.fastapi.security import (
     public_error_payload,
     redact_public_data,
 )
+from migration_factory.control_tower.application.redaction import redact_model_summary
 
 
 UnitOfWorkFactory = Any
@@ -840,7 +841,10 @@ def create_app(
     ) -> dict[str, Any]:
         """Run preflight readiness checks for a setup."""
         with unit_of_work_factory() as uow:
-            service = V2SetupService(uow.v2_setups)
+            service = V2SetupService(
+                uow.v2_setups,
+                model_client=app.state.v2_assistant_model_client,
+            )
             try:
                 dto = service.run_preflight(
                     setup_id=payload.setup_id,
@@ -861,6 +865,28 @@ def create_app(
             service = V2SetupService(uow.v2_setups)
             readiness = service.get_readiness(setup_id)
         return service.readiness_to_dict(readiness)
+
+    # ------------------------------------------------------------------
+    # V2 Azure model smoke check
+    # ------------------------------------------------------------------
+
+    @app.post("/v1/v2/azure/check-smoke")
+    def check_azure_smoke() -> dict[str, Any]:
+        """Check Azure OpenAI model readiness with a real smoke call.
+
+        Sends a tiny prompt to the configured deployment and returns
+        a sanitised result.  Never exposes API keys or secrets.
+        """
+        client = app.state.v2_assistant_model_client
+        result = client.smoke()
+        return {
+            "success": result.success,
+            "provider": result.provider,
+            "failure_reason": result.failure_reason,
+            "redacted_summary": redact_model_summary(result.redacted_summary),
+            "response_snippet": redact_model_summary(result.response_snippet),
+            "latency_ms": result.latency_ms,
+        }
 
     # ------------------------------------------------------------------
     # V2 Migration job creation endpoint (A6)
@@ -952,6 +978,7 @@ def create_app(
 
         Builds a backend-owned command manifest from the V2 setup.
         Browser cannot supply argv or env values.
+        Blocks start when AI is required and the model smoke failed.
         """
         with unit_of_work_factory() as uow:
             job = _require_v2_job(uow, payload.job_id)
@@ -961,6 +988,26 @@ def create_app(
                     "JOB_SETUP_MISMATCH",
                     "Stage start setup_id must match the persisted job.",
                 )
+            # Check AI readiness from the latest persisted preflight
+            setup = uow.v2_setups.get(job.setup_id)
+            if setup is not None and not setup.skip_endpoint_smoke:
+                preflight_svc = V2SetupService(uow.v2_setups)
+                readiness = preflight_svc.get_readiness(job.setup_id)
+                if readiness is None:
+                    raise _error(
+                        status.HTTP_400_BAD_REQUEST,
+                        "AI_MODEL_SMOKE_REQUIRED",
+                        "Run preflight before starting when AI smoke is required.",
+                    )
+                azure_ready = readiness.gates.get("azure_model_ready", True)
+                if not azure_ready:
+                    raise _error(
+                        status.HTTP_400_BAD_REQUEST,
+                        "AI_MODEL_NOT_READY",
+                        "Azure model smoke failed. "
+                        "Migration cannot start when AI is required and the model is unavailable. "
+                        "Run preflight to see the failure reason.",
+                    )
             service = V2WorkerStageService(
                 setup_repo=uow.v2_setups,
                 command_repo=uow.v2_commands,
@@ -1011,7 +1058,7 @@ def create_app(
         with unit_of_work_factory() as uow:
             _require_v2_job(uow, job_id)
             events = uow.v2_events.list_by_job(job_id)
-        return _v2_pipeline_projection(job_id, events)
+        return redact_public_data(_v2_pipeline_projection(job_id, events))
 
     @app.get("/v1/v2/migration-jobs/{job_id}/failure-summary")
     def get_v2_job_failure_summary(job_id: str) -> dict[str, Any]:
@@ -1022,7 +1069,7 @@ def create_app(
         with unit_of_work_factory() as uow:
             _require_v2_job(uow, job_id)
             events = uow.v2_events.list_by_job(job_id)
-        return _v2_failure_summary(job_id, events)
+        return redact_public_data(_v2_failure_summary(job_id, events))
 
     @app.get("/v1/v2/migration-jobs/{job_id}/events")
     async def stream_v2_job_events(
@@ -1081,28 +1128,32 @@ def create_app(
                 approval_repo=uow.v2_approvals,
             )
             try:
+                card_before = service.get_card(card_id)
                 resume = service.approve(
                     card_id=card_id,
                     expected_checksum=payload.expected_checksum,
                     job_id=job_id,
                     run_dir=run_dir,
                 )
+                is_new_approve = card_before is None or card_before.status != "approved"
             except ValueError as exc:
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,
                     "APPROVAL_FAILED",
                     str(exc),
                 ) from exc
-            _append_v2_event(
-                uow,
-                job_id=job_id,
-                stage=resume.stage_index,
-                event_type="approval_resume_queued",
-                status="queued",
-                message="Approval accepted; backend-owned resume command queued.",
-                payload={"card_id": card_id, "resume_id": resume.resume_id},
-            )
-        app.state.v2_orchestrator_runner.start_resume(job_id=job_id, resume_id=resume.resume_id)
+            if is_new_approve and resume.resume_id:
+                _append_v2_event(
+                    uow,
+                    job_id=job_id,
+                    stage=resume.stage_index,
+                    event_type="approval_resume_queued",
+                    status="queued",
+                    message="Approval accepted; backend-owned resume command queued.",
+                    payload={"card_id": card_id, "resume_id": resume.resume_id},
+                )
+        if is_new_approve and resume.resume_id:
+            app.state.v2_orchestrator_runner.start_resume(job_id=job_id, resume_id=resume.resume_id)
         asyncio.run(app.state.public_event_notifier.notify())
         return service.resume_to_dict(resume)
 
@@ -1216,6 +1267,15 @@ def create_app(
                 role="user",
                 content=payload.question,
                 correlation_id=payload.correlation_id,
+            )
+            # Emit model_invocation_started event before model call
+            uow.v2_events.save(
+                job_id=job_id,
+                stage=None,
+                event_type="model_invocation_started",
+                status="running",
+                message="Assistant model invocation started.",
+                payload={"provider": "azure_openai", "role": "assistant"},
             )
             fallback_answer = _build_v2_assistant_answer(
                 question=payload.question,
@@ -3104,9 +3164,47 @@ def _build_v2_assistant_answer(
         stage_lines.append(f"  Stage {stage_idx}: {stage_status_events[stage_idx]}")
     stage_summary = "\n".join(stage_lines) if stage_lines else "  No stage events recorded yet."
 
+    # Extract artifact kinds
+    artifact_kinds: list[str] = []
+    for event in events:
+        if event.type == "artifact_written":
+            try:
+                payload = json.loads(event.payload_json or "{}")
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+            kind = str(payload.get("artifact_kind", ""))
+            if kind and kind not in artifact_kinds:
+                artifact_kinds.append(kind)
+
+    # Extract diagnostic info from failures
+    diagnostic_lines: list[str] = []
+    for failure in failures[-3:]:
+        diag_parts: list[str] = []
+        try:
+            payload = json.loads(failure.payload_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        result_kind = str(payload.get("result_kind", ""))
+        if result_kind:
+            diag_parts.append(result_kind.replace("_", " "))
+        matched = str(payload.get("matched_line", ""))
+        if matched:
+            diag_parts.append(f"matched: {_bounded_event_text(matched, limit=120)}")
+        build_tool = str(payload.get("build_tool", ""))
+        if build_tool:
+            diag_parts.append(build_tool)
+        module = str(payload.get("module", ""))
+        if module:
+            diag_parts.append(f"module: {module}")
+        if diag_parts:
+            diagnostic_lines.append(f"  {failure.type}: {'; '.join(diag_parts)}")
+    diagnostics = "\n".join(diagnostic_lines) if diagnostic_lines else ""
+
     # Determine action
     if failures:
         failure_msgs = [f"{event.type}: {event.message}" for event in failures[-3:]]
+        if diagnostics:
+            failure_msgs.append(f"Diagnostics:\n{diagnostics}")
         action = f"Failed: {'; '.join(failure_msgs)}. Review failure evidence and decide whether to create a bounded repair proposal."
     elif pending_approvals:
         card = pending_approvals[-1]
@@ -3135,12 +3233,23 @@ def _build_v2_assistant_answer(
         f"Repair loop active ({len(repair_events)} repair events)." if repair_events
         else "No repair loop active."
     )
+    artifact_text = f"Artifacts generated: {', '.join(artifact_kinds[-10:])}." if artifact_kinds else "No artifacts generated yet."
+
+    # Model availability note
+    model_note = ""
+    if not _model_client_available():
+        model_note = (
+            "\nNote: Azure OpenAI model is not configured (missing endpoint, key, or deployment). "
+            "This is a deterministic fallback response. AI-backed coaching is unavailable until model readiness is restored."
+        )
+
     answer = (
         f"Question: {_bounded_event_text(question)}\n\n"
         f"Stage Status:\n{stage_summary}\n\n"
         f"{latest_text}\n"
         f"{command_text} {approval_state} {repair_state}\n"
-        f"Next operator action: {action}\n\n"
+        f"{artifact_text}\n"
+        f"Next operator action: {action}{model_note}\n\n"
         "Guardrails: I can explain status and summarize evidence only. I cannot execute, approve, write files, "
         "change route/stage, choose Maven goals, choose deployments, or override proof. "
         "All migration execution is backend-owned."
@@ -3155,6 +3264,7 @@ def _build_v2_assistant_prompt(
     pipeline: dict[str, Any],
     events: tuple[Any, ...],
     approvals: tuple[Any, ...],
+    max_chars: int = 8000,
 ) -> str:
     latest_events = [_v2_event_payload(event) for event in events[-12:] if event.type not in _RAW_EVENT_TYPES]
     pending_approvals = [
@@ -3197,6 +3307,20 @@ def _build_v2_assistant_prompt(
             stage_statuses[stage_key] = "failed"
         elif event.status == "running" and stage_key not in stage_statuses:
             stage_statuses.setdefault(stage_key, "running")
+    # Derive artifact kinds from events
+    artifact_kinds: list[str] = []
+    for event in events:
+        if event.type == "artifact_written":
+            try:
+                payload = json.loads(event.payload_json or "{}")
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+            kind = str(payload.get("artifact_kind", ""))
+            if kind and kind not in artifact_kinds:
+                artifact_kinds.append(kind)
+    # Build model/fallback status
+    model_status = "available" if _model_client_available() else "fallback"
+    model_source = "azure_openai" if _model_client_available() else "deterministic"
     prompt = {
         "question": question,
         "job": {
@@ -3213,6 +3337,11 @@ def _build_v2_assistant_prompt(
             "failures": failure_events[-5:],
             "repair": repair_events[-5:],
         },
+        "artifact_kinds": artifact_kinds[-20:],
+        "model": {
+            "status": model_status,
+            "source": model_source,
+        },
         "guardrails": {
             "read_only": True,
             "cannot_execute": True,
@@ -3223,7 +3352,32 @@ def _build_v2_assistant_prompt(
             "llm_cannot_approve_exact_checksum_required": True,
         },
     }
-    return json.dumps(redact_public_data(prompt), separators=(",", ":"), sort_keys=True)
+    result = json.dumps(redact_public_data(prompt), separators=(",", ":"), sort_keys=True)
+    # Bound context length to prevent token overflow
+    if len(result) > max_chars:
+        # Shrink the largest fields: latest_events and failure_summary
+        prompt["latest_events"] = latest_events[-3:]
+        prompt["failure_summary"]["failures"] = failure_events[-2:]
+        prompt["failure_summary"]["repair"] = repair_events[-2:]
+        result = json.dumps(redact_public_data(prompt), separators=(",", ":"), sort_keys=True)
+        if len(result) > max_chars:
+            # Ultimate truncation: keep only critical fields
+            prompt["latest_events"] = []
+            prompt["pipeline_rows"] = [
+                {"key": r["key"], "status": r["status"]}
+                for r in prompt["pipeline_rows"]
+            ]
+            result = json.dumps(redact_public_data(prompt), separators=(",", ":"), sort_keys=True)
+    return result[:max_chars]
+
+
+def _model_client_available() -> bool:
+    """Check if the Azure OpenAI model client is configured and reachable."""
+    import os as _os
+    endpoint = _os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
+    api_key = _os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
+    deployment = _os.environ.get("AZURE_OPENAI_ASSISTANT_DEPLOYMENT", "").strip()
+    return bool(endpoint and api_key and deployment)
 
 
 def _v2_resume_run_dir_from_commands(commands: tuple[Any, ...], stage_index: int, run_id: str) -> str:
@@ -3301,6 +3455,9 @@ _IMPORTANT_EVENT_TYPES = {
     "repair_fallback_generated",
     "copilot_repair_invalid_response",
     "next_stage_queued",
+    "final_report_started",
+    "final_report_completed",
+    "final_report_failed",
 }
 
 
@@ -3376,7 +3533,11 @@ def _pipeline_row_status(key: str, events: list[Any]) -> str:
 
 
 def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
-    """Build a redacted failure/repair summary from V2 events."""
+    """Build a redacted failure/repair summary from V2 events.
+
+    Includes BuildErrorContract diagnostic fields forwarded by build_failed
+    and transform_failed events.
+    """
     failures: list[dict[str, Any]] = []
     for event in events:
         if event.status == "failed" or event.type.endswith("_failed"):
@@ -3384,6 +3545,7 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
                 payload = json.loads(event.payload_json or "{}")
             except (json.JSONDecodeError, TypeError):
                 payload = {}
+            result_kind = str(payload.get("result_kind", ""))
             failures.append({
                 "type": event.type,
                 "stage": event.stage,
@@ -3395,6 +3557,19 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
                 "repair_loop_status": str(payload.get("repair_loop_status", "")),
                 "copilot_status": str(payload.get("copilot_invocation_status", "")),
                 "repair_fallback": str(payload.get("repair_fallback_generated", "")),
+                # ── SA4 diagnostic fields ──
+                "matched_line": _safe_failure_str(payload.get("matched_line")),
+                "command": _safe_failure_list(payload.get("command") or payload.get("resolved_command")),
+                "requested_command": _safe_failure_list(payload.get("requested_command")),
+                "build_tool": _safe_failure_str(payload.get("build_tool")),
+                "module": _safe_failure_str(payload.get("module")),
+                "main_class": _safe_failure_str(payload.get("main_class")),
+                "unit_id": _safe_failure_str(payload.get("unit_id")),
+                "result_kind": result_kind,
+                "java_home": _safe_failure_str(payload.get("java_home")),
+                "detected_version": _safe_failure_str(payload.get("detected_version")),
+                "required_minimum": _safe_failure_str(payload.get("required_minimum")),
+                "next_operator_action": _next_operator_action(result_kind),
             })
     repair_events_typed = [
         event for event in events
@@ -3422,6 +3597,60 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
         "repair_events": repair_summary,
         "artifact_kinds": artifact_kinds,
     }
+
+
+def _safe_failure_str(value: Any) -> str:
+    """Return sanitized string or empty string for failure diagnostic fields.
+
+    Values exceeding 256 chars are truncated. Sensitive content is redacted.
+    Paths, secrets, and env assignments are scrubbed as defense-in-depth
+    even though the orchestrator also redacts before persisting events.
+    """
+    if value is None:
+        return ""
+    from migration_factory.control_tower.application.redaction import redact_model_summary
+    text = redact_model_summary(str(value))
+    if len(text) > 256:
+        text = text[:256] + "...[truncated]"
+    return text
+
+
+def _safe_failure_list(value: Any) -> list[str]:
+    """Return sanitized string list for command fields."""
+    if value is None:
+        return []
+    result: list[str] = []
+    for item in value if isinstance(value, (list, tuple)) else []:
+        txt = _safe_failure_str(item)
+        if txt:
+            result.append(txt)
+    return result[:6]  # cap at 6 entries
+
+
+def _next_operator_action(result_kind: str) -> str:
+    """Suggest next operator action from build error result kind."""
+    kind = result_kind.lower()
+    action_map: dict[str, str] = {
+        "dependency_error": "Check dependency coordinates and repository access. "
+                             "Review matched_line for missing artifact and verify network/proxy settings.",
+        "compilation_error": "Review the matched_line for Java compilation errors. "
+                              "Fix source code, check Java version compatibility, or adjust compiler flags.",
+        "jdk_version_mismatch": "The detected Java version does not meet the minimum required for this stage. "
+                                 "Update JAVA_HOME or re-run preflight with the correct JDK path.",
+        "missing_jdk": "No JDK was found for this stage. "
+                        "Verify JAVA_HOME, JAVA11_HOME, JAVA17_HOME, or JAVA21_HOME are set in the setup.",
+        "maven_not_found": "Maven command was not found. Verify MAVEN_CMD path or Maven installation.",
+        "maven_version_too_old": "The installed Maven version is too old for this Spring Boot target. "
+                                  "Upgrade Maven or switch profile.",
+        "project_detection_error": "Could not detect a Java project at the sandbox path. "
+                                    "Verify that the previous stage produced valid output.",
+        "build_timeout": "Build exceeded the timeout. Consider increasing AI_MIGRATION_COPILOT_TIMEOUT_SECONDS "
+                          "or investigating performance issues.",
+        "startup_validation_failed": "Application started but validation checks failed. "
+                                      "Review logs for startup errors or health check failures.",
+        "command_error": "Build command failed. Review the matched_line and stderr for details.",
+    }
+    return action_map.get(kind, "Review build failure details and logs. If the issue persists, check preflight configuration.")
 
 
 def _event_phase_key(event: Any) -> str:

@@ -179,7 +179,7 @@ def test_v2_runner_passes_non_secret_copilot_env_and_excludes_secrets(monkeypatc
     monkeypatch.setenv("AI_MIGRATION_COPILOT_MODEL", "gpt-test")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "secret")
     monkeypatch.setenv("GITHUB_TOKEN", "secret")
-    popen = _FakePopen(stdout=[json.dumps({"final_status": "DONE"}) + "\n"], stderr=[], exit_code=0)
+    popen = _FakePopen(stdout=[json.dumps({"final_status": "DONE", "sandbox_path": "/tmp/sandbox/s1"}) + "\n"], stderr=[], exit_code=0)
     runner = V2OrchestratorRunner(
         unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
         popen_factory=popen,
@@ -252,6 +252,146 @@ def test_v2_runner_does_not_auto_queue_next_stage_on_failure(tmp_path: Path) -> 
     assert "next_stage_queued" not in event_types
 
 
+def test_v2_runner_does_not_auto_queue_on_test_failure(tmp_path: Path) -> None:
+    """Stage with TEST_FAILED must emit stage_failed, not stage_completed."""
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    result = {
+        "final_status": "TEST_FAILED",
+        "test_status": "TEST_FAILED",
+        "sandbox_path": "/tmp/sandbox",
+    }
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[json.dumps(result) + "\n"], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "stage_failed")
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [event.type for event in events]
+    assert "next_stage_queued" not in event_types
+    assert "stage_completed" not in event_types
+
+
+def test_v2_runner_does_not_auto_queue_on_transform_failure(tmp_path: Path) -> None:
+    """Stage with TRANSFORM_FAILED must not auto-progress."""
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    result = {
+        "final_status": "TRANSFORM_FAILED",
+        "transform_status": "TRANSFORM_FAILED",
+        "sandbox_path": "/tmp/sandbox",
+    }
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[json.dumps(result) + "\n"], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "stage_failed")
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [event.type for event in events]
+    assert "next_stage_queued" not in event_types
+    assert "stage_completed" not in event_types
+
+
+def test_v2_runner_does_not_auto_queue_without_sandbox(tmp_path: Path) -> None:
+    """Stage 1 with DONE but no sandbox_path must emit stage_failed."""
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    result = {"final_status": "DONE"}  # no sandbox_path
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[json.dumps(result) + "\n"], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "stage_failed")
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [event.type for event in events]
+    assert "next_stage_queued" not in event_types
+    assert "stage_completed" not in event_types
+
+
+def test_v2_runner_emits_final_report_events_for_stage3(tmp_path: Path) -> None:
+    """Stage 3 completion emits final_report_started + final_report_completed."""
+    conn = _conn(tmp_path)
+    # Save a Stage 3 command directly (not via _save_command which defaults to stage_index=1)
+    now = utc_now_text()
+    SqliteUnitOfWork(conn).v2_commands.save(
+        V2StageCommandRecord(
+            command_id="cmd-s3",
+            job_id="job-1",
+            stage_index=3,
+            manifest_checksum="checksum",
+            argv_json=json.dumps(["python", "-m", "migration_factory.orchestrator.runner"]),
+            env_json=json.dumps({"JAVA_HOME": "C:/jdk21", "JAVA11_HOME": "C:/jdk11", "JAVA17_HOME": "C:/jdk17", "JAVA21_HOME": "C:/jdk21", "MAVEN_CMD": "C:/maven/bin/mvn.cmd"}),
+            status="manifest_ready",
+            created_at=now,
+            updated_at=now,
+            result_json=None,
+        )
+    )
+    result = {
+        "final_status": "DONE",
+        "sandbox_path": "/tmp/sandbox/s3",
+    }
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[json.dumps(result) + "\n"], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+    runner.start(job_id="job-1", command_id="cmd-s3")
+    _wait_for_event(conn, "job-1", "final_report_completed")
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [event.type for event in events]
+    assert "final_report_started" in event_types
+    assert "final_report_completed" in event_types
+    assert "stage_completed" in event_types
+    # Stage 3 must NOT queue a next stage
+    assert "next_stage_queued" not in event_types
+
+
+def test_v2_runner_does_not_progress_past_unapproved_card(tmp_path: Path) -> None:
+    """Stage with a pending approval card must not auto-progress."""
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    now = utc_now_text()
+    SqliteUnitOfWork(conn).v2_approvals.save_card(
+        V2ApprovalDecisionRecord(
+            card_id="card-pending",
+            job_id="job-1",
+            interrupt_id="run-1",
+            request_checksum="chk",
+            stage_index=1,
+            summary="pending approval",
+            status="pending",
+            created_at=now,
+        )
+    )
+    result = {
+        "final_status": "DONE",
+        "sandbox_path": "/tmp/sandbox",
+    }
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[json.dumps(result) + "\n"], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "stage_blocked_for_approval")
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [event.type for event in events]
+    assert "next_stage_queued" not in event_types
+    assert "stage_completed" not in event_types
+
+
 def test_v2_runner_emits_approval_started_on_resume(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _save_command(conn)
@@ -293,3 +433,132 @@ def test_v2_runner_emits_approval_started_on_resume(tmp_path: Path) -> None:
     event_types = [event.type for event in events]
     assert "approval_started" in event_types
     assert "resume_started" in event_types
+
+
+def test_v2_runner_resume_passes_env_manifest_from_original_command(tmp_path: Path) -> None:
+    """Resume must inherit env manifest (JAVA_HOME, etc.) from the original stage command."""
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    # Save a resume command
+    now = utc_now_text()
+    SqliteUnitOfWork(conn).v2_approvals.save_card(
+        V2ApprovalDecisionRecord(
+            card_id="card-1",
+            job_id="job-1",
+            interrupt_id="run-1",
+            request_checksum="chk",
+            stage_index=1,
+            summary="test",
+            status="approved",
+            created_at=now,
+        )
+    )
+    SqliteUnitOfWork(conn).v2_approvals.save_resume(
+        V2ResumeCommandRecord(
+            resume_id="resume-1",
+            card_id="card-1",
+            decision="approved",
+            job_id="job-1",
+            stage_index=1,
+            command_json=json.dumps(["python", "-m", "resume"]),
+            created_at=now,
+        )
+    )
+    popen = _FakePopen(stdout=[json.dumps({"final_status": "DONE"}) + "\n"], stderr=[], exit_code=0)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    runner.start_resume(job_id="job-1", resume_id="resume-1")
+    _wait_for_event(conn, "job-1", "process_started")
+
+    assert popen.calls
+    env = popen.calls[0]["env"]
+    # Must inherit MAVEN_CMD and JAVA_HOME from the original command's env_json
+    assert env.get("MAVEN_CMD") == "C:/maven/bin/mvn.cmd"
+    assert env.get("JAVA_HOME") == "C:/jdk11"
+    assert env.get("JAVA11_HOME") == "C:/jdk11"
+    assert env.get("JAVA17_HOME") == "C:/jdk17"
+    assert env.get("JAVA21_HOME") == "C:/jdk21"
+
+
+def test_v2_runner_emits_diagnostic_fields_in_build_failed(tmp_path: Path) -> None:
+    """Build failure events must include matched_line, command, module, and other contract fields."""
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    result = {
+        "final_status": "BUILD_FAILED_IN_SANDBOX",
+        "build_status": "BUILD_FAILED_IN_SANDBOX",
+        "build_validation": {
+            "matched_line": "[ERROR] Failed to resolve: com.example:missing-lib:1.0",
+            "command": ["mvn", "compile", "-pl", "my-module"],
+            "requested_command": ["mvn", "compile"],
+            "resolved_command": ["mvn", "compile", "-pl", "my-module"],
+            "build_tool": "maven",
+            "result_kind": "dependency_error",
+            "message": "Java application dependency resolution failed",
+            "module": "my-module",
+        },
+    }
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[json.dumps(result) + "\n"], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "build_failed")
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    build_failed_events = [e for e in events if e.type == "build_failed"]
+    assert build_failed_events
+    payload = json.loads(build_failed_events[-1].payload_json)
+    assert payload.get("matched_line") is not None
+    assert "com.example:missing-lib" in str(payload.get("matched_line"))
+    assert payload.get("build_tool") == "maven"
+    assert payload.get("result_kind") == "dependency_error"
+    assert payload.get("module") == "my-module"
+    # Verify command fields are present
+    assert payload.get("command") == ["mvn", "compile", "-pl", "my-module"]
+
+
+def test_v2_runner_resume_no_env_manifest_fallback(tmp_path: Path) -> None:
+    """Resume without any original stage command should still work (empty manifest)."""
+    conn = _conn(tmp_path)
+    now = utc_now_text()
+    SqliteUnitOfWork(conn).v2_approvals.save_card(
+        V2ApprovalDecisionRecord(
+            card_id="card-1",
+            job_id="job-1",
+            interrupt_id="run-1",
+            request_checksum="chk",
+            stage_index=1,
+            summary="test",
+            status="approved",
+            created_at=now,
+        )
+    )
+    SqliteUnitOfWork(conn).v2_approvals.save_resume(
+        V2ResumeCommandRecord(
+            resume_id="resume-1",
+            card_id="card-1",
+            decision="approved",
+            job_id="job-1",
+            stage_index=1,
+            command_json=json.dumps(["python", "-m", "resume"]),
+            created_at=now,
+        )
+    )
+    popen = _FakePopen(stdout=[json.dumps({"final_status": "DONE"}) + "\n"], stderr=[], exit_code=0)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    runner.start_resume(job_id="job-1", resume_id="resume-1")
+    _wait_for_event(conn, "job-1", "process_started")
+    # Should not crash — just works with empty manifest
+    assert popen.calls
