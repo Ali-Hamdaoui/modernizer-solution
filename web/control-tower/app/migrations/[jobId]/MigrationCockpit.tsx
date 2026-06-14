@@ -356,14 +356,44 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
             <div key={i} className="failure-card">
               <div className="stage-header">
                 <strong>{f.type}</strong>
+                <span className="meta">Stage {f.stage ?? "?"}</span>
                 <span className="status-badge failed">FAILED</span>
               </div>
               <p>{f.message}</p>
+              {f.result_kind && (
+                <p className="meta">
+                  <strong>Root cause:</strong>{" "}
+                  {f.result_kind.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                </p>
+              )}
+              {f.matched_line && (
+                <pre className="raw-log-line">{f.matched_line}</pre>
+              )}
+              {f.command.length > 0 && (
+                <p className="meta">Command: <code>{f.command.join(" ")}</code></p>
+              )}
+              {f.build_tool && <p className="meta">Tool: {f.build_tool}</p>}
+              {f.module && <p className="meta">Module: {f.module}</p>}
+              {f.main_class && <p className="meta">Main: {f.main_class}</p>}
+              {f.unit_id && <p className="meta">Unit: {f.unit_id}</p>}
+              {f.java_home && <p className="meta">JAVA_HOME: {f.java_home}</p>}
+              {(f.detected_version || f.required_minimum) && (
+                <p className="meta">
+                  Java: {f.detected_version || "?"} → required {f.required_minimum || "?"}
+                </p>
+              )}
               {f.build_status && <p className="meta">Build: {f.build_status}</p>}
               {f.final_status && <p className="meta">Final: {f.final_status}</p>}
               {f.final_proof_level && <p className="meta">Proof level: {f.final_proof_level}</p>}
               {f.repair_loop_status && <p className="meta">Repair: {f.repair_loop_status}</p>}
               {f.copilot_status && <p className="meta">Copilot: {f.copilot_status}</p>}
+              {f.test_status && <p className="meta">Test: {f.test_status}</p>}
+              {f.next_operator_action && (
+                <div className="operator-action">
+                  <strong>Next action:</strong>
+                  <p className="meta">{f.next_operator_action}</p>
+                </div>
+              )}
             </div>
           ))}
           {data.failureSummary.repair_loop_active && (

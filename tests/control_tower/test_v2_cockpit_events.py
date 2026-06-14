@@ -96,7 +96,7 @@ def _ready_setup(conn: sqlite3.Connection) -> str:
         "pipeline_route_ready": True,
         "legacy_marker_ready": True,
         "output_parent_gate_ready": True,
-        "azure_model_ready": False,
+        "azure_model_ready": True,
     })
     repo.save_preflight(
         V2PreflightResultRecord(

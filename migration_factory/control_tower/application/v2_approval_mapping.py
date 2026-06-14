@@ -128,6 +128,35 @@ class V2ApprovalMappingService:
                 f"got {card.request_checksum}"
             )
 
+        if card.status == "approved":
+            # Idempotent duplicate approve — return existing resume if available
+            for resume in self._resumes.values():
+                if resume.card_id == card_id:
+                    return resume
+            # Legacy: card was approved before resume tracking existed
+            if self._repo is not None:
+                rows = self._repo.list_resumes_by_job(job_id)
+                for row in rows:
+                    if row.card_id == card_id:
+                        return ResumeCommand(
+                            resume_id=row.resume_id,
+                            card_id=row.card_id,
+                            decision=row.decision,
+                            job_id=row.job_id,
+                            stage_index=row.stage_index,
+                            command=tuple(json.loads(row.command_json)),
+                            created_at=row.created_at,
+                        )
+            # Fallback: return card-only result (no resume found)
+            return ResumeCommand(
+                resume_id="",
+                card_id=card_id,
+                decision="approved",
+                job_id=job_id,
+                stage_index=card.stage_index,
+                command=(),
+            )
+
         if card.status != "pending":
             raise ValueError(f"Decision card {card_id!r} is already {card.status}")
 
@@ -195,6 +224,9 @@ class V2ApprovalMappingService:
             raise ValueError(f"Decision card {card_id!r} not found")
         if card.job_id and card.job_id != job_id:
             raise ValueError(f"Decision card {card_id!r} does not belong to job {job_id!r}")
+        if card.status == "rejected":
+            # Idempotent duplicate reject
+            return card
         if card.status != "pending":
             raise ValueError(f"Decision card {card_id!r} is already {card.status}")
 

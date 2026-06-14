@@ -1,10 +1,19 @@
-"""Local ASGI bootstrap for manual Control Tower diagnostic testing."""
+"""Local ASGI bootstrap for manual Control Tower diagnostic testing.
+
+Sets ``CONTROL_TOWER_DEV_MODE=1`` so the migration runner auto-resets the
+local SQLite database on checksum mismatch (e.g. after a branch pull that
+changed migration files).  In production this flag is absent and any
+checksum mismatch is a hard crash.
+"""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 import sys
+
+# ── Enable dev-mode auto-reset for local development ─────────────────
+os.environ.setdefault("CONTROL_TOWER_DEV_MODE", "1")
 
 from migration_factory.control_tower.adapters.fastapi.app import create_app
 from migration_factory.control_tower.domain.checksums import (

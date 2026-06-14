@@ -71,19 +71,39 @@ def test_cannot_approve_wrong_job() -> None:
         service.approve(card_id=card.card_id, expected_checksum="abc123", job_id="job-2")
 
 
-def test_cannot_approve_twice() -> None:
+def test_can_approve_twice_idempotent() -> None:
     service = V2ApprovalMappingService()
     card = _card(service)
-    service.approve(card_id=card.card_id, expected_checksum="abc123", job_id="job-1")
-    with pytest.raises(ValueError, match="already approved"):
-        service.approve(card_id=card.card_id, expected_checksum="abc123", job_id="job-1")
+    r1 = service.approve(card_id=card.card_id, expected_checksum="abc123", job_id="job-1")
+    assert r1.decision == "approved"
+    # Duplicate approve must succeed (idempotent)
+    r2 = service.approve(card_id=card.card_id, expected_checksum="abc123", job_id="job-1")
+    assert r2.decision == "approved"
 
 
-def test_cannot_reject_twice() -> None:
+def test_can_reject_twice_idempotent() -> None:
+    service = V2ApprovalMappingService()
+    card = _card(service)
+    r1 = service.reject(card_id=card.card_id, job_id="job-1")
+    assert r1.status == "rejected"
+    # Duplicate reject must succeed (idempotent)
+    r2 = service.reject(card_id=card.card_id, job_id="job-1")
+    assert r2.status == "rejected"
+
+
+def test_cannot_approve_after_reject() -> None:
     service = V2ApprovalMappingService()
     card = _card(service)
     service.reject(card_id=card.card_id, job_id="job-1")
     with pytest.raises(ValueError, match="already rejected"):
+        service.approve(card_id=card.card_id, expected_checksum="abc123", job_id="job-1")
+
+
+def test_cannot_reject_after_approve() -> None:
+    service = V2ApprovalMappingService()
+    card = _card(service)
+    service.approve(card_id=card.card_id, expected_checksum="abc123", job_id="job-1")
+    with pytest.raises(ValueError, match="already approved"):
         service.reject(card_id=card.card_id, job_id="job-1")
 
 

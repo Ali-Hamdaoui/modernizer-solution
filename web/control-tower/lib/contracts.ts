@@ -587,6 +587,19 @@ export type V2FailureSummaryItem = {
   repair_loop_status: string;
   copilot_status: string;
   repair_fallback: string;
+  // ── SA4 diagnostic fields ──
+  matched_line: string;
+  command: string[];
+  requested_command: string[];
+  build_tool: string;
+  module: string;
+  main_class: string;
+  unit_id: string;
+  result_kind: string;
+  java_home: string;
+  detected_version: string;
+  required_minimum: string;
+  next_operator_action: string;
 };
 
 export type V2FailureSummaryResponse = {

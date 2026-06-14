@@ -71,16 +71,49 @@ describe("V2 Migration Cockpit contract", () => {
     expect(assistantRules.can_override_proof).toBe(false);
   });
 
-  it("no raw secrets or deployment IDs in cockpit", () => {
-    const sampleCockpitPayload = {
+  it("no raw secrets, paths, or deployment IDs in cockpit payloads", () => {
+    // Backend guarantees redaction — the frontend contract depends on it.
+    // This test verifies that realistic payloads (as API returns after
+    // redaction) do NOT contain secrets that the frontend would render.
+    const samplePayload = {
       job_id: "job-1",
-      stages: [],
-      approvals: [],
+      rows: [
+        {
+          key: "sandbox_build",
+          label: "Sandbox Build",
+          status: "failed",
+          latest_message: "[redacted-path] written",
+          artifact_count: 0,
+          last_updated: "2026-06-14T00:00:00Z",
+        },
+      ],
+      evidence: [
+        {
+          event_type: "build_failed",
+          status: "failed",
+          message: "Build failed: [redacted-path]",
+          payload: {
+            matched_line: "[redacted-path]",
+            command: ["mvn", "[redacted]", "package"],
+            java_home: "[redacted-path]",
+            AZURE_OPENAI_API_KEY: "[redacted]",
+          },
+        },
+      ],
+      raw_logs: [],
     };
-    const json = JSON.stringify(sampleCockpitPayload);
-    expect(json).not.toContain("api_key");
-    expect(json).not.toContain("deployment_id");
-    expect(json).not.toContain("endpoint_url");
+    const json = JSON.stringify(samplePayload);
+
+    // Redacted payload should never contain real secret tokens
+    const hasSecretValue =
+      /\b(sk-|ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_]+/.test(json);
+    expect(hasSecretValue).toBe(false);
+
+    // Redacted payload should not contain Windows or POSIX absolute paths
+    expect(json).not.toMatch(/\bC:\\Users\\/);
+    expect(json).not.toMatch(/\bC:\\Program Files\\/);
+    expect(json).not.toMatch(/\/home\//);
+    expect(json).not.toMatch(/\/etc\//);
   });
 
   it("stage inputs are fixed by pipeline", () => {

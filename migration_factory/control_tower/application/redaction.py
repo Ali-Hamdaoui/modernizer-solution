@@ -108,6 +108,12 @@ _SENSITIVE_ENV_VAR_RE = re.compile(
     r"\b(?:" + "|".join(re.escape(v) for v in SENSITIVE_ENV_VARS) + r")\s*=\s*\S+"
 )
 
+# Pattern matches bearer/API token values commonly surfaced in smoke errors
+_TOKEN_VALUE_RE = re.compile(
+    r"\b(?:sk-[A-Za-z0-9_-]{6,}|gh[pousr]_[A-Za-z0-9_]{8,}|Bearer\s+[A-Za-z0-9._-]{8,})\b",
+    re.IGNORECASE,
+)
+
 # ── Redaction functions ──────────────────────────────────────────────
 
 
@@ -161,6 +167,7 @@ def redact_model_summary(summary: str) -> str:
     result = redact_sensitive_env_vars(result)
     result = redact_secret_keys(result)
     result = redact_deployment_identifiers(result)
+    result = _TOKEN_VALUE_RE.sub("[redacted-token]", result)
     result = redact_raw_prompts(result)
     return result
 
