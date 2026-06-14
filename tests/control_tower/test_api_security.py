@@ -406,16 +406,335 @@ def test_orchestrator_env_excludes_secret_env_vars() -> None:
     assert any(m in "GITHUB_TOKEN" for m in _SECRET_ENV_MARKERS)
 
 
-def _seed_v2_job(connection: sqlite3.Connection, job_id: str) -> str:
-    """Insert a minimal V2 job record so V2 endpoints resolve."""
+# ── P0-2: Artifact preview security ──
+
+
+def test_artifact_preview_rejects_kind_not_in_job_artifact_refs(tmp_path: Path) -> None:
+    """Artifact preview must return exists=false when the artifact_kind
+    is not present in the job's artifact_written events."""
+    connection = _seeded_connection(tmp_path)
+    client = _client_from_connection(connection)
+    job_id = _seed_v2_job(connection, "job-no-artifact", output_parent_path=str(tmp_path))
+
+    # Even though phase2_log is a safe kind, if no artifact_written event
+    # has that kind, the endpoint must return exists=false
+    response = client.get(f"/v1/v2/jobs/{job_id}/artifacts/phase2_log")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["exists"] is False
+    assert body["preview"] == ""
+
+
+def test_artifact_preview_missing_file_does_not_leak_path(tmp_path: Path) -> None:
+    """When an artifact ref points to a missing file, must not leak the path."""
+    connection = _seeded_connection(tmp_path)
+    client = _client_from_connection(connection)
+    job_id = _seed_v2_job(connection, "job-missing-path", output_parent_path=str(tmp_path))
+
+    # Insert an artifact_written event pointing to a non-existent file
+    from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
+    with SqliteUnitOfWork(connection) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="artifact_written",
+            status="completed",
+            message="artifact saved",
+            payload={
+                "artifact_kind": "phase2_log",
+                "relative_path": "/nonexistent/path/to/artifact.log",
+            },
+        )
+
+    response = client.get(f"/v1/v2/jobs/{job_id}/artifacts/phase2_log")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["exists"] is False
+    # Must not leak the path or file location
+    body_str = str(body)
+    assert "/nonexistent/path/to/artifact.log" not in body_str
+
+
+def test_artifact_preview_bounds_output(tmp_path: Path) -> None:
+    """Artifact preview must not exceed 32 KB."""
+    connection = _seeded_connection(tmp_path)
+    client = _client_from_connection(connection)
+    job_id = _seed_v2_job(connection, "job-big-artifact", output_parent_path=str(tmp_path))
+
+    # Create a large file
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    big_path = artifact_dir / "big_file.log"
+    big_path.write_text("A" * 100000)  # 100 KB
+
+    from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
+    with SqliteUnitOfWork(connection) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="artifact_written",
+            status="completed",
+            message="artifact saved",
+            payload={
+                "artifact_kind": "phase2_log",
+                "relative_path": str(big_path),
+            },
+        )
+
+    response = client.get(f"/v1/v2/jobs/{job_id}/artifacts/phase2_log")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["exists"] is True
+    assert body["truncated"] is True
+    assert len(body["preview"]) <= 32768
+
+
+def test_artifact_preview_redacts_api_keys_and_bearer_tokens(tmp_path: Path) -> None:
+    """Artifact preview must redact API keys, bearer tokens, and auth headers."""
+    connection = _seeded_connection(tmp_path)
+    client = _client_from_connection(connection)
+    job_id = _seed_v2_job(connection, "job-secret-artifact", output_parent_path=str(tmp_path))
+
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    secret_path = artifact_dir / "secret.log"
+    secret_path.write_text(
+        "AZURE_OPENAI_API_KEY=sk-abc123\n"
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9\n"
+        "GITHUB_TOKEN=ghp_testtoken123\n"
+        "MAVEN_PASSWORD=mysecretpass\n"
+    )
+
+    from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
+    with SqliteUnitOfWork(connection) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="artifact_written",
+            status="completed",
+            message="artifact saved",
+            payload={
+                "artifact_kind": "phase2_log",
+                "relative_path": str(secret_path),
+            },
+        )
+
+    response = client.get(f"/v1/v2/jobs/{job_id}/artifacts/phase2_log")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    preview = body["preview"]
+    assert "sk-abc123" not in preview, f"API key leaked: {preview}"
+    assert "eyJhbGciOiJIUzI1NiJ9" not in preview, f"Bearer token leaked: {preview}"
+    assert "ghp_testtoken123" not in preview, f"GitHub token leaked: {preview}"
+    assert "mysecretpass" not in preview, f"Maven password leaked: {preview}"
+
+
+def test_artifact_preview_redacts_windows_paths(tmp_path: Path) -> None:
+    """Artifact preview must redact full Windows local paths."""
+    connection = _seeded_connection(tmp_path)
+    client = _client_from_connection(connection)
+    job_id = _seed_v2_job(connection, "job-winpath", output_parent_path=str(tmp_path))
+
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    win_path_file = artifact_dir / "win_path.log"
+    win_path_file.write_text(
+        "Running from C:\\Users\\admin\\app\\migration\\target\\classes\n"
+        "Output dir: D:\\data\\output\\result\n"
+    )
+
+    from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
+    with SqliteUnitOfWork(connection) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="artifact_written",
+            status="completed",
+            message="artifact saved",
+            payload={
+                "artifact_kind": "phase2_log",
+                "relative_path": str(win_path_file),
+            },
+        )
+
+    response = client.get(f"/v1/v2/jobs/{job_id}/artifacts/phase2_log")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    preview = body["preview"]
+    assert "C:\\Users\\admin" not in preview
+    assert "D:\\data" not in preview
+
+
+def test_artifact_preview_rejects_absolute_or_unc_ref(tmp_path: Path) -> None:
+    """Artifact preview must reject UNC and drive-qualified refs in payload."""
+    connection = _seeded_connection(tmp_path)
+    client = _client_from_connection(connection)
+    job_id = _seed_v2_job(connection, "job-unc-ref", output_parent_path=str(tmp_path))
+
+    from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
+    with SqliteUnitOfWork(connection) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="artifact_written",
+            status="completed",
+            message="UNC ref",
+            payload={
+                "artifact_kind": "phase2_log",
+                "relative_path": "\\\\server\\share\\file.log",
+            },
+        )
+
+    response = client.get(f"/v1/v2/jobs/{job_id}/artifacts/phase2_log")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["exists"] is False, "UNC path ref should be rejected"
+
+    # Drive-qualified path
+    from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
+    with SqliteUnitOfWork(connection) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="artifact_written",
+            status="completed",
+            message="Drive path",
+            payload={
+                "artifact_kind": "failure_classification",
+                "relative_path": "C:\\absolute\\path\\file.txt",
+            },
+        )
+
+    response = client.get(f"/v1/v2/jobs/{job_id}/artifacts/failure_classification")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["exists"] is False, "Drive-qualified ref should be rejected"
+
+
+def test_artifact_preview_rejects_ref_escaping_job_artifact_root(tmp_path: Path) -> None:
+    """Artifact preview must reject refs that escape the job artifact root
+    via parent-directory traversal in the stored relative_path."""
+    connection = _seeded_connection(tmp_path)
+    client = _client_from_connection(connection)
+    job_id = _seed_v2_job(connection, "job-traversal", output_parent_path=str(tmp_path))
+
+    from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
+    with SqliteUnitOfWork(connection) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="artifact_written",
+            status="completed",
+            message="traversal ref",
+            payload={
+                "artifact_kind": "phase2_log",
+                "relative_path": "../../etc/passwd",
+            },
+        )
+
+    response = client.get(f"/v1/v2/jobs/{job_id}/artifacts/phase2_log")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["exists"] is False, "Parent-traversal ref must be rejected"
+    # Must not leak the attempted path
+    body_str = str(body)
+    assert "../../etc/passwd" not in body_str
+    assert "etc" not in body_str or "redact" in body_str or "exists" in body_str
+
+
+def test_artifact_preview_rejects_symlink_escape_from_job_artifact_root(tmp_path: Path) -> None:
+    """Artifact preview must reject refs that use a symlink to escape the
+    job artifact root.
+
+    Skipped when OS permissions prevent symlink creation.
+    """
+    connection = _seeded_connection(tmp_path)
+    client = _client_from_connection(connection)
+    job_id = _seed_v2_job(connection, "job-symlink-escape", output_parent_path=str(tmp_path))
+
+    # Create a symlink inside the trusted root that points outside
+    outside_root = tmp_path.parent / "outside_secret.txt"
+    outside_root.write_text("sensitive data outside trusted root")
+
+    link_path = tmp_path / "innocent_link.log"
+    try:
+        link_path.symlink_to(outside_root)
+    except (OSError, NotImplementedError, PermissionError):
+        pytest.skip("OS does not support symlink creation or permissions denied")
+
+    from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
+    with SqliteUnitOfWork(connection) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="artifact_written",
+            status="completed",
+            message="symlink escape",
+            payload={
+                "artifact_kind": "phase2_log",
+                "relative_path": "innocent_link.log",
+            },
+        )
+
+    response = client.get(f"/v1/v2/jobs/{job_id}/artifacts/phase2_log")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # A symlink that resolves outside the trusted root must be rejected
+    assert body["exists"] is False, "Symlink escape must be rejected"
+    body_str = str(body)
+    assert "outside_secret" not in body_str
+
+
+def _seed_v2_job(
+    connection: sqlite3.Connection,
+    job_id: str,
+    *,
+    output_parent_path: str | None = None,
+) -> str:
+    """Insert a minimal V2 job record so V2 endpoints resolve.
+
+    When output_parent_path is provided, also creates a matching
+    setup record so the artifact preview endpoint can determine
+    the trusted artifact workspace root.
+    """
     now = "2026-01-15T00:00:00Z"
+    setup_id = f"setup-{job_id}"
     connection.execute(
         """INSERT INTO v2_migration_jobs (
             job_id, setup_id, setup_checksum, pipeline_id,
             stage_chain_json, status, created_at, updated_at, correlation_id
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (job_id, "setup-test", "cs-test", "pipeline-default", "[]", "running", now, now, None),
+        (job_id, setup_id, "cs-test", "pipeline-default", "[]", "running", now, now, None),
     )
+    if output_parent_path is not None:
+        connection.execute(
+            """INSERT INTO v2_migration_setups (
+                setup_id, run_name, legacy_app_path, output_parent_path,
+                ai_hub_path, java11_home, java17_home, java21_home,
+                maven_cmd, proof_level, skip_endpoint_smoke,
+                migration_flags_json, setup_checksum, checksum_algorithm,
+                created_at, created_by, correlation_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                setup_id,
+                "test-run",
+                output_parent_path,
+                output_parent_path,
+                output_parent_path,
+                "",
+                "",
+                "",
+                "mvn",
+                "FULL",
+                0,
+                "{}",
+                "cs-test",
+                "sha256",
+                now,
+                "tester",
+                None,
+            ),
+        )
     return job_id
 
 

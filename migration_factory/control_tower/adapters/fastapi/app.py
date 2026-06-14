@@ -1073,6 +1073,153 @@ def create_app(
             events = uow.v2_events.list_by_job(job_id)
         return redact_public_data(_v2_failure_summary(job_id, events))
 
+    @app.get("/v1/v2/jobs/{job_id}/artifacts/{artifact_kind}")
+    def get_v2_job_artifact_preview(
+        job_id: str,
+        artifact_kind: str,
+    ) -> dict[str, Any]:
+        """Return a bounded, redacted preview of a named artifact.
+
+        Only allows artifact kinds from persisted artifact_refs.
+        Never accepts arbitrary paths.
+        Bounds output to 32 KB.
+        Redacts secrets and full local paths.
+        """
+        safe_kinds = {
+            "phase2_log", "post_transform_test_log", "failure_classification",
+            "repair_plan", "deterministic_repair_plan", "copilot_repair_response",
+            "dependency_policy_report", "dependency_policy_summary",
+            "dependency_repair_plan", "orchestration_summary",
+            "target_dependency_plan", "rewrite_dry_run.patch",
+            "rewrite_impact_summary.json", "repair_ledger", "migration_ledger",
+        }
+        if artifact_kind not in safe_kinds:
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                "UNKNOWN_ARTIFACT_KIND",
+                f"Unknown artifact kind.",
+            )
+        with unit_of_work_factory() as uow:
+            job = _require_v2_job(uow, job_id)
+            events = uow.v2_events.list_by_job(job_id)
+            # Look up setup to determine the trusted artifact workspace root
+            setup = uow.v2_setups.get(job.setup_id) if job.setup_id else None
+
+        if setup is None or not setup.output_parent_path:
+            return {
+                "job_id": job_id,
+                "artifact_kind": artifact_kind,
+                "exists": False,
+                "preview": "",
+                "truncated": False,
+                "content_type": "text/plain",
+            }
+
+        # Find the artifact ref from artifact_written events belonging to this job
+        artifact_path = None
+        for event in events:
+            if event.type == "artifact_written":
+                try:
+                    payload = json.loads(event.payload_json or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                kind = str(payload.get("artifact_kind", ""))
+                if kind == artifact_kind:
+                    path_val = payload.get("relative_path") or payload.get("path")
+                    if path_val:
+                        artifact_path = str(path_val)
+                        break
+
+        if not artifact_path:
+            return {
+                "job_id": job_id,
+                "artifact_kind": artifact_kind,
+                "exists": False,
+                "preview": "",
+                "truncated": False,
+                "content_type": "text/plain",
+            }
+
+        # Resolve from stored artifact path (not from request)
+        try:
+            from migration_factory.control_tower.application.redaction import (
+                contains_forbidden_path,
+                redact_model_summary,
+            )
+
+            # Canonicalize the trusted base root from the job's setup
+            base_root = Path(setup.output_parent_path).resolve(strict=False)
+
+            # Resolve candidate path relative to the trusted base root.
+            # If artifact_path is absolute, the / operator ignores the base,
+            # so the containment check below will correctly reject it.
+            candidate = (base_root / artifact_path).resolve(strict=False)
+
+            # Root containment check: reject if candidate is not inside base_root
+            try:
+                candidate.relative_to(base_root)
+            except ValueError:
+                return {
+                    "job_id": job_id,
+                    "artifact_kind": artifact_kind,
+                    "exists": False,
+                    "preview": "",
+                    "truncated": False,
+                    "content_type": "text/plain",
+                }
+
+            # If the file does not exist, return safe missing
+            if not candidate.is_file():
+                return {
+                    "job_id": job_id,
+                    "artifact_kind": artifact_kind,
+                    "exists": False,
+                    "preview": "",
+                    "truncated": False,
+                    "content_type": "text/plain",
+                }
+
+            # Forbidden path check (defense-in-depth)
+            if contains_forbidden_path(candidate):
+                return {
+                    "job_id": job_id,
+                    "artifact_kind": artifact_kind,
+                    "exists": False,
+                    "preview": "",
+                    "truncated": False,
+                    "content_type": "text/plain",
+                }
+
+            # Read bounded preview
+            max_bytes = 32768
+            raw = candidate.read_bytes()[:max_bytes]
+            truncated = len(raw) == max_bytes
+            if raw[:3] == b"\xef\xbb\xbf":
+                raw = raw[3:]
+            try:
+                text = raw.decode("utf-8", errors="replace")
+            except (UnicodeDecodeError, LookupError):
+                text = raw.decode("latin-1", errors="replace")
+            preview = redact_model_summary(text)
+        except Exception:
+            return {
+                "job_id": job_id,
+                "artifact_kind": artifact_kind,
+                "exists": False,
+                "preview": "",
+                "truncated": False,
+                "content_type": "text/plain",
+            }
+
+        return {
+            "job_id": job_id,
+            "artifact_kind": artifact_kind,
+            "exists": True,
+            "preview": preview,
+            "truncated": truncated,
+            "content_type": "text/plain",
+        }
+
     @app.get("/v1/v2/migration-jobs/{job_id}/events")
     async def stream_v2_job_events(
         job_id: str,
@@ -3285,18 +3432,9 @@ def _build_v2_assistant_prompt(
         for card in approvals
         if card.status == "approved"
     ]
-    # Build failure summary from events
-    failure_events = [
-        _v2_event_payload(event)
-        for event in events
-        if event.type in {"stage_failed", "transform_failed", "build_failed", "sandbox_transform_failed"}
-        or event.status == "failed"
-    ]
-    repair_events = [
-        _v2_event_payload(event)
-        for event in events
-        if event.type in {"repair_started", "repair_fallback_generated", "copilot_repair_invalid_response"}
-    ]
+    # Build grouped failure summary (one card per root cause, with collapsed repair events)
+    grouped_failure_summary = _v2_failure_summary(job_id="", events=events)
+    grouped_failures = grouped_failure_summary.get("failures", [])
     # Build stage status summary
     stage_statuses: dict[str, str] = {}
     for event in events:
@@ -3336,8 +3474,8 @@ def _build_v2_assistant_prompt(
         "pending_approvals": pending_approvals,
         "approved_approvals": approved_cards,
         "failure_summary": {
-            "failures": failure_events[-5:],
-            "repair": repair_events[-5:],
+            "failures": [_f for f in grouped_failures for _f in [{"type": f["type"], "stage": f["stage"], "title": f["title"], "message": f["message"], "build_status": f["build_status"], "final_status": f["final_status"], "result_kind": f["result_kind"], "repair_loop_status": f["repair_loop_status"], "copilot_status": f["copilot_status"], "event_types": f["event_types"], "repair_events": f["repair_events"]}]],
+            "count": len(grouped_failures),
         },
         "artifact_kinds": artifact_kinds[-20:],
         "model": {
@@ -3359,12 +3497,14 @@ def _build_v2_assistant_prompt(
     if len(result) > max_chars:
         # Shrink the largest fields: latest_events and failure_summary
         prompt["latest_events"] = latest_events[-3:]
-        prompt["failure_summary"]["failures"] = failure_events[-2:]
-        prompt["failure_summary"]["repair"] = repair_events[-2:]
+        prompt["failure_summary"]["failures"] = prompt["failure_summary"]["failures"][-2:]
+        prompt["failure_summary"]["count"] = len(prompt["failure_summary"]["failures"])
         result = json.dumps(redact_public_data(prompt), separators=(",", ":"), sort_keys=True)
         if len(result) > max_chars:
             # Ultimate truncation: keep only critical fields
             prompt["latest_events"] = []
+            prompt["failure_summary"]["failures"] = []
+            prompt["failure_summary"]["count"] = 0
             prompt["pipeline_rows"] = [
                 {"key": r["key"], "status": r["status"]}
                 for r in prompt["pipeline_rows"]
@@ -3420,7 +3560,7 @@ _PIPELINE_PHASES = (
     }),
     ("sandbox_transform", "Transform Agent", {
         "sandbox_transform_started", "sandbox_transform_completed", "sandbox_transform_failed",
-        "transform_started", "transform_failed", "build_started", "build_completed", "build_failed",
+        "transform_started", "transform_failed",
     }),
     ("build_validation", "Build Agent", {"build_started", "build_completed", "build_failed"}),
     ("test_validation", "Test Validation", {"test_started", "test_completed", "test_failed"}),
@@ -3431,7 +3571,9 @@ _PIPELINE_PHASES = (
     ("result_contract", "Result Contract", {"result_contract_failed"}),
     ("final_report", "Final Report", {
         "final_report_started", "final_report_completed", "final_report_failed",
-        "proof_updated", "stage_completed",
+    }),
+    ("stage_report", "Stage Report", {
+        "stage_report_started", "stage_report_completed", "stage_report_failed",
     }),
 )
 _RAW_EVENT_TYPES = {"stdout", "stderr"}
@@ -3461,14 +3603,70 @@ _IMPORTANT_EVENT_TYPES = {
     "final_report_started",
     "final_report_completed",
     "final_report_failed",
+    "stage_report_started",
+    "stage_report_completed",
+    "stage_report_failed",
     "result_contract_failed",
 }
 
 
+def _active_stage_index(events: tuple[Any, ...]) -> int:
+    """Determine the current/active stage from events."""
+    failed_stages = {e.stage for e in events if e.stage and e.type == "stage_failed"}
+    completed_stages = {e.stage for e in events if e.stage and e.type == "stage_completed"}
+
+    # Find latest running/blocked/started stage
+    candidates = [
+        e for e in events
+        if e.stage and e.type in {
+            "stage_failed", "stage_started", "resume_started",
+            "sandbox_transform_started", "build_started", "test_started",
+            "approval_required", "stage_blocked_for_approval",
+            "final_report_started", "final_report_completed", "final_report_failed",
+            "stage_report_started", "stage_report_completed", "stage_report_failed",
+        }
+    ]
+    if candidates:
+        latest = max(candidates, key=lambda e: e.sequence)
+        return latest.stage
+
+    # Check next_stage_queued for latest to_stage
+    for event in reversed(events):
+        if event.type == "next_stage_queued":
+            payload = _event_payload_dict(event)
+            to_stage = int(payload.get("to_stage") or event.stage or 0)
+            if to_stage:
+                return to_stage
+
+    if completed_stages:
+        return max(completed_stages)
+    return 1
+
+
 def _v2_pipeline_projection(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
+    active_stage = _active_stage_index(events)
+
+    # Scope events to active stage; global events (no stage) are included
+    def _is_allowed_for_stage(event: Any) -> bool:
+        if event.stage is None:
+            return True
+        if event.stage == active_stage:
+            return True
+        # Allow next_stage_queued even if its to_stage differs
+        if event.type == "next_stage_queued":
+            return True
+        return False
+
+    stage_events = [e for e in events if _is_allowed_for_stage(e)]
+
     rows: list[dict[str, Any]] = []
     for key, label, event_types in _PIPELINE_PHASES:
-        matching = [event for event in events if event.type in event_types]
+        # For final_report, only Stage 3 events count (defense-in-depth)
+        matching = [
+            event for event in stage_events
+            if event.type in event_types
+            and (key != "final_report" or event.stage == 3)
+        ]
         latest = matching[-1] if matching else None
         # Deduplicate artifact counts by relative_path per phase
         seen_paths: set[str] = set()
@@ -3504,6 +3702,7 @@ def _v2_pipeline_projection(job_id: str, events: tuple[Any, ...]) -> dict[str, A
         "rows": rows,
         "evidence": important[-100:],
         "raw_logs": raw[-200:],
+        "active_stage_index": active_stage,
     }
 
 
@@ -3536,69 +3735,146 @@ def _pipeline_row_status(key: str, events: list[Any]) -> str:
     return "pending"
 
 
-def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
-    """Build a redacted failure/repair summary from V2 events.
+def _failure_primary_key(event: Any, payload: dict[str, Any]) -> str:
+    """Derive a primary key for grouping related failure events.
 
-    Includes BuildErrorContract diagnostic fields forwarded by build_failed
-    and transform_failed events. Also handles result_contract_failed events
-    (orchestrator completed but Control Tower could not parse its final JSON).
+    Priority: build_status > final_status > result_kind > type.
     """
-    failures: list[dict[str, Any]] = []
-    for event in events:
-        if event.status == "failed" or event.type.endswith("_failed") or event.type == "result_contract_failed":
-            try:
-                payload = json.loads(event.payload_json or "{}")
-            except (json.JSONDecodeError, TypeError):
-                payload = {}
-            result_kind = str(payload.get("result_kind", ""))
+    build_status = str(payload.get("build_status", "") or "")
+    if build_status:
+        return f"build_status:{build_status}"
+    final_status = str(payload.get("final_status", "") or "")
+    if final_status:
+        return f"final_status:{final_status}"
+    result_kind = str(payload.get("result_kind", "") or "")
+    if result_kind:
+        return f"result_kind:{result_kind}"
+    return f"type:{event.type}"
 
-            if event.type == "result_contract_failed":
-                next_action = (
-                    "Inspect orchestrator stdout/stderr and orchestration_summary.json. "
-                    "The subprocess exited but Control Tower could not parse its final result contract."
-                )
-            else:
-                next_action = _next_operator_action(result_kind)
 
-            failures.append({
-                "type": event.type,
-                "stage": event.stage,
-                "message": _bounded_event_text(event.message),
-                "build_status": str(payload.get("build_status", "")),
-                "test_status": str(payload.get("test_status", "")),
-                "final_status": str(payload.get("final_status", "")),
-                "final_proof_level": str(payload.get("final_proof_level", "")),
-                "repair_loop_status": str(payload.get("repair_loop_status", "")),
-                "copilot_status": str(payload.get("copilot_invocation_status", "")),
-                "repair_fallback": str(payload.get("repair_fallback_generated", "")),
-                # ── SA4 diagnostic fields ──
-                "matched_line": _safe_failure_str(payload.get("matched_line")),
-                "command": _safe_failure_list(payload.get("command") or payload.get("resolved_command")),
-                "requested_command": _safe_failure_list(payload.get("requested_command")),
-                "build_tool": _safe_failure_str(payload.get("build_tool")),
-                "module": _safe_failure_str(payload.get("module")),
-                "main_class": _safe_failure_str(payload.get("main_class")),
-                "unit_id": _safe_failure_str(payload.get("unit_id")),
-                "result_kind": result_kind,
-                "java_home": _safe_failure_str(payload.get("java_home")),
-                "detected_version": _safe_failure_str(payload.get("detected_version")),
-                "required_minimum": _safe_failure_str(payload.get("required_minimum")),
-                # ── Result contract diagnostic fields ──
-                "exit_code": payload.get("exit_code"),
-                "final_json_found": payload.get("final_json_found"),
-                "parse_strategy": str(payload.get("parse_strategy", "")),
-                "stdout_tail": _safe_failure_str(payload.get("stdout_tail")),
-                "stderr_tail": _safe_failure_str(payload.get("stderr_tail")),
-                "next_operator_action": next_action,
-            })
+_PRIMARY_EVENT_PRIORITY = {
+    "build_failed": 0,
+    "sandbox_transform_failed": 1,
+    "transform_failed": 2,
+    "test_failed": 3,
+    "stage_failed": 4,
+    "result_contract_failed": 5,
+    "copilot_repair_invalid_response": 6,
+    "repair_started": 7,
+}
+
+
+_REPAIR_EVENT_TYPES = {"repair_started", "repair_fallback_generated", "copilot_repair_invalid_response"}
+
+
+def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
+    """Build a redacted failure/repair summary from V2 events,
+    grouped by root cause.
+
+    Returns one card per root failure with collapsed repair events.
+    """
+    from collections import defaultdict
+
+    # Collect failed events (excluding repair events which are attached to root failures)
+    failed_events = [
+        event for event in events
+        if (event.status == "failed" or event.type.endswith("_failed") or event.type == "result_contract_failed")
+        and event.type not in _REPAIR_EVENT_TYPES
+    ]
     repair_events_typed = [
         event for event in events
-        if event.type in {"repair_started", "repair_fallback_generated", "copilot_repair_invalid_response"}
+        if event.type in _REPAIR_EVENT_TYPES
     ]
-    repair_summary = [
-        {"type": event.type, "message": _bounded_event_text(event.message)}
-        for event in repair_events_typed
+
+    # Group by (stage_index, primary_key)
+    groups: dict[tuple[int | None, str], list[Any]] = defaultdict(list)
+    group_payloads: dict[tuple[int | None, str], dict[str, Any]] = {}
+
+    for event in failed_events:
+        try:
+            payload = json.loads(event.payload_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        primary_key = _failure_primary_key(event, payload)
+        key = (event.stage, primary_key)
+        groups[key].append(event)
+        if key not in group_payloads:
+            group_payloads[key] = payload
+
+    failures: list[dict[str, Any]] = []
+    for (stage_key, _primary_key), fevents in groups.items():
+        # Pick the primary event (highest priority type)
+        fevents_sorted = sorted(fevents, key=lambda e: _PRIMARY_EVENT_PRIORITY.get(e.type, 99))
+        primary = fevents_sorted[0]
+        try:
+            payload = json.loads(primary.payload_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        result_kind = str(payload.get("result_kind", ""))
+
+        if primary.type == "result_contract_failed":
+            next_action = (
+                "Inspect orchestrator stdout/stderr and orchestration_summary.json. "
+                "The subprocess exited but Control Tower could not parse its final result contract."
+            )
+            title = "Control Tower Contract Failure"
+        elif result_kind:
+            title = f"Stage {primary.stage or '?'} {result_kind.replace('_', ' ').title()}"
+        else:
+            title = f"Stage {primary.stage or '?'} failure"
+
+        # Build related event types list
+        related_event_types = list(dict.fromkeys(e.type for e in fevents_sorted))
+
+        # Find repair events belonging to this stage
+        stage_repair_events = [
+            {"type": e.type, "message": _bounded_event_text(e.message)}
+            for e in repair_events_typed if e.stage == primary.stage
+        ]
+
+        failures.append({
+            "type": primary.type,
+            "stage": primary.stage,
+            "title": title,
+            "message": _bounded_event_text(primary.message),
+            "build_status": str(payload.get("build_status", "")),
+            "test_status": str(payload.get("test_status", "")),
+            "final_status": str(payload.get("final_status", "")),
+            "final_proof_level": str(payload.get("final_proof_level", "")),
+            "repair_loop_status": str(payload.get("repair_loop_status", "")),
+            "copilot_status": str(payload.get("copilot_invocation_status", "")),
+            "repair_fallback": str(payload.get("repair_fallback_generated", "")),
+            # SA4 diagnostic fields
+            "matched_line": _safe_failure_str(payload.get("matched_line")),
+            "command": _safe_failure_list(payload.get("command") or payload.get("resolved_command")),
+            "requested_command": _safe_failure_list(payload.get("requested_command")),
+            "build_tool": _safe_failure_str(payload.get("build_tool")),
+            "module": _safe_failure_str(payload.get("module")),
+            "main_class": _safe_failure_str(payload.get("main_class")),
+            "unit_id": _safe_failure_str(payload.get("unit_id")),
+            "result_kind": result_kind,
+            "java_home": _safe_failure_str(payload.get("java_home")),
+            "detected_version": _safe_failure_str(payload.get("detected_version")),
+            "required_minimum": _safe_failure_str(payload.get("required_minimum")),
+            # Result contract diagnostic fields
+            "exit_code": payload.get("exit_code"),
+            "final_json_found": payload.get("final_json_found"),
+            "parse_strategy": str(payload.get("parse_strategy", "")),
+            "stdout_tail": _safe_failure_str(payload.get("stdout_tail")),
+            "stderr_tail": _safe_failure_str(payload.get("stderr_tail")),
+            # Grouping fields
+            "event_types": related_event_types,
+            "repair_events": stage_repair_events,
+            "next_operator_action": _next_operator_action(result_kind),
+        })
+
+    # Collect repair events not already attached to a failure group
+    ungrouped_repair = [
+        {"type": e.type, "message": _bounded_event_text(e.message)}
+        for e in repair_events_typed
+        if not any(e.stage == f["stage"] for f in failures)
     ]
+
     artifact_kinds: list[str] = []
     for event in events:
         if event.type == "artifact_written":
@@ -3614,7 +3890,7 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
         "has_failures": len(failures) > 0,
         "failures": failures,
         "repair_loop_active": len(repair_events_typed) > 0,
-        "repair_events": repair_summary,
+        "repair_events": ungrouped_repair,
         "artifact_kinds": artifact_kinds,
     }
 
@@ -3714,6 +3990,29 @@ def _event_phase_key(event: Any) -> str:
     return ""
 
 
+def _event_payload_dict(event: Any) -> dict[str, Any]:
+    """Extract a dict payload from an event, handling both dict and JSON string forms."""
+    payload_json = getattr(event, "payload_json", None)
+    if payload_json:
+        if isinstance(payload_json, str):
+            try:
+                return json.loads(payload_json)
+            except (json.JSONDecodeError, TypeError):
+                return {}
+        if isinstance(payload_json, dict):
+            return payload_json
+    payload = getattr(event, "payload", None)
+    if payload is not None:
+        if isinstance(payload, str):
+            try:
+                return json.loads(payload)
+            except (json.JSONDecodeError, TypeError):
+                return {}
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
 def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, ...]) -> list[dict[str, Any]]:
     try:
         stages = json.loads(job.stage_chain_json)
@@ -3751,11 +4050,22 @@ def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, 
     from collections import defaultdict
     stage_events: dict[int, list[Any]] = defaultdict(list)
     for event in events:
-        if event.stage is None:
+        if event.stage is None and event.type != "next_stage_queued":
             continue
-        stage_events[event.stage].append(event)
+        if event.type == "next_stage_queued":
+            payload = _event_payload_dict(event)
+            from_stage = int(payload.get("from_stage") or 0)
+            to_stage = int(payload.get("to_stage") or event.stage or 0)
+            if from_stage:
+                stage_events[from_stage].append(event)
+            if to_stage:
+                stage_events[to_stage].append(event)
+            continue
+        if event.stage:
+            stage_events[event.stage].append(event)
+
     status_by_stage: dict[int, str] = {
-        idx: _reduce_stage_status(evts) for idx, evts in stage_events.items()
+        idx: _reduce_stage_status_with_next_stage(evts, idx) for idx, evts in stage_events.items()
     }
     for stage_index in command_stages:
         status_by_stage.setdefault(stage_index, "queued")
@@ -3771,6 +4081,28 @@ def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, 
             "chain_status": status_by_stage.get(stage_index, stage.get("chain_status", "pending")),
         })
     return normalized
+
+
+def _reduce_stage_status_with_next_stage(events: list[Any], stage_index: int) -> str:
+    """Reduce chronologically-ordered events, handling next_stage_queued.
+
+    next_stage_queued with from_stage marks that stage as completed.
+    next_stage_queued with to_stage marks that stage as queued.
+    """
+    current = "pending"
+    for event in events:
+        if event.type == "next_stage_queued":
+            payload = _event_payload_dict(event)
+            from_stage = int(payload.get("from_stage") or 0)
+            to_stage = int(payload.get("to_stage") or event.stage or 0)
+            if from_stage == stage_index:
+                current = _transition_stage_status(current, "completed")
+            elif to_stage == stage_index:
+                current = _transition_stage_status(current, "queued")
+            continue
+        mapped = _stage_status_from_event(event.type, event.status)
+        current = _transition_stage_status(current, mapped)
+    return current
 
 
 def _stage_status_from_event(event_type: str, event_status: str) -> str:
