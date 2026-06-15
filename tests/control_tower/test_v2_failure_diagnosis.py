@@ -24,6 +24,7 @@ import pytest
 from migration_factory.control_tower.application.v2_failure_diagnosis import (
     V2FailureDiagnosisService,
     FailureDiagnosisRecord,
+    create_orchestrator_diagnosis_callback,
 )
 from migration_factory.control_tower.application.v2_repair_flow import (
     V2RepairFlowService,
@@ -676,3 +677,189 @@ class TestFailureSummary:
             payload=transform_failed_payload,
         )
         assert "TRANSFORM_FAILED" in summary or "Transform failed" in summary
+
+
+# ── Production callback wiring tests ──────────────────────────────
+
+
+class TestProductionCallback:
+    """Prove the production-wired callback emits ai_diagnosis_created
+    without requiring direct V2FailureDiagnosisService.diagnose() calls.
+
+    This mirrors the pattern used in app.py:
+        callback = create_orchestrator_diagnosis_callback(..., event_sink=...)
+        callback(job_id, stage_index, command_id, event_type, payload)
+    """
+
+    def test_callback_emits_ai_diagnosis_created(
+        self,
+        repair_flow: V2RepairFlowService,
+        build_failed_payload: dict[str, Any],
+    ) -> None:
+        """The production callback emits ai_diagnosis_created when called
+        with a build_failed payload, without direct service access."""
+        events: list[dict[str, Any]] = []
+
+        def event_sink(
+            job_id: str,
+            stage: int | None,
+            event_type: str,
+            status: str,
+            message: str,
+            payload: dict[str, Any] | None = None,
+        ) -> None:
+            events.append({
+                "job_id": job_id,
+                "stage": stage,
+                "event_type": event_type,
+                "status": status,
+                "message": message,
+                "payload": payload or {},
+            })
+
+        callback = create_orchestrator_diagnosis_callback(
+            repair_flow=repair_flow,
+            event_sink=event_sink,
+        )
+
+        # Call exactly as V2OrchestratorRunner._maybe_diagnose does
+        callback(
+            "job-1",  # job_id
+            1,        # stage_index
+            "cmd-1",  # command_id
+            "build_failed",  # event_type
+            build_failed_payload,  # payload
+        )
+
+        matching = [e for e in events if e["event_type"] == "ai_diagnosis_created"]
+        assert len(matching) == 1, f"Expected 1 ai_diagnosis_created, got {len(matching)}"
+        event = matching[0]
+        assert event["job_id"] == "job-1"
+        assert event["status"] == "completed"
+        assert "build_failed" in event["message"]
+
+    def test_callback_is_idempotent(
+        self,
+        repair_flow: V2RepairFlowService,
+        build_failed_payload: dict[str, Any],
+    ) -> None:
+        """Second callback call with same (command_id, event_type) does not
+        emit duplicate ai_diagnosis_created."""
+        events: list[dict[str, Any]] = []
+
+        def event_sink(
+            job_id: str,
+            stage: int | None,
+            event_type: str,
+            status: str,
+            message: str,
+            payload: dict[str, Any] | None = None,
+        ) -> None:
+            events.append({
+                "job_id": job_id,
+                "stage": stage,
+                "event_type": event_type,
+                "status": status,
+                "message": message,
+                "payload": payload or {},
+            })
+
+        callback = create_orchestrator_diagnosis_callback(
+            repair_flow=repair_flow,
+            event_sink=event_sink,
+        )
+
+        callback("job-1", 1, "cmd-1", "build_failed", build_failed_payload)
+        callback("job-1", 1, "cmd-1", "build_failed", build_failed_payload)
+
+        matching = [e for e in events if e["event_type"] == "ai_diagnosis_created"]
+        assert len(matching) == 1, f"Expected 1 (idempotent), got {len(matching)}"
+
+    def test_callback_does_not_apply_patches(
+        self,
+        repair_flow: V2RepairFlowService,
+        build_failed_payload: dict[str, Any],
+    ) -> None:
+        """Callback must never emit patch_applied or approval_card_created."""
+        events: list[dict[str, Any]] = []
+
+        def event_sink(
+            job_id: str,
+            stage: int | None,
+            event_type: str,
+            status: str,
+            message: str,
+            payload: dict[str, Any] | None = None,
+        ) -> None:
+            events.append({
+                "job_id": job_id,
+                "stage": stage,
+                "event_type": event_type,
+                "status": status,
+                "message": message,
+                "payload": payload or {},
+            })
+
+        callback = create_orchestrator_diagnosis_callback(
+            repair_flow=repair_flow,
+            event_sink=event_sink,
+        )
+
+        callback("job-1", 1, "cmd-1", "build_failed", build_failed_payload)
+
+        for event in events:
+            assert event["event_type"] != "patch_applied"
+            assert event["event_type"] != "approval_card_created"
+            assert "approval" not in event["event_type"]
+
+    def test_callback_payload_is_redacted(
+        self,
+        repair_flow: V2RepairFlowService,
+    ) -> None:
+        """ai_diagnosis_created payload contains no raw paths or secrets."""
+        events: list[dict[str, Any]] = []
+
+        def event_sink(
+            job_id: str,
+            stage: int | None,
+            event_type: str,
+            status: str,
+            message: str,
+            payload: dict[str, Any] | None = None,
+        ) -> None:
+            events.append({
+                "job_id": job_id,
+                "stage": stage,
+                "event_type": event_type,
+                "status": status,
+                "message": message,
+                "payload": payload or {},
+            })
+
+        callback = create_orchestrator_diagnosis_callback(
+            repair_flow=repair_flow,
+            event_sink=event_sink,
+        )
+
+        # Payload with a raw absolute path
+        payload_with_paths: dict[str, Any] = {
+            "build_status": "BUILD_FAILED",
+            "command_id": "cmd-1",
+            "message": "Build failed in /home/user/projects/sandbox",
+        }
+
+        callback("job-1", 1, "cmd-1", "build_failed", payload_with_paths)
+
+        matching = [e for e in events if e["event_type"] == "ai_diagnosis_created"]
+        assert len(matching) >= 1
+        event_payload = matching[0]["payload"]
+
+        # The ai_diagnosis_created payload keys are correlation fields only,
+        # no raw paths or secrets
+        assert "diagnosis_id" in event_payload
+        assert "context_pack_id" in event_payload
+        assert "context_pack_checksum" in event_payload
+        # Check no raw path-like content in payload values
+        for value in event_payload.values():
+            if isinstance(value, str):
+                assert "/home/" not in value, f"Raw path found: {value}"
