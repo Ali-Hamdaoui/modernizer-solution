@@ -247,6 +247,7 @@ class ContextPackManifestDto:
 
     Evidence refs, bounds, and redacted summaries are included.
     Raw prompts, secrets, and deployment IDs are absent.
+    Enrichment metadata (F01) is included when available.
     """
 
     manifest_id: str
@@ -264,6 +265,7 @@ class ContextPackManifestDto:
     token_count: int | None = None
     created_at: str = ""
     created_by: str = ""
+    enrichment_metadata: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)

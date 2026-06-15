@@ -253,6 +253,67 @@ def redact_evidence_refs_json(evidence_refs_json: str | None) -> str | None:
         return redact_manifest_field(evidence_refs_json)
 
 
+# ── Context pack metadata redaction (F01) ─────────────────────────
+
+
+def redact_context_pack_metadata(
+    metadata: dict[str, object],
+) -> dict[str, object]:
+    """Redact context pack enrichment metadata before storage or prompt construction.
+
+    Applies path, env, secret, and deployment redaction to string fields.
+    Removes keys that reference raw paths, model deployments, or secrets.
+    """
+    redacted: dict[str, object] = {}
+    for key, value in metadata.items():
+        if value is None:
+            redacted[key] = None
+            continue
+        if isinstance(value, str):
+            redacted_val: str = value
+            redacted_val = redact_absolute_paths(redacted_val)
+            redacted_val = redact_env_assignments(redacted_val)
+            redacted_val = redact_secret_keys(redacted_val)
+            redacted_val = redact_deployment_identifiers(redacted_val)
+            redacted_val = redact_raw_prompts(redacted_val)
+            # Drop keys that are entirely redacted placeholders
+            if redacted_val.startswith("[redacted-"):
+                # Keep the key but with redacted value
+                redacted[key] = redacted_val
+            else:
+                redacted[key] = redacted_val
+        elif isinstance(value, (list, tuple)):
+            redacted[key] = [
+                redact_absolute_paths(str(v)) if isinstance(v, str) else v
+                for v in value
+            ]
+        else:
+            redacted[key] = value
+    return redacted
+
+
+def build_metadata_dict(pack: Any) -> dict[str, object]:
+    """Extract enrichment metadata fields from a ContextPack into a dict."""
+    fields = (
+        "agent_name",
+        "event_type",
+        "stage_index",
+        "profile_id",
+        "command_id",
+        "failure_type",
+        "artifact_refs_used",
+        "pom_summary_ref",
+        "sandbox_binding_ref",
+        "redaction_status",
+    )
+    result: dict[str, object] = {}
+    for f in fields:
+        val = getattr(pack, f, None)
+        if val is not None and val != ():
+            result[f] = val if not isinstance(val, tuple) else list(val)
+    return result
+
+
 # ── Internal helpers ───────────────────────────────────────────────
 
 

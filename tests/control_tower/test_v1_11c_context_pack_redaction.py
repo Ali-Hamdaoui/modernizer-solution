@@ -343,3 +343,107 @@ class TestContextPackFilteringPipeline:
         assert "/home/user" not in parsed["evidence_root"]
         assert "[redacted" in parsed["evidence_root"]
         assert parsed["max_files"] == 50
+
+
+# ── Context pack metadata redaction tests (F01) ────────────────────
+
+
+class TestRedactContextPackMetadata:
+
+    def test_redact_paths_in_metadata(self) -> None:
+        from migration_factory.control_tower.application.context_pack_redaction import (
+            redact_context_pack_metadata,
+        )
+        meta: dict[str, object] = {
+            "agent_name": "diagnosis",
+            "command_id": "cmd-001",
+            "sandbox_binding_ref": "/home/user/sandbox/stage-1",
+        }
+        result = redact_context_pack_metadata(meta)
+        assert result["agent_name"] == "diagnosis"
+        assert "[redacted" in str(result["sandbox_binding_ref"])
+
+    def test_redact_secrets_in_metadata(self) -> None:
+        from migration_factory.control_tower.application.context_pack_redaction import (
+            redact_context_pack_metadata,
+        )
+        meta: dict[str, object] = {
+            "profile_id": "azure-proposer",
+            "failure_type": "build_error",
+            "command_id": "AZURE_OPENAI_KEY=sk-xxx",
+        }
+        result = redact_context_pack_metadata(meta)
+        assert "sk-xxx" not in str(result["command_id"])
+
+    def test_redact_artifact_refs(self) -> None:
+        from migration_factory.control_tower.application.context_pack_redaction import (
+            redact_context_pack_metadata,
+        )
+        meta: dict[str, object] = {
+            "artifact_refs_used": [
+                "/home/user/project/build.log",
+                "pom.xml",
+            ],
+        }
+        result = redact_context_pack_metadata(meta)
+        refs = result["artifact_refs_used"]
+        assert isinstance(refs, list)
+        # Path redaction should apply
+        assert any("[redacted" in str(r) for r in refs)
+
+    def test_redact_metadata_none_values_preserved(self) -> None:
+        from migration_factory.control_tower.application.context_pack_redaction import (
+            redact_context_pack_metadata,
+        )
+        meta: dict[str, object] = {
+            "agent_name": None,
+            "event_type": "build_failed",
+        }
+        result = redact_context_pack_metadata(meta)
+        assert result["agent_name"] is None
+        assert result["event_type"] == "build_failed"
+
+
+class TestBuildMetadataDict:
+
+    def test_extract_from_pack(self) -> None:
+        from migration_factory.control_tower.application.context_pack_redaction import (
+            build_metadata_dict,
+        )
+        from migration_factory.control_tower.application.v2_model_schemas import (
+            ContextPackBuilder,
+        )
+        pack = ContextPackBuilder.build_context_pack(
+            pack_type="repair_proposal",
+            title="test",
+            description="desc",
+            evidence_refs=(),
+            agent_name="diagnosis",
+            event_type="build_failed",
+            stage_index=1,
+            artifact_refs_used=("log.txt",),
+        )
+        meta = build_metadata_dict(pack)
+        assert meta["agent_name"] == "diagnosis"
+        assert meta["event_type"] == "build_failed"
+        assert meta["stage_index"] == 1
+        assert meta["artifact_refs_used"] == ["log.txt"]
+        # Unset fields omitted
+        assert "profile_id" not in meta
+        assert "command_id" not in meta
+
+    def test_extract_empty_when_no_metadata(self) -> None:
+        from migration_factory.control_tower.application.context_pack_redaction import (
+            build_metadata_dict,
+        )
+        from migration_factory.control_tower.application.v2_model_schemas import (
+            ContextPackBuilder,
+        )
+        pack = ContextPackBuilder.build_context_pack(
+            pack_type="assistant_answer",
+            title="no meta",
+            description="desc",
+            evidence_refs=(),
+        )
+        meta = build_metadata_dict(pack)
+        assert meta == {}

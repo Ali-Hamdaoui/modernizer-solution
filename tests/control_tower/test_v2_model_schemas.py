@@ -329,3 +329,90 @@ def test_validate_against_schema_convenience() -> None:
     validate_against_schema("AssistantAnswer", {"answer": "hello"})
     with pytest.raises(SchemaValidationError):
         validate_against_schema("AssistantAnswer", {"extra": "field"})
+
+
+# ── Context pack metadata enrichment tests (F01) ────────────────────
+
+
+def test_context_pack_default_metadata() -> None:
+    """Old packs without metadata remain fully backward compatible."""
+    pack = ContextPackBuilder.build_context_pack(
+        pack_type="plan_proposal",
+        title="Legacy pack",
+        description="No metadata",
+        evidence_refs=("/tmp/evidence.txt",),
+    )
+    assert pack.agent_name is None
+    assert pack.event_type is None
+    assert pack.stage_index is None
+    assert pack.profile_id is None
+    assert pack.command_id is None
+    assert pack.failure_type is None
+    assert pack.artifact_refs_used == ()
+    assert pack.pom_summary_ref is None
+    assert pack.sandbox_binding_ref is None
+    assert pack.redaction_status is None
+
+
+def test_context_pack_with_metadata() -> None:
+    """Metadata fields are populated when provided."""
+    pack = ContextPackBuilder.build_context_pack(
+        pack_type="repair_proposal",
+        title="Diagnosis for build_failed",
+        description="Build failed in stage 1",
+        evidence_refs=("/tmp/build.log",),
+        agent_name="failure_diagnosis",
+        event_type="build_failed",
+        stage_index=1,
+        profile_id="azure-proposer",
+        command_id="cmd-001",
+        failure_type="compilation_error",
+        artifact_refs_used=("build.log", "pom.xml"),
+        pom_summary_ref="pom-summary-001",
+        sandbox_binding_ref="sandbox-001",
+        redaction_status="redacted_3_refs",
+    )
+    assert pack.agent_name == "failure_diagnosis"
+    assert pack.event_type == "build_failed"
+    assert pack.stage_index == 1
+    assert pack.profile_id == "azure-proposer"
+    assert pack.command_id == "cmd-001"
+    assert pack.failure_type == "compilation_error"
+    assert pack.artifact_refs_used == ("build.log", "pom.xml")
+    assert pack.pom_summary_ref == "pom-summary-001"
+    assert pack.sandbox_binding_ref == "sandbox-001"
+    assert pack.redaction_status == "redacted_3_refs"
+
+
+def test_context_pack_to_dict_includes_metadata() -> None:
+    """pack_to_dict includes non-empty metadata fields."""
+    pack = ContextPackBuilder.build_context_pack(
+        pack_type="repair_proposal",
+        title="Metadata test",
+        description="desc",
+        evidence_refs=("/tmp/e.log",),
+        agent_name="diagnosis",
+        event_type="build_failed",
+        stage_index=2,
+    )
+    d = ContextPackBuilder.pack_to_dict(pack)
+    assert d["agent_name"] == "diagnosis"
+    assert d["event_type"] == "build_failed"
+    assert d["stage_index"] == 2
+    # Fields not set should be absent from the dict
+    assert "command_id" not in d
+    assert "failure_type" not in d
+
+
+def test_context_pack_to_dict_backward_compatible() -> None:
+    """pack_to_dict without metadata omits all metadata keys."""
+    pack = ContextPackBuilder.build_context_pack(
+        pack_type="assistant_answer",
+        title="No metadata",
+        description="desc",
+        evidence_refs=(),
+    )
+    d = ContextPackBuilder.pack_to_dict(pack)
+    assert "agent_name" not in d
+    assert "event_type" not in d
+    assert "stage_index" not in d
