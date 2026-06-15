@@ -15,7 +15,8 @@ Responsibilities:
 3. Determine target Boot/Java from V2 stage/profile/command state
    (not scanner defaults).
 4. Map observed issue to rule_registry.ALLOWED_RULE_IDS.
-5. Persist PomContextSummary and attach pom_summary_ref to ContextPack.
+5. Emit pom_summary_created event and attach pom_summary_ref to
+   ContextPack metadata (event emission, not artifact persistence).
 6. Allow LLM to recommend deterministic rule id or POM patch intent
    with rationale only (backend never applies patches in F04).
 
@@ -293,21 +294,28 @@ class PomContextSummaryBuilder:
         return [r for r in candidates if r in ALLOWED_RULE_IDS]
 
     @staticmethod
-    def build_and_persist(
+    def build_and_emit(
         *,
         sandbox_path: str | Path,
         target_boot: str = "3.5.14",
         target_java: str = "17",
         ai_hub_path: str | None = None,
         profile_id: str | None = None,
+        job_id: str | None = None,
+        stage_index: int | None = None,
+        command_id: str | None = None,
         event_sink: Callable[[str, int | None, str, str, str, dict[str, Any] | None], None] | None = None,
     ) -> PomContextSummary:
-        """Build a PomContextSummary and optionally persist it via event_sink.
+        """Build a PomContextSummary and optionally emit a pom_summary_created event.
 
-        When event_sink is provided, emits a pom_summary_created event
-        with the full summary dict as payload. The returned summary's
-        pom_summary_ref is the stable artifact reference for downstream
-        consumers (F02 ContextPack metadata).
+        This is an event emission (not artifact persistence). The
+        pom_summary_created event carries the summary as payload so
+        downstream consumers (F02 ContextPack metadata, cockpit,
+        final report) can discover it by pom_summary_ref.
+
+        When event_sink is provided, job_id and stage_index are required.
+        Callers must supply real backend context — placeholder values
+        are rejected.
 
         Args:
             sandbox_path: Path to the sandbox directory containing pom.xml.
@@ -315,11 +323,18 @@ class PomContextSummaryBuilder:
             target_java: Target Java version from V2 stage/profile state.
             ai_hub_path: Optional AI Hub path for profile-based target stack.
             profile_id: Optional profile id for target stack resolution.
+            job_id: Required when event_sink is provided. The migration job id.
+            stage_index: Required when event_sink is provided. The stage index.
+            command_id: Optional failed command id for traceability.
             event_sink: Optional event sink matching the
                 (job_id, stage, event_type, status, message, payload) signature.
 
         Returns:
             A PomContextSummary with a stable pom_summary_ref.
+
+        Raises:
+            ValueError: If event_sink is provided but job_id or stage_index
+                        is missing, empty, or a placeholder.
         """
         summary = PomContextSummaryBuilder.build_summary(
             sandbox_path=sandbox_path,
@@ -329,13 +344,31 @@ class PomContextSummaryBuilder:
             profile_id=profile_id,
         )
         if event_sink is not None:
+            # Fail closed: require real backend context
+            if not job_id or not isinstance(job_id, str) or job_id.strip() == "":
+                raise ValueError(
+                    "build_and_emit requires a non-empty job_id when event_sink is provided"
+                )
+            if stage_index is None or not isinstance(stage_index, int) or stage_index < 0:
+                raise ValueError(
+                    "build_and_emit requires a non-negative stage_index when event_sink is provided"
+                )
+
+            event_payload = PomContextSummaryBuilder.summary_to_dict(summary)
+            # Attach caller-provided context for traceability
+            event_payload["sandbox_path"] = str(sandbox_path)
+            if command_id:
+                event_payload["command_id"] = command_id
+            if profile_id:
+                event_payload["profile_id"] = profile_id
+
             event_sink(
-                "",  # job_id — to be filled by caller if needed
-                None,  # stage — to be filled by caller if needed
+                job_id,
+                stage_index,
                 "pom_summary_created",
                 "completed",
                 f"POM context summary created: {summary.spring_boot_version}",
-                PomContextSummaryBuilder.summary_to_dict(summary),
+                event_payload,
             )
         return summary
 

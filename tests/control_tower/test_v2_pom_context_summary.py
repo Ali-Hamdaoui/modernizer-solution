@@ -442,3 +442,132 @@ class TestHelpers:
         assert not _version_lt("3.5.14", "3.5.14")
         assert not _version_lt("3.5.15", "3.5.14")
         assert not _version_lt("4.0.0", "3.5.14")
+
+
+# ── build_and_emit tests ──────────────────────────────────────────
+
+
+class TestBuildAndEmit:
+    """Prove build_and_emit emits pom_summary_created with real context
+    and fails closed on missing/placeholder context."""
+
+    def test_emits_pom_summary_created_with_real_context(
+        self,
+        sandbox_with_boot3_pom: Path,
+    ) -> None:
+        """build_and_emit emits pom_summary_created with job_id and stage_index."""
+        events: list[dict[str, Any]] = []
+
+        def event_sink(
+            job_id: str,
+            stage: int | None,
+            event_type: str,
+            status: str,
+            message: str,
+            payload: dict[str, Any] | None = None,
+        ) -> None:
+            events.append({
+                "job_id": job_id,
+                "stage": stage,
+                "event_type": event_type,
+                "status": status,
+                "message": message,
+                "payload": payload or {},
+            })
+
+        summary = PomContextSummaryBuilder.build_and_emit(
+            sandbox_path=sandbox_with_boot3_pom,
+            target_boot="3.5.14",
+            target_java="21",
+            job_id="job-1",
+            stage_index=1,
+            command_id="cmd-1",
+            event_sink=event_sink,
+        )
+
+        assert summary.pom_summary_ref.startswith("pom-summary:")
+        matching = [e for e in events if e["event_type"] == "pom_summary_created"]
+        assert len(matching) == 1
+        event = matching[0]
+        assert event["job_id"] == "job-1"
+        assert event["stage"] == 1
+        assert event["status"] == "completed"
+        assert event["payload"]["pom_summary_ref"] == summary.pom_summary_ref
+        assert event["payload"]["command_id"] == "cmd-1"
+        assert event["payload"]["sandbox_path"] == str(sandbox_with_boot3_pom)
+
+    def test_rejects_missing_job_id(
+        self,
+        sandbox_with_boot3_pom: Path,
+    ) -> None:
+        """build_and_emit raises ValueError when event_sink provided
+        but job_id is empty."""
+        with pytest.raises(ValueError, match="non-empty job_id"):
+            PomContextSummaryBuilder.build_and_emit(
+                sandbox_path=sandbox_with_boot3_pom,
+                target_boot="3.5.14",
+                target_java="21",
+                job_id="",
+                stage_index=1,
+                event_sink=lambda *a, **kw: None,
+            )
+
+    def test_rejects_missing_stage_index(
+        self,
+        sandbox_with_boot3_pom: Path,
+    ) -> None:
+        """build_and_emit raises ValueError when event_sink provided
+        but stage_index is None."""
+        with pytest.raises(ValueError, match="non-negative stage_index"):
+            PomContextSummaryBuilder.build_and_emit(
+                sandbox_path=sandbox_with_boot3_pom,
+                target_boot="3.5.14",
+                target_java="21",
+                job_id="job-1",
+                stage_index=None,
+                event_sink=lambda *a, **kw: None,
+            )
+
+    def test_rejects_negative_stage_index(
+        self,
+        sandbox_with_boot3_pom: Path,
+    ) -> None:
+        """build_and_emit raises ValueError when stage_index is negative."""
+        with pytest.raises(ValueError, match="non-negative stage_index"):
+            PomContextSummaryBuilder.build_and_emit(
+                sandbox_path=sandbox_with_boot3_pom,
+                target_boot="3.5.14",
+                target_java="21",
+                job_id="job-1",
+                stage_index=-1,
+                event_sink=lambda *a, **kw: None,
+            )
+
+    def test_no_event_sink_no_emit(
+        self,
+        sandbox_with_boot3_pom: Path,
+    ) -> None:
+        """build_and_emit without event_sink returns summary without errors."""
+        summary = PomContextSummaryBuilder.build_and_emit(
+            sandbox_path=sandbox_with_boot3_pom,
+            target_boot="3.5.14",
+            target_java="21",
+        )
+        assert isinstance(summary, PomContextSummary)
+        assert summary.pom_summary_ref.startswith("pom-summary:")
+
+    def test_pom_summary_ref_is_stable_and_traceable(
+        self,
+        sandbox_with_boot3_pom: Path,
+    ) -> None:
+        """pom_summary_ref is a stable, non-empty reference string."""
+        s1 = PomContextSummaryBuilder.build_summary(
+            sandbox_path=sandbox_with_boot3_pom,
+        )
+        s2 = PomContextSummaryBuilder.build_summary(
+            sandbox_path=sandbox_with_boot3_pom,
+        )
+        # Each call gets a unique ref (UUID-based)
+        assert s1.pom_summary_ref != s2.pom_summary_ref
+        assert s1.pom_summary_ref.startswith("pom-summary:")
+        assert len(s1.pom_summary_ref) > len("pom-summary:")
