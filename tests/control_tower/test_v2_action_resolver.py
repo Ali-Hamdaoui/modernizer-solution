@@ -66,6 +66,8 @@ def make_fake_resolver(
     """Build a resolver protocol with fake data."""
     _commands = commands or []
     _job = job
+    if _job is None and _commands:
+        _job = FakeJob(job_id=_commands[0].job_id, status="active")
     _proposals = proposals or {}
 
     def _get_job(job_id: str) -> FakeJob | None:
@@ -175,12 +177,42 @@ class TestFailClosed:
 
     def test_rejects_no_commands(self) -> None:
         """No commands for a job raises ValueError."""
+        # Job exists but has no commands
+        job = FakeJob(job_id="job-empty", status="active")
         resolver = V2AssistantActionResolver(
-            resolver=make_fake_resolver(commands=[])
+            resolver=make_fake_resolver(commands=[], job=job)
         )
         with pytest.raises(ValueError, match="No commands found"):
             resolver.resolve(
                 ActionBindingRequest(job_id="job-empty", action_type="repair_apply")
+            )
+
+    def test_rejects_no_job(self) -> None:
+        """Non-existent job raises ValueError."""
+        # Resolver with no job function returns None for any job_id
+        resolver = V2AssistantActionResolver(
+            resolver=ActionResolverProtocol()
+        )
+        with pytest.raises(ValueError, match="not found"):
+            resolver.resolve(
+                ActionBindingRequest(job_id="nonexistent", action_type="repair_apply")
+            )
+
+    def test_rejects_inactive_job(self) -> None:
+        """Completed/cancelled job raises ValueError."""
+        commands = [
+            FakeCommand(
+                "cmd-1", "job-done", 1, "failed",
+                result_json=json.dumps({"sandbox_path": "/sandbox/s1"}),
+            ),
+        ]
+        job = FakeJob(job_id="job-done", status="completed")
+        resolver = V2AssistantActionResolver(
+            resolver=make_fake_resolver(commands=commands, job=job)
+        )
+        with pytest.raises(ValueError, match="not active"):
+            resolver.resolve(
+                ActionBindingRequest(job_id="job-done", action_type="repair_apply")
             )
 
     def test_rejects_no_failed_command(self) -> None:

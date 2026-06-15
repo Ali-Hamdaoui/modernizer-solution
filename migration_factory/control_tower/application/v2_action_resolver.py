@@ -197,10 +197,17 @@ class V2AssistantActionResolver:
         Raises:
             ValueError: If any validation fails (stale, unsafe, unverifiable).
         """
-        # 1. Load job
+        # 1. Load and validate job
         job = None
         if self._resolver is not None:
             job = self._resolver.get_job(request.job_id)
+        if job is None:
+            raise ValueError(f"Job {request.job_id!r} not found")
+        job_status = str(getattr(job, "status", "") or "").lower()
+        if job_status and job_status not in ("active", "running", "in_progress"):
+            raise ValueError(
+                f"Job {request.job_id!r} is not active (status: {job_status!r})"
+            )
 
         # 2. Find latest failed command for the active stage
         commands = []
