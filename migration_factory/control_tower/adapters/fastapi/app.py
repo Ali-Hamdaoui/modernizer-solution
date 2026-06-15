@@ -154,7 +154,12 @@ from migration_factory.control_tower.application.v2_repair_flow import (
 )
 from migration_factory.control_tower.application.v2_orchestrator_runner import (
     V2OrchestratorRunner,
+    _bounded,
 )
+from migration_factory.control_tower.application.v2_failure_diagnosis import (
+    create_orchestrator_diagnosis_callback,
+)
+from migration_factory.control_tower.application.redaction import redact_public_value
 from migration_factory.control_tower.adapters.fastapi.security import (
     MUTATION_METHODS,
     ActorProvider,
@@ -499,9 +504,38 @@ def create_app(
     app.state.v2_assistant_model_client = v2_assistant_model_client or V2AssistantModelClient()
     app.state.worker_launcher = worker_launcher
     app.state.worker_terminator = worker_terminator
+    # ── F02: Wire automatic failure diagnosis into the orchestrator ──
+    def _diagnosis_event_sink(
+        job_id: str,
+        stage: int | None,
+        event_type: str,
+        status: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        with unit_of_work_factory() as uow:
+            redacted_payload = redact_public_value(payload or {})
+            uow.v2_events.save(
+                job_id=job_id,
+                stage=stage,
+                event_type=event_type,
+                status=status,
+                message=_bounded(str(redact_public_value(message))),
+                payload=redacted_payload if isinstance(redacted_payload, dict) else {},
+            )
+        if app.state.public_event_notifier is not None:
+            asyncio.run(app.state.public_event_notifier.notify())
+
+    _repair_flow = V2RepairFlowService()
+    _diagnosis_callback = create_orchestrator_diagnosis_callback(
+        repair_flow=_repair_flow,
+        event_sink=_diagnosis_event_sink,
+    )
+
     app.state.v2_orchestrator_runner = v2_orchestrator_runner or V2OrchestratorRunner(
         unit_of_work_factory=unit_of_work_factory,
         notifier=app.state.public_event_notifier,
+        diagnosis_callback=_diagnosis_callback,
     )
     app.state.controller_ownership = resolved_controller_ownership
     app.state.controller_services_started = False

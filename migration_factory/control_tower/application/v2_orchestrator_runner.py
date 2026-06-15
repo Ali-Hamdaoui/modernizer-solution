@@ -114,6 +114,7 @@ class V2OrchestratorRunner:
         notifier: Any | None = None,
         popen_factory: Any = subprocess.Popen,
         cwd: Path | None = None,
+        diagnosis_callback: Callable[[str, int, str, str, dict[str, Any]], None] | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._notifier = notifier
@@ -121,6 +122,7 @@ class V2OrchestratorRunner:
         self._cwd = cwd or Path(__file__).resolve().parents[3]
         self._event_lock = threading.Lock()
         self._last_stdout_lines: list[str] = []
+        self._diagnosis_callback = diagnosis_callback
 
     def start(self, *, job_id: str, command_id: str) -> V2OrchestratorStart:
         with self._unit_of_work_factory() as uow:
@@ -847,52 +849,101 @@ class V2OrchestratorRunner:
         public_contract = {k: v for k, v in build_contract.items() if v is not None}
 
         if _is_failure_status(build_status):
+            build_payload = {
+                "command_id": command_id,
+                "build_status": build_status,
+                "test_status": test_status,
+                **public_contract,
+            }
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="build_failed",
                 status="failed",
                 message=f"Build result: {build_status}",
-                payload={
-                    "command_id": command_id,
-                    "build_status": build_status,
-                    "test_status": test_status,
-                    **public_contract,
-                },
+                payload=build_payload,
+            )
+            self._maybe_diagnose(
+                job_id=job_id,
+                stage_index=stage_index,
+                command_id=command_id,
+                event_type="build_failed",
+                payload=build_payload,
             )
 
         if _is_failure_status(test_status):
+            test_payload = {
+                "command_id": command_id,
+                "test_status": test_status,
+                **public_contract,
+            }
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="test_failed",
                 status="failed",
                 message=f"Test result: {test_status}",
-                payload={
-                    "command_id": command_id,
-                    "test_status": test_status,
-                    **public_contract,
-                },
+                payload=test_payload,
+            )
+            self._maybe_diagnose(
+                job_id=job_id,
+                stage_index=stage_index,
+                command_id=command_id,
+                event_type="test_failed",
+                payload=test_payload,
             )
 
         if _is_failure_status(final_status) or _is_failure_status(transform_status):
+            transform_payload = {
+                "command_id": command_id,
+                "final_status": final_status,
+                "transform_status": transform_status,
+                "final_proof_level": final_proof,
+                "build_status": build_status,
+                "copilot_invocation_status": copilot_status,
+                "repair_fallback_generated": bool(fallback),
+                **public_contract,
+            }
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="transform_failed",
                 status="failed",
                 message=f"Transform/build failed: {final_status or transform_status}",
-                payload={
-                    "command_id": command_id,
-                    "final_status": final_status,
-                    "transform_status": transform_status,
-                    "final_proof_level": final_proof,
-                    "build_status": build_status,
-                    "copilot_invocation_status": copilot_status,
-                    "repair_fallback_generated": bool(fallback),
-                    **public_contract,
-                },
+                payload=transform_payload,
             )
+            self._maybe_diagnose(
+                job_id=job_id,
+                stage_index=stage_index,
+                command_id=command_id,
+                event_type="transform_failed",
+                payload=transform_payload,
+            )
+
+    def _maybe_diagnose(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Route failure events to the optional diagnosis callback (F02).
+
+        Only called when a diagnosis_callback was injected at construction.
+        The callback is expected to have signature:
+            (job_id, stage_index, command_id, event_type, payload) -> None
+        """
+        if self._diagnosis_callback is not None:
+            try:
+                self._diagnosis_callback(
+                    job_id, stage_index, command_id, event_type, payload
+                )
+            except Exception:
+                # Diagnosis is advisory — never let a diagnosis failure
+                # block the orchestrator event loop.
+                pass
 
     def _auto_queue_next_stage(
         self,
