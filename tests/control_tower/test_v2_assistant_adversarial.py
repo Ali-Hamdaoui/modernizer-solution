@@ -111,7 +111,7 @@ class TestAssistantCannotExecute:
             "/v1/v2/jobs/j-1/assistant/actions/draft",
             json={
                 "job_id": "j-1",
-                "action_type": "compile",
+                "action_type": "diagnose_failure",
                 "reason": "Test reason",
                 "stage_index": 1,
             },

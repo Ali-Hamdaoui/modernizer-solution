@@ -39,6 +39,7 @@ EVENT_ROUTES: dict[str, tuple[str, str]] = {
     "transform_failed": ("repair_diagnosis", "RepairProposal"),
     "pom_issue_detected": ("pom_repair", "RepairProposal"),
     "review_requested": ("reviewer", "ReviewerCritique"),
+    "repair_proposal_revised": ("revise_repair", "RepairProposal"),
 }
 
 # Deferred event types (not yet routed)
@@ -161,15 +162,55 @@ PROMPT_TEMPLATES: dict[str, PromptTemplate] = {
             "Event type: {event_type}\n"
             "Stage index: {stage_index}\n"
             "Proposal summary: {failure_summary}\n"
-            "Evidence refs: {evidence_refs}\n\n"
+            "Evidence refs: {evidence_refs}\n"
+            "Sandbox binding ref: {sandbox_binding_ref}\n"
+            "POM summary ref: {pom_summary_ref}\n"
+            "Safety policy: {safety_policy}\n"
+            "Proposal payload checksum: {proposal_checksum}\n"
+            "Context pack checksum: {context_pack_checksum}\n\n"
             "Produce a ReviewerCritique with:\n"
-            "- decision: accept, revise, or reject\n"
-            "- reasoning: Why this decision\n"
-            "- missing_evidence: What's missing (optional)\n"
-            "- unsafe_assumptions: Any risks (optional)\n\n"
+            "- decision: accept, revise, or reject (required)\n"
+            "- reasoning: Why this decision (required)\n"
+            "- missing_evidence: List of missing evidence (required, can be [])\n"
+            "- unsafe_assumptions: Any risks or unsafe assumptions (required, can be [])\n\n"
             "RULES:\n"
             "- Be specific about risks and missing evidence.\n"
-            "- Never approve or execute."
+            "- Verify the sandbox binding is not legacy source.\n"
+            "- Never approve or execute. Accept is only a policy gate.\n"
+            "- A revised proposal needs a fresh critique."
+        ),
+    ),
+    "revise_repair": PromptTemplate(
+        template_id="revise_repair",
+        template=(
+            "You are an AI migration repair assistant. "
+            "Revise the following repair proposal according to the operator's steering instruction.\n\n"
+            "Source proposal ID: {source_proposal_id}\n"
+            "Failed command ID: {failed_command_id}\n"
+            "Original failure summary: {failure_summary}\n"
+            "Original hypothesis: {hypothesis}\n"
+            "Original patch summary: {patch_summary}\n"
+            "Original affected paths: {affected_paths}\n"
+            "Evidence refs: {evidence_refs}\n"
+            "POM summary ref: {pom_summary_ref}\n"
+            "Sandbox binding ref: {sandbox_binding_ref}\n"
+            "Context pack checksum: {context_pack_checksum}\n"
+            "Allowed scope: {allowed_scope}\n"
+            "Safety policy: {safety_policy}\n\n"
+            "OPERATOR STEERING INSTRUCTION:\n"
+            "{revision_instruction}\n\n"
+            "Produce a revised RepairProposal with:\n"
+            "- failure_hypothesis: Revised diagnosis of root cause\n"
+            "- patch_summary: Revised change description\n"
+            "- affected_paths: Files that need modification\n"
+            "- validation_plan: How to verify the fix\n\n"
+            "RULES:\n"
+            "- Incorporate the operator's steering instruction above.\n"
+            "- If allowed_scope is pom_only, ONLY propose changes to pom.xml files.\n"
+            "- Never propose modifying legacy source outside the sandbox.\n"
+            "- Never approve or execute commands.\n"
+            "- Use only evidence provided above.\n"
+            "- Keep the proposal bounded to the immediate failure."
         ),
     ),
 }
@@ -323,11 +364,19 @@ class EventPromptRouter:
             "evidence_refs": ", ".join(pack.evidence_refs) if pack.evidence_refs else payload.get("evidence_refs", "none"),
             "pom_summary_ref": payload.get("pom_summary_ref", "none"),
             "sandbox_binding_ref": payload.get("sandbox_binding_ref", "none"),
+            "safety_policy": payload.get("safety_policy", "No legacy source mutation. Only sandbox changes. Human approval required."),
+            "proposal_checksum": payload.get("proposal_checksum", pack.checksum if pack.checksum else "unknown"),
+            "context_pack_checksum": payload.get("context_pack_checksum", pack.checksum),
         }
-        # Add any additional payload fields
+        # Add any additional payload fields (strings, ints, floats, lists)
         for key, value in payload.items():
-            if key not in fmt_vars and isinstance(value, str):
-                fmt_vars[key] = value
+            if key not in fmt_vars:
+                if isinstance(value, str):
+                    fmt_vars[key] = value
+                elif isinstance(value, (int, float)):
+                    fmt_vars[key] = str(value)
+                elif isinstance(value, (list, tuple)):
+                    fmt_vars[key] = ", ".join(str(v) for v in value)
 
         return template.format(**fmt_vars)
 

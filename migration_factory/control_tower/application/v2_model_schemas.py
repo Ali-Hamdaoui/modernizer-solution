@@ -71,24 +71,66 @@ REPAIR_PROPOSAL_SCHEMA = {
 REVIEWER_CRITIQUE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["decision", "reasoning"],
+    "required": ["decision", "reasoning", "missing_evidence", "unsafe_assumptions"],
     "properties": {
         "decision": {"type": "string", "enum": ["accept", "revise", "reject"]},
         "reasoning": {"type": "string"},
-        "missing_evidence": {"type": "array", "items": {"type": "string"}},
-        "unsafe_assumptions": {"type": "array", "items": {"type": "string"}},
+        "missing_evidence": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 0,
+        },
+        "unsafe_assumptions": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 0,
+        },
     },
 }
+
+# F05: Allowed action types — strict enum for ActionRequest schema
+F05_ALLOWED_ACTION_TYPES = (
+    "explain_failure",
+    "diagnose_failure",
+    "propose_repair",
+    "revise_repair_proposal",
+    "propose_pom_patch",
+    "request_reviewer_critique",
+    "prepare_approval_request",
+    "prepare_sandbox_repair",
+    "request_validation_rerun_after_apply",
+)
+
+# F05: Explicitly blocked action types — reject at service boundary
+F05_EXPLICITLY_BLOCKED_ACTION_TYPES = (
+    "execute_command_directly",
+    "write_file_directly",
+    "approve_decision",
+    "modify_legacy_source",
+    "override_failed_proof",
+    "choose_random_sandbox",
+)
 
 ACTION_REQUEST_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "required": ["action_type", "reason", "stage_index", "payload_checksum"],
     "properties": {
-        "action_type": {"type": "string"},
+        "action_type": {
+            "type": "string",
+            "enum": list(F05_ALLOWED_ACTION_TYPES),
+        },
         "reason": {"type": "string"},
         "stage_index": {"type": "integer", "minimum": 1, "maximum": 3},
         "payload_checksum": {"type": "string"},
+        # F05: Revision steering fields
+        "source_proposal_id": {"type": "string"},
+        "failed_command_id": {"type": "string"},
+        "revision_instruction": {"type": "string"},
+        "context_pack_checksum": {"type": "string"},
+        "revision_of": {"type": "string"},
+        "revision_number": {"type": "integer", "minimum": 1},
+        "allowed_scope": {"type": "string", "enum": ["any", "pom_only"]},
     },
 }
 

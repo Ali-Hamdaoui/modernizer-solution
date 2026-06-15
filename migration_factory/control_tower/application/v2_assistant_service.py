@@ -14,6 +14,8 @@ from migration_factory.control_tower.application.v2_model_schemas import (
     ContextPack,
     validate_against_schema,
     SchemaValidationError,
+    F05_ALLOWED_ACTION_TYPES,
+    F05_EXPLICITLY_BLOCKED_ACTION_TYPES,
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_assistant_repository import (
     SqliteV2AssistantRepository,
@@ -32,6 +34,14 @@ FORBIDDEN_CAPABILITIES = (
     "choose_deployment",
     "override_proof",
 )
+
+# F05: Adversarial action types that should never be drafted
+BLOCKED_DRAFT_ACTION_TYPES = set(F05_EXPLICITLY_BLOCKED_ACTION_TYPES) | {
+    a for a in (
+        "execute", "approve", "write", "modify", "override", "choose_random",
+        "skip_reviewer", "skip_approval", "force_apply",
+    )
+}
 
 ALLOWED_TOOLS = (
     "explain_status",
@@ -64,6 +74,14 @@ class PendingActionDraft:
     payload_checksum: str
     status: str  # draft, submitted
     created_at: str
+    # F05: optional revision payload
+    source_proposal_id: str | None = None
+    failed_command_id: str | None = None
+    revision_instruction: str | None = None
+    context_pack_checksum: str | None = None
+    revision_of: str | None = None
+    revision_number: int | None = None
+    allowed_scope: str | None = None  # any, pom_only
 
 
 class V2AssistantService:
@@ -134,8 +152,39 @@ class V2AssistantService:
         action_type: str,
         reason: str,
         stage_index: int = 1,
+        *,
+        # F05: optional revision payload
+        source_proposal_id: str | None = None,
+        failed_command_id: str | None = None,
+        revision_instruction: str | None = None,
+        context_pack_checksum: str | None = None,
+        revision_of: str | None = None,
+        revision_number: int | None = None,
+        allowed_scope: str | None = None,
     ) -> PendingActionDraft:
-        """Create a pending action draft (does NOT execute)."""
+        """Create a pending action draft (does NOT execute).
+
+        F05 hardening:
+        - Rejects blocked action types that bypass resolver/reviewer/approval gates
+        - Supports revision payload for revise_repair_proposal
+        - allowed_scope=pom_only is enforced server-side at resolve time
+        """
+        # Block known adversarial action types
+        action_lower = action_type.lower().replace("-", "_")
+        for blocked_prefix in BLOCKED_DRAFT_ACTION_TYPES:
+            if action_lower == blocked_prefix or action_lower.startswith(blocked_prefix):
+                raise ValueError(
+                    f"Action type {action_type!r} is blocked. "
+                    f"Assistant cannot execute, approve, write files, "
+                    f"modify legacy source, override proof, or choose sandbox."
+                )
+        # Verify action_type is in allowed list (or is a test/development action)
+        if action_lower not in F05_ALLOWED_ACTION_TYPES and not action_lower.startswith("test_"):
+            if any(bypass_word in action_lower for bypass_word in ["execute", "approve", "bypass", "force", "skip", "override", "direct"]):
+                raise ValueError(
+                    f"Action type {action_type!r} appears to bypass gates and is blocked."
+                )
+
         draft = PendingActionDraft(
             action_id=uuid4().hex,
             job_id=job_id,
@@ -145,6 +194,13 @@ class V2AssistantService:
             payload_checksum=f"draft-{uuid4().hex[:8]}",
             status="draft",
             created_at=utc_now_text(),
+            source_proposal_id=source_proposal_id,
+            failed_command_id=failed_command_id,
+            revision_instruction=revision_instruction,
+            context_pack_checksum=context_pack_checksum,
+            revision_of=revision_of,
+            revision_number=revision_number,
+            allowed_scope=allowed_scope,
         )
         self._drafts[draft.action_id] = draft
         # Persist if repo available
@@ -228,7 +284,7 @@ class V2AssistantService:
         }
 
     def draft_to_dict(self, draft: PendingActionDraft) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "action_id": draft.action_id,
             "job_id": draft.job_id,
             "action_type": draft.action_type,
@@ -238,3 +294,19 @@ class V2AssistantService:
             "status": draft.status,
             "created_at": draft.created_at,
         }
+        # F05: include revision payload when present
+        if draft.source_proposal_id is not None:
+            result["source_proposal_id"] = draft.source_proposal_id
+        if draft.failed_command_id is not None:
+            result["failed_command_id"] = draft.failed_command_id
+        if draft.revision_instruction is not None:
+            result["revision_instruction"] = draft.revision_instruction
+        if draft.context_pack_checksum is not None:
+            result["context_pack_checksum"] = draft.context_pack_checksum
+        if draft.revision_of is not None:
+            result["revision_of"] = draft.revision_of
+        if draft.revision_number is not None:
+            result["revision_number"] = draft.revision_number
+        if draft.allowed_scope is not None:
+            result["allowed_scope"] = draft.allowed_scope
+        return result

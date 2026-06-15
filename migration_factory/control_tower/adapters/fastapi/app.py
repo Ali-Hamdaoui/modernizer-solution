@@ -152,6 +152,9 @@ from migration_factory.control_tower.application.v2_model_schemas import (
 from migration_factory.control_tower.application.v2_repair_flow import (
     V2RepairFlowService,
 )
+from migration_factory.control_tower.application.v2_reviewer_service import (
+    V2ReviewerService,
+)
 from migration_factory.control_tower.application.v2_orchestrator_runner import (
     V2OrchestratorRunner,
     _bounded,
@@ -405,6 +408,20 @@ class ApproveCardRequest(BaseModel):
     expected_checksum: str
 
 
+# F07 reviewer request — context only, no decision from client
+
+class CreateReviewerCritiqueRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    proposal_id: str
+    proposal_type: str = "repair"  # repair, pom_patch
+    proposal_checksum: str
+    context_pack_checksum: str
+    # Internal: model_invocation_id for audit (set by orchestrator, not client)
+    model_invocation_id: str | None = None
+    # F07: decision, reasoning, missing_evidence, unsafe_assumptions are
+    # NEVER accepted from client body — the model generates them.
+
+
 class StageProgressRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     setup_id: str
@@ -432,6 +449,14 @@ class DraftActionRequest(BaseModel):
     action_type: str
     reason: str
     stage_index: int = 1
+    # F05: optional revision steering fields
+    source_proposal_id: str | None = None
+    failed_command_id: str | None = None
+    revision_instruction: str | None = None
+    context_pack_checksum: str | None = None
+    revision_of: str | None = None
+    revision_number: int | None = Field(default=None, ge=1)
+    allowed_scope: str | None = None
 
 
 class CreateRepairProposalRequest(BaseModel):
@@ -446,6 +471,9 @@ class CreateRepairProposalRequest(BaseModel):
 class ApproveRepairProposalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     approval_checksum: str
+    # F07: both checksums required — reviewer gate is mandatory, no bypass
+    proposal_checksum: str
+    context_pack_checksum: str
 
 
 @asynccontextmanager
@@ -1517,14 +1545,35 @@ def create_app(
 
         The assistant CANNOT execute, approve, write files,
         change route, or override proof.
+
+        F05: Actions are validated against ACTION_REQUEST_SCHEMA which
+        restricts action_type to F05_ALLOWED_ACTION_TYPES. Revision
+        steering fields are passed through for revise_repair_proposal.
         """
         # Validate against ActionRequest schema at the model-output boundary
-        action_data = {
+        # This now rejects blocked action types like execute_command_directly
+        action_data: dict[str, Any] = {
             "action_type": payload.action_type,
             "reason": payload.reason,
             "stage_index": payload.stage_index,
             "payload_checksum": f"draft-{payload.job_id[:8]}",
         }
+        # Pass revision fields if present (F05)
+        if payload.source_proposal_id is not None:
+            action_data["source_proposal_id"] = payload.source_proposal_id
+        if payload.failed_command_id is not None:
+            action_data["failed_command_id"] = payload.failed_command_id
+        if payload.revision_instruction is not None:
+            action_data["revision_instruction"] = payload.revision_instruction
+        if payload.context_pack_checksum is not None:
+            action_data["context_pack_checksum"] = payload.context_pack_checksum
+        if payload.revision_of is not None:
+            action_data["revision_of"] = payload.revision_of
+        if payload.revision_number is not None:
+            action_data["revision_number"] = payload.revision_number
+        if payload.allowed_scope is not None:
+            action_data["allowed_scope"] = payload.allowed_scope
+
         try:
             validate_against_schema("ActionRequest", action_data)
         except SchemaValidationError as exc:
@@ -1534,17 +1583,212 @@ def create_app(
                 str(exc),
             ) from exc
 
+        # F05: If action_type is revise_repair_proposal, resolve revision binding
+        revision_binding = None
+        if payload.action_type == "revise_repair_proposal" and payload.source_proposal_id:
+            from migration_factory.control_tower.application.v2_action_resolver import (
+                V2AssistantActionResolver,
+                ActionBindingRequest,
+                ActionResolverProtocol,
+            )
+            with unit_of_work_factory() as uow:
+                resolver_proto = ActionResolverProtocol(
+                    get_job=uow.v2_jobs.get,
+                    list_commands=uow.v2_commands.list_by_job,
+                    get_proposal=uow.v2_repairs.get_proposal,
+                )
+                action_resolver = V2AssistantActionResolver(resolver=resolver_proto)
+                binding_request = ActionBindingRequest(
+                    job_id=job_id,
+                    action_type=payload.action_type,
+                    source_proposal_id=payload.source_proposal_id,
+                    failed_command_id=payload.failed_command_id,
+                    revision_instruction=payload.revision_instruction,
+                    context_pack_checksum=payload.context_pack_checksum,
+                    allowed_scope=payload.allowed_scope or "any",
+                )
+                try:
+                    revision_binding = action_resolver.resolve_revision(binding_request)
+                except ValueError as exc:
+                    raise _error(
+                        status.HTTP_400_BAD_REQUEST,
+                        "REVISION_RESOLUTION_FAILED",
+                        str(exc),
+                    ) from exc
+
         with unit_of_work_factory() as uow:
             service = V2AssistantService(
                 assistant_repo=uow.v2_assistant,
             )
-            draft = service.draft_action(
-                job_id=payload.job_id,
-                action_type=payload.action_type,
-                reason=payload.reason,
-                stage_index=payload.stage_index,
-            )
-        return service.draft_to_dict(draft)
+            try:
+                draft = service.draft_action(
+                    job_id=payload.job_id,
+                    action_type=payload.action_type,
+                    reason=payload.reason,
+                    stage_index=payload.stage_index,
+                    source_proposal_id=payload.source_proposal_id,
+                    failed_command_id=payload.failed_command_id,
+                    revision_instruction=payload.revision_instruction,
+                    context_pack_checksum=payload.context_pack_checksum,
+                    revision_of=payload.revision_of,
+                    revision_number=payload.revision_number,
+                    allowed_scope=payload.allowed_scope,
+                )
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "DRAFT_ACTION_BLOCKED",
+                    str(exc),
+                ) from exc
+        result = service.draft_to_dict(draft)
+
+        # F05: If revision binding resolved, create a revised proposal draft
+        # via model-backed revision (not source copy)
+        revised_proposal = None
+        if revision_binding is not None:
+            with unit_of_work_factory() as uow:
+                repair_service = V2RepairFlowService(
+                    repair_repo=uow.v2_repairs,
+                )
+                # Load source proposal for context
+                source_record = uow.v2_repairs.get_proposal(payload.source_proposal_id)
+                source_failure = source_record.failure_summary if source_record else "Unknown failure"
+                source_hypothesis = source_record.hypothesis if source_record else ""
+                source_patch = source_record.patch_summary if source_record else ""
+                source_paths = (
+                    tuple(json.loads(source_record.affected_paths_json))
+                    if source_record and source_record.affected_paths_json
+                    else ()
+                )
+
+                # F05: Build revision prompt and call model (not source copy)
+                from migration_factory.control_tower.application.v2_prompt_router import (
+                    EventPromptRouter,
+                    PROMPT_TEMPLATES,
+                )
+
+                revision_template = PROMPT_TEMPLATES["revise_repair"]
+                revision_payload = {
+                    "event_type": "repair_proposal_revised",
+                    "stage_index": str(revision_binding.failed_command.stage_index),
+                    "source_proposal_id": payload.source_proposal_id,
+                    "failed_command_id": payload.failed_command_id or "",
+                    "failure_summary": source_failure,
+                    "hypothesis": source_hypothesis,
+                    "patch_summary": source_patch,
+                    "affected_paths": list(source_paths),
+                    "evidence_refs": "none",
+                    "pom_summary_ref": "none",
+                    "sandbox_binding_ref": revision_binding.binding.binding_checksum,
+                    "context_pack_checksum": payload.context_pack_checksum or "",
+                    "allowed_scope": payload.allowed_scope or "any",
+                    "revision_instruction": payload.revision_instruction or "No specific instruction.",
+                    "safety_policy": "No legacy source mutation. Only sandbox changes.",
+                }
+
+                # Format the revision prompt
+                from migration_factory.control_tower.application.v2_model_schemas import (
+                    ContextPackBuilder,
+                )
+                dummy_pack = ContextPackBuilder.build_context_pack(
+                    pack_type="repair_proposal",
+                    title="Revision",
+                    description=source_failure,
+                    evidence_refs=(),
+                )
+                revision_prompt = EventPromptRouter._format_prompt(
+                    template=revision_template.template,
+                    pack=dummy_pack,
+                    payload=revision_payload,
+                )
+
+                # Call the model — keep fallback for answer() but check success
+                model_result = app.state.v2_assistant_model_client.answer(
+                    prompt=revision_prompt,
+                    fallback=json.dumps({
+                        "failure_hypothesis": source_hypothesis,
+                        "patch_summary": source_patch,
+                        "affected_paths": list(source_paths),
+                        "validation_plan": "Re-validate after revision",
+                    }),
+                )
+
+                # F05: Fail closed — no model output = no revised proposal
+                if not model_result.success:
+                    raise _error(
+                        status.HTTP_502_BAD_GATEWAY,
+                        "REVISION_MODEL_FAILED",
+                        f"Revision model unavailable: {model_result.redacted_summary}",
+                    )
+
+                # F05: Parse and validate model output — NO fallback
+                # Invalid/non-JSON/schema-failing model output raises ValueError
+                try:
+                    revised_output = _parse_and_validate_model_output(
+                        model_content=model_result.content,
+                        schema_name="RepairProposal",
+                    )
+                except ValueError as exc:
+                    raise _error(
+                        status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        "INVALID_REPAIR_PROPOSAL_OUTPUT",
+                        str(exc),
+                    ) from exc
+
+                # Enforce pom_only on the REVISED model output's affected_paths
+                revised_paths = revised_output.get("affected_paths", [])
+                if isinstance(revised_paths, str):
+                    try:
+                        revised_paths = json.loads(revised_paths)
+                    except (json.JSONDecodeError, TypeError):
+                        revised_paths = []
+                if (payload.allowed_scope or "any") == "pom_only":
+                    non_pom = [
+                        p for p in revised_paths
+                        if not p.endswith("pom.xml") and "/pom.xml" not in p
+                    ]
+                    if non_pom:
+                        raise _error(
+                            status.HTTP_400_BAD_REQUEST,
+                            "POM_ONLY_VIOLATION",
+                            f"Revised model output contains non-POM paths: {non_pom}",
+                        )
+
+                # Persist using VALIDATED model output, not source copy
+                revised_proposal = repair_service.create_revision_proposal(
+                    command_id=revision_binding.failed_command.command_id,
+                    source_proposal_id=payload.source_proposal_id,
+                    failure_summary=revised_output.get("failure_hypothesis", source_failure),
+                    hypothesis=revised_output.get("failure_hypothesis", source_hypothesis),
+                    patch_summary=revised_output.get("patch_summary", source_patch),
+                    affected_paths=tuple(revised_paths),
+                    revision_instruction=payload.revision_instruction or "",
+                    context_pack_checksum=payload.context_pack_checksum or "",
+                    allowed_scope=payload.allowed_scope or "any",
+                    revision_number=(payload.revision_number or 0) + 1,
+                )
+
+                # Emit repair_proposal_revised event (only after successful persistence)
+                _append_v2_event(
+                    uow,
+                    job_id=job_id,
+                    stage=revision_binding.failed_command.stage_index,
+                    event_type="repair_proposal_revised",
+                    status="completed",
+                    message=f"Revised proposal {revised_proposal.proposal_id} created from {payload.source_proposal_id}",
+                    payload={
+                        "revised_proposal_id": revised_proposal.proposal_id,
+                        "source_proposal_id": payload.source_proposal_id,
+                        "revision_number": revised_proposal.revision_number,
+                        "allowed_scope": revised_proposal.allowed_scope,
+                        "command_id": revision_binding.failed_command.command_id,
+                    },
+                )
+
+            result["revision_binding"] = action_resolver.result_to_dict(revision_binding)
+            result["revised_proposal"] = repair_service.proposal_to_dict(revised_proposal)
+
+        return result
 
     # ------------------------------------------------------------------
     # V2 Repair flow endpoints (A12/P0-007)
@@ -1591,23 +1835,192 @@ def create_app(
         proposal_id: str,
         payload: ApproveRepairProposalRequest,
     ) -> dict[str, Any]:
-        """Approve a repair proposal with checksum."""
+        """Approve a repair proposal with checksum.
+
+        F07: Requires proposal_checksum and context_pack_checksum.
+        Fails closed unless a latest accepted reviewer critique matches
+        both current checksums.
+        """
         with unit_of_work_factory() as uow:
+            reviewer_service = V2ReviewerService(
+                reviewer_repo=uow.v2_reviewer,
+            )
             service = V2RepairFlowService(
                 repair_repo=uow.v2_repairs,
+                reviewer_service=reviewer_service,
             )
             try:
                 proposal = service.approve_proposal(
                     proposal_id=proposal_id,
                     approval_checksum=payload.approval_checksum,
+                    proposal_checksum=payload.proposal_checksum,
+                    context_pack_checksum=payload.context_pack_checksum,
                 )
+                # Look up the reviewer critique_id for the response
+                accepted = reviewer_service.check_reviewer_gate(
+                    proposal_id=proposal_id,
+                    proposal_checksum=payload.proposal_checksum,
+                    context_pack_checksum=payload.context_pack_checksum,
+                )
+                reviewer_critique_id = accepted.critique_id if accepted else None
+                reviewer_decision = accepted.decision if accepted else None
             except ValueError as exc:
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,
                     "REPAIR_APPROVAL_FAILED",
                     str(exc),
                 ) from exc
-        return service.proposal_to_dict(proposal)
+        return service.proposal_to_dict(
+            proposal,
+            reviewer_critique_id=reviewer_critique_id,
+            reviewer_decision=reviewer_decision,
+        )
+
+    # ------------------------------------------------------------------
+    # F07: Reviewer critique endpoints
+    # ------------------------------------------------------------------
+
+    @app.post("/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/reviewer-critique")
+    def create_reviewer_critique(
+        command_id: str,
+        proposal_id: str,
+        payload: CreateReviewerCritiqueRequest,
+    ) -> dict[str, Any]:
+        """Request a reviewer critique via model — NEVER accepts decision from client.
+
+        The backend builds the reviewer prompt from the proposal context,
+        calls the reviewer model, validates the output against
+        REVIEWER_CRITIQUE_SCHEMA, and persists the critique.
+
+        Clients CANNOT fabricate a decision=accept — only the model output
+        determines the verdict.
+        """
+        with unit_of_work_factory() as uow:
+            # Load proposal context for the reviewer prompt
+            proposal_record = uow.v2_repairs.get_proposal(proposal_id)
+            if proposal_record is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "PROPOSAL_NOT_FOUND",
+                    f"Proposal {proposal_id!r} not found",
+                )
+
+            # Build the reviewer prompt using the existing template
+            from migration_factory.control_tower.application.v2_prompt_router import (
+                EventPromptRouter,
+                PROMPT_TEMPLATES,
+            )
+            from migration_factory.control_tower.application.v2_model_schemas import (
+                ContextPackBuilder,
+            )
+
+            reviewer_template = PROMPT_TEMPLATES["reviewer"]
+            reviewer_payload = {
+                "event_type": "review_requested",
+                "stage_index": "1",
+                "failure_summary": proposal_record.failure_summary,
+                "evidence_refs": "none",
+                "sandbox_binding_ref": "none",
+                "pom_summary_ref": "none",
+                "safety_policy": "No legacy source mutation. Only sandbox changes. Human approval required.",
+                "proposal_checksum": payload.proposal_checksum,
+                "context_pack_checksum": payload.context_pack_checksum,
+            }
+
+            dummy_pack = ContextPackBuilder.build_context_pack(
+                pack_type="reviewer_critique",
+                title="Review",
+                description=proposal_record.failure_summary,
+                evidence_refs=(),
+            )
+            reviewer_prompt = EventPromptRouter._format_prompt(
+                template=reviewer_template.template,
+                pack=dummy_pack,
+                payload=reviewer_payload,
+            )
+
+            # Call the reviewer model
+            fallback_json = json.dumps({
+                "decision": "revise",
+                "reasoning": "Model unavailable — defaulting to revise for safety.",
+                "missing_evidence": ["Model output unavailable"],
+                "unsafe_assumptions": ["Reviewer model did not respond"],
+            })
+            model_result = app.state.v2_assistant_model_client.answer(
+                prompt=reviewer_prompt,
+                fallback=fallback_json,
+            )
+
+            # Parse and validate model output
+            reviewer_output = _parse_and_validate_model_output(
+                model_content=model_result.content,
+                schema_name="ReviewerCritique",
+                fallback={
+                    "decision": "revise",
+                    "reasoning": "Model unavailable — defaulting to revise for safety.",
+                    "missing_evidence": ["Model output unavailable"],
+                    "unsafe_assumptions": ["Reviewer model did not respond"],
+                },
+            )
+
+            # Persist the VALIDATED reviewer critique
+            service = V2ReviewerService(
+                reviewer_repo=uow.v2_reviewer,
+            )
+            try:
+                critique = service.record_critique(
+                    proposal_id=proposal_id,
+                    proposal_type=payload.proposal_type,
+                    proposal_checksum=payload.proposal_checksum,
+                    context_pack_checksum=payload.context_pack_checksum,
+                    decision=reviewer_output["decision"],
+                    reasoning=reviewer_output["reasoning"],
+                    missing_evidence=tuple(reviewer_output.get("missing_evidence", [])),
+                    unsafe_assumptions=tuple(reviewer_output.get("unsafe_assumptions", [])),
+                    model_invocation_id=payload.model_invocation_id,
+                )
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "CRITIQUE_FAILED",
+                    str(exc),
+                ) from exc
+        return service.critique_to_dict(critique)
+
+    @app.get("/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/reviewer-critiques")
+    def list_reviewer_critiques(
+        command_id: str,
+        proposal_id: str,
+    ) -> dict[str, Any]:
+        """List all reviewer critiques for a proposal."""
+        with unit_of_work_factory() as uow:
+            service = V2ReviewerService(
+                reviewer_repo=uow.v2_reviewer,
+            )
+            critiques = service.list_critiques(proposal_id)
+        return {
+            "command_id": command_id,
+            "proposal_id": proposal_id,
+            "critiques": [service.critique_to_dict(c) for c in critiques],
+        }
+
+    @app.get("/v1/v2/reviewer-critiques/{critique_id}")
+    def get_reviewer_critique(
+        critique_id: str,
+    ) -> dict[str, Any]:
+        """Get a reviewer critique by ID."""
+        with unit_of_work_factory() as uow:
+            service = V2ReviewerService(
+                reviewer_repo=uow.v2_reviewer,
+            )
+            critique = service.get_critique(critique_id)
+        if critique is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "CRITIQUE_NOT_FOUND",
+                f"Reviewer critique {critique_id!r} not found",
+            )
+        return service.critique_to_dict(critique)
 
     @app.post("/v1/v2/jobs/{job_id}/stages/progress")
     def progress_to_next_stage(
@@ -4577,6 +4990,58 @@ def _error(status_code: int, code: str, message: str) -> HTTPException:
     return HTTPException(
         status_code=status_code,
         detail={"code": code, "message": message},
+    )
+
+
+def _parse_and_validate_model_output(
+    *,
+    model_content: str,
+    schema_name: str,
+    fallback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Parse JSON from model output and validate against the named schema.
+
+    If the model returns plain text that is not valid JSON, or the JSON
+    fails schema validation, and a fallback is provided, the fallback is
+    returned with a logged warning. If no fallback is provided, a
+    ValueError is raised.
+
+    This is the boundary between raw model text and typed backend objects.
+    """
+    from migration_factory.control_tower.application.v2_model_schemas import (
+        validate_against_schema,
+        SchemaValidationError,
+    )
+
+    parsed: dict[str, Any] | None = None
+    try:
+        # Try direct JSON parse
+        parsed = json.loads(model_content) if isinstance(model_content, str) else model_content
+        if not isinstance(parsed, dict):
+            parsed = None
+    except (json.JSONDecodeError, TypeError):
+        # Try to extract JSON from markdown code blocks
+        import re as _re
+        m = _re.search(r'```(?:json)?\s*\n?([\s\S]*?)\n?```', str(model_content))
+        if m:
+            try:
+                parsed = json.loads(m.group(1))
+                if not isinstance(parsed, dict):
+                    parsed = None
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    if parsed is not None:
+        try:
+            validate_against_schema(schema_name, parsed)
+            return parsed
+        except SchemaValidationError:
+            pass
+
+    if fallback is not None:
+        return fallback
+    raise ValueError(
+        f"Model output could not be parsed as valid {schema_name}"
     )
 
 

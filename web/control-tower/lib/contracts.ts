@@ -504,6 +504,26 @@ export type V2AssistantAskResponse = {
   guardrails: Record<string, boolean>;
 };
 
+export type V2ReviewerCritiqueResponse = {
+  critique_id: string;
+  proposal_id: string;
+  proposal_type: string;
+  proposal_checksum: string;
+  context_pack_checksum: string;
+  decision: string;
+  reasoning: string;
+  missing_evidence: string[];
+  unsafe_assumptions: string[];
+  model_invocation_id: string | null;
+  created_at: string;
+};
+
+export type V2ReviewerCritiquesListResponse = {
+  command_id: string;
+  proposal_id: string;
+  critiques: V2ReviewerCritiqueResponse[];
+};
+
 export type V2DraftActionResponse = {
   action_id: string;
   job_id: string;
@@ -513,6 +533,16 @@ export type V2DraftActionResponse = {
   payload_checksum: string;
   status: string;
   created_at: string;
+  // F05 optional revision steering fields
+  source_proposal_id?: string | null;
+  failed_command_id?: string | null;
+  revision_instruction?: string | null;
+  context_pack_checksum?: string | null;
+  revision_of?: string | null;
+  revision_number?: number | null;
+  allowed_scope?: string | null;
+  // F05 revision binding result when revise_repair_proposal is resolved
+  revision_binding?: Record<string, unknown>;
 };
 
 export type V2StageContinuationResponse = {
