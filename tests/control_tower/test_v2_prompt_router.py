@@ -348,3 +348,22 @@ def test_request_to_dict_redacts_prompt() -> None:
     d = EventPromptRouter.request_to_dict(request)
     assert "prompt_text" not in d
     assert d["output_schema_name"] == "RepairProposal"
+
+
+def test_token_budget_matches_schema() -> None:
+    """Token budgets use correct schema-specific values, not defaults."""
+    pack = ContextPackBuilder.build_context_pack(
+        pack_type="repair_proposal",
+        title="Budget test",
+        description="Test",
+        evidence_refs=("/tmp/t.log",),
+    )
+    # RepairProposal should get 20000/6000, not the 8000/2000 fallback
+    req = EventPromptRouter.route("build_failed", pack)
+    assert req.token_budget_input == 20000
+    assert req.token_budget_output == 6000
+
+    # ReviewerCritique should get 16000/4000
+    req2 = EventPromptRouter.route("review_requested", pack)
+    assert req2.token_budget_input == 16000
+    assert req2.token_budget_output == 4000

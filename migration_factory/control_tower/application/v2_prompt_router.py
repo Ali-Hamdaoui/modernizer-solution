@@ -48,6 +48,15 @@ DEFERRED_EVENTS: tuple[str, ...] = (
     "final_report_requested",
 )
 
+# Map schema names (PascalCase) to TOKEN_BUDGETS keys (snake_case)
+SCHEMA_TO_BUDGET_KEY: dict[str, str] = {
+    "RepairProposal": "repair_proposal",
+    "ReviewerCritique": "reviewer_critique",
+    "PlanProposal": "plan_proposal",
+    "ActionRequest": "action_request",
+    "AssistantAnswer": "assistant_answer",
+}
+
 
 # ── Data types ─────────────────────────────────────────────────────
 
@@ -228,9 +237,10 @@ class EventPromptRouter:
             payload=payload or {},
         )
 
-        # Get token budgets
+        # Get token budgets (map PascalCase schema names to snake_case keys)
+        budget_key = SCHEMA_TO_BUDGET_KEY.get(schema_name, schema_name.lower())
         budgets = TOKEN_BUDGETS.get(
-            schema_name.lower(),
+            budget_key,
             {"input": 8000, "output": 2000},
         )
 
