@@ -105,7 +105,7 @@ class TestAssistantAPI:
             "/v1/v2/jobs/job-1/assistant/actions/draft",
             json={
                 "job_id": "job-1",
-                "action_type": "plan_instruction",
+                "action_type": "propose_repair",
                 "reason": "Need plan for stage 1",
                 "stage_index": 1,
             },
@@ -114,7 +114,7 @@ class TestAssistantAPI:
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["status"] == "draft"
-        assert body["action_type"] == "plan_instruction"
+        assert body["action_type"] == "propose_repair"
 
     def test_draft_action_persists(self, tmp_path: Path) -> None:
         """Draft should persist and be retrievable."""
@@ -123,7 +123,7 @@ class TestAssistantAPI:
             "/v1/v2/jobs/job-1/assistant/actions/draft",
             json={
                 "job_id": "job-1",
-                "action_type": "repair_instruction",
+                "action_type": "explain_failure",
                 "reason": "Fix NPE",
                 "stage_index": 2,
             },
@@ -206,22 +206,52 @@ class TestRepairAPI:
         assert create_resp.status_code == 200
         proposal_id = create_resp.json()["proposal_id"]
 
-        # Approve with checksum
+        # Approve with checksums (F07: all required)
+        # Create a reviewer critique directly via the repo so the gate passes
+        from migration_factory.control_tower.application.v2_reviewer_service import (
+            V2ReviewerService,
+        )
+        from migration_factory.control_tower.infrastructure.sqlite.v2_reviewer_repository import (
+            SqliteV2ReviewerRepository,
+        )
+        reviewer_repo = SqliteV2ReviewerRepository(conn)
+        reviewer_service = V2ReviewerService(reviewer_repo=reviewer_repo)
+        reviewer_service.record_critique(
+            proposal_id=proposal_id,
+            proposal_type="repair",
+            proposal_checksum="pc-test",
+            context_pack_checksum="cp-test",
+            decision="accept",
+            reasoning="Test critique — approved.",
+            missing_evidence=(),
+            unsafe_assumptions=(),
+        )
+
         response = client.post(
             f"/v1/v2/commands/cmd-2/repair/proposal/{proposal_id}/approve",
-            json={"approval_checksum": "chk-abc"},
+            json={
+                "approval_checksum": "chk-abc",
+                "proposal_checksum": "pc-test",
+                "context_pack_checksum": "cp-test",
+            },
             headers=_mutation_headers(),
         )
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["status"] == "approved"
         assert body["approval_checksum"] == "chk-abc"
+        # Reviewer metadata should be in response
+        assert "reviewer_critique_id" in body
 
     def test_approve_missing_proposal(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)
         response = client.post(
             "/v1/v2/commands/cmd-3/repair/proposal/nonexistent/approve",
-            json={"approval_checksum": "chk"},
+            json={
+                "approval_checksum": "chk",
+                "proposal_checksum": "pc",
+                "context_pack_checksum": "cp",
+            },
             headers=_mutation_headers(),
         )
         assert response.status_code == 400
@@ -274,7 +304,7 @@ class TestSchemaValidationRejection:
             "/v1/v2/jobs/job-1/assistant/actions/draft",
             json={
                 "job_id": "job-1",
-                "action_type": "compile",
+                "action_type": "diagnose_failure",
                 "reason": "test",
                 "stage_index": 1,
                 "extra_field": "should be rejected",
@@ -298,7 +328,7 @@ class TestSchemaValidationRejection:
             "/v1/v2/jobs/job-1/assistant/actions/draft",
             json={
                 "job_id": "job-1",
-                "action_type": "compile",
+                "action_type": "diagnose_failure",
                 "reason": "test",
                 "stage_index": 99,
             },
@@ -313,7 +343,7 @@ class TestSchemaValidationRejection:
             "/v1/v2/jobs/job-1/assistant/actions/draft",
             json={
                 "job_id": "job-1",
-                "action_type": "compile",
+                "action_type": "diagnose_failure",
                 "stage_index": 1,
             },
             headers=_mutation_headers(),
@@ -359,7 +389,7 @@ class TestSchemaValidationRejection:
             "/v1/v2/jobs/job-valid/assistant/actions/draft",
             json={
                 "job_id": "job-valid",
-                "action_type": "compile",
+                "action_type": "diagnose_failure",
                 "reason": "Validate build",
                 "stage_index": 2,
             },

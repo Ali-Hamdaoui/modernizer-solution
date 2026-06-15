@@ -21,6 +21,8 @@ import type {
   V2AssistantMessagesListResponse,
   V2AssistantMessageResponse,
   V2ArtifactPreviewResponse,
+  V2ReviewerCritiqueResponse,
+  V2ReviewerCritiquesListResponse,
   V2DraftActionResponse,
   ModelActivityRawResponse,
   ModelActivityResponse,
@@ -384,11 +386,61 @@ export async function draftV2Action(
   jobId: string,
   actionType: string,
   reason: string,
-  stageIndex: number = 1
+  stageIndex: number = 1,
+  // F05 optional revision steering fields
+  options?: {
+    source_proposal_id?: string;
+    failed_command_id?: string;
+    revision_instruction?: string;
+    context_pack_checksum?: string;
+    revision_of?: string;
+    revision_number?: number;
+    allowed_scope?: string;
+  }
 ): Promise<V2DraftActionResponse> {
+  const body: Record<string, unknown> = {
+    job_id: jobId,
+    action_type: actionType,
+    reason,
+    stage_index: stageIndex,
+  };
+  if (options?.source_proposal_id) body.source_proposal_id = options.source_proposal_id;
+  if (options?.failed_command_id) body.failed_command_id = options.failed_command_id;
+  if (options?.revision_instruction) body.revision_instruction = options.revision_instruction;
+  if (options?.context_pack_checksum) body.context_pack_checksum = options.context_pack_checksum;
+  if (options?.revision_of) body.revision_of = options.revision_of;
+  if (options?.revision_number) body.revision_number = options.revision_number;
+  if (options?.allowed_scope) body.allowed_scope = options.allowed_scope;
   return postJson<V2DraftActionResponse>(
     `/v1/v2/jobs/${encodeURIComponent(jobId)}/assistant/actions/draft`,
-    { job_id: jobId, action_type: actionType, reason, stage_index: stageIndex }
+    body
+  );
+}
+
+export async function requestV2ReviewerCritique(
+  commandId: string,
+  proposalId: string,
+  payload: {
+    proposal_type: string;
+    proposal_checksum: string;
+    context_pack_checksum: string;
+    model_invocation_id?: string | null;
+  }
+): Promise<V2ReviewerCritiqueResponse> {
+  // F07: NEVER sends decision/reasoning from client.
+  // The backend calls the reviewer model, validates output, and persists.
+  return postJson<V2ReviewerCritiqueResponse>(
+    `/v1/v2/commands/${encodeURIComponent(commandId)}/repair/proposal/${encodeURIComponent(proposalId)}/reviewer-critique`,
+    { proposal_id: proposalId, ...payload }
+  );
+}
+
+export async function getV2ReviewerCritiques(
+  commandId: string,
+  proposalId: string
+): Promise<V2ReviewerCritiquesListResponse> {
+  return getJson<V2ReviewerCritiquesListResponse>(
+    `/v1/v2/commands/${encodeURIComponent(commandId)}/repair/proposal/${encodeURIComponent(proposalId)}/reviewer-critiques`
   );
 }
 

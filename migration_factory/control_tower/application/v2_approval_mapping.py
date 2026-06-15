@@ -25,6 +25,10 @@ class ApprovalDecisionCard:
     summary: str
     status: str  # pending, approved, rejected
     created_at: str
+    # F07 reviewer metadata
+    reviewer_critique_id: str | None = None
+    reviewer_decision: str | None = None
+    reviewed_checksum: str | None = None
 
 
 @dataclass(frozen=True)
@@ -63,6 +67,10 @@ class V2ApprovalMappingService:
         request_checksum: str,
         stage_index: int = 1,
         summary: str = "Approval required for stage progression",
+        # F07: optional reviewer critique metadata
+        reviewer_critique_id: str | None = None,
+        reviewer_decision: str | None = None,
+        reviewed_checksum: str | None = None,
     ) -> ApprovalDecisionCard:
         """Create a durable decision card from an orchestrator interrupt."""
         card = ApprovalDecisionCard(
@@ -74,6 +82,9 @@ class V2ApprovalMappingService:
             summary=summary,
             status="pending",
             created_at=utc_now_text(),
+            reviewer_critique_id=reviewer_critique_id,
+            reviewer_decision=reviewer_decision,
+            reviewed_checksum=reviewed_checksum,
         )
         self._decisions[card.card_id] = card
         # Persist if repo available
@@ -266,7 +277,7 @@ class V2ApprovalMappingService:
         return card
 
     def card_to_dict(self, card: ApprovalDecisionCard) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "card_id": card.card_id,
             "job_id": card.job_id,
             "interrupt_id": card.interrupt_id,
@@ -276,6 +287,14 @@ class V2ApprovalMappingService:
             "status": card.status,
             "created_at": card.created_at,
         }
+        # Include optional reviewer metadata (F07)
+        if card.reviewer_critique_id is not None:
+            result["reviewer_critique_id"] = card.reviewer_critique_id
+        if card.reviewer_decision is not None:
+            result["reviewer_decision"] = card.reviewer_decision
+        if card.reviewed_checksum is not None:
+            result["reviewed_checksum"] = card.reviewed_checksum
+        return result
 
     def resume_to_dict(self, resume: ResumeCommand) -> dict[str, Any]:
         return {

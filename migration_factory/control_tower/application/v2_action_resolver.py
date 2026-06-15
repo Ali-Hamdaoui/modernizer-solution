@@ -69,6 +69,12 @@ class ActionBindingRequest:
     proposal_id: str | None = None
     event_id: str | None = None
     requester: str = "assistant"
+    # F05: revision steering fields
+    source_proposal_id: str | None = None
+    failed_command_id: str | None = None
+    revision_instruction: str | None = None
+    context_pack_checksum: str | None = None
+    allowed_scope: str | None = None  # any, pom_only
 
 
 @dataclass(frozen=True)
@@ -405,3 +411,181 @@ class V2AssistantActionResolver:
         if checksum is not None:
             return str(checksum)
         return None
+
+    # ── F05: Revision path ──────────────────────────────────────────
+
+    def resolve_revision(
+        self,
+        request: ActionBindingRequest,
+    ) -> BindingResult:
+        """Resolve a revise_repair_proposal action.
+
+        Requires:
+        - source_proposal_id: the original proposal being revised
+        - failed_command_id: the failed command to rebind to
+        - context_pack_checksum: current context checksum for staleness check
+        - revision_instruction: human steering instruction
+        - Job/command binding validation
+        - allowed_scope=pom_only enforcement (server-side)
+
+        Never mutates the source proposal — creates a new draft.
+        """
+        if request.source_proposal_id is None:
+            raise ValueError(
+                "source_proposal_id is required for revision resolution"
+            )
+        if request.failed_command_id is None:
+            raise ValueError(
+                "failed_command_id is required for revision resolution"
+            )
+        if request.context_pack_checksum is None:
+            raise ValueError(
+                "context_pack_checksum is required for revision resolution"
+            )
+
+        # 1. Load and validate job
+        job = None
+        if self._resolver is not None:
+            job = self._resolver.get_job(request.job_id)
+        if job is None:
+            raise ValueError(f"Job {request.job_id!r} not found")
+        job_status = str(getattr(job, "status", "") or "").lower()
+        if job_status and job_status not in ("active", "running", "in_progress"):
+            raise ValueError(
+                f"Job {request.job_id!r} is not active (status: {job_status!r})"
+            )
+
+        # 2. Load and validate source proposal
+        source_proposal = None
+        if self._resolver is not None:
+            source_proposal = self._resolver.get_proposal(request.source_proposal_id)
+        if source_proposal is None:
+            raise ValueError(f"Source proposal {request.source_proposal_id!r} not found")
+
+        # 3. Check stale/applied status
+        source_status = getattr(source_proposal, "status", "") or ""
+        if source_status in ("approved", "applied"):
+            raise ValueError(
+                f"Source proposal {request.source_proposal_id!r} is already "
+                f"{source_status} — cannot revise an approved/applied proposal"
+            )
+
+        # 4. Verify failed_command_id exists and is actually failed
+        commands = []
+        if self._resolver is not None:
+            commands = list(self._resolver.list_commands(request.job_id))
+        target_command = None
+        for cmd in commands:
+            if getattr(cmd, "command_id", "") == request.failed_command_id:
+                target_command = cmd
+                break
+        if target_command is None:
+            raise ValueError(
+                f"Command {request.failed_command_id!r} not found for job {request.job_id!r}"
+            )
+        cmd_status = getattr(target_command, "status", "") or ""
+        if cmd_status not in ("failed", "error", "timeout"):
+            raise ValueError(
+                f"Command {request.failed_command_id!r} status is {cmd_status!r}, "
+                f"expected failed/error/timeout"
+            )
+
+        # 5. Verify proposal command_id matches failed command
+        proposal_cmd_id = self._get_proposal_command_id(source_proposal)
+        if proposal_cmd_id is not None and proposal_cmd_id != request.failed_command_id:
+            raise ValueError(
+                f"Source proposal {request.source_proposal_id!r} is bound to command "
+                f"{proposal_cmd_id!r}, but failed_command_id is "
+                f"{request.failed_command_id!r}"
+            )
+
+        # 6. Extract sandbox path and verify not legacy source
+        sandbox_path = ""
+        result_json = getattr(target_command, "result_json", None)
+        if result_json:
+            try:
+                result = json.loads(result_json)
+                sandbox_path = str(result.get("sandbox_path", "") or "")
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if sandbox_path:
+            if is_legacy_source_path(sandbox_path):
+                raise ValueError(
+                    f"Sandbox path {sandbox_path!r} resolves to legacy source — rejected"
+                )
+
+        # 7. F05: allowed_scope=pom_only enforcement on source proposal paths
+        if request.allowed_scope == "pom_only":
+            affected_paths = getattr(source_proposal, "affected_paths", []) or []
+            if isinstance(affected_paths, str):
+                try:
+                    affected_paths = json.loads(affected_paths)
+                except (json.JSONDecodeError, TypeError):
+                    affected_paths = []
+            non_pom_paths = [
+                p for p in affected_paths
+                if not p.endswith("pom.xml") and "/pom.xml" not in p
+            ]
+            if non_pom_paths:
+                raise ValueError(
+                    f"allowed_scope=pom_only violated: non-POM paths in source "
+                    f"proposal: {non_pom_paths}"
+                )
+
+        # 8. Build binding result
+        stage_index = int(getattr(target_command, "stage_index", 1) or 1)
+        proposal_checksum = self._get_proposal_checksum(source_proposal)
+
+        binding = SandboxBinding(
+            binding_id=uuid4().hex,
+            job_id=request.job_id,
+            stage_index=stage_index,
+            command_id=request.failed_command_id,
+            sandbox_path=sandbox_path or "<redacted>",
+            sandbook_checksum=sha256_canonical_json({"sandbox_path": sandbox_path or ""}),
+            proposal_id=request.source_proposal_id,
+            proposal_checksum=proposal_checksum,
+            resolved_at=utc_now_text(),
+        )
+        binding_with_checksum = SandboxBinding(
+            binding_id=binding.binding_id,
+            job_id=binding.job_id,
+            stage_index=binding.stage_index,
+            command_id=binding.command_id,
+            sandbox_path=binding.sandbox_path,
+            sandbook_checksum=binding.sandbook_checksum,
+            proposal_id=binding.proposal_id,
+            proposal_checksum=binding.proposal_checksum,
+            binding_checksum=sha256_canonical_json({
+                "binding_id": binding.binding_id,
+                "job_id": binding.job_id,
+                "stage_index": binding.stage_index,
+                "command_id": binding.command_id,
+                "sandbox_path": binding.sandbox_path,
+                "proposal_id": binding.proposal_id,
+                "proposal_checksum": binding.proposal_checksum,
+                "revision_of": request.source_proposal_id,
+                "allowed_scope": request.allowed_scope or "any",
+            }),
+            resolved_at=binding.resolved_at,
+        )
+
+        failed_cmd_info = FailedCommandInfo(
+            command_id=request.failed_command_id,
+            stage_index=stage_index,
+            status=cmd_status,
+            sandbox_path=sandbox_path or "",
+            result_json=result_json,
+            created_at=getattr(target_command, "created_at", "") or "",
+        )
+
+        return BindingResult(
+            binding=binding_with_checksum,
+            failed_command=failed_cmd_info,
+            verified=True,
+            warnings=(
+                (f"allowed_scope=pom_only enforced — only POM paths allowed",)
+                if request.allowed_scope == "pom_only"
+                else ()
+            ),
+        )

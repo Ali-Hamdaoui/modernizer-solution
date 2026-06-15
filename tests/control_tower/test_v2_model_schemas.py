@@ -161,17 +161,17 @@ class TestSchemaValidator:
             SchemaValidator.validate("RepairProposal", data)
 
     def test_validate_reviewer_critique_accept(self) -> None:
-        data = {"decision": "accept", "reasoning": "Looks good"}
+        data = {"decision": "accept", "reasoning": "Looks good", "missing_evidence": [], "unsafe_assumptions": []}
         SchemaValidator.validate("ReviewerCritique", data)
 
     def test_validate_reviewer_critique_invalid_decision(self) -> None:
-        data = {"decision": "invalid", "reasoning": "test"}
+        data = {"decision": "invalid", "reasoning": "test", "missing_evidence": [], "unsafe_assumptions": []}
         with pytest.raises(SchemaValidationError, match="not one of"):
             SchemaValidator.validate("ReviewerCritique", data)
 
     def test_validate_action_request(self) -> None:
         data = {
-            "action_type": "compile",
+            "action_type": "diagnose_failure",
             "reason": "Validate build",
             "stage_index": 2,
             "payload_checksum": "chk:def456",
@@ -180,7 +180,7 @@ class TestSchemaValidator:
 
     def test_validate_action_request_invalid_stage(self) -> None:
         data = {
-            "action_type": "test",
+            "action_type": "diagnose_failure",
             "reason": "reason",
             "stage_index": 5,
             "payload_checksum": "chk",
@@ -222,7 +222,7 @@ class TestSchemaValidator:
 
     def test_validate_action_request_type_is_strings(self) -> None:
         data = {
-            "action_type": "compile",
+            "action_type": "diagnose_failure",
             "reason": "Validate",
             "stage_index": 1,
             "payload_checksum": "chk",
@@ -247,9 +247,11 @@ class TestSchemaValidator:
             "ReviewerCritique": {
                 "decision": "accept",
                 "reasoning": "test",
+                "missing_evidence": [],
+                "unsafe_assumptions": [],
             },
             "ActionRequest": {
-                "action_type": "test",
+                "action_type": "diagnose_failure",
                 "reason": "test",
                 "stage_index": 1,
                 "payload_checksum": "abc",
@@ -311,7 +313,7 @@ class TestValidateModelOutput:
 
     def test_returns_validated_data(self) -> None:
         original = {
-            "action_type": "compile",
+            "action_type": "diagnose_failure",
             "reason": "test",
             "stage_index": 1,
             "payload_checksum": "chk",
