@@ -30,7 +30,8 @@ import re as _re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+from uuid import uuid4
 
 from migration_factory.control_tower.domain.checksums import utc_now_text
 
@@ -63,8 +64,13 @@ class PomContextSummary:
 
     Produced from existing Maven/POM tools. Not a model schema —
     this is evidence attached to ContextPack metadata via pom_summary_ref.
+
+    The pom_summary_ref is a stable artifact reference that can be
+    passed to F02/ContextPack metadata and persisted via
+    pom_summary_created events.
     """
 
+    pom_summary_ref: str
     pom_path: str
     spring_boot_version: str
     spring_boot_version_location: str  # parent, bom, property, plugin, unknown
@@ -192,7 +198,9 @@ class PomContextSummaryBuilder:
         # 8. Build warnings list
         warnings_list = list(scan_result.get("warnings", []))
 
+        ref = f"pom-summary:{uuid4().hex}"
         return PomContextSummary(
+            pom_summary_ref=ref,
             pom_path=str(pom_file),
             spring_boot_version=boot_version,
             spring_boot_version_location=boot_location,
@@ -285,9 +293,57 @@ class PomContextSummaryBuilder:
         return [r for r in candidates if r in ALLOWED_RULE_IDS]
 
     @staticmethod
+    def build_and_persist(
+        *,
+        sandbox_path: str | Path,
+        target_boot: str = "3.5.14",
+        target_java: str = "17",
+        ai_hub_path: str | None = None,
+        profile_id: str | None = None,
+        event_sink: Callable[[str, int | None, str, str, str, dict[str, Any] | None], None] | None = None,
+    ) -> PomContextSummary:
+        """Build a PomContextSummary and optionally persist it via event_sink.
+
+        When event_sink is provided, emits a pom_summary_created event
+        with the full summary dict as payload. The returned summary's
+        pom_summary_ref is the stable artifact reference for downstream
+        consumers (F02 ContextPack metadata).
+
+        Args:
+            sandbox_path: Path to the sandbox directory containing pom.xml.
+            target_boot: Target Spring Boot version from V2 stage/profile state.
+            target_java: Target Java version from V2 stage/profile state.
+            ai_hub_path: Optional AI Hub path for profile-based target stack.
+            profile_id: Optional profile id for target stack resolution.
+            event_sink: Optional event sink matching the
+                (job_id, stage, event_type, status, message, payload) signature.
+
+        Returns:
+            A PomContextSummary with a stable pom_summary_ref.
+        """
+        summary = PomContextSummaryBuilder.build_summary(
+            sandbox_path=sandbox_path,
+            target_boot=target_boot,
+            target_java=target_java,
+            ai_hub_path=ai_hub_path,
+            profile_id=profile_id,
+        )
+        if event_sink is not None:
+            event_sink(
+                "",  # job_id — to be filled by caller if needed
+                None,  # stage — to be filled by caller if needed
+                "pom_summary_created",
+                "completed",
+                f"POM context summary created: {summary.spring_boot_version}",
+                PomContextSummaryBuilder.summary_to_dict(summary),
+            )
+        return summary
+
+    @staticmethod
     def summary_to_dict(summary: PomContextSummary) -> dict[str, Any]:
         """Convert PomContextSummary to a dict for artifact JSON."""
         return {
+            "pom_summary_ref": summary.pom_summary_ref,
             "pom_path": summary.pom_path,
             "spring_boot_version": summary.spring_boot_version,
             "spring_boot_version_location": summary.spring_boot_version_location,
