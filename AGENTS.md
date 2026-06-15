@@ -1,8 +1,8 @@
-# Modernizer Solution Agent Instructions
+# Modernizer Solution — AGENTS.md
 
 ## Mission
 
-Build the V2 Governed LLM Migration Supervisor for AI Migration Control Tower.
+Build the **V2 Governed LLM Migration Supervisor**.
 
 Source of truth:
 
@@ -10,21 +10,25 @@ Source of truth:
 docs/governed-llm-migration-supervisor/
 ```
 
-Core rule:
+Invariant:
 
 ```text
 LLM creates migration intent. Human approves. Backend executes in sandbox. Repair loop validates proof.
 ```
 
-## Branch Rule
+This is not a chatbot-only feature and not a replacement for OpenRewrite, Maven, patch gates, validation, rollback, ledger, or proof artifacts.
 
-Base branch is always:
+## Branching
+
+Base and PR target:
 
 ```text
 V2IMPROVMENT
 ```
 
-One feature = one branch = one focused commit.
+Never target `DEMO2`.
+
+One feature = one branch.
 
 Branch format:
 
@@ -32,7 +36,7 @@ Branch format:
 v2/llm-f<feature-number>-<short-title>
 ```
 
-Start every feature from latest base:
+Start:
 
 ```powershell
 git fetch --prune origin
@@ -41,52 +45,37 @@ git pull --ff-only origin V2IMPROVMENT
 git switch -c v2/llm-f<feature-number>-<short-title>
 ```
 
-PR target is always `V2IMPROVMENT`. Never target `DEMO2`.
+## Read Before Editing
 
-## Required Read Order
-
-Before editing, read:
+Read only what the assigned feature needs:
 
 1. `docs/governed-llm-migration-supervisor/index.md`
-2. assigned feature file
-3. dependency feature files
-4. code files named by the feature doc
+2. assigned feature doc
+3. dependency feature docs
+4. source files named by docs
 5. related tests
 6. relevant `.agents/skills/`
 
-Do not read or implement unrelated features unless required by dependency.
-
-## Feature Files
-
-```text
-01-contextpack-extension.md
-02-automatic-failure-diagnosis.md
-03-event-based-prompt-router.md
-04-pom-intelligence-summary.md
-05-chatbot-proposal-steering.md
-06-sandbox-action-resolver.md
-07-reviewer-before-apply.md
-08-v2-to-repair-loop-bridge.md
-09-cockpit-supervision-panels.md
-10-final-report-ai-trace.md
-```
+Do not implement unrelated features.
 
 ## Dependencies
 
 ```text
-F01 starts now.
-F03 starts now.
-F06 starts now.
-F02 depends on F01 + F03.
-F04 depends on F01 + F06.
-F05 depends on F02 + F06.
-F07 depends on repair/POM proposal objects.
-F08 depends on F06 + F07.
-F09 depends on backend records/events from F02/F05/F07/F08.
-F10 depends on records from F01-F08.
+F01 start now
+F03 start now
+F06 start now
+F02 needs F01+F03
+F04 needs F01+F06
+F05 needs F02+F06
+F07 needs proposal objects
+F08 needs F06+F07
+F09 needs backend records/events
+F10 needs F01-F08 records
 ```
 
 ## Product Authority
+
+These rules apply to the product LLM being built.
 
 LLM may create:
 
@@ -96,15 +85,15 @@ repair proposal
 POM patch intent
 proposal revision
 reviewer critique
-approval preparation request
-validation rerun request
+approval-card preparation request
+validation-rerun request
 ```
 
 LLM must never:
 
 ```text
 execute commands
-write files directly
+write files
 approve decisions
 choose sandbox/path
 modify legacy source
@@ -113,66 +102,17 @@ choose Maven goals
 override failed proof
 ```
 
-Backend owns:
+Backend owns state resolution, sandbox binding, checksums, patch apply, validation rerun, rollback, ledger/proof persistence, and unsafe-action blocking.
 
-```text
-state resolution
-sandbox binding
-checksum attachment
-patch apply
-validation rerun
-rollback
-proof persistence
-unsafe-action blocking
-```
+Human owns approve, reject, request revision, continue, and stop.
 
-Human owns:
-
-```text
-approve
-reject
-ask for revision
-continue/stop
-```
-
-Truth comes from:
-
-```text
-OpenRewrite
-Maven
-build/test
-repair_loop
-patch_gate
-rule_registry
-patch_apply
-validation_runner
-repair ledger
-proof artifacts
-```
+Execution truth comes from OpenRewrite, Maven, build/test, `repair_loop`, `patch_gate`, `rule_registry`, `patch_apply`, `validation_runner`, repair ledger, and proof artifacts.
 
 ## Non-Negotiables
 
-Do not create parallel systems for:
+Do not create parallel systems for context packs, artifact store, failure evidence, failure classifier, repair schemas, patch gate, patch apply, rollback, validation runner, repair ledger, POM parser/helpers, approval cards, event stream, or reviewer schema.
 
-```text
-context packs
-artifact store
-failure evidence
-failure classifier
-repair schemas
-patch gate
-patch apply
-rollback
-validation runner
-repair ledger
-POM parser
-POM patch helpers
-approval cards
-event stream
-reviewer schema
-```
-
-Feature 8 must route approved V2 proposals through existing `repair_loop`.
+F08 must route approved V2 proposals through existing `repair_loop`.
 
 Never bypass:
 
@@ -187,47 +127,38 @@ ledger
 
 ## Before Editing Report
 
-Briefly report:
+Report:
 
 ```text
-feature number
-branch name
-feature doc read
-dependency docs read
+feature
+branch
+docs read
 owned scope
 non-goals
 likely files
-tests/checks
+new/changed tests to run
 blockers
 ```
 
 ## Work Rules
 
-Implement only the assigned feature.
-
-No broad refactor.
-
-No adjacent feature work.
-
-No Jira unless asked.
+Implement only the assigned feature. No broad refactor. No adjacent feature work. No Jira unless asked.
 
 No secrets, tokens, raw paths, logs, DBs, caches, or runtime files in output.
 
-Never `git add .`.
+Never `git add .`. Stage explicit owned files only.
 
-Stage explicit owned files only.
-
-Never stage `.env`, `.next/`, caches, DBs, logs, or another developer’s work.
-
-Never stage `web/control-tower/next-env.d.ts` unless explicitly owned.
+Never stage `.env`, `.next/`, caches, DBs, logs, another developer’s work, or `web/control-tower/next-env.d.ts` unless explicitly owned.
 
 Do not edit applied migrations. Add append-only migrations only when required.
 
 ## Tests
 
-Run targeted tests for the owned feature.
+Run only tests that are new, changed, or directly affected by the owned feature. Do not run the full suite unless explicitly requested.
 
-If web changed, run relevant web tests/typecheck/build.
+If no test exists, add a focused test and run only that test file.
+
+If web changed, run relevant web test plus typecheck/build.
 
 Always run:
 
@@ -252,19 +183,7 @@ Push only when requested.
 
 ## Stop If
 
-Stop and report if:
-
-```text
-source docs are missing
-dependency feature is not merged
-sources conflict
-safe sandbox binding is unclear
-unsafe apply path is required
-LLM needs execute/approve/write/proof authority
-legacy source mutation risk exists
-unrelated dirty files would be included
-acceptance fails after 3 focused attempts
-```
+Stop and report if docs are missing, dependency is not merged, docs conflict with source, sandbox binding is unclear, safe work requires bypassing `repair_loop`, LLM needs execute/approve/write/proof authority, legacy source mutation risk exists, unrelated dirty files would be included, or acceptance fails after 3 focused attempts.
 
 ## Final Report
 
