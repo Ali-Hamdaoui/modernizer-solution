@@ -13,6 +13,9 @@ from uuid import uuid4
 from migration_factory.control_tower.domain.entities import V1ContextPackManifestRecord
 from migration_factory.control_tower.domain.checksums import utc_now_text, canonical_json_text, sha256_canonical_json
 from migration_factory.control_tower.application.dto import ContextPackManifestDto
+from migration_factory.control_tower.application.context_pack_redaction import (
+    redact_context_pack_metadata,
+)
 
 
 class ContextPackManifestService:
@@ -33,6 +36,7 @@ class ContextPackManifestService:
         description: str | None = None,
         evidence_refs_json: str | None = None,
         bounds_json: str | None = None,
+        enrichment_metadata: dict[str, object] | None = None,
         redaction_policy: str | None = None,
         redacted_summary: str | None = None,
         model_profile_id: str | None = None,
@@ -45,11 +49,25 @@ class ContextPackManifestService:
         """Persist a context pack manifest record.
 
         Computes checksum over the manifest content automatically.
+        If enrichment_metadata is provided, it is redacted and merged
+        into bounds_json so downstream queries can access it.
         """
         if manifest_id is None:
             manifest_id = f"cp-{uuid4().hex}"
 
         now = utc_now_text()
+
+        # Merge enrichment metadata into bounds_json if provided
+        if enrichment_metadata:
+            redacted_meta = redact_context_pack_metadata(enrichment_metadata)
+            existing_bounds: dict[str, object] = {}
+            if bounds_json:
+                try:
+                    existing_bounds = _json.loads(bounds_json)
+                except (_json.JSONDecodeError, TypeError):
+                    pass
+            existing_bounds["_enrichment"] = redacted_meta
+            bounds_json = _json.dumps(existing_bounds, separators=(",", ":"), sort_keys=True)
 
         # Build content dict for checksum computation
         content = {
@@ -142,6 +160,8 @@ class ContextPackManifestService:
         and deployment IDs are absent by construction since the
         domain record never stores them.
         """
+        # Extract enrichment metadata from bounds_json if present
+        enrichment_meta = self._extract_enrichment_from_bounds(record.bounds_json)
         return ContextPackManifestDto(
             manifest_id=record.manifest_id,
             pack_type=record.pack_type,
@@ -158,4 +178,21 @@ class ContextPackManifestService:
             token_count=record.token_count,
             created_at=record.created_at,
             created_by=record.created_by,
+            enrichment_metadata=enrichment_meta,
         )
+
+    @staticmethod
+    def _extract_enrichment_from_bounds(bounds_json: str | None) -> dict[str, object]:
+        """Extract enrichment metadata from bounds_json if present.
+
+        Returns empty dict if no enrichment data exists (backward compatible).
+        """
+        if not bounds_json:
+            return {}
+        try:
+            bounds = _json.loads(bounds_json)
+            if isinstance(bounds, dict) and "_enrichment" in bounds:
+                return dict(bounds["_enrichment"])
+        except (_json.JSONDecodeError, TypeError):
+            pass
+        return {}

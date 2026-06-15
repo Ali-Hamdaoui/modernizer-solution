@@ -276,6 +276,12 @@ class SchemaValidator:
 
 @dataclass(frozen=True)
 class ContextPack:
+    """Bounded context pack for model calls with optional enrichment metadata.
+
+    Metadata fields enrich the pack for diagnosis/proposal/review flows.
+    All metadata is optional — old packs remain readable.
+    """
+
     pack_id: str
     pack_type: str
     title: str
@@ -285,6 +291,17 @@ class ContextPack:
     token_budget_output: int
     checksum: str
     created_at: str
+    # ── Optional enrichment metadata (F01) ────────────────────────────
+    agent_name: str | None = None
+    event_type: str | None = None
+    stage_index: int | None = None
+    profile_id: str | None = None
+    command_id: str | None = None
+    failure_type: str | None = None
+    artifact_refs_used: tuple[str, ...] = ()
+    pom_summary_ref: str | None = None
+    sandbox_binding_ref: str | None = None
+    redaction_status: str | None = None
 
 
 class ContextPackBuilder:
@@ -296,6 +313,17 @@ class ContextPackBuilder:
         title: str,
         description: str,
         evidence_refs: tuple[str, ...],
+        *,
+        agent_name: str | None = None,
+        event_type: str | None = None,
+        stage_index: int | None = None,
+        profile_id: str | None = None,
+        command_id: str | None = None,
+        failure_type: str | None = None,
+        artifact_refs_used: tuple[str, ...] = (),
+        pom_summary_ref: str | None = None,
+        sandbox_binding_ref: str | None = None,
+        redaction_status: str | None = None,
     ) -> ContextPack:
         budgets = TOKEN_BUDGETS.get(pack_type, {"input": 8000, "output": 2000})
         now = utc_now_text()
@@ -311,11 +339,21 @@ class ContextPackBuilder:
             token_budget_output=budgets["output"],
             checksum=f"cp-{pack_id[:8]}",
             created_at=now,
+            agent_name=agent_name,
+            event_type=event_type,
+            stage_index=stage_index,
+            profile_id=profile_id,
+            command_id=command_id,
+            failure_type=failure_type,
+            artifact_refs_used=artifact_refs_used,
+            pom_summary_ref=pom_summary_ref,
+            sandbox_binding_ref=sandbox_binding_ref,
+            redaction_status=redaction_status,
         )
 
     @staticmethod
     def pack_to_dict(pack: ContextPack) -> dict[str, Any]:
-        return {
+        result = {
             "pack_id": pack.pack_id,
             "pack_type": pack.pack_type,
             "title": pack.title,
@@ -326,6 +364,28 @@ class ContextPackBuilder:
             "checksum": pack.checksum,
             "created_at": pack.created_at,
         }
+        # Include non-empty metadata fields for backward compatibility
+        if pack.agent_name is not None:
+            result["agent_name"] = pack.agent_name
+        if pack.event_type is not None:
+            result["event_type"] = pack.event_type
+        if pack.stage_index is not None:
+            result["stage_index"] = pack.stage_index
+        if pack.profile_id is not None:
+            result["profile_id"] = pack.profile_id
+        if pack.command_id is not None:
+            result["command_id"] = pack.command_id
+        if pack.failure_type is not None:
+            result["failure_type"] = pack.failure_type
+        if pack.artifact_refs_used:
+            result["artifact_refs_used"] = list(pack.artifact_refs_used)
+        if pack.pom_summary_ref is not None:
+            result["pom_summary_ref"] = pack.pom_summary_ref
+        if pack.sandbox_binding_ref is not None:
+            result["sandbox_binding_ref"] = pack.sandbox_binding_ref
+        if pack.redaction_status is not None:
+            result["redaction_status"] = pack.redaction_status
+        return result
 
     @staticmethod
     def schema_to_dict(schema_name: str) -> dict[str, Any] | None:
