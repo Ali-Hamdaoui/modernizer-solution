@@ -445,11 +445,11 @@ class V2SetupService:
         readiness["jdk21_ready"] = _check_jdk_path_with_version(record.java21_home, 21)
 
         if not readiness["jdk11_ready"]:
-            errors.append(f"JAVA11_HOME path does not exist: {record.java11_home}")
+            errors.append(f"JAVA11_HOME is not a valid JDK 11 home: {record.java11_home}")
         if not readiness["jdk17_ready"]:
-            errors.append(f"JAVA17_HOME path does not exist: {record.java17_home}")
+            errors.append(f"JAVA17_HOME is not a valid JDK 17 home: {record.java17_home}")
         if not readiness["jdk21_ready"]:
-            errors.append(f"JAVA21_HOME path does not exist: {record.java21_home}")
+            errors.append(f"JAVA21_HOME is not a valid JDK 21 home: {record.java21_home}")
 
         maven_result = _validate_maven_command(
             record.maven_cmd,
@@ -624,8 +624,8 @@ def _java_major_matches(version_output: str, expected_major: int) -> bool:
     if match:
         major = int(match.group(1))
         return major == expected_major
-    # Modern format: "11.0.21" or "17.0.13" etc.
-    match = re.search(r'version\s+"?(\d+)\.', version_output)
+    # Modern format: "11.0.21", "17.0.13", or GA builds such as "21".
+    match = re.search(r'version\s+"?(\d+)(?:[.+"]|\s)', version_output)
     if match:
         major = int(match.group(1))
         return major == expected_major

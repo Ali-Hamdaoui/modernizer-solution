@@ -322,7 +322,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       </section>
 
       {/* Decisions Panel */}
-      <section className="panel">
+      <section className="panel compact-panel">
         <h2>Approval Decisions</h2>
         {data.approvals.length === 0 ? (
           <p className="meta">No pending decisions.</p>
@@ -436,7 +436,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       )}
 
       {/* Assistant Panel */}
-      <section className="panel">
+      <section className="panel compact-panel">
         <h2>Assistant</h2>
         <p className="meta">
           Model: {data.assistantModel?.status ?? "unavailable"} | Source: {data.assistantModel?.source ?? "deterministic"}
@@ -472,21 +472,44 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       </section>
 
       {/* Proof & Report */}
-      <section className="panel">
+      <section className="panel compact-panel">
         <h2>Proof & Report</h2>
         <p className="meta">Final proof report generated when all three deterministic gates pass.</p>
       </section>
 
       <style>{`
-        .cockpit-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-        .panel { border: 1px solid #ccc; border-radius: 6px; padding: 1rem; }
-        .panel h2 { margin-top: 0; font-size: 1.1rem; }
+        .cockpit-layout {
+          display: grid;
+          align-content: start;
+          gap: 12px;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          grid-auto-flow: dense;
+          grid-auto-rows: minmax(160px, auto);
+          height: 100%;
+          min-height: 0;
+          overflow: auto;
+        }
+        .panel {
+          background: #fff;
+          border: 1px solid #d8dfdc;
+          border-radius: 8px;
+          min-height: 0;
+          overflow: auto;
+          padding: 12px;
+        }
+        .panel:not(.compact-panel) {
+          min-height: 320px;
+        }
+        .compact-panel {
+          max-height: 220px;
+        }
+        .panel h2 { margin-top: 0; font-size: 1rem; }
         .stage-list { display: flex; flex-direction: column; gap: 0.5rem; }
         .stage-card { border: 1px solid #ddd; border-radius: 4px; padding: 0.75rem; }
         .stage-card.queued { border-left: 3px solid #0066cc; }
         .stage-card.pending { border-left: 3px solid #888; }
-        .stage-header { display: flex; justify-content: space-between; align-items: center; }
-        .status-badge { font-size: 0.75rem; padding: 0.15rem 0.5rem; border-radius: 3px; }
+        .stage-header { display: flex; gap: 0.5rem; justify-content: space-between; align-items: center; }
+        .status-badge { font-size: 0.72rem; padding: 0.15rem 0.45rem; border-radius: 3px; white-space: nowrap; }
         .status-badge.queued { background: #e0f0ff; color: #0066cc; }
         .status-badge.running { background: #fff4cc; color: #886600; }
         .status-badge.completed { background: #e4f7e8; color: #146c2e; }
@@ -494,14 +517,14 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .status-badge.failed { background: #ffe3e3; color: #a40000; }
         .status-badge.blocked { background: #f5e8ff; color: #5a248a; }
         .status-badge.pending { background: #eee; color: #666; }
-        .meta { font-size: 0.85rem; color: #666; }
+        .meta { font-size: 0.82rem; color: #666; line-height: 1.35; overflow-wrap: anywhere; }
         .error-box { border: 1px solid #cc0000; background: #fff0f0; padding: 1rem; border-radius: 6px; }
         .info-box { border: 1px solid #0066cc; background: #f0f6ff; padding: 1rem; border-radius: 6px; }
         .evidence-placeholder { border: 1px dashed #ccc; padding: 1rem; text-align: center; color: #888; }
         .event-list { display: flex; flex-direction: column; gap: 0.4rem; }
-        .event-row { display: grid; grid-template-columns: 6rem 10rem 1fr; gap: 0.5rem; align-items: center; border-bottom: 1px solid #eee; padding: 0.35rem 0; }
+        .event-row { display: grid; grid-template-columns: minmax(4.5rem, auto) minmax(7rem, 0.7fr) minmax(0, 1fr); gap: 0.5rem; align-items: center; border-bottom: 1px solid #eee; padding: 0.35rem 0; }
         .pipeline-list { display: flex; flex-direction: column; gap: 0.45rem; }
-        .pipeline-row { display: grid; grid-template-columns: 6rem 10rem 1fr 5rem; gap: 0.5rem; align-items: center; border-bottom: 1px solid #eee; padding: 0.45rem 0; }
+        .pipeline-row { display: grid; grid-template-columns: minmax(4.5rem, auto) minmax(7rem, 0.75fr) minmax(0, 1fr) minmax(4rem, auto); gap: 0.5rem; align-items: center; border-bottom: 1px solid #eee; padding: 0.45rem 0; }
         .approval-card { border: 1px solid #eee; padding: 0.5rem; margin: 0.25rem 0; }
         .approval-actions { display: flex; gap: 0.5rem; }
         .approval-actions button { padding: 0.45rem 0.7rem; border: 1px solid #333; border-radius: 4px; background: #fff; }
@@ -521,6 +544,34 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .contract-failure-card .meta { margin: 0.2rem 0; }
         .repair-card { border: 1px solid #ffcc66; background: #fffdf0; padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; }
         .artifact-kinds { border: 1px solid #ddd; padding: 0.5rem; margin: 0.5rem 0; }
+        .artifact-kinds ul { columns: 2; margin: 0.5rem 0 0; padding-left: 1.25rem; }
+        code,
+        .checksum,
+        .raw-log-line {
+          font-family: Consolas, "Cascadia Mono", monospace;
+        }
+        @media (max-width: 860px) {
+          .cockpit-layout {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-auto-rows: minmax(160px, auto);
+          }
+          .event-row,
+          .pipeline-row {
+            grid-template-columns: 1fr;
+          }
+          .artifact-kinds ul {
+            columns: 1;
+          }
+        }
+        @media (max-width: 560px) {
+          .cockpit-layout {
+            grid-template-columns: 1fr;
+            grid-auto-rows: minmax(160px, auto);
+          }
+          .compact-panel {
+            max-height: none;
+          }
+        }
       `}</style>
     </div>
   );

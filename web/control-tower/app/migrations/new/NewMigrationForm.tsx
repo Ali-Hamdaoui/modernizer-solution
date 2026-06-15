@@ -1,9 +1,7 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
-
-// ── Types ──────────────────────────────────────────────────────────
 
 interface ParsedEnvResult {
   parsed: {
@@ -69,6 +67,44 @@ interface SettingsResponse {
   };
 }
 
+interface FormFields {
+  envBlock: string;
+  run_name: string;
+  legacy_app_path: string;
+  output_parent_path: string;
+  ai_hub_path: string;
+  java11_home: string;
+  java17_home: string;
+  java21_home: string;
+  maven_cmd: string;
+  proof_level: string;
+  skip_endpoint_smoke: boolean;
+}
+
+const EMPTY_FIELDS: FormFields = {
+  envBlock: "",
+  run_name: "",
+  legacy_app_path: "",
+  output_parent_path: "",
+  ai_hub_path: "",
+  java11_home: "",
+  java17_home: "",
+  java21_home: "",
+  maven_cmd: "",
+  proof_level: "build_test_verified",
+  skip_endpoint_smoke: false,
+};
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
+
+function mutationHeaders(): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    Origin: "http://127.0.0.1:3000",
+    "X-Control-Tower-Client": "control-tower-frontend",
+  };
+}
+
 function sanitizeSmokeSnippet(value: string): string {
   return value
     .replace(/sk-[A-Za-z0-9_-]+/g, "[redacted-token]")
@@ -120,18 +156,6 @@ export function getAzureSmokeCopy(
   };
 }
 
-// ── API helpers ────────────────────────────────────────────────────
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
-
-function mutationHeaders(): Record<string, string> {
-  return {
-    "Content-Type": "application/json",
-    Origin: "http://127.0.0.1:3000",
-    "X-Control-Tower-Client": "control-tower-frontend",
-  };
-}
-
 async function parseEnv(envBlock: string): Promise<ParsedEnvResult> {
   const res = await fetch(`${API_BASE}/v1/migration-setups/parse-env`, {
     method: "POST",
@@ -178,38 +202,6 @@ async function fetchReadiness(setupId: string): Promise<ReadinessResponse> {
   return res.json();
 }
 
-// ── Form state ─────────────────────────────────────────────────────
-
-interface FormFields {
-  envBlock: string;
-  run_name: string;
-  legacy_app_path: string;
-  output_parent_path: string;
-  ai_hub_path: string;
-  java11_home: string;
-  java17_home: string;
-  java21_home: string;
-  maven_cmd: string;
-  proof_level: string;
-  skip_endpoint_smoke: boolean;
-}
-
-const EMPTY_FIELDS: FormFields = {
-  envBlock: "",
-  run_name: "",
-  legacy_app_path: "",
-  output_parent_path: "",
-  ai_hub_path: "",
-  java11_home: "",
-  java17_home: "",
-  java21_home: "",
-  maven_cmd: "",
-  proof_level: "build_test_verified",
-  skip_endpoint_smoke: false,
-};
-
-// ── Component ──────────────────────────────────────────────────────
-
 export function NewMigrationForm() {
   const router = useRouter();
   const [fields, setFields] = useState<FormFields>(EMPTY_FIELDS);
@@ -221,12 +213,9 @@ export function NewMigrationForm() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<string | null>(null);
 
-  const updateField = useCallback(
-    (key: keyof FormFields, value: string | boolean) => {
-      setFields((prev) => ({ ...prev, [key]: value }));
-    },
-    [],
-  );
+  const updateField = useCallback((key: keyof FormFields, value: string | boolean) => {
+    setFields((prev) => ({ ...prev, [key]: value }));
+  }, []);
 
   const handleParseEnv = useCallback(async () => {
     if (!fields.envBlock.trim()) return;
@@ -238,7 +227,6 @@ export function NewMigrationForm() {
       if (result.blocked_keys.length > 0) {
         setError(`Blocked keys detected: ${result.blocked_keys.join(", ")}. These were not parsed.`);
       }
-      // Auto-fill fields from parsed result
       const p = result.parsed;
       setFields((prev) => ({
         ...prev,
@@ -291,9 +279,7 @@ export function NewMigrationForm() {
     try {
       const result = await runPreflight(setupResult.setup_id);
       setPreflight(result);
-      // Also fetch readiness
-      const readinessResult = await fetchReadiness(setupResult.setup_id);
-      setReadiness(readinessResult);
+      setReadiness(await fetchReadiness(setupResult.setup_id));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Preflight failed");
     } finally {
@@ -305,8 +291,7 @@ export function NewMigrationForm() {
     setLoading("Loading settings...");
     setError(null);
     try {
-      const result = await fetchSettings();
-      setAzureSettings(result);
+      setAzureSettings(await fetchSettings());
     } catch (e) {
       setError(e instanceof Error ? e.message : "Settings load failed");
     } finally {
@@ -314,348 +299,390 @@ export function NewMigrationForm() {
     }
   }, []);
 
-  // ── Render ──────────────────────────────────────────────────────
-
   const startState = getStartReadinessCopy(readiness);
   const azureSmokeCopy = getAzureSmokeCopy(preflight);
   const startEnabled = startState.ready;
 
   return (
-    <div className="stack" style={{ maxWidth: "800px" }}>
-      {/* Env Parser Section */}
-      <fieldset>
-        <legend>PowerShell Env Block (optional)</legend>
-        <p className="meta">
-          Paste your old PowerShell env block to auto-fill fields below.
-          Azure secrets are blocked and will not be parsed.
-        </p>
-        <textarea
-          rows={6}
-          style={{ width: "100%", fontFamily: "monospace" }}
-          placeholder={`$env:JAVA11_HOME = "C:\\Tools\\jdk-11"\n$env:MAVEN_CMD = "C:\\Tools\\mvn.cmd"\n$legacy = "C:\\work\\apps\\my-app"\n...`}
-          value={fields.envBlock}
-          onChange={(e) => updateField("envBlock", e.target.value)}
-        />
-        <button onClick={handleParseEnv} disabled={!!loading || !fields.envBlock.trim()}>
-          {loading === "Parsing env block..." ? "Parsing..." : "Parse Env Block"}
-        </button>
-        {parseResult && (
-          <div className="info-box">
-            <p>Parsed: {parseResult.parsed.run_name || "(no run name)"}</p>
-            {parseResult.ignored_keys.length > 0 && (
-              <p className="meta">Ignored keys: {parseResult.ignored_keys.join(", ")}</p>
-            )}
-            {parseResult.blocked_keys.length > 0 && (
-              <p className="warning">Blocked keys: {parseResult.blocked_keys.join(", ")}</p>
-            )}
-          </div>
-        )}
+    <div className="migration-setup-grid">
+      <fieldset className="setup-card">
+        <legend>1. Env Block</legend>
+        <div className="section-body">
+          <p className="meta">Paste your PowerShell env block to auto-fill local paths. Azure secrets are blocked.</p>
+          <textarea
+            rows={6}
+            className="env-textarea"
+            placeholder={`$env:JAVA11_HOME = "C:\\Tools\\jdk-11"\n$env:MAVEN_CMD = "C:\\Tools\\mvn.cmd"\n$legacy = "C:\\work\\apps\\my-app"\n...`}
+            value={fields.envBlock}
+            onChange={(e) => updateField("envBlock", e.target.value)}
+          />
+          <button onClick={handleParseEnv} disabled={!!loading || !fields.envBlock.trim()}>
+            {loading === "Parsing env block..." ? "Parsing..." : "Parse Env Block"}
+          </button>
+          {parseResult && (
+            <div className="info-box">
+              <p>Parsed: {parseResult.parsed.run_name || "(no run name)"}</p>
+              {parseResult.ignored_keys.length > 0 && (
+                <p className="meta">Ignored keys: {parseResult.ignored_keys.join(", ")}</p>
+              )}
+              {parseResult.blocked_keys.length > 0 && (
+                <p className="warning">Blocked keys: {parseResult.blocked_keys.join(", ")}</p>
+              )}
+            </div>
+          )}
+        </div>
       </fieldset>
 
-      {/* Manual Fields Section */}
-      <fieldset>
-        <legend>Migration Setup</legend>
-
-        <div className="field-row">
-          <label>
-            Run Name <strong>*</strong>
-          </label>
-          <input
-            type="text"
-            value={fields.run_name}
-            onChange={(e) => updateField("run_name", e.target.value)}
-            placeholder="my-app-v2"
-          />
+      <fieldset className="setup-card">
+        <legend>2. Project Paths</legend>
+        <div className="section-body">
+          <TextField label="Run Name" required value={fields.run_name} onChange={(value) => updateField("run_name", value)} placeholder="my-app-v2" />
+          <TextField label="Legacy App Path" required value={fields.legacy_app_path} onChange={(value) => updateField("legacy_app_path", value)} placeholder="C:\\work\\apps\\legacy-service" />
+          <TextField label="Output Parent Path" required value={fields.output_parent_path} onChange={(value) => updateField("output_parent_path", value)} placeholder="C:\\work\\modernized" />
+          <TextField label="AI Hub Path" required value={fields.ai_hub_path} onChange={(value) => updateField("ai_hub_path", value)} placeholder="C:\\Users\\me\\modernizer-solution-ai-hub" />
         </div>
+      </fieldset>
 
-        <div className="field-row">
-          <label>
-            Legacy App Path <strong>*</strong>
-          </label>
-          <input
-            type="text"
-            value={fields.legacy_app_path}
-            onChange={(e) => updateField("legacy_app_path", e.target.value)}
-            placeholder="C:\work\apps\legacy-service"
-          />
-        </div>
-
-        <div className="field-row">
-          <label>
-            Output Parent Path <strong>*</strong>
-          </label>
-          <input
-            type="text"
-            value={fields.output_parent_path}
-            onChange={(e) => updateField("output_parent_path", e.target.value)}
-            placeholder="C:\work\modernized"
-          />
-        </div>
-
-        <div className="field-row">
-          <label>
-            AI Hub Path <strong>*</strong>
-          </label>
-          <input
-            type="text"
-            value={fields.ai_hub_path}
-            onChange={(e) => updateField("ai_hub_path", e.target.value)}
-            placeholder="C:\Users\me\modernizer-solution-ai-hub"
-          />
-        </div>
-
-        <div className="field-row">
-          <label>
-            JAVA11_HOME <strong>*</strong>
-          </label>
-          <input
-            type="text"
-            value={fields.java11_home}
-            onChange={(e) => updateField("java11_home", e.target.value)}
-            placeholder="C:\Tools\jdk-11"
-          />
-        </div>
-
-        <div className="field-row">
-          <label>
-            JAVA17_HOME <strong>*</strong>
-          </label>
-          <input
-            type="text"
-            value={fields.java17_home}
-            onChange={(e) => updateField("java17_home", e.target.value)}
-            placeholder="C:\Tools\jdk-17"
-          />
-        </div>
-
-        <div className="field-row">
-          <label>
-            JAVA21_HOME <strong>*</strong>
-          </label>
-          <input
-            type="text"
-            value={fields.java21_home}
-            onChange={(e) => updateField("java21_home", e.target.value)}
-            placeholder="C:\Tools\jdk-21"
-          />
-        </div>
-
-        <div className="field-row">
-          <label>
-            Maven Command <strong>*</strong>
-          </label>
-          <input
-            type="text"
-            value={fields.maven_cmd}
-            onChange={(e) => updateField("maven_cmd", e.target.value)}
-            placeholder="C:\Tools\apache-maven-3.9.15\bin\mvn.cmd"
-          />
-        </div>
-
-        <div className="field-row">
-          <label>Proof Level</label>
-          <select
-            value={fields.proof_level}
-            onChange={(e) => updateField("proof_level", e.target.value)}
-          >
-            <option value="analyzed">Analyzed</option>
-            <option value="build_test_verified">Build & Test Verified</option>
-            <option value="runtime_verified">Runtime Verified</option>
-          </select>
-        </div>
-
-        <div className="field-row">
-          <label>
+      <fieldset className="setup-card">
+        <legend>3. Toolchain & Proof</legend>
+        <div className="section-body">
+          <TextField label="JAVA11_HOME" required value={fields.java11_home} onChange={(value) => updateField("java11_home", value)} placeholder="C:\\Tools\\jdk-11" />
+          <TextField label="JAVA17_HOME" required value={fields.java17_home} onChange={(value) => updateField("java17_home", value)} placeholder="C:\\Tools\\jdk-17" />
+          <TextField label="JAVA21_HOME" required value={fields.java21_home} onChange={(value) => updateField("java21_home", value)} placeholder="C:\\Tools\\jdk-21" />
+          <TextField label="Maven Command" required value={fields.maven_cmd} onChange={(value) => updateField("maven_cmd", value)} placeholder="C:\\Tools\\apache-maven-3.9.15\\bin\\mvn.cmd" />
+          <div className="field-row">
+            <label>Proof Level</label>
+            <select value={fields.proof_level} onChange={(e) => updateField("proof_level", e.target.value)}>
+              <option value="analyzed">Analyzed</option>
+              <option value="build_test_verified">Build & Test Verified</option>
+              <option value="runtime_verified">Runtime Verified</option>
+            </select>
+          </div>
+          <label className="checkbox-row">
             <input
               type="checkbox"
               checked={fields.skip_endpoint_smoke}
               onChange={(e) => updateField("skip_endpoint_smoke", e.target.checked)}
-            />{" "}
+            />
             Skip Endpoint Smoke Test
           </label>
         </div>
       </fieldset>
 
-      {/* Actions */}
-      <div className="button-row">
-        <button onClick={handleSaveSetup} disabled={!!loading || !fields.run_name || !fields.legacy_app_path}>
-          {loading === "Saving setup..." ? "Saving..." : "Save Setup"}
-        </button>
-
-        <button onClick={handleLoadSettings} disabled={!!loading}>
-          {loading === "Loading settings..." ? "Loading..." : "Check Azure Settings"}
-        </button>
-      </div>
-
-      {/* Error */}
-      {error && <div className="error-box">{error}</div>}
-
-      {/* Azure Settings */}
-      {azureSettings && (
-        <fieldset>
-          <legend>Azure Settings</legend>
-          <p>
-            Provider: <code>{azureSettings.azure.provider}</code>
-          </p>
-          <p>
-            Endpoint:{" "}
-            <code>
-              {azureSettings.azure.endpoint.configured ? "✓ Configured" : "✗ Not Configured"}
-            </code>
-          </p>
-          <p className="meta">
-            Endpoint configured is not smoke evidence. Run preflight to get a PASS or FAIL verdict.
-          </p>
-        </fieldset>
-      )}
-
-      {/* Preflight */}
-      {setupResult && (
-        <div className="button-row">
-          <button onClick={handleRunPreflight} disabled={!!loading}>
-            {loading === "Running preflight..." ? "Running..." : "Run Preflight"}
-          </button>
-        </div>
-      )}
-
-      {/* Preflight Results */}
-      {preflight && (
-        <fieldset>
-          <legend>Preflight Results</legend>
-          <p>
-            All Ready:{" "}
-            <strong className={preflight.all_ready ? "text-green" : "text-red"}>
-              {preflight.all_ready ? "YES" : "NO"}
-            </strong>
-          </p>
-          {Object.entries(preflight.readiness || {}).map(([key, val]) => (
-            <p key={key} className="check-row">
-              {key}: {val ? "✓" : "✗"}
-            </p>
-          ))}
-          {preflight.warnings.length > 0 && (
-            <div className="warning-box">
-              <p>Warnings:</p>
-              <ul>
-                {preflight.warnings.map((w, i) => (
-                  <li key={i}>{w}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {preflight.errors.length > 0 && (
-            <div className="error-box">
-              <p>Errors:</p>
-              <ul>
-                {preflight.errors.map((e, i) => (
-                  <li key={i}>{e}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          <div className="info-box">
-            <p>{azureSmokeCopy.label}</p>
-            <p className="meta">
-              Smoke checked at: <code>{azureSmokeCopy.checkedAt || preflight.checked_at}</code>
-            </p>
-            {azureSmokeCopy.failureReason && (
-              <p className="warning">
-                Failure reason: <code>{azureSmokeCopy.failureReason}</code>
-              </p>
-            )}
-            {azureSmokeCopy.snippet && (
-              <p className="meta">
-                Evidence: <code>{azureSmokeCopy.snippet}</code>
-              </p>
+      <fieldset className="setup-card">
+        <legend>4. Setup & Azure</legend>
+        <div className="section-body">
+          <div className="button-row">
+            <button onClick={handleSaveSetup} disabled={!!loading || !fields.run_name || !fields.legacy_app_path}>
+              {loading === "Saving setup..." ? "Saving..." : "Save Setup"}
+            </button>
+            <button onClick={handleLoadSettings} disabled={!!loading}>
+              {loading === "Loading settings..." ? "Loading..." : "Check Azure Settings"}
+            </button>
+            {setupResult && (
+              <button onClick={handleRunPreflight} disabled={!!loading}>
+                {loading === "Running preflight..." ? "Running..." : "Run Preflight"}
+              </button>
             )}
           </div>
-        </fieldset>
-      )}
+          {error && <div className="error-box">{error}</div>}
+          {setupResult && (
+            <div className="info-box">
+              <p>Setup saved: <code>{setupResult.run_name}</code></p>
+              <p className="meta">Setup ID: <code>{setupResult.setup_id}</code></p>
+            </div>
+          )}
+          {azureSettings ? (
+            <div className="info-box">
+              <p>Provider: <code>{azureSettings.azure.provider}</code></p>
+              <p>Endpoint: <code>{azureSettings.azure.endpoint.configured ? "Configured" : "Not Configured"}</code></p>
+              <p className="meta">Endpoint configured is not smoke evidence. Run preflight to get a PASS or FAIL verdict.</p>
+            </div>
+          ) : (
+            <p className="empty-state">Azure settings have not been checked.</p>
+          )}
+        </div>
+      </fieldset>
 
-      {/* Readiness / Start Button */}
-      {readiness && (
-        <fieldset>
-          <legend>Start Readiness</legend>
-          <p>
-            Checksum Match:{" "}
-            {readiness.preflight_checksum_match ? "✓" : "✗ (re-run preflight)"}
-          </p>
-          <p>
-            Ready:{" "}
-            <strong className={startEnabled ? "text-green" : "text-red"}>
-              {startState.label}
-            </strong>
-          </p>
-          <button
-            className="start-button"
-            disabled={!startEnabled}
-            title={
-              !readiness.preflight_checksum_match
-                ? "Preflight is stale — run preflight again"
-                : !readiness.ready
-                  ? "Fix errors above"
-                  : "Start migration"
-            }
-            onClick={async () => {
-              if (!setupResult) return;
-              setLoading("Starting migration...");
-              setError(null);
-              try {
-                // 1. Create V2 job
-                const jobRes = await fetch(`${API_BASE}/v1/v2/migration-jobs`, {
-                  method: "POST",
-                  headers: mutationHeaders(),
-                  body: JSON.stringify({ setup_id: setupResult.setup_id }),
-                });
-                if (!jobRes.ok) throw new Error(`Job creation failed: ${jobRes.status}`);
-                const jobData = await jobRes.json();
+      <fieldset className="setup-card">
+        <legend>5. Preflight Results</legend>
+        <div className="section-body">
+          {preflight ? (
+            <>
+              <p>All Ready: <strong className={preflight.all_ready ? "text-green" : "text-red"}>{preflight.all_ready ? "YES" : "NO"}</strong></p>
+              <div className="checks-list">
+                {Object.entries(preflight.readiness || {}).map(([key, val]) => (
+                  <p key={key} className="check-row">{key}: {val ? "PASS" : "FAIL"}</p>
+                ))}
+              </div>
+              {preflight.warnings.length > 0 && (
+                <div className="warning-box">
+                  <p>Warnings:</p>
+                  <ul>{preflight.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
+                </div>
+              )}
+              {preflight.errors.length > 0 && (
+                <div className="error-box">
+                  <p>Errors:</p>
+                  <ul>{preflight.errors.map((e, i) => <li key={i}>{e}</li>)}</ul>
+                </div>
+              )}
+              <div className="info-box">
+                <p>{azureSmokeCopy.label}</p>
+                <p className="meta">Smoke checked at: <code>{azureSmokeCopy.checkedAt || preflight.checked_at}</code></p>
+                {azureSmokeCopy.failureReason && <p className="warning">Failure reason: <code>{azureSmokeCopy.failureReason}</code></p>}
+                {azureSmokeCopy.snippet && <p className="meta">Evidence: <code>{azureSmokeCopy.snippet}</code></p>}
+              </div>
+            </>
+          ) : (
+            <p className="empty-state">Save setup, then run preflight to see readiness gates.</p>
+          )}
+        </div>
+      </fieldset>
 
-                // 2. Start Stage 1
-                const stageRes = await fetch(`${API_BASE}/v1/v2/migration-jobs/start-stage1`, {
-                  method: "POST",
-                  headers: mutationHeaders(),
-                  body: JSON.stringify({
-                    job_id: jobData.job_id,
-                    setup_id: setupResult.setup_id,
-                  }),
-                });
-                if (!stageRes.ok) throw new Error(`Stage 1 start failed: ${stageRes.status}`);
+      <fieldset className="setup-card">
+        <legend>6. Start Readiness</legend>
+        <div className="section-body">
+          {readiness ? (
+            <>
+              <p>Checksum Match: {readiness.preflight_checksum_match ? "YES" : "NO (re-run preflight)"}</p>
+              <p>Ready: <strong className={startEnabled ? "text-green" : "text-red"}>{startState.label}</strong></p>
+              <button
+                className="start-button"
+                disabled={!startEnabled}
+                title={
+                  !readiness.preflight_checksum_match
+                    ? "Preflight is stale - run preflight again"
+                    : !readiness.ready
+                      ? "Fix errors above"
+                      : "Start migration"
+                }
+                onClick={async () => {
+                  if (!setupResult) return;
+                  setLoading("Starting migration...");
+                  setError(null);
+                  try {
+                    const jobRes = await fetch(`${API_BASE}/v1/v2/migration-jobs`, {
+                      method: "POST",
+                      headers: mutationHeaders(),
+                      body: JSON.stringify({ setup_id: setupResult.setup_id }),
+                    });
+                    if (!jobRes.ok) throw new Error(`Job creation failed: ${jobRes.status}`);
+                    const jobData = await jobRes.json();
 
-                // 3. Navigate to cockpit
-                router.push(`/migrations/${jobData.job_id}`);
-              } catch (e) {
-                setError(e instanceof Error ? e.message : "Start failed");
-              } finally {
-                setLoading(null);
-              }
-            }}
-          >
-            {startEnabled ? "Start Migration" : "Cannot Start"}
-          </button>
-        </fieldset>
-      )}
+                    const stageRes = await fetch(`${API_BASE}/v1/v2/migration-jobs/start-stage1`, {
+                      method: "POST",
+                      headers: mutationHeaders(),
+                      body: JSON.stringify({
+                        job_id: jobData.job_id,
+                        setup_id: setupResult.setup_id,
+                      }),
+                    });
+                    if (!stageRes.ok) throw new Error(`Stage 1 start failed: ${stageRes.status}`);
+
+                    router.push(`/migrations/${jobData.job_id}`);
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : "Start failed");
+                  } finally {
+                    setLoading(null);
+                  }
+                }}
+              >
+                {startEnabled ? "Start Migration" : "Cannot Start"}
+              </button>
+            </>
+          ) : (
+            <p className="empty-state">Start is available after a passing readiness check.</p>
+          )}
+        </div>
+      </fieldset>
 
       <style>{`
-        .stack { display: flex; flex-direction: column; gap: 1rem; padding: 1rem; }
-        .meta { font-size: 0.85rem; color: #666; }
-        fieldset { border: 1px solid #ccc; border-radius: 6px; padding: 1rem; }
-        legend { font-weight: 600; padding: 0 0.5rem; }
-        .field-row { display: flex; flex-direction: column; gap: 0.25rem; margin-bottom: 0.75rem; }
-        .field-row label { font-size: 0.9rem; font-weight: 500; }
-        .field-row input, .field-row select { padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9rem; }
-        .field-row input[type="checkbox"] { width: auto; }
-        .button-row { display: flex; gap: 0.5rem; }
-        button { padding: 0.5rem 1rem; border: 1px solid #888; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
-        button:disabled { opacity: 0.5; cursor: not-allowed; }
-        .start-button { background: #0066cc; color: white; border-color: #0055aa; font-weight: 600; padding: 0.75rem 1.5rem; }
-        .error-box { border: 1px solid #cc0000; background: #fff0f0; padding: 0.75rem; border-radius: 4px; }
-        .warning-box { border: 1px solid #ccaa00; background: #fffff0; padding: 0.75rem; border-radius: 4px; }
-        .info-box { border: 1px solid #0066cc; background: #f0f6ff; padding: 0.75rem; border-radius: 4px; }
-        .text-green { color: #008800; }
-        .text-red { color: #cc0000; }
-        .check-row { font-family: monospace; font-size: 0.85rem; margin: 0.15rem 0; }
-        .warning { color: #886600; }
+        .migration-setup-grid {
+          display: grid;
+          gap: 12px;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+          height: 100%;
+          min-height: 0;
+          overflow: hidden;
+        }
+        .setup-card {
+          background: #fff;
+          border: 1px solid #d8dfdc;
+          border-radius: 8px;
+          display: flex;
+          flex-direction: column;
+          min-height: 0;
+          overflow: hidden;
+          padding: 12px;
+        }
+        legend {
+          font-weight: 700;
+          padding: 0 0.35rem;
+        }
+        .section-body {
+          display: flex;
+          flex: 1;
+          flex-direction: column;
+          gap: 10px;
+          min-height: 0;
+          overflow: auto;
+          padding-right: 4px;
+        }
+        .meta,
+        .empty-state {
+          color: #66736d;
+          font-size: 0.86rem;
+          line-height: 1.35;
+        }
+        .empty-state {
+          border: 1px dashed #c7d0cc;
+          border-radius: 6px;
+          padding: 10px;
+        }
+        .env-textarea {
+          flex: 1;
+          min-height: 118px;
+          resize: none;
+        }
+        textarea,
+        input,
+        select {
+          background: #fff;
+          border: 1px solid #c7d0cc;
+          border-radius: 6px;
+          color: #17201d;
+          min-width: 0;
+          padding: 9px 10px;
+          width: 100%;
+        }
+        textarea,
+        code,
+        .check-row {
+          font-family: Consolas, "Cascadia Mono", monospace;
+        }
+        .field-row {
+          display: flex;
+          flex-direction: column;
+          gap: 5px;
+        }
+        .field-row label,
+        .checkbox-row {
+          color: #2d3a36;
+          font-size: 0.86rem;
+          font-weight: 650;
+        }
+        .checkbox-row {
+          align-items: center;
+          display: flex;
+          gap: 8px;
+        }
+        .checkbox-row input {
+          width: auto;
+        }
+        .button-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        button {
+          background: #0f766e;
+          border: 0;
+          border-radius: 6px;
+          color: #fff;
+          cursor: pointer;
+          font-size: 0.88rem;
+          font-weight: 750;
+          min-height: 38px;
+          padding: 8px 12px;
+        }
+        button:disabled {
+          cursor: not-allowed;
+          opacity: 0.5;
+        }
+        .start-button {
+          background: #115e59;
+          width: fit-content;
+        }
+        .error-box,
+        .warning-box,
+        .info-box {
+          border-radius: 6px;
+          line-height: 1.35;
+          overflow-wrap: anywhere;
+          padding: 10px;
+        }
+        .error-box {
+          background: #fff5f5;
+          border: 1px solid #d92d20;
+        }
+        .warning-box {
+          background: #fffbeb;
+          border: 1px solid #d6a100;
+        }
+        .info-box {
+          background: #f0fdfa;
+          border: 1px solid #5eead4;
+        }
+        .text-green {
+          color: #087443;
+        }
+        .text-red {
+          color: #b42318;
+        }
+        .checks-list {
+          display: grid;
+          gap: 4px;
+        }
+        .check-row {
+          font-size: 0.8rem;
+          margin: 0;
+          overflow-wrap: anywhere;
+        }
+        .warning {
+          color: #8a6100;
+        }
+        ul {
+          margin: 6px 0 0;
+          padding-left: 18px;
+        }
+        @media (max-width: 1100px) {
+          .migration-setup-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-template-rows: repeat(3, minmax(0, 1fr));
+          }
+        }
+        @media (max-width: 760px) {
+          .migration-setup-grid {
+            grid-template-columns: 1fr;
+            grid-template-rows: repeat(6, minmax(0, 1fr));
+          }
+        }
       `}</style>
+    </div>
+  );
+}
+
+function TextField({
+  label,
+  onChange,
+  placeholder,
+  required = false,
+  value,
+}: {
+  label: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  required?: boolean;
+  value: string;
+}) {
+  return (
+    <div className="field-row">
+      <label>
+        {label} {required && <strong>*</strong>}
+      </label>
+      <input type="text" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />
     </div>
   );
 }

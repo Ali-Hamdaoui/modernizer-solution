@@ -56,6 +56,59 @@ h2 {
   padding: 32px 20px;
 }
 
+.shell:has(.new-migration-page),
+.shell:has(.migration-cockpit-page) {
+  max-width: 1680px;
+  width: 100%;
+}
+
+.new-migration-page {
+  display: grid;
+  gap: 12px;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: calc(100vh - 64px);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.new-migration-header {
+  display: grid;
+  gap: 4px;
+  min-height: 0;
+}
+
+.new-migration-header h1 {
+  font-size: 1.6rem;
+}
+
+.new-migration-header .meta {
+  max-width: 760px;
+}
+
+.migration-cockpit-page {
+  display: grid;
+  gap: 12px;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: calc(100vh - 64px);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.migration-cockpit-header {
+  display: grid;
+  gap: 4px;
+  min-height: 0;
+}
+
+.migration-cockpit-header h1 {
+  font-size: 1.35rem;
+  overflow-wrap: anywhere;
+}
+
+.migration-cockpit-header .meta {
+  max-width: 840px;
+}
+
 .eyebrow {
   color: var(--accent-dark);
   font-size: 0.78rem;

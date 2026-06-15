@@ -398,6 +398,42 @@ migration_units:
             self.assertIn("<org.springframework.version>3.5.6</org.springframework.version>", pom_text)
             self.assertIn("<version>3.5.6</version>", pom_text)
 
+    def test_spring_boot_version_patch_accepts_current_openrewrite_boot35_output(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project>
+  <properties>
+    <spring-boot.version>3.5.15</spring-boot.version>
+    <org.springframework.version>3.5.15</org.springframework.version>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+      <version>3.5.15</version>
+    </dependency>
+  </dependencies>
+</project>
+""",
+                encoding="utf-8",
+            )
+
+            patches = transform_module.patch_spring_boot_version(
+                app,
+                unit_id="spring-boot-3-5",
+                old_value="3.5.15",
+                new_value="3.5.6",
+            )
+
+            self.assertEqual(len(patches), 3)
+            pom_text = (app / "pom.xml").read_text(encoding="utf-8")
+            self.assertNotIn("3.5.15", pom_text)
+            self.assertIn("<spring-boot.version>3.5.6</spring-boot.version>", pom_text)
+            self.assertIn("<org.springframework.version>3.5.6</org.springframework.version>", pom_text)
+            self.assertIn("<version>3.5.6</version>", pom_text)
+
     def test_boot4_source_patches_update_security_and_batch_config(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"

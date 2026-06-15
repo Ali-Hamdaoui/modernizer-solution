@@ -40,7 +40,7 @@ openrewrite:
   apply_goal: runNoFork
   post_apply_patches:
     - type: spring_boot_version
-      old_value: 3.5.14
+      old_value: 3.5.15
       new_value: 3.5.6
 policies:
   safety: policies/safety.yaml

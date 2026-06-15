@@ -130,7 +130,7 @@ def test_stage_b_boot_356_units_match_allowed_order() -> None:
     assert profile["openrewrite"]["post_apply_patches"] == [
         {
             "type": "spring_boot_version",
-            "old_value": "3.5.14",
+            "old_value": "3.5.15",
             "new_value": "3.5.6",
         }
     ]
