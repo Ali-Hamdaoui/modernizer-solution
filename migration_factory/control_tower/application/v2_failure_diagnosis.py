@@ -183,6 +183,13 @@ class V2FailureDiagnosisService:
             if classification_result
             else "UNKNOWN"
         )
+        # Collect artifact refs from payload for context pack enrichment
+        evidence_artifact_refs: tuple[str, ...] = ()
+        raw_refs = payload_data.get("artifact_refs", {})
+        if isinstance(raw_refs, dict):
+            evidence_artifact_refs = tuple(
+                str(v) for v in raw_refs.values() if v
+            )[:10]
         pack = self._build_context_pack(
             event_type=event_type,
             stage_index=stage_index,
@@ -197,6 +204,8 @@ class V2FailureDiagnosisService:
             ),
             pom_summary_ref=pom_summary_ref,
             sandbox_binding_ref=sandbox_binding_ref,
+            profile_id=profile_id,
+            artifact_refs_used=evidence_artifact_refs,
         )
 
         # 8. Route through EventPromptRouter to get ModelCallRequest
@@ -396,6 +405,8 @@ class V2FailureDiagnosisService:
         redaction_status: str = "evidence_collector_unavailable",
         pom_summary_ref: str | None = None,
         sandbox_binding_ref: str | None = None,
+        profile_id: str | None = None,
+        artifact_refs_used: tuple[str, ...] = (),
     ) -> ContextPack:
         """Build an enriched ContextPack for the diagnosis.
 
@@ -425,6 +436,8 @@ class V2FailureDiagnosisService:
             redaction_status=redaction_status,
             pom_summary_ref=pom_summary_ref,
             sandbox_binding_ref=sandbox_binding_ref,
+            profile_id=profile_id,
+            artifact_refs_used=artifact_refs_used,
         )
         return pack
 
@@ -515,3 +528,59 @@ class V2FailureDiagnosisService:
     def is_diagnosable_event(event_type: str) -> bool:
         """Check if an event type can trigger diagnosis."""
         return event_type in V2FailureDiagnosisService.TRIGGER_EVENT_TYPES
+
+
+# ── Orchestrator integration helper ───────────────────────────────
+
+
+def create_orchestrator_diagnosis_callback(
+    service: V2FailureDiagnosisService | None = None,
+    *,
+    repair_flow: Any | None = None,
+    event_sink: Any | None = None,
+    evidence_collector: Any | None = None,
+    run_dir_resolver: Any | None = None,
+    profile_id: str | None = None,
+    pom_summary_ref: str | None = None,
+    sandbox_binding_ref: str | None = None,
+) -> Callable[[str, int, str, str, dict[str, Any]], None]:
+    """Create a callback suitable for V2OrchestratorRunner(diagnosis_callback=...).
+
+    The returned callback has the exact signature that
+    V2OrchestratorRunner._maybe_diagnose expects:
+        (job_id, stage_index, command_id, event_type, payload) -> None
+
+    Usage:
+        svc = V2FailureDiagnosisService(repair_flow=..., event_sink=...)
+        runner = V2OrchestratorRunner(
+            unit_of_work_factory=...,
+            diagnosis_callback=create_orchestrator_diagnosis_callback(svc),
+        )
+    """
+    if service is None:
+        service = V2FailureDiagnosisService(
+            repair_flow=repair_flow,
+            event_sink=event_sink,
+            evidence_collector=evidence_collector,
+            run_dir_resolver=run_dir_resolver,
+        )
+
+    def callback(
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        service.diagnose(  # type: ignore[union-attr]
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            event_type=event_type,
+            payload=payload,
+            profile_id=profile_id,
+            pom_summary_ref=pom_summary_ref,
+            sandbox_binding_ref=sandbox_binding_ref,
+        )
+
+    return callback
