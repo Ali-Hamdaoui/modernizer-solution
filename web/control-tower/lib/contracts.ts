@@ -436,6 +436,7 @@ export type V2PipelineResponse = {
   rows: V2PipelineRow[];
   evidence: V2JobEvent[];
   raw_logs: V2JobEvent[];
+  active_stage_index: number;
 };
 
 export type V2StageEntry = {
@@ -593,6 +594,7 @@ export type V2ReadinessResponse = {
 export type V2FailureSummaryItem = {
   type: string;
   stage: number | null;
+  title: string;
   message: string;
   build_status: string;
   test_status: string;
@@ -619,6 +621,8 @@ export type V2FailureSummaryItem = {
   parse_strategy?: string;
   stdout_tail?: string;
   stderr_tail?: string;
+  event_types: string[];
+  repair_events: { type: string; message: string }[];
   next_operator_action: string;
 };
 
@@ -629,4 +633,13 @@ export type V2FailureSummaryResponse = {
   repair_loop_active: boolean;
   repair_events: { type: string; message: string }[];
   artifact_kinds: string[];
+};
+
+export type V2ArtifactPreviewResponse = {
+  job_id: string;
+  artifact_kind: string;
+  exists: boolean;
+  preview: string;
+  truncated: boolean;
+  content_type: string;
 };

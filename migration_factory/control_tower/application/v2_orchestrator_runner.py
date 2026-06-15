@@ -79,6 +79,12 @@ _TERMINAL_FAILURES = {
     "FAIL",
 }
 
+_SUCCESS_ORCHESTRATION_STATUS = "PASS"
+_SUCCESS_FINAL_STATUS = "TRANSFORM_APPLIED_IN_SANDBOX"
+_SUCCESS_TRANSFORM_STATUS = "TRANSFORM_APPLIED_IN_SANDBOX"
+_SUCCESS_BUILD_STATUS = "BUILD_PASSED_IN_SANDBOX"
+_SUCCESS_TEST_STATUSES = {"PASS", "TEST_PASSED", "TESTS_NOT_FOUND", "PASS_WITH_WARNINGS"}
+
 _NON_ACTIVE_REPAIR_STATUSES = {
     "",
     "SKIPPED",
@@ -581,14 +587,36 @@ class V2OrchestratorRunner:
             )
             return
 
-        if stage_index in (1, 2) and not sandbox_path:
+        success_proof = _has_success_proof(result)
+        if not success_proof[0]:
+            failure = success_proof[1]
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="stage_failed",
                 status="failed",
-                message=f"Stage {stage_index} completed but produced no sandbox path; cannot progress.",
-                payload={"command_id": command_id, "exit_code": exit_code},
+                message=(
+                    f"Stage {stage_index} did not produce strict success proof: "
+                    f"expected {failure['field']}={failure['expected']}, detected={failure['detected']}."
+                ),
+                payload={
+                    "command_id": command_id,
+                    "missing_success_proof": True,
+                    "reason": failure["reason"],
+                    "proof_failure_field": failure["field"],
+                    "proof_expected": failure["expected"],
+                    "proof_detected": failure["detected"],
+                    "proof_expected_values": failure["expected_values"],
+                    "proof_detected_values": failure["detected_values"],
+                    "orchestration_status": orchestration_status,
+                    "transform_status": transform_status,
+                    "build_status": build_status,
+                    "test_status": test_status,
+                    "final_status": final_status,
+                    "sandbox_path": sandbox_path,
+                    "errors": result.get("errors", {}),
+                    "blockers": result.get("blockers", {}),
+                },
             )
             return
 
@@ -719,13 +747,17 @@ class V2OrchestratorRunner:
                 payload={"command_id": command_id, "build_status": build_status},
             )
 
-        if test_status == "TEST_PASSED":
+        if test_status in _SUCCESS_TEST_STATUSES:
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="test_completed",
                 status="completed",
-                message="Sandbox test validation completed.",
+                message=(
+                    "Sandbox tests passed."
+                    if test_status in {"PASS", "TEST_PASSED"}
+                    else f"Sandbox tests accepted with status: {test_status}."
+                ),
                 payload={"command_id": command_id, "test_status": test_status},
             )
         elif _is_failure_status(test_status):
@@ -1201,13 +1233,94 @@ def _is_terminal_failure_result(result: dict[str, Any]) -> bool:
         str(result.get("test_status", "")),
         str(result.get("transform_status", "")),
         str(result.get("repair_loop_status", "")),
-        str(result.get("orchestration_status", "")),
     ]
     if any(_is_failure_status(value) for value in statuses):
         return True
     if result.get("errors") or result.get("blockers"):
         return True
     return False
+
+
+def _has_success_proof(result: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    expected_values = {
+        "orchestration_status": _SUCCESS_ORCHESTRATION_STATUS,
+        "final_status": _SUCCESS_FINAL_STATUS,
+        "transform_status": _SUCCESS_TRANSFORM_STATUS,
+        "build_status": _SUCCESS_BUILD_STATUS,
+        "test_status": sorted(_SUCCESS_TEST_STATUSES),
+    }
+    detected_values = {
+        "orchestration_status": _normalize_detected(result.get("orchestration_status")),
+        "final_status": _normalize_detected(result.get("final_status")),
+        "transform_status": _normalize_detected(result.get("transform_status")),
+        "build_status": _normalize_detected(result.get("build_status")),
+        "test_status": _normalize_detected(result.get("test_status")),
+        "sandbox_path": _result_sandbox_path(result),
+    }
+
+    if not detected_values["sandbox_path"]:
+        return False, _proof_failure_details(
+            field="sandbox_path",
+            expected="present",
+            detected="missing",
+            reason="missing sandbox_path",
+            expected_values=expected_values,
+            detected_values=detected_values,
+        )
+    if result.get("errors"):
+        return False, _proof_failure_details(
+            field="errors",
+            expected="empty",
+            detected=_normalize_detected(result.get("errors")),
+            reason="errors present",
+            expected_values=expected_values,
+            detected_values=detected_values,
+        )
+    if result.get("blockers"):
+        return False, _proof_failure_details(
+            field="blockers",
+            expected="empty",
+            detected=_normalize_detected(result.get("blockers")),
+            reason="blockers present",
+            expected_values=expected_values,
+            detected_values=detected_values,
+        )
+
+    checks = (
+        ("orchestration_status", {_SUCCESS_ORCHESTRATION_STATUS}, "PASS"),
+        ("final_status", {_SUCCESS_FINAL_STATUS}, _SUCCESS_FINAL_STATUS),
+        ("transform_status", {_SUCCESS_TRANSFORM_STATUS}, _SUCCESS_TRANSFORM_STATUS),
+        ("build_status", {_SUCCESS_BUILD_STATUS}, _SUCCESS_BUILD_STATUS),
+        ("test_status", _SUCCESS_TEST_STATUSES, "{" + ", ".join(sorted(_SUCCESS_TEST_STATUSES)) + "}"),
+    )
+    for field, accepted, expected_text in checks:
+        detected = detected_values[field]
+        if not detected:
+            return False, _proof_failure_details(
+                field=field,
+                expected=expected_text,
+                detected="missing",
+                reason=f"missing {field}",
+                expected_values=expected_values,
+                detected_values=detected_values,
+            )
+        if detected not in accepted:
+            return False, _proof_failure_details(
+                field=field,
+                expected=expected_text,
+                detected=detected,
+                reason=f"expected {field}={expected_text}, detected={detected}",
+                expected_values=expected_values,
+                detected_values=detected_values,
+            )
+    return True, {
+        "field": "",
+        "expected": "",
+        "detected": "",
+        "reason": "",
+        "expected_values": expected_values,
+        "detected_values": detected_values,
+    }
 
 
 def _is_failure_status(value: Any) -> bool:
@@ -1221,6 +1334,29 @@ def _is_failure_status(value: Any) -> bool:
     if "FALLBACK_REPAIR_PLAN" in text:
         return True
     return False
+
+
+def _normalize_detected(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _proof_failure_details(
+    *,
+    field: str,
+    expected: str,
+    detected: Any,
+    reason: str,
+    expected_values: dict[str, Any],
+    detected_values: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "field": field,
+        "expected": expected,
+        "detected": detected,
+        "reason": reason,
+        "expected_values": expected_values,
+        "detected_values": detected_values,
+    }
 
 
 def _queued_command_id(value: Any) -> str:

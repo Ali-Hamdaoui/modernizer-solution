@@ -20,6 +20,7 @@ import type {
   V2AssistantAskResponse,
   V2AssistantMessagesListResponse,
   V2AssistantMessageResponse,
+  V2ArtifactPreviewResponse,
   V2DraftActionResponse,
   ModelActivityRawResponse,
   ModelActivityResponse,
@@ -283,6 +284,20 @@ export async function getV2FailureSummary(jobId: string): Promise<V2FailureSumma
   const safeJobId = requireJobId(jobId);
   return getJson<V2FailureSummaryResponse>(
     `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/failure-summary`
+  );
+}
+
+export async function getV2ArtifactPreview(
+  jobId: string,
+  artifactKind: string
+): Promise<V2ArtifactPreviewResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeKind = artifactKind.trim();
+  if (!safeKind) {
+    throw new Error("Artifact kind is required.");
+  }
+  return getJson<V2ArtifactPreviewResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/artifacts/${encodeURIComponent(safeKind)}`
   );
 }
 

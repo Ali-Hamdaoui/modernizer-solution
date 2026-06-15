@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -556,3 +557,36 @@ def test_assistant_prompt_model_status_field(tmp_path: Path) -> None:
             _os.environ["AZURE_OPENAI_ASSISTANT_DEPLOYMENT"] = prev_deployment
         else:
             _os.environ.pop("AZURE_OPENAI_ASSISTANT_DEPLOYMENT", None)
+
+
+def test_assistant_does_not_claim_pass_is_not_successful() -> None:
+    from migration_factory.control_tower.adapters.fastapi.app import _build_v2_assistant_answer
+
+    events = (
+        SimpleNamespace(stage=1, type="stage_started", status="running", message="Stage started", payload_json="{}"),
+        SimpleNamespace(stage=1, type="build_completed", status="completed", message="Sandbox build completed.", payload_json='{"build_status":"BUILD_PASSED_IN_SANDBOX"}'),
+        SimpleNamespace(stage=1, type="test_completed", status="completed", message="Sandbox tests accepted with status: PASS_WITH_WARNINGS.", payload_json='{"test_status":"PASS_WITH_WARNINGS"}'),
+        SimpleNamespace(stage=1, type="stage_completed", status="completed", message="Stage completed.", payload_json="{}"),
+    )
+    answer = _build_v2_assistant_answer(question="status?", events=events, approvals=(), commands=())
+
+    assert "not successful" not in answer.lower()
+    assert "proof: stage 1 passed with build and test evidence." in answer.lower()
+
+
+def test_assistant_reports_valid_pass_contract_as_stage_passed() -> None:
+    from migration_factory.control_tower.adapters.fastapi.app import _build_v2_assistant_answer
+
+    events = (
+        SimpleNamespace(stage=3, type="stage_started", status="running", message="Stage 3 started", payload_json="{}"),
+        SimpleNamespace(stage=3, type="build_completed", status="completed", message="Sandbox build completed.", payload_json='{"build_status":"BUILD_PASSED_IN_SANDBOX"}'),
+        SimpleNamespace(stage=3, type="test_completed", status="completed", message="Sandbox tests accepted with status: PASS_WITH_WARNINGS.", payload_json='{"test_status":"PASS_WITH_WARNINGS"}'),
+        SimpleNamespace(stage=3, type="stage_completed", status="completed", message="Stage 3 completed.", payload_json="{}"),
+        SimpleNamespace(stage=3, type="final_report_started", status="running", message="Final report started.", payload_json="{}"),
+        SimpleNamespace(stage=3, type="final_report_completed", status="completed", message="Final report completed.", payload_json="{}"),
+    )
+    answer = _build_v2_assistant_answer(question="is stage 3 done?", events=events, approvals=(), commands=())
+
+    assert "stage 3 passed with build and test evidence" in answer.lower()
+    assert "all stages completed" in answer.lower()
+    assert "not successful" not in answer.lower()

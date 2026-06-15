@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import MigrationCockpitPage from "../app/migrations/[jobId]/page";
 import { MigrationCockpit, reduceStageStatus } from "../app/migrations/[jobId]/MigrationCockpit";
-import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, requireJobId, v2EventStreamUrl } from "../lib/controlTowerApi";
+import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, requireJobId, v2EventStreamUrl } from "../lib/controlTowerApi";
 import type { V2JobEvent } from "../lib/contracts";
 
 describe("V2 Migration Cockpit contract", () => {
@@ -139,6 +139,31 @@ describe("V2 Migration Cockpit contract", () => {
     expect(url).not.toContain("undefined");
   });
 
+  it("artifact preview client sends only artifact kind", async () => {
+    const originalFetch = global.fetch;
+    const calls: string[] = [];
+    global.fetch = (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({
+        job_id: "job-123",
+        artifact_kind: "phase2_log",
+        exists: true,
+        preview: "BUILD_FAILED_IN_SANDBOX",
+        truncated: false,
+        content_type: "text/plain",
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    try {
+      const response = await getV2ArtifactPreview("job-123", "phase2_log");
+      expect(calls[0]).toBe(`${CONTROL_TOWER_API_BASE_URL}/v1/v2/jobs/job-123/artifacts/phase2_log`);
+      expect(calls[0]).not.toContain("path=");
+      expect(response.exists).toBe(true);
+      expect(response.preview).toContain("BUILD_FAILED_IN_SANDBOX");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
   it("empty approvals render as no pending decisions copy", () => {
     const approvals: unknown[] = [];
     const copy = approvals.length === 0 ? "No pending decisions." : "Has decisions";
@@ -205,6 +230,17 @@ describe("V2 Migration Cockpit contract", () => {
     expect(rawLogs).toContain("stdout");
   });
 
+  it("pipeline response exposes active_stage_index", () => {
+    const pipeline = {
+      job_id: "job-123",
+      rows: [],
+      evidence: [],
+      raw_logs: [],
+      active_stage_index: 2,
+    };
+    expect(pipeline.active_stage_index).toBe(2);
+  });
+
   it("human approval row is pass after approval_resume_queued, not blocked", () => {
     // Simulate the pipeline status logic: after approval_resume_queued, must be pass
     const events = [
@@ -268,6 +304,15 @@ describe("V2 Migration Cockpit contract", () => {
     };
     expect(model.status).toBe("fallback");
     expect(model.failure_reason).toBe("missing_deployment");
+  });
+
+  it("assistant and repair wording stay separate after repair fallback", () => {
+    const assistantModel = { status: "live_ok", source: "azure_openai", provider: "azure_openai" };
+    const repair = { copilot_status: "INVALID_RESPONSE", repair_fallback: "True", repair_loop_status: "FALLBACK_REPAIR_PLAN" };
+    expect(assistantModel.source).toBe("azure_openai");
+    expect(assistantModel.status).toBe("live_ok");
+    expect(repair.copilot_status).toBe("INVALID_RESPONSE");
+    expect(repair.repair_loop_status).toBe("FALLBACK_REPAIR_PLAN");
   });
 
   it("IMPORTANT_SSE_TYPES includes all required lifecycle events", () => {

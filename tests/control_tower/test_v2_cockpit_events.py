@@ -297,6 +297,23 @@ def test_openapi_json_includes_v2_paths(tmp_path: Path) -> None:
     assert "/v1/v2/migration-jobs/{job_id}/failure-summary" in paths
 
 
+def test_v2_alias_routes_reuse_existing_handlers(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_started_job(client, setup_id)
+
+    aliases = [
+        f"/v1/v2/jobs/{job_id}/pipeline",
+        f"/v1/v2/jobs/{job_id}/stages",
+        f"/v1/v2/jobs/{job_id}/failure-summary",
+        f"/v1/v2/jobs/{job_id}/events/snapshot",
+    ]
+    for path in aliases:
+        response = client.get(path)
+        assert response.status_code == 200, f"{path}: {response.text}"
+        assert response.json()["job_id"] == job_id
+
+
 def test_v2_failure_summary_endpoint_when_no_failures(tmp_path: Path) -> None:
     client, conn = _api_client(tmp_path)
     setup_id = _ready_setup(conn)
@@ -308,6 +325,36 @@ def test_v2_failure_summary_endpoint_when_no_failures(tmp_path: Path) -> None:
     assert body["job_id"] == job_id
     assert body["has_failures"] is False
     assert body["repair_loop_active"] is False
+
+
+def test_test_validation_skipped_when_active_stage_build_failed_before_tests(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_started_job(client, setup_id)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="stage_started",
+            status="running",
+            message="Stage 2 started",
+            payload={},
+        )
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="build_failed",
+            status="failed",
+            message="Sandbox build failed",
+            payload={"build_status": "BUILD_FAILED_IN_SANDBOX"},
+        )
+
+    response = client.get(f"/v1/v2/migration-jobs/{job_id}/pipeline")
+    assert response.status_code == 200, response.text
+    row = [item for item in response.json()["rows"] if item["key"] == "test_validation"][0]
+    assert row["status"] == "skipped"
+    assert row["latest_message"] == "Not run because sandbox build failed."
 
 
 def test_v2_failure_summary_endpoint_with_failures(tmp_path: Path) -> None:
@@ -357,6 +404,58 @@ def test_v2_failure_summary_endpoint_with_failures(tmp_path: Path) -> None:
     assert any(f["build_status"] == "BUILD_FAILED_IN_SANDBOX" for f in body["failures"])
     assert any(f["copilot_status"] == "INVALID_RESPONSE" for f in body["failures"])
     assert any(f["final_proof_level"] == "not_verified" for f in body["failures"])
+
+
+def test_failure_summary_groups_real_stage2_dependency_build_failure_sequence(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_started_job(client, setup_id)
+
+    sequence = [
+        ("sandbox_transform_failed", "failed", "Dependency error during sandbox transform", {"result_kind": "dependency_error"}),
+        ("sandbox_transform_failed", "failed", "Sandbox build failed", {"transform_status": "BUILD_FAILED_IN_SANDBOX"}),
+        ("build_failed", "failed", "Build failed in sandbox", {"build_status": "BUILD_FAILED_IN_SANDBOX", "result_kind": "dependency_error"}),
+        ("repair_started", "running", "Repair started", {"repair_loop_status": "FALLBACK_REPAIR_PLAN"}),
+        ("repair_fallback_generated", "completed", "Deterministic fallback repair plan generated", {"repair_fallback_generated": True}),
+        ("copilot_repair_invalid_response", "failed", "Copilot repair invalid response", {"copilot_invocation_status": "INVALID_RESPONSE"}),
+        ("transform_failed", "failed", "Transform failed", {"final_status": "FALLBACK_REPAIR_PLAN"}),
+        ("stage_failed", "failed", "Stage failed", {"final_status": "FALLBACK_REPAIR_PLAN"}),
+    ]
+    with SqliteUnitOfWork(conn) as uow:
+        for event_type, event_status, message, payload in sequence:
+            uow.v2_events.save(
+                job_id=job_id,
+                stage=2,
+                event_type=event_type,
+                status=event_status,
+                message=message,
+                payload=payload,
+            )
+
+    response = client.get(f"/v1/v2/migration-jobs/{job_id}/failure-summary")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    failures = [failure for failure in body["failures"] if failure["stage"] == 2]
+    assert len(failures) == 1
+    failure = failures[0]
+    assert failure["title"] == "Stage 2 Dependency/Build Failure"
+    assert failure["type"] == "build_failed"
+    assert failure["result_kind"] == "dependency_error"
+    assert failure["build_status"] == "BUILD_FAILED_IN_SANDBOX"
+    assert failure["final_status"] == "FALLBACK_REPAIR_PLAN"
+    assert failure["copilot_status"] == "INVALID_RESPONSE"
+    assert failure["event_types"] == [
+        "build_failed",
+        "sandbox_transform_failed",
+        "transform_failed",
+        "stage_failed",
+    ]
+    assert [event["type"] for event in failure["repair_events"]] == [
+        "repair_started",
+        "repair_fallback_generated",
+        "copilot_repair_invalid_response",
+    ]
+    assert body["repair_events"] == []
 
 
 def test_v2_approval_lifecycle_pipeline_transitions(tmp_path: Path) -> None:
@@ -610,3 +709,65 @@ def test_pipeline_and_stage_status_are_consistent_after_approval(tmp_path: Path)
     assert approval_row["status"] == "pass", f"Expected pass, got {approval_row['status']}"
     transform_row = _pipeline_row(client, job_id, "sandbox_transform")
     assert transform_row["status"] == "running", f"Expected running, got {transform_row['status']}"
+
+
+def test_pipeline_projection_does_not_mark_valid_pass_stage_failed(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job_only(client, setup_id, conn)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="stage_started", status="running", message="stage 1 started", payload={})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="sandbox_transform_started", status="running", message="transform started", payload={})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="build_completed", status="completed", message="build completed", payload={"build_status": "BUILD_PASSED_IN_SANDBOX"})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="test_completed", status="completed", message="tests accepted", payload={"test_status": "PASS_WITH_WARNINGS"})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="stage_completed", status="completed", message="stage 1 completed", payload={})
+        uow.v2_events.save(job_id=job_id, stage=2, event_type="stage_started", status="running", message="stage 2 started", payload={})
+
+    stages = _stages_status(client, job_id)
+    assert stages[1] == "completed"
+    assert stages[2] == "running"
+    assert stages[3] in {"pending", "queued"}
+
+
+def test_pipeline_projection_does_not_show_stage1_and_stage2_both_running_after_completion(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job_only(client, setup_id, conn)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="stage_started", status="running", message="stage 1 started", payload={})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="stage_completed", status="completed", message="stage 1 completed", payload={})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="next_stage_queued", status="queued", message="stage 2 queued", payload={"from_stage": 1, "to_stage": 2, "sandbox_path": "stage1 sandbox"})
+        uow.v2_events.save(job_id=job_id, stage=2, event_type="stage_started", status="running", message="stage 2 started", payload={})
+        uow.v2_events.save(job_id=job_id, stage=2, event_type="command_started", status="running", message="stage 2 command started", payload={})
+
+    stages = _stages_status(client, job_id)
+    assert stages[1] == "completed"
+    assert stages[2] == "running"
+    assert not (stages[1] == "running" and stages[2] == "running")
+
+
+def test_final_report_only_passes_after_stage3_completion(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job_only(client, setup_id, conn)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="stage_completed", status="completed", message="stage 1 completed", payload={})
+        uow.v2_events.save(job_id=job_id, stage=1, event_type="next_stage_queued", status="queued", message="stage 2 queued", payload={"from_stage": 1, "to_stage": 2, "sandbox_path": "stage1 sandbox"})
+        uow.v2_events.save(job_id=job_id, stage=2, event_type="stage_completed", status="completed", message="stage 2 completed", payload={})
+        uow.v2_events.save(job_id=job_id, stage=2, event_type="next_stage_queued", status="queued", message="stage 3 queued", payload={"from_stage": 2, "to_stage": 3, "sandbox_path": "stage2 sandbox"})
+        uow.v2_events.save(job_id=job_id, stage=3, event_type="stage_started", status="running", message="stage 3 started", payload={})
+
+    pipeline = client.get(f"/v1/v2/migration-jobs/{job_id}/pipeline").json()
+    final_report = [row for row in pipeline["rows"] if row["key"] == "final_report"][0]
+    assert final_report["status"] == "pending"
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(job_id=job_id, stage=3, event_type="final_report_started", status="running", message="final report started", payload={})
+        uow.v2_events.save(job_id=job_id, stage=3, event_type="final_report_completed", status="completed", message="final report completed", payload={})
+
+    pipeline_after = client.get(f"/v1/v2/migration-jobs/{job_id}/pipeline").json()
+    final_report_after = [row for row in pipeline_after["rows"] if row["key"] == "final_report"][0]
+    assert final_report_after["status"] == "pass"

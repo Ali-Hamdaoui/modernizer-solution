@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sqlite3
 
@@ -15,6 +16,7 @@ from migration_factory.control_tower.adapters.fastapi.security import (
 )
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
+from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import V2StageCommandRecord
 from tests.control_tower._helpers import artifact_roots, seed_pipeline_definition, seed_runner_profile_with_roots
 
 
@@ -425,6 +427,60 @@ def test_artifact_preview_rejects_kind_not_in_job_artifact_refs(tmp_path: Path) 
     assert body["preview"] == ""
 
 
+def test_artifact_preview_resolves_dot_migration_ref_under_stage_sandbox_root(tmp_path: Path) -> None:
+    connection = _seeded_connection(tmp_path)
+    client = _client_from_connection(connection)
+    output_root = tmp_path / "output"
+    stage_root = output_root / "stage-2-sandbox" / "modernized"
+    artifact = stage_root / ".migration" / "runs" / "run-544" / "phase2.log"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("BUILD_FAILED_IN_SANDBOX\nAZURE_OPENAI_API_KEY=secret\n", encoding="utf-8")
+    job_id = _seed_v2_job(connection, "job-dot-migration", output_parent_path=str(output_root))
+    now = "2026-01-15T00:00:00Z"
+
+    with SqliteUnitOfWork(connection) as uow:
+        uow.v2_commands.save(
+            V2StageCommandRecord(
+                command_id="cmd-stage-2",
+                job_id=job_id,
+                stage_index=2,
+                manifest_checksum="checksum",
+                argv_json=json.dumps([
+                    "py",
+                    "-m",
+                    "migration_factory.orchestrator.runner",
+                    "--legacy",
+                    str(output_root / "stage-1-sandbox"),
+                    "--modernized",
+                    str(output_root),
+                ]),
+                env_json="{}",
+                status="manifest_ready",
+                created_at=now,
+                updated_at=now,
+                result_json=None,
+            )
+        )
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="artifact_written",
+            status="completed",
+            message="phase2 log written",
+            payload={
+                "artifact_kind": "phase2_log",
+                "relative_path": ".migration/runs/run-544/phase2.log",
+            },
+        )
+
+    response = client.get(f"/v1/v2/jobs/{job_id}/artifacts/phase2_log")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["exists"] is True
+    assert "BUILD_FAILED_IN_SANDBOX" in body["preview"]
+    assert "secret" not in body["preview"]
+
+
 def test_artifact_preview_missing_file_does_not_leak_path(tmp_path: Path) -> None:
     """When an artifact ref points to a missing file, must not leak the path."""
     connection = _seeded_connection(tmp_path)
@@ -477,7 +533,7 @@ def test_artifact_preview_bounds_output(tmp_path: Path) -> None:
             message="artifact saved",
             payload={
                 "artifact_kind": "phase2_log",
-                "relative_path": str(big_path),
+                "relative_path": "artifacts/big_file.log",
             },
         )
 
@@ -515,7 +571,7 @@ def test_artifact_preview_redacts_api_keys_and_bearer_tokens(tmp_path: Path) -> 
             message="artifact saved",
             payload={
                 "artifact_kind": "phase2_log",
-                "relative_path": str(secret_path),
+                "relative_path": "artifacts/secret.log",
             },
         )
 
@@ -553,7 +609,7 @@ def test_artifact_preview_redacts_windows_paths(tmp_path: Path) -> None:
             message="artifact saved",
             payload={
                 "artifact_kind": "phase2_log",
-                "relative_path": str(win_path_file),
+                "relative_path": "artifacts/win_path.log",
             },
         )
 

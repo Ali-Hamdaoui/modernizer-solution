@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel, ConfigDict, Field
 
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from migration_factory.control_tower.application.commands import (
     CancelCommand,
@@ -944,6 +944,11 @@ def create_app(
             )
         return service.result_to_dict(result)
 
+    @app.get(
+        "/v1/v2/jobs/{job_id}/stages",
+        include_in_schema=False,
+        operation_id="get_v2_job_stages_alias",
+    )
     @app.get("/v1/v2/migration-jobs/{job_id}/stages")
     def get_v2_job_stages(job_id: str) -> dict[str, Any]:
         """Return three fixed V2 stages with state derived from commands/events."""
@@ -1038,6 +1043,11 @@ def create_app(
         asyncio.run(app.state.public_event_notifier.notify())
         return service.result_to_dict(result)
 
+    @app.get(
+        "/v1/v2/jobs/{job_id}/events/snapshot",
+        include_in_schema=False,
+        operation_id="get_v2_job_event_snapshot_alias",
+    )
     @app.get("/v1/v2/migration-jobs/{job_id}/events/snapshot")
     def get_v2_job_event_snapshot(
         job_id: str,
@@ -1054,6 +1064,11 @@ def create_app(
             "latest_sequence": events[-1].sequence if events else after,
         }
 
+    @app.get(
+        "/v1/v2/jobs/{job_id}/pipeline",
+        include_in_schema=False,
+        operation_id="get_v2_job_pipeline_alias",
+    )
     @app.get("/v1/v2/migration-jobs/{job_id}/pipeline")
     def get_v2_job_pipeline(job_id: str) -> dict[str, Any]:
         """Return operator-facing pipeline state derived from V2 events."""
@@ -1062,6 +1077,11 @@ def create_app(
             events = uow.v2_events.list_by_job(job_id)
         return redact_public_data(_v2_pipeline_projection(job_id, events))
 
+    @app.get(
+        "/v1/v2/jobs/{job_id}/failure-summary",
+        include_in_schema=False,
+        operation_id="get_v2_job_failure_summary_alias",
+    )
     @app.get("/v1/v2/migration-jobs/{job_id}/failure-summary")
     def get_v2_job_failure_summary(job_id: str) -> dict[str, Any]:
         """Return redacted failure/repair summary for the cockpit.
@@ -1102,6 +1122,7 @@ def create_app(
         with unit_of_work_factory() as uow:
             job = _require_v2_job(uow, job_id)
             events = uow.v2_events.list_by_job(job_id)
+            commands = uow.v2_commands.list_by_job(job_id)
             # Look up setup to determine the trusted artifact workspace root
             setup = uow.v2_setups.get(job.setup_id) if job.setup_id else None
 
@@ -1140,47 +1161,16 @@ def create_app(
                 "content_type": "text/plain",
             }
 
-        # Resolve from stored artifact path (not from request)
+        # Resolve from stored artifact ref (not from request)
         try:
-            from migration_factory.control_tower.application.redaction import (
-                contains_forbidden_path,
-                redact_model_summary,
+            from migration_factory.control_tower.application.redaction import redact_model_summary
+
+            candidate = _resolve_v2_artifact_preview_path(
+                artifact_ref=artifact_path,
+                setup=setup,
+                commands=commands,
             )
-
-            # Canonicalize the trusted base root from the job's setup
-            base_root = Path(setup.output_parent_path).resolve(strict=False)
-
-            # Resolve candidate path relative to the trusted base root.
-            # If artifact_path is absolute, the / operator ignores the base,
-            # so the containment check below will correctly reject it.
-            candidate = (base_root / artifact_path).resolve(strict=False)
-
-            # Root containment check: reject if candidate is not inside base_root
-            try:
-                candidate.relative_to(base_root)
-            except ValueError:
-                return {
-                    "job_id": job_id,
-                    "artifact_kind": artifact_kind,
-                    "exists": False,
-                    "preview": "",
-                    "truncated": False,
-                    "content_type": "text/plain",
-                }
-
-            # If the file does not exist, return safe missing
-            if not candidate.is_file():
-                return {
-                    "job_id": job_id,
-                    "artifact_kind": artifact_kind,
-                    "exists": False,
-                    "preview": "",
-                    "truncated": False,
-                    "content_type": "text/plain",
-                }
-
-            # Forbidden path check (defense-in-depth)
-            if contains_forbidden_path(candidate):
+            if candidate is None:
                 return {
                     "job_id": job_id,
                     "artifact_kind": artifact_kind,
@@ -3384,6 +3374,15 @@ def _build_v2_assistant_answer(
     )
     artifact_text = f"Artifacts generated: {', '.join(artifact_kinds[-10:])}." if artifact_kinds else "No artifacts generated yet."
 
+    proof_note = ""
+    completed_stage_indices = sorted({event.stage for event in events if event.type == "stage_completed" and event.stage})
+    if completed_stage_indices:
+        latest_completed_stage = completed_stage_indices[-1]
+        stage_build_completed = any(event.stage == latest_completed_stage and event.type == "build_completed" for event in events)
+        stage_test_completed = any(event.stage == latest_completed_stage and event.type == "test_completed" for event in events)
+        if stage_build_completed and stage_test_completed:
+            proof_note = f"Proof: Stage {latest_completed_stage} passed with build and test evidence."
+
     # Model availability note
     model_note = ""
     if not _model_client_available():
@@ -3398,6 +3397,7 @@ def _build_v2_assistant_answer(
         f"{latest_text}\n"
         f"{command_text} {approval_state} {repair_state}\n"
         f"{artifact_text}\n"
+        f"{proof_note}\n"
         f"Next operator action: {action}{model_note}\n\n"
         "Guardrails: I can explain status and summarize evidence only. I cannot execute, approve, write files, "
         "change route/stage, choose Maven goals, choose deployments, or override proof. "
@@ -3668,6 +3668,18 @@ def _v2_pipeline_projection(job_id: str, events: tuple[Any, ...]) -> dict[str, A
             and (key != "final_report" or event.stage == 3)
         ]
         latest = matching[-1] if matching else None
+        row_status = _pipeline_row_status(key, matching)
+        latest_message = latest.message if latest is not None else "Waiting for backend-owned evidence."
+        if key == "test_validation" and not matching:
+            active_build_failed = any(
+                event.stage == active_stage
+                and event.type == "build_failed"
+                and (event.status == "failed" or event.type.endswith("_failed"))
+                for event in stage_events
+            )
+            if active_build_failed:
+                row_status = "skipped"
+                latest_message = "Not run because sandbox build failed."
         # Deduplicate artifact counts by relative_path per phase
         seen_paths: set[str] = set()
         for event in events:
@@ -3683,8 +3695,8 @@ def _v2_pipeline_projection(job_id: str, events: tuple[Any, ...]) -> dict[str, A
             {
                 "key": key,
                 "label": label,
-                "status": _pipeline_row_status(key, matching),
-                "latest_message": latest.message if latest is not None else "Waiting for backend-owned evidence.",
+                "status": row_status,
+                "latest_message": latest_message,
                 "artifact_count": len(seen_paths),
                 "last_updated": latest.created_at if latest is not None else "",
             }
@@ -3735,11 +3747,118 @@ def _pipeline_row_status(key: str, events: list[Any]) -> str:
     return "pending"
 
 
+def _resolve_v2_artifact_preview_path(
+    *,
+    artifact_ref: str,
+    setup: Any,
+    commands: tuple[Any, ...],
+) -> Path | None:
+    ref = str(artifact_ref or "").strip()
+    if not ref or _is_unsafe_artifact_ref(ref):
+        return None
+
+    relative_ref = Path(ref)
+    base_roots = _v2_artifact_base_roots(setup=setup, commands=commands)
+    for base_root in base_roots:
+        candidate = _contained_existing_file(base_root, relative_ref)
+        if candidate is not None:
+            return candidate
+
+    if ref.replace("\\", "/").startswith(".migration/"):
+        rest = Path(*Path(ref).parts[1:])
+        for base_root in base_roots:
+            try:
+                migration_dirs = base_root.rglob(".migration") if base_root.is_dir() else ()
+                for migration_dir in migration_dirs:
+                    candidate = _contained_existing_file(migration_dir.parent, Path(".migration") / rest)
+                    if candidate is not None:
+                        return candidate
+            except (OSError, ValueError):
+                continue
+
+    return None
+
+
+def _is_unsafe_artifact_ref(ref: str) -> bool:
+    if ref.startswith(("\\\\", "//")):
+        return True
+    path = Path(ref)
+    win_path = PureWindowsPath(ref)
+    if path.is_absolute() or win_path.is_absolute() or win_path.drive:
+        return True
+    return any(part == ".." for part in path.parts)
+
+
+def _v2_artifact_base_roots(*, setup: Any, commands: tuple[Any, ...]) -> tuple[Path, ...]:
+    roots: list[Path] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        path = Path(text)
+        win_path = PureWindowsPath(text)
+        if not (path.is_absolute() or win_path.is_absolute() or win_path.drive):
+            return
+        try:
+            resolved = path.resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            return
+        if resolved not in roots:
+            roots.append(resolved)
+
+    add(getattr(setup, "output_parent_path", ""))
+    for command in commands:
+        try:
+            argv = json.loads(getattr(command, "argv_json", "") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            argv = []
+        if not isinstance(argv, list):
+            continue
+        for index, item in enumerate(argv):
+            if str(item) == "--modernized" and index + 1 < len(argv):
+                add(argv[index + 1])
+            if str(item) in {"--legacy", "--sandbox"} and index + 1 < len(argv):
+                add(argv[index + 1])
+    return tuple(roots)
+
+
+def _contained_existing_file(base_root: Path, relative_ref: Path) -> Path | None:
+    try:
+        resolved_base = base_root.resolve(strict=False)
+        candidate = (resolved_base / relative_ref).resolve(strict=True)
+        candidate.relative_to(resolved_base)
+    except (FileNotFoundError, OSError, RuntimeError, ValueError):
+        return None
+    if not candidate.is_file():
+        return None
+    return candidate
+
+
 def _failure_primary_key(event: Any, payload: dict[str, Any]) -> str:
     """Derive a primary key for grouping related failure events.
 
-    Priority: build_status > final_status > result_kind > type.
+    Same-stage terminal transform/build failures are one root failure even
+    when individual events carry different payload keys.
     """
+    if event.type == "result_contract_failed":
+        return "result_contract_failed"
+    if event.type in {"sandbox_transform_failed", "build_failed", "transform_failed", "stage_failed"}:
+        values = [
+            payload.get("build_status"),
+            payload.get("final_status"),
+            payload.get("transform_status"),
+            payload.get("result_kind"),
+            event.type,
+        ]
+        normalized = " ".join(str(value or "").upper() for value in values)
+        if (
+            "BUILD_FAILED_IN_SANDBOX" in normalized
+            or "FALLBACK_REPAIR_PLAN" in normalized
+            or "DEPENDENCY_ERROR" in normalized
+            or event.type in {"sandbox_transform_failed", "build_failed", "transform_failed"}
+        ):
+            return "terminal_transform_build_failure"
     build_status = str(payload.get("build_status", "") or "")
     if build_status:
         return f"build_status:{build_status}"
@@ -3806,10 +3925,13 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
         # Pick the primary event (highest priority type)
         fevents_sorted = sorted(fevents, key=lambda e: _PRIMARY_EVENT_PRIORITY.get(e.type, 99))
         primary = fevents_sorted[0]
-        try:
-            payload = json.loads(primary.payload_json or "{}")
-        except (json.JSONDecodeError, TypeError):
-            payload = {}
+        payload = _merged_event_payloads(fevents_sorted)
+        stage_repair_payload = _merged_event_payloads(
+            [event for event in repair_events_typed if event.stage == primary.stage]
+        )
+        for key, value in stage_repair_payload.items():
+            if key not in payload or payload.get(key) in ("", None, False):
+                payload[key] = value
         result_kind = str(payload.get("result_kind", ""))
 
         if primary.type == "result_contract_failed":
@@ -3818,6 +3940,11 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
                 "The subprocess exited but Control Tower could not parse its final result contract."
             )
             title = "Control Tower Contract Failure"
+        elif _primary_key == "terminal_transform_build_failure":
+            if result_kind == "dependency_error":
+                title = f"Stage {primary.stage or '?'} Dependency/Build Failure"
+            else:
+                title = f"Stage {primary.stage or '?'} Build/Transform Failure"
         elif result_kind:
             title = f"Stage {primary.stage or '?'} {result_kind.replace('_', ' ').title()}"
         else:
@@ -3893,6 +4020,21 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
         "repair_events": ungrouped_repair,
         "artifact_kinds": artifact_kinds,
     }
+
+
+def _merged_event_payloads(events: list[Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for event in events:
+        try:
+            payload = json.loads(event.payload_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        for key, value in payload.items():
+            if value in ("", None, [], {}):
+                continue
+            if key not in merged or merged.get(key) in ("", None, False):
+                merged[key] = value
+    return merged
 
 
 def _safe_failure_str(value: Any) -> str:
