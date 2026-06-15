@@ -1,124 +1,233 @@
 # Modernizer Solution Agent Instructions
 
-## Purpose
+## Mission
 
-Build the AI Migration Control Tower.
+Build the V2 Governed LLM Migration Supervisor for AI Migration Control Tower.
 
-Active work is **V2**: branch-scoped, source-of-truth driven, and subagent-managed.
+Source of truth:
 
-One mission = one branch = one focused commit unless blocked or a review fix is required.
+```text
+docs/governed-llm-migration-supervisor/
+```
 
-## V2 Workflow
+Core rule:
 
-Base branch:
+```text
+LLM creates migration intent. Human approves. Backend executes in sandbox. Repair loop validates proof.
+```
+
+## Branch Rule
+
+Base branch is always:
 
 ```text
 V2IMPROVMENT
 ```
 
-Subagent branch:
+One feature = one branch = one focused commit.
+
+Branch format:
 
 ```text
-v2/<agent-id>-<short-title>
+v2/llm-f<feature-number>-<short-title>
 ```
 
-Start:
+Start every feature from latest base:
 
 ```powershell
 git fetch --prune origin
 git switch V2IMPROVMENT
 git pull --ff-only origin V2IMPROVMENT
-git switch -c v2/<agent-id>-<short-title>
+git switch -c v2/llm-f<feature-number>-<short-title>
 ```
 
-PR target is always `V2IMPROVMENT`. Do not merge V2 work to `DEMO2`.
+PR target is always `V2IMPROVMENT`. Never target `DEMO2`.
 
-## Source Of Truth
+## Required Read Order
 
-Read in this order:
+Before editing, read:
 
-1. `V2_IMPLEMENTATION_SUBAGENT_PLAN.md`
-2. your assigned A1-A16 dossier only
-3. `improvmentV2.md` only for product vision
-4. targeted repo files named by the dossier
-5. relevant `.agents/skills/`
+1. `docs/governed-llm-migration-supervisor/index.md`
+2. assigned feature file
+3. dependency feature files
+4. code files named by the feature doc
+5. related tests
+6. relevant `.agents/skills/`
 
-Do not read all dossiers unless you are A15, A16, or integration owner.
-Do not implement adjacent dossiers.
+Do not read or implement unrelated features unless required by dependency.
 
-Use `graphify` only when broad navigation is needed and `graphify-out/graph.json` exists.
+## Feature Files
 
-## Skills
+```text
+01-contextpack-extension.md
+02-automatic-failure-diagnosis.md
+03-event-based-prompt-router.md
+04-pom-intelligence-summary.md
+05-chatbot-proposal-steering.md
+06-sandbox-action-resolver.md
+07-reviewer-before-apply.md
+08-v2-to-repair-loop-bridge.md
+09-cockpit-supervision-panels.md
+10-final-report-ai-trace.md
+```
 
-Use local skills when present:
+## Dependencies
 
-* `caveman`
-* `test-discipline`
-* `triage`
-* `requesting-code-review`
-* `subagent-driven-development`
-* `graphify`
+```text
+F01 starts now.
+F03 starts now.
+F06 starts now.
+F02 depends on F01 + F03.
+F04 depends on F01 + F06.
+F05 depends on F02 + F06.
+F07 depends on repair/POM proposal objects.
+F08 depends on F06 + F07.
+F09 depends on backend records/events from F02/F05/F07/F08.
+F10 depends on records from F01-F08.
+```
 
-## Product Rules
+## Product Authority
 
-V2 is local operator mode.
+LLM may create:
 
-Frontend may accept local absolute paths only as setup inputs. Backend validates before queuing commands.
+```text
+diagnosis
+repair proposal
+POM patch intent
+proposal revision
+reviewer critique
+approval preparation request
+validation rerun request
+```
 
-Azure secrets, endpoints, and deployment IDs stay backend-only.
+LLM must never:
 
-Azure health does not block deterministic migration start.
+```text
+execute commands
+write files directly
+approve decisions
+choose sandbox/path
+modify legacy source
+change stages
+choose Maven goals
+override failed proof
+```
 
 Backend owns:
 
 ```text
-Stage 1 -> Stage 2 -> Stage 3
+state resolution
+sandbox binding
+checksum attachment
+patch apply
+validation rerun
+rollback
+proof persistence
+unsafe-action blocking
 ```
 
-Browser cannot choose commands, Maven goals, working dirs, model deployments, or Stage 2/3 inputs.
+Human owns:
 
-Chatbot cannot execute, approve, write files, change route, change stages, or override proof.
+```text
+approve
+reject
+ask for revision
+continue/stop
+```
 
-Worker executes backend-owned manifests only.
+Truth comes from:
 
-Model output is proposal/evidence only. Maven/tests/proof are truth.
+```text
+OpenRewrite
+Maven
+build/test
+repair_loop
+patch_gate
+rule_registry
+patch_apply
+validation_runner
+repair ledger
+proof artifacts
+```
+
+## Non-Negotiables
+
+Do not create parallel systems for:
+
+```text
+context packs
+artifact store
+failure evidence
+failure classifier
+repair schemas
+patch gate
+patch apply
+rollback
+validation runner
+repair ledger
+POM parser
+POM patch helpers
+approval cards
+event stream
+reviewer schema
+```
+
+Feature 8 must route approved V2 proposals through existing `repair_loop`.
+
+Never bypass:
+
+```text
+patch_gate
+rule_registry
+patch_apply
+validation_runner
+rollback
+ledger
+```
+
+## Before Editing Report
+
+Briefly report:
+
+```text
+feature number
+branch name
+feature doc read
+dependency docs read
+owned scope
+non-goals
+likely files
+tests/checks
+blockers
+```
 
 ## Work Rules
 
-* No Jira creation unless explicitly asked.
-* No adjacent work.
-* No broad scans before source of truth.
-* No secrets/tokens in output.
-* Never `git add .`.
-* Stage explicit owned files only.
-* Never stage `web/control-tower/next-env.d.ts` unless explicitly owned.
-* Never commit `.env`, logs, DBs, `.next/`, caches, runtime files, or another developer’s work.
-* No direct long-running work in API handlers.
-* Persist commands before launch.
-* Worker argv/env must be backend-owned.
-* Approval/resume must be checksum/version guarded.
-* Do not edit applied migrations.
-* Add append-only migrations only when required.
+Implement only the assigned feature.
 
-## Before Editing
+No broad refactor.
 
-Report briefly:
+No adjacent feature work.
 
-* agent ID
-* source dossier
-* owned scope
-* non-goals
-* likely files
-* tests/checks
-* blockers
+No Jira unless asked.
 
-## Build Flow
+No secrets, tokens, raw paths, logs, DBs, caches, or runtime files in output.
 
-Implement only the dossier.
+Never `git add .`.
 
-Run focused tests, then affected regressions.
+Stage explicit owned files only.
 
-If web changed, run web tests/typecheck/build.
+Never stage `.env`, `.next/`, caches, DBs, logs, or another developer’s work.
+
+Never stage `web/control-tower/next-env.d.ts` unless explicitly owned.
+
+Do not edit applied migrations. Add append-only migrations only when required.
+
+## Tests
+
+Run targeted tests for the owned feature.
+
+If web changed, run relevant web tests/typecheck/build.
 
 Always run:
 
@@ -128,66 +237,49 @@ git diff --cached --check
 git status --short
 ```
 
-Then review honestly:
-
-* Does it build the V2 global idea?
-* Is it inside the dossier?
-* Are secrets, paths, model data, and authority safe?
-* Are tests enough?
-
-Fix issues before handoff.
-
 ## Commit
 
 ```powershell
 git add <explicit-owned-files>
 git diff --cached --check
 git diff --cached --name-only
-git commit -m "<type>(v2-<agent-id>): <summary>"
+git commit -m "feat(v2-llm-f<feature-number>): <summary>"
 git status --short
 git log -1 --oneline
 ```
 
-Push only when requested or PR flow is required.
+Push only when requested.
 
-## Legacy V1
+## Stop If
 
-Use only if explicitly assigned V1/AMF work.
-
-Start from `DEMO2`, read `docs/full-implementation/<V1-ID>*`, use branch:
+Stop and report if:
 
 ```text
-amf/<issue-id>-short-title
+source docs are missing
+dependency feature is not merged
+sources conflict
+safe sandbox binding is unclear
+unsafe apply path is required
+LLM needs execute/approve/write/proof authority
+legacy source mutation risk exists
+unrelated dirty files would be included
+acceptance fails after 3 focused attempts
 ```
-
-Preserve V1 route and invariants.
-
-## Stop
-
-Stop if:
-
-* dossier/source is missing
-* dependency not merged to base
-* sources conflict
-* arbitrary shell is needed
-* LLM needs execute/approve/write/proof authority
-* security risk is unclear
-* safe staging is impossible
-* unrelated dirty file would be included
-* acceptance fails after 3 focused attempts
 
 ## Final Report
 
 Report only:
 
-* base branch/commit
-* work branch
-* PR target
-* commit hash
-* changed files
-* tests
-* acceptance
-* `git status --short`
-* risks/deviations
-* next dependency
-* pushed or not pushed
+```text
+base branch/commit
+work branch
+PR target
+commit hash
+changed files
+tests run
+acceptance result
+git status --short
+risks/deviations
+next dependency
+pushed or not pushed
+```
