@@ -494,7 +494,8 @@ class TestBuildAndEmit:
         assert event["status"] == "completed"
         assert event["payload"]["pom_summary_ref"] == summary.pom_summary_ref
         assert event["payload"]["command_id"] == "cmd-1"
-        assert event["payload"]["sandbox_path"] == str(sandbox_with_boot3_pom)
+        # sandbox_path excluded from event payload — redacted at persistence layer
+        assert "sandbox_path" not in event["payload"]
 
     def test_rejects_missing_job_id(
         self,

@@ -356,7 +356,9 @@ class PomContextSummaryBuilder:
 
             event_payload = PomContextSummaryBuilder.summary_to_dict(summary)
             # Attach caller-provided context for traceability
-            event_payload["sandbox_path"] = str(sandbox_path)
+            # NOTE: sandbox_path is intentionally excluded from event payload
+            # to avoid exposing raw absolute paths before redaction.
+            # pom_path in summary_to_dict provides the POM artifact reference.
             if command_id:
                 event_payload["command_id"] = command_id
             if profile_id:
