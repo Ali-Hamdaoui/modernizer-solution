@@ -1159,6 +1159,7 @@ def create_app(
     def get_v2_job_artifact_preview(
         job_id: str,
         artifact_kind: str,
+        stage: int | None = Query(default=None, ge=1, le=3),
     ) -> dict[str, Any]:
         """Return a bounded, redacted preview of a named artifact.
 
@@ -1166,6 +1167,7 @@ def create_app(
         Never accepts arbitrary paths.
         Bounds output to 32 KB.
         Redacts secrets and full local paths.
+        Supports optional stage filter for stage-scoped artifacts.
         """
         safe_kinds = {
             "phase2_log", "post_transform_test_log", "failure_classification",
@@ -1174,6 +1176,7 @@ def create_app(
             "dependency_repair_plan", "orchestration_summary",
             "target_dependency_plan", "rewrite_dry_run.patch",
             "rewrite_impact_summary.json", "repair_ledger", "migration_ledger",
+            "openrewrite_plugin_xml", "approved_plan_lock",
         }
         if artifact_kind not in safe_kinds:
             raise _error(
@@ -1198,20 +1201,26 @@ def create_app(
                 "content_type": "text/plain",
             }
 
-        # Find the artifact ref from artifact_written events belonging to this job
+        # Find the artifact ref from artifact_written events belonging to this job.
+        # If stage filter is provided, only match events for that stage.
+        # When multiple matches exist, prefer the latest (highest sequence) match.
         artifact_path = None
+        best_sequence = -1
         for event in events:
-            if event.type == "artifact_written":
-                try:
-                    payload = json.loads(event.payload_json or "{}")
-                except (json.JSONDecodeError, TypeError):
-                    continue
-                kind = str(payload.get("artifact_kind", ""))
-                if kind == artifact_kind:
-                    path_val = payload.get("relative_path") or payload.get("path")
-                    if path_val:
-                        artifact_path = str(path_val)
-                        break
+            if event.type != "artifact_written":
+                continue
+            if stage is not None and event.stage != stage:
+                continue
+            try:
+                payload = json.loads(event.payload_json or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            kind = str(payload.get("artifact_kind", ""))
+            if kind == artifact_kind:
+                path_val = payload.get("relative_path") or payload.get("path")
+                if path_val and getattr(event, "sequence", 0) > best_sequence:
+                    artifact_path = str(path_val)
+                    best_sequence = getattr(event, "sequence", 0)
 
         if not artifact_path:
             return {
@@ -1478,11 +1487,21 @@ def create_app(
                 message="Assistant model invocation started.",
                 payload={"provider": "azure_openai", "role": "assistant"},
             )
+            # Resolve artifact previews for artifact-content questions
+            setup = uow.v2_setups.get(job.setup_id) if job.setup_id else None
+            artifact_previews_list = _resolve_assistant_artifact_previews(
+                question=payload.question,
+                events=events,
+                commands=commands,
+                setup=setup,
+            )
+            artifact_previews = tuple(artifact_previews_list)
             fallback_answer = _build_v2_assistant_answer(
                 question=payload.question,
                 events=events,
                 approvals=approvals,
                 commands=commands,
+                artifact_previews=artifact_previews if artifact_previews else None,
             )
             model_result = app.state.v2_assistant_model_client.answer(
                 prompt=_build_v2_assistant_prompt(
@@ -1491,6 +1510,7 @@ def create_app(
                     pipeline=pipeline,
                     events=events,
                     approvals=approvals,
+                    artifact_previews=artifact_previews if artifact_previews else None,
                 ),
                 fallback=fallback_answer,
             )
@@ -3738,12 +3758,181 @@ def _emit_v2_stage1_uat_events(uow: Any, *, job_id: str, command_id: str) -> Non
         )
 
 
+# ── Artifact-content assistant helpers ──────────────────────────────
+
+_ARTIFACT_CONTENT_KEYWORDS = {
+    "pom", "xml", "artifact", "openrewrite", "plugin", "plan lock",
+    "approved_plan", "pending_plan", "full pom", "rewrite", "dry run",
+    "patch", "ledger", "log", "report", "summary",
+}
+
+_ARTIFACT_CONTENT_QUESTION_PATTERNS = (
+    "show", "give", "display", "print", "preview", "download",
+    "what is in", "what's in", "content", "contents", "open",
+    "read", "get", "fetch", "see", "view", "look at",
+)
+
+
+def _question_looks_like_artifact_content(question: str) -> bool:
+    """Detect if a user question is asking for artifact content."""
+    lowered = str(question or "").lower()
+    # Quick guard: must be asking for something
+    if not any(pattern in lowered for pattern in _ARTIFACT_CONTENT_QUESTION_PATTERNS):
+        return False
+    # Must mention artifact-related terms
+    return any(keyword in lowered for keyword in _ARTIFACT_CONTENT_KEYWORDS)
+
+
+def _resolve_assistant_artifact_previews(
+    *,
+    question: str,
+    events: tuple[Any, ...],
+    commands: tuple[Any, ...],
+    setup: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Resolve bounded artifact previews for assistant artifact-content questions.
+
+    Only resolves safe artifact kinds from persisted events.
+    Returns list of preview dicts, bounded to 3 artifacts at 2 KB each.
+    Never reads from user-supplied paths.
+    """
+    if not _question_looks_like_artifact_content(question):
+        return []
+
+    # Collect artifact kinds mentioned in events
+    available_kinds: dict[str, int] = {}
+    for event in events:
+        if event.type != "artifact_written":
+            continue
+        try:
+            payload = json.loads(event.payload_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        kind = str(payload.get("artifact_kind", ""))
+        if kind:
+            available_kinds[kind] = getattr(event, "sequence", 0)
+
+    if not available_kinds:
+        return []
+
+    # Only resolve kinds that are both in safe_kinds AND appear in events
+    safe_kinds = {
+        "phase2_log", "post_transform_test_log", "failure_classification",
+        "repair_plan", "deterministic_repair_plan", "copilot_repair_response",
+        "dependency_policy_report", "dependency_policy_summary",
+        "dependency_repair_plan", "orchestration_summary",
+        "target_dependency_plan", "rewrite_dry_run.patch",
+        "rewrite_impact_summary.json", "repair_ledger", "migration_ledger",
+        "openrewrite_plugin_xml", "approved_plan_lock",
+    }
+
+    # Prefer kinds mentioned in the question, then fall back to all available
+    lowered = str(question or "").lower()
+    preferred_order: list[str] = []
+    for kind in available_kinds:
+        if any(part in lowered for part in kind.lower().replace("_", " ").split()):
+            preferred_order.append(kind)
+    for kind in sorted(available_kinds, key=lambda k: -available_kinds[k]):
+        if kind not in preferred_order and kind in safe_kinds:
+            preferred_order.append(kind)
+
+    previews: list[dict[str, Any]] = []
+    max_previews = 3
+    max_chars_per_preview = 2048
+
+    for kind in preferred_order:
+        if len(previews) >= max_previews:
+            break
+        if kind not in safe_kinds:
+            continue
+        preview = _resolve_single_artifact_preview(
+            artifact_kind=kind,
+            events=events,
+            commands=commands,
+            setup=setup,
+            max_chars=max_chars_per_preview,
+        )
+        if preview:
+            previews.append(preview)
+
+    return previews
+
+
+def _resolve_single_artifact_preview(
+    *,
+    artifact_kind: str,
+    events: tuple[Any, ...],
+    commands: tuple[Any, ...],
+    setup: Any | None = None,
+    max_chars: int = 2048,
+) -> dict[str, Any] | None:
+    """Resolve a single artifact preview from backend events only.
+
+    Never reads from user-supplied paths.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+    from migration_factory.control_tower.application.redaction import redact_model_summary
+
+    artifact_path = None
+    best_sequence = -1
+    for event in events:
+        if event.type != "artifact_written":
+            continue
+        try:
+            payload = _json.loads(event.payload_json or "{}")
+        except (_json.JSONDecodeError, TypeError):
+            continue
+        kind = str(payload.get("artifact_kind", ""))
+        if kind != artifact_kind:
+            continue
+        path_val = payload.get("relative_path") or payload.get("path")
+        if path_val and getattr(event, "sequence", 0) > best_sequence:
+            artifact_path = str(path_val)
+            best_sequence = getattr(event, "sequence", 0)
+
+    if not artifact_path:
+        return None
+
+    if setup is None or not getattr(setup, "output_parent_path", ""):
+        return None
+
+    try:
+        candidate = _resolve_v2_artifact_preview_path(
+            artifact_ref=artifact_path,
+            setup=setup,
+            commands=commands,
+        )
+        if candidate is None:
+            return None
+
+        raw = candidate.read_bytes()[:max_chars * 2]
+        if raw[:3] == b"\xef\xbb\xbf":
+            raw = raw[3:]
+        try:
+            text = raw.decode("utf-8", errors="replace")
+        except (UnicodeDecodeError, LookupError):
+            text = raw.decode("latin-1", errors="replace")
+        preview = redact_model_summary(text)[:max_chars]
+        truncated = len(text) > max_chars
+    except Exception:
+        return None
+
+    return {
+        "artifact_kind": artifact_kind,
+        "exists": True,
+        "preview": preview,
+        "truncated": truncated,
+    }
+
+
 def _build_v2_assistant_answer(
     *,
     question: str,
     events: tuple[Any, ...],
     approvals: tuple[Any, ...],
     commands: tuple[Any, ...],
+    artifact_previews: tuple[dict[str, Any], ...] | None = None,
 ) -> str:
     latest = events[-1] if events else None
     failures = [event for event in events if event.status == "failed" or event.type in {"stage_failed", "transform_failed", "build_failed"}]
@@ -3841,6 +4030,24 @@ def _build_v2_assistant_answer(
     )
     artifact_text = f"Artifacts generated: {', '.join(artifact_kinds[-10:])}." if artifact_kinds else "No artifacts generated yet."
 
+    # ── Artifact preview content for artifact-content questions ──
+    artifact_preview_text = ""
+    if artifact_previews:
+        preview_parts: list[str] = []
+        for pv in artifact_previews:
+            kind = pv.get("artifact_kind", "unknown")
+            truncated = pv.get("truncated", False)
+            preview = str(pv.get("preview", ""))
+            tag = f"(truncated preview)" if truncated else "(preview)"
+            preview_parts.append(f"--- {kind} {tag} ---\n{preview}")
+        if preview_parts:
+            artifact_preview_text = (
+                "\n\nArtifact Content (backend-resolved from persisted events):\n"
+                + "\n\n".join(preview_parts)
+                + "\n\nNote: Artifact content is bounded (max 2 KB). "
+                "Use the artifact preview API for the full redacted file."
+            )
+
     proof_note = ""
     completed_stage_indices = sorted({event.stage for event in events if event.type == "stage_completed" and event.stage})
     if completed_stage_indices:
@@ -3865,6 +4072,7 @@ def _build_v2_assistant_answer(
         f"{command_text} {approval_state} {repair_state}\n"
         f"{artifact_text}\n"
         f"{proof_note}\n"
+        f"{artifact_preview_text}\n"
         f"Next operator action: {action}{model_note}\n\n"
         "Guardrails: I can explain status and summarize evidence only. I cannot execute, approve, write files, "
         "change route/stage, choose Maven goals, choose deployments, or override proof. "
@@ -3881,6 +4089,7 @@ def _build_v2_assistant_prompt(
     events: tuple[Any, ...],
     approvals: tuple[Any, ...],
     max_chars: int = 8000,
+    artifact_previews: tuple[dict[str, Any], ...] | None = None,
 ) -> str:
     latest_events = [_v2_event_payload(event) for event in events[-12:] if event.type not in _RAW_EVENT_TYPES]
     pending_approvals = [
@@ -3945,6 +4154,15 @@ def _build_v2_assistant_prompt(
             "count": len(grouped_failures),
         },
         "artifact_kinds": artifact_kinds[-20:],
+        "artifact_previews": [
+            {
+                "kind": p.get("artifact_kind", ""),
+                "exists": p.get("exists", False),
+                "preview": str(p.get("preview", ""))[:1024],
+                "truncated": p.get("truncated", False),
+            }
+            for p in (artifact_previews or ())
+        ] if artifact_previews else [],
         "model": {
             "status": model_status,
             "source": model_source,

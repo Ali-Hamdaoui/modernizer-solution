@@ -291,15 +291,17 @@ export async function getV2FailureSummary(jobId: string): Promise<V2FailureSumma
 
 export async function getV2ArtifactPreview(
   jobId: string,
-  artifactKind: string
+  artifactKind: string,
+  stage?: number
 ): Promise<V2ArtifactPreviewResponse> {
   const safeJobId = requireJobId(jobId);
   const safeKind = artifactKind.trim();
   if (!safeKind) {
     throw new Error("Artifact kind is required.");
   }
+  const params = stage != null ? `?stage=${stage}` : "";
   return getJson<V2ArtifactPreviewResponse>(
-    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/artifacts/${encodeURIComponent(safeKind)}`
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/artifacts/${encodeURIComponent(safeKind)}${params}`
   );
 }
 

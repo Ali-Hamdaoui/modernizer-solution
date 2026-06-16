@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import {
   askV2Assistant,
   approveV2Card,
+  getV2ArtifactPreview,
   getV2AssistantMessages,
   getV2FailureSummary,
   getV2JobEventSnapshot,
@@ -17,6 +18,7 @@ import {
 } from "../../../lib/controlTowerApi";
 import type {
   V2ApprovalResponse,
+  V2ArtifactPreviewResponse,
   V2AssistantMessageResponse,
   V2FailureSummaryResponse,
   V2JobEvent,
@@ -48,6 +50,8 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [assistantQuestion, setAssistantQuestion] = useState("");
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
+  const [artifactPreview, setArtifactPreview] = useState<V2ArtifactPreviewResponse | null>(null);
+  const [artifactPreviewBusy, setArtifactPreviewBusy] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "connected" | "reconnecting">("connecting");
   const normalizedJobId = jobId?.trim() ?? "";
 
@@ -256,6 +260,26 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       setError(e instanceof Error ? e.message : "Rejection failed");
     } finally {
       setApprovalBusy(null);
+    }
+  }
+
+  async function previewArtifact(artifactKind: string) {
+    if (!normalizedJobId) return;
+    setArtifactPreviewBusy(artifactKind);
+    try {
+      const preview = await getV2ArtifactPreview(normalizedJobId, artifactKind);
+      setArtifactPreview(preview);
+    } catch (e) {
+      setArtifactPreview({
+        job_id: normalizedJobId,
+        artifact_kind: artifactKind,
+        exists: false,
+        preview: "",
+        truncated: false,
+        content_type: "text/plain",
+      });
+    } finally {
+      setArtifactPreviewBusy(null);
     }
   }
 
@@ -539,8 +563,36 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
             <div className="artifact-kinds">
               <strong>Generated artifact kinds:</strong>
               <ul className="meta">
-                {data.failureSummary.artifact_kinds.map((k, i) => <li key={i}>{k}</li>)}
+                {data.failureSummary.artifact_kinds.map((k, i) => (
+                  <li key={i}>
+                    <button
+                      type="button"
+                      className="artifact-kind-link"
+                      disabled={artifactPreviewBusy === k}
+                      onClick={() => void previewArtifact(k)}
+                    >
+                      {k}
+                    </button>
+                    {artifactPreviewBusy === k ? " loading..." : ""}
+                  </li>
+                ))}
               </ul>
+            </div>
+          )}
+          {artifactPreview && (
+            <div className="artifact-preview">
+              <strong>Artifact Preview: {artifactPreview.artifact_kind}</strong>
+              {artifactPreview.exists ? (
+                <>
+                  <p className="meta">
+                    {artifactPreview.truncated ? "Preview truncated (32 KB limit)." : "Full preview."}
+                  </p>
+                  <pre className="artifact-preview-content">{artifactPreview.preview}</pre>
+                </>
+              ) : (
+                <p className="meta">Artifact not available or not yet persisted.</p>
+              )}
+              <button type="button" onClick={() => setArtifactPreview(null)}>Close</button>
             </div>
           )}
         </section>
@@ -636,6 +688,11 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .trace-section ul { margin: 0.25rem 0 0 1rem; padding: 0; }
         .repair-card { border: 1px solid #ffcc66; background: #fffdf0; padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; }
         .artifact-kinds { border: 1px solid #ddd; padding: 0.5rem; margin: 0.5rem 0; }
+        .artifact-kind-link { background: none; border: none; color: #0066cc; cursor: pointer; text-decoration: underline; font-size: 0.85rem; padding: 0; }
+        .artifact-kind-link:hover { color: #004499; }
+        .artifact-kind-link:disabled { color: #888; cursor: wait; text-decoration: none; }
+        .artifact-preview { border: 1px solid #0066cc; background: #f0f6ff; padding: 1rem; margin: 0.75rem 0; border-radius: 4px; }
+        .artifact-preview-content { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 400px; overflow-y: auto; background: #fff; padding: 0.5rem; border: 1px solid #ddd; font-size: 0.8rem; }
       `}</style>
     </div>
   );
