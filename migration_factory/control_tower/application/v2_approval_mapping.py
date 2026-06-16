@@ -288,12 +288,15 @@ class V2ApprovalMappingService:
             "created_at": card.created_at,
         }
         # Include optional reviewer metadata (F07)
-        if card.reviewer_critique_id is not None:
-            result["reviewer_critique_id"] = card.reviewer_critique_id
-        if card.reviewer_decision is not None:
-            result["reviewer_decision"] = card.reviewer_decision
-        if card.reviewed_checksum is not None:
-            result["reviewed_checksum"] = card.reviewed_checksum
+        reviewer_critique_id = getattr(card, "reviewer_critique_id", None)
+        reviewer_decision = getattr(card, "reviewer_decision", None)
+        reviewed_checksum = getattr(card, "reviewed_checksum", None)
+        if reviewer_critique_id is not None:
+            result["reviewer_critique_id"] = reviewer_critique_id
+        if reviewer_decision is not None:
+            result["reviewer_decision"] = reviewer_decision
+        if reviewed_checksum is not None:
+            result["reviewed_checksum"] = reviewed_checksum
         return result
 
     def resume_to_dict(self, resume: ResumeCommand) -> dict[str, Any]:

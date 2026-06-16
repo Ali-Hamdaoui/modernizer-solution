@@ -1550,10 +1550,15 @@ def create_app(
         restricts action_type to F05_ALLOWED_ACTION_TYPES. Revision
         steering fields are passed through for revise_repair_proposal.
         """
+        action_type = (
+            "request_reviewer_critique"
+            if payload.action_type.strip().lower() == "review"
+            else payload.action_type
+        )
         # Validate against ActionRequest schema at the model-output boundary
         # This now rejects blocked action types like execute_command_directly
         action_data: dict[str, Any] = {
-            "action_type": payload.action_type,
+            "action_type": action_type,
             "reason": payload.reason,
             "stage_index": payload.stage_index,
             "payload_checksum": f"draft-{payload.job_id[:8]}",
@@ -1585,7 +1590,7 @@ def create_app(
 
         # F05: If action_type is revise_repair_proposal, resolve revision binding
         revision_binding = None
-        if payload.action_type == "revise_repair_proposal" and payload.source_proposal_id:
+        if action_type == "revise_repair_proposal" and payload.source_proposal_id:
             from migration_factory.control_tower.application.v2_action_resolver import (
                 V2AssistantActionResolver,
                 ActionBindingRequest,
@@ -1600,7 +1605,7 @@ def create_app(
                 action_resolver = V2AssistantActionResolver(resolver=resolver_proto)
                 binding_request = ActionBindingRequest(
                     job_id=job_id,
-                    action_type=payload.action_type,
+                    action_type=action_type,
                     source_proposal_id=payload.source_proposal_id,
                     failed_command_id=payload.failed_command_id,
                     revision_instruction=payload.revision_instruction,
@@ -1623,7 +1628,7 @@ def create_app(
             try:
                 draft = service.draft_action(
                     job_id=payload.job_id,
-                    action_type=payload.action_type,
+                    action_type=action_type,
                     reason=payload.reason,
                     stage_index=payload.stage_index,
                     source_proposal_id=payload.source_proposal_id,

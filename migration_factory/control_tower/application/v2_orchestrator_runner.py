@@ -592,6 +592,11 @@ class V2OrchestratorRunner:
         success_proof = _has_success_proof(result)
         if not success_proof[0]:
             failure = success_proof[1]
+            expected_text = (
+                failure["expected"]
+                if failure["detected"] != "missing" and failure["expected"] not in {"present", "empty"}
+                else f"{failure['field']}={failure['expected']}"
+            )
             self._event(
                 job_id=job_id,
                 stage=stage_index,
@@ -599,7 +604,7 @@ class V2OrchestratorRunner:
                 status="failed",
                 message=(
                     f"Stage {stage_index} did not produce strict success proof: "
-                    f"expected {failure['field']}={failure['expected']}, detected={failure['detected']}."
+                    f"expected {expected_text}, detected={failure['detected']}."
                 ),
                 payload={
                     "command_id": command_id,
