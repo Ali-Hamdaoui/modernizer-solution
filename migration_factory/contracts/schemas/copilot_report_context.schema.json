@@ -13,7 +13,6 @@
     "transformation",
     "build",
     "tests",
-    "ai_trace",
     "dependency_policy",
     "security",
     "scope_limits",
