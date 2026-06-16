@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,20 @@ _COPILOT_STATEMENT_ENV = "AI_MIGRATION_ENABLE_COPILOT_STATEMENT"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _SANDBOX_ONLY_DISCLAIMER = (
     "This is a sandbox migration candidate only; no production promotion, no PR, no deployment."
+)
+_AI_TRACE_GUARDRAIL = (
+    "LLM proposed or reviewed migration intent only; human approval and backend sandbox "
+    "repair-loop validation are the source of truth."
+)
+_SECRET_VALUE_PATTERNS = (
+    re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]{12,}"),
+    re.compile(r"(?im)^(\s*authorization\s*:\s*).+$"),
+    re.compile(r"(?i)\b[A-Za-z_]*(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY)[A-Za-z_]*\s*=\s*[^\s]+"),
+    re.compile(r"(?i)(jdbc:[a-z0-9:]+://)([^/\s:@]+):([^@\s/]+)@"),
+    re.compile(r"(?i)([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@\s/]+)@"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL),
 )
 
 
@@ -90,6 +105,7 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
     validation_scope = _validation_scope(state)
     repair_loop = _repair_loop_context(state, artifact_refs)
     dependency_policy = _dependency_policy_context(state, artifact_refs, dependency_policy_report)
+    ai_trace = _ai_trace_context(state, artifact_refs, repair_loop, run_dir)
 
     report_payload = {
         "run_id": state.get("run_id", ""),
@@ -123,6 +139,7 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
         "validated": validation_scope["validated"],
         "not_validated": validation_scope["not_validated"],
         "repair_loop": repair_loop,
+        "ai_trace": ai_trace,
         "dependency_policy": dependency_policy,
         "target_dependency_plan_ref": artifact_refs.get("target_dependency_plan", ""),
         "dependency_policy_report_ref": artifact_refs.get("dependency_policy_report", ""),
@@ -261,6 +278,24 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
                 f"- Human Review Required: {str(repair_loop.get('human_review_required', False)).lower()}",
             ]
         )
+    ai_trace = list(payload.get("ai_trace", []) or [])
+    if ai_trace:
+        lines.extend(["", "## AI Trace", "", _AI_TRACE_GUARDRAIL, ""])
+        for index, item in enumerate(ai_trace, start=1):
+            row = dict(item or {})
+            lines.extend(
+                [
+                    f"- Trace {index}: event={row.get('event', '')}; agent={row.get('agent', '')}",
+                    f"  - Evidence: {', '.join(str(ref) for ref in list(row.get('evidence_refs', []) or [])) or 'not_captured'}",
+                    f"  - Context Pack: {row.get('context_pack_checksum', '') or 'not_captured'}",
+                    f"  - Diagnosis: {row.get('diagnosis', '') or 'not_captured'}",
+                    f"  - Proposal: {row.get('proposal_ref', '') or 'not_captured'} ({row.get('proposal_checksum', '') or 'checksum not captured'})",
+                    f"  - Reviewer Verdict: {row.get('reviewer_verdict', '') or 'not_captured'}",
+                    f"  - Human Decision: {row.get('human_decision', '') or 'not_captured'}",
+                    f"  - Validation Result: {row.get('validation_result', '') or 'not_captured'}",
+                    f"  - Ledger: {row.get('ledger_ref', '') or 'not_captured'}",
+                ]
+            )
     dependency_policy = dict(payload.get("dependency_policy", {}) or {})
     if dependency_policy:
         lines.extend(
@@ -344,6 +379,96 @@ def _repair_loop_context(state: dict[str, Any], artifact_refs: dict[str, str]) -
             "h2": state.get("h2_startup_status", "H2_STARTUP_SKIPPED"),
         },
     }
+
+
+def _ai_trace_context(
+    state: dict[str, Any],
+    artifact_refs: dict[str, str],
+    repair_loop: dict[str, Any],
+    run_dir: Path,
+) -> list[dict[str, Any]]:
+    raw_records = state.get("ai_trace")
+    if raw_records is None:
+        raw_records = state.get("ai_trace_records")
+    if raw_records is None:
+        raw_records = _read_ai_trace_artifact(artifact_refs)
+    if not isinstance(raw_records, list):
+        return []
+    return [
+        normalized
+        for record in raw_records
+        if isinstance(record, dict)
+        for normalized in [_normalize_ai_trace_record(record, artifact_refs, repair_loop, run_dir)]
+        if _ai_trace_has_real_record(normalized)
+    ]
+
+
+def _read_ai_trace_artifact(artifact_refs: dict[str, str]) -> Any:
+    for key in ("ai_trace", "ai_trace_records", "final_report_ai_trace"):
+        ref = str(artifact_refs.get(key) or "")
+        if not ref:
+            continue
+        path = Path(ref)
+        if path.is_file():
+            return _read_json(path, [])
+    return None
+
+
+def _normalize_ai_trace_record(
+    record: dict[str, Any],
+    artifact_refs: dict[str, str],
+    repair_loop: dict[str, Any],
+    run_dir: Path,
+) -> dict[str, Any]:
+    proposal_ref = _first_text(
+        record.get("proposal_ref"),
+        record.get("repair_proposal_id"),
+        record.get("proposal_id"),
+    )
+    ledger_ref = _first_text(record.get("ledger_ref"), repair_loop.get("ledger_ref"), artifact_refs.get("repair_ledger"))
+    validation_result = _first_text(
+        record.get("validation_result"),
+        record.get("validation_status"),
+        _validation_result_from_repair_loop(repair_loop),
+    )
+    normalized = {
+        "event": _first_text(record.get("event"), record.get("event_type")),
+        "agent": _first_text(record.get("agent"), record.get("agent_name"), record.get("model_invocation_id")),
+        "evidence_refs": [_safe_report_value(item, run_dir) for item in _list(record.get("evidence_refs"))],
+        "context_pack_checksum": _first_text(record.get("context_pack_checksum")),
+        "diagnosis": _first_text(record.get("diagnosis"), record.get("diagnosis_id"), record.get("failure_type")),
+        "proposal_ref": proposal_ref,
+        "proposal_checksum": _first_text(record.get("proposal_checksum")),
+        "reviewer_verdict": _first_text(record.get("reviewer_verdict"), record.get("reviewer_decision"), record.get("decision")),
+        "human_decision": _first_text(record.get("human_decision"), record.get("approval_decision")),
+        "validation_result": validation_result,
+        "ledger_ref": ledger_ref,
+    }
+    return {key: _safe_report_value(value, run_dir) for key, value in normalized.items()}
+
+
+def _validation_result_from_repair_loop(repair_loop: dict[str, Any]) -> str:
+    final_status = str(repair_loop.get("final_status") or "")
+    validation = repair_loop.get("validation_after_repair")
+    if isinstance(validation, dict) and any(validation.values()):
+        return ", ".join(f"{key}={value}" for key, value in sorted(validation.items()) if value)
+    return final_status
+
+
+def _ai_trace_has_real_record(record: dict[str, Any]) -> bool:
+    return any(
+        record.get(key)
+        for key in (
+            "context_pack_checksum",
+            "diagnosis",
+            "proposal_ref",
+            "proposal_checksum",
+            "reviewer_verdict",
+            "human_decision",
+            "validation_result",
+            "ledger_ref",
+        )
+    )
 
 
 def _dependency_policy_context(
@@ -618,6 +743,50 @@ def _object_or_empty(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
     return {}
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _safe_report_value(value: Any, run_dir: Path) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _safe_report_value(item, run_dir) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_safe_report_value(item, run_dir) for item in value]
+    if not isinstance(value, str):
+        return value
+    text = value
+    if "://" not in text:
+        path = Path(text)
+        if path.is_absolute():
+            try:
+                text = path.resolve().relative_to(run_dir.resolve()).as_posix()
+            except ValueError:
+                pass
+    text = _redact_report_text(text)
+    home = str(Path.home())
+    if home and home not in {".", "/"}:
+        text = text.replace(home, "%USERPROFILE%")
+        text = text.replace(home.replace("\\", "/"), "%USERPROFILE%")
+    return text
+
+
+def _redact_report_text(text: str) -> str:
+    redacted = text
+    for pattern in _SECRET_VALUE_PATTERNS:
+        redacted = pattern.sub("[REDACTED]", redacted)
+    return redacted
 
 
 def _read_json(path: Path, warnings: list[str]) -> dict[str, Any] | None:

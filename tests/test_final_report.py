@@ -66,6 +66,7 @@ def test_successful_full_sandbox_writes_final_report_and_summary(tmp_path: Path,
     payload = json.loads(final_report.read_text(encoding="utf-8"))
     assert payload["test_status"] == "TEST_PASSED"
     assert payload["test_totals"]["tests"] == 3
+    assert payload["ai_trace"] == []
     assert payload["approval"]["approval_ref"].endswith("approval_decision.json")
     assert payload["lock_status"]["lock_ref"].endswith("approved_plan_lock.json")
     assert payload["limitations"][:4] == [
@@ -85,6 +86,7 @@ def test_successful_full_sandbox_writes_final_report_and_summary(tmp_path: Path,
     assert not (Path(state["run_dir"]) / "final" / "copilot_migration_statement.json").exists()
     assert not (Path(state["run_dir"]) / "final" / "copilot_migration_report.md").exists()
     assert "Copilot Advisory Statement" not in final_summary.read_text(encoding="utf-8")
+    assert "## AI Trace" not in final_summary.read_text(encoding="utf-8")
     assert Path(result["artifact_refs"]["copilot_migration_overview"]).is_file()
     assert Path(result["artifact_refs"]["copilot_technical_changes"]).is_file()
     assert Path(result["artifact_refs"]["copilot_validation_evidence"]).is_file()
@@ -129,6 +131,53 @@ def test_enabled_copilot_final_report_writes_optional_sidecar_artifacts(tmp_path
     assert summary["artifact_refs"]["copilot_migration_report"] == str(report_ref)
     assert result["orchestration_status"] == "PASS"
     assert result["final_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
+
+
+def test_final_report_ai_trace_uses_existing_records_and_guardrails(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("AI_MIGRATION_ENABLE_COPILOT_STATEMENT", raising=False)
+    state = _successful_state(tmp_path)
+    run_dir = Path(state["run_dir"])
+    state["ai_trace"] = [
+        {
+            "event": "build_failed",
+            "agent": "v2-failure-diagnosis",
+            "evidence_refs": [
+                str(run_dir / "logs" / "phase2_transform.log"),
+                "TOKEN=ghp_abcdefghijklmnopqrstuvwxyz123456",
+            ],
+            "context_pack_checksum": "cp-abc",
+            "diagnosis_id": "diag-1",
+            "repair_proposal_id": str(run_dir / "repairs" / "proposal-1.json"),
+            "proposal_checksum": "prop-abc",
+            "reviewer_verdict": "accept",
+            "human_decision": "approved",
+            "validation_result": "build=BUILD_PASSED_IN_SANDBOX, tests=TEST_PASSED",
+            "ledger_ref": str(run_dir / "repairs" / "repair_ledger.json"),
+        }
+    ]
+
+    result = finalize_orchestration_state(state)
+
+    final_report = json.loads(Path(result["artifact_refs"]["final_migration_report"]).read_text(encoding="utf-8"))
+    trace = final_report["ai_trace"]
+    assert len(trace) == 1
+    assert trace[0]["event"] == "build_failed"
+    assert trace[0]["context_pack_checksum"] == "cp-abc"
+    assert trace[0]["diagnosis"] == "diag-1"
+    assert trace[0]["proposal_ref"] == "repairs/proposal-1.json"
+    assert trace[0]["proposal_checksum"] == "prop-abc"
+    assert trace[0]["reviewer_verdict"] == "accept"
+    assert trace[0]["human_decision"] == "approved"
+    assert trace[0]["ledger_ref"] == "repairs/repair_ledger.json"
+    serialized = json.dumps(trace)
+    assert "ghp_" not in serialized
+    assert "[REDACTED]" in serialized
+
+    summary = Path(result["artifact_refs"]["final_migration_summary"]).read_text(encoding="utf-8")
+    assert "## AI Trace" in summary
+    assert "LLM proposed or reviewed migration intent only" in summary
+    assert "Human Decision: approved" in summary
+    assert "Reviewer Verdict: accept" in summary
 
 
 def test_enabled_copilot_final_report_uses_internal_resolved_path_only_in_memory(

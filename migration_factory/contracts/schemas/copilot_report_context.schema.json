@@ -13,6 +13,7 @@
     "transformation",
     "build",
     "tests",
+    "ai_trace",
     "dependency_policy",
     "security",
     "scope_limits",
@@ -75,6 +76,39 @@
       "type": "object",
       "required": ["status", "totals", "execution_owner", "execution_mode", "report_paths"],
       "additionalProperties": true
+    },
+    "ai_trace": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "event",
+          "agent",
+          "evidence_refs",
+          "context_pack_checksum",
+          "diagnosis",
+          "proposal_ref",
+          "proposal_checksum",
+          "reviewer_verdict",
+          "human_decision",
+          "validation_result",
+          "ledger_ref"
+        ],
+        "properties": {
+          "event": {"type": "string"},
+          "agent": {"type": "string"},
+          "evidence_refs": {"type": "array", "items": {"type": "string"}},
+          "context_pack_checksum": {"type": "string"},
+          "diagnosis": {"type": "string"},
+          "proposal_ref": {"type": "string"},
+          "proposal_checksum": {"type": "string"},
+          "reviewer_verdict": {"type": "string"},
+          "human_decision": {"type": "string"},
+          "validation_result": {"type": "string"},
+          "ledger_ref": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
     },
     "dependency_policy": {
       "type": "object",

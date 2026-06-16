@@ -34,6 +34,7 @@ def test_report_context_writes_complete_artifact_with_relative_refs_and_provenan
     assert payload["openrewrite"]["unit_id"] == "java-17"
     assert payload["openrewrite"]["active_recipes"] == ["org.openrewrite.java.migrate.UpgradeToJava17"]
     assert payload["tests"]["totals"]["passed"] == 3
+    assert payload["ai_trace"] == []
     assert payload["artifact_refs"]["final_migration_report"] == "final/migration_report.json"
     assert payload["artifact_refs"]["report_context"] == "final/report_context.json"
     assert all(not Path(ref).is_absolute() for ref in payload["artifact_refs"].values())
@@ -65,6 +66,50 @@ def test_report_context_redacts_secrets_db_urls_auth_output_and_home_paths(tmp_p
     assert str(Path.home()) not in content
     assert "[REDACTED]" in content
     assert "%USERPROFILE%" in content
+
+
+def test_report_context_ai_trace_uses_existing_records_and_redacts(tmp_path: Path) -> None:
+    run_dir = _run_dir(tmp_path)
+    report_path = run_dir / "final" / "migration_report.json"
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["ai_trace"] = [
+        {
+            "event_type": "build_failed",
+            "agent_name": "v2-failure-diagnosis",
+            "evidence_refs": [
+                str(run_dir / "logs" / "phase2_transform.log"),
+                "Authorization: Bearer abcdefghijklmnop",
+            ],
+            "context_pack_checksum": "cp-abc",
+            "failure_type": "DEPENDENCY_ERROR",
+            "repair_proposal_id": str(run_dir / "repairs" / "proposal-1.json"),
+            "proposal_checksum": "prop-abc",
+            "reviewer_decision": "accept",
+            "approval_decision": "approved",
+            "validation_status": "REPAIR_VALIDATED",
+            "ledger_ref": str(run_dir / "repairs" / "repair_ledger.json"),
+        }
+    ]
+    report_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    context = build_report_context(run_dir)
+
+    jsonschema.validate(context, json.loads(SCHEMA_PATH.read_text(encoding="utf-8")))
+    trace = context["ai_trace"]
+    assert len(trace) == 1
+    assert trace[0]["event"] == "build_failed"
+    assert trace[0]["agent"] == "v2-failure-diagnosis"
+    assert trace[0]["evidence_refs"][0] == "logs/phase2_transform.log"
+    assert trace[0]["evidence_refs"][1] == "[REDACTED]"
+    assert trace[0]["diagnosis"] == "DEPENDENCY_ERROR"
+    assert trace[0]["proposal_ref"] == "repairs/proposal-1.json"
+    assert trace[0]["reviewer_verdict"] == "accept"
+    assert trace[0]["human_decision"] == "approved"
+    assert trace[0]["ledger_ref"] == "repairs/repair_ledger.json"
+    assert "final/migration_report.json#/ai_trace" in context["provenance"]["ai_trace"]
+    serialized = json.dumps(context)
+    assert "Bearer abcdef" not in serialized
+    assert str(run_dir) not in serialized
 
 
 def test_report_context_tolerates_missing_optional_artifacts_with_sentinels(tmp_path: Path) -> None:
