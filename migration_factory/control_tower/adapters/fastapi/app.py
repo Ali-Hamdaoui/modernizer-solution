@@ -8,7 +8,7 @@ import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from contextlib import asynccontextmanager
 
@@ -175,6 +175,7 @@ from migration_factory.control_tower.adapters.fastapi.security import (
     redact_public_data,
 )
 from migration_factory.control_tower.application.redaction import redact_model_summary
+from migration_factory.control_tower.domain.checksums import utc_now_text
 from uuid import uuid4
 
 # F14 — Stage 3 POM dependency editor imports
@@ -191,6 +192,21 @@ from migration_factory.control_tower.application.pom_change_models import (
 
 UnitOfWorkFactory = Any
 ETAG_RE = re.compile(r'^"job-(?P<job_id>.+)-v(?P<version>[1-9][0-9]*)"$')
+_POM_DEPENDENCY_EDITOR_FACTORY: Callable[[], PomDependencyEditor] | None = None
+
+
+def _configure_pom_dependency_editor_factory(
+    factory: Callable[[], PomDependencyEditor],
+) -> None:
+    global _POM_DEPENDENCY_EDITOR_FACTORY
+    _POM_DEPENDENCY_EDITOR_FACTORY = factory
+
+
+def _build_pom_dependency_editor() -> PomDependencyEditor:
+    """Build the configured F14 POM editor used by API and assistant paths."""
+    if _POM_DEPENDENCY_EDITOR_FACTORY is None:
+        raise RuntimeError("PomDependencyEditor factory is not configured")
+    return _POM_DEPENDENCY_EDITOR_FACTORY()
 
 
 @dataclass(frozen=True, slots=True)
@@ -3611,10 +3627,10 @@ def create_app(
 
     # ── F14 helper functions ───────────────────────────────────────────
 
-    def _build_pom_dependency_editor():
+    def _make_pom_dependency_editor() -> PomDependencyEditor:
         """Build a PomDependencyEditor backed by the current UoW repos."""
         with unit_of_work_factory() as uow:
-            editor = PomDependencyEditor(
+            return PomDependencyEditor(
                 event_sink=uow.v2_events,
                 change_repo=uow.v2_pom_changes,
                 proposal_repo=uow.v2_pom_proposals,
@@ -3623,18 +3639,8 @@ def create_app(
                 resolve_sandbox_root=lambda job_id, stage: _resolve_stage3_sandbox_path(job_id),
                 resolve_pom_content=lambda job_id: _read_stage3_pom_content(job_id),
             )
-        # Rebuild outside UoW context — the repos hold their own connection
-        with unit_of_work_factory() as uow:
-            editor = PomDependencyEditor(
-                event_sink=uow.v2_events,
-                change_repo=uow.v2_pom_changes,
-                proposal_repo=uow.v2_pom_proposals,
-                validation_repo=uow.v2_pom_validations,
-                repair_plan_repo=uow.v2_pom_repair_plans,
-                resolve_sandbox_root=lambda job_id, stage: _resolve_stage3_sandbox_path(job_id),
-                resolve_pom_content=lambda job_id: _read_stage3_pom_content(job_id),
-            )
-            return editor
+
+    _configure_pom_dependency_editor_factory(_make_pom_dependency_editor)
 
     def _read_stage3_pom_content(job_id: str) -> str:
         """Read the Stage 3 sandbox root POM content."""
@@ -4201,6 +4207,12 @@ def _classify_v2_assistant_intent(question: str) -> str:
         )
         if any(term in lowered for term in capability_boundary_terms):
             return "capability_boundary"
+
+    # 3.25 Rollback must route before generic POM proposal/review handling.
+    if any(t in lowered for t in ("rollback", "roll back")) and any(
+        t in lowered for t in ("pom", "stage 3", "stage3", "change")
+    ):
+        return "rollback_pom_change"
 
     # 3.5 Explicit "apply this ... change" pattern (catch BEFORE explicit dep change)
     if any(t in lowered for t in ("apply this", "apply the", "apply it", "execute this",
@@ -4861,6 +4873,15 @@ def _build_v2_assistant_answer(
 
     if effective_intent == "apply_dependency_change":
         return _build_apply_dependency_change_answer(
+            question=question,
+            artifact_previews=artifact_previews,
+            events=events,
+            approvals=approvals,
+            commands=commands,
+        )
+
+    if effective_intent == "rollback_pom_change":
+        return _build_rollback_pom_change_answer(
             question=question,
             artifact_previews=artifact_previews,
             events=events,
@@ -5870,14 +5891,7 @@ def _build_apply_dependency_change_answer(
     the result from PomApplyResult.
     """
 
-    # Resolve job_id from events
-    job_id = ""
-    if events:
-        for evt in events:
-            jid = getattr(evt, "job_id", "") or ""
-            if jid:
-                job_id = str(jid)
-                break
+    job_id = _resolve_assistant_job_id(events=events, commands=commands)
 
     if not job_id:
         return (
@@ -5937,21 +5951,6 @@ def _build_apply_dependency_change_answer(
             'For example: "apply change gson to 2.11.0".'
         )
 
-    # Check if we have a root_pom preview for context
-    root_pom_exists = False
-    if artifact_previews:
-        for pv in artifact_previews:
-            if pv.get("source_type") == "file_alias" and pv.get("artifact_kind") == "root_pom":
-                root_pom_exists = bool(pv.get("exists"))
-                break
-
-    if not root_pom_exists:
-        return (
-            "The root pom.xml is not available yet. I need the POM to be "
-            "resolved before I can apply this change. Please wait for Stage 3 "
-            "setup to complete."
-        )
-
     # Route through the same PomDependencyEditor service path as UI
     try:
         editor = _build_pom_dependency_editor()
@@ -5998,6 +5997,81 @@ def _build_apply_dependency_change_answer(
                   f"Validation is now running. "
                   f"Check the Stage 3 Dependency Review panel for results.")
 
+    return "\n".join(lines)
+
+
+def _resolve_assistant_job_id(*, events: tuple[Any, ...], commands: tuple[Any, ...]) -> str:
+    for evt in events:
+        jid = getattr(evt, "job_id", "") or ""
+        if jid:
+            return str(jid)
+    for cmd in commands:
+        jid = getattr(cmd, "job_id", "") or ""
+        if jid:
+            return str(jid)
+    return ""
+
+
+def _build_rollback_pom_change_answer(
+    *,
+    question: str,
+    artifact_previews: tuple[dict[str, Any], ...] | None = None,
+    events: tuple[Any, ...] = (),
+    approvals: tuple[Any, ...] = (),
+    commands: tuple[Any, ...] = (),
+) -> str:
+    """Build an answer for rollback_pom_change intent through PomDependencyEditor."""
+    job_id = _resolve_assistant_job_id(events=events, commands=commands)
+    if not job_id:
+        return (
+            "I cannot rollback a Stage 3 POM change because I cannot determine "
+            "which job to target. Please navigate to a migration job first."
+        )
+
+    try:
+        editor = _build_pom_dependency_editor()
+        changes = editor.list_changes(job_id)
+    except Exception as exc:
+        return (
+            f"Backend could not inspect Stage 3 POM changes: {exc}. "
+            "Please try again or use the Stage 3 Dependency Review panel."
+        )
+
+    rollback_candidates = [
+        change for change in changes
+        if str(getattr(change, "status", "")) != "rolled_back"
+        and str(getattr(change, "change_id", ""))
+    ]
+    if not rollback_candidates:
+        return "No applied Stage 3 POM change found to rollback."
+
+    rollback_candidates.sort(key=lambda c: str(getattr(c, "created_at", "")))
+    change_id = str(getattr(rollback_candidates[-1], "change_id", ""))
+    try:
+        result = editor.rollback_change(
+            job_id,
+            change_id,
+            f"ask:{job_id}:{utc_now_text()}",
+        )
+    except Exception as exc:
+        return (
+            f"Backend could not rollback the Stage 3 POM change: {exc}. "
+            "Please try again or use the Stage 3 Dependency Review panel."
+        )
+
+    if result.status != "rolled_back":
+        return (
+            f"Stage 3 POM rollback did not complete. Status: {result.status}. "
+            f"Checksum restored: {result.checksum_restored}."
+        )
+
+    lines = [
+        "## POM change rolled back",
+        f"- **Change ID:** `{result.change_id}`",
+        f"- **Rollback ID:** `{result.rollback_id}`",
+        f"- **Checksum restored:** {result.checksum_restored}",
+        f"- **Status:** {result.status}",
+    ]
     return "\n".join(lines)
 
 
@@ -6686,7 +6760,7 @@ def _build_pom_explanation_answer(
                             f"properties (<properties>), parent POM, and repositories. "
                             f"These are the migration-relevant sections."
                         )
-                        return str(redact_public_data(answer))
+                        return answer
 
                     # Structured extraction (default): extract fields from XML
                     pom_summary = _extract_pom_summary(preview)

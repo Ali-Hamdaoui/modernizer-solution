@@ -24,6 +24,8 @@ from migration_factory.control_tower.application.pom_dependency_editor import (
 from migration_factory.control_tower.application.pom_change_models import (
     PomChangeStatus,
     PomApplyResult,
+    PomRollbackResult,
+    PomChangeRecordSummary,
     ALLOWED_POM_OPERATIONS,
     APPLY_CAPABLE_POM_OPERATIONS,
     PROPOSAL_ONLY_POM_OPERATIONS,
@@ -100,10 +102,12 @@ def _mock_editor(**overrides) -> PomDependencyEditor:
     val_repo.get = MagicMock(return_value=None)
     rp_repo = MagicMock()
 
+    pom_content = overrides.pop("pom_content", SAMPLE_POM)
+
     import tempfile
     sandbox = tempfile.mkdtemp(prefix="f14_assistant_test_")
     pom_file = Path(sandbox) / "pom.xml"
-    pom_file.write_text(SAMPLE_POM, encoding="utf-8")
+    pom_file.write_text(pom_content, encoding="utf-8")
 
     return PomDependencyEditor(
         event_sink=events,
@@ -112,7 +116,7 @@ def _mock_editor(**overrides) -> PomDependencyEditor:
         validation_repo=val_repo,
         repair_plan_repo=rp_repo,
         resolve_sandbox_root=lambda j, s: Path(sandbox),
-        resolve_pom_content=lambda j: SAMPLE_POM,
+        resolve_pom_content=lambda j: pom_content,
     )
 
 
@@ -515,6 +519,224 @@ class TestF14DeterministicFallback:
             assert bad not in answer, (
                 f"Raw path '{bad}' leaked in assistant answer: ...{answer[answer.find(bad)-50:answer.find(bad)+50] if bad in answer else ''}"
             )
+
+
+class TestF14RuntimeRegressions:
+    """Exact regressions observed from the live assistant UI."""
+
+    def test_raw_stage3_pom_preserves_xml_closing_tags(self):
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _build_pom_explanation_answer,
+        )
+
+        pom = SAMPLE_POM.replace(
+            "</properties>",
+            "    <assertj.version>3.13.2</assertj.version>\n    </properties>",
+        )
+        answer = _build_pom_explanation_answer(
+            artifact_previews=(
+                {
+                    "source_type": "file_alias",
+                    "artifact_kind": "root_pom",
+                    "exists": True,
+                    "stage_index": 3,
+                    "preview": pom,
+                },
+            ),
+            events=(),
+            raw_xml_requested=True,
+        )
+
+        assert "<assertj.version>3.13.2</assertj.version>" in answer
+        assert "<assertj.version>3.13.2<[redacted-path]" not in answer
+
+    def test_propose_assertj_property_returns_real_proposal(self):
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _build_pom_change_proposal_answer,
+        )
+
+        pom = SAMPLE_POM.replace(
+            "</properties>",
+            "    <assertj.version>3.13.2</assertj.version>\n    </properties>",
+        )
+        editor = _mock_editor(pom_content=pom)
+        event = MagicMock(job_id="job_1")
+
+        with patch(
+            "migration_factory.control_tower.adapters.fastapi.app._build_pom_dependency_editor",
+            return_value=editor,
+        ):
+            answer = _build_pom_change_proposal_answer(
+                question="Propose changing assertj.version to 3.24.2 in the Stage 3 root pom.xml. Do not apply it.",
+                events=(event,),
+                approvals=(),
+                commands=(),
+            )
+
+        assert "Proposal ID" in answer
+        assert "not applied" in answer.lower()
+        assert "update_property_version" in answer
+        assert "assertj.version" in answer
+        assert "3.24.2" in answer
+
+    def test_apply_assertj_property_no_nameerror_returns_change_and_validation(self):
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _build_apply_dependency_change_answer,
+        )
+
+        pom = SAMPLE_POM.replace(
+            "</properties>",
+            "    <assertj.version>3.13.2</assertj.version>\n    </properties>",
+        )
+        editor = _mock_editor(pom_content=pom)
+        event = MagicMock(job_id="job_1")
+
+        with patch(
+            "migration_factory.control_tower.adapters.fastapi.app._build_pom_dependency_editor",
+            return_value=editor,
+        ):
+            answer = _build_apply_dependency_change_answer(
+                question="Apply this Stage 3 POM change: update property assertj.version to 3.24.2.",
+                events=(event,),
+                approvals=(),
+                commands=(),
+            )
+
+        assert "name '_build_pom_dependency_editor' is not defined" not in answer
+        assert "Change ID" in answer
+        assert "Validation ID" in answer
+        assert "applied_pending_validation" in answer
+        assert "update_property_version" in answer
+        assert "property:assertj.version" in answer
+
+    def test_apply_assertj_property_changes_stage3_pom(self):
+        pom = SAMPLE_POM.replace(
+            "</properties>",
+            "    <assertj.version>3.13.2</assertj.version>\n    </properties>",
+        )
+        editor = _mock_editor(pom_content=pom)
+
+        result = editor.apply_change_from_user_request(
+            job_id="job_1",
+            user_request="update property assertj.version to 3.24.2",
+            idempotency_key="ik_assertj_write",
+        )
+
+        sandbox = editor._resolve_sandbox("job_1", 3)
+        assert sandbox is not None
+        content = (sandbox / "pom.xml").read_text(encoding="utf-8")
+        assert result.status == "applied_pending_validation"
+        assert "<assertj.version>3.24.2</assertj.version>" in content
+        assert "<assertj.version>3.13.2</assertj.version>" not in content
+
+    def test_rollback_last_stage3_change_routes_to_rollback_not_generic_proposal(self):
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _build_v2_assistant_answer,
+        )
+
+        editor = MagicMock()
+        editor.list_changes.return_value = [
+            PomChangeRecordSummary(
+                change_id="ch_1",
+                operation="update_property_version",
+                target_desc="property:assertj.version",
+                before_version="3.13.2",
+                after_version="3.24.2",
+                before_checksum="before",
+                after_checksum="after",
+                diff_summary="1 addition(s), 1 removal(s)",
+                status="applied_pending_validation",
+                validation_id="val_1",
+                rollback_id=None,
+                created_at="2026-06-16T00:00:00Z",
+            )
+        ]
+        editor.rollback_change.return_value = PomRollbackResult(
+            change_id="ch_1",
+            rollback_id="rb_1",
+            status="rolled_back",
+            checksum_restored=True,
+            validation_triggered=False,
+            validation_id=None,
+            created_at="2026-06-16T00:01:00Z",
+        )
+        event = MagicMock(job_id="job_1")
+
+        with patch(
+            "migration_factory.control_tower.adapters.fastapi.app._build_pom_dependency_editor",
+            return_value=editor,
+        ):
+            answer = _build_v2_assistant_answer(
+                question="Rollback the last Stage 3 POM change.",
+                events=(event,),
+                approvals=(),
+                commands=(),
+            )
+
+        editor.rollback_change.assert_called_once()
+        assert "POM change rolled back" in answer
+        assert "Rollback ID" in answer
+        assert "Checksum restored:** True" in answer
+        assert "I cannot apply this directly" not in answer
+
+    def test_rollback_no_change_returns_clear_message(self):
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _build_v2_assistant_answer,
+        )
+
+        editor = MagicMock()
+        editor.list_changes.return_value = []
+        event = MagicMock(job_id="job_1")
+
+        with patch(
+            "migration_factory.control_tower.adapters.fastapi.app._build_pom_dependency_editor",
+            return_value=editor,
+        ):
+            answer = _build_v2_assistant_answer(
+                question="Rollback the last Stage 3 POM change.",
+                events=(event,),
+                approvals=(),
+                commands=(),
+            )
+
+        editor.rollback_change.assert_not_called()
+        assert answer == "No applied Stage 3 POM change found to rollback."
+
+    def test_invalid_azure_fallback_still_executes_f14_apply(self):
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _build_v2_assistant_answer,
+        )
+        from migration_factory.control_tower.application.v2_assistant_model_client import (
+            _fallback_result,
+        )
+
+        pom = SAMPLE_POM.replace(
+            "</properties>",
+            "    <assertj.version>3.13.2</assertj.version>\n    </properties>",
+        )
+        editor = _mock_editor(pom_content=pom)
+        event = MagicMock(job_id="job_1")
+
+        with patch(
+            "migration_factory.control_tower.adapters.fastapi.app._build_pom_dependency_editor",
+            return_value=editor,
+        ):
+            fallback_answer = _build_v2_assistant_answer(
+                question="Apply this Stage 3 POM change: update property assertj.version to 3.24.2.",
+                events=(event,),
+                approvals=(),
+                commands=(),
+            )
+
+        fallback = _fallback_result(
+            fallback_answer,
+            "Azure OpenAI returned empty response",
+            "invalid_response",
+        )
+        assert fallback.source == "deterministic"
+        assert "Change ID" in fallback.content
+        assert "Validation ID" in fallback.content
+        assert "applied_pending_validation" in fallback.content
 
 
 def _build_test_fallback_answer(question: str) -> str:

@@ -199,6 +199,43 @@ class PomChangeProposer:
         elif "remove" in lowered and "dependency" in lowered:
             operation = "remove_dependency"
 
+        # Try property changes before dependency changes so assertj.version is a property target.
+        explicit_prop_pattern = re.compile(
+            r"""(?:update|updating|change|changing|set|bump|bumping)\s+property\s+
+            ([\w.\-]+)\s+
+            (?:to|version)\s+
+            ([\w.\-]+)""",
+            re.VERBOSE | re.IGNORECASE,
+        )
+        m = explicit_prop_pattern.search(user_request)
+        if m:
+            return {
+                "target": PomChangeTarget(
+                    kind="property",
+                    property_name=m.group(1).strip(),
+                ),
+                "operation": "update_property_version",
+                "requested_version": m.group(2).strip(),
+            }
+
+        dot_ver_prop_pattern = re.compile(
+            r"""(?:update|updating|change|changing|set|bump|bumping)\s+
+            ([\w.\-]+)\.version\s+
+            (?:to|version)\s+
+            ([\w.\-]+)""",
+            re.VERBOSE | re.IGNORECASE,
+        )
+        m = dot_ver_prop_pattern.search(user_request)
+        if m:
+            return {
+                "target": PomChangeTarget(
+                    kind="property",
+                    property_name=m.group(1).strip() + ".version",
+                ),
+                "operation": "update_property_version",
+                "requested_version": m.group(2).strip(),
+            }
+
         # Try to extract groupId:artifactId
         gav_pattern = re.compile(
             r"""(?:change|update|upgrade|downgrade|set)\s+
