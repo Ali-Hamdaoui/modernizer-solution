@@ -35,7 +35,17 @@ import type {
   PublicEventReplayResponse,
   RepairProposalListResponse,
   RunnerProfileOption,
-  StageChainResponse
+  StageChainResponse,
+  // F14 types
+  PomView,
+  PomDependencyReview,
+  PomChangeProposal,
+  PomApplyResult,
+  PomChangeRecordSummary,
+  PomValidationRun,
+  PomRollbackResult,
+  PomProposeRequest,
+  PomApplyRequest,
 } from "./contracts";
 
 export const CONTROL_TOWER_FRONTEND_CLIENT_ID = "control-tower-frontend";
@@ -463,6 +473,87 @@ export async function getV2ReviewerCritiques(
   );
 }
 
+// ── F14 — Stage 3 POM Dependency Editor API ──────────────────────────────
+
+export async function getStage3Pom(jobId: string): Promise<PomView> {
+  return getJson<PomView>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/pom`
+  );
+}
+
+export async function getStage3DependencyReview(jobId: string): Promise<PomDependencyReview> {
+  return getJson<PomDependencyReview>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/dependency-review`
+  );
+}
+
+export async function proposePomChange(
+  jobId: string,
+  request: PomProposeRequest
+): Promise<PomChangeProposal> {
+  return postJson<PomChangeProposal>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/pom/propose-change`,
+    request
+  );
+}
+
+export async function applyPomChange(
+  jobId: string,
+  request: PomApplyRequest
+): Promise<PomApplyResult> {
+  return postJson<PomApplyResult>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/pom/apply-change`,
+    request
+  );
+}
+
+export async function listPomChanges(
+  jobId: string
+): Promise<{ job_id: string; changes: PomChangeRecordSummary[] }> {
+  return getJson<{ job_id: string; changes: PomChangeRecordSummary[] }>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/pom/changes`
+  );
+}
+
+export async function getPomChange(
+  jobId: string,
+  changeId: string
+): Promise<PomChangeRecordSummary> {
+  return getJson<PomChangeRecordSummary>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/pom/changes/${encodeURIComponent(changeId)}`
+  );
+}
+
+export async function getPomValidationResult(
+  jobId: string,
+  validationId: string
+): Promise<PomValidationRun> {
+  return getJson<PomValidationRun>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/pom/validation/${encodeURIComponent(validationId)}`
+  );
+}
+
+export async function applyPomRepairPlan(
+  jobId: string,
+  repairPlanId: string,
+  idempotencyKey: string
+): Promise<PomApplyResult> {
+  return postJson<PomApplyResult>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/pom/repair`,
+    { repair_plan_id: repairPlanId, idempotency_key: idempotencyKey }
+  );
+}
+
+export async function rollbackPomChange(
+  jobId: string,
+  changeId: string,
+  idempotencyKey: string
+): Promise<PomRollbackResult> {
+  return postJson<PomRollbackResult>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/pom/rollback`,
+    { change_id: changeId, idempotency_key: idempotencyKey }
+  );
+}
 
 
 export async function postJson<TResponse>(

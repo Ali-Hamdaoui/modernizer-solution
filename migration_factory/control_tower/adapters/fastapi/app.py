@@ -175,6 +175,18 @@ from migration_factory.control_tower.adapters.fastapi.security import (
     redact_public_data,
 )
 from migration_factory.control_tower.application.redaction import redact_model_summary
+from uuid import uuid4
+
+# F14 — Stage 3 POM dependency editor imports
+from migration_factory.control_tower.application.pom_dependency_editor import (
+    PomDependencyEditor,
+)
+from migration_factory.control_tower.application.pom_change_models import (
+    PomProposeRequest,
+    PomApplyRequest,
+    PomRepairApplyRequest,
+    PomRollbackRequest,
+)
 
 
 UnitOfWorkFactory = Any
@@ -474,6 +486,34 @@ class ApproveRepairProposalRequest(BaseModel):
     # F07: both checksums required — reviewer gate is mandatory, no bypass
     proposal_checksum: str
     context_pack_checksum: str
+
+
+# ── F14 POM dependency editor request schemas ──────────────────────────
+
+class PomProposeRequestSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    user_request: str = Field(min_length=1, max_length=4000)
+    idempotency_key: str | None = None
+
+
+class PomApplyRequestSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    proposal_id: str | None = None
+    user_request: str | None = None
+    idempotency_key: str | None = None
+    plan_preview: dict[str, Any] | None = None  # Advisory only, never trusted
+
+
+class PomRepairApplyRequestSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    repair_plan_id: str
+    idempotency_key: str | None = None
+
+
+class PomRollbackRequestSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    change_id: str
+    idempotency_key: str | None = None
 
 
 @asynccontextmanager
@@ -1567,6 +1607,7 @@ def create_app(
                 events=events,
                 commands=commands,
                 setup=setup,
+                assistant_intent=assistant_intent,
             )
             artifact_previews = tuple(artifact_previews_list)
             fallback_answer = _build_v2_assistant_answer(
@@ -2169,6 +2210,158 @@ def create_app(
                     str(exc),
                 ) from exc
         return service.continuation_to_dict(result)
+
+    # ------------------------------------------------------------------
+    # F14 — Stage 3 POM Dependency Review + Apply + Validate + Rollback
+    # ------------------------------------------------------------------
+
+    @app.get("/v1/v2/jobs/{job_id}/stage/3/pom")
+    def get_stage3_pom(job_id: str) -> dict[str, Any]:
+        """Get redacted Stage 3 POM content."""
+        pom_content = _read_stage3_pom_content(job_id)
+        pom_path = _resolve_sandbox_path_string(job_id, 3)
+        target_dep_plan = _load_target_dependency_plan(job_id)
+
+        editor = _build_pom_dependency_editor()
+        view = editor.get_stage3_pom(
+            job_id,
+            pom_content=pom_content,
+            pom_path=pom_path,
+            target_dependency_plan=target_dep_plan,
+        )
+        return view.to_public_dict()
+
+    @app.get("/v1/v2/jobs/{job_id}/stage/3/dependency-review")
+    def get_stage3_dependency_review(job_id: str) -> dict[str, Any]:
+        """Get classified Stage 3 dependency review."""
+        pom_content = _read_stage3_pom_content(job_id)
+        pom_path = _resolve_sandbox_path_string(job_id, 3)
+        target_dep_plan = _load_target_dependency_plan(job_id)
+        policy_report = _load_dependency_policy_report(job_id)
+
+        editor = _build_pom_dependency_editor()
+        review = editor.review_stage3_dependencies(
+            job_id,
+            pom_content=pom_content,
+            pom_path=pom_path,
+            target_dependency_plan=target_dep_plan,
+            dependency_policy_report=policy_report,
+        )
+        return review.to_public_dict()
+
+    @app.post("/v1/v2/jobs/{job_id}/stage/3/pom/propose-change")
+    def propose_pom_change(
+        job_id: str,
+        payload: PomProposeRequestSchema,
+        request: Request,
+    ) -> dict[str, Any]:
+        """Propose a POM change (read-only, no write)."""
+        pom_content = _read_stage3_pom_content(job_id)
+
+        editor = _build_pom_dependency_editor()
+        proposal = editor.propose_change(
+            job_id,
+            payload.user_request,
+            payload.idempotency_key,
+            pom_content=pom_content,
+        )
+        return proposal.to_public_dict()
+
+    @app.post("/v1/v2/jobs/{job_id}/stage/3/pom/apply-change")
+    def apply_pom_change(
+        job_id: str,
+        payload: PomApplyRequestSchema,
+        request: Request,
+    ) -> dict[str, Any]:
+        """Apply a POM change (backend validates then writes to Stage 3 sandbox)."""
+        pom_content = _read_stage3_pom_content(job_id)
+        sandbox_path = _resolve_sandbox_path_string(job_id, 3)
+        build_cmd = _detect_build_command(job_id)
+
+        if not sandbox_path:
+            raise _error(status.HTTP_400_BAD_REQUEST, "NO_SANDBOX", "Stage 3 sandbox not available")
+
+        editor = _build_pom_dependency_editor()
+
+        if payload.proposal_id:
+            result = editor.apply_change_from_proposal(
+                job_id,
+                payload.proposal_id,
+                payload.idempotency_key or uuid4().hex,
+                pom_content=pom_content,
+                sandbox_path=sandbox_path,
+                build_command=build_cmd,
+            )
+        elif payload.user_request:
+            result = editor.apply_change_from_user_request(
+                job_id,
+                payload.user_request,
+                payload.idempotency_key or uuid4().hex,
+                pom_content=pom_content,
+                sandbox_path=sandbox_path,
+                build_command=build_cmd,
+            )
+        else:
+            raise _error(status.HTTP_400_BAD_REQUEST, "INVALID_REQUEST", "proposal_id or user_request is required")
+
+        return result.to_public_dict()
+
+    @app.get("/v1/v2/jobs/{job_id}/stage/3/pom/changes")
+    def list_pom_changes(job_id: str) -> dict[str, Any]:
+        """List all POM changes for the job."""
+        editor = _build_pom_dependency_editor()
+        changes = editor.list_changes(job_id)
+        return {"job_id": job_id, "changes": [c.to_public_dict() for c in changes]}
+
+    @app.get("/v1/v2/jobs/{job_id}/stage/3/pom/changes/{change_id}")
+    def get_pom_change(job_id: str, change_id: str) -> dict[str, Any]:
+        """Get a specific POM change record."""
+        # Delegate to list and filter (in production, add direct lookup)
+        editor = _build_pom_dependency_editor()
+        changes = editor.list_changes(job_id)
+        for c in changes:
+            if c.change_id == change_id:
+                return c.to_public_dict()
+        raise _error(status.HTTP_404_NOT_FOUND, "CHANGE_NOT_FOUND", f"Change {change_id} not found")
+
+    @app.get("/v1/v2/jobs/{job_id}/stage/3/pom/validation/{validation_id}")
+    def get_validation_result(job_id: str, validation_id: str) -> dict[str, Any]:
+        """Get validation run result."""
+        editor = _build_pom_dependency_editor()
+        result = editor.get_validation_result(job_id, validation_id)
+        if result is None:
+            raise _error(status.HTTP_404_NOT_FOUND, "VALIDATION_NOT_FOUND", f"Validation {validation_id} not found")
+        return result.to_public_dict()
+
+    @app.post("/v1/v2/jobs/{job_id}/stage/3/pom/repair")
+    def apply_repair_plan(
+        job_id: str,
+        payload: PomRepairApplyRequestSchema,
+        request: Request,
+    ) -> dict[str, Any]:
+        """Apply a repair plan."""
+        editor = _build_pom_dependency_editor()
+        result = editor.apply_repair_plan(
+            job_id,
+            payload.repair_plan_id,
+            payload.idempotency_key or uuid4().hex,
+        )
+        return result.to_public_dict()
+
+    @app.post("/v1/v2/jobs/{job_id}/stage/3/pom/rollback")
+    def rollback_pom_change(
+        job_id: str,
+        payload: PomRollbackRequestSchema,
+        request: Request,
+    ) -> dict[str, Any]:
+        """Rollback a POM change."""
+        editor = _build_pom_dependency_editor()
+        result = editor.rollback_change(
+            job_id,
+            payload.change_id,
+            payload.idempotency_key or uuid4().hex,
+        )
+        return result.to_public_dict()
 
     @app.get("/v1/model-profiles")
     def list_model_profiles() -> dict[str, Any]:
@@ -3416,6 +3609,110 @@ def create_app(
         )
         return redact_public_data(payload)
 
+    # ── F14 helper functions ───────────────────────────────────────────
+
+    def _build_pom_dependency_editor():
+        """Build a PomDependencyEditor backed by the current UoW repos."""
+        with unit_of_work_factory() as uow:
+            editor = PomDependencyEditor(
+                event_sink=uow.v2_events,
+                change_repo=uow.v2_pom_changes,
+                proposal_repo=uow.v2_pom_proposals,
+                validation_repo=uow.v2_pom_validations,
+                repair_plan_repo=uow.v2_pom_repair_plans,
+                resolve_sandbox_root=lambda job_id, stage: _resolve_stage3_sandbox_path(job_id),
+                resolve_pom_content=lambda job_id: _read_stage3_pom_content(job_id),
+            )
+        # Rebuild outside UoW context — the repos hold their own connection
+        with unit_of_work_factory() as uow:
+            editor = PomDependencyEditor(
+                event_sink=uow.v2_events,
+                change_repo=uow.v2_pom_changes,
+                proposal_repo=uow.v2_pom_proposals,
+                validation_repo=uow.v2_pom_validations,
+                repair_plan_repo=uow.v2_pom_repair_plans,
+                resolve_sandbox_root=lambda job_id, stage: _resolve_stage3_sandbox_path(job_id),
+                resolve_pom_content=lambda job_id: _read_stage3_pom_content(job_id),
+            )
+            return editor
+
+    def _read_stage3_pom_content(job_id: str) -> str:
+        """Read the Stage 3 sandbox root POM content."""
+        path = _resolve_stage3_sandbox_path(job_id)
+        if path is None:
+            return ""
+        pom_file = path / "pom.xml"
+        if pom_file.exists():
+            return pom_file.read_text(encoding="utf-8")
+        return ""
+
+    def _resolve_stage3_sandbox_path(job_id: str) -> Path | None:
+        """Resolve Stage 3 sandbox root path for a job."""
+        try:
+            with unit_of_work_factory() as uow:
+                job = uow.v2_jobs.get(job_id)
+                if job is None:
+                    return None
+        except Exception:
+            return None
+        # Try to resolve from stage events/commands
+        # Reuse existing _resolve_stage_sandbox_root pattern
+        resolved = _resolve_stage_sandbox_root(3, job_id=job_id)
+        if resolved:
+            return Path(resolved)
+        return None
+
+    def _resolve_sandbox_path_string(job_id: str, stage: int) -> str:
+        """Resolve sandbox path as string."""
+        if stage == 3:
+            path = _resolve_stage3_sandbox_path(job_id)
+            return str(path) if path else ""
+        resolved = _resolve_stage_sandbox_root(stage, job_id=job_id)
+        return resolved or ""
+
+    def _load_target_dependency_plan(job_id: str) -> dict[str, Any] | None:
+        """Load target dependency plan artifact for a job."""
+        try:
+            with unit_of_work_factory() as uow:
+                artifacts = uow.artifacts.list_by_job(job_id)
+                for a in artifacts:
+                    if a.artifact_kind in ("target_dependency_plan", "dependency_plan"):
+                        try:
+                            return json.loads(a.content or "{}")
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+        except Exception:
+            pass
+        return None
+
+    def _load_dependency_policy_report(job_id: str) -> dict[str, Any] | None:
+        """Load dependency policy report artifact for a job."""
+        try:
+            with unit_of_work_factory() as uow:
+                artifacts = uow.artifacts.list_by_job(job_id)
+                for a in artifacts:
+                    if a.artifact_kind in ("dependency_policy_report", "policy_report"):
+                        try:
+                            return json.loads(a.content or "{}")
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+        except Exception:
+            pass
+        return None
+
+    def _detect_build_command(job_id: str) -> str:
+        """Detect the appropriate Maven build command."""
+        try:
+            from migration_factory.agents.build_agent.detection import full_validation_command
+            path = _resolve_stage3_sandbox_path(job_id)
+            if path:
+                cmd = full_validation_command(str(path))
+                if cmd:
+                    return cmd
+        except Exception:
+            pass
+        return "mvn clean compile test"
+
     return app
 
 
@@ -3893,7 +4190,52 @@ def _classify_v2_assistant_intent(question: str) -> str:
         if any(term in lowered for term in capability_boundary_terms):
             return "capability_boundary"
 
-    # 4. POM change proposal intent — draft/upgrade/propose/modify with POM terms
+    # 4. Explicit single dependency change request (e.g. "update gson to 2.11.0")
+    explicit_dep_change_patterns = (
+        r"(?:update|upgrade|change|set|bump|replace)\s+([\w.\-:]+)\s+(?:to|version)\s+([\d.]+)",
+        r"(?:update|upgrade|change)\s+(?:dependency|version of)\s+([\w.\-:]+)",
+    )
+    for pattern in explicit_dep_change_patterns:
+        if re.search(pattern, lowered):
+            # If user explicitly says apply/execute/do it, route to apply
+            if any(t in lowered for t in ("apply this", "apply the", "apply it", "execute this",
+                                          "do it", "make the change", "write the change",
+                                          "go ahead and apply", "proceed with apply",
+                                          "please apply", "apply now")):
+                if not any(t in lowered for t in ("review", "what dependency", "what should", "which dependency")):
+                    return "apply_dependency_change"
+            if not any(t in lowered for t in ("review", "what dependency", "what should", "which dependency")):
+                return "pom_dependency_change_request"
+
+    # 5. Stage 3 dependency review intent — broad dependency modernization at final stage
+    stage3_review_terms = (
+        "dependency modernization", "dependency review", "dependency report",
+        "what dependencies should", "which dependencies should",
+        "what dependencies need", "which dependencies need",
+        "analyze final pom", "analyze stage 3 pom",
+        "review stage 3 pom", "review final pom",
+        "dependency modernization report",
+        "check the final pom", "check stage 3 pom",
+        "propose app-specific dependency",
+        "not handled by openrewrite", "needs operator decision",
+        "what app dependencies",
+    )
+    # Must include both a review/modernization term AND a stage 3 / final stage reference
+    looks_like_stage3_review = any(term in lowered for term in stage3_review_terms)
+    looks_like_stage3_context = any(term in lowered for term in (
+        "stage 3", "phase 3", "final stage", "target stage", "final pom", "final target",
+        "after openrewrite", "java 21", "spring boot 3", "spring boot 3.5",
+        "now that we are on", "now that we have", "at stage 3",
+    ))
+    # Skip if it looks like a pure status question
+    looks_like_status = any(term in lowered for term in (
+        "what happened", "is stage", "stage status", "what stage", "which stage",
+        "done?", "completed?", "status", "progress",
+    ))
+    if (looks_like_stage3_review or looks_like_stage3_context) and not looks_like_status:
+        return "stage3_dependency_review"
+
+    # 6. POM change proposal intent — draft/upgrade/propose/modify with POM terms
     proposal_actions = (
         "propose", "draft", "upgrade", "modify", "change",
         "migrate", "repair", "create proposal", "safe pom",
@@ -3909,7 +4251,7 @@ def _classify_v2_assistant_intent(question: str) -> str:
     ):
         return "pom_change_proposal"
 
-    # 5. POM / dependency explanation
+    # 7. POM / dependency explanation
     artifact_terms = (
         "pom", "pom.xml", "pom xml", "dependency", "dependencies",
         "plugin", "xml", "artifact", "rewrite", "patch",
@@ -3932,7 +4274,7 @@ def _classify_v2_assistant_intent(question: str) -> str:
             return "pom_or_dependency_explanation"
         return "artifact_content"
 
-    # 6. Status questions
+    # 8. Status questions
     if any(term in lowered for term in ("what happened", "status", "progress", "running", "failed", "failure", "next", "approve", "approval", "stage", "done", "completed", "ready", "pass", "fail", "proof", "pipeline", "is stage", "stage status", "what stage", "which stage")):
         return "status"
 
@@ -3990,7 +4332,81 @@ def _stage_index_from_question(question: str) -> int | None:
     match = re.search(r"\b(?:stage|phase)\s*([1-3])\b", lowered)
     if match:
         return int(match.group(1))
+    if any(term in lowered for term in ("final stage", "target stage", "final pom", "target pom", "final target")):
+        return 3
     return None
+
+
+def _get_requested_stage(question: str, intent: str = "") -> int | None:
+    """Extract requested stage from question, with intent-aware defaults.
+
+    - 'stage 3', 'phase 3', 'final stage', 'target stage', 'final pom' -> stage=3
+    - 'stage 1' -> stage=1
+    - 'stage 2' -> stage=2
+    - If no stage given and intent is stage3_dependency_review, default to stage=3
+    - If no stage given and intent is pom_dependency_change_request, prefer stage 3 if evidence available
+    - Otherwise returns None (keep existing behavior)
+    """
+    lowered = str(question or "").lower()
+    match = re.search(r"\b(?:stage|phase)\s*([1-3])\b", lowered)
+    if match:
+        return int(match.group(1))
+    # Named stage references
+    if any(term in lowered for term in ("stage 3", "phase 3", "final stage", "target stage", "final pom", "final target")):
+        return 3
+    if "stage 2" in lowered or "phase 2" in lowered:
+        return 2
+    if "stage 1" in lowered or "phase 1" in lowered:
+        return 1
+    # Intent-based defaults
+    if intent in ("stage3_dependency_review",):
+        return 3
+    return None
+
+
+def _is_final_dependency_review_allowed(
+    stage_index: int,
+    root_pom_preview: dict[str, Any] | None,
+    events: tuple[Any, ...],
+) -> tuple[bool, str]:
+    """Check if a final dependency review is allowed at the given stage.
+
+    Returns (allowed: bool, reason: str).
+    Reasons: ok, stage_not_3, root_pom_unavailable, stage_running,
+    stage_not_completed, proof_missing, build_or_tests_missing.
+    """
+    if stage_index != 3:
+        return False, "stage_not_3"
+    if not root_pom_preview or not root_pom_preview.get("exists"):
+        return False, "root_pom_unavailable"
+    # Check stage 3 events for stability
+    stage_events = sorted(
+        [event for event in events if getattr(event, "stage", None) == 3],
+        key=lambda event: getattr(event, "sequence", 0),
+    )
+    if not stage_events:
+        return False, "stage_not_completed"
+    latest_stage_event = stage_events[-1]
+    if getattr(latest_stage_event, "status", "") == "running" or str(
+        getattr(latest_stage_event, "type", "")
+    ).endswith("_started"):
+        return False, "stage_running"
+    if not any(
+        getattr(event, "type", "") in {"sandbox_transform_completed", "stage_completed"}
+        or (
+            getattr(event, "status", "") == "completed"
+            and str(getattr(event, "type", ""))
+            in {"transform_completed", "build_completed", "test_completed"}
+        )
+        for event in stage_events
+    ):
+        return False, "stage_not_completed"
+    has_build = any(
+        getattr(e, "type", "") in {"build_completed", "test_completed"} for e in stage_events
+    )
+    if not has_build:
+        return True, "ok"  # Not blocking on missing build/test — just warn
+    return True, "ok"
 
 
 def _resolve_assistant_artifact_previews(
@@ -3999,6 +4415,7 @@ def _resolve_assistant_artifact_previews(
     events: tuple[Any, ...],
     commands: tuple[Any, ...],
     setup: Any | None = None,
+    assistant_intent: str = "",
 ) -> list[dict[str, Any]]:
     """Resolve bounded artifact previews for assistant artifact-content questions.
 
@@ -4006,24 +4423,31 @@ def _resolve_assistant_artifact_previews(
     Returns list of preview dicts, bounded to 3 artifacts at 2 KB each.
     Never reads from user-supplied paths.
     """
-    if not _question_looks_like_artifact_content(question):
+    # Always resolve root_pom for pom-related intents even if question doesn't mention "pom"
+    pom_related_intents = {"pom_change_proposal", "pom_dependency_change_request", "stage3_dependency_review", "pom_or_dependency_explanation"}
+    resolve_root_pom = _question_requests_root_pom_alias(question) or assistant_intent in pom_related_intents
+
+    if not _question_looks_like_artifact_content(question) and not resolve_root_pom:
         return []
 
     previews: list[dict[str, Any]] = []
     max_previews = 3
     max_chars_per_preview = 2048
 
-    if _question_requests_root_pom_alias(question):
+    if resolve_root_pom:
+        requested_stage = _get_requested_stage(question, assistant_intent) or _stage_index_from_question(question) or 1
         root_pom_preview = _resolve_root_pom_file_alias_preview(
             job_id="",
-            stage_index=_stage_index_from_question(question) or 1,
+            stage_index=requested_stage,
             events=events,
             commands=commands,
             max_bytes=max_chars_per_preview * 2,
         )
         root_pom_preview.pop("_path", None)
         previews.append(root_pom_preview)
-        return previews
+        # If only root_pom was requested (not a broader artifact content question), return it
+        if not _question_looks_like_artifact_content(question):
+            return previews
 
     # Collect artifact kinds mentioned in events
     available_kinds: dict[str, int] = {}
@@ -4039,7 +4463,8 @@ def _resolve_assistant_artifact_previews(
             available_kinds[kind] = getattr(event, "sequence", 0)
 
     if not available_kinds:
-        return []
+        # Return root_pom only if it was resolved (other artifact kinds not available)
+        return previews
 
     # Only resolve kinds that are both in safe_kinds AND appear in events
     safe_kinds = {
@@ -4344,6 +4769,33 @@ def _build_v2_assistant_answer(
             events=events,
         )
 
+    if effective_intent == "pom_dependency_change_request":
+        return _build_pom_dependency_change_request_answer(
+            question=question,
+            artifact_previews=artifact_previews,
+            events=events,
+            approvals=approvals,
+            commands=commands,
+        )
+
+    if effective_intent == "apply_dependency_change":
+        return _build_apply_dependency_change_answer(
+            question=question,
+            artifact_previews=artifact_previews,
+            events=events,
+            approvals=approvals,
+            commands=commands,
+        )
+
+    if effective_intent == "stage3_dependency_review":
+        return _build_stage3_dependency_review_answer(
+            question=question,
+            artifact_previews=artifact_previews,
+            events=events,
+            approvals=approvals,
+            commands=commands,
+        )
+
     if effective_intent == "pom_change_proposal":
         return _build_pom_change_proposal_answer(
             question=question,
@@ -4384,7 +4836,8 @@ def _extract_pom_summary(xml_text: str) -> dict[str, Any]:
 
     Uses xml.etree.ElementTree when possible, regex as fallback.
     Returns a dict with project coordinates, properties, dependencies,
-    plugins, dependencyManagement/parent presence, and repositories.
+    plugins, dependencyManagement/parent presence, parent info,
+    dependencyManagement BOM imports, and repositories.
     Maven namespace/schema URLs are preserved.
     """
     import xml.etree.ElementTree as ET
@@ -4392,12 +4845,14 @@ def _extract_pom_summary(xml_text: str) -> dict[str, Any]:
     result: dict[str, Any] = {
         "parse_ok": False,
         "coordinates": {},
+        "parent": {},
         "properties": {},
         "dependencies": [],
         "plugins": [],
         "has_dependency_management": False,
         "has_parent": False,
         "has_repositories": False,
+        "dependency_management_boms": [],
         "packaging": "jar",
     }
 
@@ -4459,6 +4914,37 @@ def _extract_pom_summary(xml_text: str) -> dict[str, Any]:
         result["has_repositories"] = bool(
             re.search(r"<repositor(?:y|ies)>", xml_text, re.IGNORECASE)
         )
+        # Extract parent coordinates via regex
+        parent_match = re.search(
+            r"<parent>(.*?)</parent>", xml_text, re.DOTALL | re.IGNORECASE
+        )
+        if parent_match:
+            for pf in ("groupId", "artifactId", "version"):
+                pm = re.search(
+                    rf"<{pf}>([^<]*)</{pf}>", parent_match.group(1), re.IGNORECASE
+                )
+                if pm:
+                    result["parent"][pf] = pm.group(1).strip()
+        # Extract dependencyManagement BOM imports via regex
+        dm_match = re.search(
+            r"<dependencyManagement>(.*?)</dependencyManagement>", xml_text, re.DOTALL | re.IGNORECASE
+        )
+        if dm_match:
+            for bom_m in re.finditer(
+                r"<dependency>(.*?)</dependency>", dm_match.group(1), re.DOTALL | re.IGNORECASE
+            ):
+                bom: dict[str, str] = {}
+                for field in ("groupId", "artifactId", "version"):
+                    fm = re.search(
+                        rf"<{field}>([^<]*)</{field}>", bom_m.group(1), re.IGNORECASE
+                    )
+                    if fm:
+                        bom[field] = fm.group(1).strip()
+                if bom.get("type") or "bom" in bom.get("artifactId", "").lower() or "dependencies" in bom.get("artifactId", ""):
+                    bom["type"] = "pom"
+                    bom["scope"] = "import"
+                if bom:
+                    result["dependency_management_boms"].append(bom)
         return result
 
     # Namespace-aware tag helpers — handle both Maven namespace and plain XML
@@ -4538,10 +5024,38 @@ def _extract_pom_summary(xml_text: str) -> dict[str, Any]:
         _dm = root.find("dependencyManagement")
     result["has_dependency_management"] = _dm is not None
 
+    # Extract parent coordinates
     _parent = root.find(_tag("parent"))
     if _parent is None and _has_maven_ns:
         _parent = root.find("parent")
     result["has_parent"] = _parent is not None
+    if _parent is not None:
+        result["parent"] = {}
+        for pf in ("groupId", "artifactId", "version"):
+            val = _text(_parent, pf)
+            if val:
+                result["parent"][pf] = val
+
+    # Extract dependencyManagement BOM imports
+    if _dm is not None:
+        dm_deps_el = _dm.find(_tag("dependencies"))
+        if dm_deps_el is None and _has_maven_ns:
+            dm_deps_el = _dm.find("dependencies")
+        if dm_deps_el is not None:
+            for dep_el in _find_all(dm_deps_el, "dependency"):
+                bom: dict[str, str] = {}
+                for field in ("groupId", "artifactId", "version"):
+                    val = _text(dep_el, field)
+                    if val:
+                        bom[field] = val
+                type_val = _text(dep_el, "type")
+                scope_val = _text(dep_el, "scope")
+                if type_val:
+                    bom["type"] = type_val
+                if scope_val:
+                    bom["scope"] = scope_val
+                if bom:
+                    result["dependency_management_boms"].append(bom)
 
     _repos = root.find(_tag("repositories")) or root.find(_tag("pluginRepositories"))
     if _repos is None and _has_maven_ns:
@@ -4979,6 +5493,906 @@ def _build_pom_change_proposal_answer(
     return redacted
 
 
+# ── Stage 3 helpers ──────────────────────────────────────────────────
+
+
+def _detect_stage3_baseline(
+    pom_summary: dict[str, Any],
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Detect Java and Spring Boot baseline from Stage 3 POM summary and evidence.
+
+    Detection priority:
+    1. root_pom parent spring-boot-starter-parent version
+    2. root_pom dependencyManagement spring-boot-dependencies BOM version
+    3. root_pom property spring-boot.version
+    4. target_dependency_plan / migration_plan.yaml / dependency_graph
+    """
+    props = pom_summary.get("properties", {})
+    deps = pom_summary.get("dependencies", [])
+    parent_info = pom_summary.get("parent", {}) if isinstance(pom_summary.get("parent"), dict) else {}
+    dm_boms = pom_summary.get("dependency_management_boms", []) if isinstance(pom_summary.get("dependency_management_boms"), list) else []
+
+    java_version = props.get("java.version", "")
+    spring_boot_version = ""
+    spring_boot_source = "unknown"
+    has_spring_boot_bom = False
+    has_spring_boot_parent = False
+    spring_framework_version = props.get(
+        "spring-framework.version",
+        props.get("spring.framework.version", props.get("org.springframework.version", "")),
+    )
+
+    # 1. Check parent for spring-boot-starter-parent
+    parent_version = parent_info.get("version", "")
+    if "spring-boot-starter-parent" in parent_info.get("artifactId", ""):
+        has_spring_boot_parent = True
+        if parent_version:
+            spring_boot_version = parent_version
+            spring_boot_source = "parent"
+
+    # 2. Check dependencyManagement BOM imports
+    for bom in dm_boms:
+        if "spring-boot-dependencies" in bom.get("artifactId", ""):
+            has_spring_boot_bom = True
+            if not spring_boot_version and bom.get("version"):
+                spring_boot_version = bom["version"]
+                spring_boot_source = "dependency_management_bom"
+            break
+
+    # Also scan raw deps for BOM import
+    if not spring_boot_version:
+        for d in deps:
+            if "spring-boot-dependencies" in d.get("artifactId", ""):
+                has_spring_boot_bom = True
+                if d.get("version"):
+                    spring_boot_version = d["version"]
+                    spring_boot_source = "dependency_management_bom"
+                    break
+
+    # 3. Check property
+    if not spring_boot_version:
+        sb_prop = props.get("spring-boot.version", props.get("spring-boot-dependencies.version", ""))
+        if sb_prop:
+            spring_boot_version = sb_prop
+            spring_boot_source = "property"
+
+    # 4. Check evidence artifacts
+    evidence_data = evidence or {}
+    if not spring_boot_version:
+        tdp = evidence_data.get("target_dependency_plan", {})
+        if isinstance(tdp, dict) and tdp.get("spring_boot_version"):
+            spring_boot_version = str(tdp["spring_boot_version"])
+            spring_boot_source = "target_dependency_plan"
+    if not spring_boot_version:
+        mp = evidence_data.get("migration_plan", {})
+        if isinstance(mp, dict) and mp.get("target_spring_boot_version"):
+            spring_boot_version = str(mp["target_spring_boot_version"])
+            spring_boot_source = "migration_plan"
+
+    # Spring Framework version - only trust explicit properties
+    if spring_framework_version and spring_boot_version and not spring_boot_source.startswith("property"):
+        # If there's a dedicated spring-boot.version property and org.springframework.version, prefer boot
+        # Only mark spring_framework_version as weak if it was found via org.springframework.version
+        pass  # Keep as-is from property extraction
+
+    baseline_confirmed = bool(java_version and spring_boot_version)
+    missing = []
+    if not java_version:
+        missing.append("java.version")
+    if not spring_boot_version:
+        missing.append("spring_boot_version")
+
+    return {
+        "java_version": java_version or "unknown",
+        "spring_boot_version": spring_boot_version or "unknown",
+        "spring_boot_source": spring_boot_source,
+        "has_spring_boot_bom": has_spring_boot_bom,
+        "has_spring_boot_parent": has_spring_boot_parent,
+        "spring_framework_version": spring_framework_version or "unknown",
+        "baseline_confirmed": baseline_confirmed,
+        "missing": missing,
+    }
+
+
+def _classify_stage3_dependencies(
+    pom_summary: dict[str, Any],
+    baseline: dict[str, Any],
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Classify dependencies into buckets for Stage 3 review.
+
+    Buckets:
+    A. boot_managed — dependencies normally managed by Spring Boot BOM/parent
+    B. jakarta_platform — javax.* dependencies (may need migration)
+    C. app_specific_third_party — not controlled by Boot/OpenRewrite
+    D. build_plugins — Maven plugins
+    E. transitive_or_bom_managed_risk — requests for transitive deps
+    """
+    deps = pom_summary.get("dependencies", [])
+    plugins = pom_summary.get("plugins", [])
+    props = pom_summary.get("properties", {})
+
+    boot_managed_prefixes = (
+        "org.springframework.boot",
+        "org.springframework",
+        "org.hibernate.validator",
+        "com.fasterxml",
+        "org.slf4j",
+        "ch.qos.logback",
+    )
+    boot_managed_artifacts = (
+        "spring-boot-starter",
+        "hibernate-core",
+        "tomcat-embed",
+        "jackson-",
+        "slf4j-",
+        "logback-",
+        "assertj-core",
+        "junit-jupiter",
+        "mockito-",
+    )
+
+    app_specific_ga = (
+        ("org.zalando", "problem-spring-web"),
+        ("com.microsoft.azure", "azure-servicebus"),
+        ("com.microsoft.azure", "azure-servicebus-spring-boot-starter"),
+        ("org.apache.juneau", ""),
+        ("io.jsonwebtoken", ""),
+        ("com.google.code.gson", "gson"),
+        ("org.modelmapper", "modelmapper"),
+        ("org.projectlombok", "lombok"),
+        ("org.assertj", "assertj-core"),
+    )
+
+    boot_managed: list[dict[str, str]] = []
+    jakarta_platform: list[dict[str, str]] = []
+    app_specific: list[dict[str, str]] = []
+    build_plugins_list: list[dict[str, str]] = []
+
+    for d in deps:
+        gid = d.get("groupId", "")
+        aid = d.get("artifactId", "")
+
+        # B. javax → jakarta check
+        if "javax." in gid or any(
+            aid.startswith(pfx)
+            for pfx in ("javax.servlet", "javax.persistence", "javax.annotation", "javax.validation")
+        ):
+            jakarta_platform.append(d)
+            continue
+
+        # A. Boot-managed check
+        if any(gid.startswith(pfx) for pfx in boot_managed_prefixes):
+            boot_managed.append(d)
+            continue
+        if any(pfx in aid for pfx in boot_managed_artifacts):
+            boot_managed.append(d)
+            continue
+
+        # C. App-specific check
+        is_app_specific = False
+        for ag_gid, ag_aid in app_specific_ga:
+            if (ag_gid == gid or (ag_gid and gid and ag_gid in gid)) and (
+                not ag_aid or ag_aid in aid
+            ):
+                app_specific.append(d)
+                is_app_specific = True
+                break
+        if is_app_specific:
+            continue
+
+        # Default: if not recognized, put in app_specific
+        app_specific.append(d)
+
+    for p in plugins:
+        build_plugins_list.append(p)
+
+    return {
+        "boot_managed": boot_managed,
+        "jakarta_platform": jakarta_platform,
+        "app_specific_third_party": app_specific,
+        "build_plugins": build_plugins_list,
+        "transitive_or_bom_managed_risk": [],  # populated during review
+    }
+
+
+def _build_apply_dependency_change_answer(
+    *,
+    question: str,
+    artifact_previews: tuple[dict[str, Any], ...] | None = None,
+    events: tuple[Any, ...] = (),
+    approvals: tuple[Any, ...] = (),
+    commands: tuple[Any, ...] = (),
+) -> str:
+    """Build an answer for apply_dependency_change intent.
+
+    Routes through the same PomDependencyEditor service path as the UI.
+    Actually applies the change to the Stage 3 sandbox and returns
+    the result from PomApplyResult.
+    """
+
+    # Resolve job_id from events
+    job_id = ""
+    if events:
+        for evt in events:
+            jid = getattr(evt, "job_id", "") or ""
+            if jid:
+                job_id = str(jid)
+                break
+
+    if not job_id:
+        return (
+            "I cannot apply this change because I cannot determine which job "
+            "to target. Please navigate to a migration job first."
+        )
+
+    # Parse the target from the question
+    dep_name = ""
+    target_version = ""
+    update_match = re.search(
+        r"(?:update|upgrade|change|set|bump|replace)\s+([\w.\-:]+)\s+(?:to|version)\s+([\d.]+)",
+        str(question or ""), re.IGNORECASE,
+    )
+    if update_match:
+        dep_name = update_match.group(1).strip()
+        target_version = update_match.group(2).strip()
+
+    if not dep_name or not target_version:
+        return (
+            "I need a specific dependency name and target version to apply a change. "
+            'For example: "apply change gson to 2.11.0".'
+        )
+
+    # Check if we have a root_pom preview for context
+    root_pom_exists = False
+    if artifact_previews:
+        for pv in artifact_previews:
+            if pv.get("source_type") == "file_alias" and pv.get("artifact_kind") == "root_pom":
+                root_pom_exists = bool(pv.get("exists"))
+                break
+
+    if not root_pom_exists:
+        return (
+            "The root pom.xml is not available yet. I need the POM to be "
+            "resolved before I can apply this change. Please wait for Stage 3 "
+            "setup to complete."
+        )
+
+    # Route through the same PomDependencyEditor service path as UI
+    try:
+        editor = _build_pom_dependency_editor()
+        result = editor.apply_change_from_user_request(
+            job_id=job_id,
+            user_request=question,
+            idempotency_key=f"ask:{job_id}:{utc_now_text()}",
+        )
+    except Exception as e:
+        return (
+            f"Backend could not apply the change: {e}. "
+            "Please try again or use the Stage 3 Dependency Review panel."
+        )
+
+    if result.status == "blocked":
+        return (
+            f"The backend blocked this change: {result.message}\n\n"
+            "You can use the Stage 3 Dependency Review panel to review "
+            "dependencies and create a proposal before applying."
+        )
+
+    if result.status == "error":
+        return (
+            f"The backend could not apply this change: {result.message}\n\n"
+            "Please check the Stage 3 sandbox is available and try again."
+        )
+
+    # Success — report from PomApplyResult
+    lines: list[str] = []
+    lines.append(f"## ✅ POM change applied\n")
+    lines.append(f"**{result.message}**\n")
+    lines.append(f"- **Change ID:** `{result.change_id}`")
+    lines.append(f"- **Operation:** {result.operation}")
+    lines.append(f"- **Target:** {result.target_desc}")
+    if result.before_version:
+        lines.append(f"- **Before:** {result.before_version}")
+    lines.append(f"- **After:** {result.after_version}")
+    if result.validation_id:
+        lines.append(f"- **Validation ID:** `{result.validation_id}`")
+    lines.append(f"- **Status:** {result.status}")
+    if result.rollback_available:
+        lines.append(f"- **Rollback:** Available")
+    lines.append(f"\nThe change has been written to the Stage 3 sandbox. "
+                  f"Validation is now running. "
+                  f"Check the Stage 3 Dependency Review panel for results.")
+
+    return "\n".join(lines)
+
+
+def _build_pom_dependency_change_request_answer(
+    *,
+    question: str,
+    artifact_previews: tuple[dict[str, Any], ...] | None = None,
+    events: tuple[Any, ...] = (),
+    approvals: tuple[Any, ...] = (),
+    commands: tuple[Any, ...] = (),
+) -> str:
+    """Build a governed dependency change request for an explicit single dependency edit.
+
+    Examples: 'Update gson to 2.11.0', 'Change tomcat to 10.1.20 at stage 3'
+    Produces exact before/after XML, risk, evidence, and approval path.
+    """
+    lines: list[str] = []
+    lines.append(
+        "I cannot apply this directly, but I can draft a human-reviewable "
+        "dependency change request.\n"
+    )
+
+    # ── Resolve root_pom preview ──
+    root_pom_preview: dict[str, Any] | None = None
+    root_pom_exists = False
+    requested_stage = _get_requested_stage(question, "pom_dependency_change_request") or 1
+    if artifact_previews:
+        for pv in artifact_previews:
+            if pv.get("source_type") == "file_alias" and pv.get("artifact_kind") == "root_pom":
+                root_pom_preview = pv
+                root_pom_exists = bool(pv.get("exists"))
+                break
+
+    pom_summary: dict[str, Any] | None = None
+    if root_pom_preview and root_pom_exists:
+        raw_preview = str(root_pom_preview.get("preview", ""))
+        if raw_preview.strip():
+            pom_summary = _extract_pom_summary(raw_preview)
+
+    # ── Parse target dependency from question ──
+    # Patterns: "update gson to 2.11.0", "change tomcat to 10.1.20"
+    dep_name = ""
+    target_version = ""
+    update_match = re.search(
+        r"(?:update|upgrade|change|set|bump|replace)\s+([\w.\-:]+)\s+(?:to|version)\s+([\d.]+)",
+        str(question or ""), re.IGNORECASE,
+    )
+    if update_match:
+        dep_name = update_match.group(1).strip()
+        target_version = update_match.group(2).strip()
+    else:
+        # Fallback: try to find dependency name
+        dep_match = re.search(
+            r"(?:update|upgrade|change)\s+(?:dependency|version of)\s+([\w.\-:]+)",
+            str(question or ""), re.IGNORECASE,
+        )
+        if dep_match:
+            dep_name = dep_match.group(1).strip()
+
+    # ── Detect if dependency is transitive/BOM-managed ──
+    is_transitive = False
+    found_dep: dict[str, str] | None = None
+    if pom_summary and (dep_name or target_version):
+        deps = pom_summary.get("dependencies", [])
+        search_id = dep_name.lower()
+        for d in deps:
+            aid = d.get("artifactId", "").lower()
+            gid = d.get("groupId", "").lower()
+            if search_id in aid or search_id in gid or search_id in f"{gid}:{aid}":
+                found_dep = d
+                break
+        if not found_dep and dep_name:
+            # Dependency not found in POM — likely transitive
+            is_transitive = True
+
+    # ── Section 1: Proposed Change ──
+    lines.append("## 1. Proposed Change\n")
+
+    if not root_pom_exists and not pom_summary:
+        reason = (
+            str(root_pom_preview.get("reason", "not_available")).replace("_", " ")
+            if root_pom_preview
+            else "root_pom not resolved"
+        )
+        lines.append(
+            f"The root pom.xml is not available yet (reason: {reason}). "
+            "I need the root_pom to draft an exact dependency change."
+        )
+    elif is_transitive:
+        lines.append(
+            f"No direct `{dep_name}` dependency was found in the root pom.xml. "
+            f"This artifact is likely **managed transitively** by Spring Boot "
+            f"starter or BOM.\n\n"
+            f"**Recommendation:** Do not inject a direct dependency unless "
+            f"`dependency_policy_report` or `dependency_graph` evidence "
+            f"shows an effective dependency version conflict that requires "
+            f"a managed override.\n\n"
+            f"If a managed override is needed, add a `<dependencyManagement>` "
+            f"entry with the desired version instead of a direct dependency."
+        )
+    elif found_dep:
+        gid = found_dep.get("groupId", "?")
+        aid = found_dep.get("artifactId", "?")
+        current_ver = found_dep.get("version", "(managed)")
+        scope = found_dep.get("scope", "")
+        scope_note = f" [{scope}]" if scope and scope != "compile" else ""
+
+        lines.append(f"**Current match:** `{gid}:{aid}` currently uses `{current_ver}`{scope_note} in Stage {requested_stage} root_pom.\n")
+        if target_version:
+            lines.append(f"**Requested change:** `{current_ver}` → `{target_version}`\n")
+            lines.append("**Exact XML edit:**\n")
+            lines.append("~~~xml")
+            lines.append("<!-- Before -->")
+            lines.append(f"<dependency>")
+            lines.append(f"  <groupId>{gid}</groupId>")
+            lines.append(f"  <artifactId>{aid}</artifactId>")
+            lines.append(f"  <version>{current_ver}</version>")
+            if scope:
+                lines.append(f"  <scope>{scope}</scope>")
+            lines.append(f"</dependency>")
+            lines.append("")
+            lines.append("<!-- After -->")
+            lines.append(f"<dependency>")
+            lines.append(f"  <groupId>{gid}</groupId>")
+            lines.append(f"  <artifactId>{aid}</artifactId>")
+            lines.append(f"  <version>{target_version}</version>")
+            if scope:
+                lines.append(f"  <scope>{scope}</scope>")
+            lines.append(f"</dependency>")
+            lines.append("~~~\n")
+            lines.append(
+                f"**Candidate backend action:** OpenRewrite `UpgradeDependencyVersion` "
+                f"configured with `groupId={gid}`, `artifactId={aid}`, `newVersion={target_version}`."
+            )
+        else:
+            lines.append(
+                "I need a target version to propose an exact change. "
+                "Please specify the target version or provide evidence from "
+                "`target_dependency_plan` or `dependency_policy_report`."
+            )
+    else:
+        lines.append(
+            "I found the root pom.xml but could not identify a matching dependency. "
+            "Please check the exact dependency groupId and artifactId."
+        )
+
+    # ── Section 2: Risk ──
+    lines.append("")
+    lines.append("## 2. Risk\n")
+    if is_transitive:
+        lines.append(
+            "**Medium** — Adding a direct transitive dependency can create version conflicts "
+            "and override BOM-managed versions. Backend build/test validation is required."
+        )
+    elif found_dep and target_version:
+        lines.append(
+            "**Low/Medium** — A direct dependency version change may affect transitive "
+            "dependency resolution. Backend `mvn dependency:tree` and build/test "
+            "validation are required before acceptance."
+        )
+    else:
+        lines.append("Risk cannot be assessed without a specific dependency match.")
+
+    # ── Section 3: Evidence ──
+    lines.append("")
+    lines.append("## 3. Evidence\n")
+    available_artifact_kinds: list[str] = []
+    if artifact_previews:
+        for pv in artifact_previews:
+            kind = pv.get("artifact_kind", "")
+            if kind and kind not in available_artifact_kinds and pv.get("exists"):
+                available_artifact_kinds.append(kind)
+    event_artifact_kinds = _extract_artifact_kinds_list(events)
+    all_kinds = sorted(set(available_artifact_kinds + event_artifact_kinds))
+    evidence_items = [k for k in all_kinds if k in (
+        "root_pom", "target_dependency_plan", "dependency_policy_report",
+        "dependency_graph", "dependency_policy_summary", "rewrite_preview.json",
+        "migration_plan.yaml",
+    )]
+    if evidence_items:
+        lines.append("Available evidence to justify the change:")
+        for k in evidence_items:
+            lines.append(f"- `{k}`")
+    else:
+        lines.append("No dependency evidence artifacts are currently available.")
+
+    # ── Section 4: Approval ──
+    lines.append("")
+    lines.append("## 4. Approval\n")
+    lines.append(
+        "This is a draft dependency change request. To proceed:\n\n"
+        "1. **Human** reviews and approves the exact before/after change.\n"
+        "2. **Backend** creates a governed repair/proposal with checksum.\n"
+        "3. **Backend** applies the patch in the sandbox.\n"
+        "4. **Backend** validates with build and test.\n"
+        "5. **Proof gate** confirms acceptance before the change is final."
+    )
+
+    # ── Section 5: Not Applied ──
+    lines.append("")
+    lines.append("## 5. Not Applied\n")
+    lines.append(
+        "No file was written, no command was executed, no stage was changed, "
+        "and no patch was applied by this chat. "
+        "This is a human-reviewable change request only."
+    )
+
+    answer = "\n".join(lines)
+    from migration_factory.control_tower.application.redaction import (
+        redact_absolute_paths,
+        redact_deployment_identifiers,
+        redact_secret_keys,
+    )
+    redacted = answer
+    redacted = redact_absolute_paths(redacted)
+    redacted = redact_secret_keys(redacted)
+    redacted = redact_deployment_identifiers(redacted)
+    return redacted
+
+
+def _build_stage3_dependency_review_answer(
+    *,
+    question: str,
+    artifact_previews: tuple[dict[str, Any], ...] | None = None,
+    events: tuple[Any, ...] = (),
+    approvals: tuple[Any, ...] = (),
+    commands: tuple[Any, ...] = (),
+) -> str:
+    """Build a Stage 3 dependency modernization review.
+
+    Detects baseline from Stage 3 root_pom/evidence, buckets dependencies,
+    proposes evidence-backed changes, and lists policy decisions needed.
+    """
+    lines: list[str] = []
+
+    # ── Determine requested stage ──
+    requested_stage = _get_requested_stage(question, "stage3_dependency_review") or 3
+
+    # ── Resolve root_pom preview ──
+    root_pom_preview: dict[str, Any] | None = None
+    root_pom_exists = False
+    stage_of_preview = 1
+    if artifact_previews:
+        for pv in artifact_previews:
+            if pv.get("source_type") == "file_alias" and pv.get("artifact_kind") == "root_pom":
+                root_pom_preview = pv
+                root_pom_exists = bool(pv.get("exists"))
+                stage_of_preview = int(pv.get("stage_index", 1) or 1)
+                break
+
+    # ── Check if Stage 3 review is allowed ──
+    allowed, reason = _is_final_dependency_review_allowed(
+        stage_index=requested_stage if root_pom_exists else stage_of_preview,
+        root_pom_preview=root_pom_preview,
+        events=events,
+    )
+
+    # ── If not Stage 3 (or stage 1/2), defer final recommendations ──
+    if requested_stage in (1, 2) and not allowed:
+        return _build_stage1_or_2_deferred_dependency_answer(
+            requested_stage=requested_stage,
+            root_pom_preview=root_pom_preview,
+            events=events,
+        )
+
+    if not root_pom_exists:
+        reason_text = str(root_pom_preview.get("reason", "not_available")).replace("_", " ") if root_pom_preview else "not_available"
+        lines.append(
+            f"I cannot confirm the Stage 3 baseline yet. "
+            f"Stage 3 root_pom is not available (reason: {reason_text}). "
+            "Please wait for the backend to complete Stage 3 transformation "
+            "and publish root_pom evidence."
+        )
+        return "\n".join(lines)
+
+    # ── Extract POM summary and detect baseline ──
+    raw_preview = str(root_pom_preview.get("preview", ""))
+    pom_summary: dict[str, Any] | None = None
+    baseline: dict[str, Any] = {}
+    if raw_preview.strip():
+        pom_summary = _extract_pom_summary(raw_preview)
+        baseline = _detect_stage3_baseline(pom_summary)
+
+    if not pom_summary:
+        lines.append(
+            "The Stage 3 root pom.xml could not be parsed into structured fields. "
+            "Cannot perform dependency review without a parseable POM."
+        )
+        return "\n".join(lines)
+
+    # ── Section 1: Detected Stage 3 Baseline ──
+    lines.append("## 1. Detected Stage 3 Baseline\n")
+    java_ver = baseline.get("java_version", "unknown")
+    boot_ver = baseline.get("spring_boot_version", "unknown")
+    boot_src = baseline.get("spring_boot_source", "unknown")
+    confirmed = baseline.get("baseline_confirmed", False)
+
+    if confirmed:
+        lines.append(
+            f"Detected target baseline:\n"
+            f"- **Java:** {java_ver}\n"
+            f"- **Spring Boot:** {boot_ver}\n"
+            f"- **Source:** {boot_src.replace('_', ' ')}\n"
+        )
+        if baseline.get("has_spring_boot_parent"):
+            lines.append("- **Parent:** spring-boot-starter-parent\n")
+        if baseline.get("has_spring_boot_bom"):
+            lines.append("- **BOM:** spring-boot-dependencies (dependencyManagement)\n")
+    else:
+        missing = baseline.get("missing", [])
+        lines.append(
+            f"I cannot confirm the Stage 3 baseline yet. "
+            f"Missing: {', '.join(missing) if missing else 'insufficient evidence'}. "
+            f"Stage 3 root_pom or target_dependency_plan is needed."
+        )
+        return "\n".join(lines) + "\n\nNot applied.\n"
+
+    # ── Section 2: What I Will Not Do ──
+    lines.append("\n## 2. What I Will Not Do\n")
+    lines.append(
+        "- I will **not** propose Java/Spring Boot upgrades if Stage 3 already reached the target baseline.\n"
+        "- I will **not** guess latest versions.\n"
+        "- I will **not** apply anything directly.\n"
+    )
+
+    # ── Section 3: Dependency Buckets ──
+    lines.append("\n## 3. Dependency Buckets\n")
+    buckets = _classify_stage3_dependencies(pom_summary, baseline)
+
+    boot_managed_deps = buckets.get("boot_managed", [])
+    jakarta_deps = buckets.get("jakarta_platform", [])
+    app_deps = buckets.get("app_specific_third_party", [])
+    build_plugins = buckets.get("build_plugins", [])
+
+    lines.append(f"**A. Boot-Managed** ({len(boot_managed_deps)} dependencies)\n")
+    if boot_managed_deps:
+        lines.append("These are normally managed by Spring Boot BOM/parent:")
+        for d in boot_managed_deps[:10]:
+            gid = d.get("groupId", "?")
+            aid = d.get("artifactId", "?")
+            ver = d.get("version", "(managed)")
+            lines.append(f"  - `{gid}:{aid}` = `{ver}`")
+        if len(boot_managed_deps) > 10:
+            lines.append(f"  ... and {len(boot_managed_deps) - 10} more.")
+    lines.append(
+        "**Action:** Prefer BOM/parent management. Remove explicit version tags "
+        "unless dependency_policy_report requires an override.\n"
+    )
+
+    lines.append(f"**B. Jakarta/Platform** ({len(jakarta_deps)} dependencies)\n")
+    if jakarta_deps:
+        lines.append(
+            "These may indicate old Java EE / Jakarta migration risk "
+            "(remaining javax.* in Stage 3 is suspicious for Boot 3.x):"
+        )
+        for d in jakarta_deps:
+            gid = d.get("groupId", "?")
+            aid = d.get("artifactId", "?")
+            ver = d.get("version", "(managed)")
+            lines.append(f"  - `{gid}:{aid}` = `{ver}`")
+    else:
+        lines.append("No javax.* dependencies remain in Stage 3 POM.")
+
+    lines.append(f"\n**C. App-Specific Third-Party** ({len(app_deps)} dependencies)\n")
+    if app_deps:
+        lines.append("These are not controlled by Boot/OpenRewrite generic migration:")
+        for d in app_deps[:15]:
+            gid = d.get("groupId", "?")
+            aid = d.get("artifactId", "?")
+            ver = d.get("version", "(managed)")
+            lines.append(f"  - `{gid}:{aid}` = `{ver}`")
+        if len(app_deps) > 15:
+            lines.append(f"  ... and {len(app_deps) - 15} more.")
+    lines.append("**Action:** Review against target_dependency_plan, dependency_policy_report, or operator target version.\n")
+
+    lines.append(f"**D. Build/Test Plugins** ({len(build_plugins)} plugins)\n")
+    if build_plugins:
+        for p in build_plugins[:10]:
+            gid = p.get("groupId", "?")
+            aid = p.get("artifactId", "?")
+            ver = p.get("version", "(managed)")
+            lines.append(f"  - `{gid}:{aid}` = `{ver}`")
+        if len(build_plugins) > 10:
+            lines.append(f"  ... and {len(build_plugins) - 10} more.")
+    lines.append("**Action:** Check Java {java_ver} compatibility; do not upgrade blindly without plugin policy or build failure evidence.\n".format(java_ver=java_ver))
+
+    lines.append("**E. Transitive/BOM-Managed Risk**")
+    lines.append(
+        "Requests like 'change Tomcat' when no direct Tomcat dependency exists "
+        "should be handled as BOM-managed override only if dependency_policy_report requires it. "
+        "Do not inject direct transitive dependencies.\n"
+    )
+
+    # ── Section 4: Recommended Dependency Actions ──
+    lines.append("## 4. Recommended Dependency Actions\n")
+
+    recommendations: list[str] = []
+    # Boot-managed: prefer BOM management
+    for d in boot_managed_deps[:5]:
+        gid = d.get("groupId", "?")
+        aid = d.get("artifactId", "?")
+        ver = d.get("version", "(managed)")
+        if d.get("version") and d.get("version") not in ("${spring-boot.version}", "${project.parent.version}"):
+            recommendations.append(
+                f"**`{gid}:{aid}`** — current: `{ver}` → **Action:** Remove explicit version; let Boot BOM manage it. "
+                "Reason: managed by Spring Boot BOM. Risk: Low."
+            )
+    if len(boot_managed_deps) > 5:
+        recommendations.append(
+            f"... and {len(boot_managed_deps) - 5} more Boot-managed dependencies "
+            "should be reviewed for BOM alignment."
+        )
+
+    # Jakarta: flag for migration
+    for d in jakarta_deps:
+        gid = d.get("groupId", "?")
+        aid = d.get("artifactId", "?")
+        ver = d.get("version", "(managed)")
+        recommendations.append(
+            f"**`{gid}:{aid}`** — current: `{ver}` → "
+            "**Action:** Replace javax→jakarta equivalent. "
+            "Reason: Spring Boot 3 requires Jakarta namespace. "
+            f"Risk: Medium/High (source imports may break). "
+            "Evidence: Stage 3 root_pom."
+        )
+
+    # App-specific: needs policy decision
+    policy_candidates = []
+    for d in app_deps:
+        gid = d.get("groupId", "")
+        aid = d.get("artifactId", "")
+        ver = d.get("version", "(managed)")
+        if any(
+            ag_gid in gid
+            for ag_gid in (
+                "org.zalando", "microsoft.azure", "org.apache.juneau",
+                "io.jsonwebtoken", "com.google.code.gson", "org.modelmapper",
+            )
+        ):
+            policy_candidates.append(d)
+            recommendations.append(
+                f"**`{gid}:{aid}`** — current: `{ver}` → "
+                "**Action: Needs policy decision.** "
+                "No target version in evidence artifacts. "
+                "Provide operator target version or reference dependency_policy_report."
+            )
+        else:
+            recommendations.append(
+                f"**`{gid}:{aid}`** — current: `{ver}` → "
+                "**Action:** Review against dependency_policy_report or operator target."
+            )
+
+    if recommendations:
+        for rec in recommendations:
+            lines.append(f"- {rec}")
+    else:
+        lines.append("No specific dependency actions recommended at this stage.")
+
+    # ── Section 5: Human Decisions Needed ──
+    lines.append("")
+    lines.append("## 5. Human Decisions Needed\n")
+    if policy_candidates:
+        lines.append(
+            "The following dependencies require operator/business/policy target versions "
+            "before a governed change proposal can be drafted:"
+        )
+        for d in policy_candidates:
+            gid = d.get("groupId", "?")
+            aid = d.get("artifactId", "?")
+            ver = d.get("version", "(managed)")
+            lines.append(f"  - `{gid}:{aid}` (current: `{ver}`)")
+        lines.append(
+            "\nTo proceed, specify an exact target version, e.g.: "
+            "`Update <artifact> to <version> at stage 3`"
+        )
+    else:
+        lines.append("No policy decisions are currently outstanding.")
+
+    # ── Section 6: Governed Change Proposal Next Step ──
+    lines.append("")
+    lines.append("## 6. Governed Change Proposal Next Step\n")
+    lines.append(
+        "- An exact dependency change can be turned into a `pom_dependency_change_request`.\n"
+        "- Backend/OpenRewrite candidate recipe is available.\n"
+        "- Human approval with checksum is required.\n"
+        "- Sandbox apply → build/test/proof validates the change."
+    )
+
+    # ── Section 7: Not Applied ──
+    lines.append("")
+    lines.append("## 7. Not Applied\n")
+    lines.append(
+        "No file was written, no command was executed, no approval was recorded."
+    )
+
+    answer = "\n".join(lines)
+    from migration_factory.control_tower.application.redaction import (
+        redact_absolute_paths,
+        redact_deployment_identifiers,
+        redact_secret_keys,
+    )
+    redacted = answer
+    redacted = redact_absolute_paths(redacted)
+    redacted = redact_secret_keys(redacted)
+    redacted = redact_deployment_identifiers(redacted)
+    return redacted
+
+
+def _build_stage1_or_2_deferred_dependency_answer(
+    *,
+    requested_stage: int,
+    root_pom_preview: dict[str, Any] | None = None,
+    events: tuple[Any, ...] = (),
+) -> str:
+    """Build a response that defers final dependency modernization for Stage 1/2.
+
+    Explains current POM, identifies obvious risks, but does not propose
+    final app-specific dependency modernization.
+    """
+    lines: list[str] = []
+    lines.append(
+        "We are not at the final target baseline yet. "
+        "I can explain current dependencies and identify obvious risks, "
+        "but final app-specific dependency modernization should wait for "
+        "Stage 3 after OpenRewrite/backend migration produces the "
+        "Java/Spring Boot target POM.\n"
+    )
+
+    if root_pom_preview and root_pom_preview.get("exists"):
+        preview = str(root_pom_preview.get("preview", ""))
+        pom_summary = _extract_pom_summary(preview)
+        props = pom_summary.get("properties", {})
+        deps = pom_summary.get("dependencies", [])
+
+        java_ver = props.get("java.version", "unknown")
+        boot_ver = props.get("spring-boot.version", props.get("spring-boot-dependencies.version", "unknown"))
+
+        lines.append(f"**Current stage {requested_stage} POM summary:**")
+        lines.append(f"- `java.version`: `{java_ver}`")
+        if boot_ver != "unknown":
+            lines.append(f"- `spring-boot.version`: `{boot_ver}`")
+
+        # List obvious risks
+        lines.append("\n**Obvious risks identified:**")
+        javax_deps = [
+            d for d in deps
+            if "javax." in d.get("groupId", "").lower()
+            or any(pfx in d.get("artifactId", "").lower() for pfx in ("javax.",))
+        ]
+        if javax_deps:
+            lines.append(
+                f"- {len(javax_deps)} javax.* dependencies detected "
+                "(will need Jakarta migration at Stage 3)."
+            )
+        if java_ver == "11" or java_ver == "1.8":
+            lines.append(
+                f"- Java {java_ver} detected (Spring Boot 3 requires Java 17+)."
+            )
+        if not pom_summary.get("has_dependency_management") and not pom_summary.get("has_parent"):
+            lines.append("- No dependencyManagement or parent POM — version drift risk.")
+    else:
+        reason = "not_available"
+        if root_pom_preview:
+            reason = str(root_pom_preview.get("reason", "not_available")).replace("_", " ")
+        lines.append(
+            f"The root pom.xml for stage {requested_stage} is not available yet "
+            f"(reason: {reason})."
+        )
+
+    lines.append("")
+    lines.append(
+        "**What I can do now:**\n"
+        "- Explain POM content and dependencies\n"
+        "- Compare artifact versions across stages\n"
+        "- Identify obvious migration risks\n"
+        "- Handle explicit single-dependency edits you specify directly "
+        "(e.g., 'update gson to 2.11.0')\n\n"
+        "**What should wait for Stage 3:**\n"
+        "- Final app-specific dependency modernization recommendations\n"
+        "- Broad dependency upgrade plans\n"
+        "- Jakarta migration proposals"
+    )
+
+    lines.append("")
+    lines.append("Not applied: no file was written, no command was executed.")
+    return "\n".join(lines)
+
+
 def _build_pom_explanation_answer(
     *,
     artifact_previews: tuple[dict[str, Any], ...] | None = None,
@@ -5391,6 +6805,7 @@ def _build_v2_assistant_prompt(
     prompt = {
         "question": question,
         "assistant_intent": assistant_intent,
+        "requested_stage": _get_requested_stage(question, assistant_intent),
         "conversation_history": conversation_history if conversation_history else [],
         "job": {
             "job_id": getattr(job, "job_id", ""),

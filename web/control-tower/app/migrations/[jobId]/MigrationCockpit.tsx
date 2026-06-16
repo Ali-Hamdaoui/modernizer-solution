@@ -27,6 +27,7 @@ import type {
   V2MigrationJobResponse,
   V2PipelineResponse,
 } from "../../../lib/contracts";
+import Stage3DependencyReview from "./Stage3DependencyReview";
 
 interface Stage {
   stage_index: number;
@@ -156,6 +157,14 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       "model_invocation_completed",
       "model_invocation_failed",
       "result_contract_failed",
+      // F14 POM change events
+      "pom_change_proposed",
+      "pom_change_applied",
+      "pom_validation_started",
+      "pom_validation_passed",
+      "pom_validation_failed",
+      "pom_repair_plan_created",
+      "pom_change_rolled_back",
     ]) {
       source.addEventListener(type, (event) => {
         appendEventFromSse((event as MessageEvent).data);
@@ -700,6 +709,24 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         <p className="meta">Final proof report generated when all three deterministic gates pass.</p>
       </section>
 
+      {/* F14 — Stage 3 Dependency Review */}
+      {data && (
+        <section style={{ gridColumn: "1 / -1" }}>
+          <Stage3DependencyReview
+            jobId={normalizedJobId || jobId || ""}
+            stage3Completed={
+              (data.stages || []).some(
+                (s) => s.stage_index === 3 && s.chain_status === "completed"
+              )
+            }
+            events={data.events.map((e) => ({
+              type: e.type,
+              payload: (e as Record<string, unknown>).payload as Record<string, unknown> | undefined,
+            }))}
+          />
+        </section>
+      )}
+
       <style>{`
         .cockpit-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
         .panel { border: 1px solid #ccc; border-radius: 6px; padding: 1rem; }
@@ -857,4 +884,10 @@ const IMPORTANT_SSE_TYPES = new Set([
   "proof_updated",
   "next_stage_queued",
   "result_contract_failed",
+  // F14 POM change events — trigger refresh on important state changes
+  "pom_change_applied",
+  "pom_validation_passed",
+  "pom_validation_failed",
+  "pom_repair_plan_created",
+  "pom_change_rolled_back",
 ]);
