@@ -298,3 +298,228 @@ class TestApplyCapableOperations:
         accounted = APPLY_CAPABLE_POM_OPERATIONS | PROPOSAL_ONLY_POM_OPERATIONS
         for op in ALLOWED_POM_OPERATIONS:
             assert op in accounted, f"Operation '{op}' not in apply-capable or proposal-only"
+
+
+# ── F14 wiring / intent classification tests ───────────────────────
+
+
+class TestF14IntentClassification:
+    """Tests that reproduce the exact user transcript failures."""
+
+    def test_full_pom_defaults_to_stage3_when_stage3_complete(self):
+        """User asks for 'full pom xml' with Stage 3 complete → Stage 3 should be used."""
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _default_stage_when_stage3_complete,
+        )
+        # Simulate events with Stage 3 completed
+        events = (
+            MagicMock(stage=3, type="stage_completed", status="completed", sequence=5),
+            MagicMock(stage=3, type="build_completed", status="completed", sequence=6),
+        )
+        result = _default_stage_when_stage3_complete(events)
+        assert result == 3, f"Expected stage=3 when Stage 3 is complete, got {result}"
+
+    def test_stage1_not_used_when_stage3_explicit(self):
+        """User explicitly says Stage 3 → must not fall back to Stage 1."""
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _get_requested_stage,
+        )
+        # "Show the full raw backend-resolved Stage 3 root pom.xml"
+        question = "Show the full raw backend-resolved Stage 3 root pom.xml. Do not summarize it. Use Stage 3 only."
+        result = _get_requested_stage(question, "pom_or_dependency_explanation")
+        assert result == 3, f"Expected stage=3 for explicit Stage 3 question, got {result}"
+
+    def test_explicit_stage3_raw_pom_does_not_route_to_dependency_review(self):
+        """Explicit Stage 3 raw POM request must NOT route to stage3_dependency_review."""
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _classify_v2_assistant_intent,
+        )
+        question = "Show the full raw backend-resolved Stage 3 root pom.xml. Do not summarize it. Use Stage 3 only."
+        intent = _classify_v2_assistant_intent(question)
+        assert intent != "stage3_dependency_review", (
+            f"Raw POM request must not route to dependency review, got {intent}"
+        )
+        assert intent in ("pom_or_dependency_explanation", "artifact_content", "general_question"), (
+            f"Raw POM request should be pom_or_dependency_explanation, got {intent}"
+        )
+
+    def test_stage3_dependency_review_prompt_routes_to_review(self):
+        """'Review the Stage 3 pom.xml dependencies' must route to stage3_dependency_review."""
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _classify_v2_assistant_intent,
+        )
+        question = "Review the Stage 3 pom.xml dependencies. Do not apply anything."
+        intent = _classify_v2_assistant_intent(question)
+        assert intent == "stage3_dependency_review", (
+            f"Review prompt should route to stage3_dependency_review, got {intent}"
+        )
+
+    def test_propose_property_change_returns_proposal_intent_not_review(self):
+        """'Propose changing assertj.version to 3.24.2' must route to proposal, not review."""
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _classify_v2_assistant_intent,
+        )
+        question = "Propose changing assertj.version to 3.24.2 in Stage 3 root pom.xml. Do not apply."
+        intent = _classify_v2_assistant_intent(question)
+        # Must not be stage3_dependency_review or generic
+        assert intent != "stage3_dependency_review", (
+            f"Propose property change must not route to dependency review, got {intent}"
+        )
+        # Should be pom_change_proposal or pom_dependency_change_request
+        assert intent in ("pom_change_proposal", "pom_dependency_change_request"), (
+            f"Propose property change should route to proposal, got {intent}"
+        )
+
+    def test_modelmapper_apply_prompt_does_not_return_healthcheck_status(self):
+        """'Apply POM change: update org.modelmapper.version to 2.4.5' must NOT route to model_status."""
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _classify_v2_assistant_intent,
+        )
+        question = "Apply this Stage 3 POM change: update property org.modelmapper.version to 2.4.5"
+        intent = _classify_v2_assistant_intent(question)
+        assert intent != "model_status", (
+            f"Apply property change must not route to model_status (modelmapper has 'model' substring), got {intent}"
+        )
+        assert intent in ("apply_dependency_change", "pom_dependency_change_request", "pom_change_proposal"), (
+            f"Apply property change should route to apply/proposal, got {intent}"
+        )
+
+    def test_apply_property_change_routes_to_apply_dependency_change(self):
+        """'Apply this Stage 3 POM change: update property assertj.version to 3.24.2' → apply_dependency_change."""
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _classify_v2_assistant_intent,
+        )
+        question = "apply this change: update property assertj.version to 3.24.2"
+        intent = _classify_v2_assistant_intent(question)
+        assert intent == "apply_dependency_change", (
+            f"Apply property change must route to apply_dependency_change, got {intent}"
+        )
+
+
+class TestF14ApplyPropertyChange:
+    """Tests for apply property change through assistant path."""
+
+    def test_apply_property_change_from_assistant_calls_editor_and_writes(self):
+        """Apply property change from assistant calls PomDependencyEditor and writes."""
+        editor = _mock_editor()
+
+        # Update SAMPLE_POM to include assertj.version property
+        pom_with_assertj = SAMPLE_POM.replace(
+            "</properties>",
+            "    <assertj.version>3.13.2</assertj.version>\n    </properties>",
+        )
+        pom_deps = dict(SAMPLE_POM_DEPS)
+        pom_deps["properties"] = {
+            **pom_deps.get("properties", {}),
+            "assertj.version": "3.13.2",
+        }
+
+        result = editor.apply_change_from_user_request(
+            job_id="job_1",
+            user_request="update property assertj.version to 3.24.2",
+            idempotency_key="ik_prop_apply_1",
+            pom_content=pom_with_assertj,
+            pom_deps_data=pom_deps,
+        )
+
+        assert result.status == "applied_pending_validation"
+        assert result.operation == "update_property_version"
+        assert result.change_id != ""
+
+    def test_apply_property_change_returns_change_id_validation_id(self):
+        """Apply property change must return change_id and validation_id."""
+        editor = _mock_editor()
+
+        pom_with_assertj = SAMPLE_POM.replace(
+            "</properties>",
+            "    <assertj.version>3.13.2</assertj.version>\n    </properties>",
+        )
+        pom_deps = dict(SAMPLE_POM_DEPS)
+        pom_deps["properties"] = {
+            **pom_deps.get("properties", {}),
+            "assertj.version": "3.13.2",
+        }
+
+        result = editor.apply_change_from_user_request(
+            job_id="job_1",
+            user_request="update property assertj.version to 3.24.2",
+            idempotency_key="ik_prop_apply_2",
+            pom_content=pom_with_assertj,
+            pom_deps_data=pom_deps,
+        )
+
+        assert len(result.change_id) > 0, "change_id must be present"
+        assert result.validation_id is not None, "validation_id must be present"
+        assert result.status == "applied_pending_validation"
+        # Must say validation is running, not passed
+        assert "validation is now running" in result.message.lower()
+        assert "passed" not in result.status
+
+
+class TestF14DeterministicFallback:
+    """Tests for deterministic fallback behavior when Azure is unavailable."""
+
+    def test_invalid_azure_response_falls_back_to_f14_deterministic_behavior(self):
+        """When Azure returns empty/invalid, fallback must still execute F14 behavior."""
+        from migration_factory.control_tower.application.v2_assistant_model_client import (
+            V2AssistantModelResult,
+            _fallback_result,
+        )
+        # Simulate the fallback producing a valid F14 answer (not model_status)
+        fallback_text = _build_test_fallback_answer("Propose changing assertj.version to 3.24.2")
+        result = _fallback_result(fallback_text, "Azure OpenAI returned empty response", "invalid_response")
+
+        # Fallback content must include the F14 answer, not just the error
+        assert result.success is False
+        assert result.source == "deterministic"
+        # Content should contain both the fallback F14 answer and the reason
+        assert "Model: fallback" in result.content
+        assert result.failure_reason == "invalid_response"
+        # The deterministic F14 answer should NOT be the model status answer
+        assert "Azure OpenAI model is" not in fallback_text, (
+            f"Deterministic fallback must not return model status for POM proposal, got: {fallback_text[:200]}"
+        )
+
+    def test_deterministic_fallback_not_depend_on_azure_response(self):
+        """F14 deterministic behavior must not depend on Azure response content."""
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _build_v2_assistant_answer,
+        )
+        question = "Propose changing assertj.version to 3.24.2 in Stage 3 root pom.xml. Do not apply."
+        answer = _build_v2_assistant_answer(
+            question=question,
+            events=(),
+            approvals=(),
+            commands=(),
+        )
+        # The deterministic answer must NOT be the model status answer
+        assert "Azure OpenAI model is" not in answer, (
+            f"Deterministic fallback must not return model status for POM proposal, got: {answer[:200]}"
+        )
+
+    def test_no_raw_path_leak_in_f14_assistant_response(self):
+        """F14 assistant responses must never contain raw sandbox paths."""
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _build_v2_assistant_answer,
+        )
+        # Build a simple answer from deterministic fallback (no events/approvals needed)
+        question = "Show the full raw backend-resolved Stage 3 root pom.xml"
+        answer = _build_v2_assistant_answer(
+            question=question,
+            events=(),
+            approvals=(),
+            commands=(),
+        )
+        # Must not contain raw path patterns
+        for bad in ("/tmp/", "/mnt/", "/home/", "/sandbox/", "C:\\", "\\\\"):
+            assert bad not in answer, (
+                f"Raw path '{bad}' leaked in assistant answer: ...{answer[answer.find(bad)-50:answer.find(bad)+50] if bad in answer else ''}"
+            )
+
+
+def _build_test_fallback_answer(question: str) -> str:
+    """Helper to build a deterministic fallback answer for testing."""
+    from migration_factory.control_tower.adapters.fastapi.app import (
+        _build_v2_assistant_answer,
+    )
+    return _build_v2_assistant_answer(question=question, events=(), approvals=(), commands=())

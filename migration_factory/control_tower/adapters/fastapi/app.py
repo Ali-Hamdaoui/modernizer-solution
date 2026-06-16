@@ -4165,8 +4165,20 @@ def _classify_v2_assistant_intent(question: str) -> str:
     lowered = str(question or "").lower()
 
     # 1. Model status first (model/Azure/provider questions)
+    #    BUT skip if user is also asking about POM/dependency changes — model status is secondary
+    pom_or_dep_terms = (
+        "pom", "pom.xml", "dependency", "property", "assertj", "modelmapper",
+        "gson", "jackson", "spring boot", "version", "apply change", "propose change",
+    )
+    has_pom_or_dep = any(t in lowered for t in pom_or_dep_terms)
+    looks_like_status_question = any(t in lowered for t in (
+        "what happened", "stage status", "what stage", "which stage",
+        "done?", "completed?", "progress",
+    )) or re.search(r'\bis stage\b', lowered) or re.search(r'\bstatus\b', lowered) is not None
     if any(term in lowered for term in ("model", "azure", "openai", "connected", "provider", "fallback", "deterministic")):
-        return "model_status"
+        # Only route to model_status if user is NOT asking about POM/deps at the same time
+        if not has_pom_or_dep or looks_like_status_question:
+            return "model_status"
 
     # 2. Check if the user explicitly says NOT to apply/execute —
     #    this negates capability_boundary and shifts toward proposal
@@ -4190,10 +4202,23 @@ def _classify_v2_assistant_intent(question: str) -> str:
         if any(term in lowered for term in capability_boundary_terms):
             return "capability_boundary"
 
-    # 4. Explicit single dependency change request (e.g. "update gson to 2.11.0")
+    # 3.5 Explicit "apply this ... change" pattern (catch BEFORE explicit dep change)
+    if any(t in lowered for t in ("apply this", "apply the", "apply it", "execute this",
+                                  "do it", "make the change", "write the change",
+                                  "go ahead and apply", "proceed with apply",
+                                  "please apply", "apply now")):
+        if not any(t in lowered for t in ("review", "what dependency", "what should", "which dependency")):
+            return "apply_dependency_change"
+
+    # 4. Explicit single dependency/property change request (e.g. "update gson to 2.11.0")
+    #    Expanded to catch "update property X to Y" and "update X to Y.Z" patterns
     explicit_dep_change_patterns = (
         r"(?:update|upgrade|change|set|bump|replace)\s+([\w.\-:]+)\s+(?:to|version)\s+([\d.]+)",
         r"(?:update|upgrade|change)\s+(?:dependency|version of)\s+([\w.\-:]+)",
+        r"(?:update|change)\s+property\s+([\w.\-]+)",
+        r"(?:update|change)\s+([\w.\-:]+)\s+(?:to|version)\s+([\d.]+)",
+        r"(?:set|bump)\s+([\w.\-:]+)\s+(?:to)\s+([\d.]+)",
+        r"(?:update|upgrade|change|set)\s+([\w.\-]+)\.(?:version)\s+(?:to|version)\s+([\d.]+)",
     )
     for pattern in explicit_dep_change_patterns:
         if re.search(pattern, lowered):
@@ -4207,35 +4232,8 @@ def _classify_v2_assistant_intent(question: str) -> str:
             if not any(t in lowered for t in ("review", "what dependency", "what should", "which dependency")):
                 return "pom_dependency_change_request"
 
-    # 5. Stage 3 dependency review intent — broad dependency modernization at final stage
-    stage3_review_terms = (
-        "dependency modernization", "dependency review", "dependency report",
-        "what dependencies should", "which dependencies should",
-        "what dependencies need", "which dependencies need",
-        "analyze final pom", "analyze stage 3 pom",
-        "review stage 3 pom", "review final pom",
-        "dependency modernization report",
-        "check the final pom", "check stage 3 pom",
-        "propose app-specific dependency",
-        "not handled by openrewrite", "needs operator decision",
-        "what app dependencies",
-    )
-    # Must include both a review/modernization term AND a stage 3 / final stage reference
-    looks_like_stage3_review = any(term in lowered for term in stage3_review_terms)
-    looks_like_stage3_context = any(term in lowered for term in (
-        "stage 3", "phase 3", "final stage", "target stage", "final pom", "final target",
-        "after openrewrite", "java 21", "spring boot 3", "spring boot 3.5",
-        "now that we are on", "now that we have", "at stage 3",
-    ))
-    # Skip if it looks like a pure status question
-    looks_like_status = any(term in lowered for term in (
-        "what happened", "is stage", "stage status", "what stage", "which stage",
-        "done?", "completed?", "status", "progress",
-    ))
-    if (looks_like_stage3_review or looks_like_stage3_context) and not looks_like_status:
-        return "stage3_dependency_review"
-
-    # 6. POM change proposal intent — draft/upgrade/propose/modify with POM terms
+    # 5. POM change proposal intent — draft/upgrade/propose/modify with POM terms
+    #    Check BEFORE stage3 review so proposals take priority over reviews
     proposal_actions = (
         "propose", "draft", "upgrade", "modify", "change",
         "migrate", "repair", "create proposal", "safe pom",
@@ -4251,7 +4249,48 @@ def _classify_v2_assistant_intent(question: str) -> str:
     ):
         return "pom_change_proposal"
 
-    # 7. POM / dependency explanation
+    # 6. Stage 3 dependency review intent — broad dependency modernization at final stage
+    stage3_review_terms = (
+        "dependency modernization", "dependency review", "dependency report",
+        "what dependencies should", "which dependencies should",
+        "what dependencies need", "which dependencies need",
+        "analyze final pom", "analyze stage 3 pom",
+        "review stage 3 pom", "review final pom",
+        "dependency modernization report",
+        "check the final pom", "check stage 3 pom",
+        "propose app-specific dependency",
+        "not handled by openrewrite", "needs operator decision",
+        "what app dependencies",
+    )
+    # Must include both a review/modernization term AND a stage 3 / final stage reference
+    looks_like_stage3_review = any(term in lowered for term in stage3_review_terms) or bool(
+        re.search(r'\breview\b.*\b(?:pom|dependency|dependencies)\b', lowered)
+        or re.search(r'\b(?:analyze|check|inspect|examine)\b.*\b(?:pom|dependency|dependencies)\b', lowered)
+    )
+    looks_like_stage3_context = any(term in lowered for term in (
+        "stage 3", "phase 3", "final stage", "target stage", "final pom", "final target",
+        "after openrewrite", "java 21", "spring boot 3", "spring boot 3.5",
+        "now that we are on", "now that we have", "at stage 3",
+    ))
+    # Also detect any stage reference (1/2/3) for review context
+    looks_like_any_stage_context = looks_like_stage3_context or bool(
+        re.search(r'\bstage\s*[123]\b', lowered) or re.search(r'\bphase\s*[123]\b', lowered)
+    )
+    # Skip if it looks like a pure status question
+    looks_like_status = any(term in lowered for term in (
+        "what happened", "is stage", "stage status", "what stage", "which stage",
+        "done?", "completed?", "status", "progress",
+    )) or re.search(r'\bis stage\b', lowered) or re.search(r'\bstatus\b', lowered) is not None
+    # Allow review if: has review terms AND (has any stage context OR has strong standalone review terms)
+    has_standalone_review_terms = any(t in lowered for t in (
+        "needs operator decision", "dependency modernization report",
+        "dependency modernization", "dependency report",
+        "what dependencies need", "which dependencies need",
+    ))
+    if looks_like_stage3_review and (looks_like_any_stage_context or has_standalone_review_terms) and not looks_like_status:
+        return "stage3_dependency_review"
+
+    # 7. POM / dependency explanation (includes raw XML requests)
     artifact_terms = (
         "pom", "pom.xml", "pom xml", "dependency", "dependencies",
         "plugin", "xml", "artifact", "rewrite", "patch",
@@ -4263,7 +4302,7 @@ def _classify_v2_assistant_intent(question: str) -> str:
         "see", "view", "look at", "analyze", "compare",
         "summarize", "inspect", "break down", "breakdown",
         "what is in", "what's in", "content", "contents",
-        "what", "which", "list",
+        "what", "which", "list", "raw",
     )
 
     if any(term in lowered for term in artifact_terms) and (
@@ -4361,6 +4400,10 @@ def _get_requested_stage(question: str, intent: str = "") -> int | None:
     # Intent-based defaults
     if intent in ("stage3_dependency_review",):
         return 3
+    # If user asks for full/root/current/final POM without explicit stage,
+    # prefer Stage 3 if it is complete (checked via events)
+    if any(term in lowered for term in ("full pom", "root pom", "current pom", "final pom", "the pom")):
+        return None  # Let caller resolve via _default_stage_from_events
     return None
 
 
@@ -4409,6 +4452,36 @@ def _is_final_dependency_review_allowed(
     return True, "ok"
 
 
+def _default_stage_when_stage3_complete(events: tuple[Any, ...]) -> int | None:
+    """If Stage 3 is complete (has completion events), default to stage=3.
+
+    Used when user asks for "full POM" or "root POM" without explicit stage number.
+    Returns 3 if Stage 3 is complete, None otherwise.
+    """
+    stage_events = sorted(
+        [event for event in events if getattr(event, "stage", None) == 3],
+        key=lambda event: getattr(event, "sequence", 0),
+    )
+    if not stage_events:
+        return None
+    latest_stage_event = stage_events[-1]
+    if getattr(latest_stage_event, "status", "") == "running" or str(
+        getattr(latest_stage_event, "type", "")
+    ).endswith("_started"):
+        return None
+    if any(
+        getattr(event, "type", "") in {"sandbox_transform_completed", "stage_completed"}
+        or (
+            getattr(event, "status", "") == "completed"
+            and str(getattr(event, "type", ""))
+            in {"transform_completed", "build_completed", "test_completed"}
+        )
+        for event in stage_events
+    ):
+        return 3
+    return None
+
+
 def _resolve_assistant_artifact_previews(
     *,
     question: str,
@@ -4435,7 +4508,12 @@ def _resolve_assistant_artifact_previews(
     max_chars_per_preview = 2048
 
     if resolve_root_pom:
-        requested_stage = _get_requested_stage(question, assistant_intent) or _stage_index_from_question(question) or 1
+        requested_stage = (
+            _get_requested_stage(question, assistant_intent)
+            or _stage_index_from_question(question)
+            or _default_stage_when_stage3_complete(events)
+            or 1
+        )
         root_pom_preview = _resolve_root_pom_file_alias_preview(
             job_id="",
             stage_index=requested_stage,
@@ -4764,9 +4842,12 @@ def _build_v2_assistant_answer(
         effective_intent = _classify_v2_assistant_intent(question)
 
     if effective_intent == "pom_or_dependency_explanation":
+        # Detect if user is asking for raw XML (not structured summary)
+        raw_xml_requested = any(w in str(question or "").lower() for w in ("raw", "not summarize", "do not summarize", "don't summarize", "full raw"))
         return _build_pom_explanation_answer(
             artifact_previews=artifact_previews,
             events=events,
+            raw_xml_requested=raw_xml_requested,
         )
 
     if effective_intent == "pom_dependency_change_request":
@@ -5123,10 +5204,87 @@ def _build_pom_change_proposal_answer(
 ) -> str:
     """Build a governed POM change proposal from available evidence.
 
-    Does NOT dump the full POM. Produces structured sections:
-    Proposed change, Why, Risk, Evidence, Approval, Not applied.
+    If the question contains a specific property/dependency change request
+    (e.g., "propose changing assertj.version to 3.24.2"), calls the
+    PomDependencyEditor.propose_change() service to produce a real proposal
+    with proposal_id, risk, control_mode, and can_apply.
+
+    For vague requests ("propose pom changes"), produces a generic checklist.
     """
-    lines: list[str] = []
+    # ── Detect specific property/dependency change and delegate to editor ──
+    import re as _re
+    lowered = str(question or "").lower()
+    # Detect specific change: "propose changing/updating X to Y"
+    specific_change = _re.search(
+        r"(?:propose|suggest|draft|recommend).*?(?:chang|updat|upgrad|set|bump).*?(?:ing|e)?\s+"
+        r"([\w.\-]+)\s+(?:to|version|from)\s+([\d.]+)",
+        lowered, _re.IGNORECASE,
+    )
+    if not specific_change:
+        specific_change = _re.search(
+            r"(?:chang|updat|upgrad|set|bump)\s+([\w.\-]+)\s+(?:to|version)\s+([\d.]+)",
+            lowered, _re.IGNORECASE,
+        )
+
+    # Resolve job_id from events/commands
+    job_id = ""
+    if events:
+        for evt in events:
+            jid = getattr(evt, "job_id", "") or ""
+            if jid:
+                job_id = str(jid)
+                break
+    if not job_id and commands:
+        for cmd in commands:
+            jid = getattr(cmd, "job_id", "") or ""
+            if jid:
+                job_id = str(jid)
+                break
+
+    # ── If specific change detected + job_id available, call editor ──
+    if specific_change and job_id:
+        try:
+            editor = _build_pom_dependency_editor()
+            proposal = editor.propose_change(
+                job_id=job_id,
+                user_request=question,
+                idempotency_key=f"ask:{job_id}:{_bounded_event_text(question)[:40]}",
+            )
+            public = proposal.to_public_dict()
+            lines: list[str] = []
+            lines.append("## POM Change Proposal\n")
+            lines.append(f"**Proposal ID:** `{public.get('proposal_id', '')}`")
+            lines.append(f"**Status:** proposed (not applied)")
+            lines.append(f"**Can Apply:** {public.get('can_apply', False)}")
+            lines.append(f"**Risk:** {public.get('risk', 'unknown')}")
+            lines.append(f"**Control Mode:** {public.get('control_mode', 'unknown')}")
+            plan = public.get("server_validated_plan_preview", {})
+            if plan:
+                op = plan.get("operation", "")
+                target = plan.get("target", {})
+                lines.append(f"**Operation:** {op}")
+                if target.get("property_name"):
+                    lines.append(f"**Property:** `{target['property_name']}`")
+                if target.get("group_id") and target.get("artifact_id"):
+                    lines.append(f"**Artifact:** `{target['group_id']}:{target['artifact_id']}`")
+                current = plan.get("current_version", "")
+                requested = plan.get("requested_version", "")
+                if current:
+                    lines.append(f"**Current:** {current}")
+                if requested:
+                    lines.append(f"**Requested:** {requested}")
+            lines.append(f"\nThis proposal has **not** been applied. "
+                          f"Use the UI or ask me to apply it after human review.")
+            return "\n".join(lines)
+        except Exception as exc:
+            # Fall through to generic answer if editor call fails
+            return (
+                f"I tried to create a proposal through the POM editor, but it failed: {exc}. "
+                f"Please try again or use the Stage 3 Dependency Review panel."
+            )
+
+    # ── Generic proposal (no specific change detected) ──
+    lines = []
     lines.append(
         "I cannot apply this directly, but I can draft a human-reviewable "
         "POM change proposal.\n"
@@ -5730,6 +5888,7 @@ def _build_apply_dependency_change_answer(
     # Parse the target from the question
     dep_name = ""
     target_version = ""
+    is_property_update = False
     update_match = re.search(
         r"(?:update|upgrade|change|set|bump|replace)\s+([\w.\-:]+)\s+(?:to|version)\s+([\d.]+)",
         str(question or ""), re.IGNORECASE,
@@ -5737,6 +5896,40 @@ def _build_apply_dependency_change_answer(
     if update_match:
         dep_name = update_match.group(1).strip()
         target_version = update_match.group(2).strip()
+
+    # Try property update pattern: "update property X to Y" or "update X.version to Y"
+    if not dep_name or not target_version:
+        prop_match = re.search(
+            r"(?:update|change|set|bump)\s+property\s+([\w.\-]+(?:\.[\w.\-]+)?)\s+(?:to|version)\s+([\d.]+)",
+            str(question or ""), re.IGNORECASE,
+        )
+        if prop_match:
+            dep_name = prop_match.group(1).strip()
+            target_version = prop_match.group(2).strip()
+            is_property_update = True
+
+    # Try X.version to Y.Z pattern: "update assertj.version to 3.24.2"
+    if not dep_name or not target_version:
+        dot_ver_match = re.search(
+            r"(?:update|change|set|bump)\s+([\w.\-]+)\.version\s+(?:to|version)\s+([\d.]+)",
+            str(question or ""), re.IGNORECASE,
+        )
+        if dot_ver_match:
+            dep_name = dot_ver_match.group(1).strip() + ".version"
+            target_version = dot_ver_match.group(2).strip()
+            is_property_update = True
+
+    # Try "apply this ... change: update property X to Y"
+    if not dep_name or not target_version:
+        apply_prop_match = re.search(
+            r"apply.*?change.*?(?:update|change|set)\s+(?:property\s+)?([\w.\-]+(?:\.[\w.\-]+)?)\s+(?:to|version)\s+([\d.]+)",
+            str(question or ""), re.IGNORECASE,
+        )
+        if apply_prop_match:
+            dep_name = apply_prop_match.group(1).strip()
+            target_version = apply_prop_match.group(2).strip()
+            if "version" in apply_prop_match.group(0).lower():
+                is_property_update = True
 
     if not dep_name or not target_version:
         return (
@@ -5830,7 +6023,11 @@ def _build_pom_dependency_change_request_answer(
     # ── Resolve root_pom preview ──
     root_pom_preview: dict[str, Any] | None = None
     root_pom_exists = False
-    requested_stage = _get_requested_stage(question, "pom_dependency_change_request") or 1
+    requested_stage = (
+        _get_requested_stage(question, "pom_dependency_change_request")
+        or _default_stage_when_stage3_complete(events)
+        or 1
+    )
     if artifact_previews:
         for pv in artifact_previews:
             if pv.get("source_type") == "file_alias" and pv.get("artifact_kind") == "root_pom":
@@ -5844,10 +6041,12 @@ def _build_pom_dependency_change_request_answer(
         if raw_preview.strip():
             pom_summary = _extract_pom_summary(raw_preview)
 
-    # ── Parse target dependency from question ──
+    # ── Parse target dependency/property from question ──
     # Patterns: "update gson to 2.11.0", "change tomcat to 10.1.20"
+    # Also: "update property assertj.version to 3.24.2"
     dep_name = ""
     target_version = ""
+    is_property_update = False
     update_match = re.search(
         r"(?:update|upgrade|change|set|bump|replace)\s+([\w.\-:]+)\s+(?:to|version)\s+([\d.]+)",
         str(question or ""), re.IGNORECASE,
@@ -5855,7 +6054,30 @@ def _build_pom_dependency_change_request_answer(
     if update_match:
         dep_name = update_match.group(1).strip()
         target_version = update_match.group(2).strip()
-    else:
+
+    # Try property patterns
+    if not dep_name or not target_version:
+        prop_match = re.search(
+            r"(?:update|change|set|bump)\s+property\s+([\w.\-]+(?:\.[\w.\-]+)?)\s+(?:to|version)\s+([\d.]+)",
+            str(question or ""), re.IGNORECASE,
+        )
+        if prop_match:
+            dep_name = prop_match.group(1).strip()
+            target_version = prop_match.group(2).strip()
+            is_property_update = True
+
+    # Try X.version to Y.Z pattern
+    if not dep_name or not target_version:
+        dot_ver_match = re.search(
+            r"(?:update|change|set|bump)\s+([\w.\-]+)\.version\s+(?:to|version)\s+([\d.]+)",
+            str(question or ""), re.IGNORECASE,
+        )
+        if dot_ver_match:
+            dep_name = dot_ver_match.group(1).strip() + ".version"
+            target_version = dot_ver_match.group(2).strip()
+            is_property_update = True
+
+    if not dep_name and not target_version:
         # Fallback: try to find dependency name
         dep_match = re.search(
             r"(?:update|upgrade|change)\s+(?:dependency|version of)\s+([\w.\-:]+)",
@@ -5882,6 +6104,47 @@ def _build_pom_dependency_change_request_answer(
 
     # ── Section 1: Proposed Change ──
     lines.append("## 1. Proposed Change\n")
+
+    # ── Property update path ──
+    if is_property_update and pom_summary:
+        props = pom_summary.get("properties", {})
+        current_ver = props.get(dep_name, "unknown")
+        lines.append(f"**Property:** `{dep_name}` currently `{current_ver}` in Stage {requested_stage} root_pom.\n")
+        if target_version:
+            lines.append(f"**Requested change:** `{current_ver}` → `{target_version}`\n")
+            lines.append("**Exact XML edit:**\n")
+            lines.append("~~~xml")
+            lines.append("<!-- Before -->")
+            lines.append(f"<{dep_name}>{current_ver}</{dep_name}>")
+            lines.append("")
+            lines.append("<!-- After -->")
+            lines.append(f"<{dep_name}>{target_version}</{dep_name}>")
+            lines.append("~~~\n")
+
+        # Risk
+        lines.append("## 2. Risk\n")
+        lines.append("- **Risk Level:** Low")
+        lines.append("- **Scope:** Single property update in `<properties>` section")
+        lines.append("- **Impact:** Changes version of dependencies/sub-modules that reference this property")
+        lines.append("- **Rollback:** Simple version downgrade if needed\n")
+
+        # Evidence
+        lines.append("## 3. Evidence\n")
+        lines.append("- Stage {stage} root pom.xml\n".format(stage=requested_stage))
+
+        # Approval
+        lines.append("## 4. Required Approval\n")
+        lines.append("- Human review required before apply")
+        lines.append("- Patch gate: checksum verification before write")
+        lines.append("- Built-in rollback capability\n")
+
+        # Closing
+        lines.append("## 5. Next Steps\n")
+        lines.append("- This change is NOT applied. It must be reviewed first.")
+        lines.append("- Use the \"Apply\" button in the Stage 3 Dependency Review panel or say \"apply this change\" to proceed.")
+        lines.append("- Or respond with \"reject\" to discard.\n")
+        lines.append("**Status:** Proposed (NOT applied). Requires human approval.")
+        return "\n".join(lines)
 
     if not root_pom_exists and not pom_summary:
         reason = (
