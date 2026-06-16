@@ -32,7 +32,13 @@ class _FakeModelClient:
         self.result = result
         self.calls: list[dict[str, str]] = []
 
-    def answer(self, *, prompt: str, fallback: str) -> V2AssistantModelResult:
+    def answer(
+        self,
+        *,
+        prompt: str,
+        fallback: str,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> V2AssistantModelResult:
         self.calls.append({"prompt": prompt, "fallback": fallback})
         return self.result
 

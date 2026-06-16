@@ -108,7 +108,7 @@ def _fake_model_client(*, reviewer_decision: str = "accept") -> Any:
         def __init__(self, decision: str):
             self._decision = decision
 
-        def answer(self, *, prompt: str, fallback: str) -> Any:
+        def answer(self, *, prompt: str, fallback: str, conversation_history=None) -> Any:
             # Return appropriate JSON based on what's being asked
             if "ReviewerCritique" in prompt or "migration reviewer" in prompt.lower():
                 return _FakeResult(
@@ -1283,7 +1283,7 @@ def _fake_unavailable_model_client() -> Any:
         failure_reason: str = "unavailable"
 
     class _FakeClient:
-        def answer(self, *, prompt: str, fallback: str) -> Any:
+        def answer(self, *, prompt: str, fallback: str, conversation_history=None) -> Any:
             return _FakeResult(content=fallback)
 
     return _FakeClient()
@@ -1305,7 +1305,7 @@ def _fake_invalid_json_model_client() -> Any:
         failure_reason: str = ""
 
     class _FakeClient:
-        def answer(self, *, prompt: str, fallback: str) -> Any:
+        def answer(self, *, prompt: str, fallback: str, conversation_history=None) -> Any:
             return _FakeResult(content="not valid json at all {{{{{{")
 
     return _FakeClient()
@@ -1328,7 +1328,7 @@ def _fake_invalid_schema_model_client() -> Any:
         failure_reason: str = ""
 
     class _FakeClient:
-        def answer(self, *, prompt: str, fallback: str) -> Any:
+        def answer(self, *, prompt: str, fallback: str, conversation_history=None) -> Any:
             # Valid JSON but missing required fields for RepairProposal
             return _FakeResult(content=_json.dumps({
                 "failure_hypothesis": "test",
@@ -1355,7 +1355,7 @@ def _fake_valid_revision_model_client() -> Any:
         failure_reason: str = ""
 
     class _FakeClient:
-        def answer(self, *, prompt: str, fallback: str) -> Any:
+        def answer(self, *, prompt: str, fallback: str, conversation_history=None) -> Any:
             return _FakeResult(content=_json.dumps({
                 "failure_hypothesis": "Revised hypothesis from model",
                 "patch_summary": "Revised patch from model",

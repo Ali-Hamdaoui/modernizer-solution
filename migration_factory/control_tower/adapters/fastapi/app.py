@@ -1537,11 +1537,19 @@ def create_app(
             commands = uow.v2_commands.list_by_job(job_id)
             pipeline = _v2_pipeline_projection(job_id, events)
             service = V2AssistantService(assistant_repo=uow.v2_assistant)
+            # Classify assistant intent before building prompt
+            assistant_intent = _classify_v2_assistant_intent(payload.question)
+            # Read prior persisted messages for conversation history
+            prior_messages = service.get_messages(job_id)
             user_msg = service.add_message(
                 job_id=job_id,
                 role="user",
                 content=payload.question,
                 correlation_id=payload.correlation_id,
+            )
+            # Build bounded conversation history from prior messages (excludes current user message)
+            conversation_history = _build_bounded_conversation_history(
+                messages=prior_messages,
             )
             # Emit model_invocation_started event before model call
             uow.v2_events.save(
@@ -1567,6 +1575,7 @@ def create_app(
                 approvals=approvals,
                 commands=commands,
                 artifact_previews=artifact_previews if artifact_previews else None,
+                assistant_intent=assistant_intent,
             )
             model_result = app.state.v2_assistant_model_client.answer(
                 prompt=_build_v2_assistant_prompt(
@@ -1576,8 +1585,11 @@ def create_app(
                     events=events,
                     approvals=approvals,
                     artifact_previews=artifact_previews if artifact_previews else None,
+                    assistant_intent=assistant_intent,
+                    conversation_history=conversation_history,
                 ),
                 fallback=fallback_answer,
+                conversation_history=conversation_history,
             )
             assistant_msg = service.add_message(
                 job_id=job_id,
@@ -3829,19 +3841,89 @@ _ARTIFACT_CONTENT_KEYWORDS = {
     "pom", "xml", "artifact", "openrewrite", "plugin", "plan lock",
     "approved_plan", "pending_plan", "full pom", "rewrite", "dry run",
     "patch", "ledger", "log", "report", "summary",
+    "dependency", "dependencies",
 }
 
 _ARTIFACT_CONTENT_QUESTION_PATTERNS = (
     "show", "give", "display", "print", "preview", "download",
     "what is in", "what's in", "content", "contents", "open",
     "read", "get", "fetch", "see", "view", "look at",
+    "explain", "describe", "tell me about", "analyze", "compare",
+    "summarize", "inspect", "break down", "breakdown",
 )
 
 
 _ROOT_POM_ALIAS_TERMS = (
     "pom.xml", "pom xml", "full pom", "full pom.xml", "full pom xml",
     "root pom", "root_pom",
+    "pom", "pom file", "pom content", "maven pom", "build file",
+    "project xml", "dependencies", "dependency", "plugins",
 )
+
+
+def _classify_v2_assistant_intent(question: str) -> str:
+    lowered = str(question or "").lower()
+
+    artifact_terms = (
+        "pom", "pom.xml", "pom xml", "dependency", "dependencies",
+        "plugin", "xml", "artifact", "rewrite", "patch",
+        "plan", "report", "summary", "openrewrite",
+    )
+    artifact_actions = (
+        "explain", "describe", "show", "give", "display", "print",
+        "preview", "download", "open", "read", "get", "fetch",
+        "see", "view", "look at", "analyze", "compare",
+        "summarize", "inspect", "break down", "breakdown",
+        "what is in", "what's in", "content", "contents",
+        "what", "which", "list",
+    )
+
+    if any(term in lowered for term in artifact_terms) and (
+        any(action in lowered for action in artifact_actions)
+        or any(term in lowered for term in ("dependency", "dependencies", "pom", "pom.xml", "pom xml"))
+    ):
+        if any(term in lowered for term in ("pom", "pom.xml", "pom xml", "dependency", "dependencies")):
+            return "pom_or_dependency_explanation"
+        return "artifact_content"
+
+    if any(term in lowered for term in ("model", "azure", "openai", "connected", "provider", "fallback", "deterministic")):
+        return "model_status"
+
+    if any(term in lowered for term in ("what happened", "status", "progress", "running", "failed", "failure", "next", "approve", "approval", "stage", "done", "completed", "ready", "pass", "fail", "proof", "pipeline", "is stage", "stage status", "what stage", "which stage")):
+        return "status"
+
+    if any(term in lowered for term in ("you can change", "can you change", "you can do", "why can't", "do it", "make the change", "apply it")):
+        return "capability_boundary"
+
+    return "general_question"
+
+
+def _build_bounded_conversation_history(
+    messages: tuple[Any, ...],
+    max_messages: int = 8,
+) -> list[dict[str, str]]:
+    """Build a bounded, redacted conversation history from prior messages.
+
+    Returns up to max_messages recent role/content pairs.
+    Redacts content, excludes raw paths, secrets, and approval tokens.
+    """
+    from migration_factory.control_tower.application.redaction import redact_model_summary
+
+    if not messages:
+        return []
+    recent = messages[-max_messages:] if len(messages) > max_messages else messages
+    history: list[dict[str, str]] = []
+    for msg in recent:
+        role = str(getattr(msg, "role", "user") or "user")
+        content = str(getattr(msg, "content", "") or "")
+        if not content.strip():
+            continue
+        safe = redact_model_summary(str(content))
+        safe = safe[:512]  # Bound each message
+        safe = re.sub(r'/[^\s"]+/[^\s"]*', "[path-redacted]", safe)
+        safe = re.sub(r'\b[0-9a-f]{32,}\b', "[token-redacted]", safe)
+        history.append({"role": role, "content": safe})
+    return history
 
 
 def _question_looks_like_artifact_content(question: str) -> bool:
@@ -4206,14 +4288,187 @@ def _build_v2_assistant_answer(
     approvals: tuple[Any, ...],
     commands: tuple[Any, ...],
     artifact_previews: tuple[dict[str, Any], ...] | None = None,
+    assistant_intent: str = "general_question",
 ) -> str:
+    # ── Intent-adaptive fallback paths ──
+    # Auto-detect status questions when intent not explicitly set
+    effective_intent = assistant_intent
+    if effective_intent == "general_question":
+        effective_intent = _classify_v2_assistant_intent(question)
+
+    if effective_intent == "pom_or_dependency_explanation":
+        return _build_pom_explanation_answer(
+            artifact_previews=artifact_previews,
+            events=events,
+        )
+
+    if effective_intent == "capability_boundary":
+        return _build_capability_boundary_answer()
+
+    if effective_intent == "model_status":
+        return _build_model_status_answer()
+
+    if effective_intent == "general_question" or effective_intent == "artifact_content":
+        return _build_general_or_artifact_answer(
+            question=question,
+            artifact_previews=artifact_previews,
+            events=events,
+        )
+
+    # Default: operational status template
+    return _build_status_answer(
+        question=question,
+        events=events,
+        approvals=approvals,
+        commands=commands,
+        artifact_previews=artifact_previews,
+    )
+
+
+def _build_pom_explanation_answer(
+    *,
+    artifact_previews: tuple[dict[str, Any], ...] | None = None,
+    events: tuple[Any, ...] = (),
+) -> str:
+    """Build POM/dependency explanation fallback."""
+    if artifact_previews:
+        for pv in artifact_previews:
+            if pv.get("source_type") == "file_alias":
+                if pv.get("exists") is True:
+                    preview = str(pv.get("preview", ""))
+                    stage = pv.get("stage_index", "?")
+                    answer = (
+                        f"The backend-resolved root pom.xml for Stage {stage} is available. "
+                        f"Here is what it contains:\n\n--- pom.xml ---\n{preview}\n--- end ---\n\n"
+                        f"Focus on dependencies (<dependencies>), plugins (<build><plugins>), "
+                        f"properties (<properties>), parent POM, and repositories. "
+                        f"These are the migration-relevant sections."
+                    )
+                    return str(redact_public_data(answer))
+                reason = str(pv.get("reason") or "not_available").replace("_", " ")
+                stage = pv.get("stage_index", "?")
+                artifact_list = _extract_artifact_kinds_list(events)
+                artifact_note = f" Available artifact kinds: {', '.join(artifact_list)}." if artifact_list else " No artifacts are available yet."
+                answer = (
+                    f"The root pom.xml for Stage {stage} is not available yet. "
+                    f"Reason: {reason}. I can explain it once the backend publishes root_pom.{artifact_note}"
+                )
+                return str(redact_public_data(answer))
+    artifact_list = _extract_artifact_kinds_list(events)
+    artifact_note = f" Available artifact kinds: {', '.join(artifact_list)}." if artifact_list else ""
+    answer = (
+        "The root pom.xml is not available yet. "
+        f"I can explain it once the backend resolves and publishes root_pom content. "
+        "Ask about available artifact kinds instead.{artifact_note}"
+    )
+    return str(redact_public_data(answer))
+
+
+def _extract_artifact_kinds_list(events: tuple[Any, ...]) -> list[str]:
+    """Extract unique artifact kinds from events."""
+    kinds: list[str] = []
+    for event in events:
+        if getattr(event, "type", "") == "artifact_written":
+            try:
+                payload = json.loads(getattr(event, "payload_json", "") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            kind = str(payload.get("artifact_kind", ""))
+            if kind and kind not in kinds:
+                kinds.append(kind)
+    return kinds
+
+
+def _build_capability_boundary_answer() -> str:
+    """Build capability boundary fallback — no stage status template."""
+    answer = (
+        "I cannot apply changes, approve gates, execute commands, or modify stages. "
+        "The backend owns all execution. A human must approve decisions.\n\n"
+        "What I can do:\n"
+        "- Explain POM content, dependencies, plugins, and migration changes\n"
+        "- Summarize evidence, failure diagnostics, and repair proposals\n"
+        "- Compare artifacts across stages\n"
+        "- Identify what needs approval or evidence next\n"
+        "- Draft a repair request for human review"
+    )
+    return str(redact_public_data(answer))
+
+
+def _build_model_status_answer() -> str:
+    """Build model/provider status answer."""
+    available = _model_client_available()
+    if available:
+        answer = (
+            "The Azure OpenAI model is configured and connected. "
+            "AI-backed coaching is active. Source: azure_openai."
+        )
+    else:
+        answer = (
+            "The Azure OpenAI model is not fully configured "
+            "(missing endpoint, key, or deployment). "
+            "Assistant responses use deterministic fallback logic. "
+            "AI-backed coaching is unavailable until model readiness is restored."
+        )
+    return str(redact_public_data(answer))
+
+
+def _build_general_or_artifact_answer(
+    *,
+    question: str,
+    artifact_previews: tuple[dict[str, Any], ...] | None = None,
+    events: tuple[Any, ...] = (),
+) -> str:
+    """Build a short general or artifact-content answer from evidence."""
+    preview_text = ""
+    if artifact_previews:
+        preview_parts: list[str] = []
+        for pv in artifact_previews:
+            kind = pv.get("artifact_kind", "unknown")
+            preview = str(pv.get("preview", ""))
+            if pv.get("source_type") == "file_alias" and not pv.get("exists"):
+                reason = str(pv.get("reason") or "not_available").replace("_", " ")
+                stage = pv.get("stage_index", "?")
+                preview_parts.append(
+                    f"root_pom for Stage {stage} is not available: {reason}."
+                )
+                continue
+            label = "root_pom" if pv.get("source_type") == "file_alias" else kind
+            truncated = pv.get("truncated", False)
+            tag = " (truncated)" if truncated else ""
+            preview_parts.append(f"{label}{tag}:\n{preview[:512]}")
+        if preview_parts:
+            preview_text = (
+                "\n\nArtifact Content (backend-resolved):\n" + "\n---\n".join(preview_parts)
+            )
+    artifact_list = _extract_artifact_kinds_list(events)
+    artifact_note = ""
+    if artifact_list:
+        artifact_note = f"\n\nAvailable artifact kinds: {', '.join(artifact_list)}."
+    answer = (
+        f"Question: {_bounded_event_text(question)}\n\n"
+        f"Answer from available evidence.{preview_text}{artifact_note}\n\n"
+        "I can also explain POM content, summarize evidence, "
+        "or help you determine what needs approval."
+    )
+    return str(redact_public_data(answer))
+
+
+def _build_status_answer(
+    *,
+    question: str,
+    events: tuple[Any, ...],
+    approvals: tuple[Any, ...],
+    commands: tuple[Any, ...],
+    artifact_previews: tuple[dict[str, Any], ...] | None = None,
+) -> str:
+    """Build full operational status fallback (preserved for status intent)."""
     latest = events[-1] if events else None
     failures = [event for event in events if event.status == "failed" or event.type in {"stage_failed", "transform_failed", "build_failed"}]
     pending_approvals = [card for card in approvals if card.status == "pending"]
     approved_cards = [card for card in approvals if card.status == "approved"]
-    running = [event for event in events if event.status == "running"]
     completed = [event for event in events if event.type == "stage_completed"]
     repair_events = [event for event in events if event.type in {"repair_started", "repair_fallback_generated"}]
+    running_events = [event for event in events if event.status == "running"]
 
     # Build a rich stage status summary
     stage_lines: list[str] = []
@@ -4244,35 +4499,9 @@ def _build_v2_assistant_answer(
             if kind and kind not in artifact_kinds:
                 artifact_kinds.append(kind)
 
-    # Extract diagnostic info from failures
-    diagnostic_lines: list[str] = []
-    for failure in failures[-3:]:
-        diag_parts: list[str] = []
-        try:
-            payload = json.loads(failure.payload_json or "{}")
-        except (json.JSONDecodeError, TypeError):
-            payload = {}
-        result_kind = str(payload.get("result_kind", ""))
-        if result_kind:
-            diag_parts.append(result_kind.replace("_", " "))
-        matched = str(payload.get("matched_line", ""))
-        if matched:
-            diag_parts.append(f"matched: {_bounded_event_text(matched, limit=120)}")
-        build_tool = str(payload.get("build_tool", ""))
-        if build_tool:
-            diag_parts.append(build_tool)
-        module = str(payload.get("module", ""))
-        if module:
-            diag_parts.append(f"module: {module}")
-        if diag_parts:
-            diagnostic_lines.append(f"  {failure.type}: {'; '.join(diag_parts)}")
-    diagnostics = "\n".join(diagnostic_lines) if diagnostic_lines else ""
-
     # Determine action
     if failures:
         failure_msgs = [f"{event.type}: {event.message}" for event in failures[-3:]]
-        if diagnostics:
-            failure_msgs.append(f"Diagnostics:\n{diagnostics}")
         action = f"Failed: {'; '.join(failure_msgs)}. Review failure evidence and decide whether to create a bounded repair proposal."
     elif pending_approvals:
         card = pending_approvals[-1]
@@ -4283,7 +4512,7 @@ def _build_v2_assistant_answer(
         action = "Start migration or wait for the backend to emit Stage 1 events."
     elif completed:
         action = "All stages completed. Wait for backend-owned proof report generation."
-    elif running:
+    elif running_events:
         action = "Wait for the running backend-owned orchestrator command to finish or request more evidence."
     else:
         action = "Inspect the evidence stream for the next operator action."
@@ -4303,7 +4532,7 @@ def _build_v2_assistant_answer(
     )
     artifact_text = f"Artifacts generated: {', '.join(artifact_kinds[-10:])}." if artifact_kinds else "No artifacts generated yet."
 
-    # ── Artifact preview content for artifact-content questions ──
+    # ── Artifact preview content ──
     artifact_preview_text = ""
     if artifact_previews:
         preview_parts: list[str] = []
@@ -4374,6 +4603,8 @@ def _build_v2_assistant_prompt(
     approvals: tuple[Any, ...],
     max_chars: int = 8000,
     artifact_previews: tuple[dict[str, Any], ...] | None = None,
+    assistant_intent: str = "general_question",
+    conversation_history: list[dict[str, str]] | None = None,
 ) -> str:
     latest_events = [_v2_event_payload(event) for event in events[-12:] if event.type not in _RAW_EVENT_TYPES]
     pending_approvals = [
@@ -4423,6 +4654,8 @@ def _build_v2_assistant_prompt(
     model_source = "azure_openai" if _model_client_available() else "deterministic"
     prompt = {
         "question": question,
+        "assistant_intent": assistant_intent,
+        "conversation_history": conversation_history if conversation_history else [],
         "job": {
             "job_id": getattr(job, "job_id", ""),
             "setup_id": getattr(job, "setup_id", ""),

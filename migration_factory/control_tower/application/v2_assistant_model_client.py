@@ -179,7 +179,13 @@ class V2AssistantModelClient:
             checked_at=checked_at,
         )
 
-    def answer(self, *, prompt: str, fallback: str) -> V2AssistantModelResult:
+    def answer(
+        self,
+        *,
+        prompt: str,
+        fallback: str,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> V2AssistantModelResult:
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip().rstrip("/")
         api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
         deployment = os.environ.get("AZURE_OPENAI_ASSISTANT_DEPLOYMENT", "").strip()
@@ -211,6 +217,7 @@ class V2AssistantModelClient:
                 prompt=prompt,
                 max_completion_tokens=700,
                 timeout=30,
+                conversation_history=conversation_history,
             )
         except urllib.error.HTTPError as exc:
             code = int(getattr(exc, "code", 0) or 0)
@@ -289,6 +296,7 @@ class V2AssistantModelClient:
         prompt: str,
         max_completion_tokens: int = 700,
         timeout: int = 30,
+        conversation_history: list[dict[str, str]] | None = None,
     ) -> str:
         if self._is_v1_endpoint(endpoint):
             endpoint = self._normalize_v1_endpoint(endpoint)
@@ -299,6 +307,7 @@ class V2AssistantModelClient:
                 prompt=prompt,
                 max_completion_tokens=max_completion_tokens,
                 timeout=timeout,
+                conversation_history=conversation_history,
             )
         return self._chat_completion_legacy(
             endpoint=endpoint,
@@ -307,6 +316,7 @@ class V2AssistantModelClient:
             prompt=prompt,
             max_tokens=max_completion_tokens,
             timeout=timeout,
+            conversation_history=conversation_history,
         )
 
     def _chat_completion_v1(
@@ -318,18 +328,34 @@ class V2AssistantModelClient:
         prompt: str,
         max_completion_tokens: int = 700,
         timeout: int = 30,
+        conversation_history: list[dict[str, str]] | None = None,
     ) -> str:
         return self._post_chat_completion_v1(
             endpoint=endpoint,
             api_key=api_key,
             deployment=deployment,
-            messages=[
-                {"role": "system", "content": _assistant_system_prompt()},
-                {"role": "user", "content": prompt},
-            ],
+            messages=self._build_messages(prompt=prompt, conversation_history=conversation_history),
             max_completion_tokens=max_completion_tokens,
             timeout=timeout,
         )
+
+    @staticmethod
+    def _build_messages(
+        *,
+        prompt: str,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> list[dict[str, str]]:
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": _assistant_system_prompt()},
+        ]
+        if conversation_history:
+            for entry in conversation_history[-6:]:
+                role = str(entry.get("role", "user") or "user")
+                content = str(entry.get("content", "") or "")
+                if content.strip():
+                    messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": prompt})
+        return messages
 
     def _smoke_completion(
         self,
@@ -394,15 +420,13 @@ class V2AssistantModelClient:
         prompt: str,
         max_tokens: int = 700,
         timeout: int = 30,
+        conversation_history: list[dict[str, str]] | None = None,
     ) -> str:
         return self._post_chat_completion_legacy(
             endpoint=endpoint,
             api_key=api_key,
             deployment=deployment,
-            messages=[
-                {"role": "system", "content": _assistant_system_prompt()},
-                {"role": "user", "content": prompt},
-            ],
+            messages=self._build_messages(prompt=prompt, conversation_history=conversation_history),
             max_tokens=max_tokens,
             timeout=timeout,
         )
@@ -440,36 +464,40 @@ class V2AssistantModelClient:
 def _assistant_system_prompt() -> str:
     return (
         "You are a read-only AI Migration Factory coach. Your role is to help the operator understand "
-        "migration status, pipeline progress, failures, approvals, and next steps using only the evidence "
-        "supplied in the prompt.\n"
+        "migration evidence using only the data supplied in the prompt.\n"
         "RULES:\n"
-        "- Explain what happened, what failed, what artifacts were generated, and what the operator should do next.\n"
-        "- Answer questions like: 'What is happening?', 'What failed?', 'What should I approve?', "
-        "'What did the analysis find?', 'What should I do next?', 'Is AI model connected?'\n"
+        "- Answer the user's actual question directly first. Do not always recite an operational checklist.\n"
+        "- Use the operational status format (what happened, what failed, what artifacts were generated, "
+        "what to do next) ONLY when the user asks about status, progress, failure, approval, or next steps.\n"
+        "- Mention model/Azure/provider ONLY if the user asks about model connectivity or if model.status "
+        "is explicitly fallback.\n"
         "- NEVER: approve, reject, execute commands, write files, change route or stage, choose Maven goals, "
         "choose deployments, or override proof.\n"
         "- All execution is backend-owned and human-gated.\n"
-        "- If the prompt shows model status 'fallback', explain that AI coaching is running in deterministic mode.\n"
-        "- Keep answers concise: 3-8 sentences.\n"
-        "ROOT_POM FILE ALIAS RULES:\n"
+        "- Keep answers concise.\n"
+        "POM / DEPENDENCY QUESTIONS:\n"
         "- If artifact_previews contains a root_pom entry (source_type='file_alias') with exists=true, "
-        "answer with the provided backend-resolved pom.xml preview/content. The backend has already resolved "
-        "and redacted this content; trust it as authoritative.\n"
-        "- If root_pom exists=false, do NOT say 'I cannot create files' or 'I cannot access the filesystem'. "
-        "Instead, explain exactly why the root pom.xml is unavailable using the 'reason' field. "
-        "Reasons and their meanings:\n"
-        "  stage_running — the stage command is still running; pom.xml may be incomplete\n"
-        "  stage_not_completed — the stage has not yet reached a completed state\n"
-        "  sandbox_unresolved — the backend could not locate the sandbox directory\n"
-        "  file_missing_or_unsafe — pom.xml is not present in sandbox or path safety check failed\n"
-        "  file_unreadable — pom.xml exists but could not be read\n"
-        "- NEVER suggest rewrite_dry_run.patch as a substitute for the full POM. "
-        "rewrite_dry_run.patch is a diff/patch artifact, not the full pom.xml content. "
-        "If a user asks for the full POM and root_pom is unavailable, explain the reason and "
-        "offer the available artifact kinds instead.\n"
-        "- When a user asks about 'dependencies' for a POM, use the root_pom preview content "
-        "(if exists=true) as your primary source. Do not fall back to dependency_graph unless "
-        "root_pom is unavailable."
+        "explain the POM content directly: focus on dependencies, plugins, properties, versions, "
+        "parent POM, repositories, and migration-relevant changes.\n"
+        "- Use the backend-resolved preview as your primary source.\n"
+        "- If root_pom exists=false, briefly explain the reason using the reason field and offer available artifact kinds.\n"
+        "- NEVER suggest rewrite_dry_run.patch as a substitute for the full pom.xml.\n"
+        "- When the user asks about dependencies, use root_pom content (if exists=true) as primary source. "
+        "Do not fall back to dependency_graph unless root_pom is unavailable.\n"
+        "CAPABILITY BOUNDARY / FRUSTRATION:\n"
+        "- Briefly explain that the assistant cannot approve, execute, write files, or change stages.\n"
+        "- Then explain what it can do: explain POM, summarize evidence, compare artifacts, "
+        "draft a repair request, identify what needs approval or evidence next.\n"
+        "- Do not repeat the full pipeline status.\n"
+        "STATUS QUESTIONS:\n"
+        "- Use the operational format: what happened, what failed, what artifacts were generated, "
+        "what to do next. Include stage status, approvals, and repair state.\n"
+        "ROOT_POM REASON CODES (when exists=false):\n"
+        "  stage_running — stage is still running; pom.xml may be incomplete\n"
+        "  stage_not_completed — stage has not reached a completed state\n"
+        "  sandbox_unresolved — backend could not locate the sandbox\n"
+        "  file_missing_or_unsafe — pom.xml is not present or path safety check failed\n"
+        "  file_unreadable — pom.xml exists but could not be read"
     )
 
 
