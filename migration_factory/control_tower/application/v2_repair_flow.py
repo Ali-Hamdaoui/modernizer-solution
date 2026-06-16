@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 from uuid import uuid4
 
 from migration_factory.control_tower.domain.checksums import utc_now_text
@@ -16,6 +17,23 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository 
 from migration_factory.control_tower.application.v2_reviewer_service import (
     V2ReviewerService,
 )
+from migration_factory.repair_loop.ledger import (
+    append_attempt,
+    base_attempt,
+    new_ledger,
+    write_ledger,
+    write_patch_attempt_result,
+)
+from migration_factory.repair_loop.patch_apply import apply_patch_to_sandbox, rollback_patch
+from migration_factory.repair_loop.patch_gate import evaluate_patch_proposal
+from migration_factory.repair_loop.validation_runner import (
+    ValidationResult,
+    run_validation_after_patch,
+)
+
+
+ValidationRunner = Callable[..., ValidationResult]
+RepairEventRecorder = Callable[[str, dict[str, Any]], None]
 
 
 @dataclass(frozen=True)
@@ -230,6 +248,21 @@ class V2RepairFlowService:
         proposal_id: str,
         target_path: str,
         patch_content: str,
+        *,
+        run_dir: str | Path,
+        sandbox_path: str | Path,
+        legacy_path: str | Path,
+        deterministic_rule_id: str,
+        risk: str = "LOW",
+        requires_human_review: bool = False,
+        expected_validation: tuple[str, ...] = (),
+        limitations: tuple[str, ...] = (),
+        failure_classification: dict[str, Any] | None = None,
+        h2_required: bool = False,
+        run_id: str = "",
+        binding_checksum: str | None = None,
+        validation_runner: ValidationRunner = run_validation_after_patch,
+        event_recorder: RepairEventRecorder | None = None,
     ) -> SandboxAction:
         proposal = self._proposals.get(proposal_id)
         if proposal is None and self._repo is not None:
@@ -252,30 +285,262 @@ class V2RepairFlowService:
         if proposal.status != "approved":
             raise ValueError(f"Proposal {proposal_id!r} must be approved first")
 
+        run_path = Path(run_dir)
+        resolved_run_id = run_id or proposal.command_id
+        classification = dict(failure_classification or {})
+        failure_type = str(classification.get("failure_type") or proposal.failure_summary or "V2_REPAIR_PROPOSAL")
+        artifact_refs: dict[str, str] = {}
+        ledger = new_ledger(
+            run_id=resolved_run_id,
+            enabled=True,
+            auto_apply_enabled=False,
+            max_attempts=1,
+            artifact_refs=artifact_refs,
+        )
+        ledger_ref = write_ledger(run_path, ledger)
+        artifact_refs["repair_ledger"] = str(ledger_ref)
+
+        attempt = base_attempt(
+            attempt=1,
+            failure_type=failure_type,
+            classification_ref="",
+            repair_plan_ref=proposal.proposal_id,
+        )
+        if binding_checksum:
+            attempt["binding_checksum"] = binding_checksum
+        attempt["proposal_id"] = proposal.proposal_id
+
+        repair_loop_proposal = {
+            "proposal_id": proposal.proposal_id,
+            "deterministic_rule_id": deterministic_rule_id,
+            "risk": risk,
+            "requires_human_review": requires_human_review,
+            "description": proposal.hypothesis,
+            "unified_diff": patch_content,
+            "expected_validation": list(expected_validation),
+            "limitations": list(limitations),
+        }
+        gate = evaluate_patch_proposal(
+            proposal=repair_loop_proposal,
+            sandbox_path=sandbox_path,
+            run_dir=run_path,
+            legacy_path=legacy_path,
+            failure_classification=classification,
+            h2_required=h2_required,
+        )
+        attempt["patch_gate_status"] = gate.status
+        attempt["deterministic_rule_id"] = gate.rule_id
+        attempt["touched_paths"] = list(gate.touched_paths)
+        resolved_target_path = ",".join(gate.touched_paths) or "<unresolved>"
+        self._emit_repair_event(
+            event_recorder,
+            "repair_patch_gate_completed",
+            {
+                "proposal_id": proposal.proposal_id,
+                "binding_checksum": binding_checksum,
+                "patch_gate_status": gate.status,
+                "deterministic_rule_id": gate.rule_id,
+                "touched_paths": list(gate.touched_paths),
+            },
+        )
+
+        if gate.status != "ALLOWED":
+            attempt["status"] = "BLOCKED"
+            append_attempt(ledger, attempt)
+            ledger["artifact_refs"] = artifact_refs
+            ledger["final_status"] = "REPAIR_BLOCKED_HUMAN_REVIEW" if gate.human_review_required else "REPAIR_BLOCKED"
+            ledger.setdefault("warnings", []).append(gate.reason)
+            write_ledger(run_path, ledger)
+            return self._record_action(
+                proposal_id=proposal_id,
+                target_path=resolved_target_path,
+                patch_content=patch_content,
+                status="failed",
+                result_summary=f"Patch gate blocked repair proposal: {gate.reason}",
+            )
+
+        apply_result = apply_patch_to_sandbox(
+            run_dir=run_path,
+            sandbox_path=sandbox_path,
+            attempt=1,
+            unified_diff=patch_content,
+            touched_paths=list(gate.touched_paths),
+        )
+        attempt["patch_ref"] = str(apply_result.patch_path)
+        if apply_result.status != "APPLIED":
+            result_path = write_patch_attempt_result(
+                run_dir=run_path,
+                run_id=resolved_run_id,
+                attempt=1,
+                status=apply_result.status,
+                reason=apply_result.reason,
+                rule_id=gate.rule_id,
+                risk=gate.risk,
+                paths=apply_result.touched_paths,
+                before_hashes=apply_result.before_hashes,
+                errors=apply_result.errors,
+            )
+            attempt["patch_result_ref"] = str(result_path)
+            attempt["status"] = "FAILED"
+            append_attempt(ledger, attempt)
+            ledger["artifact_refs"] = artifact_refs
+            ledger["final_status"] = "REPAIR_FAILED"
+            write_ledger(run_path, ledger)
+            return self._record_action(
+                proposal_id=proposal_id,
+                target_path=resolved_target_path,
+                patch_content=patch_content,
+                status="failed",
+                result_summary=f"Repair patch was rejected in sandbox: {apply_result.reason}",
+            )
+        self._emit_repair_event(
+            event_recorder,
+            "repair_patch_applied",
+            {
+                "proposal_id": proposal.proposal_id,
+                "patch_ref": str(apply_result.patch_path),
+                "patch_status": apply_result.status,
+                "touched_paths": list(apply_result.touched_paths),
+            },
+        )
+
+        validation: ValidationResult = validation_runner(
+            run_id=resolved_run_id,
+            run_dir=run_path,
+            sandbox_path=sandbox_path,
+            attempt=1,
+            h2_required=h2_required,
+            h2_enabled=h2_required,
+        )
+        attempt["validation"] = {
+            "build_status": validation.build_status,
+            "test_status": validation.test_status,
+            "h2_status": validation.h2_status,
+        }
+        artifact_refs.update(validation.artifact_refs)
+        self._emit_repair_event(
+            event_recorder,
+            "repair_validation_completed",
+            {
+                "proposal_id": proposal.proposal_id,
+                "passed": validation.passed,
+                "build_status": validation.build_status,
+                "test_status": validation.test_status,
+                "h2_status": validation.h2_status,
+                "artifact_refs": dict(validation.artifact_refs),
+            },
+        )
+
+        if validation.passed:
+            result_path = write_patch_attempt_result(
+                run_dir=run_path,
+                run_id=resolved_run_id,
+                attempt=1,
+                status="APPLIED",
+                reason="patch applied and validation passed",
+                rule_id=gate.rule_id,
+                risk=gate.risk,
+                paths=apply_result.touched_paths,
+                before_hashes=apply_result.before_hashes,
+                after_hashes=apply_result.after_hashes,
+                validation_commands=validation.validation_commands,
+                warnings=validation.warnings,
+            )
+            attempt["patch_result_ref"] = str(result_path)
+            attempt["status"] = "VALIDATED"
+            append_attempt(ledger, attempt)
+            ledger["artifact_refs"] = artifact_refs
+            ledger["final_status"] = "REPAIR_VALIDATED"
+            write_ledger(run_path, ledger)
+            action = self._record_action(
+                proposal_id=proposal_id,
+                target_path=resolved_target_path,
+                patch_content=patch_content,
+                status="applied",
+                result_summary=f"Patch applied to {resolved_target_path} and validation passed",
+            )
+            self._mark_proposal_applied(proposal)
+            return action
+
+        rolled_back, rollback_reason = rollback_patch(
+            sandbox_path=sandbox_path,
+            snapshot_dir=apply_result.snapshot_dir,
+            touched_paths=apply_result.touched_paths,
+            created_paths=apply_result.created_paths,
+        )
+        self._emit_repair_event(
+            event_recorder,
+            "repair_rollback_completed",
+            {
+                "proposal_id": proposal.proposal_id,
+                "rollback_status": "ROLLED_BACK" if rolled_back else "ROLLBACK_FAILED",
+                "reason": rollback_reason,
+            },
+        )
+        attempt["rollback"] = {
+            "performed": True,
+            "reason": "; ".join(validation.errors) or "validation failed",
+            "status": "ROLLED_BACK" if rolled_back else "ROLLBACK_FAILED",
+        }
+        result_path = write_patch_attempt_result(
+            run_dir=run_path,
+            run_id=resolved_run_id,
+            attempt=1,
+            status="ROLLED_BACK" if rolled_back else "FAILED",
+            reason=rollback_reason,
+            rule_id=gate.rule_id,
+            risk=gate.risk,
+            paths=apply_result.touched_paths,
+            before_hashes=apply_result.before_hashes,
+            after_hashes=apply_result.after_hashes,
+            validation_commands=validation.validation_commands,
+            warnings=validation.warnings,
+            errors=validation.errors,
+        )
+        attempt["patch_result_ref"] = str(result_path)
+        attempt["status"] = "ROLLED_BACK" if rolled_back else "FAILED"
+        append_attempt(ledger, attempt)
+        ledger["artifact_refs"] = artifact_refs
+        ledger["final_status"] = "REPAIR_FAILED"
+        if not rolled_back:
+            ledger.setdefault("errors", []).append("rollback failed after repair validation failure")
+        write_ledger(run_path, ledger)
+        return self._record_action(
+            proposal_id=proposal_id,
+            target_path=resolved_target_path,
+            patch_content=patch_content,
+            status="rolled_back" if rolled_back else "failed",
+            result_summary=rollback_reason,
+        )
+
+    def _emit_repair_event(
+        self,
+        recorder: RepairEventRecorder | None,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if recorder is not None:
+            recorder(event_type, payload)
+
+    def _record_action(
+        self,
+        *,
+        proposal_id: str,
+        target_path: str,
+        patch_content: str,
+        status: str,
+        result_summary: str,
+    ) -> SandboxAction:
         action = SandboxAction(
             action_id=uuid4().hex,
             proposal_id=proposal_id,
             target_path=target_path,
             patch_content=patch_content,
-            status="applied",
-            result_summary=f"Patch applied to {target_path}",
+            status=status,
+            result_summary=result_summary,
             created_at=utc_now_text(),
         )
         self._actions[action.action_id] = action
-
-        # Update proposal
-        updated = RepairProposal(
-            proposal_id=proposal.proposal_id,
-            command_id=proposal.command_id,
-            failure_summary=proposal.failure_summary,
-            hypothesis=proposal.hypothesis,
-            patch_summary=proposal.patch_summary,
-            affected_paths=proposal.affected_paths,
-            status="applied",
-            approval_checksum=proposal.approval_checksum,
-            created_at=proposal.created_at,
-        )
-        # Persist action if repo available
         if self._repo is not None:
             action_record = V2SandboxActionRecord(
                 action_id=action.action_id,
@@ -287,10 +552,23 @@ class V2RepairFlowService:
                 created_at=action.created_at,
             )
             self._repo.save_action(action_record)
-            # Also update proposal status
-            self._repo.update_proposal_status(proposal_id, "applied")
-        self._proposals[proposal_id] = updated
         return action
+
+    def _mark_proposal_applied(self, proposal: RepairProposal) -> None:
+        updated = RepairProposal(
+            proposal_id=proposal.proposal_id,
+            command_id=proposal.command_id,
+            failure_summary=proposal.failure_summary,
+            hypothesis=proposal.hypothesis,
+            patch_summary=proposal.patch_summary,
+            affected_paths=proposal.affected_paths,
+            status="applied",
+            approval_checksum=proposal.approval_checksum,
+            created_at=proposal.created_at,
+        )
+        if self._repo is not None:
+            self._repo.update_proposal_status(proposal.proposal_id, "applied")
+        self._proposals[proposal.proposal_id] = updated
 
     def proposal_to_dict(self, proposal: RepairProposal, *, reviewer_critique_id: str | None = None, reviewer_decision: str | None = None) -> dict[str, Any]:
         result: dict[str, Any] = {

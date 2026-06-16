@@ -185,6 +185,8 @@ PROMPT_TEMPLATES: dict[str, PromptTemplate] = {
         template=(
             "You are an AI migration repair assistant. "
             "Revise the following repair proposal according to the operator's steering instruction.\n\n"
+            "Event type: {event_type}\n"
+            "Stage index: {stage_index}\n"
             "Source proposal ID: {source_proposal_id}\n"
             "Failed command ID: {failed_command_id}\n"
             "Original failure summary: {failure_summary}\n"
@@ -315,7 +317,11 @@ class EventPromptRouter:
             A ModelCallResult with validated output or failure info.
         """
         try:
-            validated = validate_model_output(schema_name, output)
+            candidate = dict(output)
+            if schema_name == "ReviewerCritique":
+                candidate.setdefault("missing_evidence", [])
+                candidate.setdefault("unsafe_assumptions", [])
+            validated = validate_model_output(schema_name, candidate)
             return ModelCallResult(
                 request_id="",  # Set by caller
                 output_schema_name=schema_name,
