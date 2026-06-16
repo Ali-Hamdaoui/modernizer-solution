@@ -83,6 +83,26 @@ def resume_orchestration(
         approved_by=approved_by,
         comments=comments,
     )
+    snapshot_mode = _load_interrupt_snapshot_mode(resolved_run_dir)
+
+    # The approval interrupt snapshot is the authoritative source for resume mode.
+    # If the run was paused in read-only mode, do not resume through the checkpointed
+    # LangGraph state because it may still reflect an older full-sandbox mode.
+    if snapshot_mode and snapshot_mode != FULL_SANDBOX_MIGRATION_MODE:
+        snapshot_result = _normalize_resume_result(
+            _resume_from_interrupt_snapshot(
+                run_id=run_id,
+                run_dir=resolved_run_dir,
+                decision=decision,
+                approved_by=approved_by,
+                comments=comments,
+            ),
+            decision=decision,
+            explicit_recorded=explicit_recorded,
+        )
+        return finalize_orchestration_state(
+            _ensure_resume_output_paths(snapshot_result, resolved_run_dir)
+        )
 
     config = build_langgraph_config(run_id)
     graph = graph_module.build_graph(checkpointer=default_checkpointer(resolved_run_dir))
@@ -139,6 +159,19 @@ def resume_orchestration(
     return finalize_orchestration_state(
         _ensure_resume_output_paths(snapshot_result, resolved_run_dir)
     )
+
+
+def _load_interrupt_snapshot_mode(run_dir: Path) -> str:
+    snapshot_path = run_dir / "orchestration" / "approval_interrupt_state.json"
+    if not snapshot_path.is_file():
+        return ""
+    try:
+        payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("mode") or "").strip()
 
 
 def _resume_completed(result: dict[str, Any], run_dir: Path) -> bool:
