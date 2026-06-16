@@ -305,6 +305,23 @@ export async function getV2ArtifactPreview(
   );
 }
 
+export async function getV2RootPomPreview(
+  jobId: string,
+  stage: number
+): Promise<V2ArtifactPreviewResponse> {
+  const safeJobId = requireJobId(jobId);
+  const params = new URLSearchParams({ stage: String(stage), mode: "preview" });
+  return getJson<V2ArtifactPreviewResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/files/root-pom?${params}`
+  );
+}
+
+export function v2RootPomDownloadUrl(jobId: string, stage: number): string {
+  const safeJobId = requireJobId(jobId);
+  const params = new URLSearchParams({ stage: String(stage), mode: "download" });
+  return `${CONTROL_TOWER_API_BASE_URL}/v1/v2/jobs/${encodeURIComponent(safeJobId)}/files/root-pom?${params}`;
+}
+
 export function v2EventStreamUrl(jobId: string, after: number = 0): string {
   const safeJobId = requireJobId(jobId);
   const params = new URLSearchParams({ after: String(after) });

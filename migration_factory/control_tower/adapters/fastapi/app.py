@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -1280,6 +1280,53 @@ def create_app(
             "truncated": truncated,
             "content_type": "text/plain",
         }
+
+    @app.get("/v1/v2/jobs/{job_id}/files/root-pom")
+    def get_v2_job_root_pom_file(
+        request: Request,
+        job_id: str,
+        stage: int = Query(default=1, ge=1, le=3),
+        mode: str = Query(default="preview", pattern="^(preview|download)$"),
+    ) -> Any:
+        """Return the backend-resolved root pom.xml for a completed stage.
+
+        The only supported file alias is root_pom. The request never accepts
+        a path; the file is resolved from persisted command/event sandbox state.
+        """
+        if "path" in request.query_params or "file" in request.query_params:
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                "PATH_NOT_ACCEPTED",
+                "File paths are not accepted for this endpoint.",
+            )
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            events = uow.v2_events.list_by_job(job_id)
+            commands = uow.v2_commands.list_by_job(job_id)
+
+        preview = _resolve_root_pom_file_alias_preview(
+            job_id=job_id,
+            stage_index=stage,
+            events=events,
+            commands=commands,
+            max_bytes=32768,
+        )
+        if mode == "preview" or not preview.get("exists"):
+            preview.pop("_path", None)
+            return preview
+
+        candidate = preview.get("_path")
+        if not isinstance(candidate, Path) or not candidate.is_file():
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "ROOT_POM_NOT_AVAILABLE",
+                "Root pom.xml is not available for that stage.",
+            )
+        return FileResponse(
+            candidate,
+            media_type="application/xml",
+            filename=f"stage-{stage}-pom.xml",
+        )
 
     @app.get("/v1/v2/migration-jobs/{job_id}/events")
     async def stream_v2_job_events(
@@ -3773,6 +3820,12 @@ _ARTIFACT_CONTENT_QUESTION_PATTERNS = (
 )
 
 
+_ROOT_POM_ALIAS_TERMS = (
+    "pom.xml", "pom xml", "full pom", "full pom.xml", "full pom xml",
+    "root pom", "root_pom",
+)
+
+
 def _question_looks_like_artifact_content(question: str) -> bool:
     """Detect if a user question is asking for artifact content."""
     lowered = str(question or "").lower()
@@ -3781,6 +3834,22 @@ def _question_looks_like_artifact_content(question: str) -> bool:
         return False
     # Must mention artifact-related terms
     return any(keyword in lowered for keyword in _ARTIFACT_CONTENT_KEYWORDS)
+
+
+def _question_requests_root_pom_alias(question: str) -> bool:
+    """Detect requests for the fixed root_pom alias, not arbitrary paths."""
+    lowered = str(question or "").lower()
+    if not any(pattern in lowered for pattern in _ARTIFACT_CONTENT_QUESTION_PATTERNS):
+        return False
+    return any(term in lowered for term in _ROOT_POM_ALIAS_TERMS)
+
+
+def _stage_index_from_question(question: str) -> int | None:
+    lowered = str(question or "").lower()
+    match = re.search(r"\b(?:stage|phase)\s*([1-3])\b", lowered)
+    if match:
+        return int(match.group(1))
+    return None
 
 
 def _resolve_assistant_artifact_previews(
@@ -3798,6 +3867,22 @@ def _resolve_assistant_artifact_previews(
     """
     if not _question_looks_like_artifact_content(question):
         return []
+
+    previews: list[dict[str, Any]] = []
+    max_previews = 3
+    max_chars_per_preview = 2048
+
+    if _question_requests_root_pom_alias(question):
+        root_pom_preview = _resolve_root_pom_file_alias_preview(
+            job_id="",
+            stage_index=_stage_index_from_question(question) or 1,
+            events=events,
+            commands=commands,
+            max_bytes=max_chars_per_preview * 2,
+        )
+        root_pom_preview.pop("_path", None)
+        previews.append(root_pom_preview)
+        return previews
 
     # Collect artifact kinds mentioned in events
     available_kinds: dict[str, int] = {}
@@ -3835,10 +3920,6 @@ def _resolve_assistant_artifact_previews(
     for kind in sorted(available_kinds, key=lambda k: -available_kinds[k]):
         if kind not in preferred_order and kind in safe_kinds:
             preferred_order.append(kind)
-
-    previews: list[dict[str, Any]] = []
-    max_previews = 3
-    max_chars_per_preview = 2048
 
     for kind in preferred_order:
         if len(previews) >= max_previews:
@@ -3920,10 +4001,184 @@ def _resolve_single_artifact_preview(
 
     return {
         "artifact_kind": artifact_kind,
+        "source_type": "artifact",
         "exists": True,
         "preview": preview,
         "truncated": truncated,
     }
+
+
+def _resolve_root_pom_file_alias_preview(
+    *,
+    job_id: str,
+    stage_index: int,
+    events: tuple[Any, ...],
+    commands: tuple[Any, ...],
+    max_bytes: int,
+) -> dict[str, Any]:
+    from migration_factory.control_tower.application.redaction import redact_model_summary
+
+    response: dict[str, Any] = {
+        "job_id": job_id,
+        "artifact_kind": "root_pom",
+        "source_type": "file_alias",
+        "file_alias": "root_pom",
+        "stage_index": stage_index,
+        "exists": False,
+        "preview": "",
+        "content": "",
+        "truncated": False,
+        "content_type": "application/xml",
+        "download_url": None,
+        "source_ref": None,
+        "reason": "not_available",
+    }
+    if stage_index not in (1, 2, 3):
+        response["reason"] = "invalid_stage"
+        return response
+
+    stage_events = sorted(
+        [event for event in events if getattr(event, "stage", None) == stage_index],
+        key=lambda event: getattr(event, "sequence", 0),
+    )
+    latest_stage_event = stage_events[-1] if stage_events else None
+    if latest_stage_event is not None and (
+        getattr(latest_stage_event, "status", "") == "running"
+        or str(getattr(latest_stage_event, "type", "")).endswith("_started")
+    ):
+        response["reason"] = "stage_running"
+        return response
+    if not any(
+        getattr(event, "type", "") in {"sandbox_transform_completed", "stage_completed"}
+        or (
+            getattr(event, "status", "") == "completed"
+            and str(getattr(event, "type", "")) in {"transform_completed", "build_completed", "test_completed"}
+        )
+        for event in stage_events
+    ):
+        response["reason"] = "stage_not_completed"
+        return response
+
+    resolved = _resolve_stage_sandbox_root(
+        stage_index=stage_index,
+        events=events,
+        commands=commands,
+    )
+    if resolved is None:
+        response["reason"] = "sandbox_unresolved"
+        return response
+    sandbox_root, source_ref = resolved
+    response["source_ref"] = source_ref
+
+    try:
+        resolved_root = sandbox_root.resolve(strict=True)
+        candidate = (resolved_root / "pom.xml").resolve(strict=True)
+        candidate.relative_to(resolved_root)
+    except (FileNotFoundError, OSError, RuntimeError, ValueError):
+        response["reason"] = "file_missing_or_unsafe"
+        return response
+    if not candidate.is_file():
+        response["reason"] = "file_missing_or_unsafe"
+        return response
+
+    try:
+        file_size = candidate.stat().st_size
+        raw = candidate.read_bytes()[:max_bytes]
+    except (OSError, RuntimeError, ValueError):
+        response["reason"] = "file_unreadable"
+        return response
+    if raw[:3] == b"\xef\xbb\xbf":
+        raw = raw[3:]
+    try:
+        text = raw.decode("utf-8", errors="replace")
+    except (UnicodeDecodeError, LookupError):
+        text = raw.decode("latin-1", errors="replace")
+    preview = redact_model_summary(text)
+    response.update({
+        "exists": True,
+        "preview": preview,
+        "content": preview,
+        "truncated": file_size > max_bytes,
+        "download_url": f"/v1/v2/jobs/{job_id}/files/root-pom?stage={stage_index}&mode=download" if job_id else None,
+        "reason": None,
+        "_path": candidate,
+    })
+    return response
+
+
+def _resolve_stage_sandbox_root(
+    *,
+    stage_index: int,
+    events: tuple[Any, ...],
+    commands: tuple[Any, ...],
+) -> tuple[Path, dict[str, str]] | None:
+    stage_commands = [
+        command for command in commands
+        if int(getattr(command, "stage_index", 0) or 0) == stage_index
+    ]
+    for command in sorted(stage_commands, key=lambda c: getattr(c, "updated_at", "") or getattr(c, "created_at", ""), reverse=True):
+        result_json = getattr(command, "result_json", None)
+        if not result_json:
+            continue
+        try:
+            result = json.loads(result_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        sandbox_path = _sandbox_path_from_mapping(result)
+        if sandbox_path:
+            return Path(sandbox_path), {
+                "command_id": str(getattr(command, "command_id", "")),
+                "source": "command_result",
+            }
+
+    for event in sorted(events, key=lambda e: getattr(e, "sequence", 0), reverse=True):
+        if getattr(event, "stage", None) != stage_index:
+            continue
+        if getattr(event, "type", "") not in {
+            "sandbox_transform_completed", "stage_completed", "artifact_written",
+            "build_completed", "test_completed",
+        }:
+            continue
+        try:
+            payload = json.loads(getattr(event, "payload_json", "") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        sandbox_path = _sandbox_path_from_mapping(payload)
+        if sandbox_path:
+            return Path(sandbox_path), {
+                "event_id": str(getattr(event, "event_id", "")),
+                "source": "event_payload",
+            }
+    return None
+
+
+def _sandbox_path_from_mapping(value: dict[str, Any]) -> str:
+    candidates: list[Any] = [
+        value.get("sandbox_path"),
+        value.get("sandbox"),
+    ]
+    artifact_refs = value.get("artifact_refs")
+    if isinstance(artifact_refs, dict):
+        candidates.extend([
+            artifact_refs.get("sandbox"),
+            artifact_refs.get("sandbox_path"),
+        ])
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if not text or _is_unsafe_sandbox_root(text):
+            continue
+        return text
+    return ""
+
+
+def _is_unsafe_sandbox_root(value: str) -> bool:
+    if value.startswith(("\\\\", "//")):
+        return True
+    path = Path(value)
+    win_path = PureWindowsPath(value)
+    if not (path.is_absolute() or win_path.is_absolute() or win_path.drive):
+        return True
+    return any(part == ".." for part in path.parts)
 
 
 def _build_v2_assistant_answer(
@@ -4038,14 +4293,25 @@ def _build_v2_assistant_answer(
             kind = pv.get("artifact_kind", "unknown")
             truncated = pv.get("truncated", False)
             preview = str(pv.get("preview", ""))
+            if pv.get("source_type") == "file_alias" and not pv.get("exists"):
+                reason = str(pv.get("reason") or "not_available").replace("_", " ")
+                stage = pv.get("stage_index", "?")
+                preview_parts.append(
+                    f"--- root_pom (file alias) ---\n"
+                    f"Full root pom.xml for Stage {stage} is not available: {reason}."
+                )
+                continue
             tag = f"(truncated preview)" if truncated else "(preview)"
-            preview_parts.append(f"--- {kind} {tag} ---\n{preview}")
+            label = "root pom.xml" if pv.get("source_type") == "file_alias" else kind
+            download_url = pv.get("download_url")
+            download_note = f"\nDownload: {download_url}" if download_url and truncated else ""
+            preview_parts.append(f"--- {label} {tag} ---\n{preview}{download_note}")
         if preview_parts:
             artifact_preview_text = (
                 "\n\nArtifact Content (backend-resolved from persisted events):\n"
                 + "\n\n".join(preview_parts)
-                + "\n\nNote: Artifact content is bounded (max 2 KB). "
-                "Use the artifact preview API for the full redacted file."
+                + "\n\nNote: Content is backend-resolved and bounded in chat. "
+                "Patch artifacts are diffs/proposed changes, not the full resulting POM."
             )
 
     proof_note = ""

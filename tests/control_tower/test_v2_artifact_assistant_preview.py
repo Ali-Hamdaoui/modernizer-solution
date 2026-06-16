@@ -95,6 +95,39 @@ def _seed_artifact_event(conn: sqlite3.Connection, *, job_id: str, stage: int, a
         )
 
 
+def _seed_stage_event(conn: sqlite3.Connection, *, job_id: str, stage: int, event_type: str, status: str = "completed", payload: dict | None = None) -> None:
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=stage,
+            event_type=event_type,
+            status=status,
+            message=f"Stage {stage} {event_type}.",
+            payload=payload or {},
+        )
+
+
+def _seed_stage_command(conn: sqlite3.Connection, *, job_id: str, stage: int, command_id: str, sandbox_path: Path, status: str = "completed") -> None:
+    from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import V2StageCommandRecord
+
+    now = utc_now_text()
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_commands.save(
+            V2StageCommandRecord(
+                command_id=command_id,
+                job_id=job_id,
+                stage_index=stage,
+                manifest_checksum=f"manifest-{command_id}",
+                argv_json=json.dumps(["modernizer", "--sandbox", str(sandbox_path)]),
+                env_json="{}",
+                status=status,
+                created_at=now,
+                updated_at=now,
+                result_json=json.dumps({"sandbox_path": str(sandbox_path)}),
+            )
+        )
+
+
 class TestArtifactPreviewWhitelist:
     """Test that safe_kinds whitelist works correctly."""
 
@@ -297,6 +330,171 @@ class TestAssistantArtifactQuestions:
         content = body["assistant_message"]["content"]
         assert "phase2_log" in content
         assert "failure_classification" in content
+
+
+class TestRootPomFileAlias:
+    def test_full_pom_request_resolves_root_pom_alias(self, tmp_path: Path) -> None:
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage1-sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text("<project><artifactId>stage-one</artifactId></project>", encoding="utf-8")
+        _seed_stage_command(conn, job_id="job-artifact", stage=1, command_id="cmd-s1", sandbox_path=sandbox)
+        _seed_stage_event(conn, job_id="job-artifact", stage=1, event_type="sandbox_transform_completed")
+
+        response = client.post(
+            "/v1/v2/jobs/job-artifact/assistant/ask",
+            json={"question": "give me the full pom.xml for stage 1"},
+            headers=_mutation_headers(),
+        )
+
+        assert response.status_code == 200, response.text
+        content = response.json()["assistant_message"]["content"]
+        assert "stage-one" in content
+        assert "rewrite_dry_run.patch" not in content
+
+    def test_full_pom_request_stage_1_uses_stage_1_sandbox_not_latest(self, tmp_path: Path) -> None:
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox1 = tmp_path / "stage1-sandbox"
+        sandbox2 = tmp_path / "stage2-sandbox"
+        sandbox1.mkdir()
+        sandbox2.mkdir()
+        (sandbox1 / "pom.xml").write_text("<project><artifactId>stage-one</artifactId></project>", encoding="utf-8")
+        (sandbox2 / "pom.xml").write_text("<project><artifactId>stage-two</artifactId></project>", encoding="utf-8")
+        _seed_stage_command(conn, job_id="job-artifact", stage=1, command_id="cmd-s1", sandbox_path=sandbox1)
+        _seed_stage_command(conn, job_id="job-artifact", stage=2, command_id="cmd-s2", sandbox_path=sandbox2)
+        _seed_stage_event(conn, job_id="job-artifact", stage=1, event_type="sandbox_transform_completed")
+        _seed_stage_event(conn, job_id="job-artifact", stage=2, event_type="sandbox_transform_completed")
+
+        response = client.get("/v1/v2/jobs/job-artifact/files/root-pom?stage=1")
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["exists"] is True
+        assert "stage-one" in body["content"]
+        assert "stage-two" not in body["content"]
+        assert body["source_ref"] == {"command_id": "cmd-s1", "source": "command_result"}
+
+    def test_full_pom_request_returns_full_content_when_file_exists(self, tmp_path: Path) -> None:
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage1-sandbox"
+        sandbox.mkdir()
+        expected = "<project><modelVersion>4.0.0</modelVersion></project>"
+        (sandbox / "pom.xml").write_text(expected, encoding="utf-8")
+        _seed_stage_command(conn, job_id="job-artifact", stage=1, command_id="cmd-s1", sandbox_path=sandbox)
+        _seed_stage_event(conn, job_id="job-artifact", stage=1, event_type="stage_completed")
+
+        response = client.get("/v1/v2/jobs/job-artifact/files/root-pom?stage=1")
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["exists"] is True
+        assert body["content"] == expected
+        assert body["truncated"] is False
+
+    def test_full_pom_request_returns_download_url_when_truncated(self, tmp_path: Path) -> None:
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage1-sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text("<project>" + ("x" * 40000) + "</project>", encoding="utf-8")
+        _seed_stage_command(conn, job_id="job-artifact", stage=1, command_id="cmd-s1", sandbox_path=sandbox)
+        _seed_stage_event(conn, job_id="job-artifact", stage=1, event_type="stage_completed")
+
+        response = client.get("/v1/v2/jobs/job-artifact/files/root-pom?stage=1")
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["exists"] is True
+        assert body["truncated"] is True
+        assert body["download_url"] == "/v1/v2/jobs/job-artifact/files/root-pom?stage=1&mode=download"
+
+    def test_full_pom_request_does_not_substitute_rewrite_patch_for_full_pom(self, tmp_path: Path) -> None:
+        client, conn, _setup_id = _client_with_setup(tmp_path, output_dir=str(tmp_path / "output"))
+        output_dir = tmp_path / "output"
+        patch_file = output_dir / "rewrite_dry_run.patch"
+        patch_file.write_text("--- pom.xml\n+++ pom.xml\n", encoding="utf-8")
+        _seed_artifact_event(
+            conn,
+            job_id="job-artifact",
+            stage=1,
+            artifact_kind="rewrite_dry_run.patch",
+            relative_path="rewrite_dry_run.patch",
+        )
+
+        response = client.post(
+            "/v1/v2/jobs/job-artifact/assistant/ask",
+            json={"question": "give me the full pom xml for stage 1"},
+            headers=_mutation_headers(),
+        )
+
+        assert response.status_code == 200, response.text
+        content = response.json()["assistant_message"]["content"].lower()
+        assert "--- pom.xml" not in content
+        assert "not available" in content
+        assert "rewrite_dry_run.patch" in content
+
+    def test_full_pom_request_stage_running_reports_not_available_yet(self, tmp_path: Path) -> None:
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage1-sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text("<project />", encoding="utf-8")
+        _seed_stage_command(conn, job_id="job-artifact", stage=1, command_id="cmd-s1", sandbox_path=sandbox, status="running")
+        _seed_stage_event(conn, job_id="job-artifact", stage=1, event_type="sandbox_transform_started", status="running")
+
+        response = client.get("/v1/v2/jobs/job-artifact/files/root-pom?stage=1")
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["exists"] is False
+        assert body["reason"] == "stage_running"
+        assert body["content"] == ""
+
+    def test_root_pom_endpoint_rejects_user_supplied_path(self, tmp_path: Path) -> None:
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+
+        response = client.get("/v1/v2/jobs/job-artifact/files/root-pom?stage=1&path=pom.xml")
+
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "PATH_NOT_ACCEPTED"
+
+    def test_root_pom_endpoint_rejects_path_traversal_and_symlink_escape(self, tmp_path: Path) -> None:
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage1-sandbox"
+        outside = tmp_path / "outside"
+        sandbox.mkdir()
+        outside.mkdir()
+        (outside / "pom.xml").write_text("<project><secret>escape</secret></project>", encoding="utf-8")
+        try:
+            (sandbox / "pom.xml").symlink_to(outside / "pom.xml")
+        except OSError as exc:
+            pytest.skip(f"Windows symlink creation privilege unavailable: {exc}")
+        _seed_stage_command(conn, job_id="job-artifact", stage=1, command_id="cmd-s1", sandbox_path=sandbox)
+        _seed_stage_event(conn, job_id="job-artifact", stage=1, event_type="stage_completed")
+
+        response = client.get("/v1/v2/jobs/job-artifact/files/root-pom?stage=1")
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["exists"] is False
+        assert body["reason"] == "file_missing_or_unsafe"
+        assert "escape" not in body["content"]
+
+    def test_root_pom_endpoint_redacts_secrets_and_absolute_paths(self, tmp_path: Path) -> None:
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage1-sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text(
+            f"<project><token>sk-secret123</token><path>{tmp_path}</path></project>",
+            encoding="utf-8",
+        )
+        _seed_stage_command(conn, job_id="job-artifact", stage=1, command_id="cmd-s1", sandbox_path=sandbox)
+        _seed_stage_event(conn, job_id="job-artifact", stage=1, event_type="stage_completed")
+
+        response = client.get("/v1/v2/jobs/job-artifact/files/root-pom?stage=1")
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert "sk-secret123" not in body["content"]
+        assert str(tmp_path) not in body["content"]
 
 
 class TestArtifactPreviewPathSafety:

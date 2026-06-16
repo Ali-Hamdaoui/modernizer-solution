@@ -5,6 +5,7 @@ import {
   askV2Assistant,
   approveV2Card,
   getV2ArtifactPreview,
+  getV2RootPomPreview,
   getV2AssistantMessages,
   getV2FailureSummary,
   getV2JobEventSnapshot,
@@ -15,6 +16,7 @@ import {
   rejectV2Card,
   requireJobId,
   v2EventStreamUrl,
+  v2RootPomDownloadUrl,
 } from "../../../lib/controlTowerApi";
 import type {
   V2ApprovalResponse,
@@ -283,6 +285,32 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     }
   }
 
+  async function previewRootPom(stageIndex: number) {
+    if (!normalizedJobId) return;
+    const busyKey = `root_pom:${stageIndex}`;
+    setArtifactPreviewBusy(busyKey);
+    try {
+      const preview = await getV2RootPomPreview(normalizedJobId, stageIndex);
+      setArtifactPreview(preview);
+    } catch (e) {
+      setArtifactPreview({
+        job_id: normalizedJobId,
+        artifact_kind: "root_pom",
+        source_type: "file_alias",
+        file_alias: "root_pom",
+        stage_index: stageIndex,
+        exists: false,
+        preview: "",
+        truncated: false,
+        content_type: "application/xml",
+        download_url: null,
+        reason: "not_available",
+      });
+    } finally {
+      setArtifactPreviewBusy(null);
+    }
+  }
+
   if (error) return <div className="error-box">{error}</div>;
   if (!data) return <div className="info-box">Loading cockpit...</div>;
 
@@ -447,6 +475,21 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
               {f.repair_loop_status && f.type !== "result_contract_failed" && <p className="meta">Repair: {f.repair_loop_status}</p>}
               {f.copilot_status && f.type !== "result_contract_failed" && <p className="meta">Copilot: {f.copilot_status}</p>}
               {f.test_status && f.type !== "result_contract_failed" && <p className="meta">Test: {f.test_status}</p>}
+              {f.stage != null && (
+                <div className="file-alias-actions">
+                  <button
+                    type="button"
+                    disabled={artifactPreviewBusy === `root_pom:${f.stage}`}
+                    onClick={() => void previewRootPom(f.stage as number)}
+                  >
+                    View full POM
+                  </button>
+                  <a href={normalizedJobId ? v2RootPomDownloadUrl(normalizedJobId, f.stage) : "#"}>
+                    Download full POM
+                  </a>
+                  {artifactPreviewBusy === `root_pom:${f.stage}` ? <span className="meta"> loading...</span> : null}
+                </div>
+              )}
               {f.next_operator_action && (
                 <div className="operator-action">
                   <strong>Next action:</strong>
@@ -571,7 +614,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
                       disabled={artifactPreviewBusy === k}
                       onClick={() => void previewArtifact(k)}
                     >
-                      {k}
+                      {artifactKindLabel(k)}
                     </button>
                     {artifactPreviewBusy === k ? " loading..." : ""}
                   </li>
@@ -581,16 +624,33 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           )}
           {artifactPreview && (
             <div className="artifact-preview">
-              <strong>Artifact Preview: {artifactPreview.artifact_kind}</strong>
+              <strong>
+                {artifactPreview.source_type === "file_alias"
+                  ? `Full POM: Stage ${artifactPreview.stage_index ?? "?"}`
+                  : `Artifact Preview: ${artifactKindLabel(artifactPreview.artifact_kind)}`}
+              </strong>
               {artifactPreview.exists ? (
                 <>
                   <p className="meta">
                     {artifactPreview.truncated ? "Preview truncated (32 KB limit)." : "Full preview."}
+                    {artifactPreview.source_ref?.command_id ? ` Source command: ${artifactPreview.source_ref.command_id}` : ""}
+                    {artifactPreview.source_ref?.event_id ? ` Source event: ${artifactPreview.source_ref.event_id}` : ""}
                   </p>
-                  <pre className="artifact-preview-content">{artifactPreview.preview}</pre>
+                  <pre className="artifact-preview-content">{artifactPreview.content ?? artifactPreview.preview}</pre>
+                  {artifactPreview.download_url && normalizedJobId && (
+                    <p>
+                      <a href={v2RootPomDownloadUrl(normalizedJobId, artifactPreview.stage_index ?? 1)}>
+                        Download full POM
+                      </a>
+                    </p>
+                  )}
                 </>
               ) : (
-                <p className="meta">Artifact not available or not yet persisted.</p>
+                <p className="meta">
+                  {artifactPreview.source_type === "file_alias"
+                    ? `Full POM is not available yet${artifactPreview.reason ? `: ${artifactPreview.reason.replace(/_/g, " ")}` : "."}`
+                    : "Artifact not available or not yet persisted."}
+                </p>
               )}
               <button type="button" onClick={() => setArtifactPreview(null)}>Close</button>
             </div>
@@ -687,6 +747,9 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .trace-section { border-left: 3px solid #6b7a90; padding-left: 0.6rem; margin-top: 0.6rem; }
         .trace-section ul { margin: 0.25rem 0 0 1rem; padding: 0; }
         .repair-card { border: 1px solid #ffcc66; background: #fffdf0; padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; }
+        .file-alias-actions { display: flex; align-items: center; gap: 0.6rem; margin: 0.5rem 0; }
+        .file-alias-actions button { padding: 0.35rem 0.6rem; border: 1px solid #333; border-radius: 4px; background: #fff; }
+        .file-alias-actions button:disabled { color: #777; border-color: #bbb; }
         .artifact-kinds { border: 1px solid #ddd; padding: 0.5rem; margin: 0.5rem 0; }
         .artifact-kind-link { background: none; border: none; color: #0066cc; cursor: pointer; text-decoration: underline; font-size: 0.85rem; padding: 0; }
         .artifact-kind-link:hover { color: #004499; }
@@ -696,6 +759,12 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       `}</style>
     </div>
   );
+}
+
+function artifactKindLabel(kind: string): string {
+  if (kind === "rewrite_dry_run.patch") return "rewrite dry run diff/proposed changes";
+  if (kind.endsWith(".patch")) return `${kind} diff/proposed changes`;
+  return kind;
 }
 
 /** Recompute stage status for every stage using ALL events so far

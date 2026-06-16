@@ -746,8 +746,15 @@ export type V2FailureSummaryResponse = {
 export type V2ArtifactPreviewResponse = {
   job_id: string;
   artifact_kind: string;
+  source_type?: "artifact" | "file_alias";
+  file_alias?: string;
+  stage_index?: number;
   exists: boolean;
   preview: string;
+  content?: string;
   truncated: boolean;
   content_type: string;
+  download_url?: string | null;
+  source_ref?: Record<string, string> | null;
+  reason?: string | null;
 };
