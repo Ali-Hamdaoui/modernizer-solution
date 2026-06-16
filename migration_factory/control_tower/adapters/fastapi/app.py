@@ -3841,7 +3841,7 @@ _ARTIFACT_CONTENT_KEYWORDS = {
     "pom", "xml", "artifact", "openrewrite", "plugin", "plan lock",
     "approved_plan", "pending_plan", "full pom", "rewrite", "dry run",
     "patch", "ledger", "log", "report", "summary",
-    "dependency", "dependencies",
+    "dependency", "dependencies", "proposal",
 }
 
 _ARTIFACT_CONTENT_QUESTION_PATTERNS = (
@@ -3850,6 +3850,9 @@ _ARTIFACT_CONTENT_QUESTION_PATTERNS = (
     "read", "get", "fetch", "see", "view", "look at",
     "explain", "describe", "tell me about", "analyze", "compare",
     "summarize", "inspect", "break down", "breakdown",
+    # Proposal / change patterns (needed for artifact resolution)
+    "draft", "propose", "change", "upgrade", "modify",
+    "migrate", "repair", "create", "update",
 )
 
 
@@ -3864,6 +3867,49 @@ _ROOT_POM_ALIAS_TERMS = (
 def _classify_v2_assistant_intent(question: str) -> str:
     lowered = str(question or "").lower()
 
+    # 1. Model status first (model/Azure/provider questions)
+    if any(term in lowered for term in ("model", "azure", "openai", "connected", "provider", "fallback", "deterministic")):
+        return "model_status"
+
+    # 2. Check if the user explicitly says NOT to apply/execute —
+    #    this negates capability_boundary and shifts toward proposal
+    user_says_dont_apply = any(phrase in lowered for phrase in (
+        "do not apply", "don't apply", "do not execute",
+        "don't execute", "do not write", "don't write",
+        "do not change", "just tell me", "only tell me",
+        "just propose", "only propose",
+    ))
+
+    # 3. Capability / action boundary — takes priority
+    #    BUT skip if user explicitly said DO NOT apply
+    if not user_says_dont_apply:
+        capability_boundary_terms = (
+            "you can change", "can you change", "you can do", "why can't",
+            "do it", "make the change", "apply it", "apply the pom",
+            "apply the change", "write the pom", "execute the change",
+            "can you apply", "can you execute", "can you write",
+            "change it yourself", "do it yourself",
+        )
+        if any(term in lowered for term in capability_boundary_terms):
+            return "capability_boundary"
+
+    # 4. POM change proposal intent — draft/upgrade/propose/modify with POM terms
+    proposal_actions = (
+        "propose", "draft", "upgrade", "modify", "change",
+        "migrate", "repair", "create proposal", "safe pom",
+        "pom change", "what should we change",
+    )
+    proposal_artifact_terms = (
+        "pom", "pom.xml", "pom xml", "dependency", "dependencies",
+        "plugin", "spring boot", "spring-boot", "boot",
+        "version", "java.version", "proposal",
+    )
+    if any(action in lowered for action in proposal_actions) and any(
+        term in lowered for term in proposal_artifact_terms
+    ):
+        return "pom_change_proposal"
+
+    # 5. POM / dependency explanation
     artifact_terms = (
         "pom", "pom.xml", "pom xml", "dependency", "dependencies",
         "plugin", "xml", "artifact", "rewrite", "patch",
@@ -3886,14 +3932,9 @@ def _classify_v2_assistant_intent(question: str) -> str:
             return "pom_or_dependency_explanation"
         return "artifact_content"
 
-    if any(term in lowered for term in ("model", "azure", "openai", "connected", "provider", "fallback", "deterministic")):
-        return "model_status"
-
+    # 6. Status questions
     if any(term in lowered for term in ("what happened", "status", "progress", "running", "failed", "failure", "next", "approve", "approval", "stage", "done", "completed", "ready", "pass", "fail", "proof", "pipeline", "is stage", "stage status", "what stage", "which stage")):
         return "status"
-
-    if any(term in lowered for term in ("you can change", "can you change", "you can do", "why can't", "do it", "make the change", "apply it")):
-        return "capability_boundary"
 
     return "general_question"
 
@@ -4303,6 +4344,15 @@ def _build_v2_assistant_answer(
             events=events,
         )
 
+    if effective_intent == "pom_change_proposal":
+        return _build_pom_change_proposal_answer(
+            question=question,
+            artifact_previews=artifact_previews,
+            events=events,
+            approvals=approvals,
+            commands=commands,
+        )
+
     if effective_intent == "capability_boundary":
         return _build_capability_boundary_answer()
 
@@ -4326,26 +4376,711 @@ def _build_v2_assistant_answer(
     )
 
 
+# ── POM change proposal builder ─────────────────────────────────────
+
+
+def _extract_pom_summary(xml_text: str) -> dict[str, Any]:
+    """Extract structured POM fields from XML text.
+
+    Uses xml.etree.ElementTree when possible, regex as fallback.
+    Returns a dict with project coordinates, properties, dependencies,
+    plugins, dependencyManagement/parent presence, and repositories.
+    Maven namespace/schema URLs are preserved.
+    """
+    import xml.etree.ElementTree as ET
+
+    result: dict[str, Any] = {
+        "parse_ok": False,
+        "coordinates": {},
+        "properties": {},
+        "dependencies": [],
+        "plugins": [],
+        "has_dependency_management": False,
+        "has_parent": False,
+        "has_repositories": False,
+        "packaging": "jar",
+    }
+
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        # Fallback: regex extraction
+        result["parse_ok"] = False
+        result["fallback_extracted"] = True
+        # Extract groupId/artifactId/version with regex
+        for field in ("groupId", "artifactId", "version", "packaging"):
+            m = re.search(
+                rf"<{field}>([^<]*)</{field}>", xml_text, re.IGNORECASE
+            )
+            if m:
+                result["coordinates"][field] = m.group(1).strip()
+        # Extract properties
+        props_match = re.search(
+            r"<properties>(.*?)</properties>", xml_text, re.DOTALL | re.IGNORECASE
+        )
+        if props_match:
+            prop_section = props_match.group(1)
+            for pm in re.finditer(
+                r"<([^>!\s]+)>([^<]*)</\1>", prop_section, re.IGNORECASE
+            ):
+                result["properties"][pm.group(1)] = pm.group(2).strip()
+        # Extract dependencies
+        for dm in re.finditer(
+            r"<dependency>(.*?)</dependency>", xml_text, re.DOTALL | re.IGNORECASE
+        ):
+            dep: dict[str, str] = {}
+            for field in ("groupId", "artifactId", "version", "scope"):
+                fm = re.search(
+                    rf"<{field}>([^<]*)</{field}>", dm.group(1), re.IGNORECASE
+                )
+                if fm:
+                    dep[field] = fm.group(1).strip()
+            if dep:
+                result["dependencies"].append(dep)
+        # Extract plugins
+        for dm in re.finditer(
+            r"<plugin>(.*?)</plugin>", xml_text, re.DOTALL | re.IGNORECASE
+        ):
+            plug: dict[str, str] = {}
+            for field in ("groupId", "artifactId", "version"):
+                fm = re.search(
+                    rf"<{field}>([^<]*)</{field}>", dm.group(1), re.IGNORECASE
+                )
+                if fm:
+                    plug[field] = fm.group(1).strip()
+            if plug:
+                result["plugins"].append(plug)
+        result["has_dependency_management"] = bool(
+            re.search(r"<dependencyManagement>", xml_text, re.IGNORECASE)
+        )
+        result["has_parent"] = bool(
+            re.search(r"<parent>", xml_text, re.IGNORECASE)
+        )
+        result["has_repositories"] = bool(
+            re.search(r"<repositor(?:y|ies)>", xml_text, re.IGNORECASE)
+        )
+        return result
+
+    # Namespace-aware tag helpers — handle both Maven namespace and plain XML
+    ns = "{http://maven.apache.org/POM/4.0.0}"
+    # Detect if root uses Maven namespace
+    _has_maven_ns = root.tag == f"{ns}project"
+
+    def _tag(local: str) -> str:
+        return f"{ns}{local}" if _has_maven_ns else local
+
+    def _text(el: Any, local: str) -> str | None:
+        child = el.find(_tag(local))
+        if child is None and _has_maven_ns:
+            # Fallback: try without namespace
+            child = el.find(local)
+        return child.text.strip() if child is not None and child.text else None
+
+    def _find_all(el: Any, local: str) -> list:
+        """Find all children matching a tag, namespace-aware."""
+        results = list(el.findall(_tag(local)))
+        if not results and _has_maven_ns:
+            results = list(el.findall(local))
+        return results
+
+    result["parse_ok"] = True
+    result["coordinates"] = {
+        "groupId": _text(root, "groupId") or "",
+        "artifactId": _text(root, "artifactId") or "",
+        "version": _text(root, "version") or "",
+        "packaging": _text(root, "packaging") or "jar",
+    }
+
+    # Properties
+    props_el = root.find(_tag("properties"))
+    if props_el is None and _has_maven_ns:
+        props_el = root.find("properties")
+    if props_el is not None:
+        for child in props_el:
+            local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            result["properties"][local] = (child.text or "").strip()
+
+    # Dependencies
+    deps_el = root.find(_tag("dependencies"))
+    if deps_el is None and _has_maven_ns:
+        deps_el = root.find("dependencies")
+    if deps_el is not None:
+        for dep_el in _find_all(deps_el, "dependency"):
+            dep = {}
+            for field in ("groupId", "artifactId", "version", "scope"):
+                val = _text(dep_el, field)
+                if val:
+                    dep[field] = val
+            if dep:
+                result["dependencies"].append(dep)
+
+    # Plugins
+    build_el = root.find(_tag("build"))
+    if build_el is None and _has_maven_ns:
+        build_el = root.find("build")
+    if build_el is not None:
+        plugins_el = build_el.find(_tag("plugins"))
+        if plugins_el is None and _has_maven_ns:
+            plugins_el = build_el.find("plugins")
+        if plugins_el is not None:
+            for plug_el in _find_all(plugins_el, "plugin"):
+                plug = {}
+                for field in ("groupId", "artifactId", "version"):
+                    val = _text(plug_el, field)
+                    if val:
+                        plug[field] = val
+                if plug:
+                    result["plugins"].append(plug)
+
+    # Presence checks
+    _dm = root.find(_tag("dependencyManagement"))
+    if _dm is None and _has_maven_ns:
+        _dm = root.find("dependencyManagement")
+    result["has_dependency_management"] = _dm is not None
+
+    _parent = root.find(_tag("parent"))
+    if _parent is None and _has_maven_ns:
+        _parent = root.find("parent")
+    result["has_parent"] = _parent is not None
+
+    _repos = root.find(_tag("repositories")) or root.find(_tag("pluginRepositories"))
+    if _repos is None and _has_maven_ns:
+        _repos = root.find("repositories") or root.find("pluginRepositories")
+    result["has_repositories"] = _repos is not None
+    return result
+
+
+def _format_xml_snippet(element: str, children: list[tuple[str, str]]) -> str:
+    """Format an XML snippet for proposal display."""
+    lines = [f"<{element}>"]
+    for tag, value in children:
+        lines.append(f"  <{tag}>{value}</{tag}>")
+    lines.append(f"</{element}>")
+    return "\n".join(lines)
+
+
+def _redact_xml_preserve_maven_urls(text: str) -> str:
+    """Redact XML content while preserving Maven namespace/schema URLs
+    and XML tag structure. Redacts filesystem paths, secrets, and
+    private repository URLs but keeps Maven URL intact."""
+
+    # Redact common POSIX-file-like paths: /usr/, /home/, /tmp/, /opt/, /etc/, /dev/
+    # but NOT inside URLs (preceded by ://)
+    text = re.sub(
+        r"(?<![:/A-Za-z0-9_-])/(?:usr|home|tmp|opt|etc|var|boot|root|dev|proc|sys|srv|mnt|media|run)/[^\s<>\"']*",
+        "[redacted-path]",
+        text,
+    )
+
+    # Redact file: prefixed paths like file:/dev/./urandom (Java security)
+    text = re.sub(
+        r"\bfile:/(?:usr|home|tmp|opt|etc|var|boot|root|dev|proc|sys|srv|mnt|media|run)/[^\s<>\"']*",
+        "file:[redacted-path]",
+        text,
+    )
+
+    # Redact secret-like XML elements — replace their content with [redacted]
+    for tag in ("password", "secret", "token", "apiKey", "api_key"):
+        text = re.sub(
+            rf"<{tag}>[^<]*</{tag}>",
+            f"<{tag}>[redacted]</{tag}>",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+    # Redact private/internal repository URLs (but not central/maven)
+    text = re.sub(
+        r"<url>https?://[^<]*(?:private|internal|nexus|artifactory|token)[^<]*</url>",
+        "<url>[redacted-private-repo]</url>",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    return text
+
+
+def _build_pom_change_proposal_answer(
+    *,
+    question: str,
+    artifact_previews: tuple[dict[str, Any], ...] | None = None,
+    events: tuple[Any, ...] = (),
+    approvals: tuple[Any, ...] = (),
+    commands: tuple[Any, ...] = (),
+) -> str:
+    """Build a governed POM change proposal from available evidence.
+
+    Does NOT dump the full POM. Produces structured sections:
+    Proposed change, Why, Risk, Evidence, Approval, Not applied.
+    """
+    lines: list[str] = []
+    lines.append(
+        "I cannot apply this directly, but I can draft a human-reviewable "
+        "POM change proposal.\n"
+    )
+
+    # ── Resolve root_pom preview ──
+    root_pom_preview: dict[str, Any] | None = None
+    root_pom_exists = False
+    if artifact_previews:
+        for pv in artifact_previews:
+            if pv.get("source_type") == "file_alias" and pv.get("artifact_kind") == "root_pom":
+                root_pom_preview = pv
+                root_pom_exists = bool(pv.get("exists"))
+                break
+
+    # ── Resolve other artifact previews for evidence ──
+    available_artifact_kinds: list[str] = []
+    if artifact_previews:
+        for pv in artifact_previews:
+            kind = pv.get("artifact_kind", "")
+            if kind and kind not in available_artifact_kinds and pv.get("exists"):
+                available_artifact_kinds.append(kind)
+    event_artifact_kinds = _extract_artifact_kinds_list(events)
+    all_evidence_kinds = sorted(set(available_artifact_kinds + event_artifact_kinds))
+
+    # ── Extract POM summary ──
+    pom_summary: dict[str, Any] | None = None
+    if root_pom_preview and root_pom_exists:
+        raw_preview = str(root_pom_preview.get("preview", ""))
+        if raw_preview.strip():
+            pom_summary = _extract_pom_summary(raw_preview)
+
+    # ── Section 1: Proposed change ──
+    lines.append("## 1. Proposed Change\n")
+
+    if not root_pom_exists:
+        reason = (
+            str(root_pom_preview.get("reason", "not_available")).replace("_", " ")
+            if root_pom_preview
+            else "root_pom not resolved"
+        )
+        lines.append(
+            f"The root pom.xml is not available yet (reason: {reason}). "
+            "I can draft a generic migration checklist, but exact XML edits "
+            "require backend evidence to be published first."
+        )
+        lines.append("")
+        lines.append("### Generic safe preparation checklist (pending root_pom):")
+        lines.append(
+            "- Ensure a dependencyManagement section exists (or parent POM) "
+            "to control transitive versions.\n"
+            "- Align dependency versions to a single Spring Boot BOM.\n"
+            "- Remove explicit version tags from Boot-managed dependencies.\n"
+            "- Review javax.* → jakarta.* migration readiness."
+        )
+    elif pom_summary:
+        props = pom_summary.get("properties", {})
+        deps = pom_summary.get("dependencies", [])
+        coords = pom_summary.get("coordinates", {})
+
+        java_version = props.get("java.version", "")
+        boot_version = props.get(
+            "spring-boot.version",
+            props.get("spring-boot-dependencies.version", ""),
+        )
+        spring_version = props.get("org.springframework.version", "")
+        hibernate_version = props.get("hibernate.version", "")
+
+        lines.append("### Preparation option (safe, current Spring Boot):")
+        lines.append("")
+
+        # Dependency management suggestion
+        if not pom_summary.get("has_dependency_management") and not pom_summary.get("has_parent"):
+            lines.append(
+                "**Add dependencyManagement** to import `spring-boot-dependencies` "
+                "BOM so that managed dependency versions are controlled centrally:"
+            )
+            lines.append("~~~xml")
+            lines.append("<dependencyManagement>")
+            lines.append("  <dependencies>")
+            lines.append("    <dependency>")
+            lines.append("      <groupId>org.springframework.boot</groupId>")
+            lines.append("      <artifactId>spring-boot-dependencies</artifactId>")
+            if boot_version:
+                lines.append(f"      <version>${{spring-boot.version}}</version>")
+            else:
+                lines.append("      <version><!-- from plan/target_dependency_plan --></version>")
+            lines.append("      <type>pom</type>")
+            lines.append("      <scope>import</scope>")
+            lines.append("    </dependency>")
+            lines.append("  </dependencies>")
+            lines.append("</dependencyManagement>")
+            lines.append("~~~")
+            lines.append("")
+
+        if boot_version:
+            lines.append(
+                f"Current Spring Boot version: `{boot_version}`. "
+            )
+            lines.append(
+                "**Align explicit versions** of Boot-managed dependencies "
+                "to `${spring-boot.version}`. Remove the version tag from "
+                "dependencies that are managed by the Boot BOM."
+            )
+            # Show specific dependencies with explicit versions
+            boot_managed_prefixes = (
+                "org.springframework.boot",
+                "org.springframework",
+                "org.hibernate",
+                "com.fasterxml",
+                "org.slf4j",
+                "ch.qos.logback",
+                "org.junit",
+            )
+            explicit_boot_deps = [
+                d for d in deps
+                if any(
+                    d.get("groupId", "").startswith(pfx)
+                    for pfx in boot_managed_prefixes
+                )
+                and d.get("version")
+            ]
+            if explicit_boot_deps:
+                lines.append("")
+                lines.append("Dependencies with explicit versions (candidates for BOM alignment):")
+                for d in explicit_boot_deps[:8]:
+                    lines.append(
+                        f"- `{d.get('groupId')}:{d.get('artifactId')}` "
+                        f"(current: `{d.get('version')}`)"
+                    )
+                if len(explicit_boot_deps) > 8:
+                    lines.append(f"  ... and {len(explicit_boot_deps) - 8} more.")
+            lines.append("")
+
+        # Spring Boot 3 migration option
+        lines.append("### Migration option (Spring Boot 3 target):")
+        lines.append("")
+        if java_version and java_version == "11":
+            lines.append(
+                "- **`java.version`**: change `11` → `17` (Spring Boot 3 requires Java 17)."
+            )
+        elif java_version:
+            lines.append(
+                f"- Current `java.version` is `{java_version}`. "
+                "Spring Boot 3 requires Java 17 or later."
+            )
+        else:
+            lines.append(
+                "- **`java.version`**: Spring Boot 3 requires Java 17; "
+                "ensure the property is set to 17."
+            )
+
+        if boot_version:
+            lines.append(
+                f"- **`spring-boot.version`**: change `{boot_version}` → "
+                "target version from `target_dependency_plan` or approved migration plan."
+            )
+        else:
+            lines.append(
+                "- **`spring-boot.version`**: set to target Spring Boot 3.x version "
+                "from `target_dependency_plan`."
+            )
+
+        # javax → jakarta migration candidates
+        javax_deps = [
+            d for d in deps
+            if any(pfx in d.get("groupId", "").lower() for pfx in ("javax",))
+            or any(pfx in d.get("artifactId", "").lower() for pfx in ("javax.servlet", "servlet-api", "javax.persistence"))
+        ]
+        if javax_deps:
+            lines.append("")
+            lines.append("**javax.* → jakarta.* migration candidates:**")
+            javax_to_jakarta_map = {
+                "javax.persistence": ("jakarta.persistence", "jakarta.persistence-api"),
+                "javax.servlet": ("jakarta.servlet", "jakarta.servlet-api"),
+                "javax.annotation": ("jakarta.annotation", "jakarta.annotation-api"),
+                "javax.transaction": ("jakarta.transaction", "jakarta.transaction-api"),
+                "javax.validation": ("jakarta.validation", "jakarta.validation-api"),
+            }
+            for d in javax_deps:
+                gid = d.get("groupId", "")
+                aid = d.get("artifactId", "")
+                ver = d.get("version", "(managed)")
+                # Find mapping
+                mapped = None
+                for javax_pfx, (jak_gid, jak_aid) in javax_to_jakarta_map.items():
+                    if javax_pfx in gid.lower() or javax_pfx in aid.lower():
+                        mapped = (jak_gid, jak_aid)
+                        break
+                if mapped:
+                    lines.append(
+                        f"  - `{gid}:{aid}` ({ver}) → `{mapped[0]}:{mapped[1]}`"
+                    )
+                else:
+                    lines.append(
+                        f"  - `{gid}:{aid}` ({ver}) → check jakarta equivalent"
+                    )
+
+        # Hibernate note
+        if hibernate_version:
+            lines.append("")
+            lines.append(
+                f"- **`hibernate.version`** (`{hibernate_version}`): "
+                "Spring Boot 3 / Spring Framework 6 requires a compatible "
+                "Hibernate 6.x with Jakarta namespace support. "
+                "If managed by the Boot BOM, this is handled automatically; "
+                "if explicit, update to a compatible version."
+            )
+
+        # Spring Aspects note
+        if spring_version and "5.3" in spring_version:
+            lines.append(
+                f"- **Spring Framework `{spring_version}`**: Spring Boot 3 "
+                "requires Spring Framework 6.x. Update `org.springframework.version` "
+                "if set explicitly."
+            )
+
+        # Azure Service Bus note
+        azure_deps = [
+            d for d in deps
+            if "azure" in d.get("groupId", "").lower()
+            or "servicebus" in d.get("artifactId", "").lower()
+        ]
+        if azure_deps:
+            lines.append("")
+            lines.append("**Azure Service Bus compatibility check:**")
+            for d in azure_deps:
+                lines.append(
+                    f"  - `{d.get('groupId')}:{d.get('artifactId')}` "
+                    f"(`{d.get('version', 'managed')}`): verify Spring Boot 3 compatibility."
+                )
+
+        # Exact property edits
+        lines.append("")
+        lines.append("### Exact XML property edits (candidate snippets)")
+        lines.append("")
+        lines.append("~~~xml")
+        lines.append("<properties>")
+        if java_version == "11":
+            lines.append("  <java.version>17</java.version>  <!-- was 11 -->")
+        if boot_version:
+            lines.append(
+                f"  <spring-boot.version><!-- see target_dependency_plan --></spring-boot.version>"
+                f"  <!-- was {boot_version} -->"
+            )
+        lines.append("</properties>")
+        lines.append("~~~")
+    else:
+        lines.append(
+            "The root pom.xml preview could not be parsed into structured fields. "
+            "A generic preparation checklist follows."
+        )
+        lines.append("")
+        lines.append("- Verify dependencyManagement or parent POM presence.")
+        lines.append("- Align dependency versions to Spring Boot BOM.")
+        lines.append("- Audit javax.* dependencies for jakarta migration.")
+        lines.append("- Confirm Java 17+ readiness for Spring Boot 3.")
+
+    # ── Section 2: Why ──
+    lines.append("")
+    lines.append("## 2. Why\n")
+    lines.append(
+        "Aligning dependencies to a managed BOM reduces version conflicts, "
+        "transitive dependency drift, and build reproducibility risks. "
+        "Spring Boot 3 migration is a structural upgrade that improves "
+        "security support, JDK 17+ compatibility, and Jakarta namespace alignment."
+    )
+
+    # ── Section 3: Risk ──
+    lines.append("")
+    lines.append("## 3. Risk\n")
+
+    has_javax = pom_summary and any(
+        "javax" in d.get("groupId", "").lower()
+        or "servlet-api" in d.get("artifactId", "").lower()
+        or "javax.persistence" in d.get("artifactId", "").lower()
+        for d in pom_summary.get("dependencies", [])
+    ) if pom_summary else False
+
+    java11 = pom_summary and pom_summary.get("properties", {}).get("java.version") == "11" if pom_summary else False
+
+    if java11 or has_javax:
+        lines.append(
+            "**Medium/High** — Spring Boot 3 requires Java 17 and Jakarta "
+            "namespace migration. Source imports, transitive dependency chains, "
+            "and annotation processors may break. Backend build/test validation "
+            "is required before acceptance."
+        )
+    else:
+        lines.append(
+            "**Low/Medium** — Dependency version alignment through BOM "
+            "management is generally safe if the target versions are tested. "
+            "Backend build validation is still required."
+        )
+    lines.append(
+        "- Compatibility: verify `mvn dependency:tree` after change.\n"
+        "- Breaking changes: Spring Boot 3 removes deprecated APIs; "
+        "`javax.*` → `jakarta.*` migration requires source changes."
+    )
+
+    # ── Section 4: Evidence to review ──
+    lines.append("")
+    lines.append("## 4. Evidence to Review\n")
+    evidence_artifacts = [
+        k for k in all_evidence_kinds
+        if k in (
+            "root_pom", "target_dependency_plan", "rewrite_preview.json",
+            "rewrite_dry_run.patch", "rewrite_plugin_plan.json",
+            "plan_validation_report.json", "dependency_graph.json",
+            "dependency_policy_report", "dependency_policy_summary",
+            "migration_plan.yaml", "migration_units.yaml",
+            "repair_ledger", "migration_ledger",
+        )
+    ]
+    if evidence_artifacts:
+        lines.append("Available evidence artifacts to justify or verify the proposal:")
+        for k in evidence_artifacts:
+            lines.append(f"- `{k}`")
+    else:
+        lines.append(
+            "No evidence artifacts are currently available. "
+            "A meaningful proposal requires at minimum `root_pom` "
+            "and ideally `target_dependency_plan` or `migration_plan.yaml`."
+        )
+    lines.append(
+        "\nThe operator should review these artifacts before approving any change."
+    )
+
+    # ── Section 5: Approval / gate ──
+    lines.append("")
+    lines.append("## 5. Approval / Gate\n")
+    lines.append(
+        "This proposal is a draft only. To proceed:\n\n"
+        "1. **Human** reviews and approves the proposed changes.\n"
+        "2. **Backend** creates a governed repair/proposal with checksum.\n"
+        "3. **Backend** applies the patch in the sandbox.\n"
+        "4. **Backend** runs `mvn build` and `mvn test` validation.\n"
+        "5. **Proof gate** confirms build/test pass before the change is accepted.\n"
+        "6. No deployment, stage change, or approval bypass is possible "
+        "through this chat interface."
+    )
+
+    # ── Section 6: Not applied ──
+    lines.append("")
+    lines.append("## 6. Not Applied\n")
+    lines.append(
+        "No file was written, no command was executed, no stage was changed, "
+        "and no patch was applied by this chat. "
+        "This is a human-reviewable proposal only. "
+        "All execution remains backend-owned and human-gated."
+    )
+
+    answer = "\n".join(lines)
+    # Apply redactions but preserve code blocks (no raw prompt redaction)
+    from migration_factory.control_tower.application.redaction import (
+        redact_absolute_paths,
+        redact_deployment_identifiers,
+        redact_secret_keys,
+    )
+    redacted = answer
+    redacted = redact_absolute_paths(redacted)
+    redacted = redact_secret_keys(redacted)
+    redacted = redact_deployment_identifiers(redacted)
+    return redacted
+
+
 def _build_pom_explanation_answer(
     *,
     artifact_previews: tuple[dict[str, Any], ...] | None = None,
     events: tuple[Any, ...] = (),
+    raw_xml_requested: bool = False,
 ) -> str:
-    """Build POM/dependency explanation fallback."""
+    """Build POM/dependency explanation fallback.
+
+    When raw_xml_requested=True (e.g., "show raw XML"), presents
+    a redacted but structurally intact XML preview.
+    Otherwise uses structured extraction for readability.
+    """
     if artifact_previews:
         for pv in artifact_previews:
             if pv.get("source_type") == "file_alias":
                 if pv.get("exists") is True:
                     preview = str(pv.get("preview", ""))
                     stage = pv.get("stage_index", "?")
-                    answer = (
+
+                    if raw_xml_requested:
+                        # XML-safe redaction: preserve Maven URLs, redact paths/secrets
+                        safe_xml = _redact_xml_preserve_maven_urls(preview)
+                        answer = (
+                            f"The backend-resolved root pom.xml for Stage {stage} is available. "
+                            f"Here is what it contains (redacted for safety):\n\n"
+                            f"--- pom.xml ---\n{safe_xml}\n--- end ---\n\n"
+                            f"Focus on dependencies (<dependencies>), plugins (<build><plugins>), "
+                            f"properties (<properties>), parent POM, and repositories. "
+                            f"These are the migration-relevant sections."
+                        )
+                        return str(redact_public_data(answer))
+
+                    # Structured extraction (default): extract fields from XML
+                    pom_summary = _extract_pom_summary(preview)
+                    lines: list[str] = []
+                    lines.append(
                         f"The backend-resolved root pom.xml for Stage {stage} is available. "
-                        f"Here is what it contains:\n\n--- pom.xml ---\n{preview}\n--- end ---\n\n"
-                        f"Focus on dependencies (<dependencies>), plugins (<build><plugins>), "
-                        f"properties (<properties>), parent POM, and repositories. "
-                        f"These are the migration-relevant sections."
+                        f"Here is a structured summary:\n"
                     )
+
+                    coords = pom_summary.get("coordinates", {})
+                    if coords:
+                        parts = []
+                        if coords.get("groupId"):
+                            parts.append(f"groupId: {coords['groupId']}")
+                        if coords.get("artifactId"):
+                            parts.append(f"artifactId: {coords['artifactId']}")
+                        if coords.get("version"):
+                            parts.append(f"version: {coords['version']}")
+                        if coords.get("packaging") and coords["packaging"] != "jar":
+                            parts.append(f"packaging: {coords['packaging']}")
+                        if parts:
+                            lines.append("**Project:** " + " | ".join(parts))
+
+                    if pom_summary.get("has_parent"):
+                        lines.append("**Parent POM:** present")
+                    if pom_summary.get("has_dependency_management"):
+                        lines.append("**Dependency Management:** present")
+                    if pom_summary.get("has_repositories"):
+                        lines.append("**Repositories:** present [redacted]")
+
+                    props = pom_summary.get("properties", {})
+                    if props:
+                        lines.append("\n**Key Properties:**")
+                        for k, v in sorted(props.items()):
+                            if len(v) > 80:
+                                v = v[:77] + "..."
+                            lines.append(f"  - `{k}` = `{v}`")
+
+                    deps = pom_summary.get("dependencies", [])
+                    if deps:
+                        lines.append("\n**Dependencies:**")
+                        for d in deps[:20]:
+                            gid = d.get("groupId", "?")
+                            aid = d.get("artifactId", "?")
+                            ver = d.get("version", "(managed)")
+                            scope = d.get("scope", "")
+                            scope_suffix = f" [{scope}]" if scope and scope != "compile" else ""
+                            lines.append(
+                                f"  - `{gid}:{aid}` = `{ver}`{scope_suffix}"
+                            )
+                        if len(deps) > 20:
+                            lines.append(f"  ... and {len(deps) - 20} more dependencies.")
+
+                    plugs = pom_summary.get("plugins", [])
+                    if plugs:
+                        lines.append("\n**Plugins:**")
+                        for p in plugs[:15]:
+                            gid = p.get("groupId", "?")
+                            aid = p.get("artifactId", "?")
+                            ver = p.get("version", "(managed)")
+                            lines.append(f"  - `{gid}:{aid}` = `{ver}`")
+                        if len(plugs) > 15:
+                            lines.append(f"  ... and {len(plugs) - 15} more plugins.")
+
+                    lines.append(
+                        "\nTo see the full raw XML (redacted for safety), "
+                        "ask 'show the raw pom.xml'."
+                    )
+                    answer = "\n".join(lines)
                     return str(redact_public_data(answer))
+
                 reason = str(pv.get("reason") or "not_available").replace("_", " ")
                 stage = pv.get("stage_index", "?")
                 artifact_list = _extract_artifact_kinds_list(events)

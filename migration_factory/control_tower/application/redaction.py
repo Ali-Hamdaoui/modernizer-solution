@@ -29,9 +29,9 @@ _WINDOWS_ABSOLUTE_PATH_RE = re.compile(
 )
 
 # Pattern matches POSIX absolute paths like /home/user/.ssh/id_rsa
-# Does NOT match URLs (http://, https://)
+# Does NOT match URLs (http://, https://) or single / between words
 _POSIX_ABSOLUTE_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9_:/<])(?<!/)/(?:[^/\s]+/)*[^/\s]*"
+    r"(?<![A-Za-z0-9_:/<])(?<!/)/(?:[^/\s]+/)*[^/\s]+"
 )
 
 # Pattern matches environment variable assignments like SECRET=value

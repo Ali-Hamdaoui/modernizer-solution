@@ -510,7 +510,7 @@ class TestConversationHistory:
         assert response.status_code == 200, response.text
         # Response should not fail due to oversized conversation history
         content = response.json()["assistant_message"]["content"]
-        assert "stage-one" in content or "not available" in content or "<project" in content
+        assert "stage-one" in content or "not available" in content or "Stage 1 is available" in content
 
 
 class TestNoSecretsLeak:
