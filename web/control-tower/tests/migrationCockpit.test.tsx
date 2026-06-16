@@ -332,13 +332,96 @@ describe("V2 Migration Cockpit contract", () => {
       "model_invocation_failed",
       "transform_failed",
       "build_failed",
+      "ai_diagnosis_created",
+      "pom_summary_created",
+      "repair_proposal_revised",
+      "reviewer_critique_created",
+      "repair_patch_gate_completed",
+      "repair_patch_applied",
+      "repair_validation_completed",
+      "repair_rollback_completed",
       "next_stage_queued",
     ]);
     expect(important.has("approval_resume_queued")).toBe(true);
     expect(important.has("approval_completed")).toBe(true);
     expect(important.has("transform_failed")).toBe(true);
     expect(important.has("build_failed")).toBe(true);
+    expect(important.has("ai_diagnosis_created")).toBe(true);
+    expect(important.has("reviewer_critique_created")).toBe(true);
+    expect(important.has("repair_validation_completed")).toBe(true);
     expect(important.has("next_stage_queued")).toBe(true);
+  });
+
+  it("failure summary exposes backend supervision trace records", () => {
+    const failureSummary = {
+      has_failures: true,
+      failures: [
+        {
+          type: "build_failed",
+          stage: 2,
+          supervision_trace: {
+            ai_diagnosis: {
+              diagnosis_id: "diag-1",
+              command_id: "cmd-1",
+              trigger_event_type: "build_failed",
+              failure_type: "DEPENDENCY_ERROR",
+              context_pack_id: "pack-1",
+              context_pack_checksum: "ctx-1",
+              repair_proposal_id: "proposal-1",
+              model_invocation_id: "model-1",
+              redaction_status: "redacted",
+              created_at: "2026-06-16T00:00:00Z",
+            },
+            evidence_used: ["pack-1", "ctx-1", "pom-summary:1"],
+            pom_analysis: {
+              pom_summary_ref: "pom-summary:1",
+              spring_boot_version: "2.7.18",
+              java_version: "11",
+              packaging: "jar",
+              candidate_rules: ["pom_dependency_alignment"],
+              created_at: "2026-06-16T00:00:01Z",
+            },
+            repair_proposal: {
+              proposal_id: "proposal-2",
+              source_proposal_id: "proposal-1",
+              command_id: "cmd-1",
+              revision_number: 2,
+              allowed_scope: "pom_only",
+              proposal_checksum: "prop-checksum",
+              status: "completed",
+              created_at: "2026-06-16T00:00:02Z",
+            },
+            reviewer_verdict: {
+              critique_id: "crit-1",
+              proposal_id: "proposal-2",
+              proposal_type: "repair_proposal",
+              proposal_checksum: "prop-checksum",
+              context_pack_checksum: "ctx-1",
+              decision: "accept",
+              reasoning: "Evidence and scope are acceptable.",
+              missing_evidence: [],
+              unsafe_assumptions: [],
+              created_at: "2026-06-16T00:00:03Z",
+            },
+            validation_result: {
+              proposal_id: "proposal-2",
+              patch_gate_status: "ALLOWED",
+              deterministic_rule_id: "pom_dependency_alignment",
+              build_status: "BUILD_PASSED_IN_SANDBOX",
+              test_status: "TESTS_PASSED",
+              h2_status: "NOT_REQUIRED",
+              ledger_ref: "repair_ledger.json",
+            },
+          },
+        },
+      ],
+    };
+    const trace = failureSummary.failures[0].supervision_trace;
+    expect(trace.ai_diagnosis?.diagnosis_id).toBe("diag-1");
+    expect(trace.evidence_used).toContain("pom-summary:1");
+    expect(trace.repair_proposal?.allowed_scope).toBe("pom_only");
+    expect(trace.reviewer_verdict?.decision).toBe("accept");
+    expect(trace.validation_result?.ledger_ref).toBe("repair_ledger.json");
   });
 
   // ── Stage status lifecycle reducer tests (V2 cockpit state model) ──

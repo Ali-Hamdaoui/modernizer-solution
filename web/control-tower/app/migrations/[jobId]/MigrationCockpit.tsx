@@ -138,6 +138,14 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       "approval_resume_queued",
       "resume_started",
       "copilot_status_checked",
+      "ai_diagnosis_created",
+      "pom_summary_created",
+      "repair_proposal_revised",
+      "reviewer_critique_created",
+      "repair_patch_gate_completed",
+      "repair_patch_applied",
+      "repair_validation_completed",
+      "repair_rollback_completed",
       "model_invocation_started",
       "model_invocation_completed",
       "model_invocation_failed",
@@ -335,6 +343,13 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
               </div>
               <p>{a.summary}</p>
               <p className="checksum">Checksum: {a.request_checksum}</p>
+              {a.reviewer_decision && (
+                <p className="meta">
+                  Reviewer: {a.reviewer_decision}
+                  {a.reviewer_critique_id ? ` (${a.reviewer_critique_id})` : ""}
+                </p>
+              )}
+              {a.reviewed_checksum && <p className="checksum">Reviewed checksum: {a.reviewed_checksum}</p>}
               <div className="approval-actions">
                 <button type="button" disabled={a.status !== "pending" || approvalBusy === a.card_id} onClick={() => void approveCard(a)}>
                   Approve
@@ -412,6 +427,102 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
                 <div className="operator-action">
                   <strong>Next action:</strong>
                   <p className="meta">{f.next_operator_action}</p>
+                </div>
+              )}
+              {f.supervision_trace && (
+                <div className="supervision-trace">
+                  <h3>AI Supervision</h3>
+                  {f.supervision_trace.ai_diagnosis ? (
+                    <div className="trace-section">
+                      <strong>AI Diagnosis</strong>
+                      <p className="meta">Diagnosis: {f.supervision_trace.ai_diagnosis.diagnosis_id}</p>
+                      <p className="meta">Failure: {f.supervision_trace.ai_diagnosis.failure_type}</p>
+                      <p className="checksum">Context pack: {f.supervision_trace.ai_diagnosis.context_pack_checksum}</p>
+                      {f.supervision_trace.ai_diagnosis.repair_proposal_id && (
+                        <p className="meta">Proposal: {f.supervision_trace.ai_diagnosis.repair_proposal_id}</p>
+                      )}
+                      <p className="meta">Redaction: {f.supervision_trace.ai_diagnosis.redaction_status || "unknown"}</p>
+                    </div>
+                  ) : (
+                    <p className="meta">No backend AI diagnosis record.</p>
+                  )}
+
+                  {f.supervision_trace.evidence_used.length > 0 && (
+                    <div className="trace-section">
+                      <strong>Evidence Used by AI</strong>
+                      <ul className="meta">
+                        {f.supervision_trace.evidence_used.map((ref) => <li key={ref}>{ref}</li>)}
+                      </ul>
+                    </div>
+                  )}
+
+                  {f.supervision_trace.pom_analysis && (
+                    <div className="trace-section">
+                      <strong>POM Analysis</strong>
+                      <p className="meta">Summary: {f.supervision_trace.pom_analysis.pom_summary_ref}</p>
+                      {f.supervision_trace.pom_analysis.spring_boot_version && (
+                        <p className="meta">Spring Boot: {f.supervision_trace.pom_analysis.spring_boot_version}</p>
+                      )}
+                      {f.supervision_trace.pom_analysis.java_version && (
+                        <p className="meta">Java: {f.supervision_trace.pom_analysis.java_version}</p>
+                      )}
+                      {f.supervision_trace.pom_analysis.candidate_rules.length > 0 && (
+                        <p className="meta">Rules: {f.supervision_trace.pom_analysis.candidate_rules.join(", ")}</p>
+                      )}
+                    </div>
+                  )}
+
+                  {f.supervision_trace.repair_proposal && (
+                    <div className="trace-section">
+                      <strong>Repair Proposal</strong>
+                      <p className="meta">Proposal: {f.supervision_trace.repair_proposal.proposal_id}</p>
+                      {f.supervision_trace.repair_proposal.source_proposal_id && (
+                        <p className="meta">Revision of: {f.supervision_trace.repair_proposal.source_proposal_id}</p>
+                      )}
+                      {f.supervision_trace.repair_proposal.allowed_scope && (
+                        <p className="meta">Scope: {f.supervision_trace.repair_proposal.allowed_scope}</p>
+                      )}
+                      {f.supervision_trace.repair_proposal.proposal_checksum && (
+                        <p className="checksum">Proposal checksum: {f.supervision_trace.repair_proposal.proposal_checksum}</p>
+                      )}
+                    </div>
+                  )}
+
+                  {f.supervision_trace.reviewer_verdict && (
+                    <div className="trace-section">
+                      <strong>Reviewer Verdict</strong>
+                      <p className="meta">Decision: {f.supervision_trace.reviewer_verdict.decision}</p>
+                      <p className="meta">{f.supervision_trace.reviewer_verdict.reasoning}</p>
+                      <p className="checksum">Reviewed checksum: {f.supervision_trace.reviewer_verdict.proposal_checksum}</p>
+                    </div>
+                  )}
+
+                  {f.supervision_trace.validation_result && (
+                    <div className="trace-section">
+                      <strong>Validation Result</strong>
+                      {f.supervision_trace.validation_result.patch_gate_status && (
+                        <p className="meta">Patch gate: {f.supervision_trace.validation_result.patch_gate_status}</p>
+                      )}
+                      {f.supervision_trace.validation_result.deterministic_rule_id && (
+                        <p className="meta">Rule: {f.supervision_trace.validation_result.deterministic_rule_id}</p>
+                      )}
+                      {f.supervision_trace.validation_result.build_status && (
+                        <p className="meta">Build: {f.supervision_trace.validation_result.build_status}</p>
+                      )}
+                      {f.supervision_trace.validation_result.test_status && (
+                        <p className="meta">Test: {f.supervision_trace.validation_result.test_status}</p>
+                      )}
+                      {f.supervision_trace.validation_result.h2_status && (
+                        <p className="meta">H2: {f.supervision_trace.validation_result.h2_status}</p>
+                      )}
+                      {f.supervision_trace.validation_result.rollback_status && (
+                        <p className="meta">Rollback: {f.supervision_trace.validation_result.rollback_status}</p>
+                      )}
+                      {f.supervision_trace.validation_result.ledger_ref && (
+                        <p className="checksum">Ledger: {f.supervision_trace.validation_result.ledger_ref}</p>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -519,6 +630,10 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .failure-card .meta { margin: 0.2rem 0; }
         .contract-failure-card { border: 1px solid #cc8800; background: #fffaf0; }
         .contract-failure-card .meta { margin: 0.2rem 0; }
+        .supervision-trace { border-top: 1px solid #f1c0c0; margin-top: 0.75rem; padding-top: 0.75rem; }
+        .supervision-trace h3 { margin: 0 0 0.5rem 0; font-size: 1rem; }
+        .trace-section { border-left: 3px solid #6b7a90; padding-left: 0.6rem; margin-top: 0.6rem; }
+        .trace-section ul { margin: 0.25rem 0 0 1rem; padding: 0; }
         .repair-card { border: 1px solid #ffcc66; background: #fffdf0; padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; }
         .artifact-kinds { border: 1px solid #ddd; padding: 0.5rem; margin: 0.5rem 0; }
       `}</style>
@@ -605,6 +720,14 @@ const IMPORTANT_SSE_TYPES = new Set([
   "repair_started",
   "repair_fallback_generated",
   "copilot_repair_invalid_response",
+  "ai_diagnosis_created",
+  "pom_summary_created",
+  "repair_proposal_revised",
+  "reviewer_critique_created",
+  "repair_patch_gate_completed",
+  "repair_patch_applied",
+  "repair_validation_completed",
+  "repair_rollback_completed",
   "proof_updated",
   "next_stage_queued",
   "result_contract_failed",

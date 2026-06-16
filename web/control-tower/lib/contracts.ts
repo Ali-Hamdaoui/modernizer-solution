@@ -465,6 +465,9 @@ export type V2ApprovalResponse = {
   summary: string;
   status: string;
   created_at: string;
+  reviewer_critique_id?: string;
+  reviewer_decision?: string;
+  reviewed_checksum?: string;
 };
 
 export type V2ResumeCommandResponse = {
@@ -654,6 +657,81 @@ export type V2FailureSummaryItem = {
   event_types: string[];
   repair_events: { type: string; message: string }[];
   next_operator_action: string;
+  supervision_trace: V2SupervisionTrace;
+};
+
+export type V2SupervisionTrace = {
+  ai_diagnosis: V2AIDiagnosisResponse | null;
+  evidence_used: string[];
+  pom_analysis: V2PomAnalysisResponse | null;
+  repair_proposal: V2RepairProposalTraceResponse | null;
+  reviewer_verdict: V2ReviewerVerdictTraceResponse | null;
+  validation_result: V2RepairValidationResponse | null;
+};
+
+export type V2AIDiagnosisResponse = {
+  diagnosis_id: string;
+  command_id: string;
+  trigger_event_type: string;
+  failure_type: string;
+  context_pack_id: string;
+  context_pack_checksum: string;
+  repair_proposal_id: string;
+  model_invocation_id: string;
+  redaction_status: string;
+  created_at: string;
+};
+
+export type V2PomAnalysisResponse = {
+  pom_summary_ref: string;
+  spring_boot_version: string;
+  java_version: string;
+  packaging: string;
+  candidate_rules: string[];
+  created_at: string;
+};
+
+export type V2RepairProposalTraceResponse = {
+  proposal_id: string;
+  source_proposal_id: string;
+  command_id: string;
+  revision_number: number | null;
+  allowed_scope: string;
+  proposal_checksum: string;
+  status: string;
+  created_at: string;
+};
+
+export type V2ReviewerVerdictTraceResponse = {
+  critique_id: string;
+  proposal_id: string;
+  proposal_type: string;
+  proposal_checksum: string;
+  context_pack_checksum: string;
+  decision: string;
+  reasoning: string;
+  missing_evidence: string[];
+  unsafe_assumptions: string[];
+  created_at: string;
+};
+
+export type V2RepairValidationResponse = {
+  proposal_id: string;
+  binding_checksum?: string;
+  patch_gate_status?: string;
+  deterministic_rule_id?: string;
+  touched_paths?: string[];
+  patch_ref?: string;
+  patch_status?: string;
+  passed?: boolean;
+  build_status?: string;
+  test_status?: string;
+  h2_status?: string;
+  artifact_refs?: Record<string, string>;
+  rollback_status?: string;
+  rollback_reason?: string;
+  ledger_ref?: string;
+  updated_at?: string;
 };
 
 export type V2FailureSummaryResponse = {

@@ -1900,6 +1900,7 @@ def create_app(
         Clients CANNOT fabricate a decision=accept — only the model output
         determines the verdict.
         """
+        event_emitted = False
         with unit_of_work_factory() as uow:
             # Load proposal context for the reviewer prompt
             proposal_record = uow.v2_repairs.get_proposal(proposal_id)
@@ -1990,6 +1991,20 @@ def create_app(
                     "CRITIQUE_FAILED",
                     str(exc),
                 ) from exc
+            command = uow.v2_commands.get(command_id)
+            if command is not None:
+                _append_v2_event(
+                    uow,
+                    job_id=command.job_id,
+                    stage=command.stage_index,
+                    event_type="reviewer_critique_created",
+                    status="completed",
+                    message=f"Reviewer critique {critique.critique_id} recorded for proposal {proposal_id}",
+                    payload=service.critique_to_dict(critique),
+                )
+                event_emitted = True
+        if event_emitted:
+            asyncio.run(app.state.public_event_notifier.notify())
         return service.critique_to_dict(critique)
 
     @app.get("/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/reviewer-critiques")
@@ -4335,7 +4350,17 @@ _PRIMARY_EVENT_PRIORITY = {
 }
 
 
-_REPAIR_EVENT_TYPES = {"repair_started", "repair_fallback_generated", "copilot_repair_invalid_response"}
+_REPAIR_EVENT_TYPES = {
+    "repair_started",
+    "repair_fallback_generated",
+    "copilot_repair_invalid_response",
+    "repair_proposal_revised",
+    "reviewer_critique_created",
+    "repair_patch_gate_completed",
+    "repair_patch_applied",
+    "repair_validation_completed",
+    "repair_rollback_completed",
+}
 
 
 def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
@@ -4356,6 +4381,7 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
         event for event in events
         if event.type in _REPAIR_EVENT_TYPES
     ]
+    supervision_by_stage = _v2_supervision_traces(events)
 
     # Group by (stage_index, primary_key)
     groups: dict[tuple[int | None, str], list[Any]] = defaultdict(list)
@@ -4445,6 +4471,7 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
             "event_types": related_event_types,
             "repair_events": stage_repair_events,
             "next_operator_action": _next_operator_action(result_kind),
+            "supervision_trace": supervision_by_stage.get(primary.stage, _empty_supervision_trace()),
         })
 
     # Collect repair events not already attached to a failure group
@@ -4472,6 +4499,160 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
         "repair_events": ungrouped_repair,
         "artifact_kinds": artifact_kinds,
     }
+
+
+def _empty_supervision_trace() -> dict[str, Any]:
+    return {
+        "ai_diagnosis": None,
+        "evidence_used": [],
+        "pom_analysis": None,
+        "repair_proposal": None,
+        "reviewer_verdict": None,
+        "validation_result": None,
+    }
+
+
+def _v2_supervision_traces(events: tuple[Any, ...]) -> dict[int | None, dict[str, Any]]:
+    traces: dict[int | None, dict[str, Any]] = {}
+
+    def trace_for(stage: int | None) -> dict[str, Any]:
+        if stage not in traces:
+            traces[stage] = _empty_supervision_trace()
+        return traces[stage]
+
+    for event in events:
+        try:
+            payload = json.loads(event.payload_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        trace = trace_for(event.stage)
+
+        if event.type == "ai_diagnosis_created":
+            evidence_refs = _safe_failure_list(payload.get("evidence_refs"))
+            context_pack_id = _safe_failure_str(payload.get("context_pack_id"))
+            context_pack_checksum = _safe_failure_str(payload.get("context_pack_checksum"))
+            if context_pack_id:
+                evidence_refs.append(context_pack_id)
+            if context_pack_checksum:
+                evidence_refs.append(context_pack_checksum)
+            trace["ai_diagnosis"] = {
+                "diagnosis_id": _safe_failure_str(payload.get("diagnosis_id")),
+                "command_id": _safe_failure_str(payload.get("command_id")),
+                "trigger_event_type": _safe_failure_str(payload.get("event_type")),
+                "failure_type": _safe_failure_str(payload.get("failure_type")),
+                "context_pack_id": context_pack_id,
+                "context_pack_checksum": context_pack_checksum,
+                "repair_proposal_id": _safe_failure_str(payload.get("repair_proposal_id")),
+                "model_invocation_id": _safe_failure_str(payload.get("model_invocation_id")),
+                "redaction_status": _safe_failure_str(payload.get("redaction_status")),
+                "created_at": event.created_at,
+            }
+            trace["evidence_used"] = _unique_trace_values(trace["evidence_used"] + evidence_refs)
+
+        elif event.type == "pom_summary_created":
+            pom_summary_ref = _safe_failure_str(payload.get("pom_summary_ref"))
+            trace["pom_analysis"] = {
+                "pom_summary_ref": pom_summary_ref,
+                "spring_boot_version": _safe_failure_str(payload.get("spring_boot_version")),
+                "java_version": _safe_failure_str(payload.get("java_version")),
+                "packaging": _safe_failure_str(payload.get("packaging")),
+                "candidate_rules": _safe_failure_list(payload.get("candidate_rules")),
+                "created_at": event.created_at,
+            }
+            if pom_summary_ref:
+                trace["evidence_used"] = _unique_trace_values(trace["evidence_used"] + [pom_summary_ref])
+
+        elif event.type == "repair_proposal_revised":
+            proposal_id = _safe_failure_str(
+                payload.get("revised_proposal_id") or payload.get("proposal_id")
+            )
+            trace["repair_proposal"] = {
+                "proposal_id": proposal_id,
+                "source_proposal_id": _safe_failure_str(payload.get("source_proposal_id")),
+                "command_id": _safe_failure_str(payload.get("command_id")),
+                "revision_number": payload.get("revision_number"),
+                "allowed_scope": _safe_failure_str(payload.get("allowed_scope")),
+                "proposal_checksum": _safe_failure_str(payload.get("proposal_checksum")),
+                "status": _safe_failure_str(payload.get("status") or event.status),
+                "created_at": event.created_at,
+            }
+
+        elif event.type == "reviewer_critique_created":
+            trace["reviewer_verdict"] = {
+                "critique_id": _safe_failure_str(payload.get("critique_id")),
+                "proposal_id": _safe_failure_str(payload.get("proposal_id")),
+                "proposal_type": _safe_failure_str(payload.get("proposal_type")),
+                "proposal_checksum": _safe_failure_str(payload.get("proposal_checksum")),
+                "context_pack_checksum": _safe_failure_str(payload.get("context_pack_checksum")),
+                "decision": _safe_failure_str(payload.get("decision")),
+                "reasoning": _safe_failure_str(payload.get("reasoning")),
+                "missing_evidence": _safe_failure_list(payload.get("missing_evidence")),
+                "unsafe_assumptions": _safe_failure_list(payload.get("unsafe_assumptions")),
+                "created_at": event.created_at,
+            }
+
+        elif event.type == "repair_patch_gate_completed":
+            validation = dict(trace["validation_result"] or {})
+            validation.update({
+                "proposal_id": _safe_failure_str(payload.get("proposal_id")),
+                "binding_checksum": _safe_failure_str(payload.get("binding_checksum")),
+                "patch_gate_status": _safe_failure_str(payload.get("patch_gate_status")),
+                "deterministic_rule_id": _safe_failure_str(payload.get("deterministic_rule_id")),
+                "touched_paths": _safe_failure_list(payload.get("touched_paths")),
+                "ledger_ref": _safe_failure_str(payload.get("ledger_ref")),
+                "updated_at": event.created_at,
+            })
+            trace["validation_result"] = validation
+
+        elif event.type == "repair_patch_applied":
+            validation = dict(trace["validation_result"] or {})
+            validation.update({
+                "proposal_id": _safe_failure_str(payload.get("proposal_id")),
+                "patch_ref": _safe_failure_str(payload.get("patch_ref")),
+                "patch_status": _safe_failure_str(payload.get("patch_status")),
+                "touched_paths": _safe_failure_list(payload.get("touched_paths")),
+                "ledger_ref": _safe_failure_str(payload.get("ledger_ref") or validation.get("ledger_ref")),
+                "updated_at": event.created_at,
+            })
+            trace["validation_result"] = validation
+
+        elif event.type == "repair_validation_completed":
+            validation = dict(trace["validation_result"] or {})
+            artifact_refs_raw = payload.get("artifact_refs") if isinstance(payload.get("artifact_refs"), dict) else {}
+            validation.update({
+                "proposal_id": _safe_failure_str(payload.get("proposal_id")),
+                "passed": bool(payload.get("passed")),
+                "build_status": _safe_failure_str(payload.get("build_status")),
+                "test_status": _safe_failure_str(payload.get("test_status")),
+                "h2_status": _safe_failure_str(payload.get("h2_status")),
+                "artifact_refs": {
+                    _safe_failure_str(key): _safe_failure_str(value)
+                    for key, value in artifact_refs_raw.items()
+                },
+                "ledger_ref": _safe_failure_str(payload.get("ledger_ref") or validation.get("ledger_ref")),
+                "updated_at": event.created_at,
+            })
+            trace["validation_result"] = validation
+
+        elif event.type == "repair_rollback_completed":
+            validation = dict(trace["validation_result"] or {})
+            validation.update({
+                "proposal_id": _safe_failure_str(payload.get("proposal_id")),
+                "rollback_status": _safe_failure_str(payload.get("rollback_status")),
+                "rollback_reason": _safe_failure_str(payload.get("reason")),
+                "updated_at": event.created_at,
+            })
+            trace["validation_result"] = validation
+
+    return traces
+
+
+def _unique_trace_values(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+    return result[:12]
 
 
 def _merged_event_payloads(events: list[Any]) -> dict[str, Any]:

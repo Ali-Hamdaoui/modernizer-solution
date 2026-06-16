@@ -406,6 +406,134 @@ def test_v2_failure_summary_endpoint_with_failures(tmp_path: Path) -> None:
     assert any(f["final_proof_level"] == "not_verified" for f in body["failures"])
 
 
+def test_v2_failure_summary_projects_ai_supervision_records(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_started_job(client, setup_id)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="build_failed",
+            status="failed",
+            message="Build failed in sandbox",
+            payload={"build_status": "BUILD_FAILED_IN_SANDBOX", "result_kind": "dependency_error"},
+        )
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="ai_diagnosis_created",
+            status="completed",
+            message="AI diagnosis created",
+            payload={
+                "diagnosis_id": "diag-1",
+                "context_pack_id": "pack-1",
+                "context_pack_checksum": "ctx-abc",
+                "command_id": "cmd-1",
+                "event_type": "build_failed",
+                "failure_type": "DEPENDENCY_ERROR",
+                "repair_proposal_id": "proposal-1",
+                "model_invocation_id": "model-1",
+                "redaction_status": "redacted",
+            },
+        )
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="pom_summary_created",
+            status="completed",
+            message="POM summary created",
+            payload={
+                "pom_summary_ref": "pom-summary:1",
+                "spring_boot_version": "2.7.18",
+                "java_version": "11",
+                "packaging": "jar",
+                "candidate_rules": ["pom_dependency_alignment"],
+            },
+        )
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="repair_proposal_revised",
+            status="completed",
+            message="Proposal revised",
+            payload={
+                "revised_proposal_id": "proposal-2",
+                "source_proposal_id": "proposal-1",
+                "revision_number": 2,
+                "allowed_scope": "pom_only",
+                "command_id": "cmd-1",
+            },
+        )
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="reviewer_critique_created",
+            status="completed",
+            message="Reviewer critique created",
+            payload={
+                "critique_id": "crit-1",
+                "proposal_id": "proposal-2",
+                "proposal_type": "repair_proposal",
+                "proposal_checksum": "prop-checksum",
+                "context_pack_checksum": "ctx-abc",
+                "decision": "accept",
+                "reasoning": "Evidence and scope are acceptable.",
+                "missing_evidence": [],
+                "unsafe_assumptions": [],
+            },
+        )
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="repair_patch_gate_completed",
+            status="completed",
+            message="Patch gate completed",
+            payload={
+                "proposal_id": "proposal-2",
+                "binding_checksum": "bind-1",
+                "patch_gate_status": "ALLOWED",
+                "deterministic_rule_id": "pom_dependency_alignment",
+                "touched_paths": ["pom.xml"],
+                "ledger_ref": "repair_ledger.json",
+            },
+        )
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="repair_validation_completed",
+            status="completed",
+            message="Validation completed",
+            payload={
+                "proposal_id": "proposal-2",
+                "passed": True,
+                "build_status": "BUILD_PASSED_IN_SANDBOX",
+                "test_status": "TESTS_PASSED",
+                "h2_status": "NOT_REQUIRED",
+                "artifact_refs": {"repair_ledger": "repair_ledger.json"},
+                "ledger_ref": "repair_ledger.json",
+            },
+        )
+
+    response = client.get(f"/v1/v2/migration-jobs/{job_id}/failure-summary")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    failures = [failure for failure in body["failures"] if failure["stage"] == 2]
+    assert len(failures) == 1
+    trace = failures[0]["supervision_trace"]
+    assert trace["ai_diagnosis"]["diagnosis_id"] == "diag-1"
+    assert trace["ai_diagnosis"]["context_pack_checksum"] == "ctx-abc"
+    assert trace["pom_analysis"]["pom_summary_ref"] == "pom-summary:1"
+    assert trace["repair_proposal"]["proposal_id"] == "proposal-2"
+    assert trace["repair_proposal"]["allowed_scope"] == "pom_only"
+    assert trace["reviewer_verdict"]["decision"] == "accept"
+    assert trace["validation_result"]["patch_gate_status"] == "ALLOWED"
+    assert trace["validation_result"]["build_status"] == "BUILD_PASSED_IN_SANDBOX"
+    assert trace["validation_result"]["ledger_ref"] == "repair_ledger.json"
+    assert trace["evidence_used"] == ["pack-1", "ctx-abc", "pom-summary:1"]
+
+
 def test_failure_summary_groups_real_stage2_dependency_build_failure_sequence(tmp_path: Path) -> None:
     client, conn = _api_client(tmp_path)
     setup_id = _ready_setup(conn)

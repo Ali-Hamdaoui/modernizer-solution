@@ -341,6 +341,7 @@ class V2RepairFlowService:
                 "patch_gate_status": gate.status,
                 "deterministic_rule_id": gate.rule_id,
                 "touched_paths": list(gate.touched_paths),
+                "ledger_ref": artifact_refs["repair_ledger"],
             },
         )
 
@@ -401,6 +402,7 @@ class V2RepairFlowService:
                 "patch_ref": str(apply_result.patch_path),
                 "patch_status": apply_result.status,
                 "touched_paths": list(apply_result.touched_paths),
+                "ledger_ref": artifact_refs["repair_ledger"],
             },
         )
 
@@ -428,6 +430,7 @@ class V2RepairFlowService:
                 "test_status": validation.test_status,
                 "h2_status": validation.h2_status,
                 "artifact_refs": dict(validation.artifact_refs),
+                "ledger_ref": artifact_refs["repair_ledger"],
             },
         )
 
