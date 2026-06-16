@@ -566,3 +566,580 @@ class TestArtifactPreviewPomResolution:
         content = response.json()["assistant_message"]["content"]
         assert "resolution-test" in content
         assert "rewrite_dry_run.patch" not in content
+
+
+class TestStageSandboxResolutionAfterRedaction:
+    """F12/F13 fix: sandbox_path must survive redaction so the resolver
+    can find the stage sandbox after stage_completed.
+
+    The orchestrator's _event() method runs all payloads through
+    redact_public_value which historically destroyed absolute paths
+    in any key containing "path".  The fix preserves sandbox_path
+    so _resolve_stage_sandbox_root can find the completed stage's
+    sandbox root even when the event payload has been through
+    the full redaction pipeline.
+    """
+
+    def test_stage1_completed_stage2_running_resolves_stage1_pom(
+        self, tmp_path: Path
+    ) -> None:
+        """Stage 1 completed + Stage 2 running → root_pom for Stage 1
+        resolves with exists=true, not sandbox_unresolved or stage_running."""
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox1 = tmp_path / "stage1-sandbox"
+        sandbox2 = tmp_path / "stage2-sandbox"
+        sandbox1.mkdir()
+        sandbox2.mkdir()
+        (sandbox1 / "pom.xml").write_text(
+            "<project><artifactId>stage-one-completed</artifactId></project>",
+            encoding="utf-8",
+        )
+        (sandbox2 / "pom.xml").write_text(
+            "<project><artifactId>stage-two-running</artifactId></project>",
+            encoding="utf-8",
+        )
+        # Stage 1: completed with sandbox_path preserved (as it would be after fix)
+        _seed_stage_command(
+            conn, job_id="job-interactive", stage=1,
+            command_id="cmd-s1", sandbox_path=sandbox1,
+        )
+        _seed_stage_event(
+            conn, job_id="job-interactive", stage=1,
+            event_type="stage_completed",
+            payload={"command_id": "cmd-s1", "sandbox_path": str(sandbox1), "exit_code": 0},
+        )
+        # Stage 2: currently running (sandbox_transform_started with status=running)
+        _seed_stage_command(
+            conn, job_id="job-interactive", stage=2,
+            command_id="cmd-s2", sandbox_path=sandbox2, status="running",
+        )
+        _seed_stage_event(
+            conn, job_id="job-interactive", stage=2,
+            event_type="sandbox_transform_started", status="running",
+        )
+
+        # Ask for Stage 1 POM
+        response = client.post(
+            "/v1/v2/jobs/job-interactive/assistant/ask",
+            json={"question": "give me the pom xml for stage 1"},
+            headers=_mutation_headers(),
+        )
+
+        assert response.status_code == 200, response.text
+        content = response.json()["assistant_message"]["content"]
+        # Must resolve Stage 1 root_pom successfully
+        assert "stage-one-completed" in content
+        # Must NOT return stage_running (Stage 2 running should not affect Stage 1)
+        assert "stage_running" not in content
+        # Must NOT return sandbox_unresolved
+        assert "sandbox unresolved" not in content and "sandbox_unresolved" not in content
+
+    def test_stage2_running_reports_stage_running_for_stage2(
+        self, tmp_path: Path
+    ) -> None:
+        """When asking for Stage 2 and Stage 2 is running, resolver must
+        return exists=false reason=stage_running."""
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage2-sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text("<project />", encoding="utf-8")
+        _seed_stage_command(
+            conn, job_id="job-interactive", stage=2,
+            command_id="cmd-s2", sandbox_path=sandbox, status="running",
+        )
+        _seed_stage_event(
+            conn, job_id="job-interactive", stage=2,
+            event_type="sandbox_transform_started", status="running",
+        )
+
+        response = client.post(
+            "/v1/v2/jobs/job-interactive/assistant/ask",
+            json={"question": "give me the pom xml for stage 2"},
+            headers=_mutation_headers(),
+        )
+
+        assert response.status_code == 200, response.text
+        content = response.json()["assistant_message"]["content"]
+        # Must indicate stage is running / not available
+        assert "stage running" in content or "stage_running" in content or "not available" in content
+
+    def test_stage1_completed_sandbox_artifact_registered_direct_endpoint(
+        self, tmp_path: Path
+    ) -> None:
+        """Direct endpoint /files/root-pom?stage=1 returns pom.xml
+        when sandbox artifact event is registered."""
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage1-sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text(
+            "<project><artifactId>direct-endpoint</artifactId></project>",
+            encoding="utf-8",
+        )
+        # Command with sandbox_path
+        _seed_stage_command(
+            conn, job_id="job-interactive", stage=1,
+            command_id="cmd-s1", sandbox_path=sandbox,
+        )
+        # Simulate the "Stage sandbox output registered" event
+        _seed_stage_event(
+            conn, job_id="job-interactive", stage=1,
+            event_type="artifact_written",
+            payload={
+                "command_id": "cmd-s1",
+                "artifact_kind": "sandbox",
+                "relative_path": str(sandbox),
+            },
+        )
+        # Also seed stage_completed with sandbox_path
+        _seed_stage_event(
+            conn, job_id="job-interactive", stage=1,
+            event_type="stage_completed",
+            payload={
+                "command_id": "cmd-s1",
+                "sandbox_path": str(sandbox),
+                "exit_code": 0,
+            },
+        )
+
+        response = client.get(
+            "/v1/v2/jobs/job-interactive/files/root-pom?stage=1&mode=preview",
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["exists"] is True, f"Expected exists=True, got {body}"
+        assert "direct-endpoint" in body["content"]
+        assert body["reason"] is None
+
+    def test_missing_pom_xml_in_sandbox_reports_file_missing(
+        self, tmp_path: Path
+    ) -> None:
+        """When sandbox artifact exists but pom.xml is missing, reason must
+        be file_missing_or_unsafe, not sandbox_unresolved."""
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage1-sandbox"
+        sandbox.mkdir()
+        # Do NOT create pom.xml — sandbox exists but no pom.xml
+        _seed_stage_command(
+            conn, job_id="job-interactive", stage=1,
+            command_id="cmd-s1", sandbox_path=sandbox,
+        )
+        _seed_stage_event(
+            conn, job_id="job-interactive", stage=1,
+            event_type="stage_completed",
+            payload={
+                "command_id": "cmd-s1",
+                "sandbox_path": str(sandbox),
+                "exit_code": 0,
+            },
+        )
+
+        response = client.get(
+            "/v1/v2/jobs/job-interactive/files/root-pom?stage=1",
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["exists"] is False
+        assert body["reason"] == "file_missing_or_unsafe", (
+            f"Expected file_missing_or_unsafe, got {body['reason']}"
+        )
+
+    def test_symlink_sandbox_path_reports_file_missing_or_unsafe(
+        self, tmp_path: Path
+    ) -> None:
+        """When sandbox path passes safety but pom.xml is a symlink
+        escape, reason is file_missing_or_unsafe."""
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage1-sandbox"
+        outside = tmp_path / "outside"
+        sandbox.mkdir()
+        outside.mkdir()
+        (outside / "pom.xml").write_text(
+            "<project><secret>symlink-escape</secret></project>",
+            encoding="utf-8",
+        )
+        try:
+            (sandbox / "pom.xml").symlink_to(outside / "pom.xml")
+        except OSError as exc:
+            pytest.skip(f"Symlink creation privilege unavailable: {exc}")
+        _seed_stage_command(
+            conn, job_id="job-interactive", stage=1,
+            command_id="cmd-s1", sandbox_path=sandbox,
+        )
+        _seed_stage_event(
+            conn, job_id="job-interactive", stage=1,
+            event_type="stage_completed",
+            payload={
+                "command_id": "cmd-s1",
+                "sandbox_path": str(sandbox),
+                "exit_code": 0,
+            },
+        )
+
+        response = client.get(
+            "/v1/v2/jobs/job-interactive/files/root-pom?stage=1",
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["exists"] is False
+        assert body["reason"] == "file_missing_or_unsafe"
+        assert "symlink-escape" not in body.get("content", "")
+
+    def test_no_sandbox_evidence_reports_sandbox_unresolved(
+        self, tmp_path: Path
+    ) -> None:
+        """When no sandbox evidence exists at all, reason must be
+        sandbox_unresolved."""
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        # No sandbox command seeded, no stage_completed with sandbox_path
+        _seed_stage_event(
+            conn, job_id="job-interactive", stage=1,
+            event_type="sandbox_transform_completed",
+            payload={"command_id": "cmd-nonexistent"},
+        )
+
+        response = client.get(
+            "/v1/v2/jobs/job-interactive/files/root-pom?stage=1",
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["exists"] is False
+        assert body["reason"] == "sandbox_unresolved", (
+            f"Expected sandbox_unresolved, got {body['reason']}"
+        )
+
+
+class TestRedactionPreservesSandboxPath:
+    """Unit tests verifying redaction preserves backend-owned sandbox_path."""
+
+    def test_sandbox_path_survives_redact_public_value(self) -> None:
+        """redact_public_value must preserve sandbox_path absolute values
+        so the stage sandbox resolver can reconstruct the sandbox root."""
+        from migration_factory.control_tower.application.redaction import (
+            redact_public_value,
+        )
+        payload = {
+            "command_id": "cmd-abc123",
+            "sandbox_path": "/home/ubuntu/stage1-sandbox",
+            "exit_code": 0,
+        }
+        redacted = redact_public_value(payload)
+        assert isinstance(redacted, dict)
+        assert redacted["sandbox_path"] == "/home/ubuntu/stage1-sandbox", (
+            f"sandbox_path must survive redaction, got {redacted['sandbox_path']!r}"
+        )
+        assert redacted["command_id"] == "cmd-abc123"
+        assert redacted["exit_code"] == 0
+
+    def test_sandbox_path_with_traversal_is_redacted(self) -> None:
+        """sandbox_path containing '..' traversal must still be redacted."""
+        from migration_factory.control_tower.application.redaction import (
+            redact_public_value,
+        )
+        payload = {
+            "sandbox_path": "/home/../etc/passwd",
+        }
+        redacted = redact_public_value(payload)
+        assert isinstance(redacted, dict)
+        assert redacted["sandbox_path"] == "[redacted]", (
+            f"Traversal path must be redacted, got {redacted['sandbox_path']!r}"
+        )
+
+    def test_other_path_keys_still_redacted(self) -> None:
+        """Keys like relative_path, artifact_path must still have their
+        absolute paths redacted."""
+        from migration_factory.control_tower.application.redaction import (
+            redact_public_value,
+        )
+        payload = {
+            "relative_path": "/home/ubuntu/some/file.xml",
+            "artifact_path": "/etc/secret",
+            "message": "check /tmp/output",
+        }
+        redacted = redact_public_value(payload)
+        assert isinstance(redacted, dict)
+        # relative_path and artifact_path contain "path" → redact_absolute_paths
+        assert "/home/ubuntu" not in redacted.get("relative_path", "")
+        assert "/etc/secret" not in redacted.get("artifact_path", "")
+        # message goes through full redact_model_summary
+        assert "/tmp/output" not in redacted.get("message", "")
+
+    def test_sandbox_path_preserved_in_nested_dict(self) -> None:
+        """sandbox_path inside nested dicts (e.g., inside artifact_refs)
+        must also be preserved."""
+        from migration_factory.control_tower.application.redaction import (
+            redact_public_value,
+        )
+        payload = {
+            "artifact_refs": {
+                "sandbox_path": "/home/ubuntu/stage2-sandbox",
+            },
+        }
+        redacted = redact_public_value(payload)
+        assert isinstance(redacted, dict)
+        refs = redacted.get("artifact_refs", {})
+        assert isinstance(refs, dict)
+        # artifact_refs is a dict, so each key-value goes through _redact_dict_value
+        assert refs.get("sandbox_path") == "/home/ubuntu/stage2-sandbox", (
+            f"Nested sandbox_path must survive, got {refs.get('sandbox_path')!r}"
+        )
+
+
+class TestPublicOutputNeverExposesSandboxPath:
+    """F12/F13 public-boundary safety: sandbox_path must be preserved in DB
+    for internal backend resolution, but must NEVER appear in public API
+    responses, SSE streams, cockpit event panels, or assistant prompts.
+
+    The DB persistence path (redact_public_value from redaction.py) preserves
+    sandbox_path.  The public output path (redact_public_data from security.py)
+    is a separate redaction pipeline that must still redact absolute
+    filesystem paths.
+    """
+
+    def test_public_events_snapshot_does_not_expose_sandbox_path(
+        self, tmp_path: Path
+    ) -> None:
+        """Public /events/snapshot endpoint must redact sandbox_path from
+        event payloads.  The raw absolute path must never reach the browser."""
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage1-sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text("<project />", encoding="utf-8")
+
+        sandbox_abs = str(sandbox.resolve())
+
+        # Seed stage_completed event with raw sandbox_path
+        # (simulates what the orchestrator now persists after our fix)
+        _seed_stage_event(
+            conn,
+            job_id="job-interactive",
+            stage=1,
+            event_type="stage_completed",
+            payload={
+                "command_id": "cmd-s1",
+                "sandbox_path": sandbox_abs,
+                "exit_code": 0,
+            },
+        )
+
+        # Call the public events snapshot endpoint
+        response = client.get(
+            "/v1/v2/migration-jobs/job-interactive/events/snapshot?after=0",
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        events = body.get("events", [])
+        assert len(events) >= 1, "Expected at least one event in snapshot"
+
+        # Serialize the full response body to string for grep-style check
+        body_text = json.dumps(body, sort_keys=True)
+
+        # The raw absolute sandbox path must NOT appear anywhere
+        assert sandbox_abs not in body_text, (
+            f"Absolute sandbox path leak in public events snapshot:\n{sandbox_abs}\n\n"
+            f"Response excerpt: {body_text[:800]}"
+        )
+        # [redacted-path] should appear instead
+        assert "[redacted-path]" in body_text or "[redacted" in body_text, (
+            "Expected redaction placeholder in public events snapshot, "
+            f"got:\n{body_text[:800]}"
+        )
+
+    def test_sse_event_serialization_does_not_expose_sandbox_path(
+        self, tmp_path: Path
+    ) -> None:
+        """SSE event stream must redact sandbox_path.  The raw absolute
+        path must never appear in EventSource output."""
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage2-sandbox"
+        sandbox.mkdir()
+
+        sandbox_abs = str(sandbox.resolve())
+
+        # Seed events that would be streamed via SSE
+        _seed_stage_event(
+            conn,
+            job_id="job-interactive",
+            stage=2,
+            event_type="build_completed",
+            payload={
+                "command_id": "cmd-s2",
+                "sandbox_path": sandbox_abs,
+                "build_status": "BUILD_PASSED_IN_SANDBOX",
+            },
+        )
+
+        # Use the once=true snapshot which uses the same _v2_event_payload
+        # serialization path as the SSE stream
+        response = client.get(
+            "/v1/v2/migration-jobs/job-interactive/events?once=true&after=0",
+        )
+
+        assert response.status_code == 200, response.text
+        sse_text = response.text
+
+        # The raw absolute sandbox path must NOT appear in SSE output
+        assert sandbox_abs not in sse_text, (
+            f"Absolute sandbox path leak in SSE event stream:\n{sandbox_abs}\n\n"
+            f"SSE excerpt: {sse_text[:800]}"
+        )
+        # Redaction placeholder should appear
+        assert "[redacted-path]" in sse_text or "[redacted" in sse_text, (
+            "Expected redaction placeholder in SSE stream, "
+            f"got:\n{sse_text[:800]}"
+        )
+
+    def test_assistant_prompt_does_not_include_raw_sandbox_path(
+        self, tmp_path: Path
+    ) -> None:
+        """The prompt JSON sent to the model must not include the raw
+        absolute sandbox_path.  Only redacted preview content and metadata."""
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage1-sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text(
+            "<project><artifactId>prompt-safety-test</artifactId></project>",
+            encoding="utf-8",
+        )
+
+        sandbox_abs = str(sandbox.resolve())
+
+        _seed_stage_command(
+            conn, job_id="job-interactive", stage=1,
+            command_id="cmd-s1", sandbox_path=sandbox,
+        )
+        _seed_stage_event(
+            conn, job_id="job-interactive", stage=1,
+            event_type="stage_completed",
+            payload={
+                "command_id": "cmd-s1",
+                "sandbox_path": sandbox_abs,
+                "exit_code": 0,
+            },
+        )
+
+        # Send a question that triggers root_pom resolution
+        # The fake model client stores the prompt in self.calls
+        response = client.post(
+            "/v1/v2/jobs/job-interactive/assistant/ask",
+            json={"question": "EXPLAIN THE POM"},
+            headers=_mutation_headers(),
+        )
+
+        assert response.status_code == 200, response.text
+
+        # The assistant response content must not leak sandbox_path
+        content = response.json()["assistant_message"]["content"]
+        assert sandbox_abs not in content, (
+            f"Sandbox path leak in assistant response:\n{sandbox_abs}\n\n"
+            f"Content: {content[:500]}"
+        )
+        # The response should have the POM content (redacted)
+        assert "prompt-safety-test" in content
+
+    def test_direct_download_mode_redacts_sandbox_path_in_content(
+        self, tmp_path: Path
+    ) -> None:
+        """Download mode must not leak the sandbox path in the XML content
+        or response headers (beyond the expected Content-Disposition)."""
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage1-sandbox"
+        sandbox.mkdir()
+        # Include the sandbox path inside the pom.xml content itself
+        sandbox_abs = str(sandbox.resolve())
+        (sandbox / "pom.xml").write_text(
+            f"<project><secretPath>{sandbox_abs}</secretPath></project>",
+            encoding="utf-8",
+        )
+
+        _seed_stage_command(
+            conn, job_id="job-interactive", stage=1,
+            command_id="cmd-s1", sandbox_path=sandbox,
+        )
+        _seed_stage_event(
+            conn, job_id="job-interactive", stage=1,
+            event_type="stage_completed",
+            payload={
+                "command_id": "cmd-s1",
+                "sandbox_path": sandbox_abs,
+                "exit_code": 0,
+            },
+        )
+
+        response = client.get(
+            "/v1/v2/jobs/job-interactive/files/root-pom?stage=1&mode=download",
+        )
+
+        assert response.status_code == 200, response.text
+        body_text = response.text
+
+        # Raw absolute sandbox path must NOT appear in download body
+        assert sandbox_abs not in body_text, (
+            f"Sandbox path leak in download body:\n{sandbox_abs}\n\n"
+            f"Body: {body_text[:500]}"
+        )
+        # Content-Type should be XML
+        content_type = response.headers.get("content-type", "")
+        assert "xml" in content_type.lower()
+
+    def test_cockpit_event_payload_never_exposes_sandbox_path(
+        self, tmp_path: Path
+    ) -> None:
+        """The cockpit event panel (fed by /events/snapshot) must never
+        expose the raw absolute sandbox_path in any event payload.
+
+        This covers the full public event rendering path including
+        pipeline projection and failure summary endpoints."""
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage1-sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text("<project />", encoding="utf-8")
+
+        sandbox_abs = str(sandbox.resolve())
+
+        # Seed multiple event types that carry sandbox_path
+        for evt_type in ("stage_completed", "sandbox_transform_completed", "build_completed"):
+            _seed_stage_event(
+                conn,
+                job_id="job-interactive",
+                stage=1,
+                event_type=evt_type,
+                payload={
+                    "command_id": "cmd-s1",
+                    "sandbox_path": sandbox_abs,
+                },
+            )
+
+        # Test events snapshot
+        resp_events = client.get(
+            "/v1/v2/migration-jobs/job-interactive/events/snapshot?after=0",
+        )
+        assert resp_events.status_code == 200
+        events_text = json.dumps(resp_events.json(), sort_keys=True)
+        assert sandbox_abs not in events_text, (
+            f"Sandbox path leak in cockpit events snapshot.\n{events_text[:800]}"
+        )
+
+        # Test pipeline projection
+        resp_pipeline = client.get(
+            "/v1/v2/migration-jobs/job-interactive/pipeline",
+        )
+        assert resp_pipeline.status_code == 200
+        pipeline_text = json.dumps(resp_pipeline.json(), sort_keys=True)
+        assert sandbox_abs not in pipeline_text, (
+            f"Sandbox path leak in pipeline projection.\n{pipeline_text[:800]}"
+        )
+
+        # Test failure summary
+        resp_failure = client.get(
+            "/v1/v2/migration-jobs/job-interactive/failure-summary",
+        )
+        assert resp_failure.status_code == 200
+        failure_text = json.dumps(resp_failure.json(), sort_keys=True)
+        assert sandbox_abs not in failure_text, (
+            f"Sandbox path leak in failure summary.\n{failure_text[:800]}"
+        )

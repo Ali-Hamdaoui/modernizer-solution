@@ -4256,6 +4256,7 @@ def _sandbox_path_from_mapping(value: dict[str, Any]) -> str:
     candidates: list[Any] = [
         value.get("sandbox_path"),
         value.get("sandbox"),
+        value.get("relative_path"),
     ]
     artifact_refs = value.get("artifact_refs")
     if isinstance(artifact_refs, dict):
