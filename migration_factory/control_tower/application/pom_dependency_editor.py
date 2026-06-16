@@ -48,6 +48,7 @@ from migration_factory.control_tower.application.pom_dependency_review import (
 )
 from migration_factory.control_tower.application.pom_change_proposer import (
     PomChangeProposer,
+    _clean_requested_version,
 )
 from migration_factory.control_tower.application.pom_xml_patcher import (
     PomXmlPatcher,
@@ -321,7 +322,7 @@ class PomDependencyEditor:
         parsed = self._proposer._parse_user_request(user_request, content, pom_deps_data)
         target = parsed["target"]
         operation = parsed["operation"]
-        requested_version = parsed.get("requested_version", "")
+        requested_version = _clean_requested_version(parsed.get("requested_version", ""))
 
         # Create a fresh policy with the current POM data for this evaluation
         fresh_policy = PomDependencyPolicy(pom_deps_data=pom_deps_data)
@@ -440,6 +441,27 @@ class PomDependencyEditor:
 
         if not result.success:
             return _error_result(f"Patch failed: {result.error}", idempotency_key)
+
+        if result.before_checksum == result.after_checksum:
+            return PomApplyResult(
+                change_id="",
+                status="noop",
+                operation=result.operation,
+                target_desc=result.target_desc,
+                before_version=result.before_version,
+                after_version=result.after_version,
+                before_checksum=result.before_checksum,
+                after_checksum=result.after_checksum,
+                diff_summary="No changes",
+                validation_id=None,
+                rollback_available=False,
+                idempotency_key=idempotency_key,
+                created_at=utc_now_text(),
+                message=(
+                    "No Stage 3 POM change was applied because the requested "
+                    "value is already present in the live sandbox POM."
+                ),
+            )
 
         # Write to sandbox (save before-content snapshot first, then write after)
         # Generate change_id early for snapshot

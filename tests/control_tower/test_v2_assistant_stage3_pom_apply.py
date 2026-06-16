@@ -26,6 +26,7 @@ from migration_factory.control_tower.application.pom_change_models import (
     PomApplyResult,
     PomRollbackResult,
     PomChangeRecordSummary,
+    PomValidationRun,
     ALLOWED_POM_OPERATIONS,
     APPLY_CAPABLE_POM_OPERATIONS,
     PROPOSAL_ONLY_POM_OPERATIONS,
@@ -105,7 +106,7 @@ def _mock_editor(**overrides) -> PomDependencyEditor:
     pom_content = overrides.pop("pom_content", SAMPLE_POM)
 
     import tempfile
-    sandbox = tempfile.mkdtemp(prefix="f14_assistant_test_")
+    sandbox = overrides.pop("sandbox_path", None) or tempfile.mkdtemp(prefix="f14_assistant_test_")
     pom_file = Path(sandbox) / "pom.xml"
     pom_file.write_text(pom_content, encoding="utf-8")
 
@@ -550,6 +551,93 @@ class TestF14RuntimeRegressions:
         assert "<assertj.version>3.13.2</assertj.version>" in answer
         assert "<assertj.version>3.13.2<[redacted-path]" not in answer
 
+    def test_xml_redaction_preserves_project_testresult_closing_tag(self):
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _build_pom_explanation_answer,
+        )
+
+        pom = SAMPLE_POM.replace(
+            "</properties>",
+            "    <project.testresult.directory>${project.build.directory}/C:/Users/me/out</project.testresult.directory>\n    </properties>",
+        )
+        answer = _build_pom_explanation_answer(
+            artifact_previews=(
+                {
+                    "source_type": "file_alias",
+                    "artifact_kind": "root_pom",
+                    "exists": True,
+                    "stage_index": 3,
+                    "preview": pom,
+                },
+            ),
+            events=(),
+            raw_xml_requested=True,
+        )
+
+        assert "<project.testresult.directory>[redacted-path]</project.testresult.directory>" in answer
+        assert "<project.testresult.directory>${project.build.directory}[redacted-path]" not in answer
+
+    def test_validation_result_prompt_routes_to_validation_lookup(self):
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _build_v2_assistant_answer,
+            _classify_v2_assistant_intent,
+        )
+
+        assert _classify_v2_assistant_intent(
+            "Show the validation result for the latest Stage 3 POM change"
+        ) == "pom_validation_result"
+
+        editor = MagicMock()
+        editor.list_changes.return_value = [
+            PomChangeRecordSummary(
+                change_id="ch_1",
+                operation="update_property_version",
+                target_desc="property:assertj.version",
+                before_version="3.13.2",
+                after_version="3.24.2",
+                before_checksum="before",
+                after_checksum="after",
+                diff_summary="1 addition(s), 1 removal(s)",
+                status="applied_pending_validation",
+                validation_id="val_1",
+                rollback_id=None,
+                created_at="2026-06-16T00:00:00Z",
+            )
+        ]
+        editor.get_validation_result.return_value = PomValidationRun(
+            validation_id="val_1",
+            change_id="ch_1",
+            status="running",
+            command="mvn clean compile test",
+            build_status="unknown",
+            test_status="unknown",
+            exit_code=None,
+            duration_ms=None,
+            log_ref=None,
+            test_log_ref=None,
+            diagnosis=None,
+            repair_plan=None,
+            created_at="2026-06-16T00:00:00Z",
+            completed_at=None,
+        )
+        event = MagicMock(job_id="job_1")
+
+        with patch(
+            "migration_factory.control_tower.adapters.fastapi.app._build_pom_dependency_editor",
+            return_value=editor,
+        ):
+            answer = _build_v2_assistant_answer(
+                question="Show the validation result for the latest Stage 3 POM change",
+                events=(event,),
+                approvals=(),
+                commands=(),
+            )
+
+        editor.get_validation_result.assert_called_once_with("job_1", "val_1")
+        assert "Stage 3 POM validation result" in answer
+        assert "Status:** running" in answer
+        assert "Proposal ID" not in answer
+
     def test_propose_assertj_property_returns_real_proposal(self):
         from migration_factory.control_tower.adapters.fastapi.app import (
             _build_pom_change_proposal_answer,
@@ -628,6 +716,90 @@ class TestF14RuntimeRegressions:
         assert result.status == "applied_pending_validation"
         assert "<assertj.version>3.24.2</assertj.version>" in content
         assert "<assertj.version>3.13.2</assertj.version>" not in content
+
+    def test_apply_then_raw_pom_reads_updated_value_from_live_sandbox(self, tmp_path):
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _resolve_root_pom_file_alias_preview,
+        )
+
+        pom = SAMPLE_POM.replace(
+            "</properties>",
+            "    <assertj.version>3.13.2</assertj.version>\n    </properties>",
+        )
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text(pom, encoding="utf-8")
+        editor = _mock_editor(pom_content=pom, sandbox_path=sandbox)
+
+        editor.apply_change_from_user_request(
+            job_id="job_1",
+            user_request="update property assertj.version to 3.24.2",
+            idempotency_key="ik_live_read",
+        )
+
+        command = MagicMock(
+            stage_index=3,
+            result_json=json.dumps({"sandbox_path": str(sandbox)}),
+            updated_at="2026-06-16T00:00:00Z",
+            created_at="2026-06-16T00:00:00Z",
+            command_id="cmd_1",
+        )
+        event = MagicMock(
+            stage=3,
+            type="pom_validation_started",
+            status="running",
+            sequence=2,
+            payload_json="{}",
+            event_id="evt_1",
+        )
+
+        preview = _resolve_root_pom_file_alias_preview(
+            job_id="job_1",
+            stage_index=3,
+            events=(event,),
+            commands=(command,),
+            max_bytes=100_000,
+        )
+
+        assert preview["exists"] is True
+        assert preview["label"] == "live Stage 3 sandbox POM during validation"
+        assert "<assertj.version>3.24.2</assertj.version>" in preview["preview"]
+
+    def test_root_pom_available_during_validation_from_live_sandbox(self, tmp_path):
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _resolve_root_pom_file_alias_preview,
+        )
+
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text(SAMPLE_POM, encoding="utf-8")
+        command = MagicMock(
+            stage_index=3,
+            result_json=json.dumps({"sandbox_path": str(sandbox)}),
+            updated_at="2026-06-16T00:00:00Z",
+            created_at="2026-06-16T00:00:00Z",
+            command_id="cmd_1",
+        )
+        event = MagicMock(
+            stage=3,
+            type="pom_validation_started",
+            status="running",
+            sequence=2,
+            payload_json="{}",
+            event_id="evt_1",
+        )
+
+        preview = _resolve_root_pom_file_alias_preview(
+            job_id="job_1",
+            stage_index=3,
+            events=(event,),
+            commands=(command,),
+            max_bytes=100_000,
+        )
+
+        assert preview["exists"] is True
+        assert preview["reason"] is None
+        assert preview["label"] == "live Stage 3 sandbox POM during validation"
 
     def test_rollback_last_stage3_change_routes_to_rollback_not_generic_proposal(self):
         from migration_factory.control_tower.adapters.fastapi.app import (

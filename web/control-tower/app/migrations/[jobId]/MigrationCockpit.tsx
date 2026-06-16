@@ -36,7 +36,7 @@ interface Stage {
   input_source_kind: string;
 }
 
-interface CockpitData {
+export interface CockpitData {
   job: V2MigrationJobResponse;
   stages: Stage[];
   approvals: V2ApprovalResponse[];
@@ -45,6 +45,35 @@ interface CockpitData {
   pipeline: V2PipelineResponse;
   failureSummary: V2FailureSummaryResponse | null;
   assistantModel: { status: string; source: string; provider: string; role: string; failure_reason?: string } | null;
+}
+
+type LiveRefreshResults = [
+  PromiseSettledResult<{ approvals: V2ApprovalResponse[] }>,
+  PromiseSettledResult<{ job_id: string; stages: Stage[] }>,
+  PromiseSettledResult<{ events: V2JobEvent[] }>,
+  PromiseSettledResult<V2PipelineResponse>,
+  PromiseSettledResult<V2FailureSummaryResponse>,
+];
+
+export function mergeCockpitLiveRefreshResults(
+  current: CockpitData,
+  results: LiveRefreshResults,
+): { data: CockpitData; failed: boolean } {
+  const [approvalsResult, stagesResult, eventsResult, pipelineResult, failureSummaryResult] = results;
+  const failed = results.some((result) => result.status === "rejected");
+  return {
+    failed,
+    data: {
+      ...current,
+      approvals: approvalsResult.status === "fulfilled" ? approvalsResult.value.approvals : current.approvals,
+      stages: stagesResult.status === "fulfilled" ? stagesResult.value.stages : current.stages,
+      events: eventsResult.status === "fulfilled" ? eventsResult.value.events : current.events,
+      pipeline: pipelineResult.status === "fulfilled" ? pipelineResult.value : current.pipeline,
+      failureSummary: failureSummaryResult.status === "fulfilled"
+        ? failureSummaryResult.value
+        : current.failureSummary,
+    },
+  };
 }
 
 export function MigrationCockpit({ jobId }: { jobId?: string }) {
@@ -56,6 +85,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [artifactPreview, setArtifactPreview] = useState<V2ArtifactPreviewResponse | null>(null);
   const [artifactPreviewBusy, setArtifactPreviewBusy] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "connected" | "reconnecting">("connecting");
+  const [liveRefreshWarning, setLiveRefreshWarning] = useState<string | null>(null);
   const normalizedJobId = jobId?.trim() ?? "";
 
   useEffect(() => {
@@ -195,7 +225,9 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       });
       // On important events, refresh from backend (async, non-blocking)
       if (IMPORTANT_SSE_TYPES.has(event.type)) {
-        void refreshLiveState();
+        void refreshLiveState().catch(() => {
+          setLiveRefreshWarning("Live refresh temporarily failed. Retrying...");
+        });
       }
     } catch {
       setStreamState("reconnecting");
@@ -231,21 +263,27 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   async function refreshLiveState() {
     if (!normalizedJobId) return;
     const safeJobId = requireJobId(normalizedJobId);
-    const [approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary] = await Promise.all([
+    const [approvalsResult, stagesResult, eventsResult, pipelineResult, failureSummaryResult] = await Promise.allSettled([
       getV2JobApprovals(safeJobId),
       getV2MigrationJobStages(safeJobId),
       getV2JobEventSnapshot(safeJobId),
       getV2JobPipeline(safeJobId),
-      getV2FailureSummary(safeJobId).catch(() => null),
-    ]);
-    setData((current) => current ? {
-      ...current,
-      approvals: approvalsResponse.approvals,
-      stages: stagesResponse.stages,
-      events: eventsResponse.events,
-      pipeline: pipelineResponse,
-      failureSummary: failureSummary as V2FailureSummaryResponse | null,
-    } : current);
+      getV2FailureSummary(safeJobId),
+    ]) as LiveRefreshResults;
+    const failed = [approvalsResult, stagesResult, eventsResult, pipelineResult, failureSummaryResult]
+      .some((result) => result.status === "rejected");
+    setLiveRefreshWarning(failed ? "Live refresh temporarily failed. Retrying..." : null);
+    setData((current) => {
+      if (!current) return current;
+      const merged = mergeCockpitLiveRefreshResults(current, [
+        approvalsResult,
+        stagesResult,
+        eventsResult,
+        pipelineResult,
+        failureSummaryResult,
+      ]);
+      return merged.data;
+    });
   }
 
   async function approveCard(card: V2ApprovalResponse) {
@@ -349,6 +387,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       <section className="panel">
         <h2>Pipeline Status</h2>
         <p className="meta">Stream: {streamState}</p>
+        {liveRefreshWarning && <p className="warning-text">{liveRefreshWarning}</p>}
         <div className="pipeline-list">
           {data.pipeline.rows.map((row) => (
             <div key={row.key} className="pipeline-row">
@@ -745,6 +784,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .status-badge.blocked { background: #f5e8ff; color: #5a248a; }
         .status-badge.pending { background: #eee; color: #666; }
         .meta { font-size: 0.85rem; color: #666; }
+        .warning-text { font-size: 0.85rem; color: #8a5a00; margin: 0.25rem 0 0.5rem; }
         .error-box { border: 1px solid #cc0000; background: #fff0f0; padding: 1rem; border-radius: 6px; }
         .info-box { border: 1px solid #0066cc; background: #f0f6ff; padding: 1rem; border-radius: 6px; }
         .evidence-placeholder { border: 1px dashed #ccc; padding: 1rem; text-align: center; color: #888; }

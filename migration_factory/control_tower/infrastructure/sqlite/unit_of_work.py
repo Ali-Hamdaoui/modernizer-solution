@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 
 from migration_factory.control_tower.infrastructure.sqlite.repositories import (
     SqliteArtifactRepository,
@@ -77,10 +78,25 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_pom_change_reposit
 )
 
 
+_WAL_CONFIGURED_CONNECTIONS: set[int] = set()
+_WAL_CONFIG_LOCK = threading.Lock()
+
+
 class SqliteControlTowerUnitOfWork:
-    def __init__(self, connection: sqlite3.Connection, *, close_connection: bool = False) -> None:
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        close_connection: bool = False,
+        transaction_mode: str = "write",
+    ) -> None:
         self.connection = connection
         self._close_connection = close_connection
+        if transaction_mode not in {"read", "write"}:
+            raise ValueError("transaction_mode must be 'read' or 'write'")
+        self.transaction_mode = transaction_mode
+        self.connection.execute("PRAGMA busy_timeout = 5000")
+        self._enable_wal_if_file_backed()
         self.runner_profiles = SqliteRunnerProfileRepository(connection)
         self.pipeline_definitions = SqlitePipelineDefinitionRepository(connection)
         self.migration_jobs = SqliteMigrationJobRepository(connection)
@@ -128,17 +144,37 @@ class SqliteControlTowerUnitOfWork:
         self.v1_proof_report_gates = SqliteV1ProofReportGateRepository(connection)
 
     def __enter__(self) -> "SqliteControlTowerUnitOfWork":
-        self.connection.execute("BEGIN IMMEDIATE")
+        if self.transaction_mode == "write":
+            self.connection.execute("BEGIN IMMEDIATE")
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool | None:
-        if exc_type is None:
+        if exc_type is None and self.connection.in_transaction:
             self.connection.execute("COMMIT")
         elif self.connection.in_transaction:
             self.connection.execute("ROLLBACK")
         if self._close_connection:
             self.connection.close()
         return None
+
+    def _enable_wal_if_file_backed(self) -> None:
+        connection_id = id(self.connection)
+        with _WAL_CONFIG_LOCK:
+            if connection_id in _WAL_CONFIGURED_CONNECTIONS:
+                return
+        try:
+            row = self.connection.execute("PRAGMA database_list").fetchone()
+            database_path = str(row["file"] if isinstance(row, sqlite3.Row) else row[2])
+        except (IndexError, KeyError, TypeError, sqlite3.DatabaseError):
+            return
+        if not database_path or database_path == ":memory:":
+            return
+        try:
+            self.connection.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.DatabaseError:
+            return
+        with _WAL_CONFIG_LOCK:
+            _WAL_CONFIGURED_CONNECTIONS.add(connection_id)
 
 
 SqliteUnitOfWork = SqliteControlTowerUnitOfWork

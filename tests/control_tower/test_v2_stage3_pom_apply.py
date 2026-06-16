@@ -293,6 +293,59 @@ class TestPomApplyIdempotency:
         assert result2.status == PomChangeStatus.APPLIED_PENDING_VALIDATION.value
         # Should be the existing result, not a new one
 
+    def test_repeated_same_apply_is_noop_or_idempotent(self):
+        sandbox = _make_temp_sandbox(SAMPLE_POM)
+        editor = _mock_editor(sandbox_path=sandbox)
+
+        first = editor.apply_change_from_user_request(
+            job_id="job_1",
+            user_request="update property java.version to 21",
+            idempotency_key="ik_first_java",
+            pom_content=SAMPLE_POM,
+            pom_deps_data=SAMPLE_POM_DEPS,
+            sandbox_path=sandbox,
+        )
+        live_content = (Path(sandbox) / "pom.xml").read_text(encoding="utf-8")
+        second = editor.apply_change_from_user_request(
+            job_id="job_1",
+            user_request="update property java.version to 21",
+            idempotency_key="ik_second_java",
+            pom_content=live_content,
+            pom_deps_data=SAMPLE_POM_DEPS,
+            sandbox_path=sandbox,
+        )
+
+        assert first.status == "applied_pending_validation"
+        assert second.status == "noop"
+        assert second.change_id == ""
+
+    def test_apply_second_time_does_not_create_new_change_id(self):
+        sandbox = _make_temp_sandbox(SAMPLE_POM)
+        editor = _mock_editor(sandbox_path=sandbox)
+
+        editor.apply_change_from_user_request(
+            job_id="job_1",
+            user_request="update property java.version to 21",
+            idempotency_key="ik_create_once",
+            pom_content=SAMPLE_POM,
+            pom_deps_data=SAMPLE_POM_DEPS,
+            sandbox_path=sandbox,
+        )
+        live_content = (Path(sandbox) / "pom.xml").read_text(encoding="utf-8")
+        save_count = editor._change_repo.save.call_count
+
+        result = editor.apply_change_from_user_request(
+            job_id="job_1",
+            user_request="update property java.version to 21",
+            idempotency_key="ik_no_new_id",
+            pom_content=live_content,
+            pom_deps_data=SAMPLE_POM_DEPS,
+            sandbox_path=sandbox,
+        )
+
+        assert result.status == "noop"
+        assert editor._change_repo.save.call_count == save_count
+
 
 class TestPomApplyStageGating:
 

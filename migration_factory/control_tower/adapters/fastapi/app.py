@@ -8,9 +8,10 @@ import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+import hashlib
 from typing import Any, Callable
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
@@ -144,6 +145,7 @@ from migration_factory.control_tower.application.v2_assistant_service import (
 )
 from migration_factory.control_tower.application.v2_assistant_model_client import (
     V2AssistantModelClient,
+    V2AssistantModelResult,
 )
 from migration_factory.control_tower.application.v2_model_schemas import (
     validate_against_schema,
@@ -207,6 +209,15 @@ def _build_pom_dependency_editor() -> PomDependencyEditor:
     if _POM_DEPENDENCY_EDITOR_FACTORY is None:
         raise RuntimeError("PomDependencyEditor factory is not configured")
     return _POM_DEPENDENCY_EDITOR_FACTORY()
+
+
+@contextmanager
+def _read_unit_of_work(unit_of_work_factory: UnitOfWorkFactory):
+    uow = unit_of_work_factory()
+    if hasattr(uow, "transaction_mode"):
+        uow.transaction_mode = "read"
+    with uow as entered:
+        yield entered
 
 
 @dataclass(frozen=True, slots=True)
@@ -1048,7 +1059,7 @@ def create_app(
     @app.get("/v1/v2/migration-jobs/{job_id}")
     def get_v2_job(job_id: str) -> dict[str, Any]:
         """Return persisted V2 parent job projection."""
-        with unit_of_work_factory() as uow:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             service = V2MigrationJobService(
                 setup_repo=uow.v2_setups,
                 job_repo=uow.v2_jobs,
@@ -1070,7 +1081,7 @@ def create_app(
     @app.get("/v1/v2/migration-jobs/{job_id}/stages")
     def get_v2_job_stages(job_id: str) -> dict[str, Any]:
         """Return three fixed V2 stages with state derived from commands/events."""
-        with unit_of_work_factory() as uow:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             job = _require_v2_job(uow, job_id)
             commands = uow.v2_commands.list_by_job(job_id)
             events = uow.v2_events.list_by_job(job_id)
@@ -1082,7 +1093,7 @@ def create_app(
     @app.get("/v1/v2/jobs/{job_id}/approvals")
     def list_v2_job_approvals(job_id: str) -> dict[str, Any]:
         """Return V2 approval cards, or [] for valid jobs with no cards."""
-        with unit_of_work_factory() as uow:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
             cards = uow.v2_approvals.list_cards_by_job(job_id)
             service = V2ApprovalMappingService(approval_repo=uow.v2_approvals)
@@ -1172,7 +1183,7 @@ def create_app(
         after: int = Query(default=0, ge=0),
     ) -> dict[str, Any]:
         """Return ordered V2 cockpit events for tests/fallback clients."""
-        with unit_of_work_factory() as uow:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
             events = uow.v2_events.list_after_sequence(job_id, after)
         return {
@@ -1190,7 +1201,7 @@ def create_app(
     @app.get("/v1/v2/migration-jobs/{job_id}/pipeline")
     def get_v2_job_pipeline(job_id: str) -> dict[str, Any]:
         """Return operator-facing pipeline state derived from V2 events."""
-        with unit_of_work_factory() as uow:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
             events = uow.v2_events.list_by_job(job_id)
         return redact_public_data(_v2_pipeline_projection(job_id, events))
@@ -1206,7 +1217,7 @@ def create_app(
 
         Never returns absolute paths, secrets, or raw token data.
         """
-        with unit_of_work_factory() as uow:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
             events = uow.v2_events.list_by_job(job_id)
         return redact_public_data(_v2_failure_summary(job_id, events))
@@ -1240,7 +1251,7 @@ def create_app(
                 "UNKNOWN_ARTIFACT_KIND",
                 f"Unknown artifact kind.",
             )
-        with unit_of_work_factory() as uow:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             job = _require_v2_job(uow, job_id)
             events = uow.v2_events.list_by_job(job_id)
             commands = uow.v2_commands.list_by_job(job_id)
@@ -1355,7 +1366,7 @@ def create_app(
                 "PATH_NOT_ACCEPTED",
                 "File paths are not accepted for this endpoint.",
             )
-        with unit_of_work_factory() as uow:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
             events = uow.v2_events.list_by_job(job_id)
             commands = uow.v2_commands.list_by_job(job_id)
@@ -1415,7 +1426,7 @@ def create_app(
             cursor = int(last_event_id) if last_event_id else after
         except ValueError as exc:
             raise _error(status.HTTP_400_BAD_REQUEST, "INVALID_EVENT_CURSOR", "Last-Event-ID must be an integer.") from exc
-        with unit_of_work_factory() as uow:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
         return EventSourceResponse(
             _v2_event_stream(
@@ -1626,6 +1637,8 @@ def create_app(
                 assistant_intent=assistant_intent,
             )
             artifact_previews = tuple(artifact_previews_list)
+            if assistant_intent in {"apply_dependency_change", "rollback_pom_change"} and uow.connection.in_transaction:
+                uow.connection.execute("COMMIT")
             fallback_answer = _build_v2_assistant_answer(
                 question=payload.question,
                 events=events,
@@ -1634,20 +1647,32 @@ def create_app(
                 artifact_previews=artifact_previews if artifact_previews else None,
                 assistant_intent=assistant_intent,
             )
-            model_result = app.state.v2_assistant_model_client.answer(
-                prompt=_build_v2_assistant_prompt(
-                    question=payload.question,
-                    job=job,
-                    pipeline=pipeline,
-                    events=events,
-                    approvals=approvals,
-                    artifact_previews=artifact_previews if artifact_previews else None,
-                    assistant_intent=assistant_intent,
+            if assistant_intent in {"apply_dependency_change", "rollback_pom_change"}:
+                model_result = V2AssistantModelResult(
+                    content=fallback_answer,
+                    source="backend_controlled",
+                    model_status="not_used",
+                    provider="backend",
+                    role="assistant",
+                    success=True,
+                    redacted_summary="Backend-controlled assistant action completed.",
+                    failure_reason="",
+                )
+            else:
+                model_result = app.state.v2_assistant_model_client.answer(
+                    prompt=_build_v2_assistant_prompt(
+                        question=payload.question,
+                        job=job,
+                        pipeline=pipeline,
+                        events=events,
+                        approvals=approvals,
+                        artifact_previews=artifact_previews if artifact_previews else None,
+                        assistant_intent=assistant_intent,
+                        conversation_history=conversation_history,
+                    ),
+                    fallback=fallback_answer,
                     conversation_history=conversation_history,
-                ),
-                fallback=fallback_answer,
-                conversation_history=conversation_history,
-            )
+                )
             assistant_msg = service.add_message(
                 job_id=job_id,
                 role="assistant",
@@ -2238,7 +2263,7 @@ def create_app(
         pom_path = _resolve_sandbox_path_string(job_id, 3)
         target_dep_plan = _load_target_dependency_plan(job_id)
 
-        editor = _build_pom_dependency_editor()
+        editor = PomDependencyEditor()
         view = editor.get_stage3_pom(
             job_id,
             pom_content=pom_content,
@@ -2255,7 +2280,7 @@ def create_app(
         target_dep_plan = _load_target_dependency_plan(job_id)
         policy_report = _load_dependency_policy_report(job_id)
 
-        editor = _build_pom_dependency_editor()
+        editor = PomDependencyEditor()
         review = editor.review_stage3_dependencies(
             job_id,
             pom_content=pom_content,
@@ -2325,16 +2350,20 @@ def create_app(
     @app.get("/v1/v2/jobs/{job_id}/stage/3/pom/changes")
     def list_pom_changes(job_id: str) -> dict[str, Any]:
         """List all POM changes for the job."""
-        editor = _build_pom_dependency_editor()
-        changes = editor.list_changes(job_id)
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            editor = PomDependencyEditor(change_repo=uow.v2_pom_changes)
+            changes = editor.list_changes(job_id)
         return {"job_id": job_id, "changes": [c.to_public_dict() for c in changes]}
 
     @app.get("/v1/v2/jobs/{job_id}/stage/3/pom/changes/{change_id}")
     def get_pom_change(job_id: str, change_id: str) -> dict[str, Any]:
         """Get a specific POM change record."""
         # Delegate to list and filter (in production, add direct lookup)
-        editor = _build_pom_dependency_editor()
-        changes = editor.list_changes(job_id)
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            editor = PomDependencyEditor(change_repo=uow.v2_pom_changes)
+            changes = editor.list_changes(job_id)
         for c in changes:
             if c.change_id == change_id:
                 return c.to_public_dict()
@@ -2343,8 +2372,13 @@ def create_app(
     @app.get("/v1/v2/jobs/{job_id}/stage/3/pom/validation/{validation_id}")
     def get_validation_result(job_id: str, validation_id: str) -> dict[str, Any]:
         """Get validation run result."""
-        editor = _build_pom_dependency_editor()
-        result = editor.get_validation_result(job_id, validation_id)
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            editor = PomDependencyEditor(
+                validation_repo=uow.v2_pom_validations,
+                repair_plan_repo=uow.v2_pom_repair_plans,
+            )
+            result = editor.get_validation_result(job_id, validation_id)
         if result is None:
             raise _error(status.HTTP_404_NOT_FOUND, "VALIDATION_NOT_FOUND", f"Validation {validation_id} not found")
         return result.to_public_dict()
@@ -3629,16 +3663,16 @@ def create_app(
 
     def _make_pom_dependency_editor() -> PomDependencyEditor:
         """Build a PomDependencyEditor backed by the current UoW repos."""
-        with unit_of_work_factory() as uow:
-            return PomDependencyEditor(
-                event_sink=uow.v2_events,
-                change_repo=uow.v2_pom_changes,
-                proposal_repo=uow.v2_pom_proposals,
-                validation_repo=uow.v2_pom_validations,
-                repair_plan_repo=uow.v2_pom_repair_plans,
-                resolve_sandbox_root=lambda job_id, stage: _resolve_stage3_sandbox_path(job_id),
-                resolve_pom_content=lambda job_id: _read_stage3_pom_content(job_id),
-            )
+        uow = unit_of_work_factory()
+        return PomDependencyEditor(
+            event_sink=uow.v2_events,
+            change_repo=uow.v2_pom_changes,
+            proposal_repo=uow.v2_pom_proposals,
+            validation_repo=uow.v2_pom_validations,
+            repair_plan_repo=uow.v2_pom_repair_plans,
+            resolve_sandbox_root=lambda job_id, stage: _resolve_stage3_sandbox_path(job_id),
+            resolve_pom_content=lambda job_id: _read_stage3_pom_content(job_id),
+        )
 
     _configure_pom_dependency_editor_factory(_make_pom_dependency_editor)
 
@@ -3655,17 +3689,21 @@ def create_app(
     def _resolve_stage3_sandbox_path(job_id: str) -> Path | None:
         """Resolve Stage 3 sandbox root path for a job."""
         try:
-            with unit_of_work_factory() as uow:
+            with _read_unit_of_work(unit_of_work_factory) as uow:
                 job = uow.v2_jobs.get(job_id)
                 if job is None:
                     return None
+                events = tuple(uow.v2_events.list_by_job(job_id))
+                commands = tuple(uow.v2_commands.list_by_job(job_id))
         except Exception:
             return None
-        # Try to resolve from stage events/commands
-        # Reuse existing _resolve_stage_sandbox_root pattern
-        resolved = _resolve_stage_sandbox_root(3, job_id=job_id)
+        resolved = _resolve_stage_sandbox_root(
+            stage_index=3,
+            events=events,
+            commands=commands,
+        )
         if resolved:
-            return Path(resolved)
+            return resolved[0]
         return None
 
     def _resolve_sandbox_path_string(job_id: str, stage: int) -> str:
@@ -3673,13 +3711,24 @@ def create_app(
         if stage == 3:
             path = _resolve_stage3_sandbox_path(job_id)
             return str(path) if path else ""
-        resolved = _resolve_stage_sandbox_root(stage, job_id=job_id)
-        return resolved or ""
+        try:
+            with _read_unit_of_work(unit_of_work_factory) as uow:
+                _require_v2_job(uow, job_id)
+                events = tuple(uow.v2_events.list_by_job(job_id))
+                commands = tuple(uow.v2_commands.list_by_job(job_id))
+        except Exception:
+            return ""
+        resolved = _resolve_stage_sandbox_root(
+            stage_index=stage,
+            events=events,
+            commands=commands,
+        )
+        return str(resolved[0]) if resolved else ""
 
     def _load_target_dependency_plan(job_id: str) -> dict[str, Any] | None:
         """Load target dependency plan artifact for a job."""
         try:
-            with unit_of_work_factory() as uow:
+            with _read_unit_of_work(unit_of_work_factory) as uow:
                 artifacts = uow.artifacts.list_by_job(job_id)
                 for a in artifacts:
                     if a.artifact_kind in ("target_dependency_plan", "dependency_plan"):
@@ -3694,7 +3743,7 @@ def create_app(
     def _load_dependency_policy_report(job_id: str) -> dict[str, Any] | None:
         """Load dependency policy report artifact for a job."""
         try:
-            with unit_of_work_factory() as uow:
+            with _read_unit_of_work(unit_of_work_factory) as uow:
                 artifacts = uow.artifacts.list_by_job(job_id)
                 for a in artifacts:
                     if a.artifact_kind in ("dependency_policy_report", "policy_report"):
@@ -4170,6 +4219,13 @@ _ROOT_POM_ALIAS_TERMS = (
 def _classify_v2_assistant_intent(question: str) -> str:
     lowered = str(question or "").lower()
 
+    if (
+        "validation" in lowered
+        and any(term in lowered for term in ("result", "status", "latest", "show"))
+        and any(term in lowered for term in ("stage 3", "stage3", "pom", "change"))
+    ):
+        return "pom_validation_result"
+
     # 1. Model status first (model/Azure/provider questions)
     #    BUT skip if user is also asking about POM/dependency changes — model status is secondary
     pom_or_dep_terms = (
@@ -4215,10 +4271,10 @@ def _classify_v2_assistant_intent(question: str) -> str:
         return "rollback_pom_change"
 
     # 3.5 Explicit "apply this ... change" pattern (catch BEFORE explicit dep change)
-    if any(t in lowered for t in ("apply this", "apply the", "apply it", "execute this",
-                                  "do it", "make the change", "write the change",
-                                  "go ahead and apply", "proceed with apply",
-                                  "please apply", "apply now")):
+    if not user_says_dont_apply and any(t in lowered for t in ("apply this", "apply the", "apply it", "execute this",
+                                                               "do it", "make the change", "write the change",
+                                                               "go ahead and apply", "proceed with apply",
+                                                               "please apply", "apply now")):
         if not any(t in lowered for t in ("review", "what dependency", "what should", "which dependency")):
             return "apply_dependency_change"
 
@@ -4235,10 +4291,10 @@ def _classify_v2_assistant_intent(question: str) -> str:
     for pattern in explicit_dep_change_patterns:
         if re.search(pattern, lowered):
             # If user explicitly says apply/execute/do it, route to apply
-            if any(t in lowered for t in ("apply this", "apply the", "apply it", "execute this",
-                                          "do it", "make the change", "write the change",
-                                          "go ahead and apply", "proceed with apply",
-                                          "please apply", "apply now")):
+            if not user_says_dont_apply and any(t in lowered for t in ("apply this", "apply the", "apply it", "execute this",
+                                                                       "do it", "make the change", "write the change",
+                                                                       "go ahead and apply", "proceed with apply",
+                                                                       "please apply", "apply now")):
                 if not any(t in lowered for t in ("review", "what dependency", "what should", "which dependency")):
                     return "apply_dependency_change"
             if not any(t in lowered for t in ("review", "what dependency", "what should", "which dependency")):
@@ -4698,20 +4754,22 @@ def _resolve_root_pom_file_alias_preview(
         key=lambda event: getattr(event, "sequence", 0),
     )
     latest_stage_event = stage_events[-1] if stage_events else None
-    if latest_stage_event is not None and (
+    is_stage_running = latest_stage_event is not None and (
         getattr(latest_stage_event, "status", "") == "running"
         or str(getattr(latest_stage_event, "type", "")).endswith("_started")
-    ):
-        response["reason"] = "stage_running"
-        return response
-    if not any(
+    )
+    stage_has_completed_evidence = any(
         getattr(event, "type", "") in {"sandbox_transform_completed", "stage_completed"}
         or (
             getattr(event, "status", "") == "completed"
             and str(getattr(event, "type", "")) in {"transform_completed", "build_completed", "test_completed"}
         )
         for event in stage_events
-    ):
+    )
+    if is_stage_running and stage_index != 3:
+        response["reason"] = "stage_running"
+        return response
+    if not stage_has_completed_evidence and not (is_stage_running and stage_index == 3):
         response["reason"] = "stage_not_completed"
         return response
 
@@ -4757,6 +4815,7 @@ def _resolve_root_pom_file_alias_preview(
         "truncated": file_size > max_bytes,
         "download_url": f"/v1/v2/jobs/{job_id}/files/root-pom?stage={stage_index}&mode=download" if job_id else None,
         "reason": None,
+        "label": "live Stage 3 sandbox POM during validation" if is_stage_running and stage_index == 3 else "root_pom",
         "_path": candidate,
     })
     return response
@@ -4882,6 +4941,15 @@ def _build_v2_assistant_answer(
 
     if effective_intent == "rollback_pom_change":
         return _build_rollback_pom_change_answer(
+            question=question,
+            artifact_previews=artifact_previews,
+            events=events,
+            approvals=approvals,
+            commands=commands,
+        )
+
+    if effective_intent == "pom_validation_result":
+        return _build_pom_validation_result_answer(
             question=question,
             artifact_previews=artifact_previews,
             events=events,
@@ -5179,6 +5247,13 @@ def _redact_xml_preserve_maven_urls(text: str) -> str:
     """Redact XML content while preserving Maven namespace/schema URLs
     and XML tag structure. Redacts filesystem paths, secrets, and
     private repository URLs but keeps Maven URL intact."""
+
+    text = re.sub(
+        r"(<project\.testresult\.directory>)(.*?)(</project\.testresult\.directory>)",
+        r"\1[redacted-path]\3",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
 
     # Redact common POSIX-file-like paths: /usr/, /home/, /tmp/, /opt/, /etc/, /dev/
     # but NOT inside URLs (preceded by ://)
@@ -5954,10 +6029,13 @@ def _build_apply_dependency_change_answer(
     # Route through the same PomDependencyEditor service path as UI
     try:
         editor = _build_pom_dependency_editor()
+        idempotency_key = _assistant_action_idempotency_key(
+            "apply_dependency_change", job_id, question
+        )
         result = editor.apply_change_from_user_request(
             job_id=job_id,
             user_request=question,
-            idempotency_key=f"ask:{job_id}:{utc_now_text()}",
+            idempotency_key=idempotency_key,
         )
     except Exception as e:
         return (
@@ -5971,6 +6049,19 @@ def _build_apply_dependency_change_answer(
             "You can use the Stage 3 Dependency Review panel to review "
             "dependencies and create a proposal before applying."
         )
+
+    if result.status == "noop":
+        lines = [
+            "## POM change not applied",
+            f"**{result.message}**",
+            f"- **Operation:** {result.operation}",
+            f"- **Target:** {result.target_desc}",
+        ]
+        if result.before_version:
+            lines.append(f"- **Current:** {result.before_version}")
+        lines.append(f"- **Requested:** {result.after_version}")
+        lines.append("- **Status:** noop")
+        return "\n".join(lines)
 
     if result.status == "error":
         return (
@@ -5998,6 +6089,12 @@ def _build_apply_dependency_change_answer(
                   f"Check the Stage 3 Dependency Review panel for results.")
 
     return "\n".join(lines)
+
+
+def _assistant_action_idempotency_key(action: str, job_id: str, question: str) -> str:
+    canonical = re.sub(r"\s+", " ", str(question or "").strip().lower())
+    digest = hashlib.sha256(f"{action}:{job_id}:{canonical}".encode("utf-8")).hexdigest()[:24]
+    return f"ask:{action}:{job_id}:{digest}"
 
 
 def _resolve_assistant_job_id(*, events: tuple[Any, ...], commands: tuple[Any, ...]) -> str:
@@ -6039,7 +6136,14 @@ def _build_rollback_pom_change_answer(
 
     rollback_candidates = [
         change for change in changes
-        if str(getattr(change, "status", "")) != "rolled_back"
+        if str(getattr(change, "status", "")) in {
+            "applied_pending_validation",
+            "validation_running",
+            "validated_passed",
+            "validated_failed",
+            "repair_applied",
+        }
+        and not getattr(change, "rollback_id", None)
         and str(getattr(change, "change_id", ""))
     ]
     if not rollback_candidates:
@@ -6051,7 +6155,7 @@ def _build_rollback_pom_change_answer(
         result = editor.rollback_change(
             job_id,
             change_id,
-            f"ask:{job_id}:{utc_now_text()}",
+            _assistant_action_idempotency_key("rollback_pom_change", job_id, change_id),
         )
     except Exception as exc:
         return (
@@ -6072,6 +6176,61 @@ def _build_rollback_pom_change_answer(
         f"- **Checksum restored:** {result.checksum_restored}",
         f"- **Status:** {result.status}",
     ]
+    return "\n".join(lines)
+
+
+def _build_pom_validation_result_answer(
+    *,
+    question: str,
+    artifact_previews: tuple[dict[str, Any], ...] | None = None,
+    events: tuple[Any, ...] = (),
+    approvals: tuple[Any, ...] = (),
+    commands: tuple[Any, ...] = (),
+) -> str:
+    """Return validation status from F14 backend validation records."""
+    job_id = _resolve_assistant_job_id(events=events, commands=commands)
+    if not job_id:
+        return "I cannot look up validation because I cannot determine the migration job."
+
+    try:
+        editor = _build_pom_dependency_editor()
+        changes = [
+            change for change in editor.list_changes(job_id)
+            if getattr(change, "validation_id", None)
+        ]
+    except Exception as exc:
+        return f"Backend could not inspect Stage 3 POM validation records: {exc}."
+
+    if not changes:
+        return "No Stage 3 POM validation record found for this job."
+
+    changes.sort(key=lambda c: str(getattr(c, "created_at", "")))
+    latest = changes[-1]
+    validation_id = str(getattr(latest, "validation_id", "") or "")
+    try:
+        result = editor.get_validation_result(job_id, validation_id)
+    except Exception as exc:
+        return f"Backend could not load Stage 3 POM validation `{validation_id}`: {exc}."
+
+    if result is None:
+        return f"No backend validation record found for `{validation_id}`."
+
+    lines = [
+        "## Stage 3 POM validation result",
+        f"- **Change ID:** `{result.change_id}`",
+        f"- **Validation ID:** `{result.validation_id}`",
+        f"- **Status:** {result.status}",
+        f"- **Build:** {result.build_status}",
+        f"- **Tests:** {result.test_status}",
+    ]
+    if result.exit_code is not None:
+        lines.append(f"- **Exit code:** {result.exit_code}")
+    if result.diagnosis:
+        lines.append(f"- **Diagnosis:** {result.diagnosis.failure_classification}")
+        if result.diagnosis.failure_classification == "evidence_insufficient":
+            lines.append("- **Evidence:** evidence_insufficient")
+    if result.log_ref:
+        lines.append(f"- **Log ref:** {result.log_ref}")
     return "\n".join(lines)
 
 
@@ -6406,6 +6565,16 @@ def _build_stage3_dependency_review_answer(
             root_pom_preview=root_pom_preview,
             events=events,
         )
+
+    if root_pom_exists and not allowed:
+        reason_text = str(reason or "not_available").replace("_", " ")
+        lines.append(
+            f"I cannot confirm the Stage 3 baseline yet. "
+            f"Stage 3 root_pom is available, but final dependency review is not stable "
+            f"(reason: {reason_text}). "
+            "Please wait for the backend validation/stage activity to finish."
+        )
+        return "\n".join(lines)
 
     if not root_pom_exists:
         reason_text = str(root_pom_preview.get("reason", "not_available")).replace("_", " ") if root_pom_preview else "not_available"
@@ -8214,7 +8383,7 @@ async def _v2_event_stream(
     while True:
         if await request.is_disconnected():
             break
-        with unit_of_work_factory() as uow:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             events = uow.v2_events.list_after_sequence(job_id, last_sent_sequence)
         if events:
             for event in events:

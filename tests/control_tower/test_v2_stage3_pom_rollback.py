@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -380,3 +380,79 @@ class TestRollbackContentRestoration:
             idempotency_key="ik_rb",
         )
         assert result.status == "error"
+
+    def test_rollback_skips_already_rolled_back_changes(self):
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _build_v2_assistant_answer,
+        )
+
+        editor = MagicMock()
+        editor.list_changes.return_value = [
+            MagicMock(
+                change_id="ch_old",
+                status=PomChangeStatus.ROLLED_BACK.value,
+                rollback_id="rb_old",
+                created_at="2026-06-16T00:02:00Z",
+            ),
+            MagicMock(
+                change_id="ch_active",
+                status=PomChangeStatus.APPLIED_PENDING_VALIDATION.value,
+                rollback_id=None,
+                created_at="2026-06-16T00:01:00Z",
+            ),
+        ]
+        editor.rollback_change.return_value = PomRollbackResult(
+            change_id="ch_active",
+            rollback_id="rb_active",
+            status="rolled_back",
+            checksum_restored=True,
+            validation_triggered=False,
+            validation_id=None,
+            created_at="2026-06-16T00:03:00Z",
+        )
+        event = MagicMock(job_id="job_1")
+
+        with patch(
+            "migration_factory.control_tower.adapters.fastapi.app._build_pom_dependency_editor",
+            return_value=editor,
+        ):
+            answer = _build_v2_assistant_answer(
+                question="Rollback latest Stage 3 POM change",
+                events=(event,),
+                approvals=(),
+                commands=(),
+            )
+
+        editor.rollback_change.assert_called_once()
+        assert editor.rollback_change.call_args.args[1] == "ch_active"
+        assert "ch_active" in answer
+
+    def test_rollback_no_active_change_returns_clear_message(self):
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _build_v2_assistant_answer,
+        )
+
+        editor = MagicMock()
+        editor.list_changes.return_value = [
+            MagicMock(
+                change_id="ch_old",
+                status=PomChangeStatus.ROLLED_BACK.value,
+                rollback_id="rb_old",
+                created_at="2026-06-16T00:02:00Z",
+            )
+        ]
+        event = MagicMock(job_id="job_1")
+
+        with patch(
+            "migration_factory.control_tower.adapters.fastapi.app._build_pom_dependency_editor",
+            return_value=editor,
+        ):
+            answer = _build_v2_assistant_answer(
+                question="Rollback latest Stage 3 POM change",
+                events=(event,),
+                approvals=(),
+                commands=(),
+            )
+
+        editor.rollback_change.assert_not_called()
+        assert answer == "No applied Stage 3 POM change found to rollback."

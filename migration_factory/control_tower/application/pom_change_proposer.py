@@ -61,7 +61,7 @@ class PomChangeProposer:
 
         target = parsed["target"]
         operation = parsed["operation"]
-        requested_version = parsed.get("requested_version", "")
+        requested_version = _clean_requested_version(parsed.get("requested_version", ""))
 
         # Build fresh policy with current POM data
         policy = PomDependencyPolicy(pom_deps_data=pom_deps_data)
@@ -159,10 +159,11 @@ class PomChangeProposer:
             group_id=target.group_id,
             artifact_id=target.artifact_id,
             property_name=target.property_name,
-            requested_version=plan.get("requested_version", ""),
+            requested_version=_clean_requested_version(plan.get("requested_version", "")),
             user_request="revalidate",
             stage=3,
         )
+
 
     # ── User request parsing ────────────────────────────────────────
 
@@ -392,3 +393,7 @@ class PomChangeProposer:
             "operation": "update_dependency_version",
             "requested_version": "",
         }
+
+
+def _clean_requested_version(value: Any) -> str:
+    return str(value or "").strip().rstrip(".,;:")

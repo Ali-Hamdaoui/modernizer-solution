@@ -571,7 +571,9 @@ export async function postJson<TResponse>(
     }
   });
   if (!response.ok) {
-    throw new Error(`Control Tower mutation failed for ${path}.`);
+    throw new Error(
+      `Control Tower mutation failed for ${path}: ${response.status} ${response.statusText || "HTTP error"}.`
+    );
   }
   return (await response.json()) as TResponse;
 }
@@ -579,7 +581,9 @@ export async function postJson<TResponse>(
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`${CONTROL_TOWER_API_BASE_URL}${path}`, { cache: "no-store" });
   if (!response.ok) {
-    throw new Error(`Control Tower request failed for ${path}.`);
+    throw new Error(
+      `Control Tower request failed for ${path}: ${response.status} ${response.statusText || "HTTP error"}.`
+    );
   }
   return (await response.json()) as T;
 }

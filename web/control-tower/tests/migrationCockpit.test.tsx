@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import MigrationCockpitPage from "../app/migrations/[jobId]/page";
-import { MigrationCockpit, reduceStageStatus } from "../app/migrations/[jobId]/MigrationCockpit";
+import {
+  MigrationCockpit,
+  mergeCockpitLiveRefreshResults,
+  reduceStageStatus,
+  type CockpitData,
+} from "../app/migrations/[jobId]/MigrationCockpit";
 import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, requireJobId, v2EventStreamUrl } from "../lib/controlTowerApi";
 import type { V2JobEvent } from "../lib/contracts";
 
@@ -137,6 +142,36 @@ describe("V2 Migration Cockpit contract", () => {
     const url = v2EventStreamUrl("job-123", 7);
     expect(url).toBe("http://127.0.0.1:8000/v1/v2/migration-jobs/job-123/events?after=7");
     expect(url).not.toContain("undefined");
+  });
+
+  it("refreshLiveState keeps existing approvals when approvals refresh fails", () => {
+    const current = makeCockpitData();
+    const merged = mergeCockpitLiveRefreshResults(current, [
+      { status: "rejected", reason: new TypeError("Failed to fetch") },
+      { status: "fulfilled", value: { job_id: "job-123", stages: [{ stage_index: 1, pipeline_stage: "Stage 1", chain_status: "running", input_source_kind: "legacy_source" }] } },
+      { status: "fulfilled", value: { events: [{ sequence: 2, type: "stage_started", status: "running", stage: 1 } as V2JobEvent] } },
+      { status: "fulfilled", value: { ...current.pipeline, rows: [{ key: "analysis", label: "Analysis", status: "running", latest_message: "Running", artifact_count: 0, last_updated: "2026-06-16T00:00:00Z" }] } },
+      { status: "fulfilled", value: { job_id: "job-123", has_failures: false, failures: [], repair_loop_active: false, repair_events: [], artifact_kinds: [] } },
+    ]);
+
+    expect(merged.failed).toBe(true);
+    expect(merged.data.approvals).toBe(current.approvals);
+    expect(merged.data.stages[0].chain_status).toBe("running");
+    expect(merged.data.events[0].sequence).toBe(2);
+  });
+
+  it("SSE-triggered refresh failure can be represented as a non-blocking warning state", () => {
+    const current = makeCockpitData();
+    const merged = mergeCockpitLiveRefreshResults(current, [
+      { status: "rejected", reason: new TypeError("Failed to fetch") },
+      { status: "rejected", reason: new TypeError("Failed to fetch") },
+      { status: "rejected", reason: new TypeError("Failed to fetch") },
+      { status: "rejected", reason: new TypeError("Failed to fetch") },
+      { status: "rejected", reason: new TypeError("Failed to fetch") },
+    ]);
+
+    expect(merged.failed).toBe(true);
+    expect(merged.data).toEqual(current);
   });
 
   it("artifact preview client sends only artifact kind", async () => {
@@ -550,3 +585,41 @@ describe("V2 Migration Cockpit contract", () => {
     expect(stage3Profile).toBe("springboot-3.5-java17-to-java21");
   });
 });
+
+function makeCockpitData(): CockpitData {
+  return {
+    job: {
+      job_id: "job-123",
+      setup_id: "setup-123",
+      setup_checksum: "setup-checksum",
+      pipeline_id: "pipeline",
+      stages: [],
+      created_at: "2026-06-16T00:00:00Z",
+    },
+    stages: [
+      { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "queued", input_source_kind: "legacy_source" },
+    ],
+    approvals: [
+      {
+        card_id: "card-1",
+        job_id: "job-123",
+        stage_index: 1,
+        status: "pending",
+        summary: "Approval required.",
+        request_checksum: "checksum-1",
+        created_at: "2026-06-16T00:00:00Z",
+      } as CockpitData["approvals"][number],
+    ],
+    messages: [],
+    events: [{ sequence: 1, type: "stage_queued", status: "queued", stage: 1 } as V2JobEvent],
+    pipeline: {
+      job_id: "job-123",
+      active_stage_index: 1,
+      rows: [],
+      evidence: [],
+      raw_logs: [],
+    } as CockpitData["pipeline"],
+    failureSummary: null,
+    assistantModel: null,
+  };
+}
