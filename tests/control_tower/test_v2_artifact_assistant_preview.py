@@ -551,6 +551,138 @@ class TestArtifactPreviewPathSafety:
             assert "my-secret" not in preview
 
 
+class TestRootPomAssistantLiveTranscript:
+    """F12: Assistant live-transcript behaviour for root_pom file alias."""
+
+    def test_assistant_stage_running_says_unavailable_due_to_stage_running(
+        self, tmp_path: Path
+    ) -> None:
+        """When stage is running and user asks for full pom.xml, assistant says
+        root_pom is unavailable because stage is running — not 'I cannot create files'."""
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage1-sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text("<project />", encoding="utf-8")
+        _seed_stage_command(conn, job_id="job-artifact", stage=1, command_id="cmd-s1", sandbox_path=sandbox, status="running")
+        _seed_stage_event(conn, job_id="job-artifact", stage=1, event_type="sandbox_transform_started", status="running")
+
+        response = client.post(
+            "/v1/v2/jobs/job-artifact/assistant/ask",
+            json={"question": "give me the full pom.xml for stage 1"},
+            headers=_mutation_headers(),
+        )
+
+        assert response.status_code == 200, response.text
+        content = response.json()["assistant_message"]["content"].lower()
+        # Must NOT claim to have the full POM
+        assert "<?xml" not in content or "not available" in content
+        # Must NOT say "I cannot create files" (the old incorrect behaviour)
+        assert "cannot create" not in content
+        # Should reference the root_pom alias or explain unavailability reason
+        assert "stage_running" in content or "running" in content or "not available" in content
+        # Should NOT suggest rewrite_dry_run.patch as substitute
+        assert "rewrite_dry_run.patch" not in content
+
+    def test_assistant_stage_completed_includes_root_pom_content(
+        self, tmp_path: Path
+    ) -> None:
+        """When stage is completed and pom.xml exists, assistant includes actual
+        backend-resolved root pom content in its answer."""
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage1-sandbox"
+        sandbox.mkdir()
+        expected = "<project><artifactId>stage-one</artifactId></project>"
+        (sandbox / "pom.xml").write_text(expected, encoding="utf-8")
+        _seed_stage_command(conn, job_id="job-artifact", stage=1, command_id="cmd-s1", sandbox_path=sandbox)
+        _seed_stage_event(conn, job_id="job-artifact", stage=1, event_type="stage_completed")
+
+        response = client.post(
+            "/v1/v2/jobs/job-artifact/assistant/ask",
+            json={"question": "give me the full pom.xml for stage 1"},
+            headers=_mutation_headers(),
+        )
+
+        assert response.status_code == 200, response.text
+        content = response.json()["assistant_message"]["content"]
+        # Should include the actual pom content (stage-one artifact ID)
+        assert "stage-one" in content
+        # Should NOT substitute rewrite patch
+        assert "rewrite_dry_run.patch" not in content
+        # Should NOT say the pom is unavailable (it is available)
+        assert "not available" not in content.lower()
+
+    def test_assistant_dependencies_question_uses_root_pom_not_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        """When user asks 'full dependencies for pom xml stage 1', assistant uses
+        root_pom content and does not fall back to dependency_graph unless
+        root_pom is unavailable."""
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage1-sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text(
+            "<project><artifactId>stage-one</artifactId>"
+            "<dependencies><dependency><groupId>org.example</groupId>"
+            "<artifactId>my-lib</artifactId></dependency></dependencies></project>",
+            encoding="utf-8",
+        )
+        _seed_stage_command(conn, job_id="job-artifact", stage=1, command_id="cmd-s1", sandbox_path=sandbox)
+        _seed_stage_event(conn, job_id="job-artifact", stage=1, event_type="stage_completed")
+
+        response = client.post(
+            "/v1/v2/jobs/job-artifact/assistant/ask",
+            json={"question": "show me full dependencies for pom xml stage 1"},
+            headers=_mutation_headers(),
+        )
+
+        assert response.status_code == 200, response.text
+        content = response.json()["assistant_message"]["content"]
+        # Should include root_pom content with the dependency info
+        assert "my-lib" in content or "stage-one" in content
+        # Should NOT fall back to dependency_graph (if root_pom is available)
+        assert "dependency_graph" not in content
+        # Should NOT suggest rewrite_dry_run.patch as substitute
+        assert "rewrite_dry_run.patch" not in content
+
+
+class TestRootPomDownloadSafety:
+    """F12: download mode must redact content; never leak raw file."""
+
+    def test_download_mode_redacts_secrets_and_paths(
+        self, tmp_path: Path
+    ) -> None:
+        """mode=download returns redacted XML, same redaction policy as preview.
+        Tokens and absolute paths must not leak."""
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage1-sandbox"
+        sandbox.mkdir()
+        secret_path = str(tmp_path / "secret-dir")
+        (sandbox / "pom.xml").write_text(
+            f"<project><token>sk-secret789</token>"
+            f"<path>{secret_path}</path></project>",
+            encoding="utf-8",
+        )
+        _seed_stage_command(conn, job_id="job-artifact", stage=1, command_id="cmd-s1", sandbox_path=sandbox)
+        _seed_stage_event(conn, job_id="job-artifact", stage=1, event_type="stage_completed")
+
+        response = client.get(
+            "/v1/v2/jobs/job-artifact/files/root-pom?stage=1&mode=download",
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.text
+        # Download must NOT leak raw secrets
+        assert "sk-secret789" not in body
+        # Download must NOT leak absolute paths from content
+        assert secret_path not in body
+        # Download must still be valid XML with project element
+        assert "<project>" in body or "<project " in body
+        # Content-Disposition header should be set for download
+        content_disp = response.headers.get("content-disposition", "")
+        assert "attachment" in content_disp
+        assert "stage-1-pom.xml" in content_disp
+
+
 class TestQuestionDetection:
     """Test _question_looks_like_artifact_content heuristic."""
 

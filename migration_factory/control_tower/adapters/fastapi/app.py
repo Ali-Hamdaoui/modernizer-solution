@@ -1315,17 +1315,35 @@ def create_app(
             preview.pop("_path", None)
             return preview
 
-        candidate = preview.get("_path")
-        if not isinstance(candidate, Path) or not candidate.is_file():
+        # Download mode: read full file, redact, return as text response
+        # Uses same redaction policy as preview (never returns raw file)
+        candidate_path = preview.get("_path")
+        if not isinstance(candidate_path, Path) or not candidate_path.is_file():
             raise _error(
                 status.HTTP_404_NOT_FOUND,
                 "ROOT_POM_NOT_AVAILABLE",
                 "Root pom.xml is not available for that stage.",
             )
-        return FileResponse(
-            candidate,
+        from migration_factory.control_tower.application.redaction import redact_model_summary
+        try:
+            raw_bytes = candidate_path.read_bytes()
+            if raw_bytes[:3] == b"\xef\xbb\xbf":
+                raw_bytes = raw_bytes[3:]
+            try:
+                text = raw_bytes.decode("utf-8", errors="replace")
+            except (UnicodeDecodeError, LookupError):
+                text = raw_bytes.decode("latin-1", errors="replace")
+            redacted = redact_model_summary(text)
+        except (OSError, RuntimeError, ValueError):
+            raise _error(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "ROOT_POM_READ_ERROR",
+                "Root pom.xml could not be read for download.",
+            )
+        return Response(
+            content=redacted,
             media_type="application/xml",
-            filename=f"stage-{stage}-pom.xml",
+            headers={"Content-Disposition": f'attachment; filename="stage-{stage}-pom.xml"'},
         )
 
     @app.get("/v1/v2/migration-jobs/{job_id}/events")
@@ -4423,9 +4441,14 @@ def _build_v2_assistant_prompt(
         "artifact_previews": [
             {
                 "kind": p.get("artifact_kind", ""),
+                "source_type": p.get("source_type", ""),
+                "file_alias": p.get("file_alias", ""),
+                "stage_index": p.get("stage_index"),
                 "exists": p.get("exists", False),
+                "reason": p.get("reason", ""),
                 "preview": str(p.get("preview", ""))[:1024],
                 "truncated": p.get("truncated", False),
+                "download_url": p.get("download_url", "") or "",
             }
             for p in (artifact_previews or ())
         ] if artifact_previews else [],
