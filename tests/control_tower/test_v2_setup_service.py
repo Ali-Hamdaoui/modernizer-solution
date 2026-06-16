@@ -802,6 +802,16 @@ class TestJdkSubprocessValidation:
         )
 
     @staticmethod
+    def _fake_subprocess_java21_bare_major(*args, **kwargs):
+        from subprocess import CompletedProcess
+        return CompletedProcess(
+            args=list(args),
+            returncode=0,
+            stdout="",
+            stderr='openjdk version "21" 2023-09-19\nOpenJDK Runtime Environment (build 21+35-2513)\n',
+        )
+
+    @staticmethod
     def _fake_subprocess_java_wrong_version(*args, **kwargs):
         from subprocess import CompletedProcess
         return CompletedProcess(
@@ -859,6 +869,21 @@ class TestJdkSubprocessValidation:
 
         import subprocess as sp
         monkeypatch.setattr(sp, "run", self._fake_subprocess_java21)
+
+        assert _check_jdk_path_with_version(str(jdk_home), 21)
+
+    def test_jdk21_bare_major_version_is_accepted(self, monkeypatch, tmp_path: Path) -> None:
+        """JDK 21 output that omits the minor version must still be accepted."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _check_jdk_path_with_version,
+        )
+        jdk_home = tmp_path / "jdk-21"
+        bin_dir = jdk_home / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "java").touch()
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, "run", self._fake_subprocess_java21_bare_major)
 
         assert _check_jdk_path_with_version(str(jdk_home), 21)
 

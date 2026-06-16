@@ -180,7 +180,10 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       });
       // On important events, refresh from backend (async, non-blocking)
       if (IMPORTANT_SSE_TYPES.has(event.type)) {
-        void refreshLiveState();
+        void refreshLiveState().catch((error) => {
+          setError(error instanceof Error ? error.message : "Live refresh failed");
+          setStreamState("reconnecting");
+        });
       }
     } catch {
       setStreamState("reconnecting");

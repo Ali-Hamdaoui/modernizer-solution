@@ -467,9 +467,16 @@ export async function postJson<TResponse>(
 }
 
 async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${CONTROL_TOWER_API_BASE_URL}${path}`, { cache: "no-store" });
+  const url = `${CONTROL_TOWER_API_BASE_URL}${path}`;
+  let response: Response;
+  try {
+    response = await fetch(url, { cache: "no-store" });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Control Tower fetch failed for ${url}: ${reason}`);
+  }
   if (!response.ok) {
-    throw new Error(`Control Tower request failed for ${path}.`);
+    throw new Error(`Control Tower request failed for ${url}.`);
   }
   return (await response.json()) as T;
 }

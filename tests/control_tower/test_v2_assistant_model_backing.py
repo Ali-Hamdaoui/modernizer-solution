@@ -81,6 +81,21 @@ class _SmokeUrlopenRecorder:
         return _SmokeResponse(self.body)
 
 
+class _SmokeFallbackRecorder:
+    def __init__(self) -> None:
+        self.calls: list[tuple[urllib.request.Request, int | None]] = []
+
+    def __call__(self, request: urllib.request.Request, timeout: int | None = None):
+        self.calls.append((request, timeout))
+        if len(self.calls) == 1:
+            raw = (
+                b'<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN">'
+                b"<HTML><HEAD><TITLE>Bad Request</TITLE></HEAD><BODY><h2>Bad Request</h2></BODY></HTML>"
+            )
+            raise urllib.error.HTTPError(request.full_url, 400, "bad request", hdrs=None, fp=BytesIO(raw))
+        return _SmokeResponse({"choices": [{"message": {"content": "OK"}}]})
+
+
 class _SmokeResponse:
     def __init__(self, body: dict[str, object]) -> None:
         self._body = body
@@ -175,6 +190,30 @@ def test_v1_smoke_http_400_sets_failure_reason_and_redacts_body(monkeypatch) -> 
     assert "sk-abc123" not in result.response_snippet
 
 
+def test_v1_smoke_retries_legacy_route_after_html_400(monkeypatch) -> None:
+    from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelClient
+
+    recorder = _SmokeFallbackRecorder()
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/openai/v1")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-api-key")
+    monkeypatch.setenv("AZURE_OPENAI_ASSISTANT_DEPLOYMENT", "gpt-5-mini")
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+
+    result = V2AssistantModelClient().smoke()
+
+    assert result.success is True
+    assert len(recorder.calls) == 2
+    first_url, _, first_body = _extract_request(recorder.calls[0][0])
+    second_url, _, second_body = _extract_request(recorder.calls[1][0])
+    assert first_url == "https://example.openai.azure.com/openai/v1/chat/completions"
+    assert second_url == (
+        "https://example.openai.azure.com/openai/deployments/"
+        "gpt-5-mini/chat/completions?api-version=2024-10-21"
+    )
+    assert first_body["model"] == "gpt-5-mini"
+    assert second_body["max_tokens"] == 100
+
+
 def test_v1_smoke_missing_key_sets_failure_reason(monkeypatch) -> None:
     from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelClient
 
@@ -211,6 +250,31 @@ def test_answer_uses_api_key_header_for_v1_endpoint(monkeypatch) -> None:
     assert body["reasoning_effort"] == "minimal"
     assert "max_tokens" not in body
     assert "temperature" not in body
+
+
+def test_answer_retries_legacy_route_after_html_400(monkeypatch) -> None:
+    from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelClient
+
+    recorder = _SmokeFallbackRecorder()
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/openai/v1")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-api-key")
+    monkeypatch.setenv("AZURE_OPENAI_ASSISTANT_DEPLOYMENT", "gpt-5-mini")
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+
+    result = V2AssistantModelClient().answer(prompt="status?", fallback="fallback")
+
+    assert result.success is True
+    assert result.content == "OK"
+    assert len(recorder.calls) == 2
+    first_url, _, first_body = _extract_request(recorder.calls[0][0])
+    second_url, _, second_body = _extract_request(recorder.calls[1][0])
+    assert first_url == "https://example.openai.azure.com/openai/v1/chat/completions"
+    assert second_url == (
+        "https://example.openai.azure.com/openai/deployments/"
+        "gpt-5-mini/chat/completions?api-version=2024-10-21"
+    )
+    assert first_body["model"] == "gpt-5-mini"
+    assert second_body["max_tokens"] == 700
 
 
 def test_assistant_uses_model_client_and_does_not_return_key(tmp_path: Path) -> None:

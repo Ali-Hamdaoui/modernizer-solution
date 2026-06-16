@@ -629,6 +629,12 @@ def _java_major_matches(version_output: str, expected_major: int) -> bool:
     if match:
         major = int(match.group(1))
         return major == expected_major
+    # Some JDK builds report only the bare major version, for example:
+    # `openjdk version "21" 2023-09-19`.
+    match = re.search(r'version\s+"?(\d+)"?(?:\s|$)', version_output)
+    if match:
+        major = int(match.group(1))
+        return major == expected_major
     return False
 
 

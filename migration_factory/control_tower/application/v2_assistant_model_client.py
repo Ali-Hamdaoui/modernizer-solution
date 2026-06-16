@@ -291,15 +291,27 @@ class V2AssistantModelClient:
         timeout: int = 30,
     ) -> str:
         if self._is_v1_endpoint(endpoint):
-            endpoint = self._normalize_v1_endpoint(endpoint)
-            return self._chat_completion_v1(
-                endpoint=endpoint,
-                api_key=api_key,
-                deployment=deployment,
-                prompt=prompt,
-                max_completion_tokens=max_completion_tokens,
-                timeout=timeout,
-            )
+            normalized_endpoint = self._normalize_v1_endpoint(endpoint)
+            try:
+                return self._chat_completion_v1(
+                    endpoint=normalized_endpoint,
+                    api_key=api_key,
+                    deployment=deployment,
+                    prompt=prompt,
+                    max_completion_tokens=max_completion_tokens,
+                    timeout=timeout,
+                )
+            except urllib.error.HTTPError as exc:
+                if not _should_retry_legacy_azure_route(exc, endpoint):
+                    raise
+                return self._chat_completion_legacy(
+                    endpoint=_legacy_endpoint_from_v1ish(endpoint),
+                    api_key=api_key,
+                    deployment=deployment,
+                    prompt=prompt,
+                    max_tokens=max_completion_tokens,
+                    timeout=timeout,
+                )
         return self._chat_completion_legacy(
             endpoint=endpoint,
             api_key=api_key,
@@ -340,15 +352,27 @@ class V2AssistantModelClient:
         timeout: int = 15,
     ) -> str:
         if self._is_v1_endpoint(endpoint):
-            endpoint = self._normalize_v1_endpoint(endpoint)
-            return self._post_chat_completion_v1(
-                endpoint=endpoint,
-                api_key=api_key,
-                deployment=deployment,
-                messages=[{"role": "user", "content": "Reply with OK."}],
-                max_completion_tokens=100,
-                timeout=timeout,
-            )
+            normalized_endpoint = self._normalize_v1_endpoint(endpoint)
+            try:
+                return self._post_chat_completion_v1(
+                    endpoint=normalized_endpoint,
+                    api_key=api_key,
+                    deployment=deployment,
+                    messages=[{"role": "user", "content": "Reply with OK."}],
+                    max_completion_tokens=100,
+                    timeout=timeout,
+                )
+            except urllib.error.HTTPError as exc:
+                if not _should_retry_legacy_azure_route(exc, endpoint):
+                    raise
+                return self._post_chat_completion_legacy(
+                    endpoint=_legacy_endpoint_from_v1ish(endpoint),
+                    api_key=api_key,
+                    deployment=deployment,
+                    messages=[{"role": "user", "content": "Reply with OK."}],
+                    max_tokens=100,
+                    timeout=timeout,
+                )
         return self._post_chat_completion_legacy(
             endpoint=endpoint,
             api_key=api_key,
@@ -508,6 +532,28 @@ def _fallback_result(fallback: str, summary: str, failure_reason: str = "") -> V
 def _looks_like_timeout(value: str) -> bool:
     lowered = str(value).lower()
     return "timeout" in lowered or "timed out" in lowered or "time out" in lowered
+
+
+def _legacy_endpoint_from_v1ish(endpoint: str) -> str:
+    cleaned = endpoint.rstrip("/")
+    if cleaned.lower().endswith("/openai/v1"):
+        return cleaned[:-len("/openai/v1")]
+    return cleaned
+
+
+def _should_retry_legacy_azure_route(exc: urllib.error.HTTPError, endpoint: str) -> bool:
+    cleaned = endpoint.rstrip("/").lower()
+    if ".openai.azure.com" not in cleaned:
+        return False
+    if int(getattr(exc, "code", 0) or 0) not in {400, 404}:
+        return False
+    snippet = _sanitize_body_snippet(exc).lower()
+    return (
+        "<html" in snippet
+        or "<!doctype html" in snippet
+        or "bad request" in snippet
+        or "deploymentnotfound" in snippet
+    )
 
 
 def _http_failure_reason(code: int) -> str:
