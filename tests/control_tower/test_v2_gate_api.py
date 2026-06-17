@@ -26,6 +26,10 @@ from migration_factory.control_tower.infrastructure.sqlite.migrations import (
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import (
     SqliteUnitOfWork,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_approval_repository import (
+    SqliteV2ApprovalRepository,
+    V2ApprovalDecisionRecord,
+)
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
     SqliteV2SetupRepository,
     V2PreflightResultRecord,
@@ -293,6 +297,44 @@ def test_v2_gate_action_rejects_assistant_authoritative_actions(tmp_path: Path) 
         headers=_mutation_headers(),
     )
     assert response.status_code == 403, response.text
+
+
+def test_v2_gate_action_blocks_approve_after_revision_requested(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    gate_id = _create_gate(conn, job_id)
+    checksum = client.get(f"/v1/v2/jobs/{job_id}/gates/{gate_id}").json()["checksum"]
+
+    approval_repo = SqliteV2ApprovalRepository(conn)
+    approval_repo.save_card(
+        V2ApprovalDecisionRecord(
+            card_id="approval-card-blocked",
+            interrupt_id="run-1",
+            request_checksum=checksum,
+            stage_index=2,
+            summary="Revision requested",
+            status="blocked",
+            created_at=utc_now_text(),
+            job_id=job_id,
+        )
+    )
+
+    payload = {
+        "action": "approve",
+        "expected_gate_checksum": checksum,
+        "idempotency_key": "idem-approve-blocked",
+        "decided_by": "human-1",
+        "actor_type": "human",
+    }
+    response = client.post(
+        f"/v1/v2/jobs/{job_id}/gates/{gate_id}/actions",
+        json=payload,
+        headers=_mutation_headers(),
+    )
+    assert response.status_code == 422, response.text
+    assert "A revision request is pending" in response.text
 
 
 def test_v2_gate_action_success_idempotency_and_conflict(tmp_path: Path) -> None:

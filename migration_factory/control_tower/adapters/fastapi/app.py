@@ -1470,6 +1470,19 @@ def create_app(
                 "Gate job does not match the requested job.",
             )
 
+        try:
+            gate_refs = json.loads(gate.source_artifact_refs_json or "[]")
+        except (json.JSONDecodeError, TypeError):
+            gate_refs = []
+        gate_checksum_value = gate_checksum(
+            gate_id=gate.gate_id,
+            job_id=gate.job_id,
+            gate_phase=gate.gate_phase,
+            stage_index=gate.stage_index,
+            source_artifact_checksum=gate.source_artifact_checksum,
+            source_artifact_refs=tuple(gate_refs),
+        )
+
         actor_type = payload.actor_type.value if hasattr(payload.actor_type, "value") else str(payload.actor_type)
         action_value = payload.action.value if hasattr(payload.action, "value") else str(payload.action)
         if action_value == GateDecision.CONTINUE.value:
@@ -1524,6 +1537,17 @@ def create_app(
                     actor_type=actor_type,
                 )
             else:
+                revision_requested_active = False
+                if gate.gate_phase == GatePhase.APPROVAL_REVIEW.value:
+                    revision_requested_active = (
+                        _approval_review_blocked_revision_card(
+                            uow,
+                            job_id=job_id,
+                            stage_index=gate.stage_index,
+                            gate_checksum=gate_checksum_value,
+                        )
+                        is not None
+                    )
                 result = action_service.approve_transformation(
                     gate_id=gate_id,
                     job_id=job_id,
@@ -1531,6 +1555,7 @@ def create_app(
                     idempotency_key=payload.idempotency_key,
                     expected_gate_checksum=payload.expected_gate_checksum,
                     actor_type=actor_type,
+                    revision_requested_active=revision_requested_active,
                 )
         elif action_value == GateDecision.REJECT.value:
             if gate.gate_phase == GatePhase.REPAIR_REVIEW.value:
@@ -4913,6 +4938,10 @@ def _handle_gate_aware_ask(
     from migration_factory.control_tower.application.v2_gate_action_service import (
         V2GateActionService,
     )
+    from migration_factory.control_tower.domain.checksums import (
+        sha256_canonical_json,
+        utc_now_text,
+    )
 
     with unit_of_work_factory() as uow:
         gate_repo = uow.phase_gates
@@ -4970,8 +4999,38 @@ def _handle_gate_aware_ask(
         )
 
         if open_gate.gate_phase == "approval_review":
+            blocked_revision_card = _approval_review_blocked_revision_card(
+                uow,
+                job_id=job_id,
+                stage_index=open_gate.stage_index,
+                gate_checksum=context.checksum,
+            )
             exact_checksum = _extract_confirm_checksum(question)
             if exact_checksum:
+                if blocked_revision_card is not None:
+                    assistant_msg = service.add_message(
+                        job_id=job_id,
+                        role="assistant",
+                        content=_approval_review_revision_blocked_message(),
+                        correlation_id=user_msg.message_id,
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "approve_from_gate",
+                        "executed": False,
+                        "available_actions": _approval_review_available_actions(blocked_revision=True),
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
                 if exact_checksum != context.checksum:
                     assistant_msg = service.add_message(
                         job_id=job_id,
@@ -5094,6 +5153,34 @@ def _handle_gate_aware_ask(
                     },
                 }
 
+            if blocked_revision_card is not None and (
+                intent.action_type == "approve_from_gate"
+                or question_lower == "approve"
+            ):
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=_approval_review_revision_blocked_message(),
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "gate_aware": True,
+                    "intent": "approve_from_gate",
+                    "executed": False,
+                    "available_actions": _approval_review_available_actions(blocked_revision=True),
+                    "guardrails": {
+                        "read_only": True,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
+
             if intent.action_type == "approve_from_gate" or question_lower == "approve":
                 assistant_msg = service.add_message(
                     job_id=job_id,
@@ -5117,7 +5204,9 @@ def _handle_gate_aware_ask(
                         "pending_confirmation": False,
                         "exact_checksum": context.checksum,
                     },
-                    "available_actions": _approval_review_available_actions(),
+                    "available_actions": _approval_review_available_actions(
+                        blocked_revision=blocked_revision_card is not None
+                    ),
                     "guardrails": {
                         "read_only": True,
                         "cannot_execute": True,
@@ -5151,7 +5240,9 @@ def _handle_gate_aware_ask(
                         "pending_confirmation": False,
                         "exact_checksum": context.checksum,
                     },
-                    "available_actions": _approval_review_available_actions(),
+                    "available_actions": _approval_review_available_actions(
+                        blocked_revision=blocked_revision_card is not None
+                    ),
                     "guardrails": {
                         "read_only": True,
                         "cannot_execute": True,
@@ -5192,33 +5283,51 @@ def _handle_gate_aware_ask(
                 }
 
             if _question_looks_like_approval_review_revision_request(question):
-                pending_card = _approval_review_pending_card(
-                    uow,
-                    job_id=job_id,
-                    gate_phase=open_gate.gate_phase,
-                    stage_index=open_gate.stage_index,
-                    gate_checksum=context.checksum,
-                )
-                if pending_card is not None:
-                    uow.v2_approvals.update_card_status(pending_card.card_id, "blocked")
-                uow.v2_events.save(
-                    job_id=job_id,
-                    stage=open_gate.stage_index,
-                    event_type="approval_revision_requested",
-                    status="blocked",
-                    message="Revision requested during approval review.",
-                    payload=_approval_review_revision_payload(
+                if blocked_revision_card is not None:
+                    assistant_msg = service.add_message(
                         job_id=job_id,
-                        gate_id=open_gate.gate_id,
-                        stage_index=open_gate.stage_index,
-                        gate_checksum=context.checksum,
-                        user_request_text=question,
-                    ),
+                        role="assistant",
+                        content=_approval_review_revision_blocked_message(),
+                        correlation_id=user_msg.message_id,
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "request_revision",
+                        "executed": False,
+                        "available_actions": _approval_review_available_actions(blocked_revision=True),
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+
+                confirmation_store.store(
+                    job_id=job_id,
+                    gate_id=open_gate.gate_id,
+                    action_type="request_revision",
+                    expected_gate_checksum=context.checksum,
+                    idempotency_key=sha256_canonical_json({
+                        "gate_id": open_gate.gate_id,
+                        "job_id": job_id,
+                        "action_type": "request_revision",
+                        "timestamp": utc_now_text(),
+                    }),
+                    user_feedback=question,
                 )
                 assistant_msg = service.add_message(
                     job_id=job_id,
                     role="assistant",
-                    content="Revision request recorded. Transform remains blocked until the evidence is revised and reviewed again.",
+                    content=(
+                        "Revision request preview only. Confirm to record the revision request. "
+                        "Transform remains blocked until the revised evidence is reviewed again."
+                    ),
                     correlation_id=user_msg.message_id,
                 )
                 return {
@@ -5228,14 +5337,16 @@ def _handle_gate_aware_ask(
                     "gate_aware": True,
                     "intent": "request_revision",
                     "executed": False,
-                    "available_actions": _approval_review_available_actions(blocked_revision=True),
+                    "available_actions": _approval_review_available_actions(
+                        blocked_revision=blocked_revision_card is not None
+                    ),
                     "action_preview": {
                         "action_type": "request_revision",
-                        "reason": "Revision requested before transform.",
+                        "reason": "Preview only; confirm to record the revision request.",
                         "confidence": 1.0,
-                        "warning": "Transform/build/test will not start.",
-                        "requires_confirmation": False,
-                        "pending_confirmation": False,
+                        "warning": "Transform/build/test will not start until you confirm.",
+                        "requires_confirmation": True,
+                        "pending_confirmation": True,
                     },
                     "guardrails": {
                         "read_only": True,
@@ -5254,6 +5365,38 @@ def _handle_gate_aware_ask(
                 current_gate_checksum=context.checksum,
             )
             if pending is not None:
+                if pending.action_type == "request_revision":
+                    _record_approval_review_revision_request(
+                        uow=uow,
+                        job_id=job_id,
+                        gate_id=open_gate.gate_id,
+                        stage_index=open_gate.stage_index,
+                        gate_checksum=context.checksum,
+                        user_request_text=pending.user_feedback or question,
+                    )
+                    assistant_msg = service.add_message(
+                        job_id=job_id,
+                        role="assistant",
+                        content="Revision request recorded. Transform remains blocked until the evidence is revised and reviewed again.",
+                        correlation_id=user_msg.message_id,
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "request_revision",
+                        "executed": False,
+                        "available_actions": _approval_review_available_actions(blocked_revision=True),
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
                 action_service = V2GateActionService(
                     uow.phase_gates,
                     uow.gate_decisions,
@@ -5439,10 +5582,6 @@ def _handle_gate_aware_ask(
         )
 
         # Store pending confirmation
-        from migration_factory.control_tower.domain.checksums import (
-            sha256_canonical_json,
-            utc_now_text,
-        )
         idempotency_key = sha256_canonical_json({
             "gate_id": open_gate.gate_id,
             "job_id": job_id,
@@ -5640,6 +5779,30 @@ def _approval_review_pending_card(
     )
 
 
+def _approval_review_blocked_revision_card(
+    uow: Any,
+    *,
+    job_id: str,
+    stage_index: int,
+    gate_checksum: str,
+) -> Any | None:
+    blocked_cards = [
+        card
+        for card in uow.v2_approvals.list_cards_by_job(job_id)
+        if card.stage_index == stage_index
+        and card.request_checksum == gate_checksum
+        and card.status == "blocked"
+    ]
+    return blocked_cards[0] if blocked_cards else None
+
+
+def _approval_review_revision_blocked_message() -> str:
+    return (
+        "A revision request is pending. Transform remains blocked. "
+        "Approval is disabled until the revision is resolved or new evidence is generated."
+    )
+
+
 def _approval_review_available_actions(*, blocked_revision: bool = False) -> tuple[dict[str, Any], ...]:
     revision_block_reason = (
         "Revision request recorded; transform stays blocked until the revised evidence is reviewed again."
@@ -5813,6 +5976,40 @@ def _approval_review_revision_payload(
         "timestamp": _utc_now_text(),
         "status": "revision_requested",
     }
+
+
+def _record_approval_review_revision_request(
+    *,
+    uow: Any,
+    job_id: str,
+    gate_id: str,
+    stage_index: int,
+    gate_checksum: str,
+    user_request_text: str,
+) -> None:
+    pending_card = _approval_review_pending_card(
+        uow,
+        job_id=job_id,
+        gate_phase="approval_review",
+        stage_index=stage_index,
+        gate_checksum=gate_checksum,
+    )
+    if pending_card is not None:
+        uow.v2_approvals.update_card_status(pending_card.card_id, "blocked")
+    uow.v2_events.save(
+        job_id=job_id,
+        stage=stage_index,
+        event_type="approval_revision_requested",
+        status="blocked",
+        message="Revision requested during approval review.",
+        payload=_approval_review_revision_payload(
+            job_id=job_id,
+            gate_id=gate_id,
+            stage_index=stage_index,
+            gate_checksum=gate_checksum,
+            user_request_text=user_request_text,
+        ),
+    )
 
 
 def _utc_now_text() -> str:

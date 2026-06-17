@@ -538,6 +538,7 @@ class V2GateActionService:
         idempotency_key: str | None = None,
         expected_gate_checksum: str | None = None,
         actor_type: str = GateActorType.HUMAN.value,
+        revision_requested_active: bool = False,
     ) -> GateActionResult:
         """Validate and execute an 'approve' decision."""
         gate = self._gate_repo.get(gate_id)
@@ -556,6 +557,18 @@ class V2GateActionService:
                 decision_id="",
                 status="invalid_decision",
                 reason="Gate job does not match the requested job.",
+            )
+        if revision_requested_active:
+            return GateActionResult(
+                action=GateDecision.APPROVE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="approval_failed",
+                reason=(
+                    "A revision request is pending. Transform remains blocked. "
+                    "Approval is disabled until the revision is resolved or new "
+                    "evidence is generated."
+                ),
             )
         return self._execute_action(
             gate_id=gate_id,
@@ -840,6 +853,7 @@ class V2GateActionService:
         idempotency_key: str | None = None,
         expected_gate_checksum: str | None = None,
         actor_type: str = GateActorType.HUMAN.value,
+        revision_requested_active: bool = False,
     ) -> GateActionResult:
         """Approve transformation at an approval_review gate.
 
@@ -872,6 +886,19 @@ class V2GateActionService:
             )
 
         stage_index = gate.stage_index
+
+        if revision_requested_active:
+            return GateActionResult(
+                action=GateDecision.APPROVE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="approval_failed",
+                reason=(
+                    "A revision request is pending. Transform remains blocked. "
+                    "Approval is disabled until the revision is resolved or new "
+                    "evidence is generated."
+                ),
+            )
 
         if self._revision_repo is not None:
             accepted_analysis = self._revision_repo.find_accepted(

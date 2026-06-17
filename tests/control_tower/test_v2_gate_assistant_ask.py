@@ -234,7 +234,10 @@ def _seed_approval_review_artifacts(root: Path) -> None:
         "dependency_graph.json": '{"graph":"legacy -> security"}',
         "test_inventory.json": '{"tests":["security_smoke_test"]}',
         "assessment_report.json": '{"risk":"medium","notes":"Spring Security should use SecurityFilterChain."}',
-        "assessment_summary.md": "Assessment summary: update Spring Security to stateless sessions.",
+        "assessment_summary.md": (
+            "Assessment summary: update Spring Security to stateless sessions. "
+            "Evidence path: C:\\Users\\abdelilah.mortaki\\Desktop\\modernizer-solution\\src\\main\\java\\SecurityConfig.java"
+        ),
         "migration_plan.yaml": "plan: replace XML security with SecurityFilterChain",
         "migration_units.yaml": "units:\n  - security-config",
         "plan_summary.md": "Plan summary: change security setup and keep sessions stateless.",
@@ -467,6 +470,8 @@ def test_ask_approval_review_explains_bound_evidence(tmp_path: Path) -> None:
     assert "What happened?" in content
     assert "analysis_report.json" in content
     assert "migration_plan.yaml" in content
+    assert "C:\\Users\\abdelilah.mortaki\\Desktop\\modernizer-solution" not in content
+    assert "[redacted-windows-path]" in content
     assert "Evidence could not be loaded: Gate has no bound artifact references." not in content
 
 
@@ -582,6 +587,8 @@ def test_ask_confirm_without_pending_returns_message(tmp_path: Path) -> None:
     data = resp.json()
     assert data.get("gate_aware") is True
     assert "assistant_message" in data
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job(job_id)
+    assert not [event for event in events if event.type == "approval_revision_requested"]
 
 
 def test_ask_preview_then_confirm(tmp_path: Path) -> None:
@@ -708,7 +715,7 @@ def test_ask_revision_request_records_blocked_state(tmp_path: Path) -> None:
         stage_index=1,
     )
 
-    request_text = "Change the plan to use SecurityFilterChain and stateless sessions."
+    request_text = "For Spring Security, use SecurityFilterChain and stateless sessions."
     resp = client.post(
         f"/v1/v2/jobs/{job_id}/assistant/ask",
         json={"question": request_text},
@@ -719,7 +726,30 @@ def test_ask_revision_request_records_blocked_state(tmp_path: Path) -> None:
     assert body.get("gate_aware") is True
     assert body.get("executed") is False
     assert body.get("intent") == "request_revision"
-    assert "Revision request recorded" in body.get("assistant_message", {}).get("content", "")
+    preview = body.get("action_preview", {})
+    assert preview.get("requires_confirmation") is True
+    assert preview.get("pending_confirmation") is True
+    assert preview.get("reason") == "Preview only; confirm to record the revision request."
+    preview_content = body.get("assistant_message", {}).get("content", "")
+    assert "Revision request preview only" in preview_content
+    assert "Revision request recorded" not in preview_content
+    assert "C:\\Users\\abdelilah.mortaki\\Desktop\\modernizer-solution" not in preview_content
+
+    events_before_confirm = SqliteUnitOfWork(conn).v2_events.list_by_job(job_id)
+    assert not [event for event in events_before_confirm if event.type == "approval_revision_requested"]
+
+    resp_confirm = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": "confirm"},
+        headers=_mutation_headers(),
+    )
+    assert resp_confirm.status_code == 200, resp_confirm.text
+    confirm_body = resp_confirm.json()
+    assert confirm_body.get("gate_aware") is True
+    assert confirm_body.get("executed") is False
+    assert confirm_body.get("intent") == "request_revision"
+    assert "Revision request recorded" in confirm_body.get("assistant_message", {}).get("content", "")
+    assert "Transform remains blocked" in confirm_body.get("assistant_message", {}).get("content", "")
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job(job_id)
     revision_events = [event for event in events if event.type == "approval_revision_requested"]
@@ -739,6 +769,36 @@ def test_ask_revision_request_records_blocked_state(tmp_path: Path) -> None:
 
     command_repo = SqliteV2CommandRepository(conn)
     assert len(command_repo.list_by_job_and_stage(job_id, 2)) == 0
+
+    resp_blocked_approve = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": "approve"},
+        headers=_mutation_headers(),
+    )
+    assert resp_blocked_approve.status_code == 200, resp_blocked_approve.text
+    blocked_body = resp_blocked_approve.json()
+    assert blocked_body.get("executed") is False
+    assert _blocked_revision_message in blocked_body.get("assistant_message", {}).get("content", "")
+    assert blocked_body.get("available_actions", [])
+
+    resp_blocked_checksum = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": f"confirm checksum {checksum}"},
+        headers=_mutation_headers(),
+    )
+    assert resp_blocked_checksum.status_code == 200, resp_blocked_checksum.text
+    blocked_checksum_body = resp_blocked_checksum.json()
+    assert blocked_checksum_body.get("executed") is False
+    assert blocked_checksum_body.get("intent") == "approve_from_gate"
+    assert _blocked_revision_message in blocked_checksum_body.get("assistant_message", {}).get("content", "")
+
+    assert len(command_repo.list_by_job_and_stage(job_id, 2)) == 0
+
+
+_blocked_revision_message = (
+    "A revision request is pending. Transform remains blocked. "
+    "Approval is disabled until the revision is resolved or new evidence is generated."
+)
 
 
 def test_ask_yes_pattern(tmp_path: Path) -> None:

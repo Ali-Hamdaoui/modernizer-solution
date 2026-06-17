@@ -34,6 +34,19 @@ import type {
 } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
 
+export function formatGateArtifactRefLabel(ref: string): string {
+  const text = ref.trim();
+  if (!text) {
+    return "artifact";
+  }
+  const label = text.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? text;
+  return label === "C:" ? "artifact" : label;
+}
+
+function formatGateArtifactRefs(refs: string[]): string {
+  return refs.map((ref) => formatGateArtifactRefLabel(ref)).join(", ");
+}
+
 interface Stage {
   stage_index: number;
   pipeline_stage: string;
@@ -143,7 +156,7 @@ export function GatePanelContent({ state }: { state: GatePanelState }) {
           </div>
           <div className="table-row">
             <span className="meta">Safe refs</span>
-            <strong>{gate.source_artifact_refs.length > 0 ? gate.source_artifact_refs.join(", ") : "None"}</strong>
+            <strong>{gate.source_artifact_refs.length > 0 ? formatGateArtifactRefs(gate.source_artifact_refs) : "None"}</strong>
             <span className="meta">Gate count: {state.gates.length}</span>
           </div>
         </div>

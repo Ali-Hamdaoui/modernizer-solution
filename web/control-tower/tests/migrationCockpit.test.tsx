@@ -4,6 +4,7 @@ import MigrationCockpitPage from "../app/migrations/[jobId]/page";
 import {
   MigrationCockpit,
   GatePanelContent,
+  formatGateArtifactRefLabel,
   mergeCockpitLiveRefreshResults,
   reduceStageStatus,
   type CockpitData,
@@ -109,6 +110,40 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Reject");
     expect(markup).toContain("diagnosis:1");
     expect(markup).toContain("sha256:gate-checksum");
+  });
+
+  it("redacts absolute Windows artifact refs down to short labels", () => {
+    const absoluteRef = "C:\\Users\\abdelilah.mortaki\\Desktop\\modernizer-solution\\SecurityConfig.java";
+    expect(formatGateArtifactRefLabel(absoluteRef)).toBe("SecurityConfig.java");
+    expect(formatGateArtifactRefLabel(absoluteRef)).not.toContain("C:\\Users\\abdelilah.mortaki");
+
+    const gate: GateRepresentation = {
+      gate_id: "gate-abs",
+      job_id: "job-abs",
+      gate_phase: "approval_review",
+      stage_index: 2,
+      gate_status: "open",
+      gate_decision: "approve",
+      source_artifact_checksum: "sha256:gate",
+      source_artifact_refs: [absoluteRef],
+      created_at: "2026-06-17T00:00:00Z",
+      resolved_at: null,
+      resolved_by: null,
+      checksum: "sha256:gate-checksum",
+      available_actions: [],
+    };
+
+    const markup = renderToStaticMarkup(
+      <GatePanelContent state={{
+        status: "success",
+        gates: [gate],
+        openGate: gate,
+        openGateDetail: null,
+      }} />
+    );
+
+    expect(markup).toContain("SecurityConfig.java");
+    expect(markup).not.toContain("C:\\Users\\abdelilah.mortaki");
   });
 
   it("assistant cannot execute, approve, write, or change route", () => {

@@ -912,6 +912,7 @@ class GateActionExecutor:
         decided_by: str = "assistant",
         idempotency_key: str | None = None,
         actor_type: str = GateActorType.ASSISTANT.value,
+        revision_requested_active: bool = False,
     ) -> GateActionResult:
         """Execute approve_from_gate action."""
         return self._action_service.approve_from_gate(
@@ -921,6 +922,7 @@ class GateActionExecutor:
             decided_by=decided_by,
             idempotency_key=idempotency_key or uuid4().hex,
             actor_type=actor_type,
+            revision_requested_active=revision_requested_active,
         )
 
     def execute_reject(

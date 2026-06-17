@@ -99,6 +99,22 @@ _DEFAULT_MAX_CONTENT_CHARS = 100_000
 _DEFAULT_MAX_ASSISTANT_CONTENT_CHARS = 20_000
 
 
+def _artifact_label(value: str, *, default: str = "artifact") -> str:
+    """Return a short public label for a possibly absolute artifact ref."""
+    text = str(value or "").strip()
+    if not text:
+        return default
+    normalized = text.replace("\\", "/").rstrip("/")
+    if not normalized:
+        return default
+    label = normalized.split("/")[-1].strip()
+    if not label:
+        return default
+    if label.endswith(":") and len(label) <= 2:
+        return default
+    return label
+
+
 # ── Resolver ──────────────────────────────────────────────────────────
 
 
@@ -328,14 +344,14 @@ class V2GateArtifactResolver:
         entries: list[tuple[str, str, str | None, str]] = []
         for item in items:
             if isinstance(item, dict):
-                kind = str(item.get("kind", "") or "").strip()
+                kind = _artifact_label(str(item.get("kind", "") or ""), default="")
                 path_or_ref = str(item.get("path_or_ref", "") or item.get("path", "") or item.get("ref", "")).strip()
                 checksum_raw = item.get("checksum")
                 checksum = str(checksum_raw).strip() if isinstance(checksum_raw, str) and checksum_raw.strip() else None
                 description_raw = item.get("description", "")
-                description = str(description_raw).strip() if description_raw is not None else ""
+                description = redact_absolute_paths(str(description_raw).strip()) if description_raw is not None else ""
                 if not kind:
-                    kind = Path(path_or_ref).name or path_or_ref
+                    kind = _artifact_label(path_or_ref)
                 if kind and path_or_ref:
                     entries.append((kind, path_or_ref, checksum, description))
                 continue
@@ -344,7 +360,7 @@ class V2GateArtifactResolver:
                 ref = item.strip()
                 if not ref:
                     continue
-                kind = Path(ref).name or ref
+                kind = _artifact_label(ref)
                 entries.append((kind, ref, None, ""))
 
         return tuple(entries)
