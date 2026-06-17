@@ -75,7 +75,7 @@ def _client(tmp_path: Path, model_client: _FakeModelClient) -> tuple[TestClient,
 
 class _SmokeUrlopenRecorder:
     def __init__(self, body: dict[str, object] | None = None, *, status: int = 200) -> None:
-        self.body = body or {"choices": [{"message": {"content": "OK"}}]}
+        self.body = body or {"output_text": "OK"}
         self.status = status
         self.calls: list[tuple[urllib.request.Request, int | None]] = []
 
@@ -85,6 +85,24 @@ class _SmokeUrlopenRecorder:
             raw = json.dumps(self.body).encode("utf-8")
             raise urllib.error.HTTPError(request.full_url, self.status, "bad request", hdrs=None, fp=BytesIO(raw))
         return _SmokeResponse(self.body)
+
+
+class _SequenceUrlopenRecorder:
+    def __init__(self, responses: list[dict[str, object]]) -> None:
+        self._responses = list(responses)
+        self.calls: list[tuple[urllib.request.Request, int | None]] = []
+
+    def __call__(self, request: urllib.request.Request, timeout: int | None = None):
+        self.calls.append((request, timeout))
+        if not self._responses:
+            raise AssertionError("No more queued responses")
+        current = self._responses.pop(0)
+        status = int(current.get("status", 200))
+        body = current.get("body", {"choices": [{"message": {"content": "OK"}}]})
+        if status >= 400:
+            raw = json.dumps(body).encode("utf-8")
+            raise urllib.error.HTTPError(request.full_url, status, "bad request", hdrs=None, fp=BytesIO(raw))
+        return _SmokeResponse(body if isinstance(body, dict) else {"choices": [{"message": {"content": str(body)}}]})
 
 
 class _SmokeResponse:
@@ -122,16 +140,15 @@ def test_v1_smoke_uses_v1_chat_completions_and_api_key_header(monkeypatch) -> No
     assert result.checked_at
     assert recorder.calls
     url, headers, body = _extract_request(recorder.calls[0][0])
-    assert url == "https://example.openai.azure.com/openai/v1/chat/completions"
+    assert url == "https://example.openai.azure.com/openai/v1/responses"
     assert headers["api-key"] == "test-api-key"
     assert "authorization" not in headers
     assert body["model"] == "gpt-5-mini"
-    assert body["messages"] == [{"role": "user", "content": "Reply with OK."}]
-    assert body["max_completion_tokens"] == 100
-    assert body["reasoning_effort"] == "minimal"
-    assert "max_tokens" not in body
-    assert "temperature" not in body
-    assert "top_p" not in body
+    assert body["input"] == [{"type": "message", "role": "user", "content": "Reply with OK."}]
+    assert body["max_output_tokens"] == 100
+    assert body["store"] is False
+    assert "messages" not in body
+    assert "max_completion_tokens" not in body
 
 
 def test_v1_smoke_uses_openai_v1_path_for_resource_root(monkeypatch) -> None:
@@ -147,13 +164,13 @@ def test_v1_smoke_uses_openai_v1_path_for_resource_root(monkeypatch) -> None:
 
     assert result.success is True
     url, headers, body = _extract_request(recorder.calls[0][0])
-    assert url == "https://example.openai.azure.com/openai/v1/chat/completions"
+    assert url == "https://example.openai.azure.com/openai/v1/responses"
     assert headers["api-key"] == "test-api-key"
     assert body["model"] == "gpt-5-mini"
-    assert body["max_completion_tokens"] == 100
-    assert body["reasoning_effort"] == "minimal"
-    assert "max_tokens" not in body
-    assert "temperature" not in body
+    assert body["max_output_tokens"] == 100
+    assert body["store"] is False
+    assert "messages" not in body
+    assert "max_completion_tokens" not in body
 
 
 def test_v1_smoke_http_400_sets_failure_reason_and_redacts_body(monkeypatch) -> None:
@@ -198,7 +215,7 @@ def test_v1_smoke_missing_key_sets_failure_reason(monkeypatch) -> None:
 def test_answer_uses_api_key_header_for_v1_endpoint(monkeypatch) -> None:
     from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelClient
 
-    recorder = _SmokeUrlopenRecorder({"choices": [{"message": {"content": "Live answer"}}]})
+    recorder = _SmokeUrlopenRecorder({"output_text": "Live answer"})
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/openai/v1")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-api-key")
     monkeypatch.setenv("AZURE_OPENAI_ASSISTANT_DEPLOYMENT", "gpt-5-mini")
@@ -209,14 +226,174 @@ def test_answer_uses_api_key_header_for_v1_endpoint(monkeypatch) -> None:
     assert result.success is True
     assert result.content == "Live answer"
     url, headers, body = _extract_request(recorder.calls[0][0])
-    assert url == "https://example.openai.azure.com/openai/v1/chat/completions"
+    assert url == "https://example.openai.azure.com/openai/v1/responses"
     assert headers["api-key"] == "test-api-key"
     assert "authorization" not in headers
     assert body["model"] == "gpt-5-mini"
-    assert body["max_completion_tokens"] == 700
-    assert body["reasoning_effort"] == "minimal"
-    assert "max_tokens" not in body
-    assert "temperature" not in body
+    assert body["max_output_tokens"] == 700
+    assert body["store"] is False
+    assert "messages" not in body
+    assert "max_completion_tokens" not in body
+
+
+def test_answer_retries_legacy_endpoint_after_generic_v1_http_400(monkeypatch) -> None:
+    from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelClient
+
+    recorder = _SequenceUrlopenRecorder(
+        [
+            {
+                "status": 400,
+                "body": {
+                    "error": {
+                        "message": "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\"><html><body><h2>Bad Request</h2><p>HTTP Error 400. The request is badly formed.</p></body></html>"
+                    }
+                },
+            },
+            {"status": 200, "body": {"choices": [{"message": {"content": "Recovered answer"}}]}},
+        ]
+    )
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/openai/v1")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-api-key")
+    monkeypatch.setenv("AZURE_OPENAI_ASSISTANT_DEPLOYMENT", "gpt-5-mini")
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+
+    result = V2AssistantModelClient().answer(prompt="status?", fallback="fallback")
+
+    assert result.success is True
+    assert result.content == "Recovered answer"
+    assert len(recorder.calls) == 2
+    first_url, _, _ = _extract_request(recorder.calls[0][0])
+    second_url, _, second_body = _extract_request(recorder.calls[1][0])
+    assert first_url == "https://example.openai.azure.com/openai/v1/responses"
+    assert second_url == "https://example.openai.azure.com/openai/v1/chat/completions"
+    assert second_body["max_completion_tokens"] == 700
+
+
+def test_answer_retries_legacy_endpoint_after_responses_and_chat_http_400(monkeypatch) -> None:
+    from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelClient
+
+    recorder = _SequenceUrlopenRecorder(
+        [
+            {
+                "status": 400,
+                "body": {
+                    "error": {
+                        "message": "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\"><html><body><h2>Bad Request</h2><p>HTTP Error 400. The request is badly formed.</p></body></html>"
+                    }
+                },
+            },
+            {
+                "status": 400,
+                "body": {
+                    "error": {
+                        "message": "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\"><html><body><h2>Bad Request</h2><p>HTTP Error 400. The request is badly formed.</p></body></html>"
+                    }
+                },
+            },
+            {"status": 200, "body": {"choices": [{"message": {"content": "Recovered answer"}}]}},
+        ]
+    )
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/openai/v1")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-api-key")
+    monkeypatch.setenv("AZURE_OPENAI_ASSISTANT_DEPLOYMENT", "gpt-5-mini")
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+
+    result = V2AssistantModelClient().answer(prompt="status?", fallback="fallback")
+
+    assert result.success is True
+    assert result.content == "Recovered answer"
+    assert len(recorder.calls) == 3
+    first_url, _, _ = _extract_request(recorder.calls[0][0])
+    second_url, _, _ = _extract_request(recorder.calls[1][0])
+    third_url, _, third_body = _extract_request(recorder.calls[2][0])
+    assert first_url == "https://example.openai.azure.com/openai/v1/responses"
+    assert second_url == "https://example.openai.azure.com/openai/v1/chat/completions"
+    assert third_url == (
+        "https://example.openai.azure.com/openai/deployments/"
+        "gpt-5-mini/chat/completions?api-version=2024-10-21"
+    )
+    assert third_body["max_tokens"] == 700
+
+
+def test_smoke_retries_legacy_endpoint_after_generic_v1_http_400(monkeypatch) -> None:
+    from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelClient
+
+    recorder = _SequenceUrlopenRecorder(
+        [
+            {
+                "status": 400,
+                "body": {
+                    "error": {
+                        "message": "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\"><html><body><h2>Bad Request</h2><p>HTTP Error 400. The request is badly formed.</p></body></html>"
+                    }
+                },
+            },
+            {"status": 200, "body": {"choices": [{"message": {"content": "OK"}}]}},
+        ]
+    )
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/openai/v1")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-api-key")
+    monkeypatch.setenv("AZURE_OPENAI_ASSISTANT_DEPLOYMENT", "gpt-5-mini")
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+
+    result = V2AssistantModelClient().smoke()
+
+    assert result.success is True
+    assert len(recorder.calls) == 2
+    first_url, _, _ = _extract_request(recorder.calls[0][0])
+    second_url, _, second_body = _extract_request(recorder.calls[1][0])
+    assert first_url == "https://example.openai.azure.com/openai/v1/responses"
+    assert second_url == "https://example.openai.azure.com/openai/v1/chat/completions"
+    assert second_body["max_completion_tokens"] == 100
+
+
+def test_smoke_retries_legacy_endpoint_after_responses_and_chat_http_400(monkeypatch) -> None:
+    from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelClient
+
+    recorder = _SequenceUrlopenRecorder(
+        [
+            {
+                "status": 400,
+                "body": {
+                    "error": {
+                        "message": "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\"><html><body><h2>Bad Request</h2><p>HTTP Error 400. The request is badly formed.</p></body></html>"
+                    }
+                },
+            },
+            {
+                "status": 400,
+                "body": {
+                    "error": {
+                        "message": "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\"><html><body><h2>Bad Request</h2><p>HTTP Error 400. The request is badly formed.</p></body></html>"
+                    }
+                },
+            },
+            {"status": 200, "body": {"choices": [{"message": {"content": "OK"}}]}},
+        ]
+    )
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/openai/v1")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-api-key")
+    monkeypatch.setenv("AZURE_OPENAI_ASSISTANT_DEPLOYMENT", "gpt-5-mini")
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+
+    result = V2AssistantModelClient().smoke()
+
+    assert result.success is True
+    assert len(recorder.calls) == 3
+    first_url, _, _ = _extract_request(recorder.calls[0][0])
+    second_url, _, _ = _extract_request(recorder.calls[1][0])
+    third_url, _, third_body = _extract_request(recorder.calls[2][0])
+    assert first_url == "https://example.openai.azure.com/openai/v1/responses"
+    assert second_url == "https://example.openai.azure.com/openai/v1/chat/completions"
+    assert third_url == (
+        "https://example.openai.azure.com/openai/deployments/"
+        "gpt-5-mini/chat/completions?api-version=2024-10-21"
+    )
+    assert third_body["max_tokens"] == 100
 
 
 def test_assistant_uses_model_client_and_does_not_return_key(tmp_path: Path) -> None:

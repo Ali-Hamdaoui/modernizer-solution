@@ -302,15 +302,51 @@ class V2AssistantModelClient:
     ) -> str:
         if self._is_v1_endpoint(endpoint):
             endpoint = self._normalize_v1_endpoint(endpoint)
-            return self._chat_completion_v1(
-                endpoint=endpoint,
-                api_key=api_key,
-                deployment=deployment,
-                prompt=prompt,
-                max_completion_tokens=max_completion_tokens,
-                timeout=timeout,
-                conversation_history=conversation_history,
-            )
+            try:
+                return self._responses_completion_v1(
+                    endpoint=endpoint,
+                    api_key=api_key,
+                    deployment=deployment,
+                    prompt=prompt,
+                    max_completion_tokens=max_completion_tokens,
+                    timeout=timeout,
+                    conversation_history=conversation_history,
+                )
+            except urllib.error.HTTPError as exc:
+                if _should_retry_with_chat_completions(exc):
+                    try:
+                        return self._chat_completion_v1(
+                            endpoint=endpoint,
+                            api_key=api_key,
+                            deployment=deployment,
+                            prompt=prompt,
+                            max_completion_tokens=max_completion_tokens,
+                            timeout=timeout,
+                            conversation_history=conversation_history,
+                        )
+                    except urllib.error.HTTPError as chat_exc:
+                        if _should_retry_with_legacy_endpoint(chat_exc):
+                            return self._chat_completion_legacy(
+                                endpoint=_legacy_endpoint_from_v1(endpoint),
+                                api_key=api_key,
+                                deployment=deployment,
+                                prompt=prompt,
+                                max_tokens=max_completion_tokens,
+                                timeout=timeout,
+                                conversation_history=conversation_history,
+                            )
+                        raise
+                if _should_retry_with_legacy_endpoint(exc):
+                    return self._chat_completion_legacy(
+                        endpoint=_legacy_endpoint_from_v1(endpoint),
+                        api_key=api_key,
+                        deployment=deployment,
+                        prompt=prompt,
+                        max_tokens=max_completion_tokens,
+                        timeout=timeout,
+                        conversation_history=conversation_history,
+                    )
+                raise
         return self._chat_completion_legacy(
             endpoint=endpoint,
             api_key=api_key,
@@ -341,6 +377,29 @@ class V2AssistantModelClient:
             timeout=timeout,
         )
 
+    def _responses_completion_v1(
+        self,
+        *,
+        endpoint: str,
+        api_key: str,
+        deployment: str,
+        prompt: str,
+        max_completion_tokens: int = 700,
+        timeout: int = 30,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> str:
+        return self._post_responses_v1(
+            endpoint=endpoint,
+            api_key=api_key,
+            deployment=deployment,
+            input_items=self._build_response_input_items(
+                prompt=prompt,
+                conversation_history=conversation_history,
+            ),
+            max_output_tokens=max_completion_tokens,
+            timeout=timeout,
+        )
+
     @staticmethod
     def _build_messages(
         *,
@@ -359,6 +418,24 @@ class V2AssistantModelClient:
         messages.append({"role": "user", "content": prompt})
         return messages
 
+    @staticmethod
+    def _build_response_input_items(
+        *,
+        prompt: str,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> list[dict[str, object]]:
+        items: list[dict[str, object]] = [
+            {"type": "message", "role": "system", "content": _assistant_system_prompt()},
+        ]
+        if conversation_history:
+            for entry in conversation_history[-6:]:
+                role = str(entry.get("role", "user") or "user")
+                content = str(entry.get("content", "") or "")
+                if content.strip():
+                    items.append({"type": "message", "role": role, "content": content})
+        items.append({"type": "message", "role": "user", "content": prompt})
+        return items
+
     def _smoke_completion(
         self,
         *,
@@ -369,14 +446,47 @@ class V2AssistantModelClient:
     ) -> str:
         if self._is_v1_endpoint(endpoint):
             endpoint = self._normalize_v1_endpoint(endpoint)
-            return self._post_chat_completion_v1(
-                endpoint=endpoint,
-                api_key=api_key,
-                deployment=deployment,
-                messages=[{"role": "user", "content": "Reply with OK."}],
-                max_completion_tokens=100,
-                timeout=timeout,
-            )
+            try:
+                return self._post_responses_v1(
+                    endpoint=endpoint,
+                    api_key=api_key,
+                    deployment=deployment,
+                    input_items=[{"type": "message", "role": "user", "content": "Reply with OK."}],
+                    max_output_tokens=100,
+                    timeout=timeout,
+                )
+            except urllib.error.HTTPError as exc:
+                if _should_retry_with_chat_completions(exc):
+                    try:
+                        return self._post_chat_completion_v1(
+                            endpoint=endpoint,
+                            api_key=api_key,
+                            deployment=deployment,
+                            messages=[{"role": "user", "content": "Reply with OK."}],
+                            max_completion_tokens=100,
+                            timeout=timeout,
+                        )
+                    except urllib.error.HTTPError as chat_exc:
+                        if _should_retry_with_legacy_endpoint(chat_exc):
+                            return self._post_chat_completion_legacy(
+                                endpoint=_legacy_endpoint_from_v1(endpoint),
+                                api_key=api_key,
+                                deployment=deployment,
+                                messages=[{"role": "user", "content": "Reply with OK."}],
+                                max_tokens=100,
+                                timeout=timeout,
+                            )
+                        raise
+                if _should_retry_with_legacy_endpoint(exc):
+                    return self._post_chat_completion_legacy(
+                        endpoint=_legacy_endpoint_from_v1(endpoint),
+                        api_key=api_key,
+                        deployment=deployment,
+                        messages=[{"role": "user", "content": "Reply with OK."}],
+                        max_tokens=100,
+                        timeout=timeout,
+                    )
+                raise
         return self._post_chat_completion_legacy(
             endpoint=endpoint,
             api_key=api_key,
@@ -402,12 +512,24 @@ class V2AssistantModelClient:
             max_completion_tokens = int(env_max_tokens)
 
         url = f"{endpoint.rstrip('/')}/chat/completions"
-        payload = {
+        payload: dict[str, object] = {
             "model": deployment,
             "messages": messages,
             "max_completion_tokens": max_completion_tokens,
-            "reasoning_effort": os.environ.get("AZURE_OPENAI_REASONING_EFFORT", "minimal").strip() or "minimal",
         }
+        # Only add one of temperature / reasoning_effort when explicitly configured.
+        # Sending an unsupported parameter to a model that does not recognise it
+        # causes a 400 "badly formed" rejection at the Azure infrastructure layer.
+        reasoning_effort = os.environ.get("AZURE_OPENAI_REASONING_EFFORT", "").strip()
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
+        else:
+            temperature = os.environ.get("AZURE_OPENAI_TEMPERATURE", "").strip()
+            if temperature:
+                try:
+                    payload["temperature"] = float(temperature)
+                except ValueError:
+                    payload["temperature"] = 0.2
         request = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
@@ -419,6 +541,40 @@ class V2AssistantModelClient:
         content = _extract_assistant_content(data)
         if not str(content).strip():
             # Empty response — log redacted diagnostics
+            _log_empty_azure_response(data, deployment)
+        return content
+
+    def _post_responses_v1(
+        self,
+        *,
+        endpoint: str,
+        api_key: str,
+        deployment: str,
+        input_items: list[dict[str, object]],
+        max_output_tokens: int,
+        timeout: int,
+    ) -> str:
+        url = f"{endpoint.rstrip('/')}/responses"
+        payload: dict[str, object] = {
+            "model": deployment,
+            "input": input_items,
+            "store": False,
+        }
+        if max_output_tokens > 0:
+            payload["max_output_tokens"] = max_output_tokens
+        reasoning_effort = os.environ.get("AZURE_OPENAI_REASONING_EFFORT", "").strip()
+        if reasoning_effort:
+            payload["reasoning"] = {"effort": reasoning_effort}
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "api-key": api_key},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        content = _extract_responses_output_text(data)
+        if not str(content).strip():
             _log_empty_azure_response(data, deployment)
         return content
 
@@ -452,9 +608,10 @@ class V2AssistantModelClient:
         max_tokens: int,
         timeout: int,
     ) -> str:
+        api_version = _azure_api_version()
         url = (
             f"{endpoint.rstrip('/')}/openai/deployments/"
-            f"{deployment}/chat/completions?api-version=2024-10-21"
+            f"{deployment}/chat/completions?api-version={api_version}"
         )
         payload = {
             "messages": messages,
@@ -566,6 +723,35 @@ def _extract_assistant_content(data: Any) -> str:
     return content
 
 
+def _extract_responses_output_text(data: Any) -> str:
+    if not isinstance(data, dict):
+        raise RuntimeError("missing responses payload")
+    output_text = data.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text
+    output = data.get("output")
+    if not isinstance(output, list):
+        raise RuntimeError("missing responses output")
+    text_parts: list[str] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if str(part.get("type", "")) == "output_text":
+                text = part.get("text")
+                if isinstance(text, str) and text.strip():
+                    text_parts.append(text)
+    combined = "\n".join(text_parts).strip()
+    if combined:
+        return combined
+    raise RuntimeError("missing responses output text")
+
+
 def _log_empty_azure_response(data: dict[str, Any], deployment: str) -> None:
     """Log redacted diagnostic for empty Azure OpenAI responses.
 
@@ -656,6 +842,47 @@ def _fallback_result(fallback: str, summary: str, failure_reason: str = "") -> V
 def _looks_like_timeout(value: str) -> bool:
     lowered = str(value).lower()
     return "timeout" in lowered or "timed out" in lowered or "time out" in lowered
+
+
+def _azure_api_version() -> str:
+    return os.environ.get("AZURE_OPENAI_API_VERSION", "").strip() or "2024-10-21"
+
+
+def _legacy_endpoint_from_v1(endpoint: str) -> str:
+    normalized = endpoint.rstrip("/")
+    if normalized.lower().endswith("/openai/v1"):
+        return normalized[:-10]
+    return normalized
+
+
+def _should_retry_with_legacy_endpoint(http_error: urllib.error.HTTPError) -> bool:
+    code = int(getattr(http_error, "code", 0) or 0)
+    if code != 400:
+        return False
+    snippet = _sanitize_body_snippet(http_error).lower()
+    if not snippet:
+        return True
+    return "<html" in snippet and "bad request" in snippet and "badly formed" in snippet
+
+
+def _should_retry_with_chat_completions(http_error: urllib.error.HTTPError) -> bool:
+    code = int(getattr(http_error, "code", 0) or 0)
+    if code in {404, 405}:
+        return True
+    if code != 400:
+        return False
+    snippet = _sanitize_body_snippet(http_error).lower()
+    if not snippet:
+        return True
+    return (
+        "<html" in snippet
+        or "badly formed" in snippet
+        or "unsupported" in snippet
+        or "not supported" in snippet
+        or "unknown parameter" in snippet
+    )
+
+
 
 
 def _http_failure_reason(code: int) -> str:

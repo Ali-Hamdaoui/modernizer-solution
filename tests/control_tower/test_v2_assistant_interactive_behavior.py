@@ -190,6 +190,7 @@ class TestIntentClassification:
     def test_what_happened_triggers_status(self) -> None:
         from migration_factory.control_tower.adapters.fastapi.app import _classify_v2_assistant_intent
         assert _classify_v2_assistant_intent("what happened?") == "status"
+        assert _classify_v2_assistant_intent("what is happening now") == "status"
         assert _classify_v2_assistant_intent("status?") == "status"
         assert _classify_v2_assistant_intent("what failed?") == "status"
         assert _classify_v2_assistant_intent("what should I do next?") == "status"
@@ -444,6 +445,21 @@ class TestWhatHappened:
         content = response.json()["assistant_message"]["content"]
         # Should include operational status elements
         assert "Stage Status:" in content or "No evidence events" in content or "No stage events" in content
+
+    def test_what_is_happening_now_returns_operational_status(self, tmp_path: Path) -> None:
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        _seed_stage_event(conn, job_id="job-interactive", stage=1, event_type="stage_started", status="running")
+
+        response = client.post(
+            "/v1/v2/jobs/job-interactive/assistant/ask",
+            json={"question": "what is happening now"},
+            headers=_mutation_headers(),
+        )
+
+        assert response.status_code == 200, response.text
+        content = response.json()["assistant_message"]["content"]
+        assert "Stage Status:" in content
+        assert "Next operator action:" in content
 
 
 class TestFallbackSafety:

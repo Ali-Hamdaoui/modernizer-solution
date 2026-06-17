@@ -4239,7 +4239,7 @@ def _classify_v2_assistant_intent(question: str) -> str:
     )
     has_pom_or_dep = any(t in lowered for t in pom_or_dep_terms)
     looks_like_status_question = any(t in lowered for t in (
-        "what happened", "stage status", "what stage", "which stage",
+        "what happened", "what is happening", "happening now", "stage status", "what stage", "which stage",
         "done?", "completed?", "progress",
     )) or re.search(r'\bis stage\b', lowered) or re.search(r'\bstatus\b', lowered) is not None
     if any(term in lowered for term in ("model", "azure", "openai", "connected", "provider", "fallback", "deterministic")):
@@ -4387,7 +4387,7 @@ def _classify_v2_assistant_intent(question: str) -> str:
         return "artifact_content"
 
     # 8. Status questions
-    if any(term in lowered for term in ("what happened", "status", "progress", "running", "failed", "failure", "next", "approve", "approval", "stage", "done", "completed", "ready", "pass", "fail", "proof", "pipeline", "is stage", "stage status", "what stage", "which stage")):
+    if any(term in lowered for term in ("what happened", "what is happening", "happening now", "status", "progress", "running", "failed", "failure", "next", "approve", "approval", "stage", "done", "completed", "ready", "pass", "fail", "proof", "pipeline", "is stage", "stage status", "what stage", "which stage")):
         return "status"
 
     return "general_question"
