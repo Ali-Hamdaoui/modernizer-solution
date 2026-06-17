@@ -168,6 +168,59 @@ class V2StageProgressionService:
             status="queued",
         )
 
+    def validate_stage_chain(
+        self,
+        job_id: str,
+        current_stage: int,
+        target_stage: int,
+    ) -> tuple[bool, str]:
+        """Validate that stage progression follows the required chain.
+
+        Two rules:
+        1. target_stage must be exactly current_stage + 1 (no skipping).
+        2. All stages BEFORE current_stage must have completed output
+           persisted in the command repository.
+
+        Args:
+            job_id: The V2 job ID.
+            current_stage: The supposedly completed stage (1 or 2).
+            target_stage: The desired next stage (current_stage + 1).
+
+        Returns:
+            Tuple of (is_valid, reason).
+        """
+        # Rule 1: No skipping — target must be exactly next
+        if target_stage != current_stage + 1:
+            return (
+                False,
+                f"Cannot skip from stage {current_stage} to stage {target_stage}: "
+                f"must progress one stage at a time",
+            )
+
+        if current_stage < 1 or current_stage > 3:
+            return (
+                False,
+                f"Current stage {current_stage} is out of range (1-3)",
+            )
+
+        if target_stage not in STAGE_CONFIG and target_stage not in (2, 3):
+            return (
+                False,
+                f"Target stage {target_stage} is not a valid migration stage",
+            )
+
+        # Rule 2: All stages before current_stage must have completed output
+        for stage in range(1, current_stage):
+            output = self.resolve_prior_stage_output(job_id, stage)
+            if output is None:
+                return (
+                    False,
+                    f"Stage {stage} has no completed output — "
+                    f"cannot progress to stage {target_stage}",
+                )
+
+        return (True, "")
+
     def resolve_prior_stage_output(
         self,
         job_id: str,
