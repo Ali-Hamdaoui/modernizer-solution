@@ -541,3 +541,71 @@ class JobProjectionDto:
     job: MigrationJobDto
     active_command: CommandExecutionDto | None
     etag: str
+
+
+# ── F15 gate projection DTOs ─────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class GateDto:
+    """API-safe projection of a PhaseGate.
+
+    Path-like values are redacted. Only checksums and statuses
+    are exposed — never raw filesystem targets.
+    """
+
+    gate_id: str
+    job_id: str
+    gate_phase: str
+    stage_index: int
+    gate_status: str
+    gate_decision: str
+    source_artifact_checksum: str
+    source_artifact_refs: tuple[str, ...]
+    created_at: str
+    resolved_at: str | None = None
+    resolved_by: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GateDecisionDto:
+    """API-safe projection of a gate decision.
+
+    Result references are exposed as opaque ids only.
+    No path, command, or env data is included.
+    """
+
+    decision_id: str
+    gate_id: str
+    action: str
+    expected_gate_checksum: str
+    idempotency_key: str
+    decided_by: str
+    decided_at: str
+    result_gate_id: str | None = None
+    result_command_id: str | None = None
+    result_revision_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactRevisionDto:
+    """API-safe projection of an artifact revision.
+
+    Contains checksums, status, and opaque refs only.
+    Never exposes filesystem paths or raw evidence content.
+    """
+
+    revision_id: str
+    job_id: str
+    stage_index: int
+    revision_kind: str
+    revision_status: str
+    revision_order: int
+    evidence_checksum: str
+    artifact_refs: tuple[str, ...]
+    created_at: str
+    created_by: str
+    accepted_at: str | None = None
+    accepted_by: str | None = None
+    prior_revision_id: str | None = None
+    superseded_by_revision_id: str | None = None
