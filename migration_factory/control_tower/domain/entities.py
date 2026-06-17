@@ -764,5 +764,6 @@ class GateDecisionRecord:
     decided_at: str = ""
     actor_type: str = "human"
     actor_id: str = ""
+    reason: str = ""
     correlation_id: str | None = None
     causation_id: str | None = None

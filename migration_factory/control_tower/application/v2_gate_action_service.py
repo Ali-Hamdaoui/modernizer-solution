@@ -341,6 +341,43 @@ class V2GateActionService:
             idempotency_key=idempotency_key,
         )
 
+    # ── action: reject_gate (with reason) ──────────────────────────
+
+    def reject_gate(
+        self,
+        *,
+        gate_id: str,
+        job_id: str,
+        decided_by: str,
+        reason: str = "",
+        idempotency_key: str | None = None,
+    ) -> GateActionResult:
+        """Reject a gate with an auditable reason.
+
+        Persists the rejection reason in the decision record and
+        resolves the gate with REJECT. Once rejected, the gate
+        cannot continue — a new gate must be created.
+
+        No command is queued. The rejection is fully auditable via
+        the decision record.
+
+        Requires:
+        - Gate exists and is OPEN
+        - Gate phase allows REJECT decision (approval_review)
+        - Gate checksum must match
+
+        Returns:
+            GateActionResult with status and persisted rejection reason.
+        """
+        return self._execute_action(
+            gate_id=gate_id,
+            job_id=job_id,
+            action=GateDecision.REJECT,
+            decided_by=decided_by,
+            reason=reason,
+            idempotency_key=idempotency_key,
+        )
+
     # ── action: approve_repair ────────────────────────────────────
 
     def approve_repair(
@@ -571,6 +608,7 @@ class V2GateActionService:
         idempotency_key: str | None = None,
         result_command_id: str | None = None,
         result_revision_id: str | None = None,
+        reason: str = "",
     ) -> GateActionResult:
         """Common validation and execution pipeline for all gate actions.
 
@@ -588,6 +626,7 @@ class V2GateActionService:
                 record. The caller is responsible for queueing the command.
             result_revision_id: Optional revision ID to store in the decision
                 record. The caller is responsible for creating the revision.
+            reason: Human-readable reason for the decision.
         """
         # 1. Gate existence
         gate = self._gate_repo.get(gate_id)
@@ -711,6 +750,7 @@ class V2GateActionService:
             decided_at=now,
             actor_type="human",
             actor_id=decided_by,
+            reason=reason,
         )
 
         try:

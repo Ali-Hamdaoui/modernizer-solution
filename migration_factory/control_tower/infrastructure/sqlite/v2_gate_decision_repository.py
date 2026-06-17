@@ -26,8 +26,8 @@ class SqliteGateDecisionRepository:
                 expected_gate_checksum, idempotency_key, request_checksum,
                 result_gate_id, result_command_id, result_revision_id,
                 decided_by, decided_at, actor_type, actor_id,
-                correlation_id, causation_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                reason, correlation_id, causation_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 record.decision_id,
                 record.gate_id,
@@ -43,6 +43,7 @@ class SqliteGateDecisionRepository:
                 record.decided_at,
                 record.actor_type,
                 record.actor_id,
+                record.reason,
                 record.correlation_id,
                 record.causation_id,
             ),
@@ -118,6 +119,7 @@ class SqliteGateDecisionRepository:
             decided_at=str(row["decided_at"]),
             actor_type=str(row["actor_type"]),
             actor_id=str(row["actor_id"]),
+            reason=str(row["reason"]) if "reason" in row.keys() else "",
             correlation_id=(
                 str(row["correlation_id"])
                 if row["correlation_id"] is not None
