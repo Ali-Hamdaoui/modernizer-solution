@@ -18,6 +18,8 @@ REQUIRED_SCHEMAS = (
     "ReviewerCritique",
     "ActionRequest",
     "AssistantAnswer",
+    "GateActionRequest",
+    "AssistantGateAnswer",
 )
 
 TOKEN_BUDGETS = {
@@ -104,6 +106,14 @@ F05_ALLOWED_ACTION_TYPES = (
     "rollback_pom_change",
     "explain_validation_result",
     "apply_repair_plan_action",
+    # F15: Gate action types (job061)
+    "continue_from_gate",
+    "request_reanalysis",
+    "request_plan_revision",
+    "approve_from_gate",
+    "reject_from_gate",
+    "explain_gate_evidence",
+    "show_gate_available_actions",
 )
 
 # F05: Explicitly blocked action types — reject at service boundary
@@ -157,12 +167,96 @@ ASSISTANT_ANSWER_SCHEMA = {
     },
 }
 
+# F15: Gate action request schema (job061)
+# Separate from ACTION_REQUEST_SCHEMA to keep strict typing for gate actions.
+# Gate actions must always include the gate_id and expected_gate_checksum.
+F15_GATE_ALLOWED_ACTION_TYPES = frozenset({
+    "continue_from_gate",
+    "request_reanalysis",
+    "request_plan_revision",
+    "approve_from_gate",
+    "reject_from_gate",
+    "explain_gate_evidence",
+    "show_gate_available_actions",
+})
+
+
+GATE_ACTION_REQUEST_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "action_type", "gate_id", "expected_gate_checksum",
+        "idempotency_key", "request_checksum", "reason",
+    ],
+    "properties": {
+        "action_type": {
+            "type": "string",
+            "enum": sorted(F15_GATE_ALLOWED_ACTION_TYPES),
+        },
+        "gate_id": {"type": "string"},
+        "expected_gate_checksum": {"type": "string"},
+        "idempotency_key": {"type": "string"},
+        "request_checksum": {"type": "string"},
+        "reason": {"type": "string"},
+        "stage_index": {"type": "integer", "minimum": 1, "maximum": 3},
+        # Chatbot can supply reanalysis/revision notes
+        "user_feedback": {"type": "string"},
+        "revision_instructions": {"type": "string"},
+        # Correlation for audit trail
+        "correlation_id": {"type": "string"},
+        "causation_id": {"type": "string"},
+    },
+}
+
+
+# F15: AssistantGateAnswer schema — gate-aware explanation (jobs 064-067)
+ASSISTANT_GATE_ANSWER_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["gate_id", "gate_phase", "answer"],
+    "properties": {
+        "gate_id": {"type": "string"},
+        "gate_phase": {
+            "type": "string",
+            "enum": [
+                "analysis_review", "planning_review",
+                "approval_review", "repair_review",
+                "stage_completion_review",
+            ],
+        },
+        "answer": {"type": "string"},
+        "evidence_summary": {"type": "string"},
+        "available_actions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["action", "label"],
+                "properties": {
+                    "action": {"type": "string"},
+                    "label": {"type": "string"},
+                    "description": {"type": "string"},
+                    "blocked": {"type": "boolean"},
+                    "block_reason": {"type": "string"},
+                },
+            },
+        },
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "decision_required": {"type": "boolean"},
+        "gate_checksum": {"type": "string"},
+        "stage_index": {"type": "integer", "minimum": 1, "maximum": 3},
+    },
+}
+
+
 SCHEMA_REGISTRY = {
     "PlanProposal": PLAN_PROPOSAL_SCHEMA,
     "RepairProposal": REPAIR_PROPOSAL_SCHEMA,
     "ReviewerCritique": REVIEWER_CRITIQUE_SCHEMA,
     "ActionRequest": ACTION_REQUEST_SCHEMA,
     "AssistantAnswer": ASSISTANT_ANSWER_SCHEMA,
+    "GateActionRequest": GATE_ACTION_REQUEST_SCHEMA,
+    "AssistantGateAnswer": ASSISTANT_GATE_ANSWER_SCHEMA,
 }
 
 
