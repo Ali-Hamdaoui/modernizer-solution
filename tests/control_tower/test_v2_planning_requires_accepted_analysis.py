@@ -73,6 +73,9 @@ def test_planning_command_rejected_if_no_accepted_analysis(tmp_path: Path) -> No
     """continue_from_gate on analysis_review gate succeeds even without
     accepted analysis (first-time accept), but the guard verifies no
     pending draft analysis is waiting for acceptance.
+
+    P0: CONTINUE queues a planning command, does NOT create a
+    synthetic planning_review gate.
     """
     gate_repo, decision_repo, revision_repo, gate_svc, action_svc, conn = _svc(tmp_path)
     gate_id = create_open_analysis_gate(gate_svc)
@@ -84,6 +87,14 @@ def test_planning_command_rejected_if_no_accepted_analysis(tmp_path: Path) -> No
         decided_by="user-1",
     )
     assert result.status == "executed"
+    # P0: result must have a planning command ID, not a gate ID
+    assert result.result_command_id is not None, (
+        "Expected a planning command to be queued"
+    )
+    assert result.result_gate_id is None, (
+        "P0: must NOT create a synthetic planning_review gate; "
+        "planning_review must come from real planning artifacts"
+    )
 
 
 def test_continue_blocked_when_draft_analysis_pending(tmp_path: Path) -> None:
@@ -157,3 +168,6 @@ def test_manual_policy_strict(tmp_path: Path) -> None:
     )
     # With accepted analysis, continue should work
     assert result.status == "executed"
+    # P0: queues planning command, does NOT create synthetic gate
+    assert result.result_command_id is not None
+    assert result.result_gate_id is None

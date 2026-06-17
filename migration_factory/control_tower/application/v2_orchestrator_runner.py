@@ -17,6 +17,9 @@ from migration_factory.control_tower.application.redaction import (
 )
 from migration_factory.control_tower.application.v2_approval_mapping import V2ApprovalMappingService
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json
+from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
+    V2StageCommandRecord,
+)
 
 
 UnitOfWorkFactory = Callable[[], Any]
@@ -132,6 +135,15 @@ class V2OrchestratorRunner:
             argv = _load_json_list(command.argv_json)
             env_manifest = _load_json_dict(command.env_json)
             stage_index = command.stage_index
+            manifest_checksum = command.manifest_checksum
+
+        # Phase commands (e.g., manifest_checksum="phase:planning")
+        # have empty stored argv. Build real argv here.
+        command_phase = _resolve_phase_from_checksum(manifest_checksum)
+        if command_phase and not argv:
+            argv = _build_phase_argv(
+                self, job_id, command_id, command, stage_index, command_phase,
+            )
 
         thread = threading.Thread(
             target=self._run_process,
@@ -141,6 +153,7 @@ class V2OrchestratorRunner:
                 "stage_index": stage_index,
                 "argv": argv,
                 "env_manifest": env_manifest,
+                "command_phase": command_phase,
             },
             name=f"v2-orchestrator-{command_id[:8]}",
             daemon=True,
@@ -199,6 +212,7 @@ class V2OrchestratorRunner:
         argv: list[str],
         env_manifest: dict[str, Any],
         resume: bool = False,
+        command_phase: str | None = None,
     ) -> None:
         if resume:
             self._event(
@@ -318,6 +332,7 @@ class V2OrchestratorRunner:
                 result=final_json,
                 stderr="\n".join(stderr_lines),
                 resume=resume,
+                command_phase=command_phase,
             )
         except Exception as exc:
             self._event(
@@ -426,6 +441,7 @@ class V2OrchestratorRunner:
         result: dict[str, Any] | None,
         stderr: str,
         resume: bool = False,
+        command_phase: str | None = None,
     ) -> None:
         stdout_tail = _bounded("\n".join(self._last_stdout_lines) if hasattr(self, "_last_stdout_lines") else "")
         stderr_tail = _bounded(stderr)
@@ -698,12 +714,20 @@ class V2OrchestratorRunner:
             payload={"command_id": command_id, "final_status": final_status},
         )
 
-        self._auto_queue_next_stage(
-            job_id=job_id,
-            stage_index=stage_index,
-            sandbox_path=sandbox_path,
-            result=result,
-        )
+        if command_phase == "planning":
+            self._handle_planning_phase_completed(
+                job_id=job_id,
+                stage_index=stage_index,
+                command_id=command_id,
+                result=result,
+            )
+        else:
+            self._auto_queue_next_stage(
+                job_id=job_id,
+                stage_index=stage_index,
+                sandbox_path=sandbox_path,
+                result=result,
+            )
 
     def _emit_phase_outcome_events(
         self,
@@ -1196,6 +1220,174 @@ class V2OrchestratorRunner:
 
         if self._notifier is not None:
             asyncio.run(self._notifier.notify())
+
+    # ── planning phase completion ──────────────────────────────────
+
+    def _handle_planning_phase_completed(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        result: dict[str, Any] | None,
+    ) -> None:
+        """Handle completion of a planning-phase subprocess.
+
+        Collects planning artifact refs/checksums and creates a
+        planning_review gate bound to those real artifacts.
+        Does NOT queue Stage 2.
+
+        The command record is append-only and cannot be updated.
+        Completion is tracked via events and the planning_review gate.
+        """
+        if result is None:
+            return
+
+        self._event(
+            job_id=job_id,
+            stage=stage_index,
+            event_type="planning_started",
+            status="running",
+            message="Planning phase started.",
+            payload={"command_id": command_id},
+        )
+        self._event(
+            job_id=job_id,
+            stage=stage_index,
+            event_type="planning_completed",
+            status="completed",
+            message="Planning phase completed.",
+            payload={"command_id": command_id},
+        )
+
+        # Collect planning artifact refs from orchestrator result
+        planning_artifacts: dict[str, str] = {}
+        artifact_refs = result.get("artifact_refs") if isinstance(result.get("artifact_refs"), dict) else {}
+        if artifact_refs:
+            planning_artifacts = {str(k): str(v) for k, v in artifact_refs.items() if v}
+
+        # Compute source checksum from result (planning output evidence)
+        from migration_factory.control_tower.domain.checksums import sha256_canonical_json
+        source_checksum = sha256_canonical_json(result)
+
+        # Build artifact refs tuple
+        ref_values = list(planning_artifacts.values())
+        sandbox_path = _result_sandbox_path(result)
+        if sandbox_path and sandbox_path not in ref_values:
+            ref_values.append(sandbox_path)
+        artifact_refs_tuple = tuple(sorted(ref_values))
+
+        # Emit artifact written events
+        for kind, path in planning_artifacts.items():
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="artifact_written",
+                status="completed",
+                message=f"Planning artifact: {kind}",
+                payload={"command_id": command_id, "artifact_kind": kind, "relative_path": _safe_artifact_ref(path)},
+            )
+
+        # Create planning_review gate AFTER real planning artifacts exist
+        with self._unit_of_work_factory() as uow:
+            from migration_factory.control_tower.application.v2_phase_gate_service import (
+                CreateGateRequest,
+                V2PhaseGateService,
+            )
+            gate_service = V2PhaseGateService(gate_repo=uow.phase_gates)
+
+            gate_result = gate_service.create_gate(CreateGateRequest(
+                job_id=job_id,
+                gate_phase="planning_review",
+                stage_index=stage_index,
+                source_artifact_checksum=source_checksum,
+                source_artifact_refs=artifact_refs_tuple,
+                created_by="system",
+            ))
+
+            if gate_result.status == "created":
+                uow.v2_events.save(
+                    job_id=job_id,
+                    stage=stage_index,
+                    event_type="f15_gate_opened",
+                    status="open",
+                    message=f"planning_review gate opened for stage {stage_index}",
+                    payload={
+                        "gate_id": gate_result.gate_id,
+                        "gate_checksum": gate_result.gate_checksum,
+                        "gate_phase": "planning_review",
+                        "stage_index": stage_index,
+                    },
+                )
+                uow.v2_events.save(
+                    job_id=job_id,
+                    stage=stage_index,
+                    event_type="planning_review_required",
+                    status="blocked",
+                    message=(
+                        f"Stage {stage_index} planning completed. "
+                        f"planning_review gate review required before proceeding."
+                    ),
+                    payload={
+                        "from_stage": stage_index,
+                        "to_stage": stage_index,
+                        "gate_id": gate_result.gate_id,
+                        "gate_checksum": gate_result.gate_checksum,
+                        "gate_status": gate_result.status,
+                    },
+                )
+
+
+# ── phase command helpers ──────────────────────────────────────────
+
+
+def _resolve_phase_from_checksum(manifest_checksum: str) -> str | None:
+    """Extract phase name from manifest_checksum like 'phase:planning'."""
+    if manifest_checksum and manifest_checksum.startswith("phase:"):
+        return manifest_checksum.split(":", 1)[1]
+    return None
+
+
+def _build_phase_argv(
+    runner: V2OrchestratorRunner,
+    job_id: str,
+    command_id: str,
+    command: Any,
+    stage_index: int,
+    command_phase: str,
+) -> list[str]:
+    """Build backend-owned argv for a phase-only orchestrator execution.
+
+    Loads the job/setup from the DB and constructs proper argv with
+    --phase <phase> flag.
+    """
+    from migration_factory.control_tower.application.v2_worker_stage import (
+        STAGE_JDK_MAP,
+    )
+
+    with runner._unit_of_work_factory() as uow:
+        job = uow.v2_jobs.get(job_id)
+        if job is None:
+            raise ValueError(f"Job {job_id!r} not found for phase command {command_id!r}")
+
+        setup = uow.v2_setups.get(job.setup_id)
+        if setup is None:
+            raise ValueError(f"Setup {job.setup_id!r} not found for phase command {command_id!r}")
+
+        effective_run_id = f"v2-{job_id[:8]}-s{stage_index}-{command_phase}"
+        argv = [
+            sys.executable,
+            "-m",
+            "migration_factory.orchestrator.runner",
+            "--run-id", effective_run_id,
+            "--legacy", setup.legacy_app_path,
+            "--modernized", setup.output_parent_path,
+            "--ai-hub", setup.ai_hub_path,
+            "--profile", "springboot-2.1.6-to-2.7-java11",
+            "--mode", "full_sandbox_migration",
+            "--phase", command_phase,
+        ]
+        return argv
 
 
 def _normalized_argv(argv: list[str]) -> list[str]:

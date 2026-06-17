@@ -55,8 +55,85 @@ def _api_client(tmp_path: Path) -> tuple[TestClient, sqlite3.Connection]:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     apply_pending_migrations(conn)
+    _seed_fk_refs(conn)
     app = create_app(lambda: SqliteUnitOfWork(conn))
     return TestClient(app, base_url="http://127.0.0.1:8000"), conn
+
+
+def _seed_fk_refs(conn: sqlite3.Connection) -> None:
+    from migration_factory.control_tower.domain.checksums import (
+        canonical_json_text,
+        sha256_canonical_json,
+        utc_now_text,
+    )
+    now = utc_now_text()
+    runner_payload = {
+        "schema_version": "1.0.0",
+        "runner_profile_id": "runner-default",
+        "runner_profile_version": "2026.06",
+        "display_name": "Default local runner",
+        "python_executable": "",
+        "ai_hub_path": "",
+        "maven": {"executable_path": "mvn", "expected_version": "3.9.9", "allow_wrapper": False},
+        "jdks": [],
+        "filesystem": {"roots": []},
+        "network": {"mode": "allowlisted", "allowed_hosts": []},
+        "ai_profile": {"profile_id": "local-disabled"},
+    }
+    conn.execute(
+        """INSERT OR IGNORE INTO runner_profiles (
+            runner_profile_id, runner_profile_version, display_name, schema_version,
+            payload_json, payload_checksum, created_at, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            runner_payload["runner_profile_id"],
+            runner_payload["runner_profile_version"],
+            runner_payload["display_name"],
+            runner_payload["schema_version"],
+            canonical_json_text(runner_payload),
+            sha256_canonical_json(runner_payload),
+            now,
+            "test",
+        ),
+    )
+    pipeline_payload = {
+        "schema_version": "1.0.0",
+        "pipeline_id": "springboot-216-to-356-java21-three-stage",
+        "pipeline_version": "2026.06",
+        "display_name": "F15 test pipeline",
+        "graph_version": "1.0",
+        "graph_state_schema_version": "1.0",
+        "stages": [
+            {
+                "stage_index": 1,
+                "stage_id": "foundation-diagnostic",
+                "profile_id": "diagnostic-profile",
+                "command_jdk": "jdk-17",
+                "input_source": {"kind": "legacy_source"},
+                "continuation_policy_id": "default",
+                "target": {"diagnostic": "foundation"},
+            },
+        ],
+    }
+    conn.execute(
+        """INSERT OR IGNORE INTO pipeline_definitions (
+            pipeline_id, pipeline_version, display_name, schema_version,
+            graph_version, graph_state_schema_version, payload_json, payload_checksum,
+            created_at, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            pipeline_payload["pipeline_id"],
+            pipeline_payload["pipeline_version"],
+            pipeline_payload["display_name"],
+            pipeline_payload["schema_version"],
+            pipeline_payload["graph_version"],
+            pipeline_payload["graph_state_schema_version"],
+            canonical_json_text(pipeline_payload),
+            sha256_canonical_json(pipeline_payload),
+            now,
+            "test",
+        ),
+    )
 
 
 def _ready_setup(conn: sqlite3.Connection) -> str:
@@ -292,3 +369,125 @@ def test_v2_gate_action_rejects_unsafe_fields_and_unsupported_action(tmp_path: P
         headers=_mutation_headers(),
     )
     assert unsupported_response.status_code == 422, unsupported_response.text
+
+
+class TestV2JobPolicyPersistence:
+    def test_create_job_defaults_to_manual_policy(self, tmp_path: Path) -> None:
+        client, conn = _api_client(tmp_path)
+        setup_id = _ready_setup(conn)
+
+        response = client.post(
+            "/v1/v2/migration-jobs",
+            json={"setup_id": setup_id},
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["stage_continuation_policy"] == "manual"
+        assert data["run_configuration_id"]
+
+        row = conn.execute(
+            "SELECT job_id, policy_json FROM run_configurations WHERE job_id = ?",
+            (data["job_id"],),
+        ).fetchone()
+        assert row is not None
+        policy = json.loads(row["policy_json"])
+        assert policy["stage_continuation_policy"] == "manual"
+
+    def test_create_job_with_explicit_manual_policy(self, tmp_path: Path) -> None:
+        client, conn = _api_client(tmp_path)
+        setup_id = _ready_setup(conn)
+
+        response = client.post(
+            "/v1/v2/migration-jobs",
+            json={
+                "setup_id": setup_id,
+                "policy": {"stage_continuation_policy": "manual"},
+            },
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["stage_continuation_policy"] == "manual"
+
+        row = conn.execute(
+            "SELECT policy_json FROM run_configurations WHERE job_id = ?",
+            (data["job_id"],),
+        ).fetchone()
+        assert row is not None
+        policy = json.loads(row["policy_json"])
+        assert policy["stage_continuation_policy"] == "manual"
+
+    def test_create_job_with_auto_on_green_policy(self, tmp_path: Path) -> None:
+        client, conn = _api_client(tmp_path)
+        setup_id = _ready_setup(conn)
+
+        response = client.post(
+            "/v1/v2/migration-jobs",
+            json={
+                "setup_id": setup_id,
+                "policy": {"stage_continuation_policy": "auto_on_green"},
+            },
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["stage_continuation_policy"] == "auto_on_green"
+
+        row = conn.execute(
+            "SELECT policy_json FROM run_configurations WHERE job_id = ?",
+            (data["job_id"],),
+        ).fetchone()
+        assert row is not None
+        policy = json.loads(row["policy_json"])
+        assert policy["stage_continuation_policy"] == "auto_on_green"
+
+    def test_create_job_with_manual_on_warning_policy(self, tmp_path: Path) -> None:
+        client, conn = _api_client(tmp_path)
+        setup_id = _ready_setup(conn)
+
+        response = client.post(
+            "/v1/v2/migration-jobs",
+            json={
+                "setup_id": setup_id,
+                "policy": {"stage_continuation_policy": "manual_on_warning_or_failure"},
+            },
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["stage_continuation_policy"] == "manual_on_warning_or_failure"
+
+    def test_create_job_rejects_unknown_policy(self, tmp_path: Path) -> None:
+        client, conn = _api_client(tmp_path)
+        setup_id = _ready_setup(conn)
+
+        response = client.post(
+            "/v1/v2/migration-jobs",
+            json={
+                "setup_id": setup_id,
+                "policy": {"stage_continuation_policy": "skip_stages"},
+            },
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 422, response.text
+
+    def test_get_job_returns_policy_for_existing_job(self, tmp_path: Path) -> None:
+        client, conn = _api_client(tmp_path)
+        setup_id = _ready_setup(conn)
+
+        create_resp = client.post(
+            "/v1/v2/migration-jobs",
+            json={
+                "setup_id": setup_id,
+                "policy": {"stage_continuation_policy": "manual"},
+            },
+            headers=_mutation_headers(),
+        )
+        job_id = create_resp.json()["job_id"]
+
+        get_resp = client.get(f"/v1/v2/migration-jobs/{job_id}")
+        assert get_resp.status_code == 200, get_resp.text
+        data = get_resp.json()
+        assert data["stage_continuation_policy"] == "manual"
+        assert data["run_configuration_id"]

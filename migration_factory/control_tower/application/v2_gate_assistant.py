@@ -131,6 +131,91 @@ class ActionPreview:
     warning: str = ""
 
 
+@dataclass
+class PendingConfirmation:
+    """Minimal pending confirmation for two-step chatbot actions.
+
+    Scoped to job_id + gate_id. Invalidated when the gate changes
+    (checksum mismatch). Never stores sandbox_path, argv, env,
+    raw commands, or filesystem targets.
+    """
+
+    job_id: str
+    gate_id: str
+    action_type: str
+    expected_gate_checksum: str
+    idempotency_key: str
+    user_feedback: str = ""
+    created_at: str = ""
+
+
+class ConfirmationStore:
+    """In-memory store for pending confirmations.
+
+    Thread-safe via per-job locking. Expired confirmations are
+    discarded on access. Gate checksum changes invalidate the
+    pending confirmation.
+    """
+
+    def __init__(self) -> None:
+        self._confirmations: dict[str, PendingConfirmation] = {}
+
+    def _key(self, job_id: str, gate_id: str) -> str:
+        return f"{job_id}:{gate_id}"
+
+    def store(
+        self,
+        *,
+        job_id: str,
+        gate_id: str,
+        action_type: str,
+        expected_gate_checksum: str,
+        idempotency_key: str,
+        user_feedback: str = "",
+    ) -> PendingConfirmation:
+        key = self._key(job_id, gate_id)
+        confirmation = PendingConfirmation(
+            job_id=job_id,
+            gate_id=gate_id,
+            action_type=action_type,
+            expected_gate_checksum=expected_gate_checksum,
+            idempotency_key=idempotency_key,
+            user_feedback=user_feedback,
+            created_at=utc_now_text(),
+        )
+        self._confirmations[key] = confirmation
+        return confirmation
+
+    def resolve(
+        self,
+        *,
+        job_id: str,
+        gate_id: str,
+        current_gate_checksum: str,
+    ) -> PendingConfirmation | None:
+        """Resolve a pending confirmation.
+
+        Returns None if no confirmation exists or the gate checksum
+        has changed (meaning the pending action is stale).
+        """
+        key = self._key(job_id, gate_id)
+        confirmation = self._confirmations.get(key)
+        if confirmation is None:
+            return None
+        if confirmation.expected_gate_checksum != current_gate_checksum:
+            self._confirmations.pop(key, None)
+            return None
+        self._confirmations.pop(key, None)
+        return confirmation
+
+    def clear_for_job(self, job_id: str) -> None:
+        """Clear all pending confirmations for a job."""
+        self._confirmations = {
+            k: v for k, v in self._confirmations.items()
+            if not k.startswith(f"{job_id}:")
+        }
+
+
 @dataclass(frozen=True)
 class GateConversationMemory:
     """Gate-aware conversation memory link (job073)."""
@@ -765,12 +850,14 @@ class GateActionExecutor:
         gate_id: str,
         checksum: str,
         *,
+        job_id: str,
         decided_by: str = "assistant",
         idempotency_key: str | None = None,
     ) -> GateActionResult:
         """Execute continue_from_gate action."""
         return self._action_service.continue_from_gate(
             gate_id=gate_id,
+            job_id=job_id,
             expected_gate_checksum=checksum,
             decided_by=decided_by,
             idempotency_key=idempotency_key or uuid4().hex,
@@ -781,6 +868,7 @@ class GateActionExecutor:
         gate_id: str,
         checksum: str,
         *,
+        job_id: str,
         user_feedback: str = "",
         decided_by: str = "assistant",
         idempotency_key: str | None = None,
@@ -788,6 +876,7 @@ class GateActionExecutor:
         """Execute request_reanalysis action."""
         return self._action_service.request_reanalysis(
             gate_id=gate_id,
+            job_id=job_id,
             expected_gate_checksum=checksum,
             user_feedback=user_feedback,
             decided_by=decided_by,
@@ -799,6 +888,7 @@ class GateActionExecutor:
         gate_id: str,
         checksum: str,
         *,
+        job_id: str,
         user_feedback: str = "",
         decided_by: str = "assistant",
         idempotency_key: str | None = None,
@@ -806,6 +896,7 @@ class GateActionExecutor:
         """Execute request_plan_revision action."""
         return self._action_service.request_plan_revision(
             gate_id=gate_id,
+            job_id=job_id,
             expected_gate_checksum=checksum,
             user_feedback=user_feedback,
             decided_by=decided_by,
@@ -817,6 +908,7 @@ class GateActionExecutor:
         gate_id: str,
         checksum: str,
         *,
+        job_id: str,
         decided_by: str = "assistant",
         idempotency_key: str | None = None,
         actor_type: str = GateActorType.ASSISTANT.value,
@@ -824,6 +916,7 @@ class GateActionExecutor:
         """Execute approve_from_gate action."""
         return self._action_service.approve_from_gate(
             gate_id=gate_id,
+            job_id=job_id,
             expected_gate_checksum=checksum,
             decided_by=decided_by,
             idempotency_key=idempotency_key or uuid4().hex,
@@ -836,6 +929,7 @@ class GateActionExecutor:
         checksum: str,
         reason: str = "",
         *,
+        job_id: str,
         decided_by: str = "assistant",
         idempotency_key: str | None = None,
         actor_type: str = GateActorType.ASSISTANT.value,
@@ -843,6 +937,7 @@ class GateActionExecutor:
         """Execute reject_from_gate action."""
         return self._action_service.reject_from_gate(
             gate_id=gate_id,
+            job_id=job_id,
             expected_gate_checksum=checksum,
             reason=reason,
             decided_by=decided_by,

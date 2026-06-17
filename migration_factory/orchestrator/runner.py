@@ -41,6 +41,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=READ_ONLY_ASSESSMENT_MODE,
         choices=[READ_ONLY_ASSESSMENT_MODE, FULL_SANDBOX_MIGRATION_MODE],
     )
+    parser.add_argument(
+        "--phase",
+        default=None,
+        choices=["analysis", "planning", "assessment"],
+        help="Run only the specified phase. Default (None) runs full pipeline.",
+    )
     return parser.parse_args(argv)
 
 
@@ -59,6 +65,8 @@ def main(argv: list[str] | None = None) -> int:
         thread_id=args.run_id,
         mode=args.mode,
     )
+    if args.phase:
+        state["phase"] = args.phase
 
     try:
         state = load_copilot_config(state)

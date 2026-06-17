@@ -455,7 +455,7 @@ class TestGateActionExecutor:
         executor = GateActionExecutor(mock_service)
         result = executor.execute_continue(
             gate_id="gate-123", checksum="chk-123",
-            decided_by="test"
+            job_id="job-1", decided_by="test",
         )
 
         mock_service.continue_from_gate.assert_called_once()
@@ -466,13 +466,13 @@ class TestGateActionExecutor:
         mock_service = MagicMock()
         executor = GateActionExecutor(mock_service)
 
-        executor.execute_continue(gate_id="gate-1", checksum="chk-1")
+        executor.execute_continue(gate_id="gate-1", checksum="chk-1", job_id="job-1")
         executor.execute_reanalysis(gate_id="gate-1", checksum="chk-1",
-                                     user_feedback="test")
+                                     job_id="job-1", user_feedback="test")
         executor.execute_plan_revision(gate_id="gate-1", checksum="chk-1",
-                                        user_feedback="test")
-        executor.execute_approve(gate_id="gate-1", checksum="chk-1")
-        executor.execute_reject(gate_id="gate-1", checksum="chk-1", reason="test")
+                                        job_id="job-1", user_feedback="test")
+        executor.execute_approve(gate_id="gate-1", checksum="chk-1", job_id="job-1")
+        executor.execute_reject(gate_id="gate-1", checksum="chk-1", job_id="job-1", reason="test")
 
         # All went through the gate action service, not direct execution
         assert mock_service.continue_from_gate.call_count == 1

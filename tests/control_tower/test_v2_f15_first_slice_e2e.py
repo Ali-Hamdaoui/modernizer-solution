@@ -1,10 +1,10 @@
-"""Focused end-to-end test for F15-JOB-050 — Manual mode fake runner.
+"""Focused end-to-end test for F15 manual mode phase-level progression.
 
 Proves the first demo flow without real Maven/orchestrator cost:
 1. Stage 1 analysis completes (simulated via fake result payload)
 2. Under manual policy, an analysis_review gate is created
 3. Chatbot explanation can read the gate
-4. Continue action queues Stage 2 planning command
+4. Continue action creates planning_review gate (not Stage 2)
 """
 
 import json
@@ -194,14 +194,16 @@ def test_f15_first_slice_gate_can_be_read(tmp_path: Path) -> None:
         assert "password" not in r.lower()
 
 
-def test_f15_first_slice_continue_queues_planning(tmp_path: Path) -> None:
-    """[E2E] Continue action at analysis_review gate queues Stage 2."""
+def test_f15_first_slice_continue_advances_phase_not_stage(tmp_path: Path) -> None:
+    """[E2E] Continue action at analysis_review gate queues a planning
+    command — does NOT create a synthetic planning_review gate and
+    does NOT queue Stage 2."""
     conn = _connection(tmp_path, "e2e3.sqlite3")
     setup_repo = SqliteV2SetupRepository(conn)
     command_repo = SqliteV2CommandRepository(conn)
     gate_repo = SqlitePhaseGateRepository(conn)
     decision_repo = SqliteGateDecisionRepository(conn)
-    setup_id = _create_setup(setup_repo)
+    _create_setup(setup_repo)
 
     job_id = "job-e2e-continue"
     sandbox_path = "/tmp/sandbox/e2e-stage1"
@@ -253,31 +255,41 @@ def test_f15_first_slice_continue_queues_planning(tmp_path: Path) -> None:
     assert action_result.status == "executed"
     assert action_result.decision_id
 
-    # After gate continues, verify the progression service
-    # can now queue Stage 2 (AUTO_ON_GREEN from the gate action)
-    progression_service = V2StageProgressionService(setup_repo, command_repo)
-    queued = progression_service.resolve_prior_stage_output(job_id, 1)
-    assert queued == sandbox_path
-
-    # Queue Stage 2 manually (the runner would do this automatically
-    # after the gate continues, using queue_next_stage_from_gate)
-    queued2 = progression_service.queue_next_stage_from_gate(
-        job_id=job_id,
-        setup_id=setup_id,
-        current_stage=1,
-        sandbox_path=sandbox_path,
-        gate_id=gate_result.gate_id,
-        decision_id=action_result.decision_id,
-        stage_continuation_policy=StageContinuationPolicy.AUTO_ON_GREEN,
-    )
-    assert queued2.status == "queued"
-    assert queued2.to_stage == 2
-
-    # Verify the Stage 2 command has gate/decision trace
+    # After gate continues: NO Stage 2 command was created
     stage2_commands = command_repo.list_by_job_and_stage(job_id, 2)
-    assert len(stage2_commands) >= 1
-    assert stage2_commands[0].gate_id == gate_result.gate_id
-    assert stage2_commands[0].decision_id == action_result.decision_id
+    assert len(stage2_commands) == 0, (
+        f"Expected no Stage 2 commands, got {len(stage2_commands)}"
+    )
+
+    # P0: NO synthetic planning_review gate created directly from
+    # CONTINUE. Real planning must run first and produce artifacts.
+    gates = gate_repo.list_by_job(job_id)
+    planning_gates = [g for g in gates if g.gate_phase == "planning_review" and g.stage_index == 1]
+    assert len(planning_gates) == 0, (
+        f"Expected NO planning_review gate (synthetic), "
+        f"but found {len(planning_gates)}"
+    )
+
+    # Instead, a planning command was queued (proof that planning
+    # execution was requested, not skipped)
+    assert action_result.result_command_id is not None, (
+        "Expected result_command_id for planning command"
+    )
+    planning_commands = command_repo.list_by_job_and_stage(job_id, 1)
+    planning_pending = [
+        c for c in planning_commands
+        if c.status == "planning_pending" and c.manifest_checksum == "phase:planning"
+    ]
+    assert len(planning_pending) >= 1, (
+        "Expected at least one planning_pending command"
+    )
+    pending_cmd = planning_pending[0]
+    assert pending_cmd.command_id == action_result.result_command_id
+
+    # Verify the analysis_review gate is now resolved
+    resolved_analysis = gate_repo.get(gate_result.gate_id)
+    assert resolved_analysis is not None
+    assert resolved_analysis.gate_status == "resolved"
 
 
 def test_f15_first_slice_manual_mode_no_auto_transform(tmp_path: Path) -> None:

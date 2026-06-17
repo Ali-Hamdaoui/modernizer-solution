@@ -66,8 +66,9 @@ def _open_gate(gate_service: V2PhaseGateService, *, phase: str = "approval_revie
 def test_assistant_approve_cannot_persist_human_decision(tmp_path: Path) -> None:
     gate_service, gate_repo, decision_repo, action_service, executor = _setup(tmp_path)
     gate_id = _open_gate(gate_service)
+    gate = gate_repo.get(gate_id)
 
-    result = executor.execute_approve(gate_id, "sha256:gate")
+    result = executor.execute_approve(gate_id, "sha256:gate", job_id=gate.job_id)
 
     assert result.status == "actor_not_authoritative"
     assert decision_repo.list_by_gate(gate_id) == ()
@@ -79,8 +80,9 @@ def test_assistant_approve_cannot_persist_human_decision(tmp_path: Path) -> None
 def test_assistant_reject_cannot_persist_human_decision(tmp_path: Path) -> None:
     gate_service, gate_repo, decision_repo, action_service, executor = _setup(tmp_path)
     gate_id = _open_gate(gate_service)
+    gate = gate_repo.get(gate_id)
 
-    result = executor.execute_reject(gate_id, "sha256:gate", reason="needs more work")
+    result = executor.execute_reject(gate_id, "sha256:gate", job_id=gate.job_id, reason="needs more work")
 
     assert result.status == "actor_not_authoritative"
     assert decision_repo.list_by_gate(gate_id) == ()

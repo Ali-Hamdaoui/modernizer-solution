@@ -37,6 +37,7 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_artifact_revision_
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
     SqliteV2CommandRepository,
+    V2StageCommandRecord,
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_gate_decision_repository import (
     SqliteGateDecisionRepository,
@@ -699,7 +700,7 @@ class V2GateActionService:
         #    of the current gate state.
         effective_idempotency_key = (
             idempotency_key
-            or f"{gate_id}:{GateDecision.CONTINUE.value}:{uuid4().hex[:8]}"
+            or f"{gate_id}:{GateDecision.CONTINUE.value}"
         )
         request_checksum = sha256_canonical_json(
             {
@@ -1009,7 +1010,7 @@ class V2GateActionService:
 
         # 2. Idempotency check (before status check — idempotent
         #    requests return the same result regardless of gate state)
-        effective_idempotency_key = idempotency_key or f"{gate_id}:{action.value}:{uuid4().hex[:8]}"
+        effective_idempotency_key = idempotency_key or f"{gate_id}:{action.value}"
         request_checksum = request_checksum or sha256_canonical_json(
             {
                 "gate_id": gate_id,
@@ -1019,8 +1020,6 @@ class V2GateActionService:
                 "reason": reason,
                 "actor_type": actor_type,
                 "expected_gate_checksum": expected_gate_checksum,
-                "result_command_id": result_command_id,
-                "result_revision_id": result_revision_id,
             }
         )
         existing = self._decision_repo.find_by_idempotency_key(effective_idempotency_key)
@@ -1189,17 +1188,50 @@ class V2GateActionService:
             ))
             result_gate_id = new_gate.gate_id if new_gate.status == "created" else None
 
-        # For continue on planning_review gates, create an approval_review
-        # gate (Job093). The approval gate must be approved before
-        # transformation can proceed.
+        # For continue on gates, create the next phase gate within
+        # the same stage (no migration stage skip).
+        #   analysis_review + CONTINUE → queue planning command
+        #   planning_review + CONTINUE → approval_review gate
+        # Stage 2 migration is NOT queued from here — only
+        # stage_completion_review + CONTINUE triggers migration stage
+        # progression (handled by the caller).
         if action == GateDecision.CONTINUE:
             try:
                 gate_phase_for_approval = GatePhase(gate.gate_phase)
             except ValueError:
                 gate_phase_for_approval = None
 
-            if gate_phase_for_approval == GatePhase.PLANNING_REVIEW:
-                # Create approval_review gate for the next stage
+            if gate_phase_for_approval == GatePhase.ANALYSIS_REVIEW:
+                # P0: Do NOT create a synthetic planning_review gate.
+                # Real planning execution must happen first and produce
+                # planning artifacts (migration_plan.yaml,
+                # migration_units.yaml, approval_request.json).
+                # Queue a planning command that the backend run loop
+                # picks up later. Once planning completes, a
+                # post-planning hook creates planning_review with
+                # real artifact refs/checksums.
+                planning_command_id = uuid4().hex
+                now = utc_now_text()
+                planning_record = V2StageCommandRecord(
+                    command_id=planning_command_id,
+                    job_id=gate.job_id,
+                    stage_index=gate.stage_index,
+                    manifest_checksum="phase:planning",
+                    argv_json="[]",
+                    env_json="{}",
+                    status="planning_pending",
+                    created_at=now,
+                    updated_at=now,
+                    result_json=None,
+                    gate_id=gate_id,
+                    decision_id="",  # filled below
+                )
+                if self._command_repo is not None:
+                    self._command_repo.save(planning_record)
+                result_command_id = planning_command_id
+
+            elif gate_phase_for_approval == GatePhase.PLANNING_REVIEW:
+                # Create approval_review gate for the same stage
                 approval_gate = self._gate_service.create_gate(CreateGateRequest(
                     job_id=gate.job_id,
                     gate_phase=GatePhase.APPROVAL_REVIEW.value,

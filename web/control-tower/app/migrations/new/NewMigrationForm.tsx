@@ -14,6 +14,7 @@ interface ParsedEnvResult {
     java_homes: { java11: string; java17: string; java21: string };
     maven_cmd: string;
     migration_flags: { proof_level: string; skip_endpoint_smoke: boolean | null };
+    stage_continuation_policy: string;
   };
   ignored_keys: string[];
   blocked_keys: string[];
@@ -192,6 +193,7 @@ interface FormFields {
   maven_cmd: string;
   proof_level: string;
   skip_endpoint_smoke: boolean;
+  stageContinuationPolicy: string;
 }
 
 const EMPTY_FIELDS: FormFields = {
@@ -206,6 +208,7 @@ const EMPTY_FIELDS: FormFields = {
   maven_cmd: "",
   proof_level: "build_test_verified",
   skip_endpoint_smoke: false,
+  stageContinuationPolicy: "manual",
 };
 
 // ── Component ──────────────────────────────────────────────────────
@@ -252,6 +255,7 @@ export function NewMigrationForm() {
         maven_cmd: p.maven_cmd || prev.maven_cmd,
         proof_level: p.migration_flags.proof_level || prev.proof_level,
         skip_endpoint_smoke: p.migration_flags.skip_endpoint_smoke ?? prev.skip_endpoint_smoke,
+        stageContinuationPolicy: p.stage_continuation_policy || prev.stageContinuationPolicy,
       }));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Parse failed");
@@ -602,10 +606,16 @@ export function NewMigrationForm() {
               setError(null);
               try {
                 // 1. Create V2 job
+                const jobPayload: Record<string, unknown> = { setup_id: setupResult.setup_id };
+                if (fields.stageContinuationPolicy) {
+                  jobPayload.policy = {
+                    stage_continuation_policy: fields.stageContinuationPolicy,
+                  };
+                }
                 const jobRes = await fetch(`${API_BASE}/v1/v2/migration-jobs`, {
                   method: "POST",
                   headers: mutationHeaders(),
-                  body: JSON.stringify({ setup_id: setupResult.setup_id }),
+                  body: JSON.stringify(jobPayload),
                 });
                 if (!jobRes.ok) throw new Error(`Job creation failed: ${jobRes.status}`);
                 const jobData = await jobRes.json();

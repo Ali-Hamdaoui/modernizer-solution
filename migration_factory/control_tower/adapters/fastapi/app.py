@@ -175,6 +175,17 @@ from migration_factory.control_tower.application.v2_evidence_pack_builder import
     EvidencePackBuilder,
     evidence_pack_to_dict,
 )
+from migration_factory.control_tower.application.v2_gate_assistant import (
+    GateContextLoader,
+    GateIntentClassifier,
+    GateActionPreviewBuilder,
+    GateActionExecutor,
+    ConfirmationStore,
+    EvidenceSanitizer,
+    ActionPreview,
+    ClassifiedIntent,
+    GateContext,
+)
 from migration_factory.control_tower.application.v2_orchestrator_runner import (
     V2OrchestratorRunner,
     _bounded,
@@ -475,6 +486,7 @@ class PreflightRequest(BaseModel):
 class CreateV2JobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     setup_id: str
+    policy: RunPolicy | None = None
 
 
 class StartV2JobRequest(BaseModel):
@@ -520,7 +532,7 @@ class StageProgressRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     setup_id: str
     current_stage: int
-    sandbox_path: str
+    sandbox_path: str | None = None
 
 
 class AssistantMessageRequest(BaseModel):
@@ -1147,9 +1159,10 @@ def create_app(
             service = V2MigrationJobService(
                 setup_repo=uow.v2_setups,
                 job_repo=uow.v2_jobs,
+                run_config_repo=uow.run_configurations,
             )
             try:
-                result = service.create_job(payload.setup_id)
+                result = service.create_job(payload.setup_id, policy=payload.policy)
             except ValueError as exc:
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,
@@ -1174,6 +1187,7 @@ def create_app(
             service = V2MigrationJobService(
                 setup_repo=uow.v2_setups,
                 job_repo=uow.v2_jobs,
+                run_config_repo=uow.run_configurations,
             )
             result = service.get_job(job_id)
         if result is None:
@@ -1958,7 +1972,10 @@ def create_app(
 
     # ------------------------------------------------------------------
     # V2 Assistant endpoints (A10/P0-006)
+    # F15: Gate-aware /ask with two-step confirmation
     # ------------------------------------------------------------------
+
+    _confirmation_store = ConfirmationStore()
 
     @app.post("/v1/v2/jobs/{job_id}/assistant/messages")
     def add_assistant_message(
@@ -2005,7 +2022,34 @@ def create_app(
         job_id: str,
         payload: AssistantAskRequest,
     ) -> dict[str, Any]:
-        """Ask the V2 assistant for read-only status guidance."""
+        """Ask the V2 assistant for read-only status guidance.
+
+        F15: If the job has an open PhaseGate, the assistant becomes
+        gate-aware — it loads gate context, classifies intent, and
+        either explains gate-bound evidence or returns an action
+        preview for state-changing intents. Confirmation toggles
+        execution through V2GateActionService.
+        """
+        # ── Phase 1: Check for open gate ──────────────────────────
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            open_gates = uow.phase_gates.list_open(job_id)
+
+        question_lower = payload.question.strip().lower()
+
+        if open_gates:
+            open_gate = open_gates[0]
+            return _handle_gate_aware_ask(
+                app=app,
+                job_id=job_id,
+                open_gate=open_gate,
+                question=payload.question,
+                correlation_id=payload.correlation_id,
+                confirmation_store=_confirmation_store,
+                unit_of_work_factory=unit_of_work_factory,
+            )
+
+        # ── Phase 2: No open gate — fall back to existing assistant ──
         with unit_of_work_factory() as uow:
             job = _require_v2_job(uow, job_id)
             events = uow.v2_events.list_by_job(job_id)
@@ -2014,7 +2058,7 @@ def create_app(
             pipeline = _v2_pipeline_projection(job_id, events)
             service = V2AssistantService(assistant_repo=uow.v2_assistant)
             # Classify assistant intent before building prompt
-            assistant_intent = _classify_v2_assistant_intent(payload.question)
+            assistant_intent = _classify_v2_assistant_intent(question_lower)
             # Read prior persisted messages for conversation history
             prior_messages = service.get_messages(job_id)
             user_msg = service.add_message(
@@ -2645,8 +2689,36 @@ def create_app(
         Stage 2 input = Stage 1 sandbox.
         Stage 3 input = Stage 2 sandbox.
         No Boot 4 path. No user-selected stage inputs.
+
+        F15: For manual/F15 policy, client sandbox_path is rejected.
+        Backend resolves sandbox_path from persisted stage output.
         """
         with unit_of_work_factory() as uow:
+            # F15: Reject client-provided sandbox_path for manual policy
+            resolved_sandbox_path = payload.sandbox_path
+            if resolved_sandbox_path is not None:
+                rc = uow.run_configurations.get_for_job(job_id)
+                if rc is not None:
+                    try:
+                        policy_json = json.loads(rc.policy_json)
+                        continuation_policy = policy_json.get("stage_continuation_policy", "")
+                        if continuation_policy in ("manual", "f15"):
+                            raise _error(
+                                status.HTTP_400_BAD_REQUEST,
+                                "CLIENT_SANDBOX_PATH_REJECTED",
+                                f"Client sandbox_path not allowed for {continuation_policy} policy. "
+                                "Backend resolves from persisted stage output.",
+                            )
+                    except (json.JSONDecodeError, TypeError, AttributeError):
+                        pass
+            # If no sandbox_path provided, resolve from latest command output
+            if resolved_sandbox_path is None:
+                commands = uow.v2_commands.list_by_job(job_id)
+                stage_commands = [c for c in commands if c.stage_index == payload.current_stage]
+                if stage_commands:
+                    latest = max(stage_commands, key=lambda c: c.created_at)
+                    resolved_sandbox_path = latest.output_root_dir or latest.sandbox_root_dir
+
             service = V2StageProgressionService(
                 setup_repo=uow.v2_setups,
                 command_repo=uow.v2_commands,
@@ -2656,7 +2728,7 @@ def create_app(
                     job_id=job_id,
                     setup_id=payload.setup_id,
                     current_stage=payload.current_stage,
-                    sandbox_path=payload.sandbox_path,
+                    sandbox_path=resolved_sandbox_path or "",
                 )
             except ValueError as exc:
                 raise _error(
@@ -4814,6 +4886,599 @@ def _classify_v2_assistant_intent(question: str) -> str:
         return "status"
 
     return "general_question"
+
+
+def _handle_gate_aware_ask(
+    app: Any,
+    job_id: str,
+    open_gate: Any,
+    question: str,
+    correlation_id: str | None,
+    confirmation_store: ConfirmationStore,
+    unit_of_work_factory: Any,
+) -> dict[str, Any]:
+    """Handle an /ask request when an open PhaseGate exists.
+
+    Loads gate context, classifies intent, and either explains
+    gate-bound evidence, returns an action preview (state-changing
+    intents), or executes a confirmed action.
+    """
+    from migration_factory.control_tower.application.v2_assistant_service import (
+        V2AssistantService,
+    )
+    from migration_factory.control_tower.application.v2_gate_action_service import (
+        V2GateActionService,
+    )
+
+    with unit_of_work_factory() as uow:
+        gate_repo = uow.phase_gates
+        gate_service = V2PhaseGateService(gate_repo)
+        resolver = V2GateArtifactResolver(gate_repo)
+        loader = GateContextLoader(
+            gate_service=gate_service,
+            resolver=resolver,
+        )
+        context, evidence_pack = loader.load_gate_with_evidence(open_gate.gate_id)
+        if context is None:
+            # Gate not found — fall through to existing assistant
+            return _fallback_to_existing_assistant(
+                app=app,
+                job_id=job_id,
+                question=question,
+                correlation_id=correlation_id,
+                unit_of_work_factory=unit_of_work_factory,
+            )
+
+        service = V2AssistantService(assistant_repo=uow.v2_assistant)
+
+        # Persist user message
+        user_msg = service.add_message(
+            job_id=job_id,
+            role="user",
+            content=question,
+            correlation_id=correlation_id,
+        )
+
+        # ── Detect confirmation intent before classification ────
+        question_lower = question.strip().lower()
+        _CONFIRM_PATTERNS = (
+            "confirm", "yes", "yes,", "yeah", "sure",
+            "go ahead", "do it", "apply", "proceed",
+            "okay", "ok,", "ok ", "approved",
+        )
+        is_confirm = any(
+            question_lower == p or question_lower.startswith(p + " ")
+            or question_lower.startswith(p + ",") or question_lower.startswith(p + ".")
+            for p in _CONFIRM_PATTERNS
+        )
+
+        # Classify intent
+        classifier = GateIntentClassifier()
+        intent: ClassifiedIntent = classifier.classify(
+            user_input=question,
+            available_actions=context.available_actions,
+            gate_phase=context.gate_phase,
+        )
+
+        # ── Handle "confirm" intent (explicit or after preview) ────
+        if is_confirm or intent.action_type == "confirm":
+            pending = confirmation_store.resolve(
+                job_id=job_id,
+                gate_id=open_gate.gate_id,
+                current_gate_checksum=context.checksum,
+            )
+            if pending is not None:
+                action_service = V2GateActionService(
+                    uow.phase_gates,
+                    uow.gate_decisions,
+                    gate_service,
+                    revision_repo=uow.artifact_revisions,
+                    command_repo=uow.v2_commands,
+                )
+                executor = GateActionExecutor(action_service=action_service)
+                execution_result = _execute_pending_action(
+                    executor=executor,
+                    job_id=job_id,
+                    gate_id=open_gate.gate_id,
+                    checksum=context.checksum,
+                    action_type=pending.action_type,
+                    user_feedback=pending.user_feedback,
+                    idempotency_key=pending.idempotency_key,
+                )
+
+                execution_success = (
+                    getattr(execution_result, "status", None) == "executed"
+                    or getattr(execution_result, "success", False)
+                )
+                execution_decision_id = getattr(execution_result, "decision_id", None)
+
+                progression_result = None
+                if (
+                    execution_success
+                    and pending.action_type == "continue_from_gate"
+                ):
+                    if open_gate.gate_phase == "analysis_review":
+                        # After analysis_review CONTINUE:
+                        # - Gate was resolved by _execute_action
+                        # - Planning command was queued by V2GateActionService
+                        #   (real planning will produce artifacts, then
+                        #   planning_review gate opens)
+                        # - No Stage 2 command was created
+                        # - No transformation was started
+                        # - No synthetic planning_review gate was created
+                        from_phase = "analysis_review"
+                        to_phase = "planning_review"
+                        stage = open_gate.stage_index
+                        cmd_id = getattr(execution_result, "result_command_id", None) or ""
+                        progression_result = {
+                            "status": "planning_queued",
+                            "from_phase": from_phase,
+                            "to_phase": to_phase,
+                            "stage_index": stage,
+                            "planning_command_id": cmd_id,
+                            "message": (
+                                f"Stage {stage} analysis review completed. "
+                                f"Stage 1 planning has been queued. "
+                                f"When planning completes and produces real "
+                                f"planning artifacts, a planning_review gate "
+                                f"will open. "
+                                f"Migration Stage 2 was not started. "
+                                f"No transform/build/test started."
+                            ),
+                        }
+                    elif open_gate.gate_phase == "planning_review":
+                        # After planning_review CONTINUE:
+                        # - Approval_review gate was created by V2GateActionService
+                        progression_result = {
+                            "status": "phase_advanced",
+                            "from_phase": "planning_review",
+                            "to_phase": "approval_review",
+                            "stage_index": open_gate.stage_index,
+                            "message": (
+                                f"Stage {open_gate.stage_index} planning review completed. "
+                                f"Approval review gate created."
+                            ),
+                        }
+
+                content = _format_execution_response(
+                    execution_result,
+                    progression=progression_result,
+                )
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=content,
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "gate_aware": True,
+                    "intent": pending.action_type,
+                    "executed": execution_success,
+                    "execution_result": {
+                        "success": execution_success,
+                        "status": getattr(execution_result, "status", "unknown"),
+                        "decision_id": execution_decision_id,
+                        "reason": getattr(execution_result, "reason", ""),
+                    },
+                    "progression_result": progression_result,
+                    "guardrails": {
+                        "read_only": False,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
+
+            # No pending confirmation — treat as ambiguous if user said confirm
+            if is_confirm:
+                explanation = (
+                    "There is no pending action to confirm. "
+                    "Please ask about the current gate first."
+                )
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=explanation,
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "gate_aware": True,
+                    "intent": "confirm",
+                    "executed": False,
+                    "ambiguous": True,
+                    "guardrails": {
+                        "read_only": True,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
+            # Fall through to classification below
+
+        # ── Handle ambiguous / unknown intent ─────────────────────
+        if intent.ambiguous or not intent.action_type:
+            from migration_factory.control_tower.application.v2_gate_assistant import (
+                AmbiguityHandler,
+            )
+            explanation = AmbiguityHandler.handle_ambiguous(intent, context)
+            assistant_msg = service.add_message(
+                job_id=job_id,
+                role="assistant",
+                content=explanation,
+                correlation_id=user_msg.message_id,
+            )
+            return {
+                "job_id": job_id,
+                "user_message": service.message_to_dict(user_msg),
+                "assistant_message": service.message_to_dict(assistant_msg),
+                "gate_aware": True,
+                "intent": intent.action_type or "ambiguous",
+                "executed": False,
+                "ambiguous": True,
+                "clarification_question": intent.clarification_question or "",
+                "available_actions": list(intent.available_actions),
+                "guardrails": {
+                    "read_only": True,
+                    "cannot_execute": True,
+                    "cannot_approve": True,
+                    "cannot_write_files": True,
+                    "cannot_change_route_or_stage": True,
+                    "cannot_override_proof": True,
+                },
+            }
+
+        # ── Build action preview (state-changing intent) ──────────
+        preview_builder = GateActionPreviewBuilder()
+        preview: ActionPreview = preview_builder.build_preview(
+            intent=intent,
+            gate_context=context,
+        )
+
+        # Store pending confirmation
+        from migration_factory.control_tower.domain.checksums import (
+            sha256_canonical_json,
+            utc_now_text,
+        )
+        idempotency_key = sha256_canonical_json({
+            "gate_id": open_gate.gate_id,
+            "job_id": job_id,
+            "action_type": preview.action_type,
+            "timestamp": utc_now_text(),
+        })
+        confirmation_store.store(
+            job_id=job_id,
+            gate_id=open_gate.gate_id,
+            action_type=preview.action_type,
+            expected_gate_checksum=context.checksum,
+            idempotency_key=idempotency_key,
+        )
+
+        content = _format_preview_response(preview, context)
+        assistant_msg = service.add_message(
+            job_id=job_id,
+            role="assistant",
+            content=content,
+            correlation_id=user_msg.message_id,
+        )
+        return {
+            "job_id": job_id,
+            "user_message": service.message_to_dict(user_msg),
+            "assistant_message": service.message_to_dict(assistant_msg),
+            "gate_aware": True,
+            "intent": intent.action_type,
+            "executed": False,
+            "action_preview": {
+                "action_type": preview.action_type,
+                "reason": preview.reason,
+                "confidence": preview.confidence,
+                "warning": preview.warning,
+                "requires_confirmation": preview.requires_confirmation,
+                "pending_confirmation": True,
+            },
+            "guardrails": {
+                "read_only": False,
+                "cannot_execute": True,
+                "cannot_approve": True,
+                "cannot_write_files": True,
+                "cannot_change_route_or_stage": True,
+                "cannot_override_proof": True,
+            },
+        }
+
+
+def _execute_pending_action(
+    executor: GateActionExecutor,
+    job_id: str,
+    gate_id: str,
+    checksum: str,
+    action_type: str,
+    user_feedback: str = "",
+    idempotency_key: str | None = None,
+) -> Any:
+    """Execute a confirmed gate action through the executor."""
+    action_map = {
+        "continue_from_gate": lambda: executor.execute_continue(
+            gate_id, checksum, job_id=job_id, idempotency_key=idempotency_key,
+        ),
+        "request_reanalysis": lambda: executor.execute_reanalysis(
+            gate_id, checksum, job_id=job_id, user_feedback=user_feedback, idempotency_key=idempotency_key,
+        ),
+        "request_plan_revision": lambda: executor.execute_plan_revision(
+            gate_id, checksum, job_id=job_id, user_feedback=user_feedback, idempotency_key=idempotency_key,
+        ),
+        "approve_from_gate": lambda: executor.execute_approve(
+            gate_id, checksum, job_id=job_id, idempotency_key=idempotency_key,
+        ),
+        "reject_from_gate": lambda: executor.execute_reject(
+            gate_id, checksum, job_id=job_id, reason=user_feedback, idempotency_key=idempotency_key,
+        ),
+    }
+    handler = action_map.get(action_type)
+    if handler is None:
+        from migration_factory.control_tower.application.v2_gate_assistant import (
+            GateActionResult,
+        )
+        return GateActionResult(
+            success=False,
+            message=f"Unknown action type: {action_type}",
+        )
+    return handler()
+
+
+def _build_gate_explanation(
+    context: GateContext,
+    question: str,
+    open_gate: Any,
+) -> str:
+    """Build a human-readable explanation from gate context."""
+    lines: list[str] = []
+    lines.append(f"**Gate: {context.gate_id[:8]}**")
+    lines.append(f"- Phase: {context.gate_phase}")
+    lines.append(f"- Stage: {context.stage_index}")
+    lines.append(f"- Status: {context.gate_status}")
+    lines.append(f"- Checksum: `{context.checksum[:16]}...`")
+    lines.append("")
+    if context.available_actions:
+        lines.append("**Available actions:**")
+        for action in context.available_actions:
+            status = "[available]" if not getattr(action, "blocked", False) else "[blocked]"
+            label = getattr(action, "label", action.action)
+            desc = getattr(action, "description", "")
+            lines.append(f"- {status} **{label}**: {desc}")
+    lines.append("")
+    lines.append(
+        "I can help you decide the next step. "
+        "Would you like to continue, reanalyze, or approve?"
+    )
+    return "\n".join(lines)
+
+
+def _format_preview_response(preview: ActionPreview, context: GateContext) -> str:
+    """Format an action preview as an assistant message."""
+    lines: list[str] = []
+    lines.append("**Action Preview**")
+    lines.append("")
+    lines.append(f"I understand you want to: **{preview.reason}**")
+    lines.append("")
+    lines.append("Here is what I would do:")
+    lines.append(f"- **Action:** `{preview.action_type}`")
+    lines.append(f"- **Confidence:** {preview.confidence:.0%}")
+    if preview.warning:
+        lines.append(f"- **Warning:** {preview.warning}")
+    lines.append("")
+    lines.append("To proceed, please confirm by saying **yes** or **confirm**.")
+    lines.append("To cancel, ask a different question or say **no**.")
+    return "\n".join(lines)
+
+
+def _format_execution_response(
+    execution_result: Any,
+    progression: dict[str, Any] | None = None,
+) -> str:
+    """Format an execution result as an assistant message."""
+    status = getattr(execution_result, "status", "")
+    success = status == "executed" or getattr(execution_result, "success", False)
+    message = getattr(execution_result, "message", getattr(execution_result, "reason", ""))
+    decision_id = getattr(execution_result, "decision_id", None)
+
+    lines: list[str] = []
+    if success:
+        lines.append("**Action Completed Successfully**")
+        lines.append("")
+        if decision_id:
+            lines.append(f"- **Decision ID:** `{decision_id}`")
+        if message:
+            lines.append(f"- **Result:** {message}")
+        lines.append("")
+        if progression:
+            prog_status = progression.get("status", "unknown")
+            if prog_status == "queued":
+                lines.append("**Planning has been queued.**")
+                to_stage = progression.get("to_stage")
+                if to_stage:
+                    lines.append(f"- **Next stage:** Stage {to_stage}")
+                lines.append("- The backend will process planning automatically.")
+            elif prog_status == "planning_queued":
+                lines.append("**Stage 1 planning has been queued.**")
+                lines.append("- Analysis review is complete and accepted.")
+                lines.append("- Stage 1 planning will run next and produce planning artifacts.")
+                lines.append("- A planning_review gate will open after planning completes.")
+                lines.append("- Migration Stage 2 was not started.")
+                lines.append("- No transform/build/test started.")
+                cmd_id = progression.get("planning_command_id", "")
+                if cmd_id:
+                    lines.append(f"- **Planning command:** `{cmd_id[:12]}...`")
+            elif prog_status == "blocked":
+                reason = progression.get("reason", "policy_blocked")
+                lines.append(f"**Planning blocked:** {reason}")
+                lines.append("The gate is resolved but automated progression is blocked.")
+            elif prog_status == "phase_advanced":
+                from_phase = progression.get("from_phase", "")
+                to_phase = progression.get("to_phase", "")
+                stage = progression.get("stage_index", "")
+                lines.append(f"**Stage {stage} phase advanced: {from_phase} → {to_phase}**")
+                message = progression.get("message", "")
+                if message:
+                    lines.append(f"- {message}")
+                lines.append("- Next gate is open and ready for review.")
+                lines.append("- Migration Stage 2 was not started.")
+                lines.append("- No source code was mutated.")
+            else:
+                lines.append(f"**Progression status:** {prog_status}")
+                lines.append("The gate is resolved but check the job for details.")
+        else:
+            lines.append("The gate action has been applied. You can check the job status for updates.")
+    else:
+        lines.append("**Action Failed**")
+        lines.append("")
+        if status:
+            lines.append(f"- **Status:** {status}")
+        if message:
+            lines.append(f"- **Error:** {message}")
+        lines.append("")
+        lines.append("Please try again or contact support if the issue persists.")
+    return "\n".join(lines)
+
+
+def _fallback_to_existing_assistant(
+    app: Any,
+    job_id: str,
+    question: str,
+    correlation_id: str | None,
+    unit_of_work_factory: Any,
+) -> dict[str, Any]:
+    """Fall back to the existing V2AssistantService when gate load fails."""
+    from migration_factory.control_tower.application.v2_assistant_service import (
+        V2AssistantService,
+        V2AssistantModelResult,
+    )
+    with unit_of_work_factory() as uow:
+        job = _require_v2_job(uow, job_id)
+        events = uow.v2_events.list_by_job(job_id)
+        approvals = uow.v2_approvals.list_cards_by_job(job_id)
+        commands = uow.v2_commands.list_by_job(job_id)
+        pipeline = _v2_pipeline_projection(job_id, events)
+        service = V2AssistantService(assistant_repo=uow.v2_assistant)
+        assistant_intent = _classify_v2_assistant_intent(question)
+        prior_messages = service.get_messages(job_id)
+        user_msg = service.add_message(
+            job_id=job_id,
+            role="user",
+            content=question,
+            correlation_id=correlation_id,
+        )
+        conversation_history = _build_bounded_conversation_history(
+            messages=prior_messages,
+        )
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=None,
+            event_type="model_invocation_started",
+            status="running",
+            message="Assistant model invocation started.",
+            payload={"provider": "azure_openai", "role": "assistant"},
+        )
+        setup = uow.v2_setups.get(job.setup_id) if job.setup_id else None
+        artifact_previews_list = _resolve_assistant_artifact_previews(
+            question=question,
+            events=events,
+            commands=commands,
+            setup=setup,
+            assistant_intent=assistant_intent,
+        )
+        artifact_previews = tuple(artifact_previews_list)
+        if assistant_intent in {"apply_dependency_change", "rollback_pom_change"} and uow.connection.in_transaction:
+            uow.connection.execute("COMMIT")
+        fallback_answer = _build_v2_assistant_answer(
+            question=question,
+            events=events,
+            approvals=approvals,
+            commands=commands,
+            artifact_previews=artifact_previews if artifact_previews else None,
+            assistant_intent=assistant_intent,
+        )
+        if assistant_intent in {"apply_dependency_change", "rollback_pom_change"}:
+            model_result = V2AssistantModelResult(
+                content=fallback_answer,
+                source="backend_controlled",
+                model_status="not_used",
+                provider="backend",
+                role="assistant",
+                success=True,
+                redacted_summary="Backend-controlled assistant action completed.",
+                failure_reason="",
+            )
+        else:
+            model_result = app.state.v2_assistant_model_client.answer(
+                prompt=_build_v2_assistant_prompt(
+                    question=question,
+                    job=job,
+                    pipeline=pipeline,
+                    events=events,
+                    approvals=approvals,
+                    artifact_previews=artifact_previews if artifact_previews else None,
+                    assistant_intent=assistant_intent,
+                    conversation_history=conversation_history,
+                ),
+                fallback=fallback_answer,
+                conversation_history=conversation_history,
+            )
+        assistant_msg = service.add_message(
+            job_id=job_id,
+            role="assistant",
+            content=model_result.content,
+            correlation_id=user_msg.message_id,
+        )
+    with unit_of_work_factory() as uow:
+        is_fallback = (
+            not model_result.success
+            and model_result.source == "deterministic"
+        )
+        _append_v2_event(
+            uow,
+            job_id=job_id,
+            stage=None,
+            event_type="model_invocation_completed" if model_result.success else "model_invocation_failed",
+            status="completed" if model_result.success else ("fallback" if is_fallback else "failed"),
+            message=model_result.redacted_summary,
+            payload={
+                "provider": model_result.provider,
+                "role": model_result.role,
+                "source": model_result.source,
+                "success": model_result.success,
+                "is_fallback": is_fallback,
+            },
+        )
+    return {
+        "job_id": job_id,
+        "user_message": service.message_to_dict(user_msg),
+        "assistant_message": service.message_to_dict(assistant_msg),
+        "model": {
+            "status": model_result.model_status,
+            "source": model_result.source,
+            "provider": model_result.provider,
+            "role": model_result.role,
+            "failure_reason": model_result.failure_reason,
+        },
+        "guardrails": {
+            "read_only": True,
+            "cannot_execute": True,
+            "cannot_approve": True,
+            "cannot_write_files": True,
+            "cannot_change_route_or_stage": True,
+            "cannot_override_proof": True,
+        },
+    }
 
 
 def _build_bounded_conversation_history(

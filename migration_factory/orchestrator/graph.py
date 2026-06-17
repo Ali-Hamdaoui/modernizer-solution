@@ -139,6 +139,10 @@ def _phase_node(
     next_on_pass: str,
 ):
     def node(state: MigrationState) -> MigrationState:
+        requested_phase = state.get("phase")
+        if requested_phase and requested_phase != phase:
+            return dict(state)  # type: ignore[return-value]
+
         result = dict(state)
         result.update(run_phase(state))
 
@@ -166,6 +170,12 @@ def _phase_node(
 
 
 def _route_analysis(state: MigrationState) -> str:
+    requested = state.get("phase")
+    if requested:
+        if requested == "planning":
+            return "planning"
+        if requested == "assessment":
+            return "assessment"
     return _route_after_validation(
         state,
         status_key="analysis_status",
@@ -175,6 +185,12 @@ def _route_analysis(state: MigrationState) -> str:
 
 
 def _route_planning(state: MigrationState) -> str:
+    requested = state.get("phase")
+    if requested:
+        if requested == "assessment":
+            return "assessment"
+        if requested == "analysis":
+            return END
     return _route_after_validation(
         state,
         status_key="planning_status",
@@ -184,6 +200,10 @@ def _route_planning(state: MigrationState) -> str:
 
 
 def _route_assessment(state: MigrationState) -> str:
+    requested = state.get("phase")
+    if requested:
+        if requested in ("analysis", "planning"):
+            return END
     return _route_after_validation(
         state,
         status_key="assessment_status",

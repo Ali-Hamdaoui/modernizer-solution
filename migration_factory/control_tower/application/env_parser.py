@@ -37,6 +37,7 @@ ALLOWLISTED_VAR_KEYS: frozenset[str] = frozenset({
     "legacy",
     "outputParent",
     "runName",
+    "stageContinuationPolicy",
 })
 
 # Azure/OpenAI key prefixes that should be blocked
@@ -104,6 +105,7 @@ class EnvParseResult:
     java_homes: ParsedJavaHomes = field(default_factory=ParsedJavaHomes)
     maven_cmd: str = ""
     migration_flags: ParsedMigrationFlags = field(default_factory=ParsedMigrationFlags)
+    stage_continuation_policy: str = ""
     ignored_keys: tuple[str, ...] = ()
     blocked_keys: tuple[str, ...] = ()
 
@@ -203,6 +205,16 @@ def parse_env_block(block: str) -> EnvParseResult:
     legacy_app_path = var_assignments.get("legacy", "")
     output_parent_path = var_assignments.get("outputParent", "")
     run_name = var_assignments.get("runName", "")
+    stage_continuation_policy_raw = var_assignments.get("stageContinuationPolicy", "")
+
+    stage_continuation_policy = ""
+    if stage_continuation_policy_raw:
+        from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
+        try:
+            StageContinuationPolicy(stage_continuation_policy_raw.strip().strip('"').strip("'"))
+            stage_continuation_policy = stage_continuation_policy_raw.strip().strip('"').strip("'")
+        except ValueError:
+            pass
 
     return EnvParseResult(
         run_name=run_name,
@@ -212,6 +224,7 @@ def parse_env_block(block: str) -> EnvParseResult:
         java_homes=java_homes,
         maven_cmd=maven_cmd,
         migration_flags=flags,
+        stage_continuation_policy=stage_continuation_policy,
         ignored_keys=tuple(sorted(set(ignored))),
         blocked_keys=tuple(sorted(set(blocked))),
     )
@@ -235,6 +248,7 @@ def parse_result_to_dict(result: EnvParseResult) -> dict[str, Any]:
                 "proof_level": result.migration_flags.proof_level,
                 "skip_endpoint_smoke": result.migration_flags.skip_endpoint_smoke,
             },
+            "stage_continuation_policy": result.stage_continuation_policy,
         },
         "ignored_keys": list(result.ignored_keys),
         "blocked_keys": list(result.blocked_keys),
