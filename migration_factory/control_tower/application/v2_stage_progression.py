@@ -68,6 +68,8 @@ class V2StageProgressionService:
         current_stage: int,
         sandbox_path: str,
         stage_continuation_policy: StageContinuationPolicy | str = StageContinuationPolicy.AUTO_ON_GREEN,
+        gate_id: str | None = None,
+        decision_id: str | None = None,
     ) -> StageContinuationResult:
         """Queue the next stage from the current stage sandbox.
 
@@ -77,6 +79,8 @@ class V2StageProgressionService:
             current_stage: The completed stage (1 or 2).
             sandbox_path: The sandbox output path from the completed stage.
             stage_continuation_policy: Backend-owned policy from run configuration.
+            gate_id: Optional gate ID that triggered this continuation.
+            decision_id: Optional decision ID that resolved the gate.
 
         Returns:
             StageContinuationResult with the next stage details.
@@ -155,6 +159,8 @@ class V2StageProgressionService:
                 created_at=now,
                 updated_at=now,
                 result_json=None,
+                gate_id=gate_id,
+                decision_id=decision_id,
             )
             self._command_repo.save(command_record)
 
@@ -166,6 +172,36 @@ class V2StageProgressionService:
             sandbox_path=sandbox_path,
             argv=argv,
             status="queued",
+        )
+
+    # ── gate-driven queue (with gate/decision tracing) ───────────────
+
+    def queue_next_stage_from_gate(
+        self,
+        job_id: str,
+        setup_id: str,
+        current_stage: int,
+        sandbox_path: str,
+        gate_id: str,
+        decision_id: str,
+        stage_continuation_policy: StageContinuationPolicy | str = StageContinuationPolicy.AUTO_ON_GREEN,
+    ) -> StageContinuationResult:
+        """Queue next stage tracking the gate decision that triggered it.
+
+        Like queue_next_stage but requires gate_id and decision_id so
+        the resulting command can be traced back to the gate resolution.
+
+        For AUTO_ON_GREEN (no gate), callers should use queue_next_stage
+        directly without gate/decision IDs (backward compatible).
+        """
+        return self.queue_next_stage(
+            job_id=job_id,
+            setup_id=setup_id,
+            current_stage=current_stage,
+            sandbox_path=sandbox_path,
+            stage_continuation_policy=stage_continuation_policy,
+            gate_id=gate_id,
+            decision_id=decision_id,
         )
 
     def validate_stage_chain(
