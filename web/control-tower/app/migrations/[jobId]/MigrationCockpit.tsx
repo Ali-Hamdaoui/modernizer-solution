@@ -557,7 +557,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         <h2>Approval Decisions</h2>
         {approvalReviewOpen && (
           <p className="meta">
-            Pre-transform review is open in the chatbot. Use the assistant to review evidence, request changes, and confirm the exact checksum.
+            Pre-transform review is open in the chatbot. Legacy Approve/Reject controls are disabled here; use the assistant to review evidence, request changes, and confirm the exact checksum.
           </p>
         )}
         {data.approvals.length === 0 ? (

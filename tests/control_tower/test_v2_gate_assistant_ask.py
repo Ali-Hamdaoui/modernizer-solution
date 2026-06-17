@@ -157,6 +157,10 @@ def _seed_fk_refs(conn: sqlite3.Connection) -> None:
 
 
 def _ready_setup(conn: sqlite3.Connection) -> str:
+    return _ready_setup_with_output_root(conn, "C:/work/out")
+
+
+def _ready_setup_with_output_root(conn: sqlite3.Connection, output_parent_path: str) -> str:
     now = utc_now_text()
     repo = SqliteV2SetupRepository(conn)
     service = V2SetupService(repo)
@@ -164,7 +168,7 @@ def _ready_setup(conn: sqlite3.Connection) -> str:
         CreateSetupRequest(
             run_name="gate-ask",
             legacy_app_path="C:/work/legacy",
-            output_parent_path="C:/work/out",
+            output_parent_path=output_parent_path,
             ai_hub_path="C:/work/ai-hub",
             java11_home="C:/java/11",
             java17_home="C:/java/17",
@@ -222,6 +226,68 @@ def _ready_setup(conn: sqlite3.Connection) -> str:
     return setup.setup_id
 
 
+def _seed_approval_review_artifacts(root: Path) -> None:
+    artifacts = {
+        "analysis_report.json": '{"summary":"Analysis identified dependency drift and legacy security config."}',
+        "analysis_summary.md": "Analysis summary: legacy security must move to SecurityFilterChain.",
+        "config_inventory.json": '{"configs":["spring-security.xml","application.yml"]}',
+        "dependency_graph.json": '{"graph":"legacy -> security"}',
+        "test_inventory.json": '{"tests":["security_smoke_test"]}',
+        "assessment_report.json": '{"risk":"medium","notes":"Spring Security should use SecurityFilterChain."}',
+        "assessment_summary.md": "Assessment summary: update Spring Security to stateless sessions.",
+        "migration_plan.yaml": "plan: replace XML security with SecurityFilterChain",
+        "migration_units.yaml": "units:\n  - security-config",
+        "plan_summary.md": "Plan summary: change security setup and keep sessions stateless.",
+        "plan_validation_report.json": '{"status":"pass"}',
+        "approval_request.json": '{"request":"approve plan after revision"}',
+        "rewrite_preview.json": '{"rewrite":"SecurityFilterChain + stateless sessions"}',
+        "rewrite_dry_run.patch": "--- a/src/main/java/App.java\n+++ b/src/main/java/App.java\n@@ -1 +1 @@\n-xml security\n+SecurityFilterChain",
+        "rewrite_impact_summary.json": '{"impact":"security configuration changes only"}',
+        "target_dependency_plan.json": '{"dependencies":["spring-security"]}',
+    }
+    root.mkdir(parents=True, exist_ok=True)
+    for rel_path, content in artifacts.items():
+        file_path = root / rel_path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content, encoding="utf-8")
+
+
+def _seed_approval_card_for_gate(
+    conn: sqlite3.Connection,
+    *,
+    job_id: str,
+    gate_id: str,
+    stage_index: int,
+) -> str:
+    gate_repo = SqlitePhaseGateRepository(conn)
+    gate = gate_repo.get(gate_id)
+    assert gate is not None
+    refs = json.loads(gate.source_artifact_refs_json)
+    checksum = gate_checksum(
+        gate_id=gate.gate_id,
+        job_id=gate.job_id,
+        gate_phase=gate.gate_phase,
+        stage_index=gate.stage_index,
+        source_artifact_checksum=gate.source_artifact_checksum,
+        source_artifact_refs=refs,
+    )
+    approval_repo = SqliteV2ApprovalRepository(conn)
+    now = utc_now_text()
+    approval_repo.save_card(
+        V2ApprovalDecisionRecord(
+            card_id="approval-card-1",
+            job_id=job_id,
+            interrupt_id="run-1",
+            request_checksum=checksum,
+            stage_index=stage_index,
+            summary="Pre-transform review",
+            status="pending",
+            created_at=now,
+        )
+    )
+    return checksum
+
+
 def _create_job(client: TestClient, setup_id: str) -> str:
     resp = client.post(
         "/v1/v2/migration-jobs",
@@ -247,6 +313,29 @@ def _create_gate(
                 stage_index=stage_index,
                 source_artifact_checksum="sha256:gate",
                 source_artifact_refs=("analysis:1", "plan:1"),
+            )
+        )
+    assert result.status == "created"
+    return result.gate_id
+
+
+def _create_gate_with_refs(
+    conn: sqlite3.Connection,
+    job_id: str,
+    *,
+    refs: tuple[str, ...],
+    phase: str = "approval_review",
+    stage_index: int = 1,
+) -> str:
+    with SqliteUnitOfWork(conn) as uow:
+        gate_service = V2PhaseGateService(uow.phase_gates)
+        result = gate_service.create_gate(
+            CreateGateRequest(
+                job_id=job_id,
+                gate_phase=phase,
+                stage_index=stage_index,
+                source_artifact_checksum="sha256:gate",
+                source_artifact_refs=refs,
             )
         )
     assert result.status == "created"
@@ -332,11 +421,35 @@ def test_ask_with_open_gate_returns_gate_aware(tmp_path: Path) -> None:
 
 def test_ask_approval_review_explains_bound_evidence(tmp_path: Path) -> None:
     client, conn = _api_client(tmp_path)
-    setup_id = _ready_setup(conn)
+    output_root = tmp_path / "out"
+    setup_id = _ready_setup_with_output_root(conn, str(output_root))
+    _seed_approval_review_artifacts(output_root)
     job_id = _create_job(client, setup_id)
     seed_job(conn, job_id=job_id)
     _seed_stage1_command(conn, job_id)
-    _create_gate(conn, job_id, stage_index=1)
+    _create_gate_with_refs(
+        conn,
+        job_id,
+        refs=(
+            "analysis_report.json",
+            "analysis_summary.md",
+            "config_inventory.json",
+            "dependency_graph.json",
+            "test_inventory.json",
+            "assessment_report.json",
+            "assessment_summary.md",
+            "migration_plan.yaml",
+            "migration_units.yaml",
+            "plan_summary.md",
+            "plan_validation_report.json",
+            "approval_request.json",
+            "rewrite_preview.json",
+            "rewrite_dry_run.patch",
+            "rewrite_impact_summary.json",
+            "target_dependency_plan.json",
+        ),
+        stage_index=1,
+    )
 
     resp = client.post(
         f"/v1/v2/jobs/{job_id}/assistant/ask",
@@ -351,6 +464,61 @@ def test_ask_approval_review_explains_bound_evidence(tmp_path: Path) -> None:
     assert "Pre-transform review" in content
     assert "blocked before transform" in content
     assert "Transform, build, and test have not started." in content
+    assert "What happened?" in content
+    assert "analysis_report.json" in content
+    assert "migration_plan.yaml" in content
+    assert "Evidence could not be loaded: Gate has no bound artifact references." not in content
+
+
+def test_ask_approval_review_what_will_change_uses_planning_evidence(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    output_root = tmp_path / "out"
+    setup_id = _ready_setup_with_output_root(conn, str(output_root))
+    _seed_approval_review_artifacts(output_root)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    _seed_stage1_command(conn, job_id)
+    _create_gate_with_refs(
+        conn,
+        job_id,
+        refs=(
+            "analysis_report.json",
+            "analysis_summary.md",
+            "config_inventory.json",
+            "dependency_graph.json",
+            "test_inventory.json",
+            "assessment_report.json",
+            "assessment_summary.md",
+            "migration_plan.yaml",
+            "migration_units.yaml",
+            "plan_summary.md",
+            "plan_validation_report.json",
+            "approval_request.json",
+            "rewrite_preview.json",
+            "rewrite_dry_run.patch",
+            "rewrite_impact_summary.json",
+            "target_dependency_plan.json",
+        ),
+        stage_index=1,
+    )
+
+    resp = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": "What will change?"},
+        headers=_mutation_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    content = body.get("assistant_message", {}).get("content", "")
+    assert body.get("gate_aware") is True
+    assert body.get("executed") is False
+    assert "What will change?" in content
+    assert "migration_plan.yaml" in content
+    assert "rewrite_preview.json" in content
+    assert "rewrite_dry_run.patch" in content
+    assert "target_dependency_plan.json" in content
+    assert "assessment_report.json" in content
+    assert "no evidence" not in content.lower()
 
 
 def test_ask_state_changing_intent_returns_preview(tmp_path: Path) -> None:
@@ -532,7 +700,13 @@ def test_ask_revision_request_records_blocked_state(tmp_path: Path) -> None:
     job_id = _create_job(client, setup_id)
     seed_job(conn, job_id=job_id)
     _seed_stage1_command(conn, job_id)
-    _create_gate(conn, job_id, stage_index=1)
+    gate_id = _create_gate(conn, job_id, stage_index=1)
+    checksum = _seed_approval_card_for_gate(
+        conn,
+        job_id=job_id,
+        gate_id=gate_id,
+        stage_index=1,
+    )
 
     request_text = "Change the plan to use SecurityFilterChain and stateless sessions."
     resp = client.post(
@@ -550,11 +724,21 @@ def test_ask_revision_request_records_blocked_state(tmp_path: Path) -> None:
     events = SqliteUnitOfWork(conn).v2_events.list_by_job(job_id)
     revision_events = [event for event in events if event.type == "approval_revision_requested"]
     assert len(revision_events) == 1
+    assert revision_events[0].status == "blocked"
     payload = json.loads(revision_events[0].payload_json or "{}")
     assert payload["status"] == "revision_requested"
     assert payload["user_request_text"] == request_text
     assert payload["gate_checksum"]
     assert payload["gate_id"]
+    assert payload["gate_checksum"] == checksum
+
+    approval_repo = SqliteV2ApprovalRepository(conn)
+    card = approval_repo.get_card("approval-card-1")
+    assert card is not None
+    assert card.status == "blocked"
+
+    command_repo = SqliteV2CommandRepository(conn)
+    assert len(command_repo.list_by_job_and_stage(job_id, 2)) == 0
 
 
 def test_ask_yes_pattern(tmp_path: Path) -> None:

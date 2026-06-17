@@ -296,7 +296,7 @@ describe("V2 Migration Cockpit contract", () => {
   it("approval review jobs route approval through chatbot copy", () => {
     const approvalReviewOpen = true;
     const labels = approvalReviewOpen
-      ? ["Review in chatbot", "Exact checksum confirmation is required.", "checksum-123"]
+      ? ["Review in chatbot", "Legacy Approve/Reject controls are disabled here.", "checksum-123"]
       : ["Approve", "Reject", "checksum-123"];
     expect(labels).toContain("Review in chatbot");
     expect(labels).toContain("checksum-123");

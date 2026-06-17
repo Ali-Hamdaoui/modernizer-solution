@@ -248,7 +248,9 @@ def test_v2_gate_list_open_detail_and_legacy_proof_route(tmp_path: Path) -> None
 
     open_before = client.get(f"/v1/v2/jobs/{job_id}/gates/open")
     assert open_before.status_code == 200
-    assert open_before.json()["gate"]["gate_id"] == gate_id
+    open_gate = open_before.json()["gate"]
+    assert open_gate["gate_id"] == gate_id
+    assert open_gate["source_artifact_refs"] == ["analysis:1", "plan:1"]
 
     list_response = client.get(f"/v1/v2/jobs/{job_id}/gates")
     assert list_response.status_code == 200

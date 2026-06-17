@@ -26,12 +26,7 @@ from migration_factory.control_tower.domain.checksums import (
     sha256_hex,
     stream_sha256,
 )
-from migration_factory.control_tower.domain.gate_artifact_ref import (
-    GateArtifactRef,
-    parse_artifact_refs,
-    validate_all_artifact_refs,
-    ArtifactRefValidationError,
-)
+from migration_factory.control_tower.domain.gate_artifact_ref import GateArtifactRef
 from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_repository import (
     SqlitePhaseGateRepository,
 )
@@ -150,11 +145,7 @@ class V2GateArtifactResolver:
                 resolution_id=uuid4().hex[:12],
             )
 
-        # Parse artifact refs from gate
-        try:
-            refs = parse_artifact_refs(gate.source_artifact_refs_json)
-        except (json.JSONDecodeError, ValueError, TypeError):
-            refs = ()
+        refs = self._parse_gate_artifact_entries(gate.source_artifact_refs_json)
 
         if not refs:
             return ArtifactResolutionResult(
@@ -169,12 +160,17 @@ class V2GateArtifactResolver:
         missing: list[str] = []
         mismatches: list[str] = []
 
-        for ref in refs:
-            result = self._resolve_single_artifact(ref)
+        for kind, path_or_ref, expected_checksum, description in refs:
+            result = self._resolve_single_artifact(
+                kind=kind,
+                path_or_ref=path_or_ref,
+                expected_checksum=expected_checksum,
+                description=description,
+            )
             if result is None:
-                missing.append(ref.kind)
+                missing.append(kind)
             elif not result.checksum_verified:
-                mismatches.append(ref.kind)
+                mismatches.append(kind)
             else:
                 resolved.append(result)
 
@@ -228,7 +224,12 @@ class V2GateArtifactResolver:
         mismatches: list[str] = []
 
         for ref in refs:
-            result = self._resolve_single_artifact(ref)
+            result = self._resolve_single_artifact(
+                kind=ref.kind,
+                path_or_ref=ref.path_or_ref,
+                expected_checksum=ref.checksum,
+                description=ref.description,
+            )
             if result is None:
                 missing.append(ref.kind)
             elif not result.checksum_verified:
@@ -253,7 +254,11 @@ class V2GateArtifactResolver:
 
     def _resolve_single_artifact(
         self,
-        ref: GateArtifactRef,
+        *,
+        kind: str,
+        path_or_ref: str,
+        expected_checksum: str | None = None,
+        description: str = "",
     ) -> ResolvedArtifact | None:
         """Resolve a single artifact ref.
 
@@ -261,34 +266,88 @@ class V2GateArtifactResolver:
         Returns a ResolvedArtifact with checksum_verified=False
         if the checksum does not match.
         """
-        try:
-            validate_all_artifact_refs([ref])
-        except ArtifactRefValidationError:
-            return None
-
         # Resolve the artifact path
-        content, size_bytes = self._read_artifact_content(ref.path_or_ref)
+        content, size_bytes = self._read_artifact_content(path_or_ref)
         if content is None:
             return None
 
         # Verify checksum
         actual_checksum = sha256_hex(content.encode("utf-8"))
-        checksum_ok = actual_checksum == ref.checksum
+        checksum_ok = True if expected_checksum is None else actual_checksum == expected_checksum
+        checksum_value = expected_checksum or actual_checksum
 
         # Redact content
-        redacted = self._redact_artifact_content(content, ref.kind)
+        redacted = self._redact_artifact_content(content, kind)
         truncated = len(redacted) > self._max_content_chars
         if truncated:
             redacted = redacted[:self._max_content_chars] + "\n\n[... content truncated ...]"
 
         return ResolvedArtifact(
-            kind=ref.kind,
-            checksum=ref.checksum,
+            kind=kind,
+            checksum=checksum_value,
             checksum_verified=checksum_ok,
             content=redacted,
             size_bytes=size_bytes,
             truncated=truncated,
         )
+
+    def _parse_gate_artifact_entries(
+        self,
+        raw: str | bytes | list[dict[str, Any]] | None,
+    ) -> tuple[tuple[str, str, str | None, str], ...]:
+        """Parse gate artifact refs into backend-owned resolution entries.
+
+        The current approval_review slice stores plain string refs in some
+        gates and structured refs in others. Plain strings are treated as
+        backend-owned storage keys and resolved without per-artifact checksum
+        verification, while structured refs keep their explicit checksums.
+        """
+        if raw is None:
+            return ()
+
+        if isinstance(raw, bytes):
+            try:
+                parsed = json.loads(raw.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+                return ()
+        elif isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                return ()
+        else:
+            parsed = raw
+
+        if isinstance(parsed, dict):
+            items: list[Any] = [parsed]
+        elif isinstance(parsed, list):
+            items = list(parsed)
+        else:
+            return ()
+
+        entries: list[tuple[str, str, str | None, str]] = []
+        for item in items:
+            if isinstance(item, dict):
+                kind = str(item.get("kind", "") or "").strip()
+                path_or_ref = str(item.get("path_or_ref", "") or item.get("path", "") or item.get("ref", "")).strip()
+                checksum_raw = item.get("checksum")
+                checksum = str(checksum_raw).strip() if isinstance(checksum_raw, str) and checksum_raw.strip() else None
+                description_raw = item.get("description", "")
+                description = str(description_raw).strip() if description_raw is not None else ""
+                if not kind:
+                    kind = Path(path_or_ref).name or path_or_ref
+                if kind and path_or_ref:
+                    entries.append((kind, path_or_ref, checksum, description))
+                continue
+
+            if isinstance(item, str):
+                ref = item.strip()
+                if not ref:
+                    continue
+                kind = Path(ref).name or ref
+                entries.append((kind, ref, None, ""))
+
+        return tuple(entries)
 
     def _read_artifact_content(
         self,
@@ -307,12 +366,11 @@ class V2GateArtifactResolver:
             # In-memory or test mode — return None
             return None, None
 
-        # Ensure the path is relative
-        if path_or_ref.startswith("/"):
-            # Absolute paths are rejected
-            return None, None
-
-        resolved_path = (self._storage_root / path_or_ref).resolve()
+        candidate_path = Path(path_or_ref)
+        if candidate_path.is_absolute():
+            resolved_path = candidate_path.resolve()
+        else:
+            resolved_path = (self._storage_root / candidate_path).resolve()
 
         # Ensure the resolved path is within the storage root
         try:

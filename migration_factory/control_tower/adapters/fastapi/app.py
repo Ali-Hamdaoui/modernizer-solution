@@ -4917,7 +4917,12 @@ def _handle_gate_aware_ask(
     with unit_of_work_factory() as uow:
         gate_repo = uow.phase_gates
         gate_service = V2PhaseGateService(gate_repo)
-        resolver = V2GateArtifactResolver(gate_repo)
+        job = uow.v2_jobs.get(job_id)
+        setup = None
+        if job is not None and getattr(job, "setup_id", None):
+            setup = uow.v2_setups.get(job.setup_id)
+        storage_root = getattr(setup, "output_parent_path", None) if setup is not None else None
+        resolver = V2GateArtifactResolver(gate_repo, storage_root=storage_root)
         loader = GateContextLoader(
             gate_service=gate_service,
             resolver=resolver,
@@ -5112,6 +5117,41 @@ def _handle_gate_aware_ask(
                         "pending_confirmation": False,
                         "exact_checksum": context.checksum,
                     },
+                    "available_actions": _approval_review_available_actions(),
+                    "guardrails": {
+                        "read_only": True,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
+
+            if intent.action_type == "reject_from_gate" or question_lower == "reject":
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=_format_approval_review_preview(context, action_type="reject_from_gate"),
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "gate_aware": True,
+                    "intent": "reject_from_gate",
+                    "executed": False,
+                    "action_preview": {
+                        "action_type": "reject_from_gate",
+                        "reason": "Preview only; exact checksum confirmation required.",
+                        "confidence": 1.0,
+                        "warning": "Legacy reject is routed through the same checksum flow in approval review.",
+                        "requires_confirmation": True,
+                        "pending_confirmation": False,
+                        "exact_checksum": context.checksum,
+                    },
+                    "available_actions": _approval_review_available_actions(),
                     "guardrails": {
                         "read_only": True,
                         "cannot_execute": True,
@@ -5140,6 +5180,7 @@ def _handle_gate_aware_ask(
                     "gate_aware": True,
                     "intent": "status",
                     "executed": False,
+                    "available_actions": _approval_review_available_actions(),
                     "guardrails": {
                         "read_only": True,
                         "cannot_execute": True,
@@ -5150,12 +5191,21 @@ def _handle_gate_aware_ask(
                     },
                 }
 
-            if any(term in question_lower for term in ("change", "add", "update", "request")):
+            if _question_looks_like_approval_review_revision_request(question):
+                pending_card = _approval_review_pending_card(
+                    uow,
+                    job_id=job_id,
+                    gate_phase=open_gate.gate_phase,
+                    stage_index=open_gate.stage_index,
+                    gate_checksum=context.checksum,
+                )
+                if pending_card is not None:
+                    uow.v2_approvals.update_card_status(pending_card.card_id, "blocked")
                 uow.v2_events.save(
                     job_id=job_id,
                     stage=open_gate.stage_index,
                     event_type="approval_revision_requested",
-                    status="revision_requested",
+                    status="blocked",
                     message="Revision requested during approval review.",
                     payload=_approval_review_revision_payload(
                         job_id=job_id,
@@ -5178,6 +5228,7 @@ def _handle_gate_aware_ask(
                     "gate_aware": True,
                     "intent": "request_revision",
                     "executed": False,
+                    "available_actions": _approval_review_available_actions(blocked_revision=True),
                     "action_preview": {
                         "action_type": "request_revision",
                         "reason": "Revision requested before transform.",
@@ -5530,6 +5581,39 @@ def _question_looks_like_approval_review_explanation(question: str) -> bool:
     )
 
 
+def _question_looks_like_approval_review_revision_request(question: str) -> bool:
+    lowered = question.lower().strip()
+    if lowered.startswith(
+        (
+            "use ",
+            "switch to ",
+            "replace ",
+            "change to ",
+            "prefer ",
+            "make ",
+            "add ",
+            "remove ",
+            "update ",
+            "modify ",
+            "refactor ",
+            "adopt ",
+        )
+    ):
+        return True
+    return any(
+        term in lowered
+        for term in (
+            "request revision",
+            "revise the plan",
+            "revise this",
+            "use securityfilterchain",
+            "stateless sessions",
+            "spring security",
+            "change the plan",
+        )
+    )
+
+
 def _extract_confirm_checksum(question: str) -> str:
     match = re.search(r"confirm\s+checksum\s+([^\s,.;:]+)", question, flags=re.IGNORECASE)
     if match:
@@ -5537,7 +5621,88 @@ def _extract_confirm_checksum(question: str) -> str:
     return ""
 
 
-def _format_approval_review_preview(context: GateContext) -> str:
+def _approval_review_pending_card(
+    uow: Any,
+    *,
+    job_id: str,
+    gate_phase: str,
+    stage_index: int,
+    gate_checksum: str,
+) -> Any | None:
+    pending_cards = [
+        card
+        for card in uow.v2_approvals.list_cards_by_job(job_id)
+        if card.stage_index == stage_index and card.status == "pending"
+    ]
+    return next(
+        (card for card in pending_cards if card.request_checksum == gate_checksum),
+        pending_cards[0] if pending_cards else None,
+    )
+
+
+def _approval_review_available_actions(*, blocked_revision: bool = False) -> tuple[dict[str, Any], ...]:
+    revision_block_reason = (
+        "Revision request recorded; transform stays blocked until the revised evidence is reviewed again."
+        if blocked_revision
+        else "Available during approval review."
+    )
+    return (
+        {
+            "action": "status",
+            "label": "Explain / Status",
+            "description": "Summarize bound analysis, planning, and assessment evidence.",
+            "blocked": False,
+            "block_reason": "",
+        },
+        {
+            "action": "request_revision",
+            "label": "Request revision",
+            "description": revision_block_reason,
+            "blocked": False,
+            "block_reason": "",
+        },
+        {
+            "action": "approve_from_gate",
+            "label": "Approve",
+            "description": "Preview only; exact checksum confirmation is required.",
+            "blocked": True,
+            "block_reason": "Approval remains behind the exact checksum flow.",
+        },
+        {
+            "action": "reject_from_gate",
+            "label": "Reject",
+            "description": "Preview only; exact checksum confirmation is required.",
+            "blocked": True,
+            "block_reason": "Legacy direct rejection is not primary in approval_review.",
+        },
+    )
+
+
+def _approval_review_artifact_excerpt(artifact: Any) -> str:
+    kind = str(getattr(artifact, "kind", "") or "").strip()
+    content = str(getattr(artifact, "content", "") or "").strip()
+    if not content:
+        return kind or "artifact"
+    first_lines = [line.strip() for line in content.splitlines() if line.strip()]
+    excerpt = " | ".join(first_lines[:3])
+    if len(excerpt) > 240:
+        excerpt = excerpt[:240] + "..."
+    return f"{kind}: {excerpt}" if kind else excerpt
+
+
+def _approval_review_evidence_lines(evidence: Any | None, *, topics: tuple[str, ...]) -> list[str]:
+    if evidence is None:
+        return []
+    lines: list[str] = []
+    for artifact in getattr(evidence, "artifacts", ()):
+        kind = str(getattr(artifact, "kind", "") or "").lower()
+        if any(topic in kind for topic in topics):
+            lines.append(f"- {_approval_review_artifact_excerpt(artifact)}")
+    return lines
+
+
+def _format_approval_review_preview(context: GateContext, *, action_type: str = "approve_from_gate") -> str:
+    action_label = "Approve" if action_type == "approve_from_gate" else "Reject"
     lines = [
         "**Pre-transform review is open**",
         "",
@@ -5548,7 +5713,9 @@ def _format_approval_review_preview(context: GateContext) -> str:
         f"Exact checksum: `{context.checksum}`",
         "Confirm it by saying `confirm checksum <exact checksum>`.",
         "",
-        "Available actions: explain, explain changes, request revision, approve, reject/stop.",
+        f"Selected action: {action_label}.",
+        "Available actions: explain/status, request revision, approve, reject.",
+        "Legacy Approve/Reject buttons are not primary in approval_review.",
     ]
     return "\n".join(lines)
 
@@ -5569,16 +5736,38 @@ def _format_approval_review_explanation(
     lines.append(f"Gate checksum: `{context.checksum}`")
 
     if evidence is not None:
-        artifact_lines: list[str] = []
-        for artifact in getattr(evidence, "artifacts", ()):
-            kind = getattr(artifact, "kind", "")
-            if kind:
-                artifact_lines.append(str(kind))
-        if artifact_lines:
+        happened_lines = _approval_review_evidence_lines(
+            evidence,
+            topics=(
+                "analysis_report",
+                "config_inventory",
+                "dependency_graph",
+                "test_inventory",
+                "assessment_report",
+                "assessment_summary",
+            ),
+        )
+        will_change_lines = _approval_review_evidence_lines(
+            evidence,
+            topics=(
+                "migration_plan",
+                "migration_units",
+                "approval_request",
+                "rewrite_preview",
+                "rewrite_dry_run",
+                "rewrite_impact_summary",
+                "target_dependency_plan",
+                "plan_validation_report",
+            ),
+        )
+        if happened_lines:
             lines.append("")
-            lines.append("Bound artifact kinds used as evidence:")
-            for kind in artifact_lines[:12]:
-                lines.append(f"- {kind}")
+            lines.append("What happened?")
+            lines.extend(happened_lines[:12])
+        if will_change_lines:
+            lines.append("")
+            lines.append("What will change?")
+            lines.extend(will_change_lines[:12])
         if getattr(evidence, "summary", ""):
             lines.append("")
             lines.append("Evidence summary:")
@@ -5601,7 +5790,7 @@ def _format_approval_review_explanation(
     lines.append(
         "Ask what happened, what will change, or request a revision before approving."
     )
-    if "change" in question.lower() or "update" in question.lower() or "request" in question.lower():
+    if _question_looks_like_approval_review_revision_request(question):
         lines.append("A revision request will be recorded and transform will stay blocked.")
     return "\n".join(lines)
 
