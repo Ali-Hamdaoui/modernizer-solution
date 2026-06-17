@@ -702,6 +702,7 @@ class V2OrchestratorRunner:
             job_id=job_id,
             stage_index=stage_index,
             sandbox_path=sandbox_path,
+            result=result,
         )
 
     def _emit_phase_outcome_events(
@@ -956,6 +957,7 @@ class V2OrchestratorRunner:
         job_id: str,
         stage_index: int,
         sandbox_path: str,
+        result: dict[str, Any] | None = None,
     ) -> None:
         from migration_factory.control_tower.application.v2_stage_progression import (
             V2StageProgressionService,
@@ -1005,6 +1007,36 @@ class V2OrchestratorRunner:
                 # Handle manual policy: create stage_completion_review gate
                 if queued.status == "blocked":
                     import json
+
+                    # Compute source artifact checksum from result if available
+                    source_checksum = ""
+                    artifact_refs: tuple[str, ...] = ()
+                    if result is not None:
+                        from migration_factory.control_tower.domain.checksums import (
+                            sha256_canonical_json,
+                        )
+                        source_checksum = sha256_canonical_json(result)
+                        # Extract artifact refs
+                        refs_dict = result.get("artifact_refs") if isinstance(result.get("artifact_refs"), dict) else {}
+                        ref_values = [str(v) for v in refs_dict.values() if v and isinstance(v, str)]
+                        if sandbox_path:
+                            ref_values.append(sandbox_path)
+                        artifact_refs = tuple(sorted(ref_values))
+
+                    # Create stage_completion_review gate
+                    # (no event_repo — events emitted manually below)
+                    gate_service = V2PhaseGateService(
+                        gate_repo=uow.phase_gates,
+                    )
+                    gate_result = gate_service.create_gate(CreateGateRequest(
+                        job_id=job_id,
+                        gate_phase="stage_completion_review",
+                        stage_index=stage_index,
+                        source_artifact_checksum=source_checksum,
+                        source_artifact_refs=artifact_refs,
+                        created_by="system",
+                    ))
+
                     uow.v2_events.save(
                         job_id=job_id,
                         stage=stage_index,
@@ -1017,6 +1049,9 @@ class V2OrchestratorRunner:
                         payload={
                             "from_stage": stage_index,
                             "to_stage": next_stage,
+                            "gate_id": gate_result.gate_id,
+                            "gate_checksum": gate_result.gate_checksum,
+                            "gate_status": gate_result.status,
                             "reason": queued.reason,
                         },
                     )
