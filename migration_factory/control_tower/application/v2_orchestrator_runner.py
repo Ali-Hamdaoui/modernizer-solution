@@ -1035,14 +1035,30 @@ class V2OrchestratorRunner:
                             ref_values.append(sandbox_path)
                         artifact_refs = tuple(sorted(ref_values))
 
-                    # Create stage_completion_review gate
-                    # (no event_repo — events emitted manually below)
+                    # Determine gate phase based on stage index
+                    # Stage 1 (analysis) → analysis_review
+                    # Stage 2 (planning) → planning_review
+                    # Stage 3 (completion) → stage_completion_review
+                    if stage_index == 1:
+                        gate_phase = "analysis_review"
+                        event_type = "analysis_review_required"
+                        phase_label = "analysis"
+                    elif stage_index == 2:
+                        gate_phase = "planning_review"
+                        event_type = "planning_review_required"
+                        phase_label = "planning"
+                    else:
+                        gate_phase = "stage_completion_review"
+                        event_type = "stage_completion_review_required"
+                        phase_label = "stage"
+
+                    # Create the gate (no event_repo — events emitted manually)
                     gate_service = V2PhaseGateService(
                         gate_repo=uow.phase_gates,
                     )
                     gate_result = gate_service.create_gate(CreateGateRequest(
                         job_id=job_id,
-                        gate_phase="stage_completion_review",
+                        gate_phase=gate_phase,
                         stage_index=stage_index,
                         source_artifact_checksum=source_checksum,
                         source_artifact_refs=artifact_refs,
@@ -1052,11 +1068,12 @@ class V2OrchestratorRunner:
                     uow.v2_events.save(
                         job_id=job_id,
                         stage=stage_index,
-                        event_type="stage_completion_review_required",
+                        event_type=event_type,
                         status="blocked",
                         message=(
-                            f"Stage {stage_index} completed under manual policy. "
-                            f"Gate review required before stage {next_stage} can start."
+                            f"Stage {stage_index} ({phase_label}) completed under manual policy. "
+                            f"{gate_phase} gate review required before "
+                            f"stage {next_stage} can start."
                         ),
                         payload={
                             "from_stage": stage_index,
