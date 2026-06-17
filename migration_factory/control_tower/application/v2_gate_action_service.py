@@ -21,10 +21,16 @@ from migration_factory.control_tower.application.v2_phase_gate_service import (
     V2PhaseGateService,
 )
 from migration_factory.control_tower.domain.checksums import utc_now_text
-from migration_factory.control_tower.domain.entities import GateDecisionRecord
+from migration_factory.control_tower.domain.entities import (
+    ArtifactRevisionRecord,
+    GateDecisionRecord,
+)
 from migration_factory.control_tower.domain.gate_checksum import (
     GateChecksumMismatchError,
     gate_checksum,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_artifact_revision_repository import (
+    SqliteArtifactRevisionRepository,
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_gate_decision_repository import (
     SqliteGateDecisionRepository,
@@ -81,10 +87,12 @@ class V2GateActionService:
         gate_repo: SqlitePhaseGateRepository,
         decision_repo: SqliteGateDecisionRepository,
         gate_service: V2PhaseGateService | None = None,
+        revision_repo: SqliteArtifactRevisionRepository | None = None,
     ) -> None:
         self._gate_repo = gate_repo
         self._decision_repo = decision_repo
         self._gate_service = gate_service or V2PhaseGateService(gate_repo)
+        self._revision_repo = revision_repo
 
     # ── action: continue ────────────────────────────────────────────
 
@@ -136,6 +144,79 @@ class V2GateActionService:
             decided_by=decided_by,
             idempotency_key=idempotency_key,
         )
+
+    # ── action: request_reanalysis (with user feedback) ─────────────
+
+    def request_reanalysis(
+        self,
+        *,
+        gate_id: str,
+        job_id: str,
+        decided_by: str,
+        user_feedback: str = "",
+        idempotency_key: str | None = None,
+    ) -> GateActionResult:
+        """Request reanalysis at an analysis_review gate.
+
+        Unlike the generic ``reanalyze_from_gate``, this method:
+          1. Only accepts analysis_review gates.
+          2. Creates a new ArtifactRevision (kind=analysis, status=draft)
+             with user feedback explaining why reanalysis is needed.
+          3. Opens a fresh analysis_review gate.
+
+        Downstream blocking (e.g. superseding planning) is handled at
+        the service layer via revision lineage, not by DB-level UPDATE.
+
+        No source writes occur.  The chatbot may explain the feedback
+        to the backend for context, but the backend owns the revision.
+        """
+        base_result = self._execute_action(
+            gate_id=gate_id,
+            job_id=job_id,
+            action=GateDecision.REANALYZE,
+            decided_by=decided_by,
+            idempotency_key=idempotency_key,
+        )
+        if base_result.status not in ("executed", "idempotent"):
+            return base_result
+
+        # Determine stage_index from the gate
+        gate = self._gate_repo.get(gate_id)
+        if gate is None:
+            return base_result  # unlikely, already resolved
+
+        stage_index = gate.stage_index
+        import json
+        now = utc_now_text()
+
+        # Create a draft analysis revision with user feedback
+        if self._revision_repo is not None and base_result.status == "executed":
+            rev_id = uuid4().hex
+            self._revision_repo.save(
+                ArtifactRevisionRecord(
+                    revision_id=rev_id,
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    revision_kind="analysis",
+                    revision_status="draft",
+                    revision_order=0,
+                    evidence_checksum=gate.source_artifact_checksum,
+                    prior_revision_checksum=None,
+                    artifact_refs_json=json.dumps(
+                        [user_feedback[:256]] if user_feedback else [],
+                        separators=(",", ":"),
+                    ),
+                    prior_revision_id=None,
+                    superseded_by_revision_id=None,
+                    accepted_at_gate_id=base_result.result_gate_id,
+                    created_at=now,
+                    created_by=decided_by,
+                    accepted_at=None,
+                    accepted_by=None,
+                )
+            )
+
+        return base_result
 
     # ── action: approve ─────────────────────────────────────────────
 
