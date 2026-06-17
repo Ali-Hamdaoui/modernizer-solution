@@ -93,7 +93,12 @@ class V2StageProgressionService:
             )
 
         policy = _coerce_stage_continuation_policy(stage_continuation_policy)
-        if policy == StageContinuationPolicy.MANUAL:
+        if policy in (StageContinuationPolicy.MANUAL, StageContinuationPolicy.MANUAL_ON_WARNING_OR_FAILURE):
+            reason = (
+                "stage_continuation_policy_manual"
+                if policy == StageContinuationPolicy.MANUAL
+                else "stage_continuation_policy_warning_or_failure"
+            )
             return StageContinuationResult(
                 continuation_id=uuid4().hex,
                 job_id=job_id,
@@ -102,8 +107,10 @@ class V2StageProgressionService:
                 sandbox_path=sandbox_path,
                 argv=(),
                 status="blocked",
-                reason="stage_continuation_policy_manual",
+                reason=reason,
             )
+
+
 
         setup = self._setup_repo.get(setup_id)
         if setup is None:

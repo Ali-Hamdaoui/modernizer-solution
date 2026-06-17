@@ -981,16 +981,28 @@ class V2OrchestratorRunner:
                     return
 
                 # Load stage continuation policy from run configuration
-                stage_continuation_policy = StageContinuationPolicy.AUTO_ON_GREEN
+                raw_policy = StageContinuationPolicy.AUTO_ON_GREEN
                 run_config = uow.run_configurations.get_for_job(job_id)
                 if run_config is not None and run_config.policy_json:
                     try:
                         import json
                         policy_dict = json.loads(run_config.policy_json)
                         policy = RunPolicy(**policy_dict)
-                        stage_continuation_policy = policy.stage_continuation_policy
+                        raw_policy = policy.stage_continuation_policy
                     except (json.JSONDecodeError, Exception):
                         pass
+
+                # Resolve effective policy:
+                # For MANUAL_ON_WARNING_OR_FAILURE, check if the result has
+                # warnings. Only block on warnings/failures; clean green
+                # results auto-progress like AUTO_ON_GREEN.
+                effective_policy = raw_policy
+                if raw_policy == StageContinuationPolicy.MANUAL_ON_WARNING_OR_FAILURE:
+                    has_warnings = _result_has_warnings(result) if result else False
+                    if not has_warnings:
+                        effective_policy = StageContinuationPolicy.AUTO_ON_GREEN
+                    else:
+                        effective_policy = StageContinuationPolicy.MANUAL
 
                 service = V2StageProgressionService(
                     setup_repo=uow.v2_setups,
@@ -1001,10 +1013,10 @@ class V2OrchestratorRunner:
                     setup_id=job.setup_id,
                     current_stage=stage_index,
                     sandbox_path=sandbox_path,
-                    stage_continuation_policy=stage_continuation_policy,
+                    stage_continuation_policy=effective_policy,
                 )
 
-                # Handle manual policy: create stage_completion_review gate
+                # Handle blocked policy: create stage_completion_review gate
                 if queued.status == "blocked":
                     import json
 
@@ -1502,6 +1514,40 @@ def _bounded(value: str) -> str:
     if len(redacted) <= _MAX_TEXT:
         return redacted
     return redacted[:_MAX_TEXT] + "...[truncated]"
+
+
+def _result_has_warnings(result: dict[str, Any] | None) -> bool:
+    """Check if an orchestrator result contains warnings.
+
+    Returns True if any status field contains a warning indicator
+    (e.g. PASS_WITH_WARNINGS), or if the result has an explicit
+    'warnings' key with content.
+    """
+    if result is None:
+        return False
+
+    # Check known warning-bearing status fields
+    test_status = str(result.get("test_status", "")).strip()
+    if test_status == "PASS_WITH_WARNINGS":
+        return True
+
+    build_status = str(result.get("build_status", "")).strip()
+    if build_status == "PASS_WITH_WARNINGS":
+        return True
+
+    orchestration_status = str(result.get("orchestration_status", "")).strip()
+    if orchestration_status == "PASS_WITH_WARNINGS":
+        return True
+
+    # Check for explicit warnings key
+    explicit_warnings = result.get("warnings")
+    if explicit_warnings:
+        if isinstance(explicit_warnings, (list, tuple)) and len(explicit_warnings) > 0:
+            return True
+        if isinstance(explicit_warnings, str) and explicit_warnings.strip():
+            return True
+
+    return False
 
 
 def _first_text(*values: Any) -> str:

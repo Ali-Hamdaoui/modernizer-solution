@@ -14,6 +14,7 @@ from .common import NonEmptyString, StrictModel, require_non_empty_string
 class StageContinuationPolicy(str, Enum):
     AUTO_ON_GREEN = "auto_on_green"
     MANUAL = "manual"
+    MANUAL_ON_WARNING_OR_FAILURE = "manual_on_warning_or_failure"
 
 
 class RunPolicy(StrictModel):
