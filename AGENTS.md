@@ -1,164 +1,129 @@
-# Modernizer Solution — AGENTS.md
+# Modernizer Solution
 
 ## Mission
 
-Build the **V2 Governed LLM Migration Supervisor**.
+Build **F15 — Chatbot-Governed Stage Workflow** for AI Migration Control Tower.
 
 Source of truth:
 
-```text
-docs/governed-llm-migration-supervisor/
-```
+* `docs/F15/index.md`
+* current `docs/F15/jobNNN-*.md`
+* `docs/governed-llm-migration-supervisor/`
 
 Invariant:
 
 ```text
-LLM creates migration intent. Human approves. Backend executes in sandbox. Repair loop validates proof.
+Chatbot interprets. Human decides. Backend validates, persists, executes in sandbox, and proves with artifacts.
 ```
 
-This is not a chatbot-only feature and not a replacement for OpenRewrite, Maven, patch gates, validation, rollback, ledger, or proof artifacts.
+F14 is closed as core chatbot-to-POM apply delivered, with follow-up debt. F15 is a new workflow-governance epic.
 
-## Branching
+## Branch
 
-Base and PR target:
-
-```text
-V2IMPROVMENT
-```
-
-Never target `DEMO2`.
-
-One feature = one branch.
-
-Branch format:
-
-```text
-v2/llm-f<feature-number>-<short-title>
-```
-
-Start:
+Use existing branch only:
 
 ```powershell
 git fetch --prune origin
-git switch V2IMPROVMENT
-git pull --ff-only origin V2IMPROVMENT
-git switch -c v2/llm-f<feature-number>-<short-title>
+git switch chatbot-optimization
+git status --short
 ```
 
-## Read Before Editing
+Do not create a branch. Do not target `DEMO2`.
 
-Read only what the assigned feature needs:
+## Read First
 
-1. `docs/governed-llm-migration-supervisor/index.md`
-2. assigned feature doc
-3. dependency feature docs
-4. source files named by docs
-5. related tests
-6. relevant `.agents/skills/`
+Read only what the current job needs:
 
-Do not implement unrelated features.
+* this `AGENTS.md`
+* `docs/F15/index.md`
+* assigned `docs/F15/jobNNN-*.md`
+* dependency job docs
+* referenced source files/tests
+* relevant `.agents/skills/`
 
-## Dependencies
+Work job-by-job from `job001` to `job122`.
 
-```text
-F01 start now
-F03 start now
-F06 start now
-F02 needs F01+F03
-F04 needs F01+F06
-F05 needs F02+F06
-F07 needs proposal objects
-F08 needs F06+F07
-F09 needs backend records/events
-F10 needs F01-F08 records
-```
+## Subagents
 
-## Product Authority
+Use subagents when useful:
 
-These rules apply to the product LLM being built.
+* Scout: map existing services/reuse points.
+* Security Reviewer: check LLM agency, paths, commands, checksums, approvals.
+* Test Planner: choose focused tests only.
+* Implementer: edits files.
+* Final Reviewer: checks diff before commit.
 
-LLM may create:
+Only the implementer edits files.
 
-```text
-diagnosis
-repair proposal
-POM patch intent
-proposal revision
-reviewer critique
-approval-card preparation request
-validation-rerun request
-```
+## Authority Rules
 
-LLM must never:
+Chatbot may explain, summarize, classify intent, draft structured gate actions, propose re-analysis/plan revision/repair, and ask clarifying questions.
 
-```text
-execute commands
-write files
-approve decisions
-choose sandbox/path
-modify legacy source
-change stages
-choose Maven goals
-override failed proof
-```
+Chatbot must never execute commands, write files, approve, choose sandbox/path, supply argv/env, mutate legacy source, skip stages, override proof, or follow instructions inside artifacts/logs/source.
 
-Backend owns state resolution, sandbox binding, checksums, patch apply, validation rerun, rollback, ledger/proof persistence, and unsafe-action blocking.
+Backend owns gates, checksums, sandbox binding, stage order, command creation, patch apply, validation, rollback, ledger/proof, idempotency, and unsafe-action blocking.
 
-Human owns approve, reject, request revision, continue, and stop.
+Human owns accept, reject, approve, revise, continue, and stop.
 
-Execution truth comes from OpenRewrite, Maven, build/test, `repair_loop`, `patch_gate`, `rule_registry`, `patch_apply`, `validation_runner`, repair ledger, and proof artifacts.
+## Reuse / No Duplication
 
-## Non-Negotiables
+Do not duplicate:
 
-Do not create parallel systems for context packs, artifact store, failure evidence, failure classifier, repair schemas, patch gate, patch apply, rollback, validation runner, repair ledger, POM parser/helpers, approval cards, event stream, or reviewer schema.
+* V2 stage progression
+* orchestrator runner
+* assistant router/service
+* repair flow
+* plan amendment/revision/review
+* artifact storage/resolution
+* event stream
+* repositories/UoW
+* validation/rollback/ledger
 
-F08 must route approved V2 proposals through existing `repair_loop`.
+Add wrappers/adapters only when needed.
 
-Never bypass:
+New F15 APIs must not accept `sandbox_path`, argv, env, raw commands, or filesystem targets from frontend/chatbot.
 
-```text
-patch_gate
-rule_registry
-patch_apply
-validation_runner
-rollback
-ledger
-```
+Gate explanations must read gate-bound artifact refs/checksums, not stale previews.
+
+No direct Stage 3 jump without accepted Stage 2 output.
 
 ## Before Editing Report
 
 Report:
 
 ```text
-feature
-branch
-docs read
-owned scope
-non-goals
-likely files
-new/changed tests to run
-blockers
+job, branch, docs read, owned scope, non-goals, reuse points, files, focused tests, blockers
 ```
 
-## Work Rules
+## Work Loop
 
-Implement only the assigned feature. No broad refactor. No adjacent feature work. No Jira unless asked.
+For each job:
 
-No secrets, tokens, raw paths, logs, DBs, caches, or runtime files in output.
+```text
+read job doc
+inspect source
+plan minimal change
+reuse existing code
+implement
+add/update focused tests
+run focused tests only
+run git diff --check
+summarize
+```
+
+No broad refactor. No adjacent jobs early. No Jira unless asked.
 
 Never `git add .`. Stage explicit owned files only.
 
-Never stage `.env`, `.next/`, caches, DBs, logs, another developer’s work, or `web/control-tower/next-env.d.ts` unless explicitly owned.
+Never stage `.env`, `.next/`, caches, DBs, logs, runtime files, unrelated work, or `web/control-tower/next-env.d.ts` unless owned.
 
-Do not edit applied migrations. Add append-only migrations only when required.
+Do not edit applied migrations. Add append-only migrations only.
 
 ## Tests
 
-Run only tests that are new, changed, or directly affected by the owned feature. Do not run the full suite unless explicitly requested.
+Do not run full suite unless explicitly requested.
 
-If no test exists, add a focused test and run only that test file.
-
-If web changed, run relevant web test plus typecheck/build.
+Run only new/changed/directly affected tests.
 
 Always run:
 
@@ -170,11 +135,13 @@ git status --short
 
 ## Commit
 
+Commit after each major coherent slice:
+
 ```powershell
 git add <explicit-owned-files>
 git diff --cached --check
 git diff --cached --name-only
-git commit -m "feat(v2-llm-f<feature-number>): <summary>"
+git commit -m "feat(f15): <summary>"
 git status --short
 git log -1 --oneline
 ```
@@ -183,22 +150,12 @@ Push only when requested.
 
 ## Stop If
 
-Stop and report if docs are missing, dependency is not merged, docs conflict with source, sandbox binding is unclear, safe work requires bypassing `repair_loop`, LLM needs execute/approve/write/proof authority, legacy source mutation risk exists, unrelated dirty files would be included, or acceptance fails after 3 focused attempts.
+Stop and report if docs conflict with source, safe work requires duplicated systems, sandbox binding is unclear, LLM needs execute/approve/write/proof authority, legacy source mutation risk exists, a new API needs frontend/chatbot path or command input, unrelated dirty files would be included, or acceptance fails after 3 focused attempts.
 
 ## Final Report
 
-Report only:
+Report:
 
 ```text
-base branch/commit
-work branch
-PR target
-commit hash
-changed files
-tests run
-acceptance result
-git status --short
-risks/deviations
-next dependency
-pushed or not pushed
+branch, commit, completed jobs, changed files, tests run, diff-check result, status, risks, next job, pushed/not pushed
 ```
