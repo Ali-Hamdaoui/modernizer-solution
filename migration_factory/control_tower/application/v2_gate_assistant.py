@@ -43,6 +43,7 @@ from migration_factory.control_tower.application.v2_evidence_pack_builder import
     EvidencePack,
     evidence_pack_to_dict,
 )
+from migration_factory.control_tower.schemas.phase_gate import GateActorType
 from migration_factory.control_tower.application.redaction import (
     redact_absolute_paths,
     redact_model_summary,
@@ -818,6 +819,7 @@ class GateActionExecutor:
         *,
         decided_by: str = "assistant",
         idempotency_key: str | None = None,
+        actor_type: str = GateActorType.ASSISTANT.value,
     ) -> GateActionResult:
         """Execute approve_from_gate action."""
         return self._action_service.approve_from_gate(
@@ -825,6 +827,7 @@ class GateActionExecutor:
             expected_gate_checksum=checksum,
             decided_by=decided_by,
             idempotency_key=idempotency_key or uuid4().hex,
+            actor_type=actor_type,
         )
 
     def execute_reject(
@@ -835,6 +838,7 @@ class GateActionExecutor:
         *,
         decided_by: str = "assistant",
         idempotency_key: str | None = None,
+        actor_type: str = GateActorType.ASSISTANT.value,
     ) -> GateActionResult:
         """Execute reject_from_gate action."""
         return self._action_service.reject_from_gate(
@@ -843,6 +847,7 @@ class GateActionExecutor:
             reason=reason,
             decided_by=decided_by,
             idempotency_key=idempotency_key or uuid4().hex,
+            actor_type=actor_type,
         )
 
 

@@ -213,13 +213,13 @@ class V2RepairGateService:
                 reason="V2GateActionService is not configured",
             )
 
-        # Use the existing REVISE decision path through gate action service
-        # which handles: gate existence, phase validation, checksum check,
-        # idempotency, gate resolution, and new gate creation.
-        return self._gate_action_service.request_plan_revision(
+        # Use the repair-specific revise path so the revision history
+        # remains tagged as repair, not planning.
+        return self._gate_action_service.request_repair_revision(
             gate_id=gate_id,
             job_id=job_id,
             decided_by=decided_by,
+            proposal_id=proposal_id,
             user_feedback=user_feedback,
             idempotency_key=idempotency_key,
             expected_gate_checksum=expected_gate_checksum,
@@ -238,6 +238,7 @@ class V2RepairGateService:
         context_pack_checksum: str,
         idempotency_key: str | None = None,
         expected_gate_checksum: str | None = None,
+        actor_type: str = "human",
     ) -> GateActionResult:
         """Approve a repair at a repair_review gate.
 
@@ -257,6 +258,18 @@ class V2RepairGateService:
                 reason="V2GateActionService is not configured",
             )
 
+        if actor_type != "human":
+            return GateActionResult(
+                action=GateDecision.CONTINUE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="actor_not_authoritative",
+                reason=(
+                    "approve_repair requires a human actor; "
+                    f"received actor_type='{actor_type}'"
+                ),
+            )
+
         return self._gate_action_service.approve_repair(
             gate_id=gate_id,
             job_id=job_id,
@@ -266,6 +279,7 @@ class V2RepairGateService:
             context_pack_checksum=context_pack_checksum,
             idempotency_key=idempotency_key,
             expected_gate_checksum=expected_gate_checksum,
+            actor_type=actor_type,
         )
 
     # ── Job 106: reject repair ───────────────────────────────────────
@@ -279,6 +293,7 @@ class V2RepairGateService:
         reason: str = "",
         idempotency_key: str | None = None,
         expected_gate_checksum: str | None = None,
+        actor_type: str = "human",
     ) -> GateActionResult:
         """Reject a repair at a repair_review gate.
 
@@ -302,6 +317,18 @@ class V2RepairGateService:
                 reason="V2GateActionService is not configured",
             )
 
+        if actor_type != "human":
+            return GateActionResult(
+                action=GateDecision.REJECT.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="actor_not_authoritative",
+                reason=(
+                    "reject_repair requires a human actor; "
+                    f"received actor_type='{actor_type}'"
+                ),
+            )
+
         return self._gate_action_service.reject_gate(
             gate_id=gate_id,
             job_id=job_id,
@@ -309,6 +336,7 @@ class V2RepairGateService:
             reason=reason,
             idempotency_key=idempotency_key,
             expected_gate_checksum=expected_gate_checksum,
+            actor_type=actor_type,
         )
 
     # ── Job 107: Repair validation result gate transition ────────────
@@ -346,7 +374,7 @@ class V2RepairGateService:
             RepairValidationTransitionResult with next gate info.
         """
         attempt_key = (job_id, stage_index)
-        current_attempts = self._attempt_counts.get(attempt_key, 0)
+        current_attempts = self._get_persisted_attempt_count(job_id, stage_index)
 
         if validation_passed:
             # Reset attempt count on success
@@ -435,7 +463,7 @@ class V2RepairGateService:
         stage_index: int,
     ) -> int:
         """Get remaining repair attempts for a job+stage."""
-        current = self._attempt_counts.get((job_id, stage_index), 0)
+        current = self._get_persisted_attempt_count(job_id, stage_index)
         return max(0, self._max_repair_attempts - current)
 
     def reset_attempts(
@@ -449,6 +477,22 @@ class V2RepairGateService:
     def clear_attempts(self) -> None:
         """Clear all attempt counts (for testing)."""
         self._attempt_counts.clear()
+
+    def _get_persisted_attempt_count(self, job_id: str, stage_index: int) -> int:
+        """Derive the attempt count from persisted gate history."""
+        if self._gate_service is None or self._gate_service._gate_repo is None:
+            return self._attempt_counts.get((job_id, stage_index), 0)
+
+        gates = self._gate_service._gate_repo.list_by_job_and_stage(job_id, stage_index)
+        if any(g.gate_phase == "stage_completion_review" for g in gates):
+            return 0
+
+        repair_gates = [g for g in gates if g.gate_phase == "repair_review"]
+        if not repair_gates:
+            return self._attempt_counts.get((job_id, stage_index), 0)
+
+        persisted = max(0, len(repair_gates) - 1)
+        return min(self._max_repair_attempts, max(persisted, self._attempt_counts.get((job_id, stage_index), 0)))
 
     # ── Serialization ────────────────────────────────────────────────
 

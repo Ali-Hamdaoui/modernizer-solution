@@ -924,6 +924,12 @@ export type GateDecision =
   | "approve"
   | "reject";
 
+export type GateActorType =
+  | "human"
+  | "assistant"
+  | "api"
+  | "system";
+
 export type GateStatus =
   | "open"
   | "resolved"
@@ -960,6 +966,7 @@ export type GateActionRequest = {
   expected_gate_checksum: string;
   idempotency_key: string;
   decided_by: string;
+  actor_type: GateActorType;
   reason?: string;
   // Repair-specific fields (only for repair_review gates):
   proposal_id?: string;

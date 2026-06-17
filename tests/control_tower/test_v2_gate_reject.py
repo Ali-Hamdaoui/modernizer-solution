@@ -170,7 +170,7 @@ def test_reject_gate_idempotent(tmp_path: Path) -> None:
 
     r2 = action_svc.reject_gate(
         gate_id=gate_id, job_id="job-abc", decided_by="user-1",
-        reason="Second rejection (ignored)",
+        reason="First rejection",
         idempotency_key="idem-reject-1",
     )
     assert r2.status == "idempotent"

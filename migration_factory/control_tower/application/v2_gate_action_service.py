@@ -20,7 +20,10 @@ from migration_factory.control_tower.application.v2_phase_gate_service import (
     ResolveGateResult,
     V2PhaseGateService,
 )
-from migration_factory.control_tower.domain.checksums import utc_now_text
+from migration_factory.control_tower.domain.checksums import (
+    sha256_canonical_json,
+    utc_now_text,
+)
 from migration_factory.control_tower.domain.entities import (
     ArtifactRevisionRecord,
     GateDecisionRecord,
@@ -210,6 +213,7 @@ class V2GateActionService:
             decided_by=decided_by,
             idempotency_key=idempotency_key,
             expected_gate_checksum=expected_gate_checksum,
+            actor_type=GateActorType.HUMAN.value,
         )
 
     # ── action: reanalyze ───────────────────────────────────────────
@@ -235,6 +239,7 @@ class V2GateActionService:
             decided_by=decided_by,
             idempotency_key=idempotency_key,
             expected_gate_checksum=expected_gate_checksum,
+            actor_type=GateActorType.HUMAN.value,
         )
 
     # ── action: request_reanalysis (with user feedback) ─────────────
@@ -248,7 +253,7 @@ class V2GateActionService:
         user_feedback: str = "",
         idempotency_key: str | None = None,
         expected_gate_checksum: str | None = None,
-    ) -> GateActionResult:
+        ) -> GateActionResult:
         """Request reanalysis at an analysis_review gate.
 
         Unlike the generic ``reanalyze_from_gate``, this method:
@@ -263,6 +268,17 @@ class V2GateActionService:
         No source writes occur.  The chatbot may explain the feedback
         to the backend for context, but the backend owns the revision.
         """
+        request_checksum = sha256_canonical_json(
+            {
+                "gate_id": gate_id,
+                "job_id": job_id,
+                "action": GateDecision.REANALYZE.value,
+                "decided_by": decided_by,
+                "user_feedback": user_feedback,
+                "expected_gate_checksum": expected_gate_checksum,
+                "idempotency_key": idempotency_key,
+            }
+        )
         base_result = self._execute_action(
             gate_id=gate_id,
             job_id=job_id,
@@ -270,6 +286,8 @@ class V2GateActionService:
             decided_by=decided_by,
             idempotency_key=idempotency_key,
             expected_gate_checksum=expected_gate_checksum,
+            actor_type=GateActorType.HUMAN.value,
+            request_checksum=request_checksum,
         )
         if base_result.status not in ("executed", "idempotent"):
             return base_result
@@ -337,6 +355,17 @@ class V2GateActionService:
         No source writes occur.  The chatbot explains the feedback;
         the backend creates the revision.
         """
+        request_checksum = sha256_canonical_json(
+            {
+                "gate_id": gate_id,
+                "job_id": job_id,
+                "action": GateDecision.REVISE.value,
+                "decided_by": decided_by,
+                "user_feedback": user_feedback,
+                "expected_gate_checksum": expected_gate_checksum,
+                "idempotency_key": idempotency_key,
+            }
+        )
         base_result = self._execute_action(
             gate_id=gate_id,
             job_id=job_id,
@@ -344,6 +373,8 @@ class V2GateActionService:
             decided_by=decided_by,
             idempotency_key=idempotency_key,
             expected_gate_checksum=expected_gate_checksum,
+            actor_type=GateActorType.HUMAN.value,
+            request_checksum=request_checksum,
         )
         if base_result.status not in ("executed", "idempotent"):
             return base_result
@@ -418,6 +449,18 @@ class V2GateActionService:
         No source writes occur.  The chatbot explains the feedback;
         the backend creates the revision proposal.
         """
+        request_checksum = sha256_canonical_json(
+            {
+                "gate_id": gate_id,
+                "job_id": job_id,
+                "action": GateDecision.REVISE.value,
+                "decided_by": decided_by,
+                "proposal_id": proposal_id,
+                "user_feedback": user_feedback,
+                "expected_gate_checksum": expected_gate_checksum,
+                "idempotency_key": idempotency_key,
+            }
+        )
         base_result = self._execute_action(
             gate_id=gate_id,
             job_id=job_id,
@@ -425,6 +468,7 @@ class V2GateActionService:
             decided_by=decided_by,
             idempotency_key=idempotency_key,
             expected_gate_checksum=expected_gate_checksum,
+            request_checksum=request_checksum,
         )
         if base_result.status not in ("executed", "idempotent"):
             return base_result
@@ -488,19 +532,38 @@ class V2GateActionService:
         self,
         *,
         gate_id: str,
-        job_id: str,
+        job_id: str | None = None,
         decided_by: str,
         idempotency_key: str | None = None,
         expected_gate_checksum: str | None = None,
+        actor_type: str = GateActorType.HUMAN.value,
     ) -> GateActionResult:
         """Validate and execute an 'approve' decision."""
+        gate = self._gate_repo.get(gate_id)
+        if gate is None:
+            return GateActionResult(
+                action=GateDecision.APPROVE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="gate_not_found",
+            )
+        effective_job_id = job_id or gate.job_id
+        if job_id is not None and job_id != gate.job_id:
+            return GateActionResult(
+                action=GateDecision.APPROVE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="invalid_decision",
+                reason="Gate job does not match the requested job.",
+            )
         return self._execute_action(
             gate_id=gate_id,
-            job_id=job_id,
+            job_id=effective_job_id,
             action=GateDecision.APPROVE,
             decided_by=decided_by,
             idempotency_key=idempotency_key,
             expected_gate_checksum=expected_gate_checksum,
+            actor_type=actor_type,
         )
 
     # ── action: reject ──────────────────────────────────────────────
@@ -509,19 +572,40 @@ class V2GateActionService:
         self,
         *,
         gate_id: str,
-        job_id: str,
+        job_id: str | None = None,
         decided_by: str,
+        reason: str = "",
         idempotency_key: str | None = None,
         expected_gate_checksum: str | None = None,
+        actor_type: str = GateActorType.HUMAN.value,
     ) -> GateActionResult:
         """Validate and execute a 'reject' decision."""
+        gate = self._gate_repo.get(gate_id)
+        if gate is None:
+            return GateActionResult(
+                action=GateDecision.REJECT.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="gate_not_found",
+            )
+        effective_job_id = job_id or gate.job_id
+        if job_id is not None and job_id != gate.job_id:
+            return GateActionResult(
+                action=GateDecision.REJECT.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="invalid_decision",
+                reason="Gate job does not match the requested job.",
+            )
         return self._execute_action(
             gate_id=gate_id,
-            job_id=job_id,
+            job_id=effective_job_id,
             action=GateDecision.REJECT,
             decided_by=decided_by,
+            reason=reason,
             idempotency_key=idempotency_key,
             expected_gate_checksum=expected_gate_checksum,
+            actor_type=actor_type,
         )
 
     # ── action: reject_gate (with reason) ──────────────────────────
@@ -535,6 +619,7 @@ class V2GateActionService:
         reason: str = "",
         idempotency_key: str | None = None,
         expected_gate_checksum: str | None = None,
+        actor_type: str = GateActorType.HUMAN.value,
     ) -> GateActionResult:
         """Reject a gate with an auditable reason.
 
@@ -561,6 +646,7 @@ class V2GateActionService:
             reason=reason,
             idempotency_key=idempotency_key,
             expected_gate_checksum=expected_gate_checksum,
+            actor_type=actor_type,
         )
 
     # ── action: approve_repair ────────────────────────────────────
@@ -576,6 +662,7 @@ class V2GateActionService:
         context_pack_checksum: str,
         idempotency_key: str | None = None,
         expected_gate_checksum: str | None = None,
+        actor_type: str = GateActorType.HUMAN.value,
     ) -> GateActionResult:
         """Approve a repair proposal and continue at a repair_review gate.
 
@@ -614,18 +701,54 @@ class V2GateActionService:
             idempotency_key
             or f"{gate_id}:{GateDecision.CONTINUE.value}:{uuid4().hex[:8]}"
         )
+        request_checksum = sha256_canonical_json(
+            {
+                "gate_id": gate_id,
+                "job_id": job_id,
+                "action": GateDecision.CONTINUE.value,
+                "decided_by": decided_by,
+                "actor_type": GateActorType.HUMAN.value,
+                "expected_gate_checksum": expected_gate_checksum,
+                "proposal_id": proposal_id,
+                "proposal_checksum": proposal_checksum,
+                "context_pack_checksum": context_pack_checksum,
+            }
+        )
         existing = self._decision_repo.find_by_idempotency_key(
             effective_idempotency_key
         )
         if existing is not None:
+            if existing.request_checksum == request_checksum:
+                return GateActionResult(
+                    action=GateDecision.CONTINUE.value,
+                    gate_id=gate_id,
+                    decision_id=existing.decision_id,
+                    status="idempotent",
+                    result_gate_id=existing.result_gate_id,
+                    result_command_id=existing.result_command_id,
+                    result_revision_id=existing.result_revision_id,
+                )
             return GateActionResult(
                 action=GateDecision.CONTINUE.value,
                 gate_id=gate_id,
-                decision_id=existing.decision_id,
-                status="idempotent",
-                result_gate_id=existing.result_gate_id,
-                result_command_id=existing.result_command_id,
-                result_revision_id=existing.result_revision_id,
+                decision_id="",
+                status="idempotency_conflict",
+                reason=(
+                    f"Idempotency key '{effective_idempotency_key}' was reused "
+                    "for a different request payload"
+                ),
+            )
+
+        if actor_type != GateActorType.HUMAN.value:
+            return GateActionResult(
+                action=GateDecision.CONTINUE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="actor_not_authoritative",
+                reason=(
+                    "approve_repair requires a human actor; "
+                    f"received actor_type='{actor_type}'"
+                ),
             )
 
         # 3. Gate status must be OPEN for new actions
@@ -696,6 +819,8 @@ class V2GateActionService:
             idempotency_key=effective_idempotency_key,
             expected_gate_checksum=expected_gate_checksum,
             result_revision_id=proposal_id,
+            actor_type=GateActorType.HUMAN.value,
+            request_checksum=request_checksum,
         )
 
         if result.status not in ("executed", "idempotent"):
@@ -713,6 +838,7 @@ class V2GateActionService:
         decided_by: str,
         idempotency_key: str | None = None,
         expected_gate_checksum: str | None = None,
+        actor_type: str = GateActorType.HUMAN.value,
     ) -> GateActionResult:
         """Approve transformation at an approval_review gate.
 
@@ -771,6 +897,18 @@ class V2GateActionService:
                     reason="No accepted plan revision for this stage",
                 )
 
+        if actor_type != GateActorType.HUMAN.value:
+            return GateActionResult(
+                action=GateDecision.APPROVE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="actor_not_authoritative",
+                reason=(
+                    "approve_transformation requires a human actor; "
+                    f"received actor_type='{actor_type}'"
+                ),
+            )
+
         # Generate a command ID for the queued transform
         command_id = uuid4().hex
 
@@ -783,6 +921,37 @@ class V2GateActionService:
             idempotency_key=idempotency_key,
             expected_gate_checksum=expected_gate_checksum,
             result_command_id=command_id,
+            actor_type=actor_type,
+        )
+
+    def reject_repair(
+        self,
+        *,
+        gate_id: str,
+        job_id: str,
+        decided_by: str,
+        reason: str = "",
+        idempotency_key: str | None = None,
+        expected_gate_checksum: str | None = None,
+        actor_type: str = GateActorType.HUMAN.value,
+    ) -> GateActionResult:
+        """Reject a repair proposal at a repair_review gate."""
+        if self._repair_service is None:
+            return GateActionResult(
+                action=GateDecision.REJECT.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="no_repair_service",
+                reason="V2RepairFlowService is not configured",
+            )
+        return self._repair_service.reject_repair(
+            gate_id=gate_id,
+            job_id=job_id,
+            decided_by=decided_by,
+            reason=reason,
+            idempotency_key=idempotency_key,
+            expected_gate_checksum=expected_gate_checksum,
+            actor_type=actor_type,
         )
 
     # ── internal pipeline ───────────────────────────────────────────
@@ -800,6 +969,7 @@ class V2GateActionService:
         result_revision_id: str | None = None,
         reason: str = "",
         actor_type: str = "human",
+        request_checksum: str | None = None,
     ) -> GateActionResult:
         """Common validation and execution pipeline for all gate actions.
 
@@ -840,16 +1010,40 @@ class V2GateActionService:
         # 2. Idempotency check (before status check — idempotent
         #    requests return the same result regardless of gate state)
         effective_idempotency_key = idempotency_key or f"{gate_id}:{action.value}:{uuid4().hex[:8]}"
+        request_checksum = request_checksum or sha256_canonical_json(
+            {
+                "gate_id": gate_id,
+                "job_id": job_id,
+                "action": action.value,
+                "decided_by": decided_by,
+                "reason": reason,
+                "actor_type": actor_type,
+                "expected_gate_checksum": expected_gate_checksum,
+                "result_command_id": result_command_id,
+                "result_revision_id": result_revision_id,
+            }
+        )
         existing = self._decision_repo.find_by_idempotency_key(effective_idempotency_key)
         if existing is not None:
+            if existing.request_checksum == request_checksum:
+                return GateActionResult(
+                    action=action.value,
+                    gate_id=gate_id,
+                    decision_id=existing.decision_id,
+                    status="idempotent",
+                    result_gate_id=existing.result_gate_id,
+                    result_command_id=existing.result_command_id,
+                    result_revision_id=existing.result_revision_id,
+                )
             return GateActionResult(
                 action=action.value,
                 gate_id=gate_id,
-                decision_id=existing.decision_id,
-                status="idempotent",
-                result_gate_id=existing.result_gate_id,
-                result_command_id=existing.result_command_id,
-                result_revision_id=existing.result_revision_id,
+                decision_id="",
+                status="idempotency_conflict",
+                reason=(
+                    f"Idempotency key '{effective_idempotency_key}' was reused "
+                    "for a different request payload"
+                ),
             )
 
         # 3. Gate status must be OPEN for new actions
@@ -1024,7 +1218,7 @@ class V2GateActionService:
             action=action.value,
             expected_gate_checksum=current_checksum,
             idempotency_key=effective_idempotency_key,
-            request_checksum=current_checksum,  # the decision is bound to the gate snapshot
+            request_checksum=request_checksum,
             result_gate_id=result_gate_id,
             result_command_id=result_command_id,  # caller queues command
             result_revision_id=result_revision_id,  # caller creates revision
@@ -1039,7 +1233,9 @@ class V2GateActionService:
             self._decision_repo.save(decision_record)
         except Exception:
             # Idempotency key collision after concurrent resolve
-            existing2 = self._decision_repo.find_by_idempotency_key(effective_idempotency_key)
+            existing2 = self._decision_repo.find_by_idempotency_key_and_checksum(
+                effective_idempotency_key, request_checksum
+            )
             if existing2 is not None:
                 return GateActionResult(
                     action=action.value,

@@ -29,6 +29,10 @@ import type {
   PlanAmendmentPreviewRequest,
   PlanAmendmentPreviewResponse,
   PipelineOption,
+  GateActionRequest,
+  GateActionResponse,
+  GateDetailResponse,
+  GateListResponse,
   PrivilegedActionListResponse,
   ProofGatesResponse,
   ProofReportEntry,
@@ -36,6 +40,7 @@ import type {
   RepairProposalListResponse,
   RunnerProfileOption,
   StageChainResponse,
+  OpenGateForJobResponse,
   // F14 types
   PomView,
   PomDependencyReview,
@@ -342,6 +347,53 @@ export async function getV2MigrationJobStages(jobId: string): Promise<{ job_id: 
   const safeJobId = requireJobId(jobId);
   return getJson<{ job_id: string; stages: V2StageEntry[] }>(
     `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/stages`
+  );
+}
+
+export async function getV2JobGates(jobId: string): Promise<GateListResponse> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<GateListResponse>(`/v1/v2/jobs/${encodeURIComponent(safeJobId)}/gates`);
+}
+
+export async function getV2OpenGate(jobId: string): Promise<OpenGateForJobResponse> {
+  const safeJobId = requireJobId(jobId);
+  const response = await fetch(
+    `${CONTROL_TOWER_API_BASE_URL}/v1/v2/jobs/${encodeURIComponent(safeJobId)}/gates/open`,
+    { cache: "no-store" }
+  );
+  if (response.status === 404) {
+    return { gate: null };
+  }
+  if (!response.ok) {
+    throw new Error(`Failed to load open gate for ${jobId}.`);
+  }
+  return (await response.json()) as OpenGateForJobResponse;
+}
+
+export async function getV2GateDetail(jobId: string, gateId: string): Promise<GateDetailResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeGateId = gateId.trim();
+  if (!safeGateId) {
+    throw new Error("Gate id is required.");
+  }
+  return getJson<GateDetailResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/gates/${encodeURIComponent(safeGateId)}`
+  );
+}
+
+export async function postV2GateAction(
+  jobId: string,
+  gateId: string,
+  payload: GateActionRequest
+): Promise<GateActionResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeGateId = gateId.trim();
+  if (!safeGateId) {
+    throw new Error("Gate id is required.");
+  }
+  return postJson<GateActionResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/gates/${encodeURIComponent(safeGateId)}/actions`,
+    payload
   );
 }
 

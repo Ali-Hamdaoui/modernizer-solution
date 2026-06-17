@@ -6,11 +6,15 @@ import {
   createDiagnosticJobPayload,
   eventStreamUrl,
   getV2AssistantMessages,
+  getV2GateDetail,
+  getV2JobGates,
+  getV2OpenGate,
   getV2JobApprovals,
   getV2MigrationJobStages,
   getJob,
   previewPlanAmendment,
   postJson,
+  postV2GateAction,
   requireJobId,
   resolveControlTowerApiBaseUrl
 } from "../lib/controlTowerApi";
@@ -150,6 +154,89 @@ describe("M2-01 frontend diagnostic contracts", () => {
       expect.stringContaining(`/v1/v2/jobs/${jobId}/assistant/messages`),
     ]);
     expect(urls.some((url) => url.includes("undefined"))).toBe(false);
+  });
+
+  it("calls F15 gate endpoints with safe request shapes", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/gates/open")) {
+        return {
+          ok: true,
+          json: async () => ({ gate: null }),
+        };
+      }
+      if (url.includes("/gates/")) {
+        return {
+          ok: true,
+          json: async () => ({
+            gate: {
+              gate_id: "gate-1",
+              job_id: "job-1",
+              gate_phase: "approval_review",
+              stage_index: 2,
+              gate_status: "open",
+              gate_decision: "continue",
+              source_artifact_checksum: "sha256:gate",
+              source_artifact_refs: ["analysis:1", "plan:1"],
+              created_at: "2026-06-12T00:00:00Z",
+              resolved_at: null,
+              resolved_by: null,
+              checksum: "sha256:gate-checksum",
+              available_actions: [],
+            },
+            evidence: null,
+            checksum: "sha256:gate-checksum",
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ gates: [] }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await Promise.all([
+      getV2JobGates("job-1"),
+      getV2OpenGate("job-1"),
+      getV2GateDetail("job-1", "gate-1"),
+      postV2GateAction("job-1", "gate-1", {
+        gate_id: "gate-1",
+        job_id: "job-1",
+        action: "reject",
+        expected_gate_checksum: "sha256:gate-checksum",
+        idempotency_key: "idem-1",
+        decided_by: "human-1",
+        actor_type: "human",
+        reason: "not ready",
+      }),
+    ]);
+
+    const urls = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(urls).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("/v1/v2/jobs/job-1/gates"),
+        expect.stringContaining("/v1/v2/jobs/job-1/gates/open"),
+        expect.stringContaining("/v1/v2/jobs/job-1/gates/gate-1"),
+      ])
+    );
+    const actionCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/actions"));
+    expect(actionCall).toBeDefined();
+    const body = JSON.parse(String((actionCall?.[1] as RequestInit | undefined)?.body ?? "{}"));
+    expect(body).toEqual(expect.objectContaining({
+      gate_id: "gate-1",
+      job_id: "job-1",
+      action: "reject",
+      expected_gate_checksum: "sha256:gate-checksum",
+      idempotency_key: "idem-1",
+      decided_by: "human-1",
+      actor_type: "human",
+      reason: "not ready",
+    }));
+    expect(JSON.stringify(body)).not.toContain("sandbox_path");
+    expect(JSON.stringify(body)).not.toContain("argv");
+    expect(JSON.stringify(body)).not.toContain("env");
+    expect(JSON.stringify(body)).not.toContain("raw_command");
+    expect(JSON.stringify(body)).not.toContain("filesystem");
   });
 
   it("does not fetch V2 cockpit endpoints when job id is missing", async () => {

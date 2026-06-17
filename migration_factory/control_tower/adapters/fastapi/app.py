@@ -110,6 +110,7 @@ from migration_factory.control_tower.infrastructure.singleton import (
     create_controller_ownership,
 )
 from migration_factory.control_tower.schemas.run_configuration import RunPolicy
+from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
 from migration_factory.control_tower.application.env_parser import (
     EnvParseResult,
     parse_env_block,
@@ -154,8 +155,25 @@ from migration_factory.control_tower.application.v2_model_schemas import (
 from migration_factory.control_tower.application.v2_repair_flow import (
     V2RepairFlowService,
 )
+from migration_factory.control_tower.application.v2_repair_gate_service import (
+    V2RepairGateService,
+    create_repair_gate_diagnosis_callback,
+)
 from migration_factory.control_tower.application.v2_reviewer_service import (
     V2ReviewerService,
+)
+from migration_factory.control_tower.application.v2_failure_diagnosis import (
+    V2FailureDiagnosisService,
+)
+from migration_factory.control_tower.application.v2_gate_action_service import (
+    V2GateActionService,
+)
+from migration_factory.control_tower.application.v2_gate_artifact_resolver import (
+    V2GateArtifactResolver,
+)
+from migration_factory.control_tower.application.v2_evidence_pack_builder import (
+    EvidencePackBuilder,
+    evidence_pack_to_dict,
 )
 from migration_factory.control_tower.application.v2_orchestrator_runner import (
     V2OrchestratorRunner,
@@ -163,6 +181,10 @@ from migration_factory.control_tower.application.v2_orchestrator_runner import (
 )
 from migration_factory.control_tower.application.v2_failure_diagnosis import (
     create_orchestrator_diagnosis_callback,
+)
+from migration_factory.control_tower.application.v2_phase_gate_service import (
+    AvailableAction,
+    V2PhaseGateService,
 )
 from migration_factory.control_tower.application.redaction import redact_public_value
 from migration_factory.control_tower.adapters.fastapi.security import (
@@ -178,6 +200,25 @@ from migration_factory.control_tower.adapters.fastapi.security import (
 )
 from migration_factory.control_tower.application.redaction import redact_model_summary
 from migration_factory.control_tower.domain.checksums import utc_now_text
+from migration_factory.control_tower.domain.gate_checksum import gate_checksum
+from migration_factory.control_tower.schemas.phase_gate import (
+    GateActorType,
+    GateDecision,
+    GatePhase,
+    GateStatus,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_gate_decision_repository import (
+    SqliteGateDecisionRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_repository import (
+    SqlitePhaseGateRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_artifact_revision_repository import (
+    SqliteArtifactRevisionRepository,
+)
+from migration_factory.control_tower.application.v2_gate_errors import (
+    http_status_for_gate_status,
+)
 from uuid import uuid4
 
 # F14 — Stage 3 POM dependency editor imports
@@ -447,6 +488,20 @@ class ApproveCardRequest(BaseModel):
     expected_checksum: str
 
 
+class GateActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: GateDecision
+    expected_gate_checksum: str
+    idempotency_key: str | None = None
+    decided_by: str
+    actor_type: GateActorType
+    reason: str = ""
+    proposal_id: str | None = None
+    proposal_checksum: str | None = None
+    context_pack_checksum: str | None = None
+    user_feedback: str = ""
+
+
 # F07 reviewer request — context only, no decision from client
 
 class CreateReviewerCritiqueRequest(BaseModel):
@@ -622,10 +677,66 @@ def create_app(
             asyncio.run(app.state.public_event_notifier.notify())
 
     _repair_flow = V2RepairFlowService()
-    _diagnosis_callback = create_orchestrator_diagnosis_callback(
+    _diagnosis_service = V2FailureDiagnosisService(
         repair_flow=_repair_flow,
         event_sink=_diagnosis_event_sink,
     )
+    _orchestrator_diagnosis_callback = create_orchestrator_diagnosis_callback(
+        service=_diagnosis_service,
+    )
+
+    def _repair_gate_enabled_for_job(job_id: str) -> bool:
+        with unit_of_work_factory() as uow:
+            run_config = uow.run_configurations.get_for_job(job_id)
+        if run_config is None or not run_config.policy_json:
+            return False
+        try:
+            policy = RunPolicy(**json.loads(run_config.policy_json))
+        except Exception:
+            return False
+        return policy.stage_continuation_policy != StageContinuationPolicy.AUTO_ON_GREEN
+
+    def _maybe_create_repair_gate(
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if not V2FailureDiagnosisService.is_diagnosable_event(event_type):
+            return
+        if not _repair_gate_enabled_for_job(job_id):
+            return
+
+        with unit_of_work_factory() as uow:
+            gate_service = V2PhaseGateService(uow.phase_gates)
+            decision_service = V2GateActionService(
+                uow.phase_gates,
+                uow.gate_decisions,
+                gate_service,
+                revision_repo=uow.artifact_revisions,
+                repair_service=_repair_flow,
+            )
+            repair_gate_service = V2RepairGateService(
+                gate_service=gate_service,
+                gate_action_service=decision_service,
+                repair_flow=_repair_flow,
+                diagnosis_service=_diagnosis_service,
+            )
+            create_repair_gate_diagnosis_callback(
+                repair_gate_service,
+                _diagnosis_service,
+            )(job_id, stage_index, command_id, event_type, payload)
+
+    def _diagnosis_callback(
+        job_id: str,
+        stage: int,
+        command_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        _orchestrator_diagnosis_callback(job_id, stage, command_id, event_type, payload)
+        _maybe_create_repair_gate(job_id, stage, command_id, event_type, payload)
 
     app.state.v2_orchestrator_runner = v2_orchestrator_runner or V2OrchestratorRunner(
         unit_of_work_factory=unit_of_work_factory,
@@ -1221,6 +1332,304 @@ def create_app(
             _require_v2_job(uow, job_id)
             events = uow.v2_events.list_by_job(job_id)
         return redact_public_data(_v2_failure_summary(job_id, events))
+
+    def _v2_gate_to_dict(
+        gate: Any,
+        *,
+        available_actions: list[AvailableAction] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            refs_raw = json.loads(gate.source_artifact_refs_json or "[]")
+        except (json.JSONDecodeError, TypeError):
+            refs_raw = []
+        if isinstance(refs_raw, dict):
+            refs = [str(value) for value in refs_raw.values() if value]
+        elif isinstance(refs_raw, list):
+            refs = [str(value) for value in refs_raw if value]
+        else:
+            refs = []
+        checksum = gate_checksum(
+            gate_id=gate.gate_id,
+            job_id=gate.job_id,
+            gate_phase=gate.gate_phase,
+            stage_index=gate.stage_index,
+            source_artifact_checksum=gate.source_artifact_checksum,
+            source_artifact_refs=tuple(refs),
+        )
+        return {
+            "gate_id": gate.gate_id,
+            "job_id": gate.job_id,
+            "gate_phase": gate.gate_phase,
+            "stage_index": gate.stage_index,
+            "gate_status": gate.gate_status,
+            "gate_decision": gate.gate_decision,
+            "source_artifact_checksum": gate.source_artifact_checksum,
+            "source_artifact_refs": refs,
+            "created_at": gate.created_at,
+            "resolved_at": gate.resolved_at,
+            "resolved_by": gate.resolved_by,
+            "checksum": checksum,
+            "available_actions": [
+                {
+                    "action": action.action,
+                    "label": action.label,
+                    "description": action.description,
+                    "blocked": action.blocked,
+                    "block_reason": action.block_reason,
+                }
+                for action in (available_actions or [])
+            ],
+        }
+
+    def _v2_gate_detail_payload(
+        uow: Any,
+        gate: Any,
+    ) -> dict[str, Any]:
+        gate_service = V2PhaseGateService(uow.phase_gates)
+        available_actions = gate_service.get_available_actions(gate.gate_id)
+        gate_dict = _v2_gate_to_dict(gate, available_actions=available_actions)
+
+        evidence: dict[str, Any] | None = None
+        setup = None
+        job = uow.v2_jobs.get(gate.job_id)
+        if job is not None and getattr(job, "setup_id", None):
+            setup = uow.v2_setups.get(job.setup_id)
+        storage_root = getattr(setup, "output_parent_path", None) if setup is not None else None
+        resolver = V2GateArtifactResolver(uow.phase_gates, storage_root=storage_root)
+        pack_builder = EvidencePackBuilder(resolver)
+        try:
+            gate_phase = GatePhase(gate.gate_phase)
+        except ValueError:
+            gate_phase = None
+        if gate_phase == GatePhase.ANALYSIS_REVIEW:
+            evidence = evidence_pack_to_dict(pack_builder.build_analysis_pack(gate.gate_id))
+        elif gate_phase == GatePhase.PLANNING_REVIEW:
+            evidence = evidence_pack_to_dict(pack_builder.build_planning_pack(gate.gate_id))
+        elif gate_phase == GatePhase.APPROVAL_REVIEW:
+            evidence = evidence_pack_to_dict(pack_builder.build_approval_pack(gate.gate_id))
+        elif gate_phase in {GatePhase.REPAIR_REVIEW, GatePhase.STAGE_COMPLETION_REVIEW}:
+            evidence = evidence_pack_to_dict(pack_builder.build_failure_pack(gate.gate_id))
+
+        return {
+            "gate": gate_dict,
+            "evidence": evidence,
+            "checksum": gate_dict["checksum"],
+        }
+
+    def _v2_gate_action_response(
+        uow: Any,
+        *,
+        job_id: str,
+        gate_id: str,
+        payload: GateActionRequest,
+    ) -> dict[str, Any]:
+        gate_service = V2PhaseGateService(uow.phase_gates)
+        repair_flow = V2RepairFlowService(repair_repo=uow.v2_repairs)
+        action_service = V2GateActionService(
+            uow.phase_gates,
+            uow.gate_decisions,
+            gate_service,
+            revision_repo=uow.artifact_revisions,
+            repair_service=repair_flow,
+        )
+        repair_gate_service = V2RepairGateService(
+            gate_service=gate_service,
+            gate_action_service=action_service,
+            repair_flow=repair_flow,
+        )
+
+        gate = uow.phase_gates.get(gate_id)
+        if gate is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "GATE_NOT_FOUND",
+                f"Gate {gate_id!r} not found.",
+            )
+        if gate.job_id != job_id:
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                "GATE_JOB_MISMATCH",
+                "Gate job does not match the requested job.",
+            )
+
+        actor_type = payload.actor_type.value if hasattr(payload.actor_type, "value") else str(payload.actor_type)
+        action_value = payload.action.value if hasattr(payload.action, "value") else str(payload.action)
+        if action_value == GateDecision.CONTINUE.value:
+            result = action_service.continue_from_gate(
+                gate_id=gate_id,
+                job_id=job_id,
+                decided_by=payload.decided_by,
+                idempotency_key=payload.idempotency_key,
+                expected_gate_checksum=payload.expected_gate_checksum,
+                actor_type=actor_type,
+            )
+        elif action_value == GateDecision.REANALYZE.value:
+            result = action_service.request_reanalysis(
+                gate_id=gate_id,
+                job_id=job_id,
+                decided_by=payload.decided_by,
+                user_feedback=payload.user_feedback,
+                idempotency_key=payload.idempotency_key,
+                expected_gate_checksum=payload.expected_gate_checksum,
+            )
+        elif action_value == GateDecision.REVISE.value:
+            if gate.gate_phase == GatePhase.REPAIR_REVIEW.value:
+                result = repair_gate_service.request_repair_revision(
+                    gate_id=gate_id,
+                    job_id=job_id,
+                    decided_by=payload.decided_by,
+                    proposal_id=payload.proposal_id or "",
+                    user_feedback=payload.user_feedback,
+                    idempotency_key=payload.idempotency_key,
+                    expected_gate_checksum=payload.expected_gate_checksum,
+                )
+            else:
+                result = action_service.request_plan_revision(
+                    gate_id=gate_id,
+                    job_id=job_id,
+                    decided_by=payload.decided_by,
+                    user_feedback=payload.user_feedback,
+                    idempotency_key=payload.idempotency_key,
+                    expected_gate_checksum=payload.expected_gate_checksum,
+                )
+        elif action_value == GateDecision.APPROVE.value:
+            if gate.gate_phase == GatePhase.REPAIR_REVIEW.value:
+                result = repair_gate_service.approve_repair(
+                    gate_id=gate_id,
+                    job_id=job_id,
+                    decided_by=payload.decided_by,
+                    proposal_id=payload.proposal_id or "",
+                    proposal_checksum=payload.proposal_checksum or "",
+                    context_pack_checksum=payload.context_pack_checksum or "",
+                    idempotency_key=payload.idempotency_key,
+                    expected_gate_checksum=payload.expected_gate_checksum,
+                    actor_type=actor_type,
+                )
+            else:
+                result = action_service.approve_transformation(
+                    gate_id=gate_id,
+                    job_id=job_id,
+                    decided_by=payload.decided_by,
+                    idempotency_key=payload.idempotency_key,
+                    expected_gate_checksum=payload.expected_gate_checksum,
+                    actor_type=actor_type,
+                )
+        elif action_value == GateDecision.REJECT.value:
+            if gate.gate_phase == GatePhase.REPAIR_REVIEW.value:
+                result = repair_gate_service.reject_repair(
+                    gate_id=gate_id,
+                    job_id=job_id,
+                    decided_by=payload.decided_by,
+                    reason=payload.reason,
+                    idempotency_key=payload.idempotency_key,
+                    expected_gate_checksum=payload.expected_gate_checksum,
+                    actor_type=actor_type,
+                )
+            else:
+                result = action_service.reject_gate(
+                    gate_id=gate_id,
+                    job_id=job_id,
+                    decided_by=payload.decided_by,
+                    reason=payload.reason,
+                    idempotency_key=payload.idempotency_key,
+                    expected_gate_checksum=payload.expected_gate_checksum,
+                    actor_type=actor_type,
+                )
+        else:
+            raise _error(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "UNSUPPORTED_GATE_ACTION",
+                f"Unsupported gate action {action_value!r}.",
+            )
+
+        if result.status == "idempotency_conflict":
+            raise _error(
+                status.HTTP_409_CONFLICT,
+                "IDEMPOTENCY_CONFLICT",
+                result.reason or "Idempotency key was reused for a different request.",
+            )
+        if result.status == "stale_checksum":
+            raise _error(
+                status.HTTP_409_CONFLICT,
+                "STALE_GATE_CHECKSUM",
+                result.reason or "Gate checksum is stale.",
+            )
+        if result.status in {"actor_not_authoritative", "invalid_decision", "gate_not_open", "gate_not_found", "command_conflict", "approval_failed", "no_repair_service", "no_action_service"}:
+            raise _error(
+                http_status_for_gate_status(result.status),
+                result.status.upper(),
+                result.reason or result.status,
+            )
+
+        return {
+            "result": {
+                "decision_id": result.decision_id,
+                "gate_id": result.gate_id,
+                "job_id": job_id,
+                "action": result.action,
+                "status": result.status,
+                "result_gate_id": result.result_gate_id,
+                "result_command_id": result.result_command_id,
+                "result_revision_id": result.result_revision_id,
+                "reason": result.reason,
+            }
+        }
+
+    @app.get("/v1/v2/jobs/{job_id}/gates")
+    def list_v2_job_gates(job_id: str) -> dict[str, Any]:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            gates = sorted(
+                uow.phase_gates.list_by_job(job_id),
+                key=lambda gate: (gate.created_at, gate.stage_index, gate.gate_id),
+            )
+            gate_service = V2PhaseGateService(uow.phase_gates)
+            return {
+                "gates": [
+                    _v2_gate_to_dict(
+                        gate,
+                        available_actions=gate_service.get_available_actions(gate.gate_id),
+                    )
+                    for gate in gates
+                ]
+            }
+
+    @app.get("/v1/v2/jobs/{job_id}/gates/open")
+    def get_v2_job_open_gate(job_id: str) -> dict[str, Any]:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            open_gates = uow.phase_gates.list_open(job_id)
+            gate = open_gates[0] if open_gates else None
+            gate_service = V2PhaseGateService(uow.phase_gates)
+            return {
+                "gate": None if gate is None else _v2_gate_to_dict(
+                    gate,
+                    available_actions=gate_service.get_available_actions(gate.gate_id),
+                )
+            }
+
+    @app.get("/v1/v2/jobs/{job_id}/gates/{gate_id}")
+    def get_v2_job_gate(job_id: str, gate_id: str) -> dict[str, Any]:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            gate = uow.phase_gates.get(gate_id)
+            if gate is None or gate.job_id != job_id:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "GATE_NOT_FOUND",
+                    f"Gate {gate_id!r} not found.",
+                )
+            return _v2_gate_detail_payload(uow, gate)
+
+    @app.post("/v1/v2/jobs/{job_id}/gates/{gate_id}/actions")
+    def post_v2_job_gate_action(
+        job_id: str,
+        gate_id: str,
+        payload: GateActionRequest,
+    ) -> dict[str, Any]:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            return _v2_gate_action_response(uow, job_id=job_id, gate_id=gate_id, payload=payload)
 
     @app.get("/v1/v2/jobs/{job_id}/artifacts/{artifact_kind}")
     def get_v2_job_artifact_preview(

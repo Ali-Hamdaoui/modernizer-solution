@@ -26,6 +26,7 @@ def test_decision_request_construction() -> None:
         request_checksum="sha256:req456",
         decided_by="user-1",
         decided_at="2026-06-17T14:00:00Z",
+        actor_type="human",
     )
     assert req.gate_id == "gate-abc"
     assert req.action == GateDecision.CONTINUE
@@ -42,6 +43,7 @@ def test_decision_request_coerces_action_string() -> None:
         request_checksum="sha256:req456",
         decided_by="user-1",
         decided_at="2026-06-17T14:00:00Z",
+        actor_type="human",
     )
     assert req.action == GateDecision.APPROVE
 
@@ -66,6 +68,7 @@ def test_decision_request_rejects_empty_required_fields() -> None:
             "request_checksum": "sha256:req456",
             "decided_by": "user-1",
             "decided_at": "2026-06-17T14:00:00Z",
+            "actor_type": "human",
         }
         kwargs[field_name] = bad_value
         with pytest.raises(ValidationError):
@@ -116,6 +119,7 @@ def test_decision_record_construction() -> None:
         request_checksum="sha256:req456",
         decided_by="user-1",
         decided_at="2026-06-17T14:00:00Z",
+        actor_type="human",
     )
     assert record.decision_id == "dec-001"
     assert record.gate_id == "gate-abc"
@@ -139,6 +143,7 @@ def test_decision_record_with_result_refs() -> None:
         result_revision_id=None,
         decided_by="user-1",
         decided_at="2026-06-17T14:00:00Z",
+        actor_type="human",
     )
     assert record.result_gate_id == "gate-new-001"
     assert record.result_command_id is None
@@ -155,6 +160,7 @@ def test_decision_record_defaults() -> None:
         request_checksum="sha256:req999",
         decided_by="user-1",
         decided_at="2026-06-17T14:00:00Z",
+        actor_type="human",
     )
     assert record.actor_type == "human"
     assert record.actor_id == ""
@@ -321,6 +327,7 @@ def test_decision_request_rejects_unknown_fields() -> None:
             request_checksum="sha256:req456",
             decided_by="user-1",
             decided_at="2026-06-17T14:00:00Z",
+            actor_type="human",
             sandbox_path="/tmp/evil",  # blocked
         )
 

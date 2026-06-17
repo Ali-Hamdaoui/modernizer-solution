@@ -21,6 +21,7 @@ _STATUS_TO_HTTP: dict[str, int] = {
     "gate_not_found": 404,
     "gate_not_open": 409,
     "stale_checksum": 409,
+    "idempotency_conflict": 409,
     "command_conflict": 409,
     "invalid_decision": 422,
     "no_accepted_analysis": 422,
@@ -110,6 +111,13 @@ class StaleChecksumError(GateError):
     http_status = 409
 
 
+class IdempotencyConflictError(GateError):
+    """The idempotency key was reused for a different payload."""
+
+    status = "idempotency_conflict"
+    http_status = 409
+
+
 class CommandConflictError(GateError):
     """A command is already queued/running for this job."""
 
@@ -165,6 +173,7 @@ _STATUS_TO_ERROR_CLASS: dict[str, type[GateError]] = {
     "gate_not_found": GateNotFoundError,
     "gate_not_open": GateNotOpenError,
     "stale_checksum": StaleChecksumError,
+    "idempotency_conflict": IdempotencyConflictError,
     "command_conflict": CommandConflictError,
     "invalid_decision": InvalidDecisionError,
     "no_accepted_analysis": NoAcceptedAnalysisError,

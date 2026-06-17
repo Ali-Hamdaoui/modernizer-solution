@@ -1,13 +1,15 @@
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import MigrationCockpitPage from "../app/migrations/[jobId]/page";
 import {
   MigrationCockpit,
+  GatePanelContent,
   mergeCockpitLiveRefreshResults,
   reduceStageStatus,
   type CockpitData,
 } from "../app/migrations/[jobId]/MigrationCockpit";
 import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, requireJobId, v2EventStreamUrl } from "../lib/controlTowerApi";
-import type { V2JobEvent } from "../lib/contracts";
+import type { GateRepresentation, V2JobEvent } from "../lib/contracts";
 
 describe("V2 Migration Cockpit contract", () => {
   it("passes the awaited route job id into MigrationCockpit", async () => {
@@ -56,6 +58,57 @@ describe("V2 Migration Cockpit contract", () => {
   it("approval requires checksum", () => {
     const approval = { id: "a1", status: "pending", checksum_required: true };
     expect(approval.checksum_required).toBe(true);
+  });
+
+  it("renders the open gate panel with gate-safe details", () => {
+    const gate: GateRepresentation = {
+      gate_id: "gate-1",
+      job_id: "job-1",
+      gate_phase: "repair_review",
+      stage_index: 2,
+      gate_status: "open",
+      gate_decision: "revise",
+      source_artifact_checksum: "sha256:gate",
+      source_artifact_refs: ["diagnosis:1", "evidence:2"],
+      created_at: "2026-06-17T00:00:00Z",
+      resolved_at: null,
+      resolved_by: null,
+      checksum: "sha256:gate-checksum",
+      available_actions: [
+        { action: "revise", label: "Revise", description: "Request repair revision", blocked: false, block_reason: "" },
+        { action: "reject", label: "Reject", description: "Reject repair", blocked: false, block_reason: "" },
+      ],
+    };
+
+    const markup = renderToStaticMarkup(
+      <GatePanelContent state={{
+        status: "success",
+        gates: [gate],
+        openGate: gate,
+        openGateDetail: {
+          gate,
+          evidence: {
+            failure_summary: "build failed in sandbox",
+            root_cause_hypothesis: "dependency mismatch",
+            patch_summary: "Align the version",
+            affected_paths: ["pom.xml"],
+            reviewer_critique: null,
+            remaining_attempts: 2,
+            max_attempts: 3,
+          },
+          checksum: gate.checksum,
+        },
+      }} />
+    );
+
+    expect(markup).toContain("Open gate");
+    expect(markup).toContain("repair_review");
+    expect(markup).toContain("Stage 2");
+    expect(markup).toContain("build failed in sandbox");
+    expect(markup).toContain("Revise");
+    expect(markup).toContain("Reject");
+    expect(markup).toContain("diagnosis:1");
+    expect(markup).toContain("sha256:gate-checksum");
   });
 
   it("assistant cannot execute, approve, write, or change route", () => {

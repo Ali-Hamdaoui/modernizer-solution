@@ -248,7 +248,7 @@ class GateDecisionRequest(StrictModel):
     request_checksum: NonEmptyString
     decided_by: NonEmptyString
     decided_at: NonEmptyString
-    actor_type: str = "human"
+    actor_type: NonEmptyString
     actor_id: str = ""
     correlation_id: str | None = None
     causation_id: str | None = None
@@ -268,6 +268,11 @@ class GateDecisionRequest(StrictModel):
     @classmethod
     def _validate_required_strings(cls, value: str, info) -> str:
         return require_non_empty_string(value, info.field_name)
+
+    @field_validator("actor_type", mode="after")
+    @classmethod
+    def _validate_actor_type(cls, value: str) -> str:
+        return require_non_empty_string(value, "actor_type")
 
 
 class GateDecisionResult(StrictModel):

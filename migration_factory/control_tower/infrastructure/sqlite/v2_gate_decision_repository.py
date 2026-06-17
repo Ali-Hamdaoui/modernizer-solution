@@ -73,6 +73,24 @@ class SqliteGateDecisionRepository:
             return None
         return self._row_to_record(row)
 
+    def find_by_idempotency_key_and_checksum(
+        self,
+        idempotency_key: str,
+        request_checksum: str,
+    ) -> GateDecisionRecord | None:
+        """Find the most recent exact idempotent match for a request."""
+        row = self._connection.execute(
+            """SELECT * FROM v2_gate_decisions
+               WHERE idempotency_key = ?
+                 AND request_checksum = ?
+               ORDER BY decided_at DESC
+               LIMIT 1""",
+            (idempotency_key, request_checksum),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_record(row)
+
     def list_by_gate(self, gate_id: str) -> tuple[GateDecisionRecord, ...]:
         rows = self._connection.execute(
             """SELECT * FROM v2_gate_decisions

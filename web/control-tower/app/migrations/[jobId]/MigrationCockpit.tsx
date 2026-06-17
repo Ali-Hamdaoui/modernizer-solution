@@ -12,6 +12,9 @@ import {
   getV2JobApprovals,
   getV2MigrationJob,
   getV2JobPipeline,
+  getV2GateDetail,
+  getV2JobGates,
+  getV2OpenGate,
   getV2MigrationJobStages,
   rejectV2Card,
   requireJobId,
@@ -26,6 +29,8 @@ import type {
   V2JobEvent,
   V2MigrationJobResponse,
   V2PipelineResponse,
+  GateDetailResponse,
+  GateRepresentation,
 } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
 
@@ -46,6 +51,17 @@ export interface CockpitData {
   failureSummary: V2FailureSummaryResponse | null;
   assistantModel: { status: string; source: string; provider: string; role: string; failure_reason?: string } | null;
 }
+
+type GatePanelState =
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "empty" }
+  | {
+      status: "success";
+      gates: GateRepresentation[];
+      openGate: GateRepresentation | null;
+      openGateDetail: GateDetailResponse | null;
+    };
 
 type LiveRefreshResults = [
   PromiseSettledResult<{ approvals: V2ApprovalResponse[] }>,
@@ -76,6 +92,68 @@ export function mergeCockpitLiveRefreshResults(
   };
 }
 
+export function GatePanelContent({ state }: { state: GatePanelState }) {
+  if (state.status === "loading") {
+    return (
+      <section className="panel stack" aria-label="Open gate panel">
+        <h2>Open gate</h2>
+        <p className="meta">Loading gate state...</p>
+      </section>
+    );
+  }
+
+  if (state.status === "error") {
+    return (
+      <section className="panel stack" aria-label="Open gate panel">
+        <h2>Open gate</h2>
+        <p className="meta" role="alert">Failed to load gate state: {state.message}</p>
+      </section>
+    );
+  }
+
+  if (state.status === "empty") {
+    return (
+      <section className="panel stack" aria-label="Open gate panel">
+        <h2>Open gate</h2>
+        <p className="meta">No F15 gates are registered yet for this job.</p>
+      </section>
+    );
+  }
+
+  const gate = state.openGate;
+  const detail = state.openGateDetail;
+
+  return (
+    <section className="panel stack" aria-label="Open gate panel">
+      <h2>Open gate</h2>
+      <p className="meta">All gate data comes from backend-owned, gate-bound artifacts and checksums.</p>
+      {gate ? (
+        <div className="table-list">
+          <div className="table-row">
+            <span className="meta">Type</span>
+            <strong>{gate.gate_phase}</strong>
+            <span className="meta">Stage {gate.stage_index}</span>
+            <span className="meta">Status: {gate.gate_status}</span>
+            <span className="meta">Checksum: {gate.checksum}</span>
+          </div>
+          <div className="table-row">
+            <span className="meta">Summary</span>
+            <strong>{detail?.evidence?.failure_summary ?? "Open gate awaiting decision"}</strong>
+            <span className="meta">Allowed actions: {gate.available_actions.map((action) => action.label).join(", ") || "None"}</span>
+          </div>
+          <div className="table-row">
+            <span className="meta">Safe refs</span>
+            <strong>{gate.source_artifact_refs.length > 0 ? gate.source_artifact_refs.join(", ") : "None"}</strong>
+            <span className="meta">Gate count: {state.gates.length}</span>
+          </div>
+        </div>
+      ) : (
+        <p className="meta">No gate is currently open for this job.</p>
+      )}
+    </section>
+  );
+}
+
 export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [data, setData] = useState<CockpitData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -86,6 +164,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [artifactPreviewBusy, setArtifactPreviewBusy] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "connected" | "reconnecting">("connecting");
   const [liveRefreshWarning, setLiveRefreshWarning] = useState<string | null>(null);
+  const [gateState, setGateState] = useState<GatePanelState>({ status: "loading" });
   const normalizedJobId = jobId?.trim() ?? "";
 
   useEffect(() => {
@@ -130,6 +209,47 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     }
     loadCockpit();
     return () => { cancelled = true; };
+  }, [normalizedJobId]);
+
+  useEffect(() => {
+    if (!normalizedJobId) {
+      setGateState({ status: "loading" });
+      return;
+    }
+
+    let cancelled = false;
+    async function loadGateState() {
+      try {
+        const safeJobId = requireJobId(normalizedJobId);
+        const [gateList, openGateResponse] = await Promise.all([
+          getV2JobGates(safeJobId),
+          getV2OpenGate(safeJobId),
+        ]);
+        if (cancelled) return;
+        const openGate = openGateResponse.gate ?? null;
+        const openGateDetail = openGate
+          ? await getV2GateDetail(safeJobId, openGate.gate_id).catch(() => null)
+          : null;
+        if (cancelled) return;
+        setGateState({
+          status: gateList.gates.length === 0 ? "empty" : "success",
+          gates: gateList.gates,
+          openGate,
+          openGateDetail,
+        });
+      } catch (e) {
+        if (!cancelled) {
+          setGateState({
+            status: "error",
+            message: e instanceof Error ? e.message : "Failed to load gate state.",
+          });
+        }
+      }
+    }
+    loadGateState();
+    return () => {
+      cancelled = true;
+    };
   }, [normalizedJobId]);
 
   useEffect(() => {
@@ -382,6 +502,8 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         </div>
         <p className="meta">Stage inputs are fixed by pipeline. No user selection of Stage 2/3 paths.</p>
       </section>
+
+      {gateState.status !== "loading" ? <GatePanelContent state={gateState} /> : null}
 
       {/* Evidence Panel */}
       <section className="panel">
