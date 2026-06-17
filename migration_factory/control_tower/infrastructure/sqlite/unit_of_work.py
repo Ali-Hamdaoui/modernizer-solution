@@ -76,6 +76,15 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_pom_change_reposit
     SqlitePomValidationRepository,
     SqlitePomRepairPlanRepository,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_repository import (
+    SqlitePhaseGateRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_gate_decision_repository import (
+    SqliteGateDecisionRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_artifact_revision_repository import (
+    SqliteArtifactRevisionRepository,
+)
 
 
 _WAL_CONFIGURED_CONNECTIONS: set[int] = set()
@@ -142,6 +151,9 @@ class SqliteControlTowerUnitOfWork:
         self.v2_pom_repair_plans = SqlitePomRepairPlanRepository(connection)
         self.v1_proof_reports = SqliteV1ProofReportRepository(connection)
         self.v1_proof_report_gates = SqliteV1ProofReportGateRepository(connection)
+        self.phase_gates = SqlitePhaseGateRepository(connection)
+        self.gate_decisions = SqliteGateDecisionRepository(connection)
+        self.artifact_revisions = SqliteArtifactRevisionRepository(connection)
 
     def __enter__(self) -> "SqliteControlTowerUnitOfWork":
         if self.transaction_mode == "write":
