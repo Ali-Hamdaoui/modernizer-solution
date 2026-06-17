@@ -209,6 +209,7 @@ _VALID_PHASE_DECISIONS: dict[GatePhase, frozenset[GateDecision]] = {
         GateDecision.CONTINUE,
         GateDecision.REANALYZE,
         GateDecision.REVISE,
+        GateDecision.REJECT,
     }),
     GatePhase.STAGE_COMPLETION_REVIEW: frozenset({
         GateDecision.CONTINUE,

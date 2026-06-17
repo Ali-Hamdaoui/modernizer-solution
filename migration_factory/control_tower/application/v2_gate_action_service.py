@@ -394,6 +394,94 @@ class V2GateActionService:
 
         return base_result
 
+    # ── action: request_repair_revision (job104) ─────────────────────
+
+    def request_repair_revision(
+        self,
+        *,
+        gate_id: str,
+        job_id: str,
+        decided_by: str,
+        proposal_id: str,
+        user_feedback: str = "",
+        idempotency_key: str | None = None,
+        expected_gate_checksum: str | None = None,
+    ) -> GateActionResult:
+        """Request a repair revision at a repair_review gate.
+
+        Only works on repair_review gates.  The handler:
+          1. Resolves the current repair_review gate with REVISE.
+          2. Opens a new repair_review gate with user feedback context.
+          3. The caller should create the revised repair proposal
+             via V2RepairFlowService.create_revision_proposal().
+
+        No source writes occur.  The chatbot explains the feedback;
+        the backend creates the revision proposal.
+        """
+        base_result = self._execute_action(
+            gate_id=gate_id,
+            job_id=job_id,
+            action=GateDecision.REVISE,
+            decided_by=decided_by,
+            idempotency_key=idempotency_key,
+            expected_gate_checksum=expected_gate_checksum,
+        )
+        if base_result.status not in ("executed", "idempotent"):
+            return base_result
+
+        # Create a revision artifact with user feedback
+        gate = self._gate_repo.get(gate_id)
+        if gate is None:
+            return base_result
+
+        stage_index = gate.stage_index
+        import json
+        now = utc_now_text()
+
+        if self._revision_repo is not None and base_result.status == "executed":
+            feedback_lines = [user_feedback[:256]] if user_feedback else []
+            if proposal_id:
+                feedback_lines.append(f"source_proposal:{proposal_id}")
+
+            rev_id = uuid4().hex
+            self._revision_repo.save(
+                ArtifactRevisionRecord(
+                    revision_id=rev_id,
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    revision_kind="repair",
+                    revision_status="draft",
+                    revision_order=0,
+                    evidence_checksum=gate.source_artifact_checksum,
+                    prior_revision_checksum=None,
+                    artifact_refs_json=json.dumps(
+                        feedback_lines,
+                        separators=(",", ":"),
+                    ),
+                    prior_revision_id=None,
+                    superseded_by_revision_id=None,
+                    accepted_at_gate_id=base_result.result_gate_id,
+                    created_at=now,
+                    created_by=decided_by,
+                    accepted_at=None,
+                    accepted_by=None,
+                )
+            )
+
+        # Store proposal_id in result_revision_id for caller context
+        base_result = GateActionResult(
+            action=base_result.action,
+            gate_id=base_result.gate_id,
+            decision_id=base_result.decision_id,
+            status=base_result.status,
+            result_gate_id=base_result.result_gate_id,
+            result_command_id=base_result.result_command_id,
+            result_revision_id=proposal_id or base_result.result_revision_id,
+            reason=base_result.reason,
+        )
+
+        return base_result
+
     # ── action: approve ─────────────────────────────────────────────
 
     def approve_from_gate(

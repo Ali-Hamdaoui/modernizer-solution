@@ -190,6 +190,7 @@ def test_different_gates_have_different_keys() -> None:
         (GatePhase.REPAIR_REVIEW, GateDecision.CONTINUE, True),
         (GatePhase.REPAIR_REVIEW, GateDecision.REANALYZE, True),
         (GatePhase.REPAIR_REVIEW, GateDecision.REVISE, True),
+        (GatePhase.REPAIR_REVIEW, GateDecision.REJECT, True),
         (GatePhase.STAGE_COMPLETION_REVIEW, GateDecision.CONTINUE, True),
         (GatePhase.STAGE_COMPLETION_REVIEW, GateDecision.REJECT, False),
     ],
