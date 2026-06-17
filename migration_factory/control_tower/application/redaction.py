@@ -309,3 +309,70 @@ def _redact_dict_value(key: str, value: Any) -> Any:
     if isinstance(value, str):
         return redact_model_summary(value)
     return redact_public_value(value)
+
+
+# ── Patch preview redaction (F15-JOB-109) ────────────────────────────
+
+# Default max chars for a patch preview
+DEFAULT_PATCH_PREVIEW_CHAR_LIMIT = 10_000
+
+# Patterns for secrets commonly found in patches
+_PATCH_SECRET_PATTERNS: list[tuple[str, str]] = [
+    (r'password\s*=\s*\S+', 'password=[redacted]'),
+    (r'api[_-]?key\s*=\s*\S+', 'api_key=[redacted]'),
+    (r'token\s*=\s*\S+', 'token=[redacted]'),
+    (r'secret\s*=\s*\S+', 'secret=[redacted]'),
+    (r'access[_-]?key[-_=]?\S+', 'access_key=[redacted]'),
+    (r'secret[_-]?key[-_=]?\S+', 'secret_key=[redacted]'),
+]
+
+
+_DEFAULT_PATCH_SECRET_RE = re.compile(
+    "|".join(pattern for pattern, _ in _PATCH_SECRET_PATTERNS),
+    re.IGNORECASE,
+)
+
+
+def redact_patch_preview(
+    patch_content: str,
+    *,
+    max_chars: int = DEFAULT_PATCH_PREVIEW_CHAR_LIMIT,
+    redact_secrets: bool = True,
+    redact_paths: bool = True,
+) -> str:
+    """Redact a repair patch preview for safe display.
+
+    Applies:
+      1. Absolute path redaction (sandbox paths, user-specific paths)
+      2. Secret value redaction (passwords, tokens, API keys)
+      3. Size bounding with omitted-section markers
+
+    Args:
+        patch_content: Raw patch/unified-diff content.
+        max_chars: Maximum characters for the preview.
+        redact_secrets: Whether to redact secret-like values.
+        redact_paths: Whether to redact absolute paths.
+
+    Returns:
+        Redacted, bounded patch preview.
+    """
+    result = patch_content
+
+    # 1. Redact absolute paths (sandbox, user home, tmp, etc.)
+    if redact_paths:
+        result = redact_absolute_paths(result)
+
+    # 2. Redact secret-like values
+    if redact_secrets:
+        result = _DEFAULT_PATCH_SECRET_RE.sub(
+            lambda m: _PATCH_SECRET_PATTERNS[m.lastindex - 1][1]
+            if m.lastindex and m.lastindex <= len(_PATCH_SECRET_PATTERNS)
+            else "[redacted]",
+            result,
+        )
+
+    # 3. Size bounding
+    if len(result) > max_chars:
+        result = result[:max_chars] + "\n[... patch preview truncated at {} chars ...]".format(max_chars)
+
+    return result

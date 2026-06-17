@@ -240,18 +240,25 @@ def test_reject_gate_on_planning_gate_fails(tmp_path: Path) -> None:
     assert result.status == "invalid_decision"
 
 
-def test_reject_gate_on_repair_gate_fails(tmp_path: Path) -> None:
-    """Reject is only valid for approval_review gates."""
+def test_reject_gate_on_repair_gate_succeeds(tmp_path: Path) -> None:
+    """Reject is now valid for repair_review gates (F15-JOB-106)."""
     gate_repo, decision_repo, gate_svc, action_svc, conn = _setup(tmp_path)
 
     gate_id = _create_open_gate(gate_svc, phase="repair_review")
 
     result = action_svc.reject_gate(
         gate_id=gate_id, job_id="job-abc", decided_by="user-1",
-        reason="Not applicable",
+        reason="The repair proposal is too risky",
     )
 
-    assert result.status == "invalid_decision"
+    assert result.status == "executed"
+    assert result.decision_id
+
+    # Gate should be resolved with REJECT
+    gate = gate_repo.get(gate_id)
+    assert gate is not None
+    assert gate.gate_status == "resolved"
+    assert gate.gate_decision == "reject"
 
 
 # ── no command is queued ─────────────────────────────────────────────

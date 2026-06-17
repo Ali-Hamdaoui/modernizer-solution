@@ -907,3 +907,108 @@ export type PomApplyRequest = {
   user_request?: string;
   idempotency_key?: string;
 };
+
+// ── F15 Gate types (jobs 101-117) ──────────────────────────────────────
+
+export type GatePhase =
+  | "analysis_review"
+  | "planning_review"
+  | "approval_review"
+  | "repair_review"
+  | "stage_completion_review";
+
+export type GateDecision =
+  | "continue"
+  | "reanalyze"
+  | "revise"
+  | "approve"
+  | "reject";
+
+export type GateStatus =
+  | "open"
+  | "resolved"
+  | "superseded";
+
+export type GateRepresentation = {
+  gate_id: string;
+  job_id: string;
+  gate_phase: GatePhase;
+  stage_index: number;
+  gate_status: GateStatus;
+  gate_decision: GateDecision;
+  source_artifact_checksum: string;
+  source_artifact_refs: string[];
+  created_at: string;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  checksum: string;
+  available_actions: AvailableAction[];
+};
+
+export type AvailableAction = {
+  action: string;
+  label: string;
+  description: string;
+  blocked: boolean;
+  block_reason: string;
+};
+
+export type GateActionRequest = {
+  gate_id: string;
+  job_id: string;
+  action: GateDecision;
+  expected_gate_checksum: string;
+  idempotency_key: string;
+  decided_by: string;
+  reason?: string;
+  // Repair-specific fields (only for repair_review gates):
+  proposal_id?: string;
+  proposal_checksum?: string;
+  context_pack_checksum?: string;
+  user_feedback?: string;
+  // No sandbox_path, argv, or env fields
+};
+
+export type GateActionResult = {
+  decision_id: string;
+  gate_id: string;
+  job_id: string;
+  action: GateDecision;
+  status: string;
+  result_gate_id: string | null;
+  result_command_id: string | null;
+  result_revision_id: string | null;
+  reason: string;
+};
+
+export type RepairGateEvidence = {
+  failure_summary: string;
+  root_cause_hypothesis: string;
+  patch_summary: string;
+  affected_paths: string[];
+  reviewer_critique: {
+    critique_id: string;
+    decision: string;
+    reasoning: string;
+  } | null;
+  remaining_attempts: number;
+  max_attempts: number;
+};
+
+export type GateDetailResponse = {
+  gate: GateRepresentation;
+  evidence: RepairGateEvidence | null;
+  checksum: string;
+};
+
+export type GateListResponse = {
+  gates: GateRepresentation[];
+};
+
+export type GateActionResponse = {
+  result: GateActionResult;
+};
+
+export type OpenGateForJobResponse = {
+  gate: GateRepresentation | null;
+};
