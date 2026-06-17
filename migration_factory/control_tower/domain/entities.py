@@ -700,3 +700,39 @@ class PhaseGateRecord:
     created_at: str
     resolved_at: str | None = None
     resolved_by: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GateDecisionRecord:
+    """Immutable record of a gate decision action.
+
+    Append-only: once inserted, the record must never be updated
+    or deleted. Every decision is bound to a specific gate
+    checksum and carries an idempotency key.
+
+    Idempotency contract:
+      * Duplicate (idempotency_key, request_checksum) returns
+        the same result (the original decision_id).
+      * A different request_checksum under the same
+        idempotency_key is rejected as a conflicting payload.
+
+    Result references are backend-owned and never supplied by
+    the frontend/chatbot.
+    """
+
+    decision_id: str
+    gate_id: str
+    job_id: str
+    action: str                # GateDecision value from the enum
+    expected_gate_checksum: str  # checksum of the gate snapshot
+    idempotency_key: str
+    request_checksum: str       # checksum of the full request payload
+    result_gate_id: str | None = None     # new gate after reanalysis
+    result_command_id: str | None = None  # command queued (continue)
+    result_revision_id: str | None = None # plan revision
+    decided_by: str = ""
+    decided_at: str = ""
+    actor_type: str = "human"
+    actor_id: str = ""
+    correlation_id: str | None = None
+    causation_id: str | None = None

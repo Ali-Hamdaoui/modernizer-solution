@@ -205,3 +205,73 @@ def is_valid_decision_for_phase(
     """Return True if *decision* is allowed at *gate_phase*."""
     allowed = _VALID_PHASE_DECISIONS.get(gate_phase, frozenset())
     return decision in allowed
+
+
+# ── GateDecision request/result schemas ───────────────────────────────
+
+
+class GateDecisionRequest(StrictModel):
+    """Backend-validated request to decide a gate.
+
+    The chatbot may express the intent flexibly in natural language;
+    the backend maps it to this typed model before any state change.
+
+    Idempotency: duplicate (idempotency_key, request_checksum)
+    returns the same result.  A different checksum under the same
+    key is rejected.
+    """
+
+    gate_id: NonEmptyString
+    job_id: NonEmptyString
+    action: GateDecision
+    expected_gate_checksum: NonEmptyString
+    idempotency_key: NonEmptyString
+    request_checksum: NonEmptyString
+    decided_by: NonEmptyString
+    decided_at: NonEmptyString
+    actor_type: str = "human"
+    actor_id: str = ""
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+    @field_validator("action", mode="before")
+    @classmethod
+    def _coerce_action(cls, value) -> GateDecision:
+        if isinstance(value, GateDecision):
+            return value
+        return GateDecision(value)
+
+    @field_validator(
+        "gate_id", "job_id", "expected_gate_checksum",
+        "idempotency_key", "request_checksum",
+        "decided_by", "decided_at", mode="after",
+    )
+    @classmethod
+    def _validate_required_strings(cls, value: str, info) -> str:
+        return require_non_empty_string(value, info.field_name)
+
+
+class GateDecisionResult(StrictModel):
+    """Result of a processed gate decision.
+
+    Result references (result_gate_id, result_command_id,
+    result_revision_id) are backend-owned and never supplied by
+    the frontend/chatbot.
+    """
+
+    decision_id: NonEmptyString
+    gate_id: NonEmptyString
+    job_id: NonEmptyString
+    action: GateDecision
+    idempotency_key: NonEmptyString
+    result_gate_id: str | None = None
+    result_command_id: str | None = None
+    result_revision_id: str | None = None
+    decided_at: str = ""
+
+    @field_validator("action", mode="before")
+    @classmethod
+    def _coerce_action(cls, value) -> GateDecision:
+        if isinstance(value, GateDecision):
+            return value
+        return GateDecision(value)

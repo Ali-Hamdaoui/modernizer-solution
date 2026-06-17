@@ -11,6 +11,8 @@ from .pipeline_definition import (
 )
 from .phase_gate import (
     GateDecision,
+    GateDecisionRequest,
+    GateDecisionResult,
     GatePhase,
     GateStatus,
     PhaseGate,
@@ -41,6 +43,8 @@ __all__ = [
     "AiProfileReference",
     "FilesystemPolicy",
     "GateDecision",
+    "GateDecisionRequest",
+    "GateDecisionResult",
     "GatePhase",
     "GateStatus",
     "JdkConfig",
