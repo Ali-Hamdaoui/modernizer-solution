@@ -218,6 +218,86 @@ class V2GateActionService:
 
         return base_result
 
+    # ── action: request_plan_revision (with user feedback) ─────────
+
+    def request_plan_revision(
+        self,
+        *,
+        gate_id: str,
+        job_id: str,
+        decided_by: str,
+        user_feedback: str = "",
+        idempotency_key: str | None = None,
+    ) -> GateActionResult:
+        """Request a plan revision at a planning_review gate.
+
+        Only works on planning_review gates.  The handler:
+          1. Resolves the current planning_review gate with REVISE.
+          2. Creates a new ArtifactRevision (kind=planning, status=draft)
+             with user feedback for the plan amendment.
+          3. Opens a new open planning_review gate.
+          4. Binds to the currently accepted analysis revision for
+             the same stage (if available).
+
+        No source writes occur.  The chatbot explains the feedback;
+        the backend creates the revision.
+        """
+        base_result = self._execute_action(
+            gate_id=gate_id,
+            job_id=job_id,
+            action=GateDecision.REVISE,
+            decided_by=decided_by,
+            idempotency_key=idempotency_key,
+        )
+        if base_result.status not in ("executed", "idempotent"):
+            return base_result
+
+        gate = self._gate_repo.get(gate_id)
+        if gate is None:
+            return base_result
+
+        stage_index = gate.stage_index
+        import json
+        now = utc_now_text()
+
+        if self._revision_repo is not None and base_result.status == "executed":
+            # Find the accepted analysis revision for this stage
+            accepted_analysis = self._revision_repo.find_accepted(
+                job_id, stage_index, "analysis"
+            )
+            analysis_checksum = (
+                accepted_analysis.evidence_checksum
+                if accepted_analysis is not None
+                else gate.source_artifact_checksum
+            )
+
+            rev_id = uuid4().hex
+            self._revision_repo.save(
+                ArtifactRevisionRecord(
+                    revision_id=rev_id,
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    revision_kind="planning",
+                    revision_status="draft",
+                    revision_order=0,
+                    evidence_checksum=analysis_checksum,
+                    prior_revision_checksum=None,
+                    artifact_refs_json=json.dumps(
+                        [user_feedback[:256]] if user_feedback else [],
+                        separators=(",", ":"),
+                    ),
+                    prior_revision_id=None,
+                    superseded_by_revision_id=None,
+                    accepted_at_gate_id=base_result.result_gate_id,
+                    created_at=now,
+                    created_by=decided_by,
+                    accepted_at=None,
+                    accepted_by=None,
+                )
+            )
+
+        return base_result
+
     # ── action: approve ─────────────────────────────────────────────
 
     def approve_from_gate(
