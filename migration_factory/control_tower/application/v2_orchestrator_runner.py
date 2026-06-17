@@ -1065,6 +1065,23 @@ class V2OrchestratorRunner:
                         created_by="system",
                     ))
 
+                    # Emit gate lifecycle events for SSE/assistant context
+                    uow.v2_events.save(
+                        job_id=job_id,
+                        stage=stage_index,
+                        event_type="f15_gate_opened",
+                        status="open",
+                        message=(
+                            f"{gate_phase} gate opened for stage {stage_index}"
+                        ),
+                        payload={
+                            "gate_id": gate_result.gate_id,
+                            "gate_checksum": gate_result.gate_checksum,
+                            "gate_phase": gate_phase,
+                            "stage_index": stage_index,
+                        },
+                    )
+
                     uow.v2_events.save(
                         job_id=job_id,
                         stage=stage_index,
