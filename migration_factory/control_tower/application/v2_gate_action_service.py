@@ -48,8 +48,10 @@ from migration_factory.control_tower.domain.commands import (
     NONTERMINAL_COMMAND_STATES,
 )
 from migration_factory.control_tower.schemas.phase_gate import (
+    GateActorType,
     GateDecision,
     GatePhase,
+    HUMAN_AUTHORITATIVE_ACTIONS,
     is_valid_decision_for_phase,
 )
 
@@ -641,6 +643,7 @@ class V2GateActionService:
         result_command_id: str | None = None,
         result_revision_id: str | None = None,
         reason: str = "",
+        actor_type: str = "human",
     ) -> GateActionResult:
         """Common validation and execution pipeline for all gate actions.
 
@@ -664,6 +667,9 @@ class V2GateActionService:
             result_revision_id: Optional revision ID to store in the decision
                 record. The caller is responsible for creating the revision.
             reason: Human-readable reason for the decision.
+            actor_type: Who initiated this action ("human", "assistant",
+                "api", or "system"). Defaults to "human". Assistant cannot
+                perform authoritative actions (approve, reject).
         """
         # 1. Gate existence
         gate = self._gate_repo.get(gate_id)
@@ -698,6 +704,20 @@ class V2GateActionService:
                 decision_id="",
                 status="gate_not_open",
                 reason=f"Gate is {gate.gate_status}",
+            )
+
+        # 3aa. Actor authority check — non-human actors cannot perform
+        #      authoritative actions (approve, reject).
+        if action.value in HUMAN_AUTHORITATIVE_ACTIONS and actor_type != GateActorType.HUMAN.value:
+            return GateActionResult(
+                action=action.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="actor_not_authoritative",
+                reason=(
+                    f"Action '{action.value}' requires a human actor, "
+                    f"but actor_type is '{actor_type}'"
+                ),
             )
 
         # 3a. Conflicting command guard — check if there are already
@@ -832,7 +852,7 @@ class V2GateActionService:
             result_revision_id=result_revision_id,  # caller creates revision
             decided_by=decided_by,
             decided_at=now,
-            actor_type="human",
+            actor_type=actor_type,
             actor_id=decided_by,
             reason=reason,
         )

@@ -21,6 +21,24 @@ from pydantic import Field, field_validator, model_validator
 from .common import NonEmptyString, StrictModel, require_non_empty_string
 
 
+# ── actor type ───────────────────────────────────────────────────────
+
+
+class GateActorType(str, Enum):
+    """Who or what initiated the gate action."""
+
+    HUMAN = "human"        # Real user — authoritative for all actions
+    ASSISTANT = "assistant"  # AI assistant — requires user confirmation
+    API = "api"            # Automated caller (scripts, webhook)
+    SYSTEM = "system"      # Backend system action (auto-continue, etc.)
+
+
+HUMAN_AUTHORITATIVE_ACTIONS: frozenset[str] = frozenset({
+    "approve",
+    "reject",
+})
+
+
 # ── gate enums ────────────────────────────────────────────────────────
 
 
