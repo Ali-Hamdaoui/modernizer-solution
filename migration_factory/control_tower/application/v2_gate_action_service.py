@@ -116,6 +116,7 @@ class V2GateActionService:
         job_id: str,
         decided_by: str,
         idempotency_key: str | None = None,
+        expected_gate_checksum: str | None = None,
     ) -> GateActionResult:
         """Validate and execute a 'continue' decision at a gate.
 
@@ -123,6 +124,11 @@ class V2GateActionService:
         - gate exists and is OPEN
         - gate phase allows CONTINUE decision
         - gate checksum must match (validated inside resolve)
+
+        Args:
+            expected_gate_checksum: Optional caller-supplied checksum
+                for stale protection. If provided, compared against
+                the current gate checksum before resolution.
 
         Returns:
             GateActionResult with status and optional queued references.
@@ -133,6 +139,7 @@ class V2GateActionService:
             action=GateDecision.CONTINUE,
             decided_by=decided_by,
             idempotency_key=idempotency_key,
+            expected_gate_checksum=expected_gate_checksum,
         )
 
     # ── action: reanalyze ───────────────────────────────────────────
@@ -144,6 +151,7 @@ class V2GateActionService:
         job_id: str,
         decided_by: str,
         idempotency_key: str | None = None,
+        expected_gate_checksum: str | None = None,
     ) -> GateActionResult:
         """Validate and execute a 'reanalyze' decision.
 
@@ -156,6 +164,7 @@ class V2GateActionService:
             action=GateDecision.REANALYZE,
             decided_by=decided_by,
             idempotency_key=idempotency_key,
+            expected_gate_checksum=expected_gate_checksum,
         )
 
     # ── action: request_reanalysis (with user feedback) ─────────────
@@ -168,6 +177,7 @@ class V2GateActionService:
         decided_by: str,
         user_feedback: str = "",
         idempotency_key: str | None = None,
+        expected_gate_checksum: str | None = None,
     ) -> GateActionResult:
         """Request reanalysis at an analysis_review gate.
 
@@ -189,6 +199,7 @@ class V2GateActionService:
             action=GateDecision.REANALYZE,
             decided_by=decided_by,
             idempotency_key=idempotency_key,
+            expected_gate_checksum=expected_gate_checksum,
         )
         if base_result.status not in ("executed", "idempotent"):
             return base_result
@@ -241,6 +252,7 @@ class V2GateActionService:
         decided_by: str,
         user_feedback: str = "",
         idempotency_key: str | None = None,
+        expected_gate_checksum: str | None = None,
     ) -> GateActionResult:
         """Request a plan revision at a planning_review gate.
 
@@ -261,6 +273,7 @@ class V2GateActionService:
             action=GateDecision.REVISE,
             decided_by=decided_by,
             idempotency_key=idempotency_key,
+            expected_gate_checksum=expected_gate_checksum,
         )
         if base_result.status not in ("executed", "idempotent"):
             return base_result
@@ -320,6 +333,7 @@ class V2GateActionService:
         job_id: str,
         decided_by: str,
         idempotency_key: str | None = None,
+        expected_gate_checksum: str | None = None,
     ) -> GateActionResult:
         """Validate and execute an 'approve' decision."""
         return self._execute_action(
@@ -328,6 +342,7 @@ class V2GateActionService:
             action=GateDecision.APPROVE,
             decided_by=decided_by,
             idempotency_key=idempotency_key,
+            expected_gate_checksum=expected_gate_checksum,
         )
 
     # ── action: reject ──────────────────────────────────────────────
@@ -339,6 +354,7 @@ class V2GateActionService:
         job_id: str,
         decided_by: str,
         idempotency_key: str | None = None,
+        expected_gate_checksum: str | None = None,
     ) -> GateActionResult:
         """Validate and execute a 'reject' decision."""
         return self._execute_action(
@@ -347,6 +363,7 @@ class V2GateActionService:
             action=GateDecision.REJECT,
             decided_by=decided_by,
             idempotency_key=idempotency_key,
+            expected_gate_checksum=expected_gate_checksum,
         )
 
     # ── action: reject_gate (with reason) ──────────────────────────
@@ -359,6 +376,7 @@ class V2GateActionService:
         decided_by: str,
         reason: str = "",
         idempotency_key: str | None = None,
+        expected_gate_checksum: str | None = None,
     ) -> GateActionResult:
         """Reject a gate with an auditable reason.
 
@@ -384,6 +402,7 @@ class V2GateActionService:
             decided_by=decided_by,
             reason=reason,
             idempotency_key=idempotency_key,
+            expected_gate_checksum=expected_gate_checksum,
         )
 
     # ── action: approve_repair ────────────────────────────────────
@@ -398,6 +417,7 @@ class V2GateActionService:
         proposal_checksum: str,
         context_pack_checksum: str,
         idempotency_key: str | None = None,
+        expected_gate_checksum: str | None = None,
     ) -> GateActionResult:
         """Approve a repair proposal and continue at a repair_review gate.
 
@@ -516,6 +536,7 @@ class V2GateActionService:
             action=GateDecision.CONTINUE,
             decided_by=decided_by,
             idempotency_key=effective_idempotency_key,
+            expected_gate_checksum=expected_gate_checksum,
             result_revision_id=proposal_id,
         )
 
@@ -533,6 +554,7 @@ class V2GateActionService:
         job_id: str,
         decided_by: str,
         idempotency_key: str | None = None,
+        expected_gate_checksum: str | None = None,
     ) -> GateActionResult:
         """Approve transformation at an approval_review gate.
 
@@ -601,6 +623,7 @@ class V2GateActionService:
             action=GateDecision.APPROVE,
             decided_by=decided_by,
             idempotency_key=idempotency_key,
+            expected_gate_checksum=expected_gate_checksum,
             result_command_id=command_id,
         )
 
@@ -614,6 +637,7 @@ class V2GateActionService:
         action: GateDecision,
         decided_by: str,
         idempotency_key: str | None = None,
+        expected_gate_checksum: str | None = None,
         result_command_id: str | None = None,
         result_revision_id: str | None = None,
         reason: str = "",
@@ -630,6 +654,11 @@ class V2GateActionService:
         7. Return result with result references.
 
         Args:
+            expected_gate_checksum: Optional caller-supplied expected
+                checksum for stale protection. If provided, compared
+                against the current gate checksum before resolution.
+                If not provided, the current checksum is used (backward
+                compatible behaviour).
             result_command_id: Optional command ID to store in the decision
                 record. The caller is responsible for queueing the command.
             result_revision_id: Optional revision ID to store in the decision
@@ -735,12 +764,32 @@ class V2GateActionService:
             source_artifact_refs=refs,
         )
 
-        # 5. Resolve the gate
+        # Stale checksum protection: if the caller supplied an expected
+        # checksum, compare it against the current gate checksum.  A
+        # mismatch means the caller's view of the gate is stale.
+        if expected_gate_checksum is not None and expected_gate_checksum != current_checksum:
+            return GateActionResult(
+                action=action.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="stale_checksum",
+                reason=(
+                    f"Gate checksum mismatch: caller expected "
+                    f"{expected_gate_checksum[:16]}... but current is "
+                    f"{current_checksum[:16]}... "
+                    f"Refresh the gate view and retry"
+                ),
+            )
+
+        # 5. Resolve the gate (uses current_checksum as expected if
+        #    caller did not supply one; otherwise uses the caller-supplied
+        #    value which we validated above)
+        resolve_expected = expected_gate_checksum or current_checksum
         resolve_result = self._gate_service.resolve_gate(ResolveGateRequest(
             gate_id=gate_id,
             job_id=job_id,
             gate_decision=action.value,
-            expected_gate_checksum=current_checksum,
+            expected_gate_checksum=resolve_expected,
             resolved_by=decided_by,
         ))
 
