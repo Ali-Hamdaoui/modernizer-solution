@@ -1,5 +1,11 @@
 """Strict Control Tower configuration schemas."""
 
+from .artifact_revision import (
+    ArtifactRevision,
+    ArtifactRevisionKind,
+    ArtifactRevisionStatus,
+    get_upstream_kind,
+)
 from .common import StrictModel, NonEmptyString
 from .pipeline_definition import (
     PipelineDefinition,
@@ -41,12 +47,16 @@ from .runner_profile import (
 __all__ = [
     "AIProfileReference",
     "AiProfileReference",
+    "ArtifactRevision",
+    "ArtifactRevisionKind",
+    "ArtifactRevisionStatus",
     "FilesystemPolicy",
     "GateDecision",
     "GateDecisionRequest",
     "GateDecisionResult",
     "GatePhase",
     "GateStatus",
+    "get_upstream_kind",
     "JdkConfig",
     "JdkInstallation",
     "MavenConfig",

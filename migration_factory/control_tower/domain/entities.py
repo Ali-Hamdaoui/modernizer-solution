@@ -703,6 +703,36 @@ class PhaseGateRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactRevisionRecord:
+    """Immutable record of versioned evidence for a governed phase.
+
+    Tracks analysis, planning, approval, and repair evidence revisions.
+    Downstream phases must only consume ACCEPTED revisions.
+
+    Append-only: status transitions are recorded by inserting a new
+    revision (or superseding the prior one). Superseded revisions
+    remain queryable indefinitely.
+    """
+
+    revision_id: str
+    job_id: str
+    stage_index: int
+    revision_kind: str
+    revision_status: str
+    revision_order: int
+    evidence_checksum: str
+    prior_revision_checksum: str | None
+    artifact_refs_json: str
+    prior_revision_id: str | None
+    superseded_by_revision_id: str | None
+    accepted_at_gate_id: str | None
+    created_at: str
+    created_by: str
+    accepted_at: str | None = None
+    accepted_by: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class GateDecisionRecord:
     """Immutable record of a gate decision action.
 
