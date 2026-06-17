@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from migration_factory.control_tower.domain.checksums import sha256_canonical_json
 from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
     SqliteV2RepairRepository,
@@ -53,6 +54,15 @@ class RepairProposal:
     revision_number: int | None = None
     context_pack_checksum: str | None = None
     allowed_scope: str | None = None
+    diagnosis_id: str = ""
+    diagnosis_checksum: str = ""
+    evidence_pack_checksum: str = ""
+    proposal_checksum: str = ""
+    validation_plan: str = ""
+    proposer_model_invocation_id: str = ""
+    proposer_model_role: str = ""
+    proposer_model_provider: str = ""
+    proposer_deployment_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -94,7 +104,30 @@ class V2RepairFlowService:
         hypothesis: str,
         patch_summary: str,
         affected_paths: tuple[str, ...],
+        *,
+        validation_plan: str = "",
+        diagnosis_id: str = "",
+        diagnosis_checksum: str = "",
+        evidence_pack_checksum: str = "",
+        context_pack_checksum: str = "",
+        proposal_checksum: str | None = None,
+        proposer_model_invocation_id: str = "",
+        proposer_model_role: str = "",
+        proposer_model_provider: str = "",
+        proposer_deployment_label: str = "",
     ) -> RepairProposal:
+        resolved_proposal_checksum = proposal_checksum or self.compute_proposal_checksum(
+            command_id=command_id,
+            failure_summary=failure_summary,
+            hypothesis=hypothesis,
+            patch_summary=patch_summary,
+            affected_paths=affected_paths,
+            validation_plan=validation_plan,
+            diagnosis_id=diagnosis_id,
+            diagnosis_checksum=diagnosis_checksum,
+            evidence_pack_checksum=evidence_pack_checksum,
+            context_pack_checksum=context_pack_checksum,
+        )
         proposal = RepairProposal(
             proposal_id=uuid4().hex,
             command_id=command_id,
@@ -105,6 +138,16 @@ class V2RepairFlowService:
             status="draft",
             approval_checksum=None,
             created_at=utc_now_text(),
+            diagnosis_id=diagnosis_id,
+            diagnosis_checksum=diagnosis_checksum,
+            evidence_pack_checksum=evidence_pack_checksum,
+            context_pack_checksum=context_pack_checksum or None,
+            proposal_checksum=resolved_proposal_checksum,
+            validation_plan=validation_plan,
+            proposer_model_invocation_id=proposer_model_invocation_id,
+            proposer_model_role=proposer_model_role,
+            proposer_model_provider=proposer_model_provider,
+            proposer_deployment_label=proposer_deployment_label,
         )
         self._proposals[proposal.proposal_id] = proposal
         # Persist if repo available
@@ -119,6 +162,16 @@ class V2RepairFlowService:
                 status=proposal.status,
                 approval_checksum=proposal.approval_checksum,
                 created_at=proposal.created_at,
+                diagnosis_id=proposal.diagnosis_id,
+                diagnosis_checksum=proposal.diagnosis_checksum,
+                evidence_pack_checksum=proposal.evidence_pack_checksum,
+                context_pack_checksum=proposal.context_pack_checksum or "",
+                proposal_checksum=proposal.proposal_checksum,
+                validation_plan_text=proposal.validation_plan,
+                proposer_model_invocation_id=proposal.proposer_model_invocation_id,
+                proposer_model_role=proposal.proposer_model_role,
+                proposer_model_provider=proposal.proposer_model_provider,
+                proposer_deployment_label=proposal.proposer_deployment_label,
             )
             self._repo.save_proposal(record)
         return proposal
@@ -158,6 +211,7 @@ class V2RepairFlowService:
             revision_number=revision_number,
             context_pack_checksum=context_pack_checksum,
             allowed_scope=allowed_scope,
+            validation_plan="",
         )
         self._proposals[proposal.proposal_id] = proposal
         if self._repo is not None:
@@ -171,6 +225,12 @@ class V2RepairFlowService:
                 status=proposal.status,
                 approval_checksum=proposal.approval_checksum,
                 created_at=proposal.created_at,
+                diagnosis_id=proposal.diagnosis_id,
+                diagnosis_checksum=proposal.diagnosis_checksum,
+                evidence_pack_checksum=proposal.evidence_pack_checksum,
+                context_pack_checksum=proposal.context_pack_checksum or "",
+                proposal_checksum=proposal.proposal_checksum,
+                validation_plan_text=proposal.validation_plan,
             )
             self._repo.save_proposal(record)
         return proposal
@@ -203,6 +263,16 @@ class V2RepairFlowService:
                     status=record.status,
                     approval_checksum=record.approval_checksum,
                     created_at=record.created_at,
+                    diagnosis_id=record.diagnosis_id,
+                    diagnosis_checksum=record.diagnosis_checksum,
+                    evidence_pack_checksum=record.evidence_pack_checksum,
+                    context_pack_checksum=record.context_pack_checksum or None,
+                    proposal_checksum=record.proposal_checksum,
+                    validation_plan=record.validation_plan_text,
+                    proposer_model_invocation_id=record.proposer_model_invocation_id,
+                    proposer_model_role=record.proposer_model_role,
+                    proposer_model_provider=record.proposer_model_provider,
+                    proposer_deployment_label=record.proposer_deployment_label,
                 )
                 self._proposals[proposal_id] = proposal
         if proposal is None:
@@ -236,11 +306,69 @@ class V2RepairFlowService:
             status="approved",
             approval_checksum=approval_checksum,
             created_at=proposal.created_at,
+            source_proposal_id=proposal.source_proposal_id,
+            revision_of=proposal.revision_of,
+            revision_number=proposal.revision_number,
+            context_pack_checksum=proposal.context_pack_checksum,
+            allowed_scope=proposal.allowed_scope,
+            diagnosis_id=proposal.diagnosis_id,
+            diagnosis_checksum=proposal.diagnosis_checksum,
+            evidence_pack_checksum=proposal.evidence_pack_checksum,
+            proposal_checksum=proposal.proposal_checksum,
+            validation_plan=proposal.validation_plan,
+            proposer_model_invocation_id=proposal.proposer_model_invocation_id,
+            proposer_model_role=proposal.proposer_model_role,
+            proposer_model_provider=proposal.proposer_model_provider,
+            proposer_deployment_label=proposal.proposer_deployment_label,
         )
         self._proposals[proposal_id] = updated
         # Persist if repo available
         if self._repo is not None:
             self._repo.update_proposal_status(proposal_id, "approved", approval_checksum)
+        return updated
+
+    def reject_proposal(
+        self,
+        proposal_id: str,
+    ) -> RepairProposal:
+        proposal = self._proposals.get(proposal_id)
+        if proposal is None and self._repo is not None:
+            record = self._repo.get_proposal(proposal_id)
+            if record is not None:
+                proposal = self.record_to_proposal(record)
+                self._proposals[proposal_id] = proposal
+        if proposal is None:
+            raise ValueError(f"Proposal {proposal_id!r} not found")
+        if proposal.status not in {"draft", "approved"}:
+            raise ValueError(f"Proposal {proposal_id!r} cannot be rejected from status {proposal.status}")
+        updated = RepairProposal(
+            proposal_id=proposal.proposal_id,
+            command_id=proposal.command_id,
+            failure_summary=proposal.failure_summary,
+            hypothesis=proposal.hypothesis,
+            patch_summary=proposal.patch_summary,
+            affected_paths=proposal.affected_paths,
+            status="rejected",
+            approval_checksum=proposal.approval_checksum,
+            created_at=proposal.created_at,
+            source_proposal_id=proposal.source_proposal_id,
+            revision_of=proposal.revision_of,
+            revision_number=proposal.revision_number,
+            context_pack_checksum=proposal.context_pack_checksum,
+            allowed_scope=proposal.allowed_scope,
+            diagnosis_id=proposal.diagnosis_id,
+            diagnosis_checksum=proposal.diagnosis_checksum,
+            evidence_pack_checksum=proposal.evidence_pack_checksum,
+            proposal_checksum=proposal.proposal_checksum,
+            validation_plan=proposal.validation_plan,
+            proposer_model_invocation_id=proposal.proposer_model_invocation_id,
+            proposer_model_role=proposal.proposer_model_role,
+            proposer_model_provider=proposal.proposer_model_provider,
+            proposer_deployment_label=proposal.proposer_deployment_label,
+        )
+        self._proposals[proposal_id] = updated
+        if self._repo is not None:
+            self._repo.update_proposal_status(proposal_id, "rejected")
         return updated
 
     def apply_patch(
@@ -278,6 +406,16 @@ class V2RepairFlowService:
                     status=record.status,
                     approval_checksum=record.approval_checksum,
                     created_at=record.created_at,
+                    diagnosis_id=record.diagnosis_id,
+                    diagnosis_checksum=record.diagnosis_checksum,
+                    evidence_pack_checksum=record.evidence_pack_checksum,
+                    context_pack_checksum=record.context_pack_checksum or None,
+                    proposal_checksum=record.proposal_checksum,
+                    validation_plan=record.validation_plan_text,
+                    proposer_model_invocation_id=record.proposer_model_invocation_id,
+                    proposer_model_role=record.proposer_model_role,
+                    proposer_model_provider=record.proposer_model_provider,
+                    proposer_deployment_label=record.proposer_deployment_label,
                 )
                 self._proposals[proposal_id] = proposal
         if proposal is None:
@@ -568,6 +706,20 @@ class V2RepairFlowService:
             status="applied",
             approval_checksum=proposal.approval_checksum,
             created_at=proposal.created_at,
+            source_proposal_id=proposal.source_proposal_id,
+            revision_of=proposal.revision_of,
+            revision_number=proposal.revision_number,
+            context_pack_checksum=proposal.context_pack_checksum,
+            allowed_scope=proposal.allowed_scope,
+            diagnosis_id=proposal.diagnosis_id,
+            diagnosis_checksum=proposal.diagnosis_checksum,
+            evidence_pack_checksum=proposal.evidence_pack_checksum,
+            proposal_checksum=proposal.proposal_checksum,
+            validation_plan=proposal.validation_plan,
+            proposer_model_invocation_id=proposal.proposer_model_invocation_id,
+            proposer_model_role=proposal.proposer_model_role,
+            proposer_model_provider=proposal.proposer_model_provider,
+            proposer_deployment_label=proposal.proposer_deployment_label,
         )
         if self._repo is not None:
             self._repo.update_proposal_status(proposal.proposal_id, "applied")
@@ -581,9 +733,11 @@ class V2RepairFlowService:
             "hypothesis": proposal.hypothesis,
             "patch_summary": proposal.patch_summary,
             "affected_paths": list(proposal.affected_paths),
+            "validation_plan": proposal.validation_plan,
             "status": proposal.status,
             "approval_checksum": proposal.approval_checksum,
             "created_at": proposal.created_at,
+            "proposal_checksum": proposal.proposal_checksum,
         }
         # F07: Include reviewer metadata when available
         if reviewer_critique_id is not None:
@@ -597,7 +751,76 @@ class V2RepairFlowService:
             result["revision_number"] = proposal.revision_number
         if proposal.allowed_scope is not None:
             result["allowed_scope"] = proposal.allowed_scope
+        if proposal.context_pack_checksum is not None:
+            result["context_pack_checksum"] = proposal.context_pack_checksum
+        if proposal.diagnosis_id:
+            result["diagnosis_id"] = proposal.diagnosis_id
+        if proposal.diagnosis_checksum:
+            result["diagnosis_checksum"] = proposal.diagnosis_checksum
+        if proposal.evidence_pack_checksum:
+            result["evidence_pack_checksum"] = proposal.evidence_pack_checksum
+        if proposal.proposer_model_invocation_id:
+            result["proposer_model_invocation_id"] = proposal.proposer_model_invocation_id
+        if proposal.proposer_model_role:
+            result["proposer_model_role"] = proposal.proposer_model_role
+        if proposal.proposer_model_provider:
+            result["proposer_model_provider"] = proposal.proposer_model_provider
+        if proposal.proposer_deployment_label:
+            result["proposer_deployment_label"] = proposal.proposer_deployment_label
         return result
+
+    @staticmethod
+    def compute_proposal_checksum(
+        *,
+        command_id: str,
+        failure_summary: str,
+        hypothesis: str,
+        patch_summary: str,
+        affected_paths: tuple[str, ...],
+        validation_plan: str = "",
+        diagnosis_id: str = "",
+        diagnosis_checksum: str = "",
+        evidence_pack_checksum: str = "",
+        context_pack_checksum: str = "",
+    ) -> str:
+        return sha256_canonical_json(
+            {
+                "command_id": command_id,
+                "failure_summary": failure_summary,
+                "hypothesis": hypothesis,
+                "patch_summary": patch_summary,
+                "affected_paths": list(affected_paths),
+                "validation_plan": validation_plan,
+                "diagnosis_id": diagnosis_id,
+                "diagnosis_checksum": diagnosis_checksum,
+                "evidence_pack_checksum": evidence_pack_checksum,
+                "context_pack_checksum": context_pack_checksum,
+            }
+        )
+
+    @staticmethod
+    def record_to_proposal(record: V2RepairProposalRecord) -> RepairProposal:
+        return RepairProposal(
+            proposal_id=record.proposal_id,
+            command_id=record.command_id,
+            failure_summary=record.failure_summary,
+            hypothesis=record.hypothesis,
+            patch_summary=record.patch_summary,
+            affected_paths=tuple(json.loads(record.affected_paths_json)),
+            status=record.status,
+            approval_checksum=record.approval_checksum,
+            created_at=record.created_at,
+            context_pack_checksum=record.context_pack_checksum or None,
+            diagnosis_id=record.diagnosis_id,
+            diagnosis_checksum=record.diagnosis_checksum,
+            evidence_pack_checksum=record.evidence_pack_checksum,
+            proposal_checksum=record.proposal_checksum,
+            validation_plan=record.validation_plan_text,
+            proposer_model_invocation_id=record.proposer_model_invocation_id,
+            proposer_model_role=record.proposer_model_role,
+            proposer_model_provider=record.proposer_model_provider,
+            proposer_deployment_label=record.proposer_deployment_label,
+        )
 
     def action_to_dict(self, action: SandboxAction) -> dict[str, Any]:
         return {

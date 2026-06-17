@@ -218,6 +218,30 @@ Critical non-execution rule:
 
 ## Approval Contracts
 
+## Governed Repair Workflow Contracts
+
+Governed repair workflow exposes read-only backend status at:
+
+- `GET /v1/v2/jobs/{job_id}/governed-repair/status`
+
+Related backend mutation endpoints are checksum-gated and backend-owned:
+
+- `POST /v1/v2/diagnoses/{diagnosis_id}/repair-proposal`
+- `POST /v1/v2/repair-proposals/{proposal_id}/review`
+- `POST /v1/v2/repair-proposals/{proposal_id}/approval`
+- `POST /v1/v2/repair-proposals/{proposal_id}/patch-candidate`
+- `POST /v1/v2/patch-candidates/{patch_candidate_id}/apply`
+
+Important governed repair rules:
+
+- frontend cannot submit raw patch or diff content
+- reviewer `accept` is not human approval
+- approval is checksum-bound
+- apply uses persisted patch candidate only
+- patch gate re-runs before apply
+- validation failure triggers rollback
+- legacy source remains unchanged
+
 `approval_decision.json`:
 
 - decision

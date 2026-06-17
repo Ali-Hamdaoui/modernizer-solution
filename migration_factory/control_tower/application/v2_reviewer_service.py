@@ -37,7 +37,10 @@ class ReviewerCritique:
     missing_evidence: tuple[str, ...]
     unsafe_assumptions: tuple[str, ...]
     model_invocation_id: str | None
-    created_at: str
+    model_role: str = ""
+    model_provider: str = ""
+    deployment_label: str = ""
+    created_at: str = ""
 
 
 class V2ReviewerService:
@@ -67,6 +70,9 @@ class V2ReviewerService:
         missing_evidence: tuple[str, ...] = (),
         unsafe_assumptions: tuple[str, ...] = (),
         model_invocation_id: str | None = None,
+        model_role: str = "",
+        model_provider: str = "",
+        deployment_label: str = "",
     ) -> ReviewerCritique:
         """Record a reviewer critique for a proposal.
 
@@ -92,6 +98,9 @@ class V2ReviewerService:
             missing_evidence=missing_evidence,
             unsafe_assumptions=unsafe_assumptions,
             model_invocation_id=model_invocation_id,
+            model_role=model_role,
+            model_provider=model_provider,
+            deployment_label=deployment_label,
             created_at=utc_now_text(),
         )
         self._critiques[critique.critique_id] = critique
@@ -108,6 +117,9 @@ class V2ReviewerService:
                 missing_evidence_json=json.dumps(list(critique.missing_evidence), separators=(",", ":")),
                 unsafe_assumptions_json=json.dumps(list(critique.unsafe_assumptions), separators=(",", ":")),
                 model_invocation_id=critique.model_invocation_id,
+                model_role=critique.model_role,
+                model_provider=critique.model_provider,
+                deployment_label=critique.deployment_label,
                 created_at=critique.created_at,
             )
             self._repo.save_critique(record)
@@ -154,12 +166,12 @@ class V2ReviewerService:
             The matching accepted critique, or None if the gate is not satisfied.
         """
         if self._repo is not None:
-            record = self._repo.get_latest_accepted(
+            record = self._repo.get_latest_for_binding(
                 proposal_id=proposal_id,
                 proposal_checksum=proposal_checksum,
                 context_pack_checksum=context_pack_checksum,
             )
-            if record is not None:
+            if record is not None and record.decision == "accept":
                 return self._record_to_critique(record)
             return None
 
@@ -167,7 +179,6 @@ class V2ReviewerService:
         matching = [
             c for c in self._critiques.values()
             if c.proposal_id == proposal_id
-            and c.decision == "accept"
             and c.proposal_checksum == proposal_checksum
             and c.context_pack_checksum == context_pack_checksum
         ]
@@ -175,7 +186,7 @@ class V2ReviewerService:
             return None
         # Latest first
         matching.sort(key=lambda c: c.created_at, reverse=True)
-        return matching[0]
+        return matching[0] if matching[0].decision == "accept" else None
 
     def critique_to_dict(self, critique: ReviewerCritique) -> dict[str, Any]:
         return {
@@ -189,6 +200,9 @@ class V2ReviewerService:
             "missing_evidence": list(critique.missing_evidence),
             "unsafe_assumptions": list(critique.unsafe_assumptions),
             "model_invocation_id": critique.model_invocation_id,
+            "model_role": critique.model_role,
+            "model_provider": critique.model_provider,
+            "deployment_label": critique.deployment_label,
             "created_at": critique.created_at,
         }
 
@@ -204,5 +218,8 @@ class V2ReviewerService:
             missing_evidence=tuple(json.loads(record.missing_evidence_json)),
             unsafe_assumptions=tuple(json.loads(record.unsafe_assumptions_json)),
             model_invocation_id=record.model_invocation_id,
+            model_role=record.model_role,
+            model_provider=record.model_provider,
+            deployment_label=record.deployment_label,
             created_at=record.created_at,
         )

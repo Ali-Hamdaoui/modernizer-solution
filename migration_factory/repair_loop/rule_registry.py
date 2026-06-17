@@ -15,6 +15,7 @@ ALLOWED_RULE_IDS = {
     "DEPENDENCY_UPGRADE_ZALANDO_PROBLEM_SPRING_WEB_0291",
     "H2_SMOKE_CONFIG_ONLY",
     "JAKARTA_IMPORT_MECHANICAL_SOURCE",
+    "POM_VERSION_PIN_EXACT",
 }
 
 
@@ -54,6 +55,8 @@ def evaluate_rule(
         return _h2_smoke_config_only(touched_paths)
     if rule_id == "JAKARTA_IMPORT_MECHANICAL_SOURCE":
         return _jakarta_import_mechanical(touched_paths, unified_diff)
+    if rule_id == "POM_VERSION_PIN_EXACT":
+        return _pom_version_pin_exact(touched_paths, unified_diff)
     return RuleDecision(False, f"rule id is not implemented: {rule_id}", human_review_required=True)
 
 
@@ -162,6 +165,22 @@ def _jakarta_import_mechanical(paths: list[str], diff: str) -> RuleDecision:
         if not (body.startswith("import javax.") or body.startswith("import jakarta.") or body.startswith("package javax.") or body.startswith("package jakarta.")):
             return RuleDecision(False, "source diff is not import/package-only")
     return RuleDecision(True, "Jakarta import/package-only source patch is allowed")
+
+
+def _pom_version_pin_exact(paths: list[str], diff: str) -> RuleDecision:
+    if paths != ["pom.xml"]:
+        return RuleDecision(False, "exact version pin rule must touch only pom.xml")
+    removed = "\n".join(_removed_lines(diff))
+    added = "\n".join(_added_lines(diff))
+    removed_versions = re.findall(r"<version>\s*([^<]+)\s*</version>", removed)
+    added_versions = re.findall(r"<version>\s*([^<]+)\s*</version>", added)
+    if not removed_versions or not any(".x" in version for version in removed_versions):
+        return RuleDecision(False, "patch does not remove wildcard pom version")
+    if not added_versions:
+        return RuleDecision(False, "patch does not add exact pom version")
+    if any(".x" in version for version in added_versions):
+        return RuleDecision(False, "patch still contains wildcard pom version")
+    return RuleDecision(True, "exact pom version pin patch is allowed")
 
 
 def _added_lines(diff: str) -> list[str]:

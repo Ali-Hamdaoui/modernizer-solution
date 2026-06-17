@@ -9,6 +9,10 @@ from uuid import uuid4
 
 from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.application.redaction import redact_model_summary
+from migration_factory.control_tower.application.v2_assistant_failure_answers import (
+    V2AssistantFailureAnswer,
+    V2AssistantFailureAnswerService,
+)
 from migration_factory.control_tower.application.v2_model_schemas import (
     ContextPackBuilder,
     ContextPack,
@@ -104,6 +108,7 @@ class V2AssistantService:
         self._messages: dict[str, AssistantMessage] = {}
         self._drafts: dict[str, PendingActionDraft] = {}
         self._repo = assistant_repo
+        self._failure_answers = V2AssistantFailureAnswerService()
 
     def add_message(
         self,
@@ -231,6 +236,52 @@ class V2AssistantService:
             title=title,
             description=description,
             evidence_refs=evidence_refs,
+        )
+
+    def is_failure_question(self, text: str) -> bool:
+        return self._failure_answers.is_failure_question(text)
+
+    def extract_failure_stage_index(self, text: str) -> int | None:
+        return self._failure_answers.extract_stage_index(text)
+
+    def build_failure_answer_inputs(
+        self,
+        *,
+        stage_index: int | None,
+        event_type: str,
+        recent_failure_event_payload: dict[str, Any] | None,
+    ) -> tuple[Any, dict[str, Any] | None]:
+        return self._failure_answers.build_answer_inputs(
+            stage_index=stage_index,
+            event_type=event_type,
+            recent_failure_event_payload=recent_failure_event_payload,
+        )
+
+    def answer_failure_question(
+        self,
+        *,
+        job_id: str,
+        stage_index: int | None = None,
+        latest_diagnosis_data: dict[str, Any] | None = None,
+        latest_proposal_data: dict[str, Any] | None = None,
+        latest_reviewer_data: dict[str, Any] | None = None,
+        failure_evidence_pack: Any | None = None,
+        failure_classification: dict[str, Any] | None = None,
+        governed_status_data: dict[str, Any] | None = None,
+        recent_failure_event_payload: dict[str, Any] | None = None,
+        existing_message_text: str = "",
+    ) -> V2AssistantFailureAnswer:
+        return self._failure_answers.answer_failure_question(
+            job_id=job_id,
+            stage_index=stage_index,
+            latest_diagnosis_data=latest_diagnosis_data,
+            latest_proposal_data=latest_proposal_data,
+            latest_reviewer_data=latest_reviewer_data,
+            failure_evidence_pack=failure_evidence_pack,
+            failure_classification=failure_classification,
+            governed_status_data=governed_status_data,
+            recent_failure_event_payload=recent_failure_event_payload,
+            existing_message_text=existing_message_text,
         )
 
     def get_messages(self, job_id: str) -> tuple[AssistantMessage, ...]:

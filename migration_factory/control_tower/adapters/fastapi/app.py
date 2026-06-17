@@ -152,6 +152,18 @@ from migration_factory.control_tower.application.v2_model_schemas import (
 from migration_factory.control_tower.application.v2_repair_flow import (
     V2RepairFlowService,
 )
+from migration_factory.control_tower.application.v2_repair_proposal_approval import (
+    V2RepairProposalApprovalService,
+)
+from migration_factory.control_tower.application.v2_patch_candidate_service import (
+    V2PatchCandidateService,
+)
+from migration_factory.control_tower.application.v2_patch_candidate_apply_service import (
+    V2PatchCandidateApplyService,
+)
+from migration_factory.control_tower.application.v2_governed_repair_status import (
+    V2GovernedRepairStatusService,
+)
 from migration_factory.control_tower.application.v2_reviewer_service import (
     V2ReviewerService,
 )
@@ -160,7 +172,12 @@ from migration_factory.control_tower.application.v2_orchestrator_runner import (
     _bounded,
 )
 from migration_factory.control_tower.application.v2_failure_diagnosis import (
+    V2FailureDiagnosisService,
     create_orchestrator_diagnosis_callback,
+)
+from migration_factory.control_tower.application.v2_diagnosis_proposal_flow import (
+    build_default_structured_model_clients,
+    V2DiagnosisProposalFlowService,
 )
 from migration_factory.control_tower.application.redaction import redact_public_value
 from migration_factory.control_tower.adapters.fastapi.security import (
@@ -476,6 +493,24 @@ class ApproveRepairProposalRequest(BaseModel):
     context_pack_checksum: str
 
 
+class RepairProposalApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: str = Field(..., pattern="^(approve|reject)$")
+    approval_checksum: str = Field(min_length=1)
+    note: str = ""
+
+
+class CreatePatchCandidateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    materialization_mode: str = Field(default="deterministic_only", pattern="^(deterministic_only)$")
+
+
+class ApplyPatchCandidateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    patch_candidate_checksum: str = Field(min_length=1)
+    operator_note: str = ""
+
+
 @asynccontextmanager
 async def _control_tower_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Run startup reconciliation on service start."""
@@ -530,6 +565,9 @@ def create_app(
     app.state.actor_provider = resolved_actor_provider
     app.state.v2_settings = ControlTowerSettings()
     app.state.v2_assistant_model_client = v2_assistant_model_client or V2AssistantModelClient()
+    proposer_client, reviewer_client = build_default_structured_model_clients(app.state.v2_assistant_model_client)
+    app.state.v2_proposer_client = proposer_client
+    app.state.v2_reviewer_client = reviewer_client
     app.state.worker_launcher = worker_launcher
     app.state.worker_terminator = worker_terminator
     # ── F02: Wire automatic failure diagnosis into the orchestrator ──
@@ -555,9 +593,11 @@ def create_app(
             asyncio.run(app.state.public_event_notifier.notify())
 
     _repair_flow = V2RepairFlowService()
+    _diagnosis_repo = unit_of_work_factory().v2_failure_diagnoses
     _diagnosis_callback = create_orchestrator_diagnosis_callback(
         repair_flow=_repair_flow,
         event_sink=_diagnosis_event_sink,
+        diagnosis_repo=_diagnosis_repo,
     )
 
     app.state.v2_orchestrator_runner = v2_orchestrator_runner or V2OrchestratorRunner(
@@ -1469,6 +1509,103 @@ def create_app(
                 content=payload.question,
                 correlation_id=payload.correlation_id,
             )
+            if service.is_failure_question(payload.question):
+                requested_stage = service.extract_failure_stage_index(payload.question)
+                failure_event = _latest_v2_failure_event(events, question=payload.question, stage_index=requested_stage)
+                failure_payload = _safe_json_loads(getattr(failure_event, "payload_json", "{}")) if failure_event is not None else None
+                latest_diagnosis = uow.v2_failure_diagnoses.get_latest_for_job(job_id, stage_index=requested_stage)
+                diagnosis_payload = (
+                    V2FailureDiagnosisService.persisted_record_to_dict(latest_diagnosis)
+                    if latest_diagnosis is not None
+                    else {}
+                )
+                proposal_payload: dict[str, Any] = {}
+                reviewer_payload: dict[str, Any] = {}
+                if latest_diagnosis is not None:
+                    proposal_record = None
+                    for candidate in uow.v2_repairs.list_proposals_by_command(latest_diagnosis.command_id):
+                        if getattr(candidate, "diagnosis_id", "") == latest_diagnosis.diagnosis_id:
+                            proposal_record = candidate
+                            break
+                    if proposal_record is None:
+                        proposal_record = uow.v2_repairs.get_latest_by_command(latest_diagnosis.command_id)
+                    if proposal_record is not None:
+                        proposal_payload = V2DiagnosisProposalFlowService.proposal_record_to_dict(proposal_record)
+                        critiques = uow.v2_reviewer.list_critiques_by_proposal(proposal_record.proposal_id)
+                        if critiques:
+                            reviewer_service = V2ReviewerService(reviewer_repo=uow.v2_reviewer)
+                            reviewer_payload = reviewer_service.critique_to_dict(
+                                reviewer_service._record_to_critique(critiques[0])
+                            )
+                        patch_candidate = uow.v2_repairs.get_latest_patch_candidate(proposal_record.proposal_id)
+                        if patch_candidate is not None:
+                            proposal_payload["patch_candidate_status"] = patch_candidate.status
+                            proposal_payload["patch_candidate_gate_status"] = patch_candidate.gate_status
+                            proposal_payload["patch_candidate_id"] = patch_candidate.patch_candidate_id
+                            proposal_payload["patch_candidate_gate_reason"] = patch_candidate.gate_reason
+                            proposal_payload["patch_candidate_result_summary"] = patch_candidate.result_summary
+                            proposal_payload["patch_candidate_validation_status"] = patch_candidate.validation_status
+                            proposal_payload["patch_candidate_rollback_status"] = patch_candidate.rollback_status
+                evidence_pack = None
+                failure_classification = None
+                governed_status_payload: dict[str, Any] = {}
+                try:
+                    governed_status_payload = V2GovernedRepairStatusService(
+                        diagnosis_repo=uow.v2_failure_diagnoses,
+                        repair_repo=uow.v2_repairs,
+                        reviewer_repo=uow.v2_reviewer,
+                        command_repo=uow.v2_commands,
+                    ).get_status(
+                        job_id=job_id,
+                        stage_index=requested_stage,
+                    )
+                except ValueError:
+                    governed_status_payload = {}
+                if latest_diagnosis is None and failure_event is not None:
+                    evidence_pack, failure_classification = service.build_failure_answer_inputs(
+                        stage_index=failure_event.stage,
+                        event_type=failure_event.type,
+                        recent_failure_event_payload=failure_payload,
+                    )
+                deterministic_answer = service.answer_failure_question(
+                    job_id=job_id,
+                    stage_index=requested_stage,
+                    latest_diagnosis_data=diagnosis_payload,
+                    latest_proposal_data=proposal_payload,
+                    latest_reviewer_data=reviewer_payload,
+                    failure_evidence_pack=evidence_pack,
+                    failure_classification=failure_classification,
+                    governed_status_data=governed_status_payload,
+                    recent_failure_event_payload=failure_payload,
+                    existing_message_text=payload.question,
+                )
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=deterministic_answer.answer,
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "failure_answer": deterministic_answer.to_dict(),
+                    "model": {
+                        "status": "deterministic_failure_answer",
+                        "source": "deterministic",
+                        "provider": "deterministic",
+                        "role": "assistant",
+                        "failure_reason": "",
+                    },
+                    "guardrails": {
+                        "read_only": True,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
             # Emit model_invocation_started event before model call
             uow.v2_events.save(
                 job_id=job_id,
@@ -1533,6 +1670,128 @@ def create_app(
                 "cannot_write_files": True,
                 "cannot_change_route_or_stage": True,
                 "cannot_override_proof": True,
+            },
+        }
+
+    @app.get("/v1/v2/jobs/{job_id}/diagnosis/latest")
+    def get_latest_v2_failure_diagnosis(
+        job_id: str,
+        stage_index: int | None = None,
+    ) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            record = uow.v2_failure_diagnoses.get_latest_for_job(job_id, stage_index=stage_index)
+        if record is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "DIAGNOSIS_NOT_FOUND",
+                f"No persisted failure diagnosis found for job {job_id!r}.",
+            )
+        return {
+            "job_id": job_id,
+            "diagnosis": redact_public_value(V2FailureDiagnosisService.persisted_record_to_dict(record)),
+        }
+
+    @app.get("/v1/v2/jobs/{job_id}/governed-repair/status")
+    def get_governed_repair_status(
+        job_id: str,
+        stage_index: int | None = Query(default=None),
+        diagnosis_id: str | None = Query(default=None),
+        proposal_id: str | None = Query(default=None),
+        patch_candidate_id: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            service = V2GovernedRepairStatusService(
+                diagnosis_repo=uow.v2_failure_diagnoses,
+                repair_repo=uow.v2_repairs,
+                reviewer_repo=uow.v2_reviewer,
+                command_repo=uow.v2_commands,
+            )
+            try:
+                projection = service.get_status(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    diagnosis_id=diagnosis_id,
+                    proposal_id=proposal_id,
+                    patch_candidate_id=patch_candidate_id,
+                )
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "GOVERNED_REPAIR_STATUS_FAILED",
+                    str(exc),
+                ) from exc
+        return redact_public_value(projection)
+
+    @app.post("/v1/v2/diagnoses/{diagnosis_id}/repair-proposal")
+    def create_diagnosis_bound_repair_proposal(
+        diagnosis_id: str,
+    ) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            diagnosis = uow.v2_failure_diagnoses.get_by_id(diagnosis_id)
+            if diagnosis is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "DIAGNOSIS_NOT_FOUND",
+                    f"Diagnosis {diagnosis_id!r} not found.",
+                )
+            flow = V2DiagnosisProposalFlowService(
+                diagnosis_repo=uow.v2_failure_diagnoses,
+                repair_repo=uow.v2_repairs,
+                repair_flow=V2RepairFlowService(repair_repo=uow.v2_repairs),
+                proposer_client=app.state.v2_proposer_client,
+            )
+            try:
+                result = flow.create_repair_proposal(diagnosis_id=diagnosis_id)
+            except ValueError as exc:
+                code = (
+                    "INVALID_REPAIR_PROPOSAL_OUTPUT"
+                    if "Invalid RepairProposal" in str(exc) or "valid JSON" in str(exc)
+                    else "REPAIR_PROPOSAL_MODEL_FAILED"
+                )
+                status_code = (
+                    status.HTTP_422_UNPROCESSABLE_ENTITY
+                    if code == "INVALID_REPAIR_PROPOSAL_OUTPUT"
+                    else status.HTTP_502_BAD_GATEWAY
+                )
+                raise _error(status_code, code, str(exc)) from exc
+
+            _append_v2_event(
+                uow,
+                job_id=diagnosis.job_id,
+                stage=diagnosis.stage_index,
+                event_type="repair_proposal_created",
+                status="completed",
+                message="Governed repair proposal created from persisted diagnosis.",
+                payload={
+                    "diagnosis_id": diagnosis.diagnosis_id,
+                    "proposal_id": result.proposal.proposal_id,
+                    "proposal_checksum": result.proposal_checksum,
+                    "diagnosis_checksum": result.diagnosis_checksum,
+                    "evidence_pack_checksum": result.evidence_pack_checksum,
+                    "context_pack_checksum": result.context_pack_checksum,
+                    "status": result.proposal.status,
+                },
+            )
+        return {
+            "diagnosis_id": diagnosis_id,
+            "proposal": redact_public_value(V2RepairFlowService().proposal_to_dict(result.proposal)),
+            "bindings": {
+                "diagnosis_checksum": result.diagnosis_checksum,
+                "evidence_pack_checksum": result.evidence_pack_checksum,
+                "context_pack_checksum": result.context_pack_checksum,
+                "proposal_checksum": result.proposal_checksum,
+            },
+            "model": {
+                "request_id": result.model_request.request_id,
+                "source": result.model_call.source,
+                "provider": result.model_call.provider,
+                "role": result.model_call.role,
+                "status": result.model_call.model_status,
+                "deployment_label": result.model_call.deployment_label,
+                "model_invocation_id": result.model_call.model_invocation_id,
+                "compatibility_mode": result.model_call.compatibility_mode,
             },
         }
 
@@ -1831,11 +2090,13 @@ def create_app(
                 hypothesis=payload.hypothesis,
                 patch_summary=payload.patch_summary,
                 affected_paths=tuple(payload.affected_paths),
+                validation_plan=f"Verify repair for {payload.command_id}",
             )
         return service.proposal_to_dict(proposal)
 
     @app.post("/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/approve")
     def approve_repair_proposal(
+        request: Request,
         command_id: str,
         proposal_id: str,
         payload: ApproveRepairProposalRequest,
@@ -1854,21 +2115,48 @@ def create_app(
                 repair_repo=uow.v2_repairs,
                 reviewer_service=reviewer_service,
             )
+            proposal_record = uow.v2_repairs.get_proposal(proposal_id)
+            if proposal_record is None:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "REPAIR_APPROVAL_FAILED",
+                    f"Proposal {proposal_id!r} not found",
+                )
             try:
-                proposal = service.approve_proposal(
-                    proposal_id=proposal_id,
-                    approval_checksum=payload.approval_checksum,
-                    proposal_checksum=payload.proposal_checksum,
-                    context_pack_checksum=payload.context_pack_checksum,
-                )
-                # Look up the reviewer critique_id for the response
-                accepted = reviewer_service.check_reviewer_gate(
-                    proposal_id=proposal_id,
-                    proposal_checksum=payload.proposal_checksum,
-                    context_pack_checksum=payload.context_pack_checksum,
-                )
-                reviewer_critique_id = accepted.critique_id if accepted else None
-                reviewer_decision = accepted.decision if accepted else None
+                if proposal_record.context_pack_checksum or proposal_record.diagnosis_id:
+                    if payload.proposal_checksum != proposal_record.proposal_checksum:
+                        raise ValueError("proposal_checksum does not match current governed proposal")
+                    if payload.context_pack_checksum != proposal_record.context_pack_checksum:
+                        raise ValueError("context_pack_checksum does not match current governed proposal")
+                    approval_service = V2RepairProposalApprovalService(
+                        repair_repo=uow.v2_repairs,
+                        repair_flow=service,
+                        reviewer_service=reviewer_service,
+                    )
+                    result = approval_service.decide(
+                        proposal_id=proposal_id,
+                        operator_decision="approve",
+                        approval_checksum=payload.approval_checksum,
+                        correlation_id=getattr(request.state, "correlation_id", None),
+                    )
+                    proposal = result.proposal
+                    reviewer_critique_id = result.approval_decision.reviewer_critique_id
+                    reviewer_decision = result.latest_reviewer_decision
+                else:
+                    proposal = service.approve_proposal(
+                        proposal_id=proposal_id,
+                        approval_checksum=payload.approval_checksum,
+                        proposal_checksum=payload.proposal_checksum,
+                        context_pack_checksum=payload.context_pack_checksum,
+                    )
+                    # Look up the reviewer critique_id for the response
+                    accepted = reviewer_service.check_reviewer_gate(
+                        proposal_id=proposal_id,
+                        proposal_checksum=payload.proposal_checksum,
+                        context_pack_checksum=payload.context_pack_checksum,
+                    )
+                    reviewer_critique_id = accepted.critique_id if accepted else None
+                    reviewer_decision = accepted.decision if accepted else None
             except ValueError as exc:
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,
@@ -1880,6 +2168,114 @@ def create_app(
             reviewer_critique_id=reviewer_critique_id,
             reviewer_decision=reviewer_decision,
         )
+
+    @app.post("/v1/v2/repair-proposals/{proposal_id}/approval")
+    def decide_repair_proposal_approval(
+        request: Request,
+        proposal_id: str,
+        payload: RepairProposalApprovalRequest,
+    ) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            reviewer_service = V2ReviewerService(reviewer_repo=uow.v2_reviewer)
+            repair_flow = V2RepairFlowService(
+                repair_repo=uow.v2_repairs,
+                reviewer_service=reviewer_service,
+            )
+            approval_service = V2RepairProposalApprovalService(
+                repair_repo=uow.v2_repairs,
+                repair_flow=repair_flow,
+                reviewer_service=reviewer_service,
+            )
+            try:
+                result = approval_service.decide(
+                    proposal_id=proposal_id,
+                    operator_decision=payload.decision,
+                    approval_checksum=payload.approval_checksum,
+                    operator_note=payload.note,
+                    correlation_id=getattr(request.state, "correlation_id", None),
+                )
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "REPAIR_PROPOSAL_APPROVAL_FAILED",
+                    str(exc),
+                ) from exc
+        return {
+            "proposal": repair_flow.proposal_to_dict(result.proposal),
+            "proposal_status": result.proposal.status,
+            "proposal_checksum": result.proposal.proposal_checksum,
+            "reviewer_gate_status": result.reviewer_gate_status,
+            "approval_result": result.approval_result,
+            "latest_reviewer_decision": result.latest_reviewer_decision,
+            "approval_decision": result.approval_decision.to_dict(),
+            "applied": False,
+        }
+
+    @app.post("/v1/v2/repair-proposals/{proposal_id}/patch-candidate")
+    def create_patch_candidate(
+        proposal_id: str,
+        payload: CreatePatchCandidateRequest,
+    ) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            reviewer_service = V2ReviewerService(reviewer_repo=uow.v2_reviewer)
+            service = V2PatchCandidateService(
+                repair_repo=uow.v2_repairs,
+                reviewer_service=reviewer_service,
+                command_repo=uow.v2_commands,
+            )
+            try:
+                candidate = service.create_patch_candidate(
+                    proposal_id=proposal_id,
+                    materialization_mode=payload.materialization_mode,
+                )
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "PATCH_CANDIDATE_CREATION_FAILED",
+                    str(exc),
+                ) from exc
+        return {
+            "patch_candidate_id": candidate.patch_candidate_id,
+            "proposal_id": candidate.proposal_id,
+            "status": candidate.status,
+            "patch_candidate_checksum": candidate.patch_candidate_checksum,
+            "gate_status": candidate.gate_status,
+            "gate_reason": candidate.gate_reason,
+            "touched_paths": list(candidate.touched_paths),
+            "unified_diff_preview": service.preview_unified_diff(candidate),
+            "applied": False,
+        }
+
+    @app.post("/v1/v2/patch-candidates/{patch_candidate_id}/apply")
+    def apply_patch_candidate(
+        patch_candidate_id: str,
+        payload: ApplyPatchCandidateRequest,
+    ) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            reviewer_service = V2ReviewerService(reviewer_repo=uow.v2_reviewer)
+            repair_flow = V2RepairFlowService(
+                repair_repo=uow.v2_repairs,
+                reviewer_service=reviewer_service,
+            )
+            service = V2PatchCandidateApplyService(
+                repair_repo=uow.v2_repairs,
+                reviewer_service=reviewer_service,
+                command_repo=uow.v2_commands,
+                repair_flow=repair_flow,
+            )
+            try:
+                result = service.apply_patch_candidate(
+                    patch_candidate_id=patch_candidate_id,
+                    patch_candidate_checksum=payload.patch_candidate_checksum,
+                    operator_note=payload.operator_note,
+                )
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "PATCH_CANDIDATE_APPLY_FAILED",
+                    str(exc),
+                ) from exc
+        return result.to_dict()
 
     # ------------------------------------------------------------------
     # F07: Reviewer critique endpoints
@@ -2006,6 +2402,72 @@ def create_app(
         if event_emitted:
             asyncio.run(app.state.public_event_notifier.notify())
         return service.critique_to_dict(critique)
+
+    @app.post("/v1/v2/repair-proposals/{proposal_id}/review")
+    def review_diagnosis_bound_repair_proposal(
+        proposal_id: str,
+    ) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            proposal_record = uow.v2_repairs.get_proposal(proposal_id)
+            if proposal_record is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "PROPOSAL_NOT_FOUND",
+                    f"Proposal {proposal_id!r} not found.",
+                )
+            command = uow.v2_commands.get(proposal_record.command_id)
+            reviewer_service = V2ReviewerService(reviewer_repo=uow.v2_reviewer)
+            flow = V2DiagnosisProposalFlowService(
+                diagnosis_repo=uow.v2_failure_diagnoses,
+                repair_repo=uow.v2_repairs,
+                reviewer_service=reviewer_service,
+                reviewer_client=app.state.v2_reviewer_client,
+            )
+            try:
+                result = flow.review_repair_proposal(proposal_id)
+            except ValueError as exc:
+                code = (
+                    "INVALID_REVIEWER_CRITIQUE_OUTPUT"
+                    if "Invalid ReviewerCritique" in str(exc) or "valid JSON" in str(exc)
+                    else "REVIEWER_MODEL_FAILED"
+                )
+                status_code = (
+                    status.HTTP_422_UNPROCESSABLE_ENTITY
+                    if code == "INVALID_REVIEWER_CRITIQUE_OUTPUT"
+                    else status.HTTP_502_BAD_GATEWAY
+                )
+                raise _error(status_code, code, str(exc)) from exc
+
+            if command is not None:
+                _append_v2_event(
+                    uow,
+                    job_id=command.job_id,
+                    stage=command.stage_index,
+                    event_type="reviewer_critique_created",
+                    status="completed",
+                    message="Reviewer critique created for governed repair proposal.",
+                    payload={
+                        "proposal_id": result.proposal.proposal_id,
+                        "proposal_checksum": result.proposal.proposal_checksum,
+                        "context_pack_checksum": result.proposal.context_pack_checksum,
+                        "decision": result.critique.decision,
+                        "critique_id": result.critique.critique_id,
+                    },
+                )
+        return {
+            "proposal": redact_public_value(V2RepairFlowService().proposal_to_dict(result.proposal)),
+            "critique": redact_public_value(reviewer_service.critique_to_dict(result.critique)),
+            "model": {
+                "request_id": result.model_request.request_id,
+                "source": result.model_call.source,
+                "provider": result.model_call.provider,
+                "role": result.model_call.role,
+                "status": result.model_call.model_status,
+                "deployment_label": result.model_call.deployment_label,
+                "model_invocation_id": result.model_call.model_invocation_id,
+                "compatibility_mode": result.model_call.compatibility_mode,
+            },
+        }
 
     @app.get("/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/reviewer-critiques")
     def list_reviewer_critiques(
@@ -3871,6 +4333,43 @@ def _build_v2_assistant_answer(
         "All migration execution is backend-owned."
     )
     return str(redact_public_data(answer))
+
+
+def _safe_json_loads(text: str) -> dict[str, Any]:
+    try:
+        value = json.loads(text or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _latest_v2_failure_event(
+    events: tuple[Any, ...],
+    *,
+    question: str,
+    stage_index: int | None,
+) -> Any | None:
+    lowered = question.lower()
+    preferred_types = ["build_failed", "test_failed", "transform_failed"]
+    if "build" in lowered:
+        preferred_types = ["build_failed", *preferred_types]
+    elif "test" in lowered:
+        preferred_types = ["test_failed", *preferred_types]
+    elif "transform" in lowered:
+        preferred_types = ["transform_failed", *preferred_types]
+
+    failure_events = [
+        event for event in events
+        if event.type in {"build_failed", "test_failed", "transform_failed", "stage_failed"}
+        or event.status == "failed"
+    ]
+    if stage_index is not None:
+        failure_events = [event for event in failure_events if event.stage == stage_index]
+    for event_type in preferred_types:
+        typed = [event for event in failure_events if event.type == event_type]
+        if typed:
+            return typed[-1]
+    return failure_events[-1] if failure_events else None
 
 
 def _build_v2_assistant_prompt(

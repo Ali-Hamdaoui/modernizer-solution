@@ -25,6 +25,8 @@ class V2AssistantModelResult:
     success: bool
     redacted_summary: str
     failure_reason: str
+    deployment_label: str = ""
+    model_invocation_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -180,27 +182,70 @@ class V2AssistantModelClient:
         )
 
     def answer(self, *, prompt: str, fallback: str) -> V2AssistantModelResult:
+        return self._answer_with_deployment(
+            prompt=prompt,
+            fallback=fallback,
+            role=self.role,
+            deployment=os.environ.get("AZURE_OPENAI_ASSISTANT_DEPLOYMENT", "").strip(),
+            missing_deployment_reason="missing_deployment",
+            missing_deployment_summary="Azure OpenAI deployment name not configured.",
+        )
+
+    def answer_for_role(self, *, prompt: str, fallback: str, role: str) -> V2AssistantModelResult:
+        deployment = ""
+        if role == "proposer":
+            deployment = os.environ.get("AZURE_OPENAI_PROPOSER_DEPLOYMENT", "").strip()
+        elif role == "reviewer":
+            deployment = os.environ.get("AZURE_OPENAI_REVIEWER_DEPLOYMENT", "").strip()
+        else:
+            return _fallback_result(
+                fallback,
+                f"Unknown structured model role {role!r}.",
+                "unknown_role",
+                role=role,
+            )
+        return self._answer_with_deployment(
+            prompt=prompt,
+            fallback=fallback,
+            role=role,
+            deployment=deployment,
+            missing_deployment_reason="missing_role_deployment",
+            missing_deployment_summary=f"Azure OpenAI {role} deployment name not configured.",
+        )
+
+    def _answer_with_deployment(
+        self,
+        *,
+        prompt: str,
+        fallback: str,
+        role: str,
+        deployment: str,
+        missing_deployment_reason: str,
+        missing_deployment_summary: str,
+    ) -> V2AssistantModelResult:
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip().rstrip("/")
         api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
-        deployment = os.environ.get("AZURE_OPENAI_ASSISTANT_DEPLOYMENT", "").strip()
 
         if not endpoint:
             return _fallback_result(
                 fallback,
                 "Azure OpenAI endpoint not configured.",
                 "missing_endpoint",
+                role=role,
             )
         if not api_key:
             return _fallback_result(
                 fallback,
                 "Azure OpenAI API key not configured.",
                 "missing_key",
+                role=role,
             )
         if not deployment:
             return _fallback_result(
                 fallback,
-                "Azure OpenAI deployment name not configured.",
-                "missing_deployment",
+                missing_deployment_summary,
+                missing_deployment_reason,
+                role=role,
             )
 
         try:
@@ -228,6 +273,8 @@ class V2AssistantModelClient:
                 fallback,
                 summary,
                 _http_failure_reason(code),
+                role=role,
+                deployment_label=_public_deployment_label(deployment),
             )
         except urllib.error.URLError as exc:
             reason = str(exc.reason) if hasattr(exc, "reason") else str(exc)
@@ -236,17 +283,23 @@ class V2AssistantModelClient:
                     fallback,
                     "Azure OpenAI request timed out.",
                     "timeout",
+                    role=role,
+                    deployment_label=_public_deployment_label(deployment),
                 )
             return _fallback_result(
                 fallback,
                 f"Azure OpenAI request failed: {redact_model_summary(reason)}.",
                 "invalid_response",
+                role=role,
+                deployment_label=_public_deployment_label(deployment),
             )
         except Exception as exc:
             return _fallback_result(
                 fallback,
                 f"Azure OpenAI assistant unavailable ({type(exc).__name__}).",
                 "invalid_response",
+                role=role,
+                deployment_label=_public_deployment_label(deployment),
             )
 
         safe_content = str(redact_public_value(redact_model_summary(content))).strip()
@@ -255,6 +308,8 @@ class V2AssistantModelClient:
                 fallback,
                 "Azure OpenAI returned an empty response.",
                 "invalid_response",
+                role=role,
+                deployment_label=_public_deployment_label(deployment),
             )
 
         return V2AssistantModelResult(
@@ -262,10 +317,12 @@ class V2AssistantModelClient:
             source="azure_openai",
             model_status="live_ok",
             provider=self.provider,
-            role=self.role,
+            role=role,
             success=True,
             redacted_summary="Azure OpenAI assistant invocation succeeded.",
             failure_reason="",
+            deployment_label=_public_deployment_label(deployment),
+            model_invocation_id=_build_model_invocation_id(role),
         )
 
     @staticmethod
@@ -491,17 +548,26 @@ def _redact_smoke_text(text: str, *, endpoint: str, deployment: str, api_key: st
     return result[:500]
 
 
-def _fallback_result(fallback: str, summary: str, failure_reason: str = "") -> V2AssistantModelResult:
+def _fallback_result(
+    fallback: str,
+    summary: str,
+    failure_reason: str = "",
+    *,
+    role: str = "assistant",
+    deployment_label: str = "",
+) -> V2AssistantModelResult:
     safe_summary = str(redact_model_summary(summary))
     return V2AssistantModelResult(
         content=f"{fallback}\n\nModel: fallback\nSource: deterministic\nReason: {safe_summary}",
         source="deterministic",
         model_status="fallback",
         provider="deterministic",
-        role="assistant",
+        role=role,
         success=False,
         redacted_summary=safe_summary,
         failure_reason=failure_reason,
+        deployment_label=deployment_label,
+        model_invocation_id=_build_model_invocation_id(role),
     )
 
 
@@ -539,3 +605,8 @@ def _summary_with_snippet(summary: str, snippet: str) -> str:
 
 def _public_deployment_label(deployment: str) -> str:
     return "configured" if str(deployment or "").strip() else ""
+
+
+def _build_model_invocation_id(role: str) -> str:
+    stamp = utc_now_text().replace(":", "").replace("-", "").replace(".", "")
+    return f"{role}-{stamp}"

@@ -19,7 +19,10 @@ class V2ReviewerCritiqueRecord:
     missing_evidence_json: str
     unsafe_assumptions_json: str
     model_invocation_id: str | None
-    created_at: str
+    model_role: str = ""
+    model_provider: str = ""
+    deployment_label: str = ""
+    created_at: str = ""
 
 
 class SqliteV2ReviewerRepository:
@@ -38,8 +41,9 @@ class SqliteV2ReviewerRepository:
                 critique_id, proposal_id, proposal_type,
                 proposal_checksum, context_pack_checksum,
                 decision, reasoning, missing_evidence_json,
-                unsafe_assumptions_json, model_invocation_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                unsafe_assumptions_json, model_invocation_id, model_role,
+                model_provider, deployment_label, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 record.critique_id,
                 record.proposal_id,
@@ -51,6 +55,9 @@ class SqliteV2ReviewerRepository:
                 record.missing_evidence_json,
                 record.unsafe_assumptions_json,
                 record.model_invocation_id,
+                record.model_role,
+                record.model_provider,
+                record.deployment_label,
                 record.created_at,
             ),
         )
@@ -100,6 +107,25 @@ class SqliteV2ReviewerRepository:
             return None
         return self._row_to_record(row)
 
+    def get_latest_for_binding(
+        self,
+        proposal_id: str,
+        proposal_checksum: str,
+        context_pack_checksum: str,
+    ) -> V2ReviewerCritiqueRecord | None:
+        row = self._connection.execute(
+            """SELECT * FROM v2_reviewer_critiques
+               WHERE proposal_id = ?
+                 AND proposal_checksum = ?
+                 AND context_pack_checksum = ?
+               ORDER BY created_at DESC
+               LIMIT 1""",
+            (proposal_id, proposal_checksum, context_pack_checksum),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_record(row)
+
     def _row_to_record(self, row: sqlite3.Row) -> V2ReviewerCritiqueRecord:
         return V2ReviewerCritiqueRecord(
             critique_id=str(row["critique_id"]),
@@ -112,5 +138,8 @@ class SqliteV2ReviewerRepository:
             missing_evidence_json=str(row["missing_evidence_json"]),
             unsafe_assumptions_json=str(row["unsafe_assumptions_json"]),
             model_invocation_id=str(row["model_invocation_id"]) if row["model_invocation_id"] else None,
+            model_role=str(row["model_role"]) if "model_role" in row.keys() else "",
+            model_provider=str(row["model_provider"]) if "model_provider" in row.keys() else "",
+            deployment_label=str(row["deployment_label"]) if "deployment_label" in row.keys() else "",
             created_at=str(row["created_at"]),
         )
