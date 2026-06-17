@@ -336,6 +336,86 @@ class V2GateActionService:
             idempotency_key=idempotency_key,
         )
 
+    # ── action: approve_transformation ─────────────────────────────
+
+    def approve_transformation(
+        self,
+        *,
+        gate_id: str,
+        job_id: str,
+        decided_by: str,
+        idempotency_key: str | None = None,
+    ) -> GateActionResult:
+        """Approve transformation at an approval_review gate.
+
+        Validates that both an accepted analysis revision and an accepted
+        plan revision exist for the same stage before allowing approval.
+        This prevents approving a transformation on a stale plan.
+
+        On success, returns a result_command_id that the caller can use
+        to queue the backend-owned transform command.
+
+        Requires:
+        - Gate exists and is OPEN
+        - Gate phase is approval_review (APPROVE is valid)
+        - Accepted analysis revision exists for this stage
+        - Accepted plan revision exists for this stage (no stale plan)
+        - Gate checksum must match
+
+        Returns:
+            GateActionResult with status, decision_id, and
+            result_command_id referencing the queued transform command.
+        """
+        # Pre-validate accepted analysis and plan BEFORE resolving gate
+        gate = self._gate_repo.get(gate_id)
+        if gate is None:
+            return GateActionResult(
+                action=GateDecision.APPROVE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="gate_not_found",
+            )
+
+        stage_index = gate.stage_index
+
+        if self._revision_repo is not None:
+            accepted_analysis = self._revision_repo.find_accepted(
+                job_id, stage_index, "analysis"
+            )
+            if accepted_analysis is None:
+                return GateActionResult(
+                    action=GateDecision.APPROVE.value,
+                    gate_id=gate_id,
+                    decision_id="",
+                    status="no_accepted_analysis",
+                    reason="No accepted analysis revision for this stage",
+                )
+
+            accepted_plan = self._revision_repo.find_accepted(
+                job_id, stage_index, "planning"
+            )
+            if accepted_plan is None:
+                return GateActionResult(
+                    action=GateDecision.APPROVE.value,
+                    gate_id=gate_id,
+                    decision_id="",
+                    status="no_accepted_plan",
+                    reason="No accepted plan revision for this stage",
+                )
+
+        # Generate a command ID for the queued transform
+        command_id = uuid4().hex
+
+        # Execute the approval action (validates gate open, phase, checksum)
+        return self._execute_action(
+            gate_id=gate_id,
+            job_id=job_id,
+            action=GateDecision.APPROVE,
+            decided_by=decided_by,
+            idempotency_key=idempotency_key,
+            result_command_id=command_id,
+        )
+
     # ── internal pipeline ───────────────────────────────────────────
 
     def _execute_action(
@@ -346,6 +426,7 @@ class V2GateActionService:
         action: GateDecision,
         decided_by: str,
         idempotency_key: str | None = None,
+        result_command_id: str | None = None,
     ) -> GateActionResult:
         """Common validation and execution pipeline for all gate actions.
 
@@ -357,6 +438,10 @@ class V2GateActionService:
         5. Resolve the gate via V2PhaseGateService.
         6. Persist the decision record.
         7. Return result with result references.
+
+        Args:
+            result_command_id: Optional command ID to store in the decision
+                record. The caller is responsible for queueing the command.
         """
         # 1. Gate existence
         gate = self._gate_repo.get(gate_id)
@@ -474,7 +559,7 @@ class V2GateActionService:
             idempotency_key=effective_idempotency_key,
             request_checksum=current_checksum,  # the decision is bound to the gate snapshot
             result_gate_id=result_gate_id,
-            result_command_id=None,  # caller queues command
+            result_command_id=result_command_id,  # caller queues command
             result_revision_id=None,  # caller creates revision
             decided_by=decided_by,
             decided_at=now,
@@ -506,4 +591,5 @@ class V2GateActionService:
             decision_id=decision_id,
             status="executed",
             result_gate_id=result_gate_id,
+            result_command_id=result_command_id,
         )
