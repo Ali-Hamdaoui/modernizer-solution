@@ -4234,8 +4234,8 @@ def _classify_v2_assistant_intent(question: str) -> str:
     # 1. Model status first (model/Azure/provider questions)
     #    BUT skip if user is also asking about POM/dependency changes — model status is secondary
     pom_or_dep_terms = (
-        "pom", "pom.xml", "dependency", "property", "assertj", "modelmapper",
-        "gson", "jackson", "spring boot", "version", "apply change", "propose change",
+        "pom", "pom.xml", "dependency", "property", "modelmapper",
+        "jackson", "spring boot", "version", "apply change", "propose change",
     )
     has_pom_or_dep = any(t in lowered for t in pom_or_dep_terms)
     looks_like_status_question = any(t in lowered for t in (
@@ -4255,6 +4255,18 @@ def _classify_v2_assistant_intent(question: str) -> str:
         "do not change", "just tell me", "only tell me",
         "just propose", "only propose",
     ))
+
+    advisory_mode = user_says_dont_apply or any(phrase in lowered for phrase in (
+        "propose", "suggest", "review", "analyze",
+        "can i", "should i", "what do you think",
+    ))
+    if advisory_mode and any(term in lowered for term in (
+        "pom", "pom.xml", "dependency", "property", "version", ":",
+    )):
+        if any(term in lowered for term in (
+            "update", "updating", "change", "changing", "set", "setting", "upgrade", "upgrading",
+        )):
+            return "pom_change_proposal"
 
     # 3. Capability / action boundary — takes priority
     #    BUT skip if user explicitly said DO NOT apply
@@ -4283,7 +4295,7 @@ def _classify_v2_assistant_intent(question: str) -> str:
         if not any(t in lowered for t in ("review", "what dependency", "what should", "which dependency")):
             return "apply_dependency_change"
 
-    # 4. Explicit single dependency/property change request (e.g. "update gson to 2.11.0")
+    # 4. Explicit single dependency/property change request (e.g. "update library-name to 1.2.3")
     #    Expanded to catch "update property X to Y" and "update X to Y.Z" patterns
     explicit_dep_change_patterns = (
         r"(?:update|upgrade|change|set|bump|replace)\s+([\w.\-:]+)\s+(?:to|version)\s+([\d.]+)",
@@ -4295,6 +4307,8 @@ def _classify_v2_assistant_intent(question: str) -> str:
     )
     for pattern in explicit_dep_change_patterns:
         if re.search(pattern, lowered):
+            if advisory_mode:
+                return "pom_change_proposal"
             # If user explicitly says apply/execute/do it, route to apply
             if not user_says_dont_apply and any(t in lowered for t in ("apply this", "apply the", "apply it", "execute this",
                                                                        "do it", "make the change", "write the change",
@@ -4303,7 +4317,7 @@ def _classify_v2_assistant_intent(question: str) -> str:
                 if not any(t in lowered for t in ("review", "what dependency", "what should", "which dependency")):
                     return "apply_dependency_change"
             if not any(t in lowered for t in ("review", "what dependency", "what should", "which dependency")):
-                return "pom_dependency_change_request"
+                return "apply_dependency_change"
 
     # 5. POM change proposal intent — draft/upgrade/propose/modify with POM terms
     #    Check BEFORE stage3 review so proposals take priority over reviews
@@ -5308,7 +5322,7 @@ def _build_pom_change_proposal_answer(
     """Build a governed POM change proposal from available evidence.
 
     If the question contains a specific property/dependency change request
-    (e.g., "propose changing assertj.version to 3.24.2"), calls the
+    (e.g., "propose changing example.version to 1.2.3"), calls the
     PomDependencyEditor.propose_change() service to produce a real proposal
     with proposal_id, risk, control_mode, and can_apply.
 
@@ -5333,7 +5347,7 @@ def _build_pom_change_proposal_answer(
     if not specific_change:
         # Pattern: "change X to Y" (artifact name or GAV)
         specific_change = _re.search(
-            r"(?:chang|updat|upgrad|set|bump)\s+([\w.\-:]+)\s+(?:to|version)\s+([\d.]+(?:[\-.]?[\w]+)*)",
+            r"(?:chang(?:e|ing)?|updat(?:e|ing)?|upgrad(?:e|ing)?|set(?:ting)?|bump(?:ing)?)\s+([\w.\-:]+)\s+(?:to|version)\s+([\d.]+(?:[\-.]?[\w]+)*)",
             lowered, _re.IGNORECASE,
         )
 
@@ -5908,7 +5922,6 @@ def _classify_stage3_dependencies(
         ("com.microsoft.azure", "azure-servicebus-spring-boot-starter"),
         ("org.apache.juneau", ""),
         ("io.jsonwebtoken", ""),
-        ("com.google.code.gson", "gson"),
         ("org.modelmapper", "modelmapper"),
         ("org.projectlombok", "lombok"),
         ("org.assertj", "assertj-core"),
@@ -6081,7 +6094,7 @@ def _build_apply_dependency_change_answer(
     if not dep_name or not target_version:
         return (
             "I need a specific dependency name and target version to apply a change. "
-            'For example: "apply change gson to 2.11.0" or "update dependency com.google.code.gson:gson to 2.11.0".'
+            'For example: "apply change library-name to 1.2.3" or "update dependency com.example:library-name to 1.2.3".'
         )
 
     # Route through the same PomDependencyEditor service path as UI
@@ -6302,7 +6315,7 @@ def _build_pom_dependency_change_request_answer(
 ) -> str:
     """Build a governed dependency change request for an explicit single dependency edit.
 
-    Examples: 'Update gson to 2.11.0', 'Change tomcat to 10.1.20 at stage 3'
+    Examples: 'Update library-name to 1.2.3', 'Change server-runtime to 4.5.6 at stage 3'
     Produces exact before/after XML, risk, evidence, and approval path.
     """
     lines: list[str] = []
@@ -6333,8 +6346,8 @@ def _build_pom_dependency_change_request_answer(
             pom_summary = _extract_pom_summary(raw_preview)
 
     # ── Parse target dependency/property from question ──
-    # Patterns: "update gson to 2.11.0", "change tomcat to 10.1.20"
-    # Also: "update property assertj.version to 3.24.2"
+    # Patterns: "update library-name to 1.2.3", "change server-runtime to 4.5.6"
+    # Also: "update property example.version to 1.2.3"
     dep_name = ""
     target_version = ""
     is_property_update = False
@@ -6805,7 +6818,7 @@ def _build_stage3_dependency_review_answer(
             ag_gid in gid
             for ag_gid in (
                 "org.zalando", "microsoft.azure", "org.apache.juneau",
-                "io.jsonwebtoken", "com.google.code.gson", "org.modelmapper",
+                "io.jsonwebtoken", "org.modelmapper",
             )
         ):
             policy_candidates.append(d)
@@ -6945,7 +6958,7 @@ def _build_stage1_or_2_deferred_dependency_answer(
         "- Compare artifact versions across stages\n"
         "- Identify obvious migration risks\n"
         "- Handle explicit single-dependency edits you specify directly "
-        "(e.g., 'update gson to 2.11.0')\n\n"
+        "(e.g., 'update library-name to 1.2.3')\n\n"
         "**What should wait for Stage 3:**\n"
         "- Final app-specific dependency modernization recommendations\n"
         "- Broad dependency upgrade plans\n"

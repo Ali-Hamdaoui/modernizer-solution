@@ -242,6 +242,55 @@ class TestPomApplyBasic:
         # The property name in pom is java.version (with dot)
         assert "21" in content
 
+    def test_apply_generic_gav_uses_live_pom_metadata_when_no_parsed_data(self):
+        """Generic GAV apply derives metadata from live POM, not hardcoded Gson."""
+        pom = SAMPLE_POM.replace(
+            "    </dependencies>",
+            """        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-lang3</artifactId>
+            <version>3.12.0</version>
+        </dependency>
+    </dependencies>""",
+        )
+        sandbox = _make_temp_sandbox(pom)
+        editor = PomDependencyEditor(
+            resolve_sandbox_root=lambda j, s: Path(sandbox),
+            resolve_pom_content=lambda j: (Path(sandbox) / "pom.xml").read_text(encoding="utf-8"),
+        )
+
+        result = editor.apply_change_from_user_request(
+            job_id="job_1",
+            user_request="update dependency org.apache.commons:commons-lang3 to 3.14.0",
+            idempotency_key="ik_generic_gav",
+            sandbox_path=sandbox,
+        )
+
+        content = (Path(sandbox) / "pom.xml").read_text(encoding="utf-8")
+        assert result.status == "applied_pending_validation"
+        assert result.operation == "update_dependency_version"
+        assert result.target_desc == "org.apache.commons:commons-lang3"
+        assert result.before_version == "3.12.0"
+        assert result.after_version == "3.14.0"
+        assert "<version>3.14.0</version>" in content
+        assert "<version>3.12.0</version>" not in content
+
+    def test_missing_dependency_is_blocked_not_confirmation_loop(self):
+        editor = _mock_editor()
+
+        result = editor.apply_change_from_user_request(
+            job_id="job_1",
+            user_request="Apply this Stage 3 POM change: update dependency some.missing:artifact to 1.2.3.",
+            idempotency_key="ik_missing_dep",
+            pom_content=SAMPLE_POM,
+        )
+
+        assert result.status == "blocked"
+        assert result.change_id == ""
+        assert result.validation_id is None
+        assert "not present" in result.message.lower()
+        assert "confirm_high_risk" not in result.message
+
 
 class TestPomApplyIdempotency:
 

@@ -689,7 +689,7 @@ def _assistant_system_prompt() -> str:
         "dependency_policy_report, dependency_graph, and operator-provided targets.\n"
         "- Never recommend 'latest' without evidence.\n"
         "- For dependencies without target versions, mark as 'needs policy decision.'\n"
-        "- For explicit dependency change requests (e.g., 'update gson to 2.11.0 at stage 3'), "
+        "- For explicit dependency change requests (e.g., 'update library-name to 1.2.3 at stage 3'), "
         "produce exact before/after XML, risk, evidence, and backend recipe candidate.\n"
         "- If a dependency is transitive/BOM-managed (e.g., Tomcat), explain management "
         "and do not inject a direct dependency unless policy requires it.\n"

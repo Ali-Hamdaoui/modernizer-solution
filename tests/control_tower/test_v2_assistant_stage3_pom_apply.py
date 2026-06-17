@@ -1201,6 +1201,41 @@ class TestParserGavPatterns:
         assert result["requested_version"] == "2.11.0"
 
 
+class TestF14ModeClassification:
+    """F14 mode separation: exact imperative applies; advisory proposes only."""
+
+    def test_direct_imperative_gav_update_routes_to_apply(self):
+        from migration_factory.control_tower.adapters.fastapi.app import _classify_v2_assistant_intent
+
+        assert _classify_v2_assistant_intent(
+            "update dependency com.google.code.gson:gson to 2.11.0"
+        ) == "apply_dependency_change"
+
+    def test_direct_property_update_routes_to_apply(self):
+        from migration_factory.control_tower.adapters.fastapi.app import _classify_v2_assistant_intent
+
+        assert _classify_v2_assistant_intent(
+            "update property assertj.version to 3.24.2"
+        ) == "apply_dependency_change"
+
+    def test_advisory_gav_update_routes_to_proposal(self):
+        from migration_factory.control_tower.adapters.fastapi.app import _classify_v2_assistant_intent
+
+        assert _classify_v2_assistant_intent(
+            "Can I update com.google.code.gson:gson to 2.11.0?"
+        ) == "pom_change_proposal"
+        assert _classify_v2_assistant_intent(
+            "What do you think about updating com.google.code.gson:gson to 2.11.0?"
+        ) == "pom_change_proposal"
+
+    def test_do_not_apply_wins_over_apply_verb(self):
+        from migration_factory.control_tower.adapters.fastapi.app import _classify_v2_assistant_intent
+
+        assert _classify_v2_assistant_intent(
+            "Update dependency com.google.code.gson:gson to 2.11.0, but do not apply it."
+        ) == "pom_change_proposal"
+
+
 class TestAzureEmptyResponseDiagnostics:
     """Azure empty-response diagnostics capture finish_reason, usage, choice shape."""
 

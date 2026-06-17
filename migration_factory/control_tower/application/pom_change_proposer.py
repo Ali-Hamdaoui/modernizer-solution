@@ -23,6 +23,7 @@ from migration_factory.control_tower.application.pom_dependency_policy import (
     _is_vague_request,
     _is_latest_request,
 )
+from migration_factory.control_tower.application.pom_dependency_review import PomDependencyReviewer
 from migration_factory.control_tower.application.pom_xml_patcher import PomXmlPatcher
 from migration_factory.control_tower.domain.checksums import utc_now_text
 
@@ -41,6 +42,7 @@ class PomChangeProposer:
     ) -> None:
         self._policy = policy or PomDependencyPolicy()
         self._patcher = patcher or PomXmlPatcher()
+        self._reviewer = PomDependencyReviewer()
 
     def propose(
         self,
@@ -56,15 +58,17 @@ class PomChangeProposer:
         Returns a read-only proposal. No file is written.
         """
 
+        live_deps_data = pom_deps_data or self._reviewer.parse_pom_deps(pom_content)
+
         # Parse the user request to extract target and operation
-        parsed = self._parse_user_request(user_request, pom_content, pom_deps_data)
+        parsed = self._parse_user_request(user_request, pom_content, live_deps_data)
 
         target = parsed["target"]
         operation = parsed["operation"]
         requested_version = _clean_requested_version(parsed.get("requested_version", ""))
 
         # Build fresh policy with current POM data
-        policy = PomDependencyPolicy(pom_deps_data=pom_deps_data)
+        policy = PomDependencyPolicy(pom_deps_data=live_deps_data)
 
         # Evaluate through policy
         decision: DependencyPolicyDecision = policy.evaluate_change(
@@ -200,7 +204,7 @@ class PomChangeProposer:
         elif "remove" in lowered and "dependency" in lowered:
             operation = "remove_dependency"
 
-        # Try property changes before dependency changes so assertj.version is a property target.
+        # Try property changes before dependency changes so *.version names are property targets.
         explicit_prop_pattern = re.compile(
             r"""(?:update|updating|change|changing|set|bump|bumping)\s+property\s+
             ([\w.\-]+)\s+
@@ -238,6 +242,27 @@ class PomChangeProposer:
             }
 
         # ── GAV patterns (groupId:artifactId with colon) ──
+        gav_advisory_pattern = re.compile(
+            r"""(?:can\s+i|should\s+i|what\s+do\s+you\s+think\s+about)\s+
+            (?:chang(?:ing|e)|updat(?:ing|e)|upgrad(?:ing|e)|set(?:ting)?)\s+
+            (?:dependency\s+)?
+            ([\w.\-]+):([\w.\-]+)
+            \s+(?:to\s+|version\s+)?
+            ([\w.\-]+)""",
+            re.VERBOSE | re.IGNORECASE,
+        )
+        m = gav_advisory_pattern.search(user_request)
+        if m:
+            return {
+                "target": PomChangeTarget(
+                    kind="dependency",
+                    group_id=m.group(1),
+                    artifact_id=m.group(2),
+                ),
+                "operation": operation,
+                "requested_version": _clean_version_token(m.group(3)),
+            }
+
         # Pattern A: "propose/suggest/draft changing/updating GROUP:ARTIFACT to VERSION"
         gav_propose_pattern = re.compile(
             r"""(?:propose|suggest|draft|recommend)\s+
@@ -380,7 +405,7 @@ class PomChangeProposer:
                 "requested_version": m.group(2).strip(),
             }
 
-        # Try X.version to Y.Z pattern: "update assertj.version to 3.24.2"
+        # Try X.version to Y.Z pattern: "update example.version to 1.2.3"
         dot_ver_prop_pattern = re.compile(
             r"""(?:update|change|set|bump)\s+
             ([\w.\-]+)\.version\s+
@@ -466,5 +491,5 @@ def _clean_requested_version(value: Any) -> str:
 
 
 def _clean_version_token(value: str) -> str:
-    """Clean a version token, stripping trailing punctuation like 2.11.0. -> 2.11.0"""
+    """Clean a version token, stripping trailing punctuation like 1.2.3. -> 1.2.3"""
     return str(value or "").strip().rstrip(".,;:")

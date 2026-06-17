@@ -333,7 +333,7 @@ export default function Stage3DependencyReview({
             type="text"
             value={userInput}
             onChange={(e) => setUserInput(e.target.value)}
-            placeholder="e.g., change gson to 2.11.0"
+            placeholder="e.g., update dependency com.example:library-name to 1.2.3"
             className="flex-1 border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             onKeyDown={(e) => {
               if (e.key === "Enter") handlePropose();

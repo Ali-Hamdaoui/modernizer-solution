@@ -51,6 +51,7 @@ class SqlitePomChangeProposalRepository:
     def save(
         self,
         *,
+        proposal_id: str | None = None,
         job_id: str,
         stage_index: int,
         user_request: str,
@@ -60,7 +61,7 @@ class SqlitePomChangeProposalRepository:
         control_mode: str,
         expected_checksum: str | None = None,
     ) -> PomChangeProposalRecord:
-        proposal_id = uuid4().hex
+        proposal_id = proposal_id or uuid4().hex
         now = utc_now_text()
         record = PomChangeProposalRecord(
             proposal_id=proposal_id,

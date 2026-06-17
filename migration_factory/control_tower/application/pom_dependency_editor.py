@@ -213,18 +213,21 @@ class PomDependencyEditor:
         """Propose a POM change. Read-only — no file written."""
         content = pom_content or self._resolve_pom(job_id)
 
+        live_deps_data = pom_deps_data or self._review.parse_pom_deps(content)
+
         # Propose
         proposal = self._proposer.propose(
             job_id=job_id,
             user_request=user_request,
             stage=3,
             pom_content=content,
-            pom_deps_data=pom_deps_data,
+            pom_deps_data=live_deps_data,
         )
 
         # Persist proposal if repos available
         if self._proposal_repo:
             self._proposal_repo.save(
+                proposal_id=proposal.proposal_id,
                 job_id=job_id,
                 stage_index=3,
                 user_request=user_request,
@@ -317,15 +320,16 @@ class PomDependencyEditor:
             return existing
 
         content = pom_content or self._resolve_pom(job_id)
+        live_deps_data = pom_deps_data or self._review.parse_pom_deps(content)
 
         # Parse user request to extract target
-        parsed = self._proposer._parse_user_request(user_request, content, pom_deps_data)
+        parsed = self._proposer._parse_user_request(user_request, content, live_deps_data)
         target = parsed["target"]
         operation = parsed["operation"]
         requested_version = _clean_requested_version(parsed.get("requested_version", ""))
 
         # Create a fresh policy with the current POM data for this evaluation
-        fresh_policy = PomDependencyPolicy(pom_deps_data=pom_deps_data)
+        fresh_policy = PomDependencyPolicy(pom_deps_data=live_deps_data)
 
         # Policy evaluation
         decision = fresh_policy.evaluate_change(
