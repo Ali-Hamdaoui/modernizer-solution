@@ -161,6 +161,112 @@ class V2StageProgressionService:
             status="queued",
         )
 
+    def resolve_prior_stage_output(
+        self,
+        job_id: str,
+        current_stage: int,
+    ) -> str | None:
+        """Resolve the sandbox output path from the prior stage's command result.
+
+        Looks up the latest V2StageCommandRecord for the given stage
+        and extracts the sandbox_path from its persisted result_json.
+
+        This eliminates reliance on frontend/chatbot-supplied sandbox_path
+        for F15 progression — the backend resolves prior-stage output
+        from persisted command/event evidence.
+
+        Args:
+            job_id: The V2 job ID.
+            current_stage: The completed stage (1 or 2) whose output
+                is needed as input for the next stage.
+
+        Returns:
+            The sandbox output path string, or None if it cannot be
+            resolved (no commands found, no result_json, or missing
+            sandbox_path in result).
+        """
+        if self._command_repo is None:
+            return None
+
+        commands = self._command_repo.list_by_job_and_stage(job_id, current_stage)
+        if not commands:
+            return None
+
+        # Most recent command for the stage
+        last = commands[0]
+        if last.result_json is None:
+            return None
+
+        try:
+            result = json.loads(last.result_json)
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+        if not isinstance(result, dict):
+            return None
+
+        # Extract sandbox_path from result (same logic as orchestrator runner)
+        sandbox_path = result.get("sandbox_path")
+        if sandbox_path and isinstance(sandbox_path, str):
+            return sandbox_path
+
+        # Fallback: check artifact_refs sub-dict
+        artifact_refs = result.get("artifact_refs")
+        if isinstance(artifact_refs, dict):
+            for key in ("sandbox", "sandbox_path", "modernized_app", "modernized_app_path"):
+                val = artifact_refs.get(key)
+                if val and isinstance(val, str):
+                    return val
+
+        return None
+
+    def queue_next_stage_from_persisted(
+        self,
+        job_id: str,
+        setup_id: str,
+        current_stage: int,
+        stage_continuation_policy: StageContinuationPolicy | str = StageContinuationPolicy.AUTO_ON_GREEN,
+    ) -> StageContinuationResult:
+        """Queue next stage using persisted output from the prior stage.
+
+        Resolves the sandbox_path from the prior stage's command result
+        instead of requiring it as a parameter. This is the F15-safe
+        entry point that does not accept frontend/chatbot-supplied paths.
+
+        Args:
+            job_id: The V2 job ID.
+            setup_id: The setup ID to load paths from.
+            current_stage: The completed stage (1 or 2).
+            stage_continuation_policy: Backend-owned policy.
+
+        Returns:
+            StageContinuationResult with resolved sandbox_path, or
+            status='blocked' with reason if output cannot be resolved.
+
+        Raises:
+            ValueError: If the stage cannot progress.
+        """
+        sandbox_path = self.resolve_prior_stage_output(job_id, current_stage)
+        if sandbox_path is None:
+            return StageContinuationResult(
+                continuation_id=uuid4().hex,
+                job_id=job_id,
+                from_stage=current_stage,
+                to_stage=current_stage + 1,
+                sandbox_path="",
+                argv=(),
+                status="blocked",
+                reason="prior_stage_output_not_resolved",
+            )
+
+        return self.queue_next_stage(
+            job_id=job_id,
+            setup_id=setup_id,
+            current_stage=current_stage,
+            sandbox_path=sandbox_path,
+            stage_continuation_policy=stage_continuation_policy,
+        )
+
     def continuation_to_dict(self, result: StageContinuationResult) -> dict[str, Any]:
         return {
             "continuation_id": result.continuation_id,
