@@ -293,18 +293,15 @@ describe("V2 Migration Cockpit contract", () => {
     }
   });
 
-  it("approval card exposes checksum controls", () => {
-    const approval = {
-      card_id: "card-1",
-      stage_index: 1,
-      summary: "Human approval required before sandbox transform.",
-      status: "pending",
-      request_checksum: "checksum-123",
-    };
-    const labels = ["Approve", "Reject", approval.request_checksum, "LLM cannot approve; exact checksum required."];
-    expect(labels).toContain("Approve");
-    expect(labels).toContain("Reject");
+  it("approval review jobs route approval through chatbot copy", () => {
+    const approvalReviewOpen = true;
+    const labels = approvalReviewOpen
+      ? ["Review in chatbot", "Exact checksum confirmation is required.", "checksum-123"]
+      : ["Approve", "Reject", "checksum-123"];
+    expect(labels).toContain("Review in chatbot");
     expect(labels).toContain("checksum-123");
+    expect(labels).not.toContain("Approve");
+    expect(labels).not.toContain("Reject");
   });
 
   it("pipeline projection shows agent phases before raw logs", () => {

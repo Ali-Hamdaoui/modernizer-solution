@@ -17,6 +17,7 @@ from migration_factory.control_tower.application.redaction import (
 )
 from migration_factory.control_tower.application.v2_approval_mapping import V2ApprovalMappingService
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json
+from migration_factory.control_tower.domain.gate_checksum import gate_checksum
 from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
     V2StageCommandRecord,
 )
@@ -516,6 +517,47 @@ class V2OrchestratorRunner:
         if sandbox_path:
             result["sandbox_path"] = sandbox_path
 
+        # ── Phase-specific handling: planning bypasses full-stage proof ──
+        if command_phase == "planning":
+            self._emit_artifacts(
+                job_id=job_id,
+                stage_index=stage_index,
+                command_id=command_id,
+                result=result,
+            )
+            orchestration_status = str(result.get("orchestration_status", ""))
+            if orchestration_status == "PASS" and sandbox_path:
+                self._handle_planning_phase_completed(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    command_id=command_id,
+                    result=result,
+                )
+            else:
+                self._emit_diagnostic_failure_events(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    command_id=command_id,
+                    result=result,
+                )
+                self._event(
+                    job_id=job_id,
+                    stage=stage_index,
+                    event_type="stage_failed",
+                    status="failed",
+                    message=(
+                        f"Planning phase did not produce valid proof: "
+                        f"orchestration_status={orchestration_status}, "
+                        f"sandbox_path={'present' if sandbox_path else 'missing'}"
+                    ),
+                    payload={
+                        "command_id": command_id,
+                        "orchestration_status": orchestration_status,
+                        "sandbox_path": sandbox_path,
+                    },
+                )
+            return
+
         self._emit_artifacts(
             job_id=job_id,
             stage_index=stage_index,
@@ -538,29 +580,72 @@ class V2OrchestratorRunner:
         if result.get("status") == "human_approval_required":
             checksum = sha256_canonical_json(result)
             with self._unit_of_work_factory() as uow:
-                card = V2ApprovalMappingService(uow.v2_approvals).create_decision_card(
+                approval_gate, created_new_gate = _open_or_refresh_approval_review_gate(
+                    uow=uow,
                     job_id=job_id,
-                    interrupt_id=str(result.get("run_id") or command_id),
-                    request_checksum=checksum,
                     stage_index=stage_index,
-                    summary="Human approval required before sandbox transform.",
+                    command_id=command_id,
+                    result=result,
                 )
+                import json as _json
+                try:
+                    approval_refs = _json.loads(approval_gate.source_artifact_refs_json)
+                except (TypeError, _json.JSONDecodeError):
+                    approval_refs = []
+                approval_gate_checksum = gate_checksum(
+                    gate_id=approval_gate.gate_id,
+                    job_id=approval_gate.job_id,
+                    gate_phase=approval_gate.gate_phase,
+                    stage_index=approval_gate.stage_index,
+                    source_artifact_checksum=approval_gate.source_artifact_checksum,
+                    source_artifact_refs=approval_refs,
+                )
+                approval_service = V2ApprovalMappingService(uow.v2_approvals)
+                pending_cards = [
+                    existing_card
+                    for existing_card in uow.v2_approvals.list_cards_by_job(job_id)
+                    if existing_card.stage_index == stage_index
+                    and existing_card.status == "pending"
+                    and existing_card.request_checksum == approval_gate_checksum
+                ]
+                if pending_cards:
+                    card = pending_cards[0]
+                else:
+                    card = approval_service.create_decision_card(
+                        job_id=job_id,
+                        interrupt_id=str(result.get("run_id") or command_id),
+                        request_checksum=approval_gate_checksum,
+                        stage_index=stage_index,
+                        summary="Pre-transform review required before sandbox transform.",
+                    )
 
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="approval_required",
                 status="blocked",
-                message="Orchestrator paused for human approval.",
-                payload={"command_id": command_id, "card_id": card.card_id, "request_checksum": checksum},
+                message="Orchestrator paused for human approval review.",
+                payload={
+                    "command_id": command_id,
+                    "card_id": card.card_id,
+                    "request_checksum": approval_gate_checksum,
+                    "gate_id": approval_gate.gate_id,
+                    "gate_checksum": approval_gate_checksum,
+                    "gate_created": created_new_gate,
+                },
             )
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="stage_blocked_for_approval",
                 status="blocked",
-                message="Stage is blocked until exact checksum approval.",
-                payload={"command_id": command_id, "card_id": card.card_id},
+                message="Stage is blocked until exact checksum approval-review confirmation.",
+                payload={
+                    "command_id": command_id,
+                    "card_id": card.card_id,
+                    "gate_id": approval_gate.gate_id,
+                    "gate_checksum": approval_gate_checksum,
+                },
             )
             return
 
@@ -1563,6 +1648,137 @@ def _safe_artifact_ref(value: Any) -> str:
     if marker in text:
         return text[text.index(marker):]
     return _bounded(str(redact_public_value(text)))
+
+
+_APPROVAL_REVIEW_ARTIFACT_KEYS: tuple[str, ...] = (
+    "analysis_report",
+    "analysis_report.json",
+    "analysis_summary",
+    "analysis_summary.md",
+    "dependency_graph",
+    "dependency_graph.json",
+    "config_inventory",
+    "config_inventory.json",
+    "test_inventory",
+    "test_inventory.json",
+    "migration_plan.yaml",
+    "migration_units.yaml",
+    "plan_summary.md",
+    "plan_validation_report.json",
+    "target_dependency_plan",
+    "rewrite_preview",
+    "rewrite_preview.json",
+    "rewrite_dry_run.patch",
+    "rewrite_impact_summary",
+    "rewrite_impact_summary.json",
+    "assessment_report",
+    "assessment_report.json",
+    "assessment_summary",
+    "assessment_summary.md",
+    "approval_request.json",
+    "approval_request",
+)
+
+
+def _approval_review_artifact_refs(result: dict[str, Any]) -> tuple[str, ...]:
+    """Collect evidence refs to bind to an approval_review gate."""
+    artifact_refs = result.get("artifact_refs") if isinstance(result.get("artifact_refs"), dict) else {}
+    selected: list[str] = []
+
+    for key in _APPROVAL_REVIEW_ARTIFACT_KEYS:
+        value = artifact_refs.get(key)
+        if isinstance(value, str) and value.strip():
+            selected.append(value.strip())
+
+    if not selected:
+        for value in artifact_refs.values():
+            if isinstance(value, str) and value.strip():
+                selected.append(value.strip())
+
+    # Preserve deterministic ordering for gate checksum binding.
+    return tuple(sorted(dict.fromkeys(selected)))
+
+
+def _approval_review_source_checksum(
+    *,
+    job_id: str,
+    stage_index: int,
+    command_id: str,
+    result: dict[str, Any],
+    artifact_refs: tuple[str, ...],
+) -> str:
+    """Compute the approval evidence checksum bound to the gate."""
+    approval_request_checksum = _first_text(
+        result.get("approval_request_checksum"),
+        result.get("request_checksum"),
+        result.get("card_checksum"),
+        sha256_canonical_json(result),
+    )
+    return sha256_canonical_json({
+        "job_id": job_id,
+        "stage_index": stage_index,
+        "command_id": command_id,
+        "approval_request_checksum": approval_request_checksum,
+        "artifact_refs": list(artifact_refs),
+    })
+
+
+def _open_or_refresh_approval_review_gate(
+    *,
+    uow: Any,
+    job_id: str,
+    stage_index: int,
+    command_id: str,
+    result: dict[str, Any],
+) -> tuple[Any, bool]:
+    """Create or reuse the approval_review gate for a blocked transform.
+
+    Returns (gate_record, created_new_gate).
+    """
+    from migration_factory.control_tower.application.v2_phase_gate_service import (
+        CreateGateRequest,
+        V2PhaseGateService,
+    )
+
+    gate_service = V2PhaseGateService(gate_repo=uow.phase_gates)
+    artifact_refs = _approval_review_artifact_refs(result)
+    source_checksum = _approval_review_source_checksum(
+        job_id=job_id,
+        stage_index=stage_index,
+        command_id=command_id,
+        result=result,
+        artifact_refs=artifact_refs,
+    )
+    refs_json = json.dumps(list(artifact_refs), separators=(",", ":"))
+    existing = uow.phase_gates.find_open(job_id, "approval_review", stage_index)
+    if existing is not None:
+        same_refs = existing.source_artifact_refs_json == refs_json
+        same_checksum = existing.source_artifact_checksum == source_checksum
+        if same_refs and same_checksum:
+            return existing, False
+        gate_service.supersede_gate(existing.gate_id)
+
+    gate_result = gate_service.create_gate(CreateGateRequest(
+        job_id=job_id,
+        gate_phase="approval_review",
+        stage_index=stage_index,
+        source_artifact_checksum=source_checksum,
+        source_artifact_refs=artifact_refs,
+        created_by="backend_orchestrator",
+    ))
+    if gate_result.status == "created":
+        gate = uow.phase_gates.get(gate_result.gate_id)
+        if gate is None:
+            raise ValueError("approval_review gate was created but could not be loaded")
+        return gate, True
+
+    if gate_result.existing_gate_id:
+        gate = uow.phase_gates.get(gate_result.existing_gate_id)
+        if gate is None:
+            raise ValueError("approval_review gate conflict could not be resolved")
+        return gate, False
+
+    raise ValueError("approval_review gate could not be created")
 
 
 def _canonical_event_type(phase: str, suffix: str, *, stage_index: int) -> str:

@@ -36,9 +36,14 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository
     SqliteV2CommandRepository,
     V2StageCommandRecord,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_approval_repository import (
+    SqliteV2ApprovalRepository,
+    V2ApprovalDecisionRecord,
+)
 from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_repository import (
     SqlitePhaseGateRepository,
 )
+from migration_factory.control_tower.domain.gate_checksum import gate_checksum
 from tests.control_tower.transition_helpers import seed_job
 
 
@@ -78,12 +83,20 @@ def _seed_fk_refs(conn: sqlite3.Connection) -> None:
         "runner_profile_id": "runner-default",
         "runner_profile_version": "2026.06",
         "display_name": "Default local runner",
-        "python_executable": "",
-        "ai_hub_path": "",
+        "python_executable": "C:/Python/python.exe",
+        "ai_hub_path": "C:/work/ai-hub",
         "maven": {"executable_path": "mvn", "expected_version": "3.9.9", "allow_wrapper": False},
-        "jdks": [],
-        "filesystem": {"roots": []},
-        "network": {"mode": "allowlisted", "allowed_hosts": []},
+        "jdks": [
+            {"jdk_id": "jdk-17", "java_home": "C:/java/17", "expected_major": 17, "role": "source"},
+            {"jdk_id": "jdk-21", "java_home": "C:/java/21", "expected_major": 21, "role": "target"},
+        ],
+        "filesystem": {
+            "roots": [
+                {"root_id": "source-root", "kind": "source", "path": "C:/work/legacy"},
+                {"root_id": "output-root", "kind": "output", "path": "C:/work/out"},
+            ]
+        },
+        "network": {"mode": "allowlisted", "allowed_hosts": ["repo.local"]},
         "ai_profile": {"profile_id": "local-disabled"},
     }
     now = utc_now_text()
@@ -118,7 +131,7 @@ def _seed_fk_refs(conn: sqlite3.Connection) -> None:
                 "command_jdk": "jdk-17",
                 "input_source": {"kind": "legacy_source"},
                 "continuation_policy_id": "default",
-                "target": {"diagnostic": "foundation"},
+                "target": {"java": 17, "spring_boot": "3.5.6"},
             },
         ],
     }
@@ -261,7 +274,7 @@ def _seed_stage1_command(
         job_id=job_id,
         stage_index=1,
         manifest_checksum="test-seed-1",
-        argv_json=json.dumps(["test-runner", "--stage", "1"], separators=(",", ":")),
+        argv_json=json.dumps(["test-runner", "--stage", "1", "--modernized", "C:/work/modernized"], separators=(",", ":")),
         env_json=json.dumps({}, separators=(",", ":")),
         status="completed",
         created_at=now,
@@ -315,6 +328,29 @@ def test_ask_with_open_gate_returns_gate_aware(tmp_path: Path) -> None:
     assert "user_message" in data
     assert "assistant_message" in data
     assert len(data["assistant_message"]["content"]) > 0
+
+
+def test_ask_approval_review_explains_bound_evidence(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    _seed_stage1_command(conn, job_id)
+    _create_gate(conn, job_id, stage_index=1)
+
+    resp = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": "What happened?"},
+        headers=_mutation_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    content = body.get("assistant_message", {}).get("content", "")
+    assert body.get("gate_aware") is True
+    assert body.get("executed") is False
+    assert "Pre-transform review" in content
+    assert "blocked before transform" in content
+    assert "Transform, build, and test have not started." in content
 
 
 def test_ask_state_changing_intent_returns_preview(tmp_path: Path) -> None:
@@ -381,13 +417,54 @@ def test_ask_confirm_without_pending_returns_message(tmp_path: Path) -> None:
 
 
 def test_ask_preview_then_confirm(tmp_path: Path) -> None:
-    """Preview → confirm flow — approval_review + approve requires
-    human actor, so execution is expected to fail."""
+    """Preview → exact checksum confirm flow resumes approval-review."""
     client, conn = _api_client(tmp_path)
     setup_id = _ready_setup(conn)
     job_id = _create_job(client, setup_id)
     seed_job(conn, job_id=job_id)
-    gate_id = _create_gate(conn, job_id)
+    _seed_stage1_command(conn, job_id)
+    gate_id = _create_gate(conn, job_id, stage_index=1)
+
+    gate_repo = SqlitePhaseGateRepository(conn)
+    gate = gate_repo.get(gate_id)
+    assert gate is not None
+    refs = json.loads(gate.source_artifact_refs_json)
+    checksum = gate_checksum(
+        gate_id=gate.gate_id,
+        job_id=gate.job_id,
+        gate_phase=gate.gate_phase,
+        stage_index=gate.stage_index,
+        source_artifact_checksum=gate.source_artifact_checksum,
+        source_artifact_refs=refs,
+    )
+
+    approval_repo = SqliteV2ApprovalRepository(conn)
+    now = utc_now_text()
+    approval_repo.save_card(
+        V2ApprovalDecisionRecord(
+            card_id="approval-card-1",
+            job_id=job_id,
+            interrupt_id="run-1",
+            request_checksum=checksum,
+            stage_index=1,
+            summary="Pre-transform review",
+            status="pending",
+            created_at=now,
+        )
+    )
+
+    class _Runner:
+        def __init__(self) -> None:
+            self.started: list[str] = []
+
+        def start_resume(self, *, job_id: str, resume_id: str):
+            self.started.append(resume_id)
+
+        def start(self, *, job_id: str, command_id: str):
+            self.started.append(command_id)
+
+    runner = _Runner()
+    client.app.state.v2_orchestrator_runner = runner
 
     resp1 = client.post(
         f"/v1/v2/jobs/{job_id}/assistant/ask",
@@ -397,31 +474,96 @@ def test_ask_preview_then_confirm(tmp_path: Path) -> None:
     assert resp1.status_code == 200, resp1.text
     data1 = resp1.json()
     assert data1.get("executed") is False
-    assert data1.get("action_preview", {}).get("pending_confirmation") is True
+    assert data1.get("action_preview", {}).get("pending_confirmation") is False
+    assert data1.get("action_preview", {}).get("exact_checksum") == checksum
 
     resp2 = client.post(
         f"/v1/v2/jobs/{job_id}/assistant/ask",
-        json={"question": "confirm"},
+        json={"question": f"confirm checksum {checksum}"},
         headers=_mutation_headers(),
     )
     assert resp2.status_code == 200, resp2.text
     data2 = resp2.json()
     assert data2.get("gate_aware") is True
     assert "assistant_message" in data2
-    # approve from assistant actor fails — execution did not succeed
-    assert data2.get("executed") is False
+    assert data2.get("executed") is True
     er = data2.get("execution_result", {})
-    assert er.get("success") is False
-    assert er.get("status") == "actor_not_authoritative"
+    assert er.get("success") is True
+    assert runner.started, "resume must be queued"
 
 
-def test_ask_yes_pattern(tmp_path: Path) -> None:
-    """Yes pattern triggers confirmation."""
+def test_ask_confirm_checksum_rejects_wrong_checksum(tmp_path: Path) -> None:
     client, conn = _api_client(tmp_path)
     setup_id = _ready_setup(conn)
     job_id = _create_job(client, setup_id)
     seed_job(conn, job_id=job_id)
-    gate_id = _create_gate(conn, job_id)
+    _seed_stage1_command(conn, job_id)
+    gate_id = _create_gate(conn, job_id, stage_index=1)
+
+    gate_repo = SqlitePhaseGateRepository(conn)
+    gate = gate_repo.get(gate_id)
+    assert gate is not None
+    refs = json.loads(gate.source_artifact_refs_json)
+    checksum = gate_checksum(
+        gate_id=gate.gate_id,
+        job_id=gate.job_id,
+        gate_phase=gate.gate_phase,
+        stage_index=gate.stage_index,
+        source_artifact_checksum=gate.source_artifact_checksum,
+        source_artifact_refs=refs,
+    )
+    wrong_checksum = checksum[:-1] + ("0" if checksum[-1] != "0" else "1")
+
+    resp = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": f"confirm checksum {wrong_checksum}"},
+        headers=_mutation_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body.get("gate_aware") is True
+    assert body.get("executed") is False
+    assert "Checksum mismatch" in body.get("assistant_message", {}).get("content", "")
+
+
+def test_ask_revision_request_records_blocked_state(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    _seed_stage1_command(conn, job_id)
+    _create_gate(conn, job_id, stage_index=1)
+
+    request_text = "Change the plan to use SecurityFilterChain and stateless sessions."
+    resp = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": request_text},
+        headers=_mutation_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body.get("gate_aware") is True
+    assert body.get("executed") is False
+    assert body.get("intent") == "request_revision"
+    assert "Revision request recorded" in body.get("assistant_message", {}).get("content", "")
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job(job_id)
+    revision_events = [event for event in events if event.type == "approval_revision_requested"]
+    assert len(revision_events) == 1
+    payload = json.loads(revision_events[0].payload_json or "{}")
+    assert payload["status"] == "revision_requested"
+    assert payload["user_request_text"] == request_text
+    assert payload["gate_checksum"]
+    assert payload["gate_id"]
+
+
+def test_ask_yes_pattern(tmp_path: Path) -> None:
+    """Yes without checksum stays blocked."""
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    _create_gate(conn, job_id)
 
     resp1 = client.post(
         f"/v1/v2/jobs/{job_id}/assistant/ask",
@@ -430,7 +572,7 @@ def test_ask_yes_pattern(tmp_path: Path) -> None:
     )
     assert resp1.status_code == 200, resp1.text
     data1 = resp1.json()
-    assert data1.get("action_preview", {}).get("pending_confirmation") is True
+    assert data1.get("action_preview", {}).get("pending_confirmation") is False
 
     resp2 = client.post(
         f"/v1/v2/jobs/{job_id}/assistant/ask",
@@ -438,8 +580,10 @@ def test_ask_yes_pattern(tmp_path: Path) -> None:
         headers=_mutation_headers(),
     )
     assert resp2.status_code == 200, resp2.text
-    assert resp2.json().get("gate_aware") is True
-
+    body = resp2.json()
+    assert body.get("gate_aware") is True
+    assert body.get("executed") is False
+    assert "no pending action" in body.get("assistant_message", {}).get("content", "").lower()
 
 def test_ask_read_only_question_no_execution(tmp_path: Path) -> None:
     """Read-only question with open gate → no execution."""
@@ -602,3 +746,72 @@ def test_ask_analysis_reanalysis_does_not_queue_planning(tmp_path: Path) -> None
     repo = SqliteV2CommandRepository(conn)
     stage2_commands = repo.list_by_job_and_stage(job_id, 2)
     assert len(stage2_commands) == 0
+
+
+def test_ask_confirm_invokes_backend_runner(tmp_path: Path) -> None:
+    """Assistant confirm on analysis_review continue invokes
+    V2OrchestratorRunner.start for the returned planning command.
+    No Stage 2 / transform / build / test starts."""
+    from unittest.mock import MagicMock, ANY
+
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    _seed_stage1_command(conn, job_id)
+    gate_id = _create_gate(conn, job_id, phase="analysis_review", stage_index=1)
+
+    mock_runner = MagicMock()
+    client.app.state.v2_orchestrator_runner = mock_runner
+
+    # Step 1: state-changing intent → preview
+    resp1 = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": "accept analysis and continue"},
+        headers=_mutation_headers(),
+    )
+    assert resp1.status_code == 200, resp1.text
+    data1 = resp1.json()
+    assert data1.get("executed") is False
+    assert data1.get("action_preview", {}).get("pending_confirmation") is True
+
+    # Step 2: confirm → execution succeeds + planning command queued
+    resp2 = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": "confirm"},
+        headers=_mutation_headers(),
+    )
+    assert resp2.status_code == 200, resp2.text
+    data2 = resp2.json()
+    assert data2.get("executed") is True
+    er = data2.get("execution_result", {})
+    assert er.get("success") is True
+    pr = data2.get("progression_result")
+    assert pr is not None
+    assert pr.get("status") == "planning_queued"
+    cmd_id = pr.get("planning_command_id", "")
+    assert cmd_id != "", "planning_command_id must be present"
+
+    # Verify mock runner.start was called with the planning command
+    mock_runner.start.assert_called_once_with(job_id=job_id, command_id=cmd_id)
+
+    # Verify NO Stage 2 command was created
+    repo = SqliteV2CommandRepository(conn)
+    stage2 = repo.list_by_job_and_stage(job_id, 2)
+    assert len(stage2) == 0, "No Stage 2 commands"
+
+    # Verify no planning_review gate was created (synthetic)
+    gate_repo = SqlitePhaseGateRepository(conn)
+    gates = gate_repo.list_by_job(job_id)
+    planning_gates = [g for g in gates
+                      if g.gate_phase == "planning_review" and g.stage_index == 1]
+    assert len(planning_gates) == 0, "No synthetic planning_review gate"
+
+    # Verify exactly one planning_pending command exists
+    planning_commands = repo.list_by_job_and_stage(job_id, 1)
+    planning_pending = [
+        c for c in planning_commands
+        if c.status == "planning_pending" and c.manifest_checksum == "phase:planning"
+    ]
+    assert len(planning_pending) == 1
+    assert planning_pending[0].command_id == cmd_id

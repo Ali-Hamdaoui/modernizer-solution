@@ -72,12 +72,20 @@ def _seed_fk_refs(conn: sqlite3.Connection) -> None:
         "runner_profile_id": "runner-default",
         "runner_profile_version": "2026.06",
         "display_name": "Default local runner",
-        "python_executable": "",
-        "ai_hub_path": "",
+        "python_executable": "C:/Python/python.exe",
+        "ai_hub_path": "C:/work/ai-hub",
         "maven": {"executable_path": "mvn", "expected_version": "3.9.9", "allow_wrapper": False},
-        "jdks": [],
-        "filesystem": {"roots": []},
-        "network": {"mode": "allowlisted", "allowed_hosts": []},
+        "jdks": [
+            {"jdk_id": "jdk-17", "java_home": "C:/java/17", "expected_major": 17, "role": "source"},
+            {"jdk_id": "jdk-21", "java_home": "C:/java/21", "expected_major": 21, "role": "target"},
+        ],
+        "filesystem": {
+            "roots": [
+                {"root_id": "source-root", "kind": "source", "path": "C:/work/legacy"},
+                {"root_id": "output-root", "kind": "output", "path": "C:/work/out"},
+            ]
+        },
+        "network": {"mode": "allowlisted", "allowed_hosts": ["repo.local"]},
         "ai_profile": {"profile_id": "local-disabled"},
     }
     conn.execute(
@@ -111,7 +119,7 @@ def _seed_fk_refs(conn: sqlite3.Connection) -> None:
                 "command_jdk": "jdk-17",
                 "input_source": {"kind": "legacy_source"},
                 "continuation_policy_id": "default",
-                "target": {"diagnostic": "foundation"},
+                "target": {"java": 17, "spring_boot": "3.5.6"},
             },
         ],
     }

@@ -241,7 +241,16 @@ def test_v2_runner_maps_approval_interrupt_to_card_and_blocked_events(tmp_path: 
         "status": "human_approval_required",
         "run_id": "run-1",
         "summary": {"analysis_status": "PASS"},
-        "artifact_refs": {"plan": "C:/out/.migration/runs/run-1/planning/plan.json"},
+        "artifact_refs": {
+            "analysis_report": "C:/out/.migration/runs/run-1/analysis/report.json",
+            "dependency_graph": "C:/out/.migration/runs/run-1/analysis/dependency-graph.json",
+            "config_inventory": "C:/out/.migration/runs/run-1/analysis/config-inventory.json",
+            "test_inventory": "C:/out/.migration/runs/run-1/analysis/test-inventory.json",
+            "migration_plan.yaml": "C:/out/.migration/runs/run-1/planning/migration-plan.yaml",
+            "migration_units.yaml": "C:/out/.migration/runs/run-1/planning/migration-units.yaml",
+            "assessment_report": "C:/out/.migration/runs/run-1/assessment/report.json",
+            "approval_request.json": "C:/out/.migration/runs/run-1/planning/approval-request.json",
+        },
         "decision_options": ["approved", "rejected", "replan_required"],
     }
     runner = V2OrchestratorRunner(
@@ -261,6 +270,21 @@ def test_v2_runner_maps_approval_interrupt_to_card_and_blocked_events(tmp_path: 
     assert cards[0].job_id == "job-1"
     assert cards[0].request_checksum
     assert len(uow.v2_approvals.list_cards_by_job("job-1")) == 1
+
+    gates = uow.phase_gates.list_open("job-1")
+    assert len(gates) == 1
+    assert gates[0].gate_phase == "approval_review"
+    assert gates[0].gate_status == "open"
+    assert "analysis/report.json" in gates[0].source_artifact_refs_json
+    assert "approval-request.json" in gates[0].source_artifact_refs_json
+
+    # Replaying the same approval-required result must reuse the gate
+    # and approval card instead of duplicating them.
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "stage_blocked_for_approval")
+    uow2 = SqliteUnitOfWork(conn)
+    assert len(uow2.phase_gates.list_open("job-1")) == 1
+    assert len(uow2.v2_approvals.list_cards_by_status("pending")) == 1
 
 
 def test_v2_runner_passes_non_secret_copilot_env_and_excludes_secrets(monkeypatch, tmp_path: Path) -> None:

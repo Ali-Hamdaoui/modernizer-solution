@@ -1160,6 +1160,8 @@ def create_app(
                 setup_repo=uow.v2_setups,
                 job_repo=uow.v2_jobs,
                 run_config_repo=uow.run_configurations,
+                runner_profile_repo=uow.runner_profiles,
+                pipeline_repo=uow.pipeline_definitions,
             )
             try:
                 result = service.create_job(payload.setup_id, policy=payload.policy)
@@ -1188,6 +1190,8 @@ def create_app(
                 setup_repo=uow.v2_setups,
                 job_repo=uow.v2_jobs,
                 run_config_repo=uow.run_configurations,
+                runner_profile_repo=uow.runner_profiles,
+                pipeline_repo=uow.pipeline_definitions,
             )
             result = service.get_job(job_id)
         if result is None:
@@ -4960,7 +4964,238 @@ def _handle_gate_aware_ask(
             gate_phase=context.gate_phase,
         )
 
-        # ── Handle "confirm" intent (explicit or after preview) ────
+        if open_gate.gate_phase == "approval_review":
+            exact_checksum = _extract_confirm_checksum(question)
+            if exact_checksum:
+                if exact_checksum != context.checksum:
+                    assistant_msg = service.add_message(
+                        job_id=job_id,
+                        role="assistant",
+                        content="Checksum mismatch. Confirm the latest gate checksum from the review surface.",
+                        correlation_id=user_msg.message_id,
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "confirm_checksum",
+                        "executed": False,
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+
+                approval_service = V2ApprovalMappingService(uow.v2_approvals)
+                pending_cards = [
+                    card
+                    for card in uow.v2_approvals.list_cards_by_job(job_id)
+                    if card.stage_index == open_gate.stage_index and card.status == "pending"
+                ]
+                pending_card = next(
+                    (card for card in pending_cards if card.request_checksum == context.checksum),
+                    pending_cards[0] if pending_cards else None,
+                )
+                if pending_card is None:
+                    assistant_msg = service.add_message(
+                        job_id=job_id,
+                        role="assistant",
+                        content="No pending approval card exists for this gate.",
+                        correlation_id=user_msg.message_id,
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "confirm_checksum",
+                        "executed": False,
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+
+                commands = uow.v2_commands.list_by_job(job_id)
+                run_dir = _v2_resume_run_dir_from_commands(
+                    commands,
+                    open_gate.stage_index,
+                    pending_card.interrupt_id,
+                )
+                resume = approval_service.approve(
+                    card_id=pending_card.card_id,
+                    expected_checksum=context.checksum,
+                    job_id=job_id,
+                    run_dir=run_dir,
+                )
+                if resume.resume_id:
+                    runner = getattr(app.state, "v2_orchestrator_runner", None)
+                    if runner is not None:
+                        runner.start_resume(
+                            job_id=job_id,
+                            resume_id=resume.resume_id,
+                        )
+
+                action_service = V2GateActionService(
+                    uow.phase_gates,
+                    uow.gate_decisions,
+                    V2PhaseGateService(uow.phase_gates),
+                    revision_repo=uow.artifact_revisions,
+                    command_repo=uow.v2_commands,
+                )
+                gate_result = action_service.approve_from_gate(
+                    gate_id=open_gate.gate_id,
+                    job_id=job_id,
+                    decided_by="human",
+                    expected_gate_checksum=context.checksum,
+                )
+
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content="Checksum confirmed. Approval review resolved and resume queued.",
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "gate_aware": True,
+                    "intent": "confirm_checksum",
+                    "executed": gate_result.status == "executed" or bool(resume.resume_id),
+                    "execution_result": {
+                        "success": gate_result.status == "executed" or bool(resume.resume_id),
+                        "status": gate_result.status,
+                        "decision_id": gate_result.decision_id,
+                        "reason": gate_result.reason,
+                        "resume_id": resume.resume_id,
+                    },
+                    "guardrails": {
+                        "read_only": False,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
+
+            if intent.action_type == "approve_from_gate" or question_lower == "approve":
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=_format_approval_review_preview(context),
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "gate_aware": True,
+                    "intent": "approve_from_gate",
+                    "executed": False,
+                    "action_preview": {
+                        "action_type": "approve_from_gate",
+                        "reason": "Preview only; exact checksum confirmation required.",
+                        "confidence": 1.0,
+                        "warning": "Approval will not execute until the exact checksum is confirmed.",
+                        "requires_confirmation": True,
+                        "pending_confirmation": False,
+                        "exact_checksum": context.checksum,
+                    },
+                    "guardrails": {
+                        "read_only": True,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
+
+            if _question_looks_like_approval_review_explanation(question):
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=_format_approval_review_explanation(
+                        context=context,
+                        evidence=evidence_pack,
+                        question=question,
+                    ),
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "gate_aware": True,
+                    "intent": "status",
+                    "executed": False,
+                    "guardrails": {
+                        "read_only": True,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
+
+            if any(term in question_lower for term in ("change", "add", "update", "request")):
+                uow.v2_events.save(
+                    job_id=job_id,
+                    stage=open_gate.stage_index,
+                    event_type="approval_revision_requested",
+                    status="revision_requested",
+                    message="Revision requested during approval review.",
+                    payload=_approval_review_revision_payload(
+                        job_id=job_id,
+                        gate_id=open_gate.gate_id,
+                        stage_index=open_gate.stage_index,
+                        gate_checksum=context.checksum,
+                        user_request_text=question,
+                    ),
+                )
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content="Revision request recorded. Transform remains blocked until the evidence is revised and reviewed again.",
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "gate_aware": True,
+                    "intent": "request_revision",
+                    "executed": False,
+                    "action_preview": {
+                        "action_type": "request_revision",
+                        "reason": "Revision requested before transform.",
+                        "confidence": 1.0,
+                        "warning": "Transform/build/test will not start.",
+                        "requires_confirmation": False,
+                        "pending_confirmation": False,
+                    },
+                    "guardrails": {
+                        "read_only": True,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
+# ── Handle "confirm" intent (explicit or after preview) ────
         if is_confirm or intent.action_type == "confirm":
             pending = confirmation_store.resolve(
                 job_id=job_id,
@@ -5026,6 +5261,14 @@ def _handle_gate_aware_ask(
                                 f"No transform/build/test started."
                             ),
                         }
+                        # Start the backend-owned planning command
+                        if cmd_id:
+                            _runner = app.state.v2_orchestrator_runner
+                            if _runner is not None:
+                                try:
+                                    _runner.start(job_id=job_id, command_id=cmd_id)
+                                except Exception:
+                                    pass
                     elif open_gate.gate_phase == "planning_review":
                         # After planning_review CONTINUE:
                         # - Approval_review gate was created by V2GateActionService
@@ -5261,6 +5504,132 @@ def _build_gate_explanation(
         "Would you like to continue, reanalyze, or approve?"
     )
     return "\n".join(lines)
+
+
+def _question_looks_like_approval_review_explanation(question: str) -> bool:
+    lowered = question.lower()
+    return any(
+        term in lowered
+        for term in (
+            "what happened",
+            "what is happening",
+            "explain analysis",
+            "explain planning",
+            "explain assessment",
+            "what will change",
+            "what will be transformed",
+            "what rewrite will happen",
+            "show migration plan",
+            "show plan",
+            "what is the plan",
+            "why blocked",
+            "what stage",
+            "current state",
+            "status",
+        )
+    )
+
+
+def _extract_confirm_checksum(question: str) -> str:
+    match = re.search(r"confirm\s+checksum\s+([^\s,.;:]+)", question, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def _format_approval_review_preview(context: GateContext) -> str:
+    lines = [
+        "**Pre-transform review is open**",
+        "",
+        f"Stage {context.stage_index} is blocked before transform.",
+        "Analysis, planning, and assessment are complete.",
+        "Transform, build, and test have not started.",
+        "",
+        f"Exact checksum: `{context.checksum}`",
+        "Confirm it by saying `confirm checksum <exact checksum>`.",
+        "",
+        "Available actions: explain, explain changes, request revision, approve, reject/stop.",
+    ]
+    return "\n".join(lines)
+
+
+def _format_approval_review_explanation(
+    *,
+    context: GateContext,
+    evidence: Any | None,
+    question: str,
+) -> str:
+    lines: list[str] = []
+    lines.append("**Pre-transform review**")
+    lines.append("")
+    lines.append(f"Stage {context.stage_index} is blocked before transform.")
+    lines.append("Analysis, planning, and assessment are complete.")
+    lines.append("Transform, build, and test have not started.")
+    lines.append("")
+    lines.append(f"Gate checksum: `{context.checksum}`")
+
+    if evidence is not None:
+        artifact_lines: list[str] = []
+        for artifact in getattr(evidence, "artifacts", ()):
+            kind = getattr(artifact, "kind", "")
+            if kind:
+                artifact_lines.append(str(kind))
+        if artifact_lines:
+            lines.append("")
+            lines.append("Bound artifact kinds used as evidence:")
+            for kind in artifact_lines[:12]:
+                lines.append(f"- {kind}")
+        if getattr(evidence, "summary", ""):
+            lines.append("")
+            lines.append("Evidence summary:")
+            lines.append(str(evidence.summary)[:1200])
+
+        missing = tuple(getattr(evidence, "missing_refs", ()) or ())
+        mismatches = tuple(getattr(evidence, "checksum_mismatches", ()) or ())
+        if missing:
+            lines.append("")
+            lines.append("Missing bound refs:")
+            for ref in missing:
+                lines.append(f"- {ref}")
+        if mismatches:
+            lines.append("")
+            lines.append("Checksum mismatches:")
+            for ref in mismatches:
+                lines.append(f"- {ref}")
+
+    lines.append("")
+    lines.append(
+        "Ask what happened, what will change, or request a revision before approving."
+    )
+    if "change" in question.lower() or "update" in question.lower() or "request" in question.lower():
+        lines.append("A revision request will be recorded and transform will stay blocked.")
+    return "\n".join(lines)
+
+
+def _approval_review_revision_payload(
+    *,
+    job_id: str,
+    gate_id: str,
+    stage_index: int,
+    gate_checksum: str,
+    user_request_text: str,
+) -> dict[str, Any]:
+    return {
+        "job_id": job_id,
+        "gate_id": gate_id,
+        "stage_index": stage_index,
+        "gate_checksum": gate_checksum,
+        "user_request_text": user_request_text,
+        "actor": "human",
+        "timestamp": _utc_now_text(),
+        "status": "revision_requested",
+    }
+
+
+def _utc_now_text() -> str:
+    from migration_factory.control_tower.domain.checksums import utc_now_text
+
+    return utc_now_text()
 
 
 def _format_preview_response(preview: ActionPreview, context: GateContext) -> str:

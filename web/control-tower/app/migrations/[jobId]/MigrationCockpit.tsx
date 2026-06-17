@@ -166,6 +166,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [liveRefreshWarning, setLiveRefreshWarning] = useState<string | null>(null);
   const [gateState, setGateState] = useState<GatePanelState>({ status: "loading" });
   const normalizedJobId = jobId?.trim() ?? "";
+  const approvalReviewOpen = gateState.status === "success" && gateState.openGate?.gate_phase === "approval_review";
 
   useEffect(() => {
     if (!normalizedJobId) {
@@ -554,6 +555,11 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       {/* Decisions Panel */}
       <section className="panel">
         <h2>Approval Decisions</h2>
+        {approvalReviewOpen && (
+          <p className="meta">
+            Pre-transform review is open in the chatbot. Use the assistant to review evidence, request changes, and confirm the exact checksum.
+          </p>
+        )}
         {data.approvals.length === 0 ? (
           <p className="meta">No pending decisions.</p>
         ) : (
@@ -572,14 +578,20 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
                 </p>
               )}
               {a.reviewed_checksum && <p className="checksum">Reviewed checksum: {a.reviewed_checksum}</p>}
-              <div className="approval-actions">
-                <button type="button" disabled={a.status !== "pending" || approvalBusy === a.card_id} onClick={() => void approveCard(a)}>
-                  Approve
-                </button>
-                <button type="button" disabled={a.status !== "pending" || approvalBusy === a.card_id} onClick={() => void rejectCard(a)}>
-                  Reject
-                </button>
-              </div>
+              {approvalReviewOpen ? (
+                <p className="meta">
+                  Review in chatbot. Exact checksum confirmation is required before transform resumes.
+                </p>
+              ) : (
+                <div className="approval-actions">
+                  <button type="button" disabled={a.status !== "pending" || approvalBusy === a.card_id} onClick={() => void approveCard(a)}>
+                    Approve
+                  </button>
+                  <button type="button" disabled={a.status !== "pending" || approvalBusy === a.card_id} onClick={() => void rejectCard(a)}>
+                    Reject
+                  </button>
+                </div>
+              )}
             </div>
           ))
         )}
