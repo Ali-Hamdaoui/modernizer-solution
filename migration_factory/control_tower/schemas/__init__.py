@@ -9,7 +9,12 @@ from .pipeline_definition import (
     PipelineTarget,
     StageInputSource,
 )
-from .run_configuration import RunConfiguration, RunPolicy, TargetProofLevel
+from .run_configuration import (
+    RunConfiguration,
+    RunPolicy,
+    StageContinuationPolicy,
+    TargetProofLevel,
+)
 from .runner_profile import (
     AIProfileReference,
     AiProfileReference,
@@ -43,6 +48,7 @@ __all__ = [
     "RunConfiguration",
     "RunPolicy",
     "RunnerProfile",
+    "StageContinuationPolicy",
     "StageInputSource",
     "StrictModel",
     "TargetProofLevel",

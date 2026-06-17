@@ -17,6 +17,7 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository
     SqliteV2CommandRepository,
     V2StageCommandRecord,
 )
+from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
 
 
 STAGE_CONFIG = {
@@ -66,6 +67,7 @@ class V2StageProgressionService:
         setup_id: str,
         current_stage: int,
         sandbox_path: str,
+        stage_continuation_policy: StageContinuationPolicy | str = StageContinuationPolicy.AUTO_ON_GREEN,
     ) -> StageContinuationResult:
         """Queue the next stage from the current stage sandbox.
 
@@ -74,6 +76,7 @@ class V2StageProgressionService:
             setup_id: The setup ID to load paths from.
             current_stage: The completed stage (1 or 2).
             sandbox_path: The sandbox output path from the completed stage.
+            stage_continuation_policy: Backend-owned policy from run configuration.
 
         Returns:
             StageContinuationResult with the next stage details.
@@ -87,6 +90,19 @@ class V2StageProgressionService:
             raise ValueError(
                 f"Cannot progress from stage {current_stage}: "
                 f"stage {next_stage} is not a valid target"
+            )
+
+        policy = _coerce_stage_continuation_policy(stage_continuation_policy)
+        if policy == StageContinuationPolicy.MANUAL:
+            return StageContinuationResult(
+                continuation_id=uuid4().hex,
+                job_id=job_id,
+                from_stage=current_stage,
+                to_stage=next_stage,
+                sandbox_path=sandbox_path,
+                argv=(),
+                status="blocked",
+                reason="stage_continuation_policy_manual",
             )
 
         setup = self._setup_repo.get(setup_id)
@@ -165,3 +181,11 @@ def _get_jdk_home(setup: V2MigrationSetupRecord, env_var: str) -> str:
         "JAVA21_HOME": setup.java21_home,
     }
     return mapping.get(env_var, "")
+
+
+def _coerce_stage_continuation_policy(
+    value: StageContinuationPolicy | str,
+) -> StageContinuationPolicy:
+    if isinstance(value, StageContinuationPolicy):
+        return value
+    return StageContinuationPolicy(value)

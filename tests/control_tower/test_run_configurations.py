@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from migration_factory.control_tower.schemas.run_configuration import (
     RunConfiguration,
     RunPolicy,
+    StageContinuationPolicy,
 )
 
 
@@ -59,7 +60,36 @@ def test_run_policy_defaults_are_false() -> None:
         continue_after_warning=False,
         enable_runtime_gate=False,
         enable_endpoint_gate=False,
+        stage_continuation_policy=StageContinuationPolicy.AUTO_ON_GREEN,
     )
+
+
+def test_stage_continuation_policy_defaults_to_auto_on_green() -> None:
+    configuration = RunConfiguration.model_validate(_run_configuration_payload())
+
+    assert configuration.policy.stage_continuation_policy == StageContinuationPolicy.AUTO_ON_GREEN
+    assert configuration.model_dump(mode="json")["policy"]["stage_continuation_policy"] == "auto_on_green"
+
+
+def test_stage_continuation_policy_accepts_manual() -> None:
+    payload = _run_configuration_payload()
+    payload["policy"] = {"stage_continuation_policy": "manual"}
+
+    configuration = RunConfiguration.model_validate(payload)
+
+    assert configuration.policy.stage_continuation_policy == StageContinuationPolicy.MANUAL
+
+
+def test_f15_manual_policy_factory_defaults_to_manual() -> None:
+    assert RunPolicy.f15_manual().stage_continuation_policy == StageContinuationPolicy.MANUAL
+
+
+def test_invalid_stage_continuation_policy_rejected() -> None:
+    payload = _run_configuration_payload()
+    payload["policy"] = {"stage_continuation_policy": "skip_stages"}
+
+    with pytest.raises(ValidationError):
+        RunConfiguration.model_validate(payload)
 
 
 def test_strict_booleans_reject_string_values() -> None:

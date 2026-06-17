@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from enum import Enum
+
 from pydantic import Field, field_validator
 
 from migration_factory.control_tower.domain.states import TargetProofLevel
@@ -9,10 +11,28 @@ from migration_factory.control_tower.domain.states import TargetProofLevel
 from .common import NonEmptyString, StrictModel, require_non_empty_string
 
 
+class StageContinuationPolicy(str, Enum):
+    AUTO_ON_GREEN = "auto_on_green"
+    MANUAL = "manual"
+
+
 class RunPolicy(StrictModel):
     continue_after_warning: bool = False
     enable_runtime_gate: bool = False
     enable_endpoint_gate: bool = False
+    stage_continuation_policy: StageContinuationPolicy = StageContinuationPolicy.AUTO_ON_GREEN
+
+    @field_validator("stage_continuation_policy", mode="before")
+    @classmethod
+    def _coerce_stage_continuation_policy(cls, value):
+        if isinstance(value, StageContinuationPolicy):
+            return value
+        return StageContinuationPolicy(value)
+
+    @classmethod
+    def f15_manual(cls) -> "RunPolicy":
+        """Return the default policy for new F15 governed-stage jobs."""
+        return cls(stage_continuation_policy=StageContinuationPolicy.MANUAL)
 
 
 class RunConfiguration(StrictModel):

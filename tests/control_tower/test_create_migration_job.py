@@ -11,7 +11,10 @@ from migration_factory.control_tower.domain.errors import CompatibilityError, No
 from migration_factory.control_tower.domain.states import JobState, TargetProofLevel
 from migration_factory.control_tower.infrastructure.sqlite.connection import connect_control_tower
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteControlTowerUnitOfWork
-from migration_factory.control_tower.schemas.run_configuration import RunConfiguration, RunPolicy
+from migration_factory.control_tower.schemas.run_configuration import (
+    RunConfiguration,
+    RunPolicy,
+)
 
 from ._helpers import (
     canonical_json,
@@ -83,6 +86,7 @@ def test_create_migration_job_writes_everything_atomically(tmp_path: Path) -> No
                 "continue_after_warning": False,
                 "enable_runtime_gate": False,
                 "enable_endpoint_gate": False,
+                "stage_continuation_policy": "auto_on_green",
             },
         }
         assert run_configuration_row["payload_json"] == canonical_json(expected_run_configuration)
@@ -166,6 +170,41 @@ def test_missing_runner_profile_raises_not_found(tmp_path: Path) -> None:
     }
 
 
+def test_create_migration_job_can_persist_manual_stage_continuation_policy(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "control_tower.sqlite3"
+    connection = make_migrated_connection(tmp_path)
+    seed_runner_profile(connection)
+    seed_pipeline_definition(connection)
+    connection.close()
+
+    service = _service_for(db_path)
+    command = _create_command(policy=RunPolicy.f15_manual())
+    result = service.execute(command)
+
+    with connect_control_tower(db_path) as verification_connection:
+        row = verification_connection.execute(
+            """
+            SELECT policy_json, payload_json
+            FROM run_configurations
+            WHERE job_id = ?
+            """,
+            (result.job_id,),
+        ).fetchone()
+
+    assert row is not None
+    assert row["policy_json"] == canonical_json(
+        {
+            "continue_after_warning": False,
+            "enable_runtime_gate": False,
+            "enable_endpoint_gate": False,
+            "stage_continuation_policy": "manual",
+        }
+    )
+    assert '"stage_continuation_policy":"manual"' in row["payload_json"]
+
+
 def test_pipeline_runner_compatibility_failure_rolls_back_everything(tmp_path: Path) -> None:
     db_path = tmp_path / "control_tower.sqlite3"
     connection = make_migrated_connection(tmp_path)
@@ -199,7 +238,7 @@ def _service_for(db_path: Path) -> CreateMigrationJobService:
     return CreateMigrationJobService(factory)
 
 
-def _create_command() -> CreateMigrationJobCommand:
+def _create_command(policy: RunPolicy | None = None) -> CreateMigrationJobCommand:
     return CreateMigrationJobCommand(
         actor="tester",
         legacy_source_ref="C:/legacy/source",
@@ -210,7 +249,7 @@ def _create_command() -> CreateMigrationJobCommand:
         pipeline_version="2026.06",
         target_proof_level=TargetProofLevel.BUILD_TEST_VERIFIED,
         enabled_gates=("build", "test"),
-        policy=RunPolicy(),
+        policy=policy or RunPolicy(),
         correlation_id="corr-1",
     )
 

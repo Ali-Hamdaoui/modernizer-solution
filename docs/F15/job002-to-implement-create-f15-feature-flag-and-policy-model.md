@@ -1,7 +1,7 @@
 # F15-JOB-002 — Create F15 feature flag and policy model
 
 **Area:** Policy  
-**Status:** To implement  
+**Status:** Implemented
 **Epic:** F15 — Chatbot-Governed Stage Workflow  
 **Generated:** 2026-06-17
 
@@ -18,14 +18,14 @@ Introduce opt-in F15 behavior without changing old jobs by default.
 
 - Do not create a second orchestrator, repair engine, plan revision engine, prompt router, or stage progression service.
 - Do not bypass existing SQLite UnitOfWork/repository patterns.
-- Do not accept `sandbox_path`, `argv`, `env`, or raw filesystem targets from the frontend/chatbot.
+- Do not accept `sandbox_path`, `argv`, `env`, raw commands, or raw filesystem targets from the frontend/chatbot.
 - Do not let the chatbot directly execute, approve, write files, or mutate legacy source.
 
 ## Scope
 
-- [ ] Add `stage_continuation_policy` enum.
-- [ ] Default existing jobs to `auto_on_green`.
-- [ ] Default new F15 jobs to `manual`.
+- [x] Add `stage_continuation_policy` enum.
+- [x] Default existing jobs to `auto_on_green`.
+- [x] Default new F15 jobs to `manual` through the typed `RunPolicy.f15_manual()` factory.
 
 ## Workflow impact
 
@@ -41,9 +41,9 @@ The chatbot remains flexible for natural language, but this job must preserve st
 
 ## Acceptance criteria
 
-- [ ] Old jobs can continue auto progression.
-- [ ] New F15 jobs can stop at manual gates.
-- [ ] Policy value is persisted or derivable in job config.
+- [x] Old jobs can continue auto progression.
+- [x] New F15 jobs can stop at manual gates.
+- [x] Policy value is persisted or derivable in job config.
 
 ## Suggested tests
 
@@ -63,7 +63,7 @@ Do not expand beyond this job. Do not implement later F15 slices early.
 - F14 is closed as "core chatbot-to-POM apply delivered" with follow-up debt for read/propose/raw-POM consistency.
 - The chatbot must be flexible in language, explanation, and intent mapping.
 - The backend must remain strict in state, paths, checksums, commands, approvals, and writes.
-- No new F15 endpoint may accept `sandbox_path`, `argv`, `env`, or raw filesystem targets from the frontend/chatbot.
+- No new F15 endpoint may accept `sandbox_path`, `argv`, `env`, raw commands, or raw filesystem targets from the frontend/chatbot.
 - All stage-changing work must go through persisted gates and backend-owned services.
 - Reuse existing stage progression, prompt router, action schema, repair flow, and plan amendment/revision code.
 - Artifact explanation must read gate-bound artifact refs/checksums, not stale previews.
