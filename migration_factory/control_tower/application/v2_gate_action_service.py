@@ -32,6 +32,9 @@ from migration_factory.control_tower.domain.gate_checksum import (
 from migration_factory.control_tower.infrastructure.sqlite.v2_artifact_revision_repository import (
     SqliteArtifactRevisionRepository,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
+    SqliteV2CommandRepository,
+)
 from migration_factory.control_tower.infrastructure.sqlite.v2_gate_decision_repository import (
     SqliteGateDecisionRepository,
 )
@@ -40,6 +43,9 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_reposit
 )
 from migration_factory.control_tower.application.v2_repair_flow import (
     V2RepairFlowService,
+)
+from migration_factory.control_tower.domain.commands import (
+    NONTERMINAL_COMMAND_STATES,
 )
 from migration_factory.control_tower.schemas.phase_gate import (
     GateDecision,
@@ -92,12 +98,14 @@ class V2GateActionService:
         gate_service: V2PhaseGateService | None = None,
         revision_repo: SqliteArtifactRevisionRepository | None = None,
         repair_service: V2RepairFlowService | None = None,
+        command_repo: SqliteV2CommandRepository | None = None,
     ) -> None:
         self._gate_repo = gate_repo
         self._decision_repo = decision_repo
         self._gate_service = gate_service or V2PhaseGateService(gate_repo)
         self._revision_repo = revision_repo
         self._repair_service = repair_service
+        self._command_repo = command_repo
 
     # ── action: continue ────────────────────────────────────────────
 
@@ -662,6 +670,33 @@ class V2GateActionService:
                 status="gate_not_open",
                 reason=f"Gate is {gate.gate_status}",
             )
+
+        # 3a. Conflicting command guard — check if there are already
+        #     non-terminal (queued/running) commands for this job.
+        #     This prevents queuing conflicting work when another
+        #     command is already in progress.
+        if self._command_repo is not None:
+            existing_commands = self._command_repo.list_by_job(gate.job_id)
+            for cmd in existing_commands:
+                from migration_factory.control_tower.domain.commands import (
+                    CommandState,
+                )
+                try:
+                    cmd_state = CommandState(cmd.status)
+                except ValueError:
+                    continue
+                if cmd_state in NONTERMINAL_COMMAND_STATES:
+                    return GateActionResult(
+                        action=action.value,
+                        gate_id=gate_id,
+                        decision_id="",
+                        status="command_conflict",
+                        reason=(
+                            f"Job {gate.job_id} already has a non-terminal "
+                            f"command {cmd.command_id} with status "
+                            f"{cmd.status}"
+                        ),
+                    )
 
         # 4. Phase-valid decision check
         try:
