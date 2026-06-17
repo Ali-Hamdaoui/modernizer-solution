@@ -20,7 +20,12 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_event_repository i
     SqliteV2JobEventRepository,
 )
 from migration_factory.control_tower.domain.gate_checksum import gate_checksum
-from migration_factory.control_tower.schemas.phase_gate import GatePhase, GateStatus
+from migration_factory.control_tower.schemas.phase_gate import (
+    GateDecision,
+    GatePhase,
+    GateStatus,
+    is_valid_decision_for_phase,
+)
 
 
 # ── request/result types ──────────────────────────────────────────────
@@ -70,6 +75,45 @@ class ResolveGateRequest:
 class ResolveGateResult:
     gate_id: str
     status: str  # 'resolved', 'stale_checksum', 'already_resolved', 'not_found'
+
+
+# ── available action types ────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class AvailableAction:
+    """A possible action at a gate, with UI-friendly label and metadata."""
+
+    action: str          # GateDecision value (e.g. "continue", "reanalyze")
+    label: str           # UI-readable label (e.g. "Accept", "Request Reanalysis")
+    description: str     # Short explanation for UI tooltips
+    blocked: bool = False  # True if blocked by an open/running command conflict
+    block_reason: str = ""
+
+
+# Map GateDecision values to UI-friendly labels and descriptions
+_ACTION_LABELS: dict[GateDecision, tuple[str, str]] = {
+    GateDecision.CONTINUE: (
+        "Accept",
+        "Accept the current state and proceed to the next phase",
+    ),
+    GateDecision.REANALYZE: (
+        "Request Reanalysis",
+        "Request updated analysis with user feedback",
+    ),
+    GateDecision.REVISE: (
+        "Request Revision",
+        "Request a plan revision with user feedback",
+    ),
+    GateDecision.APPROVE: (
+        "Approve",
+        "Approve the transformation to proceed",
+    ),
+    GateDecision.REJECT: (
+        "Reject",
+        "Reject the current state — gate cannot continue",
+    ),
+}
 
 
 # ── service ──────────────────────────────────────────────────────────
@@ -242,6 +286,62 @@ class V2PhaseGateService:
             gate_id=request.gate_id,
             status="resolved",
         )
+
+    # ── available actions ─────────────────────────────────────────
+
+    def get_available_actions(
+        self,
+        gate_id: str,
+        *,
+        blocked_actions: set[str] | None = None,
+    ) -> list[AvailableAction]:
+        """Return the list of valid actions for an open gate.
+
+        Only open gates return available actions. Resolved, superseded,
+        or nonexistent gates return an empty list.
+
+        Args:
+            gate_id: The gate to query.
+            blocked_actions: Optional set of action values that are
+                temporarily blocked (e.g. due to open/running commands).
+
+        Returns:
+            List of AvailableAction with UI-friendly labels and
+            block status.
+        """
+        gate = self._gate_repo.get(gate_id)
+        if gate is None or gate.gate_status != GateStatus.OPEN.value:
+            return []
+
+        try:
+            gate_phase = GatePhase(gate.gate_phase)
+        except ValueError:
+            return []
+
+        blocked = blocked_actions or set()
+        result: list[AvailableAction] = []
+
+        for decision in GateDecision:
+            if decision == GateDecision.PENDING:
+                continue  # not a user-selectable action
+            if not is_valid_decision_for_phase(gate_phase, decision):
+                continue
+
+            label_info = _ACTION_LABELS.get(decision, (decision.value, ""))
+            is_blocked = decision.value in blocked
+            block_reason = ""
+            if is_blocked:
+                block_reason = f"Action '{decision.value}' is blocked by an open or running command"
+
+            result.append(AvailableAction(
+                action=decision.value,
+                label=label_info[0],
+                description=label_info[1],
+                blocked=is_blocked,
+                block_reason=block_reason,
+            ))
+
+        return result
 
     def supersede_gate(self, gate_id: str) -> bool:
         """Supersede an open gate with a newer one.
