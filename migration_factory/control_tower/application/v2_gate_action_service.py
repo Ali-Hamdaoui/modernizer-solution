@@ -126,6 +126,12 @@ class V2GateActionService:
         - gate exists and is OPEN
         - gate phase allows CONTINUE decision
         - gate checksum must match (validated inside resolve)
+        - For analysis_review phase: an accepted analysis revision must
+          exist for the stage (proves analysis was accepted before
+          planning can proceed)
+        - For planning_review phase: an accepted plan revision must
+          exist for the stage (proves plan was accepted before
+          approval/proceed)
 
         Args:
             expected_gate_checksum: Optional caller-supplied checksum
@@ -135,6 +141,68 @@ class V2GateActionService:
         Returns:
             GateActionResult with status and optional queued references.
         """
+        # Pre-validation: check for required accepted revisions
+        gate = self._gate_repo.get(gate_id)
+        if gate is not None and self._revision_repo is not None:
+            try:
+                gate_phase_val = GatePhase(gate.gate_phase)
+            except ValueError:
+                gate_phase_val = None
+
+            if gate_phase_val == GatePhase.ANALYSIS_REVIEW:
+                # For analysis_review, there must be an accepted analysis
+                # revision (proving analysis was properly accepted)
+                accepted = self._revision_repo.find_accepted(
+                    gate.job_id, gate.stage_index, "analysis"
+                )
+                # If no accepted analysis revision exists and this is
+                # the first acceptance, we still allow it. The guard
+                # only blocks when there IS a revision but it isn't
+                # accepted (e.g., after a reanalysis that wasn't accepted).
+                all_analysis = [
+                    r for r in self._revision_repo.list_by_job_and_stage(
+                        gate.job_id, gate.stage_index
+                    )
+                    if r.revision_kind == "analysis"
+                ]
+                if all_analysis and accepted is None:
+                    # There are analysis revisions but none accepted
+                    return GateActionResult(
+                        action=GateDecision.CONTINUE.value,
+                        gate_id=gate_id,
+                        decision_id="",
+                        status="no_accepted_analysis",
+                        reason=(
+                            f"Analysis must be accepted before continuing "
+                            f"from analysis_review gate. Found "
+                            f"{len(all_analysis)} draft revision(s)"
+                        ),
+                    )
+
+            elif gate_phase_val == GatePhase.PLANNING_REVIEW:
+                # For planning_review, there must be an accepted plan
+                accepted = self._revision_repo.find_accepted(
+                    gate.job_id, gate.stage_index, "planning"
+                )
+                all_plans = [
+                    r for r in self._revision_repo.list_by_job_and_stage(
+                        gate.job_id, gate.stage_index
+                    )
+                    if r.revision_kind == "planning"
+                ]
+                if all_plans and accepted is None:
+                    return GateActionResult(
+                        action=GateDecision.CONTINUE.value,
+                        gate_id=gate_id,
+                        decision_id="",
+                        status="no_accepted_plan",
+                        reason=(
+                            f"Plan must be accepted before continuing "
+                            f"from planning_review gate. Found "
+                            f"{len(all_plans)} draft revision(s)"
+                        ),
+                    )
+
         return self._execute_action(
             gate_id=gate_id,
             job_id=job_id,
@@ -838,6 +906,28 @@ class V2GateActionService:
                 created_by=decided_by,
             ))
             result_gate_id = new_gate.gate_id if new_gate.status == "created" else None
+
+        # For continue on planning_review gates, create an approval_review
+        # gate (Job093). The approval gate must be approved before
+        # transformation can proceed.
+        if action == GateDecision.CONTINUE:
+            try:
+                gate_phase_for_approval = GatePhase(gate.gate_phase)
+            except ValueError:
+                gate_phase_for_approval = None
+
+            if gate_phase_for_approval == GatePhase.PLANNING_REVIEW:
+                # Create approval_review gate for the next stage
+                approval_gate = self._gate_service.create_gate(CreateGateRequest(
+                    job_id=gate.job_id,
+                    gate_phase=GatePhase.APPROVAL_REVIEW.value,
+                    stage_index=gate.stage_index,
+                    source_artifact_checksum=current_checksum,
+                    source_artifact_refs=tuple(refs),
+                    created_by=decided_by,
+                ))
+                if approval_gate.status == "created":
+                    result_gate_id = approval_gate.gate_id
 
         decision_record = GateDecisionRecord(
             decision_id=decision_id,

@@ -93,6 +93,21 @@ class SqliteArtifactRevisionRepository:
             return None
         return self._row_to_record(row)
 
+    def find_latest_by_kind(
+        self, job_id: str, stage_index: int, revision_kind: str
+    ) -> ArtifactRevisionRecord | None:
+        """Find the latest revision of a given kind for a stage."""
+        row = self._connection.execute(
+            """SELECT * FROM v2_artifact_revisions
+               WHERE job_id = ? AND stage_index = ? AND revision_kind = ?
+               ORDER BY revision_order DESC
+               LIMIT 1""",
+            (job_id, stage_index, revision_kind),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_record(row)
+
     def list_by_prior(self, prior_revision_id: str) -> tuple[ArtifactRevisionRecord, ...]:
         """List revisions that superseded the given prior revision."""
         rows = self._connection.execute(

@@ -470,7 +470,7 @@ class TestGateActionExecutor:
         executor.execute_reanalysis(gate_id="gate-1", checksum="chk-1",
                                      user_feedback="test")
         executor.execute_plan_revision(gate_id="gate-1", checksum="chk-1",
-                                        revision_instructions="test")
+                                        user_feedback="test")
         executor.execute_approve(gate_id="gate-1", checksum="chk-1")
         executor.execute_reject(gate_id="gate-1", checksum="chk-1", reason="test")
 

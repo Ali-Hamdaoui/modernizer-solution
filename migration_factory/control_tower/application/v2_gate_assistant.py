@@ -798,7 +798,7 @@ class GateActionExecutor:
         gate_id: str,
         checksum: str,
         *,
-        revision_instructions: str = "",
+        user_feedback: str = "",
         decided_by: str = "assistant",
         idempotency_key: str | None = None,
     ) -> GateActionResult:
@@ -806,7 +806,7 @@ class GateActionExecutor:
         return self._action_service.request_plan_revision(
             gate_id=gate_id,
             expected_gate_checksum=checksum,
-            revision_instructions=revision_instructions,
+            user_feedback=user_feedback,
             decided_by=decided_by,
             idempotency_key=idempotency_key or uuid4().hex,
         )
