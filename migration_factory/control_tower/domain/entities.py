@@ -672,3 +672,31 @@ class V1ProofReportGateRecord:
     output_checksum: str
     proof_gate_checksum: str
     chain_status: str
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseGateRecord:
+    """Immutable record of an F15 governed-stage gate.
+
+    Append-only: once inserted with gate_status='resolved' (or
+    superseded), the record must never be updated. Open gates may
+    be superseded by inserting a new record with the same
+    (job_id, gate_phase, stage_index) key and marking the prior
+    record as superseded.
+
+    Unique constraint: at most one row with gate_status='open'
+    per (job_id, gate_phase, stage_index).
+    """
+
+    gate_id: str
+    job_id: str
+    gate_phase: str
+    stage_index: int
+    gate_status: str
+    gate_decision: str
+    source_artifact_checksum: str
+    resolved_artifact_checksum: str | None
+    source_artifact_refs_json: str
+    created_at: str
+    resolved_at: str | None = None
+    resolved_by: str | None = None
