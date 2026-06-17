@@ -6,6 +6,17 @@
 F15 generalizes the F14 chatbot-to-POM apply pattern to the whole migration lifecycle. For Stage 1, Stage 2, and Stage 3, the Control Tower pauses at analysis, planning, approval, repair, and stage-completion gates. The chatbot can explain evidence and flexibly understand user intent. The backend validates and executes every state-changing action through persisted gates, checksums, and existing services.
 ## Critical rule
 Flexible chatbot does not mean flexible execution. The chatbot may understand many phrases and ask follow-up questions, but backend actions are typed, persisted, checksum-bound, idempotent, sandbox-only, and stage-ordered.
+## Epic boundary
+F15 is a new workflow-governance epic for the existing AI Migration Control Tower. It is not a reopening of F14 and it must not replace or fork V2 stage progression, the orchestrator runner, the assistant router/service, repair flow, plan amendment/revision/review, artifact storage/resolution, event streaming, repositories/UoW, validation, rollback, or ledger/proof systems.
+
+F14 is closed as core chatbot-to-POM apply delivered. Follow-up debt remains for read/propose/raw-POM consistency, but that debt is not part of the F15 boundary unless a later F15 job explicitly adapts it through existing backend-owned services.
+
+Blocked F15 anti-patterns:
+- Direct chatbot command execution, file writes, approval, stage mutation, proof override, sandbox choice, or legacy source mutation.
+- New API inputs that accept `sandbox_path`, `argv`, `env`, raw commands, or raw filesystem targets from the frontend or chatbot.
+- Duplicate orchestrators, repair engines, plan revision systems, assistant routers, artifact resolvers, repositories, runners, validation layers, rollback layers, or ledgers.
+- Gate explanations based on stale previews instead of gate-bound artifact refs and checksums.
+- Stage skips that bypass accepted prior-stage output.
 ## Existing code to reuse
 - **stage:** `migration_factory/control_tower/application/v2_stage_progression.py; migration_factory/control_tower/application/v2_orchestrator_runner.py`
 - **assistant:** `migration_factory/control_tower/application/v2_assistant_service.py; migration_factory/control_tower/application/v2_prompt_router.py; migration_factory/control_tower/application/v2_model_schemas.py`
@@ -23,7 +34,7 @@ Flexible chatbot does not mean flexible execution. The chatbot may understand ma
 ## Folder structure
 
 ```text
-doc/
+docs/F15/
 ├── index.md
 ├── job001-to-implement-define-f15-epic-boundaries.md
 ├── job002-to-implement-create-f15-feature-flag-and-policy-model.md
