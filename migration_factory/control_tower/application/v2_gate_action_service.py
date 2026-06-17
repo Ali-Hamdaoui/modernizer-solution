@@ -38,6 +38,9 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_gate_decision_repo
 from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_repository import (
     SqlitePhaseGateRepository,
 )
+from migration_factory.control_tower.application.v2_repair_flow import (
+    V2RepairFlowService,
+)
 from migration_factory.control_tower.schemas.phase_gate import (
     GateDecision,
     GatePhase,
@@ -88,11 +91,13 @@ class V2GateActionService:
         decision_repo: SqliteGateDecisionRepository,
         gate_service: V2PhaseGateService | None = None,
         revision_repo: SqliteArtifactRevisionRepository | None = None,
+        repair_service: V2RepairFlowService | None = None,
     ) -> None:
         self._gate_repo = gate_repo
         self._decision_repo = decision_repo
         self._gate_service = gate_service or V2PhaseGateService(gate_repo)
         self._revision_repo = revision_repo
+        self._repair_service = repair_service
 
     # ── action: continue ────────────────────────────────────────────
 
@@ -336,6 +341,144 @@ class V2GateActionService:
             idempotency_key=idempotency_key,
         )
 
+    # ── action: approve_repair ────────────────────────────────────
+
+    def approve_repair(
+        self,
+        *,
+        gate_id: str,
+        job_id: str,
+        decided_by: str,
+        proposal_id: str,
+        proposal_checksum: str,
+        context_pack_checksum: str,
+        idempotency_key: str | None = None,
+    ) -> GateActionResult:
+        """Approve a repair proposal and continue at a repair_review gate.
+
+        Delegates to V2RepairFlowService to validate the proposal and
+        reviewer critique before resolving the gate. After approval, the
+        gate is resolved with CONTINUE so the repair can be applied in
+        the sandbox.
+
+        Requires:
+        - Gate exists
+        - Gate phase is repair_review
+        - Gate is OPEN (unless idempotent)
+        - V2RepairFlowService is configured
+        - Proposal exists in draft state
+        - Reviewer gate passes (accepted critique matches checksums)
+        - Gate checksum must match
+
+        Returns:
+            GateActionResult with status, decision_id, and
+            result_revision_id linking to the approved repair proposal.
+        """
+        # 1. Gate existence
+        gate = self._gate_repo.get(gate_id)
+        if gate is None:
+            return GateActionResult(
+                action=GateDecision.CONTINUE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="gate_not_found",
+            )
+
+        # 2. Idempotency check — before gate status check so repeated
+        #    requests with the same key return idempotent regardless
+        #    of the current gate state.
+        effective_idempotency_key = (
+            idempotency_key
+            or f"{gate_id}:{GateDecision.CONTINUE.value}:{uuid4().hex[:8]}"
+        )
+        existing = self._decision_repo.find_by_idempotency_key(
+            effective_idempotency_key
+        )
+        if existing is not None:
+            return GateActionResult(
+                action=GateDecision.CONTINUE.value,
+                gate_id=gate_id,
+                decision_id=existing.decision_id,
+                status="idempotent",
+                result_gate_id=existing.result_gate_id,
+                result_command_id=existing.result_command_id,
+                result_revision_id=existing.result_revision_id,
+            )
+
+        # 3. Gate status must be OPEN for new actions
+        if gate.gate_status != "open":
+            return GateActionResult(
+                action=GateDecision.CONTINUE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="gate_not_open",
+                reason=f"Gate is {gate.gate_status}",
+            )
+
+        # 4. Phase must be repair_review
+        try:
+            gate_phase = GatePhase(gate.gate_phase)
+        except ValueError:
+            return GateActionResult(
+                action=GateDecision.CONTINUE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="invalid_decision",
+                reason=f"Unknown gate phase: {gate.gate_phase}",
+            )
+
+        if gate_phase != GatePhase.REPAIR_REVIEW:
+            return GateActionResult(
+                action=GateDecision.CONTINUE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="invalid_decision",
+                reason=f"approve_repair only works on repair_review gates, not {gate_phase.value}",
+            )
+
+        # 5. Require repair service
+        if self._repair_service is None:
+            return GateActionResult(
+                action=GateDecision.CONTINUE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="no_repair_service",
+                reason="V2RepairFlowService is not configured",
+            )
+
+        # 6. Approve the proposal via V2RepairFlowService
+        #    This validates proposal state and reviewer critique gate
+        try:
+            self._repair_service.approve_proposal(
+                proposal_id=proposal_id,
+                approval_checksum=gate.source_artifact_checksum,
+                proposal_checksum=proposal_checksum,
+                context_pack_checksum=context_pack_checksum,
+            )
+        except ValueError as exc:
+            return GateActionResult(
+                action=GateDecision.CONTINUE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="approval_failed",
+                reason=str(exc),
+            )
+
+        # 7. Execute continue action (resolves gate, persists decision)
+        result = self._execute_action(
+            gate_id=gate_id,
+            job_id=job_id,
+            action=GateDecision.CONTINUE,
+            decided_by=decided_by,
+            idempotency_key=effective_idempotency_key,
+            result_revision_id=proposal_id,
+        )
+
+        if result.status not in ("executed", "idempotent"):
+            return result
+
+        return result
+
     # ── action: approve_transformation ─────────────────────────────
 
     def approve_transformation(
@@ -427,6 +570,7 @@ class V2GateActionService:
         decided_by: str,
         idempotency_key: str | None = None,
         result_command_id: str | None = None,
+        result_revision_id: str | None = None,
     ) -> GateActionResult:
         """Common validation and execution pipeline for all gate actions.
 
@@ -442,6 +586,8 @@ class V2GateActionService:
         Args:
             result_command_id: Optional command ID to store in the decision
                 record. The caller is responsible for queueing the command.
+            result_revision_id: Optional revision ID to store in the decision
+                record. The caller is responsible for creating the revision.
         """
         # 1. Gate existence
         gate = self._gate_repo.get(gate_id)
@@ -560,7 +706,7 @@ class V2GateActionService:
             request_checksum=current_checksum,  # the decision is bound to the gate snapshot
             result_gate_id=result_gate_id,
             result_command_id=result_command_id,  # caller queues command
-            result_revision_id=None,  # caller creates revision
+            result_revision_id=result_revision_id,  # caller creates revision
             decided_by=decided_by,
             decided_at=now,
             actor_type="human",
@@ -592,4 +738,5 @@ class V2GateActionService:
             status="executed",
             result_gate_id=result_gate_id,
             result_command_id=result_command_id,
+            result_revision_id=result_revision_id,
         )
