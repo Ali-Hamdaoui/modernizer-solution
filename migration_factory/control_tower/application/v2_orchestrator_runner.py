@@ -960,6 +960,14 @@ class V2OrchestratorRunner:
         from migration_factory.control_tower.application.v2_stage_progression import (
             V2StageProgressionService,
         )
+        from migration_factory.control_tower.application.v2_phase_gate_service import (
+            CreateGateRequest,
+            V2PhaseGateService,
+        )
+        from migration_factory.control_tower.schemas.run_configuration import (
+            RunPolicy,
+            StageContinuationPolicy,
+        )
 
         next_stage = stage_index + 1
         next_command_id: str | None = None
@@ -970,6 +978,18 @@ class V2OrchestratorRunner:
                 if job is None:
                     return
 
+                # Load stage continuation policy from run configuration
+                stage_continuation_policy = StageContinuationPolicy.AUTO_ON_GREEN
+                run_config = uow.run_configurations.get_for_job(job_id)
+                if run_config is not None and run_config.policy_json:
+                    try:
+                        import json
+                        policy_dict = json.loads(run_config.policy_json)
+                        policy = RunPolicy(**policy_dict)
+                        stage_continuation_policy = policy.stage_continuation_policy
+                    except (json.JSONDecodeError, Exception):
+                        pass
+
                 service = V2StageProgressionService(
                     setup_repo=uow.v2_setups,
                     command_repo=uow.v2_commands,
@@ -979,7 +999,28 @@ class V2OrchestratorRunner:
                     setup_id=job.setup_id,
                     current_stage=stage_index,
                     sandbox_path=sandbox_path,
+                    stage_continuation_policy=stage_continuation_policy,
                 )
+
+                # Handle manual policy: create stage_completion_review gate
+                if queued.status == "blocked":
+                    import json
+                    uow.v2_events.save(
+                        job_id=job_id,
+                        stage=stage_index,
+                        event_type="stage_completion_review_required",
+                        status="blocked",
+                        message=(
+                            f"Stage {stage_index} completed under manual policy. "
+                            f"Gate review required before stage {next_stage} can start."
+                        ),
+                        payload={
+                            "from_stage": stage_index,
+                            "to_stage": next_stage,
+                            "reason": queued.reason,
+                        },
+                    )
+                    return
 
                 uow.v2_events.save(
                     job_id=job_id,
