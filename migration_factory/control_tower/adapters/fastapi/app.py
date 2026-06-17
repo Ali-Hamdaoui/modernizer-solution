@@ -1680,18 +1680,23 @@ def create_app(
                 correlation_id=user_msg.message_id,
             )
         with unit_of_work_factory() as uow:
+            is_fallback = (
+                not model_result.success
+                and model_result.source == "deterministic"
+            )
             _append_v2_event(
                 uow,
                 job_id=job_id,
                 stage=None,
                 event_type="model_invocation_completed" if model_result.success else "model_invocation_failed",
-                status="completed" if model_result.success else "failed",
+                status="completed" if model_result.success else ("fallback" if is_fallback else "failed"),
                 message=model_result.redacted_summary,
                 payload={
                     "provider": model_result.provider,
                     "role": model_result.role,
                     "source": model_result.source,
                     "success": model_result.success,
+                    "is_fallback": is_fallback,
                 },
             )
         return {
@@ -4915,10 +4920,12 @@ def _build_v2_assistant_answer(
     if effective_intent == "pom_or_dependency_explanation":
         # Detect if user is asking for raw XML (not structured summary)
         raw_xml_requested = any(w in str(question or "").lower() for w in ("raw", "not summarize", "do not summarize", "don't summarize", "full raw"))
+        job_id = _resolve_assistant_job_id(events=events, commands=commands)
         return _build_pom_explanation_answer(
             artifact_previews=artifact_previews,
             events=events,
             raw_xml_requested=raw_xml_requested,
+            job_id=job_id,
         )
 
     if effective_intent == "pom_dependency_change_request":
@@ -5310,15 +5317,23 @@ def _build_pom_change_proposal_answer(
     # ── Detect specific property/dependency change and delegate to editor ──
     import re as _re
     lowered = str(question or "").lower()
-    # Detect specific change: "propose changing/updating X to Y"
+
+    # Detect specific change: "propose changing/updating X to Y" (with : for GAV)
     specific_change = _re.search(
         r"(?:propose|suggest|draft|recommend).*?(?:chang|updat|upgrad|set|bump).*?(?:ing|e)?\s+"
-        r"([\w.\-]+)\s+(?:to|version|from)\s+([\d.]+)",
+        r"([\w.\-:]+)\s+(?:to|version|from)\s+([\d.]+(?:[\-.]?[\w]+)*)",
         lowered, _re.IGNORECASE,
     )
     if not specific_change:
+        # Pattern: "update dependency GROUP:ARTIFACT to VERSION"
         specific_change = _re.search(
-            r"(?:chang|updat|upgrad|set|bump)\s+([\w.\-]+)\s+(?:to|version)\s+([\d.]+)",
+            r"(?:update|updat|chang|set|bump)\s+dependency\s+([\w.\-:]+)\s+(?:to|version)\s+([\d.]+(?:[\-.]?[\w]+)*)",
+            lowered, _re.IGNORECASE,
+        )
+    if not specific_change:
+        # Pattern: "change X to Y" (artifact name or GAV)
+        specific_change = _re.search(
+            r"(?:chang|updat|upgrad|set|bump)\s+([\w.\-:]+)\s+(?:to|version)\s+([\d.]+(?:[\-.]?[\w]+)*)",
             lowered, _re.IGNORECASE,
         )
 
@@ -5974,56 +5989,99 @@ def _build_apply_dependency_change_answer(
             "to target. Please navigate to a migration job first."
         )
 
-    # Parse the target from the question
+    # ── Parse the target from the question ──
     dep_name = ""
     target_version = ""
     is_property_update = False
-    update_match = re.search(
-        r"(?:update|upgrade|change|set|bump|replace)\s+([\w.\-:]+)\s+(?:to|version)\s+([\d.]+)",
-        str(question or ""), re.IGNORECASE,
-    )
-    if update_match:
-        dep_name = update_match.group(1).strip()
-        target_version = update_match.group(2).strip()
+    q = str(question or "")
 
-    # Try property update pattern: "update property X to Y" or "update X.version to Y"
+    # Pattern 1: "apply this ... update dependency GROUP:ARTIFACT to VERSION" (GAV with colon)
+    gav_apply_dep_match = re.search(
+        r"(?:apply|execute|write).*?(?:update|change|set|bump)\s+dependency\s+([\w.\-]+):([\w.\-]+)\s+(?:to|version)\s+([\d.]+(?:[\-.]?[\w]+)*)",
+        q, re.IGNORECASE,
+    )
+    if gav_apply_dep_match:
+        dep_name = f"{gav_apply_dep_match.group(1)}:{gav_apply_dep_match.group(2)}"
+        target_version = gav_apply_dep_match.group(3).strip().rstrip(".,;:")
+
+    # Pattern 2: "update dependency GROUP:ARTIFACT to VERSION" (GAV with colon, no apply prefix)
+    if not dep_name or not target_version:
+        gav_dep_match = re.search(
+            r"(?:update|change|set|bump|upgrade)\s+dependency\s+([\w.\-]+):([\w.\-]+)\s+(?:to|version)\s+([\d.]+(?:[\-.]?[\w]+)*)",
+            q, re.IGNORECASE,
+        )
+        if gav_dep_match:
+            dep_name = f"{gav_dep_match.group(1)}:{gav_dep_match.group(2)}"
+            target_version = gav_dep_match.group(3).strip().rstrip(".,;:")
+
+    # Pattern 3: "change dependency GROUP:ARTIFACT to VERSION"
+    if not dep_name or not target_version:
+        gav_change_dep_match = re.search(
+            r"(?:change|update|set)\s+dependency\s+([\w.\-]+):([\w.\-]+)\s+(?:to|version)\s+([\d.]+(?:[\-.]?[\w]+)*)",
+            q, re.IGNORECASE,
+        )
+        if gav_change_dep_match:
+            dep_name = f"{gav_change_dep_match.group(1)}:{gav_change_dep_match.group(2)}"
+            target_version = gav_change_dep_match.group(3).strip().rstrip(".,;:")
+
+    # Pattern 4: Generic "update/change GROUP:ARTIFACT to VERSION" (single word before colon)
+    if not dep_name or not target_version:
+        update_match = re.search(
+            r"(?:update|upgrade|change|set|bump|replace)\s+([\w.\-]+):([\w.\-]+)\s+(?:to|version)\s+([\d.]+(?:[\-.]?[\w]+)*)",
+            q, re.IGNORECASE,
+        )
+        if update_match:
+            dep_name = f"{update_match.group(1)}:{update_match.group(2)}"
+            target_version = update_match.group(3).strip().rstrip(".,;:")
+
+    # Pattern 5: Generic "update X to Y" (artifact without colon)
+    if not dep_name or not target_version:
+        update_match = re.search(
+            r"(?:update|upgrade|change|set|bump|replace)\s+([\w.\-:]+)\s+(?:to|version)\s+([\d.]+(?:[\-.]?[\w]+)*)",
+            q, re.IGNORECASE,
+        )
+        if update_match:
+            dep_name = update_match.group(1).strip()
+            target_version = update_match.group(2).strip().rstrip(".,;:")
+
+    # Pattern 6: "update property X to Y" or "update X.version to Y"
     if not dep_name or not target_version:
         prop_match = re.search(
-            r"(?:update|change|set|bump)\s+property\s+([\w.\-]+(?:\.[\w.\-]+)?)\s+(?:to|version)\s+([\d.]+)",
-            str(question or ""), re.IGNORECASE,
+            r"(?:update|change|set|bump)\s+property\s+([\w.\-]+(?:\.[\w.\-]+)?)\s+(?:to|version)\s+([\d.]+(?:[\-.]?[\w]+)*)",
+            q, re.IGNORECASE,
         )
         if prop_match:
             dep_name = prop_match.group(1).strip()
-            target_version = prop_match.group(2).strip()
+            target_version = prop_match.group(2).strip().rstrip(".,;:")
             is_property_update = True
 
-    # Try X.version to Y.Z pattern: "update assertj.version to 3.24.2"
+    # Pattern 7: "update X.version to Y.Z"
     if not dep_name or not target_version:
         dot_ver_match = re.search(
-            r"(?:update|change|set|bump)\s+([\w.\-]+)\.version\s+(?:to|version)\s+([\d.]+)",
-            str(question or ""), re.IGNORECASE,
+            r"(?:update|change|set|bump)\s+([\w.\-]+)\.version\s+(?:to|version)\s+([\d.]+(?:[\-.]?[\w]+)*)",
+            q, re.IGNORECASE,
         )
         if dot_ver_match:
             dep_name = dot_ver_match.group(1).strip() + ".version"
-            target_version = dot_ver_match.group(2).strip()
+            target_version = dot_ver_match.group(2).strip().rstrip(".,;:")
             is_property_update = True
 
-    # Try "apply this ... change: update property X to Y"
+    # Pattern 8: "apply this ... change: update property X to Y"
     if not dep_name or not target_version:
         apply_prop_match = re.search(
-            r"apply.*?change.*?(?:update|change|set)\s+(?:property\s+)?([\w.\-]+(?:\.[\w.\-]+)?)\s+(?:to|version)\s+([\d.]+)",
-            str(question or ""), re.IGNORECASE,
+            r"apply.*?change.*?(?:update|change|set)\s+(?:property\s+)?([\w.\-]+(?:\.[\w.\-]+)?)\s+(?:to|version)\s+([\d.]+(?:[\-.]?[\w]+)*)",
+            q, re.IGNORECASE,
         )
         if apply_prop_match:
             dep_name = apply_prop_match.group(1).strip()
-            target_version = apply_prop_match.group(2).strip()
+            target_version = apply_prop_match.group(2).strip().rstrip(".,;:")
             if "version" in apply_prop_match.group(0).lower():
                 is_property_update = True
 
     if not dep_name or not target_version:
         return (
             "I need a specific dependency name and target version to apply a change. "
-            'For example: "apply change gson to 2.11.0".'
+            'For example: "apply change gson to 2.11.0" or "update dependency com.google.code.gson:gson to 2.11.0".'
         )
 
     # Route through the same PomDependencyEditor service path as UI
@@ -6904,13 +6962,109 @@ def _build_pom_explanation_answer(
     artifact_previews: tuple[dict[str, Any], ...] | None = None,
     events: tuple[Any, ...] = (),
     raw_xml_requested: bool = False,
+    job_id: str = "",
 ) -> str:
     """Build POM/dependency explanation fallback.
 
     When raw_xml_requested=True (e.g., "show raw XML"), presents
     a redacted but structurally intact XML preview.
     Otherwise uses structured extraction for readability.
+
+    For "find" operations, reads the live Stage 3 sandbox POM
+    instead of just the truncated preview.
     """
+    # ── For "find" / "show raw" operations, use live POM from editor ──
+    if job_id:
+        try:
+            editor = _build_pom_dependency_editor()
+            view = editor.get_stage3_pom(job_id=job_id)
+            if view.exists:
+                live_content = str(view.content or "")
+                if live_content.strip():
+                    stage = 3
+                    if raw_xml_requested:
+                        safe_xml = _redact_xml_preserve_maven_urls(live_content)
+                        if view.truncated:
+                            note = " (excerpt — full XML truncated for safety)"
+                        else:
+                            note = ""
+                        answer = (
+                            f"The backend-resolved root pom.xml for Stage {stage} is available{note}. "
+                            f"Here is what it contains (redacted for safety):\n\n"
+                            f"--- pom.xml ---\n{safe_xml}\n--- end ---\n\n"
+                            f"Focus on dependencies (<dependencies>), plugins (<build><plugins>), "
+                            f"properties (<properties>), parent POM, and repositories. "
+                            f"These are the migration-relevant sections."
+                        )
+                        return answer
+                    # Structured extraction from live content
+                    pom_summary = _extract_pom_summary(live_content)
+                    # ... proceed to structured summary (fall-through to existing logic)
+                    lines: list[str] = []
+                    lines.append(
+                        f"The backend-resolved root pom.xml for Stage {stage} is available. "
+                        f"Here is a structured summary:\n"
+                    )
+                    coords = pom_summary.get("coordinates", {})
+                    if coords:
+                        parts = []
+                        if coords.get("groupId"):
+                            parts.append(f"groupId: {coords['groupId']}")
+                        if coords.get("artifactId"):
+                            parts.append(f"artifactId: {coords['artifactId']}")
+                        if coords.get("version"):
+                            parts.append(f"version: {coords['version']}")
+                        if coords.get("packaging") and coords["packaging"] != "jar":
+                            parts.append(f"packaging: {coords['packaging']}")
+                        if parts:
+                            lines.append("**Project:** " + " | ".join(parts))
+                    if pom_summary.get("has_parent"):
+                        lines.append("**Parent POM:** present")
+                    if pom_summary.get("has_dependency_management"):
+                        lines.append("**Dependency Management:** present")
+                    if pom_summary.get("has_repositories"):
+                        lines.append("**Repositories:** present [redacted]")
+                    props = pom_summary.get("properties", {})
+                    if props:
+                        lines.append("\n**Key Properties:**")
+                        for k, v in sorted(props.items()):
+                            if len(v) > 80:
+                                v = v[:77] + "..."
+                            lines.append(f"  - `{k}` = `{v}`")
+                    deps = pom_summary.get("dependencies", [])
+                    if deps:
+                        lines.append("\n**Dependencies:**")
+                        for d in deps[:20]:
+                            gid = d.get("groupId", "?")
+                            aid = d.get("artifactId", "?")
+                            ver = d.get("version", "(managed)")
+                            scope = d.get("scope", "")
+                            scope_suffix = f" [{scope}]" if scope and scope != "compile" else ""
+                            lines.append(
+                                f"  - `{gid}:{aid}` = `{ver}`{scope_suffix}"
+                            )
+                        if len(deps) > 20:
+                            lines.append(f"  ... and {len(deps) - 20} more dependencies.")
+                    plugs = pom_summary.get("plugins", [])
+                    if plugs:
+                        lines.append("\n**Plugins:**")
+                        for p in plugs[:15]:
+                            gid = p.get("groupId", "?")
+                            aid = p.get("artifactId", "?")
+                            ver = p.get("version", "(managed)")
+                            lines.append(f"  - `{gid}:{aid}` = `{ver}`")
+                        if len(plugs) > 15:
+                            lines.append(f"  ... and {len(plugs) - 15} more plugins.")
+                    lines.append(
+                        "\nTo see the full raw XML (redacted for safety), "
+                        "ask 'show the raw pom.xml'."
+                    )
+                    answer = "\n".join(lines)
+                    return str(redact_public_data(answer))
+        except Exception:
+            # Live POM read failed; fall through to preview-based answer
+            pass
+
     if artifact_previews:
         for pv in artifact_previews:
             if pv.get("source_type") == "file_alias":
@@ -7760,6 +7914,22 @@ _REPAIR_EVENT_TYPES = {
 }
 
 
+def _is_fallback_model_event(event: Any) -> bool:
+    """Check if a model_invocation_failed event is a deterministic fallback.
+
+    Fallback model events should be telemetry, not migration failure/repair.
+    """
+    if event.type != "model_invocation_failed":
+        return False
+    try:
+        payload = json.loads(event.payload_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    source = str(payload.get("source", "")).lower()
+    is_fallback = bool(payload.get("is_fallback", False))
+    return source == "deterministic" or is_fallback
+
+
 def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
     """Build a redacted failure/repair summary from V2 events,
     grouped by root cause.
@@ -7773,6 +7943,7 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
         event for event in events
         if (event.status == "failed" or event.type.endswith("_failed") or event.type == "result_contract_failed")
         and event.type not in _REPAIR_EVENT_TYPES
+        and not _is_fallback_model_event(event)
     ]
     repair_events_typed = [
         event for event in events

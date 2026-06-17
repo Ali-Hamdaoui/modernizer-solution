@@ -258,10 +258,12 @@ class V2AssistantModelClient:
 
         safe_content = str(redact_public_value(redact_model_summary(content))).strip()
         if not safe_content:
+            # Log empty response diagnostic before returning fallback
+            _log_empty_azure_result_summary(endpoint=endpoint, deployment=deployment)
             return _fallback_result(
                 fallback,
                 "Azure OpenAI returned an empty response.",
-                "invalid_response",
+                "empty_response",
             )
 
         return V2AssistantModelResult(
@@ -394,6 +396,11 @@ class V2AssistantModelClient:
         max_completion_tokens: int,
         timeout: int,
     ) -> str:
+        # Allow max_completion_tokens override via environment variable
+        env_max_tokens = os.environ.get("AZURE_OPENAI_ASSISTANT_MAX_COMPLETION_TOKENS", "").strip()
+        if env_max_tokens and env_max_tokens.isdigit():
+            max_completion_tokens = int(env_max_tokens)
+
         url = f"{endpoint.rstrip('/')}/chat/completions"
         payload = {
             "model": deployment,
@@ -409,7 +416,11 @@ class V2AssistantModelClient:
         )
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
-        return _extract_assistant_content(data)
+        content = _extract_assistant_content(data)
+        if not str(content).strip():
+            # Empty response — log redacted diagnostics
+            _log_empty_azure_response(data, deployment)
+        return content
 
     def _chat_completion_legacy(
         self,
@@ -555,6 +566,54 @@ def _extract_assistant_content(data: Any) -> str:
     return content
 
 
+def _log_empty_azure_response(data: dict[str, Any], deployment: str) -> None:
+    """Log redacted diagnostic for empty Azure OpenAI responses.
+
+    Captures: response id, model, finish_reason, usage, choice count,
+    content_filter_results presence — all without leaking prompts, keys, or paths.
+    """
+    import logging
+    logger = logging.getLogger("v2_assistant_model_client")
+    try:
+        diag: dict[str, Any] = {
+            "event": "azure_empty_response",
+            "deployment": str(deployment)[:64] if deployment else "",
+        }
+        if isinstance(data, dict):
+            resp_id = str(data.get("id", ""))[:64]
+            if resp_id:
+                diag["response_id"] = resp_id
+            model_name = str(data.get("model", ""))[:64]
+            if model_name:
+                diag["model"] = model_name
+            choices = data.get("choices")
+            if isinstance(choices, list):
+                diag["choice_count"] = len(choices)
+                if choices:
+                    first = choices[0] if isinstance(choices[0], dict) else {}
+                    finish = first.get("finish_reason", "")
+                    if finish:
+                        diag["finish_reason"] = str(finish)[:64]
+                    msg = first.get("message")
+                    diag["message_present"] = bool(msg)
+                    if isinstance(msg, dict):
+                        content = msg.get("content")
+                        diag["content_present"] = content is not None
+                        diag["content_length"] = len(str(content or ""))
+            usage = data.get("usage")
+            if isinstance(usage, dict):
+                diag["usage"] = {
+                    "prompt_tokens": usage.get("prompt_tokens"),
+                    "completion_tokens": usage.get("completion_tokens"),
+                    "total_tokens": usage.get("total_tokens"),
+                }
+            cfr = data.get("content_filter_results")
+            diag["content_filter_results_present"] = cfr is not None
+        logger.warning("AZURE_EMPTY_RESPONSE: %s", json.dumps(diag, default=str))
+    except Exception:
+        logger.warning("AZURE_EMPTY_RESPONSE: could not build diagnostic")
+
+
 def _sanitize_body_snippet(http_error: urllib.error.HTTPError) -> str:
     try:
         raw = http_error.read()
@@ -628,3 +687,17 @@ def _summary_with_snippet(summary: str, snippet: str) -> str:
 
 def _public_deployment_label(deployment: str) -> str:
     return "configured" if str(deployment or "").strip() else ""
+
+
+def _log_empty_azure_result_summary(*, endpoint: str, deployment: str) -> None:
+    """Log a redacted summary when Azure returns empty content and fallback is used.
+
+    Does NOT leak endpoint, deployment, or keys.
+    """
+    import logging
+    logger = logging.getLogger("v2_assistant_model_client")
+    safe_deployment = _public_deployment_label(deployment)
+    logger.warning(
+        "AZURE_EMPTY_RESULT: deployment=%s (empty response from Azure; using deterministic fallback)",
+        safe_deployment or "unset",
+    )

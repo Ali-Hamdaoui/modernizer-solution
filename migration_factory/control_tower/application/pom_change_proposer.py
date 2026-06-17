@@ -237,7 +237,73 @@ class PomChangeProposer:
                 "requested_version": m.group(2).strip(),
             }
 
-        # Try to extract groupId:artifactId
+        # ── GAV patterns (groupId:artifactId with colon) ──
+        # Pattern A: "propose/suggest/draft changing/updating GROUP:ARTIFACT to VERSION"
+        gav_propose_pattern = re.compile(
+            r"""(?:propose|suggest|draft|recommend)\s+
+            (?:chang(?:ing|e)|updat(?:ing|e)|upgrad(?:ing|e))\s+
+            (?:dependency\s+)?
+            ([\w.\-]+):([\w.\-]+)
+            \s+(?:to\s+|version\s+)?
+            ([\w.\-]+)""",
+            re.VERBOSE | re.IGNORECASE,
+        )
+        m = gav_propose_pattern.search(user_request)
+        if m:
+            return {
+                "target": PomChangeTarget(
+                    kind="dependency",
+                    group_id=m.group(1),
+                    artifact_id=m.group(2),
+                ),
+                "operation": operation,
+                "requested_version": _clean_version_token(m.group(3)),
+            }
+
+        # Pattern B: "update/change/set dependency GROUP:ARTIFACT to VERSION"
+        gav_dep_pattern = re.compile(
+            r"""(?:update|updat(?:ing|e)|chang(?:ing|e)|set|bump)\s+
+            dependency\s+
+            ([\w.\-]+):([\w.\-]+)
+            \s+(?:to\s+|version\s+)?
+            ([\w.\-]+)""",
+            re.VERBOSE | re.IGNORECASE,
+        )
+        m = gav_dep_pattern.search(user_request)
+        if m:
+            return {
+                "target": PomChangeTarget(
+                    kind="dependency",
+                    group_id=m.group(1),
+                    artifact_id=m.group(2),
+                ),
+                "operation": operation,
+                "requested_version": _clean_version_token(m.group(3)),
+            }
+
+        # Pattern C: "apply this ... update dependency GROUP:ARTIFACT to VERSION"
+        gav_apply_dep_pattern = re.compile(
+            r"""apply\s+this.*?
+            (?:update|updat(?:ing|e)|chang(?:ing|e)|set)\s+
+            dependency\s+
+            ([\w.\-]+):([\w.\-]+)
+            \s+(?:to\s+|version\s+)?
+            ([\w.\-]+)""",
+            re.VERBOSE | re.IGNORECASE,
+        )
+        m = gav_apply_dep_pattern.search(user_request)
+        if m:
+            return {
+                "target": PomChangeTarget(
+                    kind="dependency",
+                    group_id=m.group(1),
+                    artifact_id=m.group(2),
+                ),
+                "operation": operation,
+                "requested_version": _clean_version_token(m.group(3)),
+            }
+
+        # Try to extract groupId:artifactId (existing simple GAV pattern)
         gav_pattern = re.compile(
             r"""(?:change|update|upgrade|downgrade|set)\s+
             ([\w.\-]+):([\w.\-]+)
@@ -396,4 +462,9 @@ class PomChangeProposer:
 
 
 def _clean_requested_version(value: Any) -> str:
+    return str(value or "").strip().rstrip(".,;:")
+
+
+def _clean_version_token(value: str) -> str:
+    """Clean a version token, stripping trailing punctuation like 2.11.0. -> 2.11.0"""
     return str(value or "").strip().rstrip(".,;:")

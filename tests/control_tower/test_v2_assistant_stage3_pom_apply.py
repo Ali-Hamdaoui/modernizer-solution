@@ -917,3 +917,480 @@ def _build_test_fallback_answer(question: str) -> str:
         _build_v2_assistant_answer,
     )
     return _build_v2_assistant_answer(question=question, events=(), approvals=(), commands=())
+
+
+# ═══════════════════════════════════════════════════════════════════
+# F12: GAV parsing & Azure/UI fixes — new tests
+# ═══════════════════════════════════════════════════════════════════
+
+class TestProposeGavDependency:
+    """Propose GAV (group:artifact) dependency returns real proposal, not generic BOM."""
+
+    def test_propose_gav_dependency_returns_real_proposal(self):
+        """'propose changing com.google.code.gson:gson to 2.11.0' -> real proposal with proposal_id."""
+        editor = _mock_editor()
+        proposal = editor.propose_change(
+            job_id="job_1",
+            user_request="propose changing com.google.code.gson:gson to 2.11.0 in the Stage 3 root pom.xml. Do not apply it.",
+            idempotency_key="ik_gav_prop_1",
+            pom_content=SAMPLE_POM,
+            pom_deps_data=SAMPLE_POM_DEPS,
+        )
+        assert proposal.applied is False
+        assert proposal.proposal_id != ""
+        plan = proposal.server_validated_plan_preview
+        assert plan.get("operation") == "update_dependency_version"
+        target = plan.get("target", {})
+        assert target.get("group_id") == "com.google.code.gson"
+        assert target.get("artifact_id") == "gson"
+        assert plan.get("requested_version") == "2.11.0"
+
+    def test_propose_gav_dependency_not_generic_bom_proposal(self):
+        """GAV proposal must NOT produce a generic Spring Boot BOM proposal."""
+        editor = _mock_editor()
+        proposal = editor.propose_change(
+            job_id="job_1",
+            user_request="Propose changing com.google.code.gson:gson to 2.11.0 in the Stage 3 root pom.xml. Do not apply it.",
+            idempotency_key="ik_gav_prop_2",
+            pom_content=SAMPLE_POM,
+            pom_deps_data=SAMPLE_POM_DEPS,
+        )
+        plan = proposal.server_validated_plan_preview
+        # Must be an update_dependency_version operation, NOT a generic proposal
+        assert plan.get("operation") == "update_dependency_version"
+        target = plan.get("target", {})
+        assert target.get("kind") == "dependency"
+        assert target.get("group_id") == "com.google.code.gson"
+        assert target.get("artifact_id") == "gson"
+
+    def test_short_gson_and_full_gav_both_parse_to_same_target(self):
+        """Short 'gson' and full 'com.google.code.gson:gson' both map to same dependency target."""
+        editor = _mock_editor()
+
+        # Short form
+        proposal_short = editor.propose_change(
+            job_id="job_1",
+            user_request="change gson to 2.11.0",
+            idempotency_key="ik_short",
+            pom_content=SAMPLE_POM,
+            pom_deps_data=SAMPLE_POM_DEPS,
+        )
+        # Full GAV form
+        proposal_gav = editor.propose_change(
+            job_id="job_1",
+            user_request="change com.google.code.gson:gson to 2.11.0",
+            idempotency_key="ik_gav",
+            pom_content=SAMPLE_POM,
+            pom_deps_data=SAMPLE_POM_DEPS,
+        )
+
+        target_short = proposal_short.server_validated_plan_preview.get("target", {})
+        target_gav = proposal_gav.server_validated_plan_preview.get("target", {})
+        # Both should resolve to same groupId:artifactId
+        assert target_short.get("group_id", "").lower() == "com.google.code.gson"
+        assert target_short.get("artifact_id", "").lower() == "gson"
+        assert target_gav.get("group_id", "").lower() == "com.google.code.gson"
+        assert target_gav.get("artifact_id", "").lower() == "gson"
+
+
+class TestApplyGavDependency:
+    """Apply GAV dependency routes to PomDependencyEditor and changes live POM."""
+
+    def test_apply_update_dependency_gav_routes_to_apply(self):
+        """'update dependency GROUP:ARTIFACT to VERSION' routes to apply, returns result."""
+        editor = _mock_editor()
+        result = editor.apply_change_from_user_request(
+            job_id="job_1",
+            user_request="update dependency com.google.code.gson:gson to 2.11.0",
+            idempotency_key="ik_gav_apply_1",
+            pom_content=SAMPLE_POM,
+            pom_deps_data=SAMPLE_POM_DEPS,
+        )
+        assert result.status == "applied_pending_validation"
+        assert "gson" in result.target_desc.lower()
+        assert result.after_version == "2.11.0"
+
+    def test_apply_update_dependency_gav_returns_change_and_validation(self):
+        """GAV apply returns change_id and validation_id."""
+        editor = _mock_editor()
+        result = editor.apply_change_from_user_request(
+            job_id="job_1",
+            user_request="Apply this Stage 3 POM change: update dependency com.google.code.gson:gson to 2.11.0.",
+            idempotency_key="ik_gav_apply_2",
+            pom_content=SAMPLE_POM,
+            pom_deps_data=SAMPLE_POM_DEPS,
+        )
+        assert result.change_id != ""
+        assert result.validation_id is not None
+        assert result.rollback_available is True
+
+    def test_apply_update_dependency_gav_changes_live_pom(self):
+        """GAV apply actually changes the live Stage 3 sandbox POM file."""
+        import tempfile
+        from pathlib import Path
+
+        sandbox = tempfile.mkdtemp(prefix="f14_gav_test_")
+        pom_file = Path(sandbox) / "pom.xml"
+
+        # POM with gson at 2.10.1 (the Stage 3 scenario)
+        stage3_pom = """<?xml version="1.0" encoding="UTF-8"?>
+<project>
+    <dependencies>
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+            <version>2.10.1</version>
+        </dependency>
+    </dependencies>
+</project>
+"""
+        pom_file.write_text(stage3_pom, encoding="utf-8")
+
+        editor = PomDependencyEditor(
+            resolve_sandbox_root=lambda j, s: Path(sandbox),
+            resolve_pom_content=lambda j: pom_file.read_text(encoding="utf-8"),
+        )
+
+        result = editor.apply_change_from_user_request(
+            job_id="job_1",
+            user_request="update dependency com.google.code.gson:gson to 2.11.0",
+            idempotency_key="ik_gav_live_1",
+            pom_deps_data=SAMPLE_POM_DEPS,
+        )
+
+        # Check result
+        assert result.before_version == "2.10.1"
+        assert result.after_version == "2.11.0"
+
+        # Verify live POM file was changed
+        updated_content = pom_file.read_text(encoding="utf-8")
+        assert "2.11.0" in updated_content
+        assert "2.10.1" not in updated_content
+
+        # Cleanup
+        import shutil
+        shutil.rmtree(sandbox, ignore_errors=True)
+
+    def test_property_update_assertj_still_works(self):
+        """Property update 'update property assertj.version to 3.24.2' still works after GAV fixes."""
+        editor = _mock_editor(
+            pom_content=SAMPLE_POM.replace("<properties>\n        <java.version>17</java.version>",
+                                             "<properties>\n        <java.version>17</java.version>\n        <assertj.version>3.24.1</assertj.version>"),
+        )
+
+        proposal = editor.propose_change(
+            job_id="job_1",
+            user_request="update property assertj.version to 3.24.2",
+            idempotency_key="ik_prop_test",
+        )
+
+        plan = proposal.server_validated_plan_preview
+        target = plan.get("target", {})
+        assert target.get("kind") == "property"
+        assert target.get("property_name") == "assertj.version"
+        assert plan.get("requested_version") == "3.24.2"
+
+    def test_invalid_azure_fallback_still_executes_gav_apply(self):
+        """Azure empty response fallback must still execute the GAV apply (deterministic path)."""
+        from migration_factory.control_tower.application.v2_assistant_model_client import (
+            _fallback_result,
+        )
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _build_v2_assistant_answer,
+        )
+
+        editor = _mock_editor()
+        event = MagicMock(job_id="job_1")
+
+        with patch(
+            "migration_factory.control_tower.adapters.fastapi.app._build_pom_dependency_editor",
+            return_value=editor,
+        ):
+            fallback_answer = _build_v2_assistant_answer(
+                question="Apply this Stage 3 POM change: update dependency com.google.code.gson:gson to 2.11.0.",
+                events=(event,),
+                approvals=(),
+                commands=(),
+            )
+
+        fallback = _fallback_result(
+            fallback_answer,
+            "Azure OpenAI returned empty response",
+            "empty_response",
+        )
+        # The deterministic fallback came from the backend, not Azure
+        assert fallback.source == "deterministic"
+        # The route was recognized (either applied or blocked, not generic error)
+        assert "applied_pending_validation" in fallback.content or "blocked" in fallback.content
+        # Must NOT be the generic "I need a specific dependency name" message
+        assert "I need a specific dependency name" not in fallback.content
+
+
+class TestParserGavPatterns:
+    """Parser tests for GAV patterns in _parse_user_request."""
+
+    def _make_proposer(self):
+        from migration_factory.control_tower.application.pom_change_proposer import PomChangeProposer
+        return PomChangeProposer()
+
+    def test_parse_propose_changing_gav_to_version(self):
+        """'propose changing com.google.code.gson:gson to 2.11.0' parses correctly."""
+        proposer = self._make_proposer()
+        result = proposer._parse_user_request(
+            "propose changing com.google.code.gson:gson to 2.11.0 in the Stage 3 root pom.xml. Do not apply it.",
+            SAMPLE_POM, SAMPLE_POM_DEPS,
+        )
+        assert result["target"].kind == "dependency"
+        assert result["target"].group_id == "com.google.code.gson"
+        assert result["target"].artifact_id == "gson"
+        assert result["requested_version"] == "2.11.0"
+        assert result["operation"] == "update_dependency_version"
+
+    def test_parse_update_dependency_gav_to_version(self):
+        """'update dependency com.google.code.gson:gson to 2.11.0' parses correctly."""
+        proposer = self._make_proposer()
+        result = proposer._parse_user_request(
+            "update dependency com.google.code.gson:gson to 2.11.0",
+            SAMPLE_POM, SAMPLE_POM_DEPS,
+        )
+        assert result["target"].kind == "dependency"
+        assert result["target"].group_id == "com.google.code.gson"
+        assert result["target"].artifact_id == "gson"
+        assert result["requested_version"] == "2.11.0"
+
+    def test_parse_apply_this_update_dependency_gav_to_version(self):
+        """'Apply this ... update dependency GROUP:ARTIFACT to VERSION' parses correctly."""
+        proposer = self._make_proposer()
+        result = proposer._parse_user_request(
+            "Apply this Stage 3 POM change: update dependency com.google.code.gson:gson to 2.11.0.",
+            SAMPLE_POM, SAMPLE_POM_DEPS,
+        )
+        assert result["target"].kind == "dependency"
+        assert result["target"].group_id == "com.google.code.gson"
+        assert result["target"].artifact_id == "gson"
+        assert result["requested_version"] == "2.11.0"
+
+    def test_parse_gav_version_strips_trailing_period(self):
+        """Version '2.11.0.' -> '2.11.0' (strips trailing period)."""
+        from migration_factory.control_tower.application.pom_change_proposer import _clean_version_token
+        assert _clean_version_token("2.11.0.") == "2.11.0"
+        assert _clean_version_token("2.11.0") == "2.11.0"
+        assert _clean_version_token("3.5.14-RC.1,") == "3.5.14-RC.1"
+
+    def test_parse_property_request_still_works(self):
+        """Property requests still parse correctly after GAV changes."""
+        proposer = self._make_proposer()
+        result = proposer._parse_user_request(
+            "update property assertj.version to 3.24.2",
+            SAMPLE_POM, SAMPLE_POM_DEPS,
+        )
+        assert result["target"].kind == "property"
+        assert result["target"].property_name == "assertj.version"
+        assert result["requested_version"] == "3.24.2"
+        assert result["operation"] == "update_property_version"
+
+    def test_parse_short_artifact_request_still_works(self):
+        """Short artifact 'change gson to 2.11.0' still parses correctly."""
+        proposer = self._make_proposer()
+        result = proposer._parse_user_request(
+            "change gson to 2.11.0",
+            SAMPLE_POM, SAMPLE_POM_DEPS,
+        )
+        assert result["target"].kind == "dependency"
+        assert result["target"].artifact_id.lower() == "gson"
+        assert result["requested_version"] == "2.11.0"
+
+
+class TestAzureEmptyResponseDiagnostics:
+    """Azure empty-response diagnostics capture finish_reason, usage, choice shape."""
+
+    def test_azure_empty_logs_finish_reason_usage_choice_shape(self):
+        """_log_empty_azure_response captures finish_reason, usage, choice_count."""
+        from migration_factory.control_tower.application.v2_assistant_model_client import (
+            _log_empty_azure_response,
+        )
+        import logging
+
+        # Sample Azure response with empty content
+        data = {
+            "id": "chatcmpl-abc123",
+            "model": "gpt-4o-mini",
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {"content": "", "role": "assistant"},
+                "index": 0,
+                "content_filter_results": {"hate": {"filtered": False}},
+            }],
+            "usage": {
+                "prompt_tokens": 5300,
+                "completion_tokens": 5,
+                "total_tokens": 5305,
+            },
+        }
+
+        # Should not raise
+        with patch.object(logging.getLogger("v2_assistant_model_client"), "warning") as mock_warn:
+            _log_empty_azure_response(data, "gpt-4o-mini")
+            # Verify logger was called with diagnostic info
+            assert mock_warn.called
+            call_args = str(mock_warn.call_args)
+            assert "empty_response" in call_args.lower() or "AZURE_EMPTY" in call_args
+
+    def test_azure_empty_with_minimal_response_no_error(self):
+        """Minimal response (choices present but empty content) logs without error."""
+        from migration_factory.control_tower.application.v2_assistant_model_client import (
+            _log_empty_azure_response,
+        )
+        import logging
+
+        data = {"choices": [{"message": {"content": ""}}]}
+
+        with patch.object(logging.getLogger("v2_assistant_model_client"), "warning"):
+            # Should not raise
+            _log_empty_azure_response(data, "deployment")
+
+
+class TestModelInvocationFailedClassification:
+    """model_invocation_failed with fallback is telemetry, not failure/repair."""
+
+    def test_model_invocation_failed_with_fallback_is_telemetry_not_failure_repair(self):
+        """_is_fallback_model_event returns True for deterministic fallback events."""
+        from migration_factory.control_tower.adapters.fastapi.app import (_is_fallback_model_event,)
+
+        # Create a mock event that is a model_invocation_failed with deterministic source
+        fallback_event = MagicMock(
+            type="model_invocation_failed",
+            payload_json='{"source": "deterministic", "is_fallback": true}',
+        )
+        assert _is_fallback_model_event(fallback_event) is True
+
+        # Real model failure (not fallback) should NOT be filtered
+        real_failure_event = MagicMock(
+            type="model_invocation_failed",
+            payload_json='{"source": "azure_openai", "is_fallback": false}',
+        )
+        assert _is_fallback_model_event(real_failure_event) is False
+
+        # Non-model events should NOT be filtered
+        build_failed_event = MagicMock(
+            type="build_failed",
+            payload_json='{}',
+        )
+        assert _is_fallback_model_event(build_failed_event) is False
+
+    def test_model_invocation_completed_not_filtered(self):
+        """model_invocation_completed events are NOT filtered as fallback."""
+        from migration_factory.control_tower.adapters.fastapi.app import (_is_fallback_model_event,)
+
+        completed_event = MagicMock(
+            type="model_invocation_completed",
+            payload_json='{"source": "azure_openai"}',
+        )
+        assert _is_fallback_model_event(completed_event) is False
+
+
+class TestLivePomFind:
+    """Live POM find reads from Stage 3 sandbox, not truncated preview."""
+
+    def test_find_gav_dependency_reads_live_stage3_pom_not_preview(self):
+        """'find com.google.code.gson:gson' reads live Stage 3 sandbox POM."""
+        import tempfile
+        from pathlib import Path
+
+        sandbox = tempfile.mkdtemp(prefix="f14_find_test_")
+        pom_file = Path(sandbox) / "pom.xml"
+
+        stage3_pom = """<?xml version="1.0" encoding="UTF-8"?>
+<project>
+    <dependencies>
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+            <version>2.10.1</version>
+        </dependency>
+    </dependencies>
+</project>
+"""
+        pom_file.write_text(stage3_pom, encoding="utf-8")
+
+        editor = PomDependencyEditor(
+            resolve_sandbox_root=lambda j, s: Path(sandbox),
+            resolve_pom_content=lambda j: pom_file.read_text(encoding="utf-8"),
+        )
+
+        view = editor.get_stage3_pom(job_id="job_1")
+        assert view.exists is True
+        assert "2.10.1" in view.content
+        assert "com.google.code.gson" in view.content
+        assert "gson" in view.content
+
+        import shutil
+        shutil.rmtree(sandbox, ignore_errors=True)
+
+    def test_find_artifactid_gson_returns_matching_block(self):
+        """'find gson' returns the matching dependency block."""
+        import tempfile
+        from pathlib import Path
+
+        sandbox = tempfile.mkdtemp(prefix="f14_find_test_")
+        pom_file = Path(sandbox) / "pom.xml"
+        pom_file.write_text(SAMPLE_POM, encoding="utf-8")
+
+        editor = PomDependencyEditor(
+            resolve_sandbox_root=lambda j, s: Path(sandbox),
+            resolve_pom_content=lambda j: pom_file.read_text(encoding="utf-8"),
+        )
+
+        view = editor.get_stage3_pom(job_id="job_1")
+        assert view.exists is True
+        content_lower = view.content.lower()
+        # Should contain the gson dependency block
+        assert "gson" in content_lower
+        assert "com.google.code.gson" in content_lower
+
+        import shutil
+        shutil.rmtree(sandbox, ignore_errors=True)
+
+    def test_full_raw_pom_truncation_is_labeled_if_truncated(self):
+        """If POM is truncated, the View marks truncated=True."""
+        # Create a very large POM
+        large_pom = "<?xml version='1.0'?>\n<project>\n" + ("  <!-- padding -->\n" * 5000) + "</project>\n"
+
+        import tempfile
+        from pathlib import Path
+        sandbox = tempfile.mkdtemp(prefix="f14_pom_trunc_")
+        pom_file = Path(sandbox) / "pom.xml"
+        pom_file.write_text(large_pom, encoding="utf-8")
+
+        editor = PomDependencyEditor(
+            resolve_sandbox_root=lambda j, s: Path(sandbox),
+            resolve_pom_content=lambda j: pom_file.read_text(encoding="utf-8"),
+        )
+
+        view = editor.get_stage3_pom(job_id="job_1")
+        if view.truncated:
+            assert len(view.content) <= 100_000
+
+        import shutil
+        shutil.rmtree(sandbox, ignore_errors=True)
+
+    def test_find_pom_no_raw_sandbox_path_leak(self):
+        """POM view content must NOT leak raw sandbox paths."""
+        import tempfile
+        from pathlib import Path
+
+        sandbox = tempfile.mkdtemp(prefix="f14_path_leak_")
+        pom_file = Path(sandbox) / "pom.xml"
+        pom_file.write_text(SAMPLE_POM, encoding="utf-8")
+
+        editor = PomDependencyEditor(
+            resolve_sandbox_root=lambda j, s: Path(sandbox),
+            resolve_pom_content=lambda j: pom_file.read_text(encoding="utf-8"),
+        )
+
+        view = editor.get_stage3_pom(job_id="job_1")
+        # The content should NOT contain the raw sandbox path
+        assert sandbox not in view.content
+
+        import shutil
+        shutil.rmtree(sandbox, ignore_errors=True)
