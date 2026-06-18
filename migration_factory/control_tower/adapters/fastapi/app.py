@@ -191,6 +191,9 @@ from migration_factory.control_tower.application.v2_dual_model_runtime import (
 from migration_factory.control_tower.application.v2_dual_model_invocation_audit import (
     V2DualModelInvocationAuditStore,
 )
+from migration_factory.control_tower.application.v2_planning_dual_model_review import (
+    V2PlanningDualModelReviewService,
+)
 from migration_factory.control_tower.application.redaction import redact_public_value
 from migration_factory.control_tower.adapters.fastapi.security import (
     MUTATION_METHODS,
@@ -606,6 +609,16 @@ def create_app(
 
     _repair_flow = V2RepairFlowService()
     _diagnosis_repo = unit_of_work_factory().v2_failure_diagnoses
+    _trace_store = V2DualModelInvocationAuditStore()
+    _dual_model_runtime = V2DualModelRuntimeService(
+        model1_client=app.state.v2_proposer_client,
+        model2_client=app.state.v2_reviewer_client,
+        trace_store=_trace_store,
+    )
+    _planning_review_service = V2PlanningDualModelReviewService(
+        unit_of_work_factory=unit_of_work_factory,
+        runtime_service=_dual_model_runtime,
+    )
     _diagnosis_callback = create_orchestrator_diagnosis_callback(
         repair_flow=_repair_flow,
         event_sink=_diagnosis_event_sink,
@@ -616,6 +629,7 @@ def create_app(
         unit_of_work_factory=unit_of_work_factory,
         notifier=app.state.public_event_notifier,
         diagnosis_callback=_diagnosis_callback,
+        planning_review_service=_planning_review_service,
     )
     app.state.controller_ownership = resolved_controller_ownership
     app.state.controller_services_started = False

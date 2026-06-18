@@ -115,6 +115,7 @@ class V2OrchestratorRunner:
         popen_factory: Any = subprocess.Popen,
         cwd: Path | None = None,
         diagnosis_callback: Callable[[str, int, str, str, dict[str, Any]], None] | None = None,
+        planning_review_service: Any | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._notifier = notifier
@@ -123,6 +124,7 @@ class V2OrchestratorRunner:
         self._event_lock = threading.Lock()
         self._last_stdout_lines: list[str] = []
         self._diagnosis_callback = diagnosis_callback
+        self._planning_review_service = planning_review_service
 
     def start(self, *, job_id: str, command_id: str) -> V2OrchestratorStart:
         with self._unit_of_work_factory() as uow:
@@ -520,6 +522,42 @@ class V2OrchestratorRunner:
         )
 
         if result.get("status") == "human_approval_required":
+            approval_summary = "Human approval required before sandbox transform."
+            planning_payload: dict[str, Any] | None = None
+            if self._planning_review_service is not None:
+                try:
+                    planning_review = self._planning_review_service.review_planning_for_approval(
+                        job_id=job_id,
+                        stage_index=stage_index,
+                        command_id=command_id,
+                        result=result,
+                    )
+                    approval_summary = planning_review.approval_summary
+                    planning_payload = planning_review.supervision_payload
+                    artifact_refs = result.get("artifact_refs") if isinstance(result.get("artifact_refs"), dict) else {}
+                    artifact_refs.update(planning_review.artifact_refs)
+                    if artifact_refs:
+                        result["artifact_refs"] = artifact_refs
+                    result["planning_supervision"] = planning_payload
+                    if planning_review.artifact_refs:
+                        self._emit_artifacts(
+                            job_id=job_id,
+                            stage_index=stage_index,
+                            command_id=command_id,
+                            result={"artifact_refs": planning_review.artifact_refs},
+                        )
+                except Exception as exc:
+                    planning_payload = {
+                        "purpose": "planning_review",
+                        "errors": [f"planning_supervision_failed:{type(exc).__name__}"],
+                        "read_only": True,
+                    }
+                    result["planning_supervision"] = planning_payload
+                    approval_summary = (
+                        "Human approval required before sandbox transform.\n"
+                        "Planning AI supervision unavailable; deterministic backend flow continued.\n"
+                        "Exact checksum approval still required."
+                    )
             checksum = sha256_canonical_json(result)
             with self._unit_of_work_factory() as uow:
                 card = V2ApprovalMappingService(uow.v2_approvals).create_decision_card(
@@ -527,7 +565,7 @@ class V2OrchestratorRunner:
                     interrupt_id=str(result.get("run_id") or command_id),
                     request_checksum=checksum,
                     stage_index=stage_index,
-                    summary="Human approval required before sandbox transform.",
+                    summary=approval_summary,
                 )
 
             self._event(
@@ -536,7 +574,12 @@ class V2OrchestratorRunner:
                 event_type="approval_required",
                 status="blocked",
                 message="Orchestrator paused for human approval.",
-                payload={"command_id": command_id, "card_id": card.card_id, "request_checksum": checksum},
+                payload={
+                    "command_id": command_id,
+                    "card_id": card.card_id,
+                    "request_checksum": checksum,
+                    "planning_supervision": planning_payload or {},
+                },
             )
             self._event(
                 job_id=job_id,

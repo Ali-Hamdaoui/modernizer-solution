@@ -59,6 +59,49 @@ class _SequentialFakePopen:
         return _FakeProcess(stdout, stderr, exit_code)
 
 
+class _FakePlanningReview:
+    def __init__(self, artifact_one: Path, artifact_two: Path) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._artifact_refs = {
+            "planning_model1_review": str(artifact_one),
+            "planning_model2_verification": str(artifact_two),
+        }
+
+    def review_planning_for_approval(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        result: dict[str, Any],
+    ):
+        self.calls.append(
+            {
+                "job_id": job_id,
+                "stage_index": stage_index,
+                "command_id": command_id,
+                "result": dict(result),
+            }
+        )
+        return type(
+            "_PlanningReviewResult",
+            (),
+            {
+                "approval_summary": (
+                    "Human approval required before sandbox transform.\n"
+                    "Model 2 verdict: rejected.\n"
+                    "Exact checksum approval still required."
+                ),
+                "artifact_refs": dict(self._artifact_refs),
+                "supervision_payload": {
+                    "purpose": "planning_review",
+                    "model2": {"structured_output": {"verdict": "rejected"}},
+                    "read_only": True,
+                },
+            },
+        )()
+
+
 def _conn(tmp_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(
         tmp_path / "runner.sqlite3",
@@ -261,6 +304,47 @@ def test_v2_runner_maps_approval_interrupt_to_card_and_blocked_events(tmp_path: 
     assert cards[0].job_id == "job-1"
     assert cards[0].request_checksum
     assert len(uow.v2_approvals.list_cards_by_job("job-1")) == 1
+
+
+def test_v2_runner_records_planning_review_before_human_approval(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    model1_path = tmp_path / "model1_review.json"
+    model2_path = tmp_path / "model2_review.json"
+    model1_path.write_text("{}", encoding="utf-8")
+    model2_path.write_text("{}", encoding="utf-8")
+    planning_review = _FakePlanningReview(model1_path, model2_path)
+    result = {
+        "status": "human_approval_required",
+        "run_id": "run-1",
+        "summary": {"analysis_status": "PASS"},
+        "artifact_refs": {"plan": "C:/out/.migration/runs/run-1/planning/plan.json"},
+        "decision_options": ["approved", "rejected", "replan_required"],
+    }
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[json.dumps(result) + "\n"], stderr=[], exit_code=0),
+        cwd=tmp_path,
+        planning_review_service=planning_review,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "stage_blocked_for_approval")
+
+    uow = SqliteUnitOfWork(conn)
+    assert len(planning_review.calls) == 1
+    events = uow.v2_events.list_by_job("job-1")
+    approval_required = [event for event in events if event.type == "approval_required"][-1]
+    artifact_events = [event for event in events if event.type == "artifact_written"]
+    approval_payload = json.loads(approval_required.payload_json or "{}")
+    assert approval_payload["planning_supervision"]["purpose"] == "planning_review"
+    assert approval_payload["planning_supervision"]["model2"]["structured_output"]["verdict"] == "rejected"
+    kinds = {json.loads(event.payload_json or "{}").get("artifact_kind") for event in artifact_events}
+    assert "planning_model1_review" in kinds
+    assert "planning_model2_verification" in kinds
+    cards = uow.v2_approvals.list_cards_by_status("pending")
+    assert len(cards) == 1
+    assert "Model 2 verdict: rejected." in cards[0].summary
 
 
 def test_v2_runner_passes_non_secret_copilot_env_and_excludes_secrets(monkeypatch, tmp_path: Path) -> None:

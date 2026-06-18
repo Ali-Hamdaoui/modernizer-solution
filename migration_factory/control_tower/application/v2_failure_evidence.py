@@ -378,7 +378,7 @@ def infer_stage_run_root(path: str | Path | None) -> Path | None:
     resolved = Path(path).resolve()
     location = resolved if resolved.is_dir() else resolved.parent
     lowered = location.name.lower()
-    if lowered in {"logs", "build", "orchestration", "analysis", "transformation"}:
+    if lowered in {"logs", "build", "orchestration", "analysis", "planning", "transformation"}:
         return location.parent.resolve()
     if lowered == "post_transform" and location.parent.name.lower() == "test":
         return location.parent.parent.resolve()
