@@ -29,6 +29,15 @@ class PomPropertyPatch:
 
 
 @dataclass(frozen=True)
+class MavenWildcardVersionPatch:
+    file: str
+    property: str
+    old_value: str
+    new_value: str
+    unit: str
+
+
+@dataclass(frozen=True)
 class SpringBootVersionPatch:
     file: str
     location: str
@@ -131,6 +140,53 @@ def patch_pom_property(
             unit=unit_id,
         )
     ]
+
+
+def patch_invalid_maven_wildcard_versions(
+    project_path: Path,
+    *,
+    unit_id: str,
+) -> list[MavenWildcardVersionPatch]:
+    pom_path = project_path / "pom.xml"
+    if not pom_path.is_file():
+        return []
+
+    tree = ET.parse(pom_path)
+    root = tree.getroot()
+    namespace = _namespace(root.tag)
+    if namespace:
+        ET.register_namespace("", namespace)
+
+    properties = root.find(_tag(namespace, "properties"))
+    if properties is None:
+        return []
+
+    replacements = {
+        "javax.persistence.version": ("3.0.x", "3.1.0"),
+        "javax.servlet.version": ("5.0.x", "6.0.0"),
+    }
+    patches: list[MavenWildcardVersionPatch] = []
+    for property_name, (old_value, new_value) in replacements.items():
+        property_node = properties.find(_tag(namespace, property_name))
+        if property_node is None or property_node.text is None:
+            continue
+        current_value = property_node.text.strip()
+        if current_value != old_value:
+            continue
+        property_node.text = new_value
+        patches.append(
+            MavenWildcardVersionPatch(
+                file="pom.xml",
+                property=property_name,
+                old_value=current_value,
+                new_value=new_value,
+                unit=unit_id,
+            )
+        )
+
+    if patches:
+        tree.write(pom_path, encoding="utf-8", xml_declaration=True)
+    return patches
 
 
 def patch_spring_boot_version(

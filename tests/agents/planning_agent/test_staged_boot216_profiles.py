@@ -129,6 +129,10 @@ def test_stage_b_boot_356_units_match_allowed_order() -> None:
     assert tuple(unit.id for unit in units) in ALLOWED_UNIT_ORDERS
     assert profile["openrewrite"]["post_apply_patches"] == [
         {
+            "type": "invalid_maven_wildcard_versions",
+            "required": False,
+        },
+        {
             "type": "spring_boot_version",
             "old_value": "3.5.14",
             "new_value": "3.5.6",

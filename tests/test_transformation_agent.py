@@ -27,6 +27,7 @@ from migration_factory.agents.transformation_agent.pom_patches import (
     detect_spring_boot_version,
     is_stable_spring_boot_35_version,
     patch_batch_config_flat_file_item_reader_constructor,
+    patch_invalid_maven_wildcard_versions,
     patch_maven_enforcer_java_version,
     patch_pom_property,
     patch_security_config_authorize_http_requests,
@@ -59,6 +60,9 @@ PLUGIN_XML = """<plugin>
   <version>6.23.0</version>
 </plugin>
 """
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+REAL_AI_HUB = REPO_ROOT / "modernizer-solution-ai-hub"
 
 
 PLAN_YAML = """schema_version: "1.3"
@@ -364,6 +368,57 @@ migration_units:
                 "<archunit.version>1.4.1</archunit.version>",
                 (app / "pom.xml").read_text(encoding="utf-8"),
             )
+
+    def test_invalid_maven_wildcard_versions_patch_updates_known_properties(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project>
+  <properties>
+    <javax.persistence.version>3.0.x</javax.persistence.version>
+    <javax.servlet.version>5.0.x</javax.servlet.version>
+  </properties>
+</project>
+""",
+                encoding="utf-8",
+            )
+
+            patches = patch_invalid_maven_wildcard_versions(app, unit_id="spring-boot-3-5")
+
+            self.assertEqual(len(patches), 2)
+            self.assertEqual(
+                [(patch.property, patch.old_value, patch.new_value) for patch in patches],
+                [
+                    ("javax.persistence.version", "3.0.x", "3.1.0"),
+                    ("javax.servlet.version", "5.0.x", "6.0.0"),
+                ],
+            )
+            pom_text = (app / "pom.xml").read_text(encoding="utf-8")
+            self.assertIn("<javax.persistence.version>3.1.0</javax.persistence.version>", pom_text)
+            self.assertIn("<javax.servlet.version>6.0.0</javax.servlet.version>", pom_text)
+
+    def test_invalid_maven_wildcard_versions_patch_is_noop_when_values_already_exact(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            pom_path = app / "pom.xml"
+            pom_path.write_text(
+                """<project>
+  <properties>
+    <javax.persistence.version>3.1.0</javax.persistence.version>
+    <javax.servlet.version>6.0.0</javax.servlet.version>
+  </properties>
+</project>
+""",
+                encoding="utf-8",
+            )
+            before = pom_path.read_text(encoding="utf-8")
+
+            patches = patch_invalid_maven_wildcard_versions(app, unit_id="spring-boot-3-5")
+
+            self.assertEqual(patches, [])
+            self.assertEqual(pom_path.read_text(encoding="utf-8"), before)
 
     def test_spring_boot_version_patch_updates_properties_and_dependencies(self) -> None:
         with workspace_temp_dir() as tmp:
@@ -792,6 +847,109 @@ migration_units:
                 (app / "pom.xml").read_text(encoding="utf-8"),
             )
             run_command.assert_called_once()
+
+    def test_invalid_maven_wildcard_versions_patch_runs_before_validation_and_records_in_ledger(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project>
+  <properties>
+    <javax.persistence.version>3.0.x</javax.persistence.version>
+    <javax.servlet.version>5.0.x</javax.servlet.version>
+  </properties>
+</project>
+""",
+                encoding="utf-8",
+            )
+            plan = tmp / "plan.yaml"
+            plan.write_text(
+                """
+schema_version: "1.3"
+migration:
+  id: test-migration
+  name: Test Migration
+workspaces:
+  target:
+    path: ./modernized-app
+    migration_dir: .migration
+    ledger_file: .migration/ledger.json
+migration_units:
+  - id: spring-boot-3-5
+    title: Spring Boot 3.5
+    transformations:
+      - type: openrewrite
+        apply_goal: runNoFork
+        active_recipes:
+          - org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5
+      - type: invalid_maven_wildcard_versions
+        required: false
+    checks:
+      - id: validation
+        command: mvn clean test
+        required: true
+""",
+                encoding="utf-8",
+            )
+            plugin = tmp / "rewrite-plugin.txt"
+            plugin.write_text(PLUGIN_XML, encoding="utf-8")
+
+            with mock.patch(
+                "migration_factory.agents.transformation_agent.agent.run_command",
+                return_value=CommandResult(
+                    command="mvn",
+                    exit_code=0,
+                    stdout=[],
+                    stderr=[],
+                    duration_seconds=0.01,
+                ),
+            ) as run_command:
+                result = run_transformation_agent(app, plugin, plan, wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            transformations = ledger["units"]["spring-boot-3-5"]["transformations"]
+            self.assertEqual(transformations[0]["type"], "invalid_maven_wildcard_versions")
+            self.assertEqual(transformations[0]["status"], "applied")
+            self.assertEqual(
+                [(patch["property"], patch["old_value"], patch["new_value"]) for patch in transformations[0]["patches"]],
+                [
+                    ("javax.persistence.version", "3.0.x", "3.1.0"),
+                    ("javax.servlet.version", "5.0.x", "6.0.0"),
+                ],
+            )
+            pom_text = (app / "pom.xml").read_text(encoding="utf-8")
+            self.assertIn("<javax.persistence.version>3.1.0</javax.persistence.version>", pom_text)
+            self.assertIn("<javax.servlet.version>6.0.0</javax.servlet.version>", pom_text)
+            self.assertEqual(ledger["build_validation"]["unit_id"], "spring-boot-3-5")
+            run_command.assert_called_once()
+
+    def test_stage_b_profile_execution_plan_includes_invalid_wildcard_patch_after_openrewrite(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            run_id = "run-1"
+            _write_approved_run_artifacts(
+                app,
+                run_id,
+                include_rewrite_plan=True,
+                source_unit_id="spring-boot-3-5",
+                source_unit_goal="Upgrade Spring Boot to 3.5.x.",
+            )
+
+            plan_path = write_transformation_execution_plan(app, run_id)
+            transform_module._apply_openrewrite_apply_settings(
+                plan_path,
+                str(REAL_AI_HUB),
+                "springboot-2.7-to-3.5-java17",
+            )
+            plan = load_migration_plan(plan_path, app)
+            unit = next(unit for unit in plan.units if unit.id == "spring-boot-3-5")
+            transformations = unit.transformations
+
+            self.assertEqual(transformations[0]["type"], "openrewrite")
+            self.assertEqual(transformations[1]["type"], "invalid_maven_wildcard_versions")
+            self.assertEqual(transformations[1]["required"], False)
+            self.assertEqual(transformations[2]["type"], "spring_boot_version")
 
     def test_required_enforcer_patch_missing_match_fails_before_validation(self) -> None:
         with workspace_temp_dir() as tmp:

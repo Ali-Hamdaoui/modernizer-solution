@@ -39,6 +39,8 @@ openrewrite:
   catalog_path: catalogs/openrewrite/springboot-3.5-java17.yaml
   apply_goal: runNoFork
   post_apply_patches:
+    - type: invalid_maven_wildcard_versions
+      required: false
     - type: spring_boot_version
       old_value: 3.5.14
       new_value: 3.5.6

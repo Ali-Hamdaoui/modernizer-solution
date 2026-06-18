@@ -21,6 +21,7 @@ from .plan import MigrationPlan, MigrationUnit, load_migration_plan
 from .pom_patches import (
     patch_batch_config_flat_file_item_reader_constructor,
     detect_spring_boot_version,
+    patch_invalid_maven_wildcard_versions,
     patch_maven_enforcer_java_version,
     patch_pom_property,
     patch_security_config_authorize_http_requests,
@@ -211,6 +212,47 @@ def _run_unit(
                     f"unit={patch.unit} patch=pom_property file={patch.file} "
                     f"property={patch.property} old_value={patch.old_value} "
                     f"new_value={patch.new_value}"
+                )
+            recorded_transformations.append(
+                {
+                    "type": transformation_type,
+                    "status": "applied" if patches else "not_applicable",
+                    "file": "pom.xml",
+                    "patches": [
+                        {
+                            "file": patch.file,
+                            "property": patch.property,
+                            "old_value": patch.old_value,
+                            "new_value": patch.new_value,
+                            "unit": patch.unit,
+                        }
+                        for patch in patches
+                    ],
+                }
+            )
+            continue
+
+        if transformation_type == "invalid_maven_wildcard_versions":
+            patches = [] if dry_run else patch_invalid_maven_wildcard_versions(
+                plan.target_path,
+                unit_id=unit.id,
+            )
+            required = transformation.get("required", False) is True
+            if required and not dry_run and not patches:
+                _mark_unit_blocked(
+                    plan,
+                    unit,
+                    "REQUIRED_POM_PATCH_NOT_APPLIED invalid_maven_wildcard_versions",
+                    command_results,
+                    recorded_transformations=recorded_transformations,
+                )
+                raise TransformationAgentError(
+                    "REQUIRED_POM_PATCH_NOT_APPLIED invalid_maven_wildcard_versions"
+                )
+            for patch in patches:
+                print(
+                    f"unit={patch.unit} patch=invalid_maven_wildcard_versions file={patch.file} "
+                    f"property={patch.property} old_value={patch.old_value} new_value={patch.new_value}"
                 )
             recorded_transformations.append(
                 {
