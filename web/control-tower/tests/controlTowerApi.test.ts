@@ -15,6 +15,7 @@ import {
   getV2JobApprovals,
   getV2MigrationJobStages,
   getJob,
+  materializeV2RepairExecutionPlan,
   previewPlanAmendment,
   postJson,
   rejectV2RepairProposal,
@@ -279,6 +280,27 @@ describe("M2-01 frontend diagnostic contracts", () => {
       approval_checksum: "reject",
       note: "Operator: architect - Needs human review",
     });
+  });
+
+  it("materialize repair execution plan calls read-write execution-plan endpoint only", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        proposal_id: "proposal-1",
+        execution_plan: { applied: false, read_only: true },
+      })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await materializeV2RepairExecutionPlan("job-123", "proposal-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${DEFAULT_CONTROL_TOWER_API_BASE_URL}/v1/v2/migration-jobs/job-123/repair-proposals/proposal-1/materialize-execution-plan`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({}),
+      })
+    );
   });
 
   it("preview helper uses preview endpoint and safe preview contract", async () => {
