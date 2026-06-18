@@ -105,7 +105,8 @@ def _reject(client: TestClient, job_id: str, proposal_id: str):
     )
 
 
-def _run_api_chain_to_apply(client: TestClient, job_id: str, proposal_id: str) -> None:
+def _run_api_chain_to_apply(client: TestClient, job_id: str, proposal_id: str) -> dict[str, dict]:
+    responses: dict[str, dict] = {}
     for step in (
         "materialize-execution-plan",
         "materialize-patch-candidate",
@@ -113,6 +114,20 @@ def _run_api_chain_to_apply(client: TestClient, job_id: str, proposal_id: str) -
     ):
         response = _post(client, job_id, proposal_id, step)
         assert response.status_code == 200, response.text
+        responses[step] = response.json()
+    return responses
+
+
+def _assert_lifecycle_contract(lifecycle_proposal: dict[str, object], *, expected_state: str, expected_action: str) -> None:
+    assert lifecycle_proposal["current_state"] == expected_state
+    assert lifecycle_proposal["approval_state"] in {"approved", "rejected"}
+    assert lifecycle_proposal["sandbox_apply_state"] in {"not_started", "applied"}
+    assert lifecycle_proposal["sandbox_validation_state"] in {"not_started", "passed", "rolled_back", "failed", "rollback_error"}
+    assert lifecycle_proposal["rollback_performed"] in {True, False}
+    assert lifecycle_proposal["source_mutated"] is False
+    assert lifecycle_proposal["sandbox_only"] is True
+    assert lifecycle_proposal["stage_resumed"] is False
+    assert lifecycle_proposal["next_operator_action"] == expected_action
 
 
 def test_api_governed_repair_workflow_happy_path(tmp_path: Path) -> None:
@@ -125,8 +140,41 @@ def test_api_governed_repair_workflow_happy_path(tmp_path: Path) -> None:
 
     approval = _approve(client, job_id, proposal_id, checksum)
     assert approval.status_code == 200, approval.text
-    assert approval.json()["applied"] is False
-    _run_api_chain_to_apply(client, job_id, proposal_id)
+    approval_body = approval.json()
+    assert approval_body["proposal_id"] == proposal_id
+    assert approval_body["job_id"] == job_id
+    assert approval_body["run_id"].endswith("-s2")
+    assert approval_body["approval_result"] == "approved"
+    assert approval_body["approval_state"]["state"] == "approved"
+    assert approval_body["applied"] is False
+    assert approval_body["source_mutated"] is False
+    assert approval_body["stage_resumed"] is False
+    assert approval_body["approval_state"]["read_only_until_apply"] is True
+    assert approval_body["approval_state"]["no_auto_apply"] is True
+    chain = _run_api_chain_to_apply(client, job_id, proposal_id)
+    assert chain["materialize-execution-plan"]["proposal_id"] == proposal_id
+    assert chain["materialize-execution-plan"]["job_id"] == job_id
+    assert chain["materialize-execution-plan"]["applied"] is False
+    assert chain["materialize-execution-plan"]["human_approved"] is True
+    assert chain["materialize-execution-plan"]["read_only"] is True
+    assert chain["materialize-execution-plan"]["requires_sandbox_apply"] is True
+    assert chain["materialize-execution-plan"]["requires_validation"] is True
+    assert chain["materialize-execution-plan"]["source_mutated"] is False
+    assert chain["materialize-execution-plan"]["stage_resumed"] is False
+    assert chain["materialize-patch-candidate"]["proposal_id"] == proposal_id
+    assert chain["materialize-patch-candidate"]["job_id"] == job_id
+    assert chain["materialize-patch-candidate"]["applied"] is False
+    assert chain["materialize-patch-candidate"]["read_only"] is True
+    assert chain["materialize-patch-candidate"]["source_mutated"] is False
+    assert chain["materialize-patch-candidate"]["stage_resumed"] is False
+    assert chain["materialize-patch-candidate"]["patch_operations"]
+    assert chain["apply-to-sandbox"]["proposal_id"] == proposal_id
+    assert chain["apply-to-sandbox"]["job_id"] == job_id
+    assert chain["apply-to-sandbox"]["applied"] is True
+    assert chain["apply-to-sandbox"]["sandbox_only"] is True
+    assert chain["apply-to-sandbox"]["source_mutated"] is False
+    assert chain["apply-to-sandbox"]["validation_started"] is False
+    assert chain["apply-to-sandbox"]["stage_resumed"] is False
     validation = _post(client, job_id, proposal_id, "validate-sandbox-repair")
     assert validation.status_code == 200, validation.text
     lifecycle = client.get(f"/v1/v2/migration-jobs/{job_id}/repair-lifecycle")
@@ -140,12 +188,17 @@ def test_api_governed_repair_workflow_happy_path(tmp_path: Path) -> None:
     assert source_pom.read_text(encoding="utf-8") == source_before
     assert (proposal_dir / "sandbox_apply_result.json").is_file()
     assert (proposal_dir / "sandbox_validation_result.json").is_file()
+    assert validation_body["proposal_id"] == proposal_id
+    assert validation_body["job_id"] == job_id
+    assert validation_body["status"] == "passed"
+    assert validation_body["rollback_performed"] is False
+    assert validation_body["validation_started_at"]
+    assert validation_body["validation_finished_at"]
     assert validation_body["validation_result"]["status"] == "passed"
     assert validation_body["source_mutated"] is False
     assert validation_body["sandbox_only"] is True
     assert validation_body["stage_resumed"] is False
-    assert lifecycle_proposal["current_state"] == "validation_passed"
-    assert lifecycle_proposal["stage_resumed"] is False
+    _assert_lifecycle_contract(lifecycle_proposal, expected_state="validation_passed", expected_action="no action required")
 
 
 def test_api_governed_repair_workflow_rollback_path(tmp_path: Path) -> None:
@@ -170,12 +223,22 @@ def test_api_governed_repair_workflow_rollback_path(tmp_path: Path) -> None:
     lifecycle_proposal = lifecycle.json()["repair_proposals"][0]
     assert sandbox_pom.read_text(encoding="utf-8") == sandbox_before_apply
     assert source_pom.read_text(encoding="utf-8") == source_before
+    assert validation_body["proposal_id"] == proposal_id
+    assert validation_body["job_id"] == job_id
+    assert validation_body["status"] == "rolled_back"
+    assert validation_body["rollback_performed"] is True
+    assert validation_body["validation_started_at"]
+    assert validation_body["validation_finished_at"]
     assert validation_body["validation_result"]["status"] == "rolled_back"
     assert validation_body["validation_result"]["rollback_performed"] is True
     assert validation_body["source_mutated"] is False
     assert validation_body["sandbox_only"] is True
     assert validation_body["stage_resumed"] is False
-    assert lifecycle_proposal["current_state"] == "validation_failed_rolled_back"
+    _assert_lifecycle_contract(
+        lifecycle_proposal,
+        expected_state="validation_failed_rolled_back",
+        expected_action="inspect rollback",
+    )
 
 
 def test_api_governed_repair_workflow_safety_gates(tmp_path: Path) -> None:
@@ -201,12 +264,32 @@ def test_api_governed_repair_workflow_safety_gates(tmp_path: Path) -> None:
 
     plan = _post(client, job_id, proposal_id, "materialize-execution-plan")
     assert plan.status_code == 200, plan.text
+    plan_body = plan.json()
+    assert plan_body["proposal_id"] == proposal_id
+    assert plan_body["job_id"] == job_id
+    assert plan_body["approved"] is False or plan_body["human_approved"] is True
+    assert plan_body["applied"] is False
+    assert plan_body["read_only"] is True
+    assert plan_body["requires_sandbox_apply"] is True
+    assert plan_body["requires_validation"] is True
+    assert plan_body["source_mutated"] is False
+    assert plan_body["stage_resumed"] is False
+
     before_candidate = _post(client, job_id, proposal_id, "apply-to-sandbox")
     assert before_candidate.status_code != 200
     assert not (proposal_dir / "sandbox_apply_result.json").exists()
 
     candidate = _post(client, job_id, proposal_id, "materialize-patch-candidate")
     assert candidate.status_code == 200, candidate.text
+    candidate_body = candidate.json()
+    assert candidate_body["proposal_id"] == proposal_id
+    assert candidate_body["job_id"] == job_id
+    assert candidate_body["applied"] is False
+    assert candidate_body["read_only"] is True
+    assert candidate_body["source_mutated"] is False
+    assert candidate_body["stage_resumed"] is False
+    assert candidate_body["patch_operations"]
+
     before_apply = _post(client, job_id, proposal_id, "validate-sandbox-repair")
     assert before_apply.status_code != 200
     assert "applied to sandbox before validation" in before_apply.text.lower()
@@ -226,19 +309,23 @@ def test_api_governed_repair_workflow_reject_path(tmp_path: Path) -> None:
     rejected = _reject(client, job_id, proposal_id)
     assert rejected.status_code == 200, rejected.text
     body = rejected.json()
+    assert body["proposal_id"] == proposal_id
+    assert body["job_id"] == job_id
+    assert body["run_id"].endswith("-s2")
     assert body["approval_result"] == "rejected"
     assert body["applied"] is False
     assert body["approval_state"]["state"] == "rejected"
     assert body["approval_state"]["operator"] == "architect"
     assert body["approval_state"]["reason"] == "manual review required"
+    assert body["source_mutated"] is False
+    assert body["stage_resumed"] is False
+    assert body["approval_state"]["read_only_until_apply"] is True
+    assert body["approval_state"]["no_auto_apply"] is True
 
     lifecycle = client.get(f"/v1/v2/migration-jobs/{job_id}/repair-lifecycle")
     assert lifecycle.status_code == 200, lifecycle.text
     lifecycle_proposal = lifecycle.json()["repair_proposals"][0]
-    assert lifecycle_proposal["current_state"] == "rejected"
-    assert lifecycle_proposal["next_operator_action"] == "human review required"
-    assert lifecycle_proposal["stage_resumed"] is False
-    assert lifecycle_proposal["source_mutated"] is False
+    _assert_lifecycle_contract(lifecycle_proposal, expected_state="rejected", expected_action="human review required")
 
     for endpoint in ("materialize-execution-plan", "materialize-patch-candidate", "apply-to-sandbox", "validate-sandbox-repair"):
         response = _post(client, job_id, proposal_id, endpoint)

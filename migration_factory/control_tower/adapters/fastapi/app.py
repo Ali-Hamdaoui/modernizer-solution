@@ -2310,9 +2310,13 @@ def create_app(
         return redact_public_data(
             {
                 "proposal_id": proposal_id,
+                "job_id": job_id,
+                "run_id": str(proposal_payload.get("run_id") or ""),
                 "approval_state": approval_state,
                 "approval_result": "approved",
                 "applied": False,
+                "source_mutated": False,
+                "stage_resumed": False,
                 "read_only_until_apply": True,
                 "no_auto_apply": True,
             }
@@ -2374,9 +2378,13 @@ def create_app(
         return redact_public_data(
             {
                 "proposal_id": proposal_id,
+                "job_id": job_id,
+                "run_id": str(proposal_payload.get("run_id") or ""),
                 "approval_state": approval_state,
                 "approval_result": "rejected",
                 "applied": False,
+                "source_mutated": False,
+                "stage_resumed": False,
                 "read_only_until_apply": True,
                 "no_auto_apply": True,
             }
@@ -2419,7 +2427,32 @@ def create_app(
                 "REPAIR_EXECUTION_PLAN_MATERIALIZATION_FAILED",
                 str(exc),
             ) from exc
-        return redact_public_data(result.to_dict())
+        execution_plan = result.execution_plan
+        return redact_public_data(
+            {
+                "proposal_id": proposal_id,
+                "job_id": job_id,
+                "run_id": str(execution_plan.get("run_id") or ""),
+                "execution_plan": execution_plan,
+                "artifact_path": result.artifact_path,
+                "approval_checksum": str(execution_plan.get("approval_checksum") or ""),
+                "failure_type": str(execution_plan.get("failure_type") or ""),
+                "root_cause": str(execution_plan.get("root_cause") or ""),
+                "affected_paths": list(execution_plan.get("affected_paths") or []),
+                "planned_operations": list(execution_plan.get("planned_operations") or []),
+                "validation_commands": list(execution_plan.get("validation_commands") or []),
+                "rollback_plan": str(execution_plan.get("rollback_plan") or ""),
+                "requires_sandbox_apply": bool(execution_plan.get("requires_sandbox_apply")),
+                "requires_validation": bool(execution_plan.get("requires_validation")),
+                "human_approved": bool(execution_plan.get("human_approved")),
+                "sandbox_only": True,
+                "source_mutated": False,
+                "stage_resumed": False,
+                "applied": False,
+                "read_only": True,
+                "approved": True,
+            }
+        )
 
     @app.get(
         "/v1/v2/jobs/{job_id}/repair-proposals/{proposal_id}/execution-plan",
@@ -2457,8 +2490,15 @@ def create_app(
             {
                 "proposal_id": proposal_id,
                 "execution_plan": plan,
+                "job_id": job_id,
+                "run_id": str(plan.get("run_id") or ""),
                 "applied": False,
                 "read_only": True,
+                "source_mutated": False,
+                "stage_resumed": False,
+                "human_approved": True,
+                "requires_sandbox_apply": True,
+                "requires_validation": True,
             }
         )
 
@@ -2499,7 +2539,23 @@ def create_app(
                 "REPAIR_PATCH_CANDIDATE_MATERIALIZATION_FAILED",
                 str(exc),
             ) from exc
-        return redact_public_data(result.to_dict())
+        return redact_public_data(
+            {
+                "proposal_id": proposal_id,
+                "job_id": job_id,
+                "run_id": str(result.patch_candidate.get("run_id") or ""),
+                "patch_candidate": result.patch_candidate,
+                "artifact_path": result.artifact_path,
+                "sandbox_only": True,
+                "validation_started": False,
+                "source_mutated": False,
+                "stage_resumed": False,
+                "applied": False,
+                "read_only": True,
+                "human_approved": True,
+                "patch_operations": list(result.patch_candidate.get("patch_operations") or []),
+            }
+        )
 
     @app.get(
         "/v1/v2/jobs/{job_id}/repair-proposals/{proposal_id}/patch-candidate",
@@ -2543,8 +2599,14 @@ def create_app(
             {
                 "proposal_id": proposal_id,
                 "patch_candidate": candidate,
+                "job_id": job_id,
+                "run_id": str(candidate.get("run_id") or ""),
                 "applied": False,
                 "read_only": True,
+                "source_mutated": False,
+                "stage_resumed": False,
+                "human_approved": True,
+                "patch_operations": list(candidate.get("patch_operations") or []),
             }
         )
 
@@ -2585,7 +2647,22 @@ def create_app(
                 "REPAIR_SANDBOX_APPLY_FAILED",
                 str(exc),
             ) from exc
-        return redact_public_data(result.to_dict())
+        apply_result = result.apply_result
+        return redact_public_data(
+            {
+                "proposal_id": proposal_id,
+                "job_id": job_id,
+                "run_id": str(apply_result.get("run_id") or ""),
+                "apply_result": apply_result,
+                "artifact_path": result.artifact_path,
+                "sandbox_only": True,
+                "validation_started": False,
+                "source_mutated": False,
+                "stage_resumed": False,
+                "applied": True,
+                "backup_refs": list(apply_result.get("backup_refs") or []),
+            }
+        )
 
     @app.get(
         "/v1/v2/jobs/{job_id}/repair-proposals/{proposal_id}/sandbox-apply-result",
@@ -2629,9 +2706,14 @@ def create_app(
             {
                 "proposal_id": proposal_id,
                 "apply_result": apply_result,
+                "job_id": job_id,
+                "run_id": str(apply_result.get("run_id") or ""),
                 "sandbox_only": True,
                 "validation_started": False,
                 "source_mutated": False,
+                "stage_resumed": False,
+                "applied": True,
+                "backup_refs": list(apply_result.get("backup_refs") or []),
             }
         )
 
@@ -2675,7 +2757,23 @@ def create_app(
                 "REPAIR_SANDBOX_VALIDATION_FAILED",
                 str(exc),
             ) from exc
-        return redact_public_data(result.to_dict())
+        validation_result = result.validation_result
+        return redact_public_data(
+            {
+                "proposal_id": proposal_id,
+                "job_id": job_id,
+                "run_id": str(validation_result.get("run_id") or ""),
+                "validation_result": validation_result,
+                "artifact_path": result.artifact_path,
+                "status": str(validation_result.get("status") or ""),
+                "rollback_performed": bool(validation_result.get("rollback_performed")),
+                "validation_started_at": str(validation_result.get("validation_started_at") or ""),
+                "validation_finished_at": str(validation_result.get("validation_finished_at") or ""),
+                "sandbox_only": True,
+                "source_mutated": False,
+                "stage_resumed": False,
+            }
+        )
 
     @app.get(
         "/v1/v2/jobs/{job_id}/repair-proposals/{proposal_id}/sandbox-validation-result",
