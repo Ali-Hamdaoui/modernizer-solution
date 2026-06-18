@@ -3,10 +3,13 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
+from uuid import uuid4
 
 from migration_factory.control_tower.application.redaction import redact_model_summary
 from migration_factory.control_tower.application.v2_model_schemas import validate_model_output
+from migration_factory.control_tower.domain.checksums import utc_now_text
 
 
 MODEL_1_ROLE = "model_1_migration_engineer"
@@ -38,6 +41,8 @@ class ModelInvocationRequest:
     source_input: str = ""
     model1_output: dict[str, Any] | None = None
     correlation_id: str | None = None
+    supervision_context: str = ""
+    trace_root: str = ""
 
     def __post_init__(self) -> None:
         if self.role not in _ALLOWED_ROLES:
@@ -83,8 +88,11 @@ class ModelInvocationResult:
     mode: str
     success: bool
     structured_output: dict[str, Any]
+    invocation_id: str = ""
+    created_at: str = ""
     warnings: tuple[str, ...] = field(default_factory=tuple)
     errors: tuple[str, ...] = field(default_factory=tuple)
+    trace_artifact_refs: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -92,6 +100,11 @@ class ModelInvocationResult:
 
 class StructuredModelRuntimeClient(Protocol):
     def invoke(self, request: ModelInvocationRequest) -> dict[str, Any]:
+        ...
+
+
+class ModelInvocationTraceStore(Protocol):
+    def persist_trace(self, *, request: ModelInvocationRequest, result: ModelInvocationResult) -> dict[str, str]:
         ...
 
 
@@ -103,9 +116,11 @@ class V2DualModelRuntimeService:
         *,
         model1_client: StructuredModelRuntimeClient | None = None,
         model2_client: StructuredModelRuntimeClient | None = None,
+        trace_store: ModelInvocationTraceStore | None = None,
     ) -> None:
         self._model1_client = model1_client
         self._model2_client = model2_client
+        self._trace_store = trace_store
 
     def get_status(self) -> ModelRuntimeStatus:
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
@@ -135,55 +150,107 @@ class V2DualModelRuntimeService:
         if request.role != MODEL_1_ROLE:
             raise ValueError("Model 1 invocation requires model_1_migration_engineer role.")
         status = self.get_status()
+        invocation_id = uuid4().hex
+        created_at = utc_now_text()
         if status.model1_ready and self._model1_client is not None:
             structured = validate_model_output("Model1ReviewResult", self._model1_client.invoke(request))
-            return ModelInvocationResult(
+            result = ModelInvocationResult(
                 role=MODEL_1_ROLE,
                 provider=self.provider,
                 mode="live",
                 success=True,
                 structured_output=structured,
+                invocation_id=invocation_id,
+                created_at=created_at,
                 warnings=status.warnings,
                 errors=status.errors,
             )
-        result = self._deterministic_model1(request.evidence_bundle)
-        return ModelInvocationResult(
+            return self._persist_if_configured(request=request, result=result)
+        deterministic = self._deterministic_model1(request.evidence_bundle)
+        result = ModelInvocationResult(
             role=MODEL_1_ROLE,
             provider="deterministic",
             mode="fallback",
             success=True,
-            structured_output=result.to_dict(),
+            structured_output=deterministic.to_dict(),
+            invocation_id=invocation_id,
+            created_at=created_at,
             warnings=status.warnings,
             errors=status.errors,
         )
+        return self._persist_if_configured(request=request, result=result)
 
     def invoke_model_2(self, request: ModelInvocationRequest) -> ModelInvocationResult:
         if request.role != MODEL_2_ROLE:
             raise ValueError("Model 2 invocation requires model_2_safety_reviewer role.")
         status = self.get_status()
+        invocation_id = uuid4().hex
+        created_at = utc_now_text()
         if status.model2_ready and self._model2_client is not None:
             structured = validate_model_output("Model2VerificationResult", self._model2_client.invoke(request))
-            return ModelInvocationResult(
+            result = ModelInvocationResult(
                 role=MODEL_2_ROLE,
                 provider=self.provider,
                 mode="live",
                 success=True,
                 structured_output=structured,
+                invocation_id=invocation_id,
+                created_at=created_at,
                 warnings=status.warnings,
                 errors=status.errors,
             )
-        result = self._deterministic_model2(
+            return self._persist_if_configured(request=request, result=result)
+        deterministic = self._deterministic_model2(
             evidence_bundle=request.evidence_bundle,
             model1_output=request.model1_output or {},
         )
-        return ModelInvocationResult(
+        result = ModelInvocationResult(
             role=MODEL_2_ROLE,
             provider="deterministic",
             mode="fallback",
             success=True,
-            structured_output=result.to_dict(),
+            structured_output=deterministic.to_dict(),
+            invocation_id=invocation_id,
+            created_at=created_at,
             warnings=status.warnings,
             errors=status.errors,
+        )
+        return self._persist_if_configured(request=request, result=result)
+
+    def _persist_if_configured(
+        self,
+        *,
+        request: ModelInvocationRequest,
+        result: ModelInvocationResult,
+    ) -> ModelInvocationResult:
+        if self._trace_store is None or not str(request.trace_root or "").strip():
+            return result
+        try:
+            refs = self._trace_store.persist_trace(request=request, result=result)
+        except Exception as exc:
+            return ModelInvocationResult(
+                role=result.role,
+                provider=result.provider,
+                mode=result.mode,
+                success=result.success,
+                structured_output=result.structured_output,
+                invocation_id=result.invocation_id,
+                created_at=result.created_at,
+                warnings=result.warnings + ("Invocation trace persistence failed; execution status unchanged.",),
+                errors=result.errors + (redact_model_summary(f"trace_persist_failed:{type(exc).__name__}"),),
+                trace_artifact_refs=result.trace_artifact_refs,
+            )
+        return ModelInvocationResult(
+            role=result.role,
+            provider=result.provider,
+            mode=result.mode,
+            success=result.success,
+            structured_output=result.structured_output,
+            invocation_id=result.invocation_id,
+            created_at=result.created_at,
+            warnings=result.warnings,
+            errors=result.errors,
+            trace_artifact_refs=refs,
         )
 
     def _deterministic_model1(self, evidence_bundle: dict[str, Any]) -> Model1ReviewResult:
