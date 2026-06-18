@@ -17,6 +17,15 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository 
     V2RepairProposalRecord,
     V2SandboxActionRecord,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository import (
+    SqliteV2JobRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
+    SqliteV2SetupRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
+    SqliteV2CommandRepository,
+)
 from migration_factory.control_tower.application.v2_reviewer_service import (
     V2ReviewerService,
 )
@@ -86,11 +95,17 @@ class V2RepairFlowService:
         self,
         repair_repo: SqliteV2RepairRepository | None = None,
         reviewer_service: V2ReviewerService | None = None,
+        job_repo: SqliteV2JobRepository | None = None,
+        setup_repo: SqliteV2SetupRepository | None = None,
+        command_repo: SqliteV2CommandRepository | None = None,
     ) -> None:
         self._proposals: dict[str, RepairProposal] = {}
         self._actions: dict[str, SandboxAction] = {}
         self._repo = repair_repo
         self._reviewer = reviewer_service or V2ReviewerService()
+        self._job_repo = job_repo
+        self._setup_repo = setup_repo
+        self._command_repo = command_repo
 
     def create_proposal(
         self,
@@ -401,7 +416,14 @@ class V2RepairFlowService:
             attempt=1,
             payload={
                 "schema_version": "1.0",
+                "proposal_id": proposal.proposal_id,
                 "repair_proposal_checksum": repair_proposal_checksum,
+                "target_path": target_path,
+                "deterministic_rule_id": deterministic_rule_id,
+                "risk": risk,
+                "requires_human_review": requires_human_review,
+                "binding_checksum": binding_checksum,
+                "h2_required": h2_required,
                 **repair_loop_proposal,
             },
         )
@@ -647,6 +669,127 @@ class V2RepairFlowService:
             self._repo.save_action(action_record)
         return action
 
+    def apply_approved_proposal(
+        self,
+        *,
+        proposal_id: str,
+        command_id: str,
+        validation_runner: ValidationRunner | None = None,
+        event_recorder: RepairEventRecorder | None = None,
+    ) -> SandboxAction:
+        """Apply an approved repair proposal using persisted backend evidence.
+
+        The caller supplies only IDs. The service resolves the job, setup,
+        command result, sandbox path, run directory, and patch draft
+        artifact from backend-owned persistence.
+        """
+        proposal = self._proposals.get(proposal_id)
+        if proposal is None and self._repo is not None:
+            record = self._repo.get_proposal(proposal_id)
+            if record is not None:
+                proposal = self._record_to_proposal(record)
+                self._proposals[proposal_id] = proposal
+        if proposal is None:
+            raise ValueError(f"Proposal {proposal_id!r} not found")
+        if proposal.status != "approved":
+            raise ValueError(f"Proposal {proposal_id!r} must be approved first")
+        if proposal.command_id != command_id:
+            raise ValueError(
+                f"Proposal {proposal_id!r} is bound to command {proposal.command_id!r}, "
+                f"not {command_id!r}"
+            )
+        if self._job_repo is None or self._setup_repo is None or self._command_repo is None:
+            raise ValueError("Repair approval apply requires job, setup, and command repositories")
+        if validation_runner is None:
+            validation_runner = run_validation_after_patch
+
+        command = self._command_repo.get(command_id)
+        if command is None:
+            raise ValueError(f"Command {command_id!r} not found")
+        job = self._job_repo.get(command.job_id)
+        if job is None:
+            raise ValueError(f"Job {command.job_id!r} not found for command {command_id!r}")
+        setup = self._setup_repo.get(job.setup_id)
+        if setup is None:
+            raise ValueError(f"Setup {job.setup_id!r} not found for job {job.job_id!r}")
+
+        result_json = command.result_json or ""
+        result_data: dict[str, Any] = {}
+        if result_json:
+            try:
+                parsed = json.loads(result_json)
+                if isinstance(parsed, dict):
+                    result_data = parsed
+            except (json.JSONDecodeError, TypeError):
+                result_data = {}
+
+        run_id = str(result_data.get("run_id") or command.command_id)
+        output_root = str(
+            result_data.get("modernized_app_path")
+            or result_data.get("output_root_dir")
+            or setup.output_parent_path
+        )
+        run_dir = Path(output_root) / ".migration" / "runs" / run_id
+        sandbox_path = str(
+            result_data.get("sandbox_path")
+            or result_data.get("modernized_app_path")
+            or result_data.get("output_app_path")
+            or ""
+        )
+        if not sandbox_path:
+            raise ValueError(f"Sandbox path could not be resolved for command {command_id!r}")
+
+        draft_path = run_dir / "repairs" / "patch_draft_1.json"
+        if not draft_path.is_file():
+            raise ValueError(f"Repair patch draft not found at {draft_path}")
+
+        try:
+            draft_payload = json.loads(draft_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, TypeError) as exc:
+            raise ValueError(f"Repair patch draft could not be read: {draft_path}") from exc
+        if not isinstance(draft_payload, dict):
+            raise ValueError(f"Repair patch draft is invalid: {draft_path}")
+        if draft_payload.get("proposal_id") != proposal_id:
+            raise ValueError(f"Repair patch draft proposal mismatch at {draft_path}")
+        if draft_payload.get("repair_proposal_checksum") != proposal.proposal_checksum:
+            raise ValueError(
+                "Repair patch draft checksum does not match the approved proposal"
+            )
+
+        affected_paths = list(proposal.affected_paths)
+        target_path = affected_paths[0] if affected_paths else ""
+        if not target_path:
+            raise ValueError(f"Proposal {proposal_id!r} does not declare a target path")
+
+        expected_validation = tuple(
+            str(item) for item in draft_payload.get("expected_validation", [])
+            if isinstance(item, str)
+        )
+        limitations = tuple(
+            str(item) for item in draft_payload.get("limitations", [])
+            if isinstance(item, str)
+        )
+
+        return self.apply_patch(
+            proposal_id=proposal_id,
+            target_path=target_path,
+            patch_content=str(draft_payload.get("unified_diff", "")),
+            run_id=run_id,
+            run_dir=run_dir,
+            sandbox_path=sandbox_path,
+            legacy_path=setup.legacy_app_path,
+            deterministic_rule_id=str(draft_payload.get("deterministic_rule_id", "")),
+            risk=str(draft_payload.get("risk", "LOW")),
+            requires_human_review=bool(draft_payload.get("requires_human_review", False)),
+            expected_validation=expected_validation,
+            limitations=limitations,
+            failure_classification=dict(draft_payload.get("failure_classification") or {}),
+            h2_required=bool(draft_payload.get("h2_required", False)),
+            binding_checksum=str(draft_payload.get("binding_checksum") or "") or None,
+            validation_runner=validation_runner,
+            event_recorder=event_recorder,
+        )
+
     def _mark_proposal_applied(self, proposal: RepairProposal) -> None:
         updated = RepairProposal(
             proposal_id=proposal.proposal_id,
@@ -663,6 +806,38 @@ class V2RepairFlowService:
         if self._repo is not None:
             self._repo.update_proposal_status(proposal.proposal_id, "applied")
         self._proposals[proposal.proposal_id] = updated
+
+    def _record_to_proposal(self, record: V2RepairProposalRecord) -> RepairProposal:
+        affected_paths = tuple(json.loads(record.affected_paths_json))
+        return RepairProposal(
+            proposal_id=record.proposal_id,
+            command_id=record.command_id,
+            failure_summary=record.failure_summary,
+            hypothesis=record.hypothesis,
+            patch_summary=record.patch_summary,
+            affected_paths=affected_paths,
+            status=record.status,
+            approval_checksum=record.approval_checksum,
+            created_at=record.created_at,
+            proposal_checksum=record.proposal_checksum
+            or self._proposal_checksum(
+                command_id=record.command_id,
+                failure_summary=record.failure_summary,
+                hypothesis=record.hypothesis,
+                patch_summary=record.patch_summary,
+                affected_paths=affected_paths,
+                source_proposal_id=record.source_proposal_id,
+                revision_of=record.revision_of,
+                revision_number=record.revision_number,
+                context_pack_checksum=record.context_pack_checksum,
+                allowed_scope=record.allowed_scope,
+            ),
+            source_proposal_id=record.source_proposal_id,
+            revision_of=record.revision_of,
+            revision_number=record.revision_number,
+            context_pack_checksum=record.context_pack_checksum,
+            allowed_scope=record.allowed_scope,
+        )
 
     def proposal_to_dict(self, proposal: RepairProposal, *, reviewer_critique_id: str | None = None, reviewer_decision: str | None = None) -> dict[str, Any]:
         result: dict[str, Any] = {

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+import migration_factory.control_tower.application.v2_repair_flow as v2_repair_flow
 
 from migration_factory.control_tower.application.v2_setup_service import (
     CreateSetupRequest,
@@ -23,6 +25,17 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_assistant_reposito
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
     SqliteV2RepairRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository import (
+    SqliteV2JobRepository,
+    V2MigrationJobRecord,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
+    SqliteV2CommandRepository,
+    V2StageCommandRecord,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
+    V2MigrationSetupRecord,
 )
 
 
@@ -51,6 +64,153 @@ def _api_client(tmp_path: Path, *, fake_model_client: object | None = None):
         app.state.v2_assistant_model_client = fake_model_client
     client = TestClient(app, base_url="http://127.0.0.1:8000")
     return client, conn
+
+
+def _seed_repair_apply_context(
+    conn: sqlite3.Connection,
+    tmp_path: Path,
+    *,
+    proposal_id: str,
+    proposal_checksum: str,
+    command_id: str,
+) -> Path:
+    setup_repo = SqliteV2SetupRepository(conn)
+    job_repo = SqliteV2JobRepository(conn)
+    command_repo = SqliteV2CommandRepository(conn)
+    legacy_root = Path(tmp_path / "legacy")
+    sandbox_root = Path(tmp_path / "out" / ".migration" / "runs" / "run-apply-1" / "sandbox")
+    legacy_root.mkdir(parents=True, exist_ok=True)
+    sandbox_root.mkdir(parents=True, exist_ok=True)
+    (sandbox_root / "pom.xml").write_text("<project/>", encoding="utf-8")
+
+    setup = V2MigrationSetupRecord(
+        setup_id="setup-apply-1",
+        run_name="repair-apply",
+        legacy_app_path=str(tmp_path / "legacy"),
+        output_parent_path=str(tmp_path / "out"),
+        ai_hub_path=str(tmp_path / "ai-hub"),
+        java11_home="C:/java11",
+        java17_home="C:/java17",
+        java21_home="C:/java21",
+        maven_cmd="mvn",
+        proof_level="build_test_verified",
+        skip_endpoint_smoke=False,
+        migration_flags_json="{}",
+        setup_checksum="setup-chk",
+        checksum_algorithm="sha256",
+        created_at="2026-06-18T00:00:00Z",
+        created_by="test",
+        correlation_id=None,
+    )
+    setup_repo.save(setup)
+    job_repo.save(
+        V2MigrationJobRecord(
+            job_id="job-2",
+            setup_id=setup.setup_id,
+            setup_checksum="setup-chk",
+            pipeline_id="pipeline-1",
+            stage_chain_json="[]",
+            status="created",
+            created_at="2026-06-18T00:00:00Z",
+            updated_at="2026-06-18T00:00:00Z",
+            correlation_id=None,
+        )
+    )
+
+    run_id = "run-apply-1"
+    run_dir = Path(tmp_path / "out" / ".migration" / "runs" / run_id)
+    draft_path = run_dir / "repairs" / "patch_draft_1.json"
+    draft_path.parent.mkdir(parents=True, exist_ok=True)
+    draft_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "proposal_id": proposal_id,
+                "repair_proposal_checksum": proposal_checksum,
+                "target_path": "pom.xml",
+                "deterministic_rule_id": "DEPENDENCY_ADD_H2_RUNTIME",
+                "risk": "LOW",
+                "requires_human_review": False,
+                "binding_checksum": "binding-1",
+                "h2_required": True,
+                "unified_diff": _h2_patch(),
+                "expected_validation": ["mvn test"],
+                "limitations": [],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    command_repo.save(
+        V2StageCommandRecord(
+            command_id=command_id,
+            job_id="job-2",
+            stage_index=3,
+            manifest_checksum="manifest-chk",
+            argv_json="[]",
+            env_json="{}",
+            status="failed",
+            created_at="2026-06-18T00:00:00Z",
+            updated_at="2026-06-18T00:00:00Z",
+            result_json=json.dumps(
+                {
+                    "run_id": run_id,
+                    "sandbox_path": str(run_dir / "sandbox"),
+                    "modernized_app_path": str(tmp_path / "out"),
+                }
+            ),
+            gate_id=None,
+            decision_id=None,
+        )
+    )
+    return run_dir
+
+
+def _fake_apply_result(run_dir: Path):
+    from migration_factory.repair_loop.patch_apply import PatchApplyResult
+
+    patch_path = run_dir / "repairs" / "patch_attempt_1.diff"
+    patch_path.parent.mkdir(parents=True, exist_ok=True)
+    patch_path.write_text(_h2_patch(), encoding="utf-8")
+    return PatchApplyResult(
+        status="APPLIED",
+        reason="ok",
+        patch_path=patch_path,
+        touched_paths=["pom.xml"],
+        before_hashes={"pom.xml": "before"},
+        after_hashes={"pom.xml": "after"},
+        snapshot_dir=run_dir / "repairs" / "snapshots" / "attempt_1",
+        created_paths=[],
+        errors=[],
+    )
+
+
+def _fake_validation(passed: bool):
+    from migration_factory.repair_loop.validation_runner import ValidationResult
+
+    return ValidationResult(
+        passed=passed,
+        build_status="BUILD_PASSED_IN_SANDBOX" if passed else "BUILD_FAILED_IN_SANDBOX",
+        test_status="TEST_PASSED" if passed else "TEST_FAILED",
+        h2_status="H2_STARTUP_PASSED" if passed else "H2_STARTUP_FAILED",
+        validation_commands=[["mvn", "test"]],
+        artifact_refs={},
+        warnings=[],
+        errors=[] if passed else ["validation failed"],
+    )
+
+
+def _h2_patch() -> str:
+    return (
+        "diff --git a/pom.xml b/pom.xml\n"
+        "--- a/pom.xml\n"
+        "+++ b/pom.xml\n"
+        "@@\n"
+        " <dependencies>\n"
+        "+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n"
+    )
 
 
 class _RecordingProposerClient:
@@ -254,6 +414,14 @@ class TestRepairAPI:
         )
         assert create_resp.status_code == 200
         proposal_id = create_resp.json()["proposal_id"]
+        proposal_checksum = create_resp.json()["proposal_checksum"]
+        run_dir = _seed_repair_apply_context(
+            conn,
+            tmp_path,
+            proposal_id=proposal_id,
+            proposal_checksum=proposal_checksum,
+            command_id="cmd-2",
+        )
 
         # Approve with checksums (F07: all required)
         # Create a reviewer critique directly via the repo so the gate passes
@@ -276,6 +444,18 @@ class TestRepairAPI:
             unsafe_assumptions=(),
         )
 
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(
+            v2_repair_flow,
+            "apply_patch_to_sandbox",
+            lambda **kwargs: _fake_apply_result(Path(kwargs["run_dir"])),
+        )
+        monkeypatch.setattr(
+            v2_repair_flow,
+            "run_validation_after_patch",
+            lambda **kwargs: _fake_validation(True),
+        )
+
         response = client.post(
             f"/v1/v2/commands/cmd-2/repair/proposal/{proposal_id}/approve",
             json={
@@ -292,6 +472,9 @@ class TestRepairAPI:
         assert body["proposal_checksum"]
         # Reviewer metadata should be in response
         assert "reviewer_critique_id" in body
+        assert body["repair_action"]["status"] == "applied"
+        assert (run_dir / "repairs" / "patch_draft_1.json").is_file()
+        monkeypatch.undo()
 
     def test_approve_missing_proposal(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)

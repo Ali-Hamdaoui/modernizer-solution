@@ -2657,6 +2657,9 @@ def create_app(
             service = V2RepairFlowService(
                 repair_repo=uow.v2_repairs,
                 reviewer_service=reviewer_service,
+                job_repo=uow.v2_jobs,
+                setup_repo=uow.v2_setups,
+                command_repo=uow.v2_commands,
             )
             try:
                 proposal = service.approve_proposal(
@@ -2664,6 +2667,10 @@ def create_app(
                     approval_checksum=payload.approval_checksum,
                     proposal_checksum=payload.proposal_checksum,
                     context_pack_checksum=payload.context_pack_checksum,
+                )
+                repair_action = service.apply_approved_proposal(
+                    proposal_id=proposal_id,
+                    command_id=command_id,
                 )
                 # Look up the reviewer critique_id for the response
                 accepted = reviewer_service.check_reviewer_gate(
@@ -2683,7 +2690,9 @@ def create_app(
             proposal,
             reviewer_critique_id=reviewer_critique_id,
             reviewer_decision=reviewer_decision,
-        )
+        ) | {
+            "repair_action": service.action_to_dict(repair_action),
+        }
 
     # ------------------------------------------------------------------
     # F07: Reviewer critique endpoints
