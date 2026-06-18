@@ -148,6 +148,40 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).not.toContain("Failed to fetch");
   });
 
+  it("preserves multiline assistant messages in the cockpit", () => {
+    const markup = renderToStaticMarkup(
+      <AssistantPanelContent
+        assistantModel={{
+          status: "fallback",
+          source: "deterministic",
+          provider: "backend",
+          role: "assistant",
+          failure_reason: "assistant_ask_failed",
+        }}
+        messages={[
+          {
+            message_id: "msg-1",
+            job_id: "job-1",
+            role: "assistant",
+            content: "Line 1\nLine 2",
+            correlation_id: null,
+            created_at: "2026-06-18T00:00:00Z",
+          },
+        ]}
+        assistantError={null}
+        assistantQuestion="what about the pom?"
+        assistantBusy={false}
+        approvalReviewOpen={false}
+        onQuestionChange={() => undefined}
+        onAsk={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("message-content");
+    expect(markup).toContain("Line 1");
+    expect(markup).toContain("Line 2");
+  });
+
   it("redacts absolute Windows artifact refs down to short labels", () => {
     const absoluteRef = "C:\\Users\\abdelilah.mortaki\\Desktop\\modernizer-solution\\SecurityConfig.java";
     expect(formatGateArtifactRefLabel(absoluteRef)).toBe("SecurityConfig.java");

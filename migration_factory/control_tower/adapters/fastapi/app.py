@@ -195,6 +195,11 @@ from migration_factory.control_tower.application.v2_orchestrator_runner import (
 from migration_factory.control_tower.application.v2_failure_diagnosis import (
     create_orchestrator_diagnosis_callback,
 )
+from migration_factory.control_tower.application.v2_assistant_response_composer import (
+    AssistantResponseCard,
+    AssistantResponseSection,
+    V2AssistantResponseComposer,
+)
 from migration_factory.control_tower.application.v2_phase_gate_service import (
     AvailableAction,
     V2PhaseGateService,
@@ -252,6 +257,7 @@ from migration_factory.control_tower.application.pom_change_models import (
 UnitOfWorkFactory = Any
 ETAG_RE = re.compile(r'^"job-(?P<job_id>.+)-v(?P<version>[1-9][0-9]*)"$')
 _POM_DEPENDENCY_EDITOR_FACTORY: Callable[[], PomDependencyEditor] | None = None
+_ASSISTANT_RESPONSE_COMPOSER = V2AssistantResponseComposer()
 
 
 def _configure_pom_dependency_editor_factory(
@@ -8681,11 +8687,19 @@ def _build_apply_dependency_change_answer(
         )
 
     if result.status == "blocked":
-        return (
-            f"The backend blocked this change: {result.message}\n\n"
-            "You can use the Stage 3 Dependency Review panel to review "
-            "dependencies and create a proposal before applying."
+        card = AssistantResponseCard(
+            headline="Change blocked safely",
+            status="blocked",
+            summary="The backend refused to apply this change.",
+            sections=(
+                AssistantResponseSection(title="Reason", lines=(result.message,)),
+            ),
+            safety_note=(
+                "Ask for a proposal instead of a direct apply:\n"
+                '"Explain how Tomcat is managed and propose whether a Tomcat override is needed."'
+            ),
         )
+        return _ASSISTANT_RESPONSE_COMPOSER.render(card)
 
     if result.status == "noop":
         lines = [
@@ -8706,26 +8720,34 @@ def _build_apply_dependency_change_answer(
             "Please check the Stage 3 sandbox is available and try again."
         )
 
-    # Success — report from PomApplyResult
-    lines: list[str] = []
-    lines.append(f"## ✅ POM change applied\n")
-    lines.append(f"**{result.message}**\n")
-    lines.append(f"- **Change ID:** `{result.change_id}`")
-    lines.append(f"- **Operation:** {result.operation}")
-    lines.append(f"- **Target:** {result.target_desc}")
-    if result.before_version:
-        lines.append(f"- **Before:** {result.before_version}")
-    lines.append(f"- **After:** {result.after_version}")
-    if result.validation_id:
-        lines.append(f"- **Validation ID:** `{result.validation_id}`")
-    lines.append(f"- **Status:** {result.status}")
-    if result.rollback_available:
-        lines.append(f"- **Rollback:** Available")
-    lines.append(f"\nThe change has been written to the Stage 3 sandbox. "
-                  f"Validation is now running. "
-                  f"Check the Stage 3 Dependency Review panel for results.")
-
-    return "\n".join(lines)
+    card = AssistantResponseCard(
+        headline="POM change applied",
+        status="done",
+        summary="The change was written to the Stage 3 sandbox.",
+        sections=(
+            AssistantResponseSection(
+                title="Change",
+                lines=(
+                    f"Operation: {result.operation}",
+                    f"Target: {result.target_desc}",
+                    f"Before: {result.before_version}" if result.before_version else "",
+                    f"After: {result.after_version}",
+                    f"Change ID: `{result.change_id}`",
+                ),
+            ),
+            AssistantResponseSection(
+                title="Validation",
+                lines=(
+                    "Status: running",
+                    f"Result: {result.status}",
+                    f"Validation ID: `{result.validation_id}`" if result.validation_id else "",
+                    "Rollback: available" if result.rollback_available else "",
+                ),
+            ),
+        ),
+        next_step="Open Stage 3 Dependency Review to inspect validation results.",
+    )
+    return _ASSISTANT_RESPONSE_COMPOSER.render(card)
 
 
 def _assistant_action_idempotency_key(action: str, job_id: str, question: str) -> str:
@@ -8806,14 +8828,28 @@ def _build_rollback_pom_change_answer(
             f"Checksum restored: {result.checksum_restored}."
         )
 
-    lines = [
-        "## POM change rolled back",
-        f"- **Change ID:** `{result.change_id}`",
-        f"- **Rollback ID:** `{result.rollback_id}`",
-        f"- **Checksum restored:** {result.checksum_restored}",
-        f"- **Status:** {result.status}",
-    ]
-    return "\n".join(lines)
+    card = AssistantResponseCard(
+        headline="POM change rolled back",
+        status="done",
+        summary="The Stage 3 sandbox has been restored.",
+        sections=(
+            AssistantResponseSection(
+                title="Change",
+                lines=(
+                    f"Change ID: `{result.change_id}`",
+                    f"Rollback ID: `{result.rollback_id}`",
+                ),
+            ),
+            AssistantResponseSection(
+                title="Status",
+                lines=(
+                    f"**Checksum restored:** {result.checksum_restored}",
+                    f"Status: {result.status}",
+                ),
+            ),
+        ),
+    )
+    return _ASSISTANT_RESPONSE_COMPOSER.render(card)
 
 
 def _build_pom_validation_result_answer(
@@ -8852,23 +8888,33 @@ def _build_pom_validation_result_answer(
     if result is None:
         return f"No backend validation record found for `{validation_id}`."
 
-    lines = [
-        "## Stage 3 POM validation result",
-        f"- **Change ID:** `{result.change_id}`",
-        f"- **Validation ID:** `{result.validation_id}`",
-        f"- **Status:** {result.status}",
-        f"- **Build:** {result.build_status}",
-        f"- **Tests:** {result.test_status}",
-    ]
-    if result.exit_code is not None:
-        lines.append(f"- **Exit code:** {result.exit_code}")
-    if result.diagnosis:
-        lines.append(f"- **Diagnosis:** {result.diagnosis.failure_classification}")
-        if result.diagnosis.failure_classification == "evidence_insufficient":
-            lines.append("- **Evidence:** evidence_insufficient")
-    if result.log_ref:
-        lines.append(f"- **Log ref:** {result.log_ref}")
-    return "\n".join(lines)
+    card = AssistantResponseCard(
+        headline="Stage 3 POM validation result",
+        status="info",
+        summary=f"Build: {result.build_status} | Tests: {result.test_status}",
+        sections=(
+            AssistantResponseSection(
+                title="Validation",
+                lines=(
+                    f"Change ID: `{result.change_id}`",
+                    f"Validation ID: `{result.validation_id}`",
+                    f"**Status:** {result.status}",
+                    f"Exit code: {result.exit_code}" if result.exit_code is not None else "",
+                ),
+            ),
+            AssistantResponseSection(
+                title="Reason",
+                lines=(
+                    f"Diagnosis: {result.diagnosis.failure_classification}" if result.diagnosis else "",
+                    "Evidence: evidence_insufficient"
+                    if result.diagnosis and result.diagnosis.failure_classification == "evidence_insufficient"
+                    else "",
+                    f"Log ref: {result.log_ref}" if result.log_ref else "",
+                ),
+            ),
+        ),
+    )
+    return _ASSISTANT_RESPONSE_COMPOSER.render(card)
 
 
 def _build_pom_dependency_change_request_answer(
@@ -9787,18 +9833,36 @@ def _build_model_status_answer() -> str:
     """Build model/provider status answer."""
     available = _model_client_available()
     if available:
-        answer = (
-            "The Azure OpenAI model is configured and connected. "
-            "AI-backed coaching is active. Source: azure_openai."
+        card = AssistantResponseCard(
+            headline="Model status",
+            status="done",
+            summary="The Azure OpenAI model is configured and connected.",
+            sections=(
+                AssistantResponseSection(
+                    title="Status",
+                    lines=(
+                        "AI-backed coaching is active.",
+                        "Source: azure_openai.",
+                    ),
+                ),
+            ),
         )
     else:
-        answer = (
-            "The Azure OpenAI model is not fully configured "
-            "(missing endpoint, key, or deployment). "
-            "Assistant responses use deterministic fallback logic. "
-            "AI-backed coaching is unavailable until model readiness is restored."
+        card = AssistantResponseCard(
+            headline="Model status",
+            status="warning",
+            summary="The Azure OpenAI model is not fully configured.",
+            sections=(
+                AssistantResponseSection(
+                    title="Status",
+                    lines=(
+                        "Assistant responses use deterministic fallback logic.",
+                        "AI-backed coaching is unavailable until model readiness is restored.",
+                    ),
+                ),
+            ),
         )
-    return str(redact_public_data(answer))
+    return _ASSISTANT_RESPONSE_COMPOSER.render(card)
 
 
 def _build_general_or_artifact_answer(
@@ -9967,20 +10031,54 @@ def _build_status_answer(
             "This is a deterministic fallback response. AI-backed coaching is unavailable until model readiness is restored."
         )
 
-    answer = (
-        f"Question: {_bounded_event_text(question)}\n\n"
-        f"Stage Status:\n{stage_summary}\n\n"
-        f"{latest_text}\n"
-        f"{command_text} {approval_state} {repair_state}\n"
-        f"{artifact_text}\n"
-        f"{proof_note}\n"
-        f"{artifact_preview_text}\n"
-        f"Next operator action: {action}{model_note}\n\n"
-        "Guardrails: I can explain status and summarize evidence only. I cannot execute, approve, write files, "
-        "change route/stage, choose Maven goals, choose deployments, or override proof. "
-        "All migration execution is backend-owned."
+    headline = "Migration completed" if completed else "Migration status"
+    summary = (
+        "All stages are complete and proof evidence is available."
+        if completed
+        else (
+            "A human decision or more evidence is needed."
+            if pending_approvals or failures
+            else (
+                "Approval has been accepted; the backend should resume."
+                if approved_cards
+                else (
+                    "The backend is still running."
+                    if running_events
+                    else "Current state is available below."
+                )
+            )
+        )
     )
-    return str(redact_public_data(answer))
+
+    status_lines = (
+        f"Stage Status:\n{stage_summary}",
+        latest_text,
+        f"{command_text} {approval_state} {repair_state}",
+        f"Next operator action: {action}{model_note}",
+        (
+            "Guardrails: I can explain status and summarize evidence only. "
+            "I cannot execute, approve, write files, change route/stage, choose Maven goals, "
+            "choose deployments, or override proof. All migration execution is backend-owned."
+        ),
+    )
+    artifact_lines = tuple(
+        line for line in (
+            artifact_text,
+            proof_note,
+            artifact_preview_text,
+        )
+        if line
+    )
+    card = AssistantResponseCard(
+        headline=headline,
+        status="done" if completed else ("failed" if failures else ("pending" if pending_approvals else "info")),
+        summary=summary,
+        sections=(
+            AssistantResponseSection(title="Status", lines=status_lines),
+            AssistantResponseSection(title="Artifacts", lines=artifact_lines),
+        ),
+    )
+    return _ASSISTANT_RESPONSE_COMPOSER.render(card)
 
 
 def _build_v2_assistant_prompt(

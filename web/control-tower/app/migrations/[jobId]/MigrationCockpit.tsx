@@ -206,7 +206,8 @@ export function AssistantPanelContent({
       ) : (
         messages.map((m) => (
           <div key={m.message_id} className="message">
-            <strong>{m.role}:</strong> {m.content}
+            <strong>{m.role}:</strong>
+            <pre className="message-content">{m.content}</pre>
           </div>
         ))
       )}
@@ -999,6 +1000,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .assistant-composer button { padding: 0.5rem 0.75rem; border: 1px solid #333; border-radius: 4px; background: #fff; }
         .assistant-composer button:disabled { color: #777; border-color: #bbb; }
         .assistant-error { border: 1px solid #c98300; background: #fff8ea; color: #7a4a00; padding: 0.65rem 0.75rem; border-radius: 4px; margin: 0.5rem 0 0.75rem; }
+        .message-content { margin: 0.25rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
         .failure-panel { border-color: #a40000; background: #fffafa; }
         .failure-card { border: 1px solid #ffcccc; padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; }
         .failure-card .meta { margin: 0.2rem 0; }
