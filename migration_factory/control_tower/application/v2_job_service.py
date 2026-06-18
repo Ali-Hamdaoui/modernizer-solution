@@ -34,6 +34,7 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository imp
 from migration_factory.control_tower.schemas.run_configuration import (
     RunConfiguration,
     RunPolicy,
+    StageContinuationPolicy,
 )
 
 
@@ -54,7 +55,7 @@ class V2MigrationJobResult:
     pipeline_id: str
     stages: tuple[dict[str, Any], ...]
     created_at: str
-    stage_continuation_policy: str = "manual"
+    stage_continuation_policy: str = StageContinuationPolicy.AUTO_ON_GREEN.value
     run_configuration_id: str = ""
 
 
@@ -115,7 +116,7 @@ class V2MigrationJobService:
         # Create job
         job_id = uuid4().hex
         now = utc_now_text()
-        effective_policy = policy if policy is not None else RunPolicy.f15_manual()
+        effective_policy = policy if policy is not None else RunPolicy()
 
         stages = []
         for idx in (1, 2, 3):
@@ -232,7 +233,7 @@ class V2MigrationJobService:
             stages = json.loads(record.stage_chain_json)
         except (json.JSONDecodeError, TypeError):
             stages = []
-        policy_value = "manual"
+        policy_value = StageContinuationPolicy.AUTO_ON_GREEN.value
         run_cfg_id = ""
         if self._run_config_repo is not None:
             run_config = self._run_config_repo.get_for_job(job_id)
@@ -267,7 +268,7 @@ class V2MigrationJobService:
             except (json.JSONDecodeError, TypeError):
                 stages = []
             # Look up run_configuration for actual stage_continuation_policy
-            policy = "manual"
+            policy = StageContinuationPolicy.AUTO_ON_GREEN.value
             run_config_id = ""
             if self._run_config_repo is not None:
                 try:
@@ -275,7 +276,10 @@ class V2MigrationJobService:
                     if rc is not None:
                         run_config_id = rc.run_configuration_id
                         rc_payload = json.loads(rc.payload_json)
-                        policy = rc_payload.get("stage_continuation_policy", "manual")
+                        policy = rc_payload.get(
+                            "stage_continuation_policy",
+                            StageContinuationPolicy.AUTO_ON_GREEN.value,
+                        )
                 except (json.JSONDecodeError, TypeError, Exception):
                     pass
             results.append(V2MigrationJobResult(

@@ -3,6 +3,12 @@
 import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 
+import {
+  createV2JobPayload,
+  DEFAULT_V2_STAGE_CONTINUATION_POLICY,
+  type V2StageContinuationPolicy,
+} from "../../../lib/controlTowerApi";
+
 // ── Types ──────────────────────────────────────────────────────────
 
 interface ParsedEnvResult {
@@ -193,7 +199,7 @@ interface FormFields {
   maven_cmd: string;
   proof_level: string;
   skip_endpoint_smoke: boolean;
-  stageContinuationPolicy: string;
+  stageContinuationPolicy: V2StageContinuationPolicy;
 }
 
 const EMPTY_FIELDS: FormFields = {
@@ -208,7 +214,7 @@ const EMPTY_FIELDS: FormFields = {
   maven_cmd: "",
   proof_level: "build_test_verified",
   skip_endpoint_smoke: false,
-  stageContinuationPolicy: "manual",
+  stageContinuationPolicy: DEFAULT_V2_STAGE_CONTINUATION_POLICY,
 };
 
 // ── Component ──────────────────────────────────────────────────────
@@ -255,7 +261,7 @@ export function NewMigrationForm() {
         maven_cmd: p.maven_cmd || prev.maven_cmd,
         proof_level: p.migration_flags.proof_level || prev.proof_level,
         skip_endpoint_smoke: p.migration_flags.skip_endpoint_smoke ?? prev.skip_endpoint_smoke,
-        stageContinuationPolicy: p.stage_continuation_policy || prev.stageContinuationPolicy,
+        stageContinuationPolicy: (p.stage_continuation_policy as V2StageContinuationPolicy) || prev.stageContinuationPolicy,
       }));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Parse failed");
@@ -606,12 +612,10 @@ export function NewMigrationForm() {
               setError(null);
               try {
                 // 1. Create V2 job
-                const jobPayload: Record<string, unknown> = { setup_id: setupResult.setup_id };
-                if (fields.stageContinuationPolicy) {
-                  jobPayload.policy = {
-                    stage_continuation_policy: fields.stageContinuationPolicy,
-                  };
-                }
+                const jobPayload = createV2JobPayload(
+                  setupResult.setup_id,
+                  fields.stageContinuationPolicy || DEFAULT_V2_STAGE_CONTINUATION_POLICY,
+                );
                 const jobRes = await fetch(`${API_BASE}/v1/v2/migration-jobs`, {
                   method: "POST",
                   headers: mutationHeaders(),

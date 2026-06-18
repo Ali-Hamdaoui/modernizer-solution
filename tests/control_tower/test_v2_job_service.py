@@ -309,7 +309,7 @@ def test_create_job_with_preflight_and_readiness(tmp_path: Path) -> None:
         job_service.create_job(setup_id)
 
 
-def test_create_job_persists_run_configuration_and_uses_manual_policy(tmp_path: Path) -> None:
+def test_create_job_persists_run_configuration_and_defaults_auto_on_green_policy(tmp_path: Path) -> None:
     conn = sqlite3.connect(
         tmp_path / "create_job.sqlite3",
         check_same_thread=False,
@@ -328,7 +328,7 @@ def test_create_job_persists_run_configuration_and_uses_manual_policy(tmp_path: 
     result = service.create_job(setup_id)
 
     assert result.pipeline_id == PIPELINE_ID
-    assert result.stage_continuation_policy == "manual"
+    assert result.stage_continuation_policy == "auto_on_green"
 
     run_config_row = conn.execute(
         """
@@ -349,7 +349,7 @@ def test_create_job_persists_run_configuration_and_uses_manual_policy(tmp_path: 
             "continue_after_warning": False,
             "enable_runtime_gate": False,
             "enable_endpoint_gate": False,
-            "stage_continuation_policy": "manual",
+            "stage_continuation_policy": "auto_on_green",
         }
     )
 
@@ -551,11 +551,11 @@ def test_create_job_endpoint_returns_201_with_seeded_dependencies(tmp_path: Path
     assert response.status_code == 201, response.text
     data = response.json()
     assert data["pipeline_id"] == PIPELINE_ID
-    assert data["stage_continuation_policy"] == "manual"
+    assert data["stage_continuation_policy"] == "auto_on_green"
     assert data["run_configuration_id"]
 
 
-def test_create_job_endpoint_accepts_explicit_manual_policy_contract(
+def test_create_job_endpoint_accepts_explicit_auto_on_green_policy_contract(
     tmp_path: Path,
 ) -> None:
     client, conn = _api_client(tmp_path)
@@ -569,14 +569,46 @@ def test_create_job_endpoint_accepts_explicit_manual_policy_contract(
         "/v1/v2/migration-jobs",
         json={
             "setup_id": setup_id,
-            "policy": {"stage_continuation_policy": "manual"},
+            "policy": {"stage_continuation_policy": "auto_on_green"},
         },
         headers=_mutation_headers(),
     )
     assert response.status_code == 201, response.text
     data = response.json()
-    assert data["stage_continuation_policy"] == "manual"
+    assert data["stage_continuation_policy"] == "auto_on_green"
     assert data["run_configuration_id"]
+
+
+def test_create_job_endpoint_accepts_partial_policy_payload(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    _seed_exact_v2_dependencies(conn)
+
+    setup_repo = SqliteV2SetupRepository(conn)
+    setup_id, setup_checksum = _make_setup(setup_repo)
+    _save_ready_preflight(setup_repo, setup_id=setup_id, setup_checksum=setup_checksum)
+
+    response = client.post(
+        "/v1/v2/migration-jobs",
+        json={
+            "setup_id": setup_id,
+            "policy": {"stage_continuation_policy": "auto_on_green"},
+        },
+        headers=_mutation_headers(),
+    )
+    assert response.status_code == 201, response.text
+    data = response.json()
+    assert data["stage_continuation_policy"] == "auto_on_green"
+    row = conn.execute(
+        "SELECT policy_json FROM run_configurations WHERE job_id = ?",
+        (data["job_id"],),
+    ).fetchone()
+    assert row is not None
+    assert json.loads(row["policy_json"]) == {
+        "continue_after_warning": False,
+        "enable_runtime_gate": False,
+        "enable_endpoint_gate": False,
+        "stage_continuation_policy": "auto_on_green",
+    }
 
 
 def test_stale_run_configurations_fk_allows_job_id_without_migration_job_row(
@@ -603,7 +635,7 @@ def test_stale_run_configurations_fk_allows_job_id_without_migration_job_row(
         pipeline_version="2026.06",
         target_proof_level=TargetProofLevel.BUILD_TEST_VERIFIED,
         enabled_gates_json="[]",
-        policy_json='{"continue_after_warning":false,"enable_runtime_gate":false,"enable_endpoint_gate":false,"stage_continuation_policy":"manual"}',
+        policy_json='{"continue_after_warning":false,"enable_runtime_gate":false,"enable_endpoint_gate":false,"stage_continuation_policy":"auto_on_green"}',
         payload_json='{"schema_version":"1.0.0"}',
         payload_checksum="checksum",
         created_at=utc_now_text(),

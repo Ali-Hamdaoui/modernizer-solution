@@ -75,6 +75,40 @@ export function resolveControlTowerApiBaseUrl(
 
 export const CONTROL_TOWER_API_BASE_URL = resolveControlTowerApiBaseUrl();
 
+export const DEFAULT_V2_STAGE_CONTINUATION_POLICY = "auto_on_green" as const;
+
+export type V2StageContinuationPolicy =
+  | typeof DEFAULT_V2_STAGE_CONTINUATION_POLICY
+  | "manual"
+  | "manual_on_warning_or_failure";
+
+type V2JobPolicy = {
+  continue_after_warning: boolean;
+  enable_runtime_gate: boolean;
+  enable_endpoint_gate: boolean;
+  stage_continuation_policy: V2StageContinuationPolicy;
+};
+
+export type CreateV2JobRequest = {
+  setup_id: string;
+  policy: V2JobPolicy;
+};
+
+export function createV2JobPayload(
+  setupId: string,
+  stageContinuationPolicy: V2StageContinuationPolicy = DEFAULT_V2_STAGE_CONTINUATION_POLICY,
+): CreateV2JobRequest {
+  return {
+    setup_id: setupId,
+    policy: {
+      continue_after_warning: false,
+      enable_runtime_gate: false,
+      enable_endpoint_gate: false,
+      stage_continuation_policy: stageContinuationPolicy,
+    },
+  };
+}
+
 export function requireJobId(jobId: string): string {
   const trimmedJobId = jobId.trim();
   if (!trimmedJobId) {
@@ -254,7 +288,7 @@ export function assistantStreamUrl(jobId: string): string {
 export async function createV2Job(setupId: string): Promise<V2MigrationJobResponse> {
   return postJson<V2MigrationJobResponse>(
     "/v1/v2/migration-jobs",
-    { setup_id: setupId }
+    createV2JobPayload(setupId)
   );
 }
 

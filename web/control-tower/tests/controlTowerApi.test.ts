@@ -4,6 +4,7 @@ import {
   DEFAULT_CONTROL_TOWER_API_BASE_URL,
   allowedStatusCopy,
   createDiagnosticJobPayload,
+  createV2JobPayload,
   eventStreamUrl,
   getV2AssistantMessages,
   getV2GateDetail,
@@ -55,6 +56,18 @@ describe("M2-01 frontend diagnostic contracts", () => {
     expect(JSON.stringify(payload)).not.toContain("actor");
     expect(JSON.stringify(payload)).not.toContain("command");
     expect(JSON.stringify(payload)).not.toContain("executable");
+  });
+
+  it("defaults new V2 jobs to auto_on_green stage continuation", () => {
+    expect(createV2JobPayload("setup-1")).toEqual({
+      setup_id: "setup-1",
+      policy: {
+        continue_after_warning: false,
+        enable_runtime_gate: false,
+        enable_endpoint_gate: false,
+        stage_continuation_policy: "auto_on_green"
+      }
+    });
   });
 
   it("uses only approved diagnostic wording", () => {
@@ -147,7 +160,7 @@ describe("M2-01 frontend diagnostic contracts", () => {
       getV2AssistantMessages(jobId),
     ]);
 
-    const urls = fetchMock.mock.calls.map(([url]) => String(url));
+    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
     expect(urls).toEqual([
       expect.stringContaining(`/v1/v2/jobs/${jobId}/approvals`),
       expect.stringContaining(`/v1/v2/migration-jobs/${jobId}/stages`),
@@ -211,7 +224,7 @@ describe("M2-01 frontend diagnostic contracts", () => {
       }),
     ]);
 
-    const urls = fetchMock.mock.calls.map(([url]) => String(url));
+    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
     expect(urls).toEqual(
       expect.arrayContaining([
         expect.stringContaining("/v1/v2/jobs/job-1/gates"),
@@ -219,7 +232,9 @@ describe("M2-01 frontend diagnostic contracts", () => {
         expect.stringContaining("/v1/v2/jobs/job-1/gates/gate-1"),
       ])
     );
-    const actionCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/actions"));
+    const actionCall = fetchMock.mock.calls.find(
+      (call) => String(call[0]).includes("/actions"),
+    ) as [string, RequestInit?] | undefined;
     expect(actionCall).toBeDefined();
     const body = JSON.parse(String((actionCall?.[1] as RequestInit | undefined)?.body ?? "{}"));
     expect(body).toEqual(expect.objectContaining({

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { getAzureSmokeCopy, getStartReadinessCopy } from "../app/migrations/new/NewMigrationForm";
+import { DEFAULT_V2_STAGE_CONTINUATION_POLICY } from "../lib/controlTowerApi";
 
 // Frontend contract tests for the New Migration form
 // These test the parsing/shape of env blocks without relying on mock API.
@@ -210,6 +211,10 @@ describe("V2 New Migration form contract", () => {
     expect(setupPayload).toHaveProperty("java17_home");
     expect(setupPayload).toHaveProperty("java21_home");
     expect(setupPayload).toHaveProperty("maven_cmd");
+  });
+
+  it("new UI V2 jobs default to auto_on_green continuation", () => {
+    expect(DEFAULT_V2_STAGE_CONTINUATION_POLICY).toBe("auto_on_green");
   });
 
   it("preflight request matches backend PreflightRequest schema", () => {
