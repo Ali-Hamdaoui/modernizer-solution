@@ -614,6 +614,15 @@ describe("V2 Migration Cockpit contract", () => {
                   size_bytes: 128,
                   read_only: true,
                 },
+                {
+                  proposal_id: "proposal-1",
+                  artifact_name: "sandbox_validation_result.json",
+                  relative_path: "ai_supervision/repair_proposals/proposal-1/sandbox_validation_result.json",
+                  kind: "json",
+                  exists: true,
+                  size_bytes: 96,
+                  read_only: true,
+                },
               ],
               read_only: true,
             },
@@ -648,16 +657,82 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("proposal-2");
     expect(markup).toContain("Rollback performed: true");
     expect(markup).toContain("Sandbox validation state: rolled_back");
+    expect(markup).toContain("Sandbox validation passed.");
+    expect(markup).toContain("No source files were modified.");
+    expect(markup).toContain("Migration stages were not resumed.");
+    expect(markup).toContain("Sandbox validation failed and rollback was performed.");
+    expect(markup).toContain("The sandbox file was restored from backup.");
     expect(markup).toContain("Source mutated: false");
     expect(markup).toContain("Stage resumed: false");
     expect(markup).toContain("Read-only projection: true");
-    expect(markup).toContain("Repair artifacts: repair_proposal.md, repair_proposal.json");
+    expect(markup).toContain(
+      "Repair artifacts: repair_proposal.md, repair_proposal.json, sandbox_validation_result.json"
+    );
     expect(markup).toContain("Read-only artifact preview: repair_proposal.md");
+    expect(markup).toContain("Validation artifact: sandbox_validation_result.json");
     expect(markup).toContain("Update sandbox pom.xml only.");
     expect(markup).toContain("No previewable repair artifacts.");
     expect(markup).not.toContain(">Apply<");
     expect(markup).not.toContain(">Validate<");
     expect(markup).not.toContain(">Resume<");
+  });
+
+  it("cockpit renders rollback error warning for failed validation", () => {
+    const markup = renderToStaticMarkup(
+      <MigrationCockpit
+        jobId="job-123"
+        initialData={{
+          job: { job_id: "job-123", setup_id: "setup-1", setup_checksum: "chk", pipeline_id: "pipe", stages: [], created_at: "now" },
+          stages: [],
+          approvals: [],
+          messages: [],
+          events: [],
+          pipeline: { job_id: "job-123", rows: [], evidence: [], raw_logs: [], active_stage_index: 3 },
+          dualModelTraces: { job_id: "job-123", run_id: "v2-demo-s2", trace_count: 0, latest_model1_trace: null, latest_model2_trace: null, traces: [], artifact_refs: [], read_only: true },
+          repairLifecycle: {
+            job_id: "job-123",
+            repair_proposals: [
+              {
+                job_id: "job-123",
+                run_id: "v2-demo-s2",
+                proposal_id: "proposal-warning",
+                failure_type: "invalid_maven_wildcard_version",
+                root_cause: "Rollback error after validation failure.",
+                current_state: "validation_failed_rollback_error",
+                approval_state: "approved",
+                approval_checksum: "chk-warning",
+                has_execution_plan: true,
+                has_patch_candidate: true,
+                sandbox_apply_state: "applied",
+                sandbox_validation_state: "rollback_error",
+                rollback_performed: true,
+                source_mutated: false,
+                sandbox_only: true,
+                stage_resumed: false,
+                next_operator_action: "inspect rollback",
+                risk_level: "high",
+                model2_verdict: "needs_human_review",
+                artifact_refs: {},
+                read_only: true,
+              },
+            ],
+            read_only: true,
+          },
+          repairArtifacts: {},
+          repairArtifactPreviews: {},
+          evidenceBundle: null,
+          failureSummary: null,
+          assistantModel: null,
+        }}
+      />
+    );
+    expect(markup).toContain("Validation failed and rollback reported an error.");
+    expect(markup).toContain("Manual inspection is required.");
+    expect(markup).toContain("No source promotion was performed.");
+    expect(markup).toContain("Source mutated: false");
+    expect(markup).toContain("Sandbox only: true");
+    expect(markup).toContain("Stage resumed: false");
+    expect(markup).not.toContain("Validate sandbox repair");
   });
 
   it("cockpit renders approve and reject buttons for pending repair proposal", () => {

@@ -197,6 +197,32 @@ export function canValidateSandboxRepair(proposal: {
   );
 }
 
+export function getRepairValidationStatusMessages(currentState: string): string[] {
+  switch (currentState) {
+    case "validation_passed":
+      return [
+        "Sandbox validation passed.",
+        "No source files were modified.",
+        "Migration stages were not resumed.",
+      ];
+    case "validation_failed_rolled_back":
+      return [
+        "Sandbox validation failed and rollback was performed.",
+        "The sandbox file was restored from backup.",
+        "No source files were modified.",
+        "Migration stages were not resumed.",
+      ];
+    case "validation_failed_rollback_error":
+      return [
+        "Validation failed and rollback reported an error.",
+        "Manual inspection is required.",
+        "No source promotion was performed.",
+      ];
+    default:
+      return [];
+  }
+}
+
 export async function submitRepairPatchCandidateMaterialization(args: {
   jobId: string;
   proposalId: string;
@@ -231,8 +257,8 @@ const REPAIR_ARTIFACT_PREFERRED_PREVIEW_ORDER = [
   "approval_state.json",
   "repair_execution_plan.json",
   "repair_patch_candidate.json",
-  "sandbox_apply_result.json",
   "sandbox_validation_result.json",
+  "sandbox_apply_result.json",
   "backups/pom.xml.before-repair",
 ] as const;
 
@@ -785,6 +811,11 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
                 <p className="meta">Sandbox only: {String(proposal.sandbox_only)}</p>
                 <p className="meta">Stage resumed: {String(proposal.stage_resumed)}</p>
                 <p className="meta">Read-only projection: {String(proposal.read_only)}</p>
+                {getRepairValidationStatusMessages(proposal.current_state).map((line) => (
+                  <p key={`${proposal.proposal_id}-${line}`} className="meta">
+                    {line}
+                  </p>
+                ))}
                 {data.repairArtifacts[proposal.proposal_id]?.artifacts?.some((artifact) => artifact.exists) ? (
                   <p className="meta">
                     Repair artifacts: {data.repairArtifacts[proposal.proposal_id]?.artifacts
@@ -795,6 +826,11 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
                 ) : (
                   <p className="meta">No previewable repair artifacts.</p>
                 )}
+                {data.repairArtifacts[proposal.proposal_id]?.artifacts?.some(
+                  (artifact) => artifact.exists && artifact.artifact_name === "sandbox_validation_result.json"
+                ) ? (
+                  <p className="meta">Validation artifact: sandbox_validation_result.json</p>
+                ) : null}
                 {data.repairArtifactPreviews[proposal.proposal_id] ? (
                   <details className="raw-logs">
                     <summary>
