@@ -16,6 +16,7 @@ import {
   getV2MigrationJobStages,
   getJob,
   materializeV2RepairExecutionPlan,
+  materializeV2RepairPatchCandidate,
   previewPlanAmendment,
   postJson,
   rejectV2RepairProposal,
@@ -296,6 +297,27 @@ describe("M2-01 frontend diagnostic contracts", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       `${DEFAULT_CONTROL_TOWER_API_BASE_URL}/v1/v2/migration-jobs/job-123/repair-proposals/proposal-1/materialize-execution-plan`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({}),
+      })
+    );
+  });
+
+  it("materialize patch candidate calls read-write patch-candidate endpoint only", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        proposal_id: "proposal-1",
+        patch_candidate: { applied: false, read_only: true },
+      })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await materializeV2RepairPatchCandidate("job-123", "proposal-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${DEFAULT_CONTROL_TOWER_API_BASE_URL}/v1/v2/migration-jobs/job-123/repair-proposals/proposal-1/materialize-patch-candidate`,
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({}),

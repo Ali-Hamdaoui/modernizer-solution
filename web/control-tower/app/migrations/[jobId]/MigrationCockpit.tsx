@@ -18,6 +18,7 @@ import {
   getV2JobPipeline,
   getV2MigrationJobStages,
   materializeV2RepairExecutionPlan,
+  materializeV2RepairPatchCandidate,
   rejectV2Card,
   rejectV2RepairProposal,
   requireJobId,
@@ -140,6 +141,33 @@ export async function submitRepairExecutionPlanMaterialization(args: {
   return refreshRepairLifecyclePanelState(safeJobId);
 }
 
+export function canMaterializeRepairPatchCandidate(proposal: {
+  current_state: string;
+  approval_state: string;
+  has_execution_plan: boolean;
+  has_patch_candidate: boolean;
+  sandbox_apply_state: string;
+  sandbox_validation_state: string;
+}): boolean {
+  return (
+    proposal.current_state === "execution_plan_ready"
+    && proposal.approval_state === "approved"
+    && proposal.has_execution_plan
+    && !proposal.has_patch_candidate
+    && proposal.sandbox_apply_state === "not_started"
+    && proposal.sandbox_validation_state === "not_started"
+  );
+}
+
+export async function submitRepairPatchCandidateMaterialization(args: {
+  jobId: string;
+  proposalId: string;
+}): Promise<Pick<CockpitData, "repairLifecycle" | "repairArtifacts" | "repairArtifactPreviews">> {
+  const safeJobId = requireJobId(args.jobId);
+  await materializeV2RepairPatchCandidate(safeJobId, args.proposalId);
+  return refreshRepairLifecyclePanelState(safeJobId);
+}
+
 const REPAIR_ARTIFACT_PREFERRED_PREVIEW_ORDER = [
   "repair_proposal.md",
   "repair_proposal.json",
@@ -206,6 +234,7 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
   const [repairApprovalBusy, setRepairApprovalBusy] = useState<string | null>(null);
   const [repairExecutionBusy, setRepairExecutionBusy] = useState<string | null>(null);
+  const [repairPatchBusy, setRepairPatchBusy] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "connected" | "reconnecting">("connecting");
   const normalizedJobId = jobId?.trim() ?? "";
 
@@ -505,6 +534,28 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
     }
   }
 
+  async function materializeRepairPatchCandidate(proposalId: string) {
+    if (!normalizedJobId) return;
+    setRepairPatchBusy(proposalId);
+    try {
+      const refreshState = await submitRepairPatchCandidateMaterialization({
+        jobId: normalizedJobId,
+        proposalId,
+      });
+      setData((current) => current ? {
+        ...current,
+        repairLifecycle: refreshState.repairLifecycle,
+        repairArtifacts: refreshState.repairArtifacts,
+        repairArtifactPreviews: refreshState.repairArtifactPreviews,
+      } : current);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Patch candidate materialization failed");
+    } finally {
+      setRepairPatchBusy(null);
+    }
+  }
+
   if (error) return <div className="error-box">{error}</div>;
   if (!data) return <div className="info-box">Loading cockpit...</div>;
 
@@ -687,6 +738,22 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
                     </div>
                     <p className="meta">This only creates a read-only execution plan.</p>
                     <p className="meta">It does not apply patches or run validation.</p>
+                  </>
+                ) : null}
+                {canMaterializeRepairPatchCandidate(proposal) ? (
+                  <>
+                    <div className="approval-actions">
+                      <button
+                        type="button"
+                        disabled={repairPatchBusy === proposal.proposal_id}
+                        onClick={() => void materializeRepairPatchCandidate(proposal.proposal_id)}
+                      >
+                        Materialize patch candidate
+                      </button>
+                    </div>
+                    <p className="meta">This only creates a read-only patch candidate.</p>
+                    <p className="meta">It does not apply patches or run validation.</p>
+                    <p className="meta">It does not modify source or sandbox files.</p>
                   </>
                 ) : null}
                 {Object.keys(proposal.artifact_refs ?? {}).length > 0 ? (

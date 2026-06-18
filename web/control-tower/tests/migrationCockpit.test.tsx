@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import MigrationCockpitPage from "../app/migrations/[jobId]/page";
-import { MigrationCockpit, canMaterializeRepairExecutionPlan, cockpitEvidenceStatusLines, reduceStageStatus, submitRepairExecutionPlanMaterialization, submitRepairProposalCockpitDecision } from "../app/migrations/[jobId]/MigrationCockpit";
+import { MigrationCockpit, canMaterializeRepairExecutionPlan, canMaterializeRepairPatchCandidate, cockpitEvidenceStatusLines, reduceStageStatus, submitRepairExecutionPlanMaterialization, submitRepairPatchCandidateMaterialization, submitRepairProposalCockpitDecision } from "../app/migrations/[jobId]/MigrationCockpit";
 import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, requireJobId, v2EventStreamUrl } from "../lib/controlTowerApi";
 import type { V2JobEvent } from "../lib/contracts";
 
@@ -1010,6 +1010,49 @@ describe("V2 Migration Cockpit contract", () => {
     })).toBe(false);
   });
 
+  it("materialize patch candidate button shows only for execution_plan_ready proposal", () => {
+    expect(canMaterializeRepairPatchCandidate({
+      current_state: "execution_plan_ready",
+      approval_state: "approved",
+      has_execution_plan: true,
+      has_patch_candidate: false,
+      sandbox_apply_state: "not_started",
+      sandbox_validation_state: "not_started",
+    })).toBe(true);
+    expect(canMaterializeRepairPatchCandidate({
+      current_state: "pending_approval",
+      approval_state: "pending_approval",
+      has_execution_plan: true,
+      has_patch_candidate: false,
+      sandbox_apply_state: "not_started",
+      sandbox_validation_state: "not_started",
+    })).toBe(false);
+    expect(canMaterializeRepairPatchCandidate({
+      current_state: "rejected",
+      approval_state: "rejected",
+      has_execution_plan: true,
+      has_patch_candidate: false,
+      sandbox_apply_state: "not_started",
+      sandbox_validation_state: "not_started",
+    })).toBe(false);
+    expect(canMaterializeRepairPatchCandidate({
+      current_state: "execution_plan_ready",
+      approval_state: "approved",
+      has_execution_plan: false,
+      has_patch_candidate: false,
+      sandbox_apply_state: "not_started",
+      sandbox_validation_state: "not_started",
+    })).toBe(false);
+    expect(canMaterializeRepairPatchCandidate({
+      current_state: "execution_plan_ready",
+      approval_state: "approved",
+      has_execution_plan: true,
+      has_patch_candidate: true,
+      sandbox_apply_state: "not_started",
+      sandbox_validation_state: "not_started",
+    })).toBe(false);
+  });
+
   it("cockpit renders materialize execution plan button and safety text only for approved no-plan proposal", () => {
     const approvedMarkup = renderToStaticMarkup(
       <MigrationCockpit
@@ -1112,6 +1155,161 @@ describe("V2 Migration Cockpit contract", () => {
       />
     );
     expect(hiddenMarkup).not.toContain("Materialize execution plan");
+
+    const patchCandidateHidden = renderToStaticMarkup(
+      <MigrationCockpit
+        jobId="job-123"
+        initialData={{
+          job: { job_id: "job-123", setup_id: "setup-1", setup_checksum: "chk", pipeline_id: "pipe", stages: [], created_at: "now" },
+          stages: [],
+          approvals: [],
+          messages: [],
+          events: [],
+          pipeline: { job_id: "job-123", rows: [], evidence: [], raw_logs: [], active_stage_index: 3 },
+          dualModelTraces: { job_id: "job-123", run_id: "v2-demo-s2", trace_count: 0, latest_model1_trace: null, latest_model2_trace: null, traces: [], artifact_refs: [], read_only: true },
+          repairLifecycle: {
+            job_id: "job-123",
+            repair_proposals: [
+              {
+                job_id: "job-123",
+                run_id: "v2-demo-s2",
+                proposal_id: "proposal-candidate",
+                failure_type: "invalid_maven_wildcard_version",
+                root_cause: "root",
+                current_state: "patch_candidate_ready",
+                approval_state: "approved",
+                approval_checksum: "chk-candidate",
+                has_execution_plan: true,
+                has_patch_candidate: true,
+                sandbox_apply_state: "not_started",
+                sandbox_validation_state: "not_started",
+                rollback_performed: false,
+                source_mutated: false,
+                sandbox_only: true,
+                stage_resumed: false,
+                next_operator_action: "apply patch to sandbox",
+                risk_level: "medium",
+                model2_verdict: "accepted",
+                artifact_refs: {},
+                read_only: true,
+              },
+            ],
+            read_only: true,
+          },
+          repairArtifacts: {},
+          repairArtifactPreviews: {},
+          evidenceBundle: null,
+          failureSummary: null,
+          assistantModel: null,
+        }}
+      />
+    );
+    expect(patchCandidateHidden).not.toContain("Materialize patch candidate");
+  });
+
+  it("cockpit renders materialize patch candidate button and safety text only for execution plan ready proposal", () => {
+    const approvedMarkup = renderToStaticMarkup(
+      <MigrationCockpit
+        jobId="job-123"
+        initialData={{
+          job: { job_id: "job-123", setup_id: "setup-1", setup_checksum: "chk", pipeline_id: "pipe", stages: [], created_at: "now" },
+          stages: [],
+          approvals: [],
+          messages: [],
+          events: [],
+          pipeline: { job_id: "job-123", rows: [], evidence: [], raw_logs: [], active_stage_index: 3 },
+          dualModelTraces: { job_id: "job-123", run_id: "v2-demo-s2", trace_count: 0, latest_model1_trace: null, latest_model2_trace: null, traces: [], artifact_refs: [], read_only: true },
+          repairLifecycle: {
+            job_id: "job-123",
+            repair_proposals: [
+              {
+                job_id: "job-123",
+                run_id: "v2-demo-s2",
+                proposal_id: "proposal-approved",
+                failure_type: "invalid_maven_wildcard_version",
+                root_cause: "root",
+                current_state: "execution_plan_ready",
+                approval_state: "approved",
+                approval_checksum: "chk-approved",
+                has_execution_plan: true,
+                has_patch_candidate: false,
+                sandbox_apply_state: "not_started",
+                sandbox_validation_state: "not_started",
+                rollback_performed: false,
+                source_mutated: false,
+                sandbox_only: true,
+                stage_resumed: false,
+                next_operator_action: "materialize patch candidate",
+                risk_level: "medium",
+                model2_verdict: "accepted",
+                artifact_refs: {},
+                read_only: true,
+              },
+            ],
+            read_only: true,
+          },
+          repairArtifacts: {},
+          repairArtifactPreviews: {},
+          evidenceBundle: null,
+          failureSummary: null,
+          assistantModel: null,
+        }}
+      />
+    );
+    expect(approvedMarkup).toContain("Materialize patch candidate");
+    expect(approvedMarkup).toContain("This only creates a read-only patch candidate.");
+    expect(approvedMarkup).toContain("It does not apply patches or run validation.");
+    expect(approvedMarkup).toContain("It does not modify source or sandbox files.");
+
+    const hiddenPending = renderToStaticMarkup(
+      <MigrationCockpit
+        jobId="job-123"
+        initialData={{
+          job: { job_id: "job-123", setup_id: "setup-1", setup_checksum: "chk", pipeline_id: "pipe", stages: [], created_at: "now" },
+          stages: [],
+          approvals: [],
+          messages: [],
+          events: [],
+          pipeline: { job_id: "job-123", rows: [], evidence: [], raw_logs: [], active_stage_index: 3 },
+          dualModelTraces: { job_id: "job-123", run_id: "v2-demo-s2", trace_count: 0, latest_model1_trace: null, latest_model2_trace: null, traces: [], artifact_refs: [], read_only: true },
+          repairLifecycle: {
+            job_id: "job-123",
+            repair_proposals: [
+              {
+                job_id: "job-123",
+                run_id: "v2-demo-s2",
+                proposal_id: "proposal-pending",
+                failure_type: "invalid_maven_wildcard_version",
+                root_cause: "root",
+                current_state: "pending_approval",
+                approval_state: "pending_approval",
+                approval_checksum: "chk-pending",
+                has_execution_plan: false,
+                has_patch_candidate: false,
+                sandbox_apply_state: "not_started",
+                sandbox_validation_state: "not_started",
+                rollback_performed: false,
+                source_mutated: false,
+                sandbox_only: true,
+                stage_resumed: false,
+                next_operator_action: "approve repair proposal",
+                risk_level: "medium",
+                model2_verdict: "accepted",
+                artifact_refs: {},
+                read_only: true,
+              },
+            ],
+            read_only: true,
+          },
+          repairArtifacts: {},
+          repairArtifactPreviews: {},
+          evidenceBundle: null,
+          failureSummary: null,
+          assistantModel: null,
+        }}
+      />
+    );
+    expect(hiddenPending).not.toContain("Materialize patch candidate");
   });
 
   it("materialize action refreshes lifecycle and artifacts only", async () => {
@@ -1186,6 +1384,88 @@ describe("V2 Migration Cockpit contract", () => {
 
     await expect(
       submitRepairExecutionPlanMaterialization({
+        jobId: "job-123",
+        proposalId: "proposal-1",
+      })
+    ).rejects.toThrow(/control tower mutation failed/i);
+  });
+
+  it("materialize patch candidate refreshes lifecycle and artifacts only", async () => {
+    const fetchMock = vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () => {
+        if (url.includes("/materialize-patch-candidate")) {
+          return {
+            proposal_id: "proposal-1",
+            patch_candidate: { applied: false, read_only: true },
+          };
+        }
+        if (url.includes("/repair-lifecycle")) {
+          return {
+            job_id: "job-123",
+            repair_proposals: [
+              {
+                job_id: "job-123",
+                run_id: "v2-demo-s2",
+                proposal_id: "proposal-1",
+                failure_type: "invalid_maven_wildcard_version",
+                root_cause: "root",
+                current_state: "patch_candidate_ready",
+                approval_state: "approved",
+                approval_checksum: "chk-1",
+                has_execution_plan: true,
+                has_patch_candidate: true,
+                sandbox_apply_state: "not_started",
+                sandbox_validation_state: "not_started",
+                rollback_performed: false,
+                source_mutated: false,
+                sandbox_only: true,
+                stage_resumed: false,
+                next_operator_action: "apply patch to sandbox",
+                risk_level: "medium",
+                model2_verdict: "accepted",
+                artifact_refs: {},
+                read_only: true,
+              },
+            ],
+            read_only: true,
+          };
+        }
+        return {
+          proposal_id: "proposal-1",
+          artifacts: [],
+          read_only: true,
+        };
+      },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await submitRepairPatchCandidateMaterialization({
+      jobId: "job-123",
+      proposalId: "proposal-1",
+    });
+
+    expect(result.repairLifecycle?.repair_proposals).toHaveLength(1);
+    expect(result.repairLifecycle?.repair_proposals[0].has_patch_candidate).toBe(true);
+    const urls = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(urls[0]).toContain("/materialize-patch-candidate");
+    expect(urls.some((url) => url.includes("/repair-lifecycle"))).toBe(true);
+    expect(urls.some((url) => url.includes("/artifacts"))).toBe(true);
+    expect(urls.some((url) => url.includes("materialize-execution-plan"))).toBe(false);
+    expect(urls.some((url) => url.includes("apply-to-sandbox"))).toBe(false);
+    expect(urls.some((url) => url.includes("validate-sandbox-repair"))).toBe(false);
+    expect(urls.some((url) => url.includes("/stages/progress"))).toBe(false);
+  });
+
+  it("materialize patch candidate surfaces readable API failure", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      json: async () => ({ error: { code: "FAILED" } }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      submitRepairPatchCandidateMaterialization({
         jobId: "job-123",
         proposalId: "proposal-1",
       })
