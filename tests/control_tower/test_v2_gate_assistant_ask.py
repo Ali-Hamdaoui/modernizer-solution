@@ -921,6 +921,62 @@ def test_ask_confirm_checksum_retry_response_on_locked_resume_launch(tmp_path: P
     assert "retrying" in body.get("assistant_message", {}).get("content", "").lower()
 
 
+def test_ask_read_only_question_survives_busy_database(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    output_root = tmp_path / "out"
+    setup_id = _ready_setup_with_output_root(conn, str(output_root))
+    _seed_approval_review_artifacts(output_root)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    _seed_stage1_command(conn, job_id)
+    _create_gate_with_refs(
+        conn,
+        job_id,
+        refs=(
+            "analysis_report.json",
+            "analysis_summary.md",
+            "config_inventory.json",
+            "dependency_graph.json",
+            "test_inventory.json",
+            "assessment_report.json",
+            "assessment_summary.md",
+            "migration_plan.yaml",
+            "migration_units.yaml",
+            "plan_summary.md",
+            "plan_validation_report.json",
+            "approval_request.json",
+            "rewrite_preview.json",
+            "rewrite_dry_run.patch",
+            "rewrite_impact_summary.json",
+            "target_dependency_plan.json",
+        ),
+        stage_index=1,
+    )
+
+    lock_conn = sqlite3.connect(
+        str(tmp_path / "gate_ask.sqlite3"),
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=0.1,
+    )
+    lock_conn.row_factory = sqlite3.Row
+    try:
+        lock_conn.execute("BEGIN IMMEDIATE")
+        resp = client.post(
+            f"/v1/v2/jobs/{job_id}/assistant/ask",
+            json={"question": "What happened?"},
+            headers=_mutation_headers(),
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body.get("assistant_message", {}).get("content", "")
+        assert body.get("busy") in {True, None}
+    finally:
+        if lock_conn.in_transaction:
+            lock_conn.execute("ROLLBACK")
+        lock_conn.close()
+
+
 def test_ask_revision_request_records_blocked_state(tmp_path: Path) -> None:
     client, conn = _api_client(tmp_path)
     setup_id = _ready_setup(conn)

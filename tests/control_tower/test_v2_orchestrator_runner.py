@@ -597,6 +597,42 @@ def test_stage_failed_not_emitted_for_valid_pass_contract(tmp_path: Path) -> Non
     assert len(popen.calls) == 3
 
 
+def test_stage1_completion_replay_does_not_duplicate_stage2_command(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+    launched: list[str] = []
+    runner.start = lambda *, job_id, command_id: launched.append(command_id)  # type: ignore[method-assign]
+
+    result = _success_result(sandbox_path="/tmp/stage-1")
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=1,
+        command_id="cmd-1",
+        exit_code=0,
+        result=result,
+        stderr="",
+        command_phase=None,
+    )
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=1,
+        command_id="cmd-1",
+        exit_code=0,
+        result=result,
+        stderr="",
+        command_phase=None,
+    )
+
+    stage2_commands = SqliteUnitOfWork(conn).v2_commands.list_by_job_and_stage("job-1", 2)
+    assert len(stage2_commands) == 1
+    assert len(launched) >= 1
+
+
 def test_v2_runner_emits_final_report_events_for_stage3(tmp_path: Path) -> None:
     """Stage 3 completion emits final_report_started + final_report_completed."""
     conn = _conn(tmp_path)
@@ -629,6 +665,7 @@ def test_v2_runner_emits_final_report_events_for_stage3(tmp_path: Path) -> None:
     event_types = [event.type for event in events]
     assert "final_report_started" in event_types
     assert "final_report_completed" in event_types
+    assert "migration_completed" in event_types
     assert "stage_completed" in event_types
     # Stage 3 must NOT queue a next stage
     assert "next_stage_queued" not in event_types

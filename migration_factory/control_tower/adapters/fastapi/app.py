@@ -2095,21 +2095,60 @@ def create_app(
         execution through V2GateActionService.
         """
         # ── Phase 1: Check for open gate ──────────────────────────
-        with unit_of_work_factory() as uow:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
             open_gates = uow.phase_gates.list_open(job_id)
 
         question_lower = payload.question.strip().lower()
+        assistant_intent = _classify_v2_assistant_intent(question_lower)
 
         if open_gates:
             open_gate = open_gates[0]
-            return _handle_gate_aware_ask(
+            if (
+                _assistant_question_requires_write(question_lower=question_lower, assistant_intent=assistant_intent)
+                or _question_looks_like_approval_review_revision_request(payload.question)
+            ):
+                try:
+                    return _handle_gate_aware_ask(
+                        app=app,
+                        job_id=job_id,
+                        open_gate=open_gate,
+                        question=payload.question,
+                        correlation_id=payload.correlation_id,
+                        confirmation_store=_confirmation_store,
+                        unit_of_work_factory=unit_of_work_factory,
+                    )
+                except sqlite3.OperationalError as exc:
+                    if _is_sqlite_locked_error(exc):
+                        return {
+                            "job_id": job_id,
+                            "gate_aware": True,
+                            "executed": False,
+                            "busy": True,
+                            "assistant_message": {
+                                "message_id": None,
+                                "job_id": job_id,
+                                "role": "assistant",
+                                "content": "The orchestrator is busy right now. Retry shortly.",
+                                "correlation_id": payload.correlation_id,
+                                "created_at": utc_now_text(),
+                            },
+                            "guardrails": {
+                                "read_only": True,
+                                "cannot_execute": True,
+                                "cannot_approve": True,
+                                "cannot_write_files": True,
+                                "cannot_change_route_or_stage": True,
+                                "cannot_override_proof": True,
+                            },
+                        }
+                    raise
+            return _handle_gate_aware_read_only_ask(
                 app=app,
                 job_id=job_id,
                 open_gate=open_gate,
                 question=payload.question,
                 correlation_id=payload.correlation_id,
-                confirmation_store=_confirmation_store,
                 unit_of_work_factory=unit_of_work_factory,
             )
 
@@ -2121,8 +2160,17 @@ def create_app(
             commands = uow.v2_commands.list_by_job(job_id)
             pipeline = _v2_pipeline_projection(job_id, events)
             service = V2AssistantService(assistant_repo=uow.v2_assistant)
-            # Classify assistant intent before building prompt
-            assistant_intent = _classify_v2_assistant_intent(question_lower)
+            if not _assistant_question_requires_write(
+                question_lower=question_lower,
+                assistant_intent=assistant_intent,
+            ):
+                return _handle_v2_assistant_read_only_ask(
+                    app=app,
+                    job_id=job_id,
+                    question=payload.question,
+                    correlation_id=payload.correlation_id,
+                    unit_of_work_factory=unit_of_work_factory,
+                )
             # Read prior persisted messages for conversation history
             prior_messages = service.get_messages(job_id)
             user_msg = service.add_message(
@@ -6376,6 +6424,424 @@ def _format_execution_response(
         lines.append("")
         lines.append("Please try again or contact support if the issue persists.")
     return "\n".join(lines)
+
+
+def _assistant_question_requires_write(*, question_lower: str, assistant_intent: str) -> bool:
+    if assistant_intent in {"apply_dependency_change", "rollback_pom_change", "continue_from_gate", "request_revision"}:
+        return True
+    if assistant_intent == "confirm":
+        return True
+    confirm_patterns = (
+        "confirm",
+        "yes",
+        "yeah",
+        "sure",
+        "go ahead",
+        "do it",
+        "apply",
+        "proceed",
+        "okay",
+        "ok",
+    )
+    return any(
+        question_lower == pattern
+        or question_lower.startswith(pattern + " ")
+        or question_lower.startswith(pattern + ",")
+        or question_lower.startswith(pattern + ".")
+        for pattern in confirm_patterns
+    )
+
+
+def _handle_v2_assistant_read_only_ask(
+    app: Any,
+    job_id: str,
+    question: str,
+    correlation_id: str | None,
+    unit_of_work_factory: Any,
+) -> dict[str, Any]:
+    from migration_factory.control_tower.application.v2_assistant_service import (
+        AssistantMessage,
+        V2AssistantModelResult,
+        V2AssistantService,
+    )
+
+    try:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            job = _require_v2_job(uow, job_id)
+            events = uow.v2_events.list_by_job(job_id)
+            approvals = uow.v2_approvals.list_cards_by_job(job_id)
+            commands = uow.v2_commands.list_by_job(job_id)
+            pipeline = _v2_pipeline_projection(job_id, events)
+            service = V2AssistantService(assistant_repo=uow.v2_assistant)
+            assistant_intent = _classify_v2_assistant_intent(question.strip().lower())
+            setup = uow.v2_setups.get(job.setup_id) if job.setup_id else None
+            artifact_previews_list = _resolve_assistant_artifact_previews(
+                question=question,
+                events=events,
+                commands=commands,
+                setup=setup,
+                assistant_intent=assistant_intent,
+            )
+            artifact_previews = tuple(artifact_previews_list)
+            fallback_answer = _build_v2_assistant_answer(
+                question=question,
+                events=events,
+                approvals=approvals,
+                commands=commands,
+                artifact_previews=artifact_previews if artifact_previews else None,
+                assistant_intent=assistant_intent,
+            )
+            if assistant_intent in {"apply_dependency_change", "rollback_pom_change"}:
+                model_result = V2AssistantModelResult(
+                    content=fallback_answer,
+                    source="backend_controlled",
+                    model_status="not_used",
+                    provider="backend",
+                    role="assistant",
+                    success=True,
+                    redacted_summary="Backend-controlled assistant action completed.",
+                    failure_reason="",
+                )
+            else:
+                model_result = app.state.v2_assistant_model_client.answer(
+                    prompt=_build_v2_assistant_prompt(
+                        question=question,
+                        job=job,
+                        pipeline=pipeline,
+                        events=events,
+                        approvals=approvals,
+                        artifact_previews=artifact_previews if artifact_previews else None,
+                        assistant_intent=assistant_intent,
+                        conversation_history=(),
+                    ),
+                    fallback=fallback_answer,
+                    conversation_history=(),
+                )
+
+            now = utc_now_text()
+            user_msg = AssistantMessage(
+                message_id=uuid4().hex,
+                job_id=job_id,
+                role="user",
+                content=question,
+                correlation_id=correlation_id,
+                created_at=now,
+            )
+            assistant_msg = AssistantMessage(
+                message_id=uuid4().hex,
+                job_id=job_id,
+                role="assistant",
+                content=model_result.content,
+                correlation_id=user_msg.message_id,
+                created_at=now,
+            )
+            response = {
+                "job_id": job_id,
+                "user_message": service.message_to_dict(user_msg),
+                "assistant_message": service.message_to_dict(assistant_msg),
+                "model": {
+                    "status": model_result.model_status,
+                    "source": model_result.source,
+                    "provider": model_result.provider,
+                    "role": model_result.role,
+                    "failure_reason": model_result.failure_reason,
+                },
+                "guardrails": {
+                    "read_only": True,
+                    "cannot_execute": True,
+                    "cannot_approve": True,
+                    "cannot_write_files": True,
+                    "cannot_change_route_or_stage": True,
+                    "cannot_override_proof": True,
+                },
+            }
+            return response
+    except sqlite3.OperationalError as exc:
+        if _is_sqlite_locked_error(exc):
+            return {
+                "job_id": job_id,
+                "user_message": {
+                    "message_id": None,
+                    "job_id": job_id,
+                    "role": "user",
+                    "content": question,
+                    "correlation_id": correlation_id,
+                    "created_at": utc_now_text(),
+                },
+                "assistant_message": {
+                    "message_id": None,
+                    "job_id": job_id,
+                    "role": "assistant",
+                    "content": "The orchestrator is busy right now. Retry shortly.",
+                    "correlation_id": correlation_id,
+                    "created_at": utc_now_text(),
+                },
+                "model": {
+                    "status": "busy",
+                    "source": "backend_controlled",
+                    "provider": "backend",
+                    "role": "assistant",
+                    "failure_reason": "database is locked",
+                },
+                "guardrails": {
+                    "read_only": True,
+                    "cannot_execute": True,
+                    "cannot_approve": True,
+                    "cannot_write_files": True,
+                    "cannot_change_route_or_stage": True,
+                    "cannot_override_proof": True,
+                },
+                "busy": True,
+            }
+        raise
+
+
+def _handle_gate_aware_read_only_ask(
+    app: Any,
+    job_id: str,
+    open_gate: Any,
+    question: str,
+    correlation_id: str | None,
+    unit_of_work_factory: Any,
+) -> dict[str, Any]:
+    from migration_factory.control_tower.application.v2_assistant_service import (
+        AssistantMessage,
+        V2AssistantService,
+    )
+
+    try:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            gate_repo = uow.phase_gates
+            gate_service = V2PhaseGateService(gate_repo)
+            job = uow.v2_jobs.get(job_id)
+            setup = None
+            if job is not None and getattr(job, "setup_id", None):
+                setup = uow.v2_setups.get(job.setup_id)
+            storage_root = getattr(setup, "output_parent_path", None) if setup is not None else None
+            resolver = V2GateArtifactResolver(gate_repo, storage_root=storage_root)
+            loader = GateContextLoader(
+                gate_service=gate_service,
+                resolver=resolver,
+            )
+            context, evidence_pack = loader.load_gate_with_evidence(open_gate.gate_id)
+            if context is None:
+                return _handle_v2_assistant_read_only_ask(
+                    app=app,
+                    job_id=job_id,
+                    question=question,
+                    correlation_id=correlation_id,
+                    unit_of_work_factory=unit_of_work_factory,
+                )
+
+            service = V2AssistantService(assistant_repo=uow.v2_assistant)
+            user_msg = AssistantMessage(
+                message_id=uuid4().hex,
+                job_id=job_id,
+                role="user",
+                content=question,
+                correlation_id=correlation_id,
+                created_at=utc_now_text(),
+            )
+            question_lower = question.strip().lower()
+            classifier = GateIntentClassifier()
+            intent: ClassifiedIntent = classifier.classify(
+                user_input=question,
+                available_actions=context.available_actions,
+                gate_phase=context.gate_phase,
+            )
+
+            if open_gate.gate_phase == "approval_review":
+                blocked_revision_card = _approval_review_blocked_revision_card(
+                    uow,
+                    job_id=job_id,
+                    stage_index=open_gate.stage_index,
+                    gate_checksum=context.checksum,
+                )
+                if blocked_revision_card is not None and (
+                    intent.action_type == "approve_from_gate"
+                    or question_lower == "approve"
+                    or intent.action_type == "reject_from_gate"
+                    or question_lower == "reject"
+                ):
+                    assistant_msg = AssistantMessage(
+                        message_id=uuid4().hex,
+                        job_id=job_id,
+                        role="assistant",
+                        content=_approval_review_revision_blocked_message(),
+                        correlation_id=user_msg.message_id,
+                        created_at=utc_now_text(),
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "approve_from_gate",
+                        "executed": False,
+                        "available_actions": _approval_review_available_actions(blocked_revision=True),
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+                exact_checksum = _extract_confirm_checksum(question)
+                if intent.action_type == "approve_from_gate" or question_lower == "approve":
+                    assistant_msg = AssistantMessage(
+                        message_id=uuid4().hex,
+                        job_id=job_id,
+                        role="assistant",
+                        content=_format_approval_review_preview(context),
+                        correlation_id=user_msg.message_id,
+                        created_at=utc_now_text(),
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "approve_from_gate",
+                        "executed": False,
+                        "action_preview": {
+                            "action_type": "approve_from_gate",
+                            "reason": "Preview only; exact checksum confirmation required.",
+                            "confidence": 1.0,
+                            "warning": "Approval will not execute until the exact checksum is confirmed.",
+                            "requires_confirmation": True,
+                            "pending_confirmation": False,
+                            "exact_checksum": context.checksum,
+                        },
+                        "available_actions": _approval_review_available_actions(),
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+                if exact_checksum and exact_checksum != context.checksum:
+                    assistant_msg = AssistantMessage(
+                        message_id=uuid4().hex,
+                        job_id=job_id,
+                        role="assistant",
+                        content="Checksum mismatch. Confirm the latest gate checksum from the review surface.",
+                        correlation_id=user_msg.message_id,
+                        created_at=utc_now_text(),
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "confirm_checksum",
+                        "executed": False,
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+                if _question_looks_like_approval_review_explanation(question):
+                    explanation_text, explanation_model = _format_approval_review_explanation(
+                        app=app,
+                        context=context,
+                        evidence=evidence_pack,
+                        question=question,
+                    )
+                    assistant_msg = AssistantMessage(
+                        message_id=uuid4().hex,
+                        job_id=job_id,
+                        role="assistant",
+                        content=explanation_text,
+                        correlation_id=user_msg.message_id,
+                        created_at=utc_now_text(),
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "status",
+                        "executed": False,
+                        "model": explanation_model,
+                        "available_actions": _approval_review_available_actions(),
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+
+            assistant_msg = AssistantMessage(
+                message_id=uuid4().hex,
+                job_id=job_id,
+                role="assistant",
+                content=_format_approval_review_preview(context),
+                correlation_id=user_msg.message_id,
+                created_at=utc_now_text(),
+            )
+            return {
+                "job_id": job_id,
+                "user_message": service.message_to_dict(user_msg),
+                "assistant_message": service.message_to_dict(assistant_msg),
+                "gate_aware": True,
+                "intent": intent.action_type or "status",
+                "executed": False,
+                "available_actions": list(intent.available_actions),
+                "guardrails": {
+                    "read_only": True,
+                    "cannot_execute": True,
+                    "cannot_approve": True,
+                    "cannot_write_files": True,
+                    "cannot_change_route_or_stage": True,
+                    "cannot_override_proof": True,
+                },
+            }
+    except sqlite3.OperationalError as exc:
+        if _is_sqlite_locked_error(exc):
+            return {
+                "job_id": job_id,
+                "user_message": {
+                    "message_id": None,
+                    "job_id": job_id,
+                    "role": "user",
+                    "content": question,
+                    "correlation_id": correlation_id,
+                    "created_at": utc_now_text(),
+                },
+                "assistant_message": {
+                    "message_id": None,
+                    "job_id": job_id,
+                    "role": "assistant",
+                    "content": "The orchestrator is busy right now. Retry shortly.",
+                    "correlation_id": correlation_id,
+                    "created_at": utc_now_text(),
+                },
+                "gate_aware": True,
+                "intent": "status",
+                "executed": False,
+                "busy": True,
+                "guardrails": {
+                    "read_only": True,
+                    "cannot_execute": True,
+                    "cannot_approve": True,
+                    "cannot_write_files": True,
+                    "cannot_change_route_or_stage": True,
+                    "cannot_override_proof": True,
+                },
+            }
+        raise
 
 
 def _fallback_to_existing_assistant(

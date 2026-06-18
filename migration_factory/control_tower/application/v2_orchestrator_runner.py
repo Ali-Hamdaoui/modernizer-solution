@@ -814,6 +814,21 @@ class V2OrchestratorRunner:
             payload={"command_id": command_id, "final_status": final_status},
         )
 
+        if stage_index == 3:
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="migration_completed",
+                status="completed",
+                message="Migration completed successfully.",
+                payload={
+                    "command_id": command_id,
+                    "final_status": final_status,
+                    "sandbox_path": sandbox_path,
+                },
+            )
+            return
+
         if command_phase == "planning":
             self._handle_planning_phase_completed(
                 job_id=job_id,
@@ -1255,8 +1270,17 @@ class V2OrchestratorRunner:
         except ValueError:
             return
 
-        if next_command_id:
+        if next_command_id and not self._stage_has_started(job_id=job_id, stage_index=next_stage):
             self.start(job_id=job_id, command_id=next_command_id)
+
+    def _stage_has_started(self, *, job_id: str, stage_index: int) -> bool:
+        with self._unit_of_work_factory() as uow:
+            events = uow.v2_events.list_by_job(job_id)
+        started_event_types = {"stage_started", "process_started", "resume_started"}
+        return any(
+            event.stage == stage_index and event.type in started_event_types
+            for event in events
+        )
 
     def _emit_artifacts(
         self,

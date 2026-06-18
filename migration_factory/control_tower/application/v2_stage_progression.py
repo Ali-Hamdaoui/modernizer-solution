@@ -48,6 +48,7 @@ class StageContinuationResult:
     argv: tuple[str, ...]
     status: str  # queued, blocked
     reason: str = ""
+    command_id: str | None = None
 
 
 class V2StageProgressionService:
@@ -112,9 +113,8 @@ class V2StageProgressionService:
                 argv=(),
                 status="blocked",
                 reason=reason,
+                command_id=None,
             )
-
-
 
         setup = self._setup_repo.get(setup_id)
         if setup is None:
@@ -136,6 +136,23 @@ class V2StageProgressionService:
             "--profile", config["profile"],
             "--mode", "full_sandbox_migration",
         )
+
+        existing_command_id: str | None = None
+        if self._command_repo is not None:
+            existing = self._command_repo.list_by_job_and_stage(job_id, next_stage)
+            if existing:
+                existing_command_id = existing[0].command_id
+                return StageContinuationResult(
+                    continuation_id=uuid4().hex,
+                    job_id=job_id,
+                    from_stage=current_stage,
+                    to_stage=next_stage,
+                    sandbox_path=sandbox_path,
+                    argv=argv,
+                    status="queued",
+                    reason="existing_next_stage_command",
+                    command_id=existing_command_id,
+                )
 
         # Persist the next stage command if repo available
         if self._command_repo is not None:
@@ -163,6 +180,7 @@ class V2StageProgressionService:
                 decision_id=decision_id,
             )
             self._command_repo.save(command_record)
+            existing_command_id = command_id
 
         return StageContinuationResult(
             continuation_id=uuid4().hex,
@@ -172,6 +190,7 @@ class V2StageProgressionService:
             sandbox_path=sandbox_path,
             argv=argv,
             status="queued",
+            command_id=existing_command_id,
         )
 
     # ── gate-driven queue (with gate/decision tracing) ───────────────
@@ -373,6 +392,7 @@ class V2StageProgressionService:
             "argv": list(result.argv),
             "status": result.status,
             "reason": result.reason,
+            "command_id": result.command_id,
         }
 
 
