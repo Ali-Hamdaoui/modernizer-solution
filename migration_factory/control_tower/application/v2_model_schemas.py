@@ -15,6 +15,7 @@ from migration_factory.control_tower.application.redaction import (
 REQUIRED_SCHEMAS = (
     "PlanProposal",
     "RepairProposal",
+    "GovernedRepairProposal",
     "ReviewerCritique",
     "ActionRequest",
     "AssistantAnswer",
@@ -154,6 +155,41 @@ ASSISTANT_ANSWER_SCHEMA = {
     },
 }
 
+GOVERNED_REPAIR_PROPOSAL_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "summary",
+        "failure_type",
+        "root_cause",
+        "confidence",
+        "recommended_action",
+        "risk_level",
+        "affected_paths",
+        "proposed_file_changes",
+        "validation_commands",
+        "rollback_plan",
+        "human_approval_required",
+        "no_auto_apply",
+        "evidence_refs",
+    ],
+    "properties": {
+        "summary": {"type": "string"},
+        "failure_type": {"type": "string"},
+        "root_cause": {"type": "string"},
+        "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+        "recommended_action": {"type": "string"},
+        "risk_level": {"type": "string", "enum": ["low", "medium", "high"]},
+        "affected_paths": {"type": "array", "items": {"type": "string"}},
+        "proposed_file_changes": {"type": "array", "items": {"type": "string"}},
+        "validation_commands": {"type": "array", "items": {"type": "string"}},
+        "rollback_plan": {"type": "string"},
+        "human_approval_required": {"type": "boolean"},
+        "no_auto_apply": {"type": "boolean"},
+        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
 MODEL_1_REVIEW_RESULT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -206,6 +242,7 @@ MODEL_2_VERIFICATION_RESULT_SCHEMA = {
 SCHEMA_REGISTRY = {
     "PlanProposal": PLAN_PROPOSAL_SCHEMA,
     "RepairProposal": REPAIR_PROPOSAL_SCHEMA,
+    "GovernedRepairProposal": GOVERNED_REPAIR_PROPOSAL_SCHEMA,
     "ReviewerCritique": REVIEWER_CRITIQUE_SCHEMA,
     "ActionRequest": ACTION_REQUEST_SCHEMA,
     "AssistantAnswer": ASSISTANT_ANSWER_SCHEMA,

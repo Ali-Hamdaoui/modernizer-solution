@@ -558,3 +558,92 @@ def test_failure_question_on_completed_run_with_late_model_failure_reports_compl
     assert body["evidence_bundle"]["migration_status"] == "completed_with_warnings"
     assert "migration evidence shows completion" in body["assistant_message"]["content"].lower()
     assert "only ai/model supervision is unavailable" in body["assistant_message"]["content"].lower()
+
+
+def test_repair_intent_api_uses_governed_repair_proposal_flow(tmp_path: Path) -> None:
+    fake = _FakeModelClient()
+    client, conn = _client(tmp_path, fake)
+    job_id, _run_dir = _seed_event_derived_stage2_job(conn, tmp_path)
+
+    response = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": "solve this"},
+        headers=_mutation_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert fake.calls == []
+    assert body["model"]["status"] == "governed_repair_proposal"
+    assert body["repair_proposal_review"]["proposal"]["failure_type"] == "invalid_maven_wildcard_version"
+    assert body["repair_proposal_review"]["verification"]["verdict"] == "accepted"
+    assert body["repair_proposal_review"]["proposal"]["no_auto_apply"] is True
+    assert body["repair_proposal_review"]["proposal"]["human_approval_required"] is True
+    assert "I prepared a repair proposal; I did not apply it." in body["assistant_message"]["content"]
+    assert "jakarta.persistence-api:jar:3.0.x" in body["assistant_message"]["content"]
+    assert "jakarta.servlet-api:jar:5.0.x" in body["assistant_message"]["content"]
+    assert "review and approve proposal" in body["assistant_message"]["content"].lower()
+    trace_response = client.get(f"/v1/v2/migration-jobs/{job_id}/dual-model-traces")
+    trace_body = trace_response.json()
+    contexts = {item["supervision_context"] for item in trace_body["traces"]}
+    assert "repair_proposal" in contexts
+    assert "repair_proposal_verification" in contexts
+
+
+def test_repair_intent_on_completed_run_reports_no_repair_needed(tmp_path: Path) -> None:
+    fake = _FakeModelClient()
+    client, conn = _client(tmp_path, fake)
+    now = utc_now_text()
+    app_root = tmp_path / "modernized-app"
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_setups.save(
+            V2MigrationSetupRecord(
+                setup_id="setup-complete-repair",
+                run_name="Migration complete",
+                legacy_app_path=str(tmp_path / "legacy-app"),
+                output_parent_path=str(app_root),
+                ai_hub_path=str(tmp_path / "ai-hub"),
+                java11_home="C:/jdk11",
+                java17_home="C:/jdk17",
+                java21_home="C:/jdk21",
+                maven_cmd="mvn",
+                proof_level="standard",
+                skip_endpoint_smoke=False,
+                migration_flags_json="{}",
+                setup_checksum="setup-checksum-complete-repair",
+                checksum_algorithm="sha256",
+                created_at=now,
+                created_by="test",
+                correlation_id=None,
+            )
+        )
+        uow.v2_jobs.save(
+            V2MigrationJobRecord(
+                job_id="job-complete-repair",
+                setup_id="setup-complete-repair",
+                setup_checksum="setup-checksum-complete-repair",
+                pipeline_id="springboot-216-to-356-java21-three-stage",
+                stage_chain_json="[]",
+                status="completed",
+                created_at=now,
+                updated_at=now,
+                correlation_id=None,
+            )
+        )
+        uow.v2_events.save(job_id="job-complete-repair", stage=3, event_type="stage_completed", status="completed", message="stage 3 completed", payload={"final_status": "TRANSFORM_APPLIED_IN_SANDBOX", "final_proof_level": "compiled"})
+        uow.v2_events.save(job_id="job-complete-repair", stage=3, event_type="build_completed", status="completed", message="build passed", payload={"build_status": "BUILD_PASSED_IN_SANDBOX"})
+        uow.v2_events.save(job_id="job-complete-repair", stage=3, event_type="test_completed", status="completed", message="tests warnings", payload={"test_status": "PASS_WITH_WARNINGS"})
+        uow.v2_events.save(job_id="job-complete-repair", stage=None, event_type="model_invocation_failed", status="failed", message="Azure OpenAI endpoint not configured", payload={"provider": "deterministic"})
+
+    response = client.post(
+        "/v1/v2/jobs/job-complete-repair/assistant/ask",
+        json={"question": "fix this"},
+        headers=_mutation_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert fake.calls == []
+    assert body["model"]["status"] == "governed_repair_proposal"
+    assert "no migration repair is needed" in body["assistant_message"]["content"].lower()
+    assert "I prepared a repair proposal; I did not apply it." not in body["assistant_message"]["content"]

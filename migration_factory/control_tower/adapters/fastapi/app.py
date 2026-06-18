@@ -197,6 +197,9 @@ from migration_factory.control_tower.application.v2_planning_dual_model_review i
 from migration_factory.control_tower.application.v2_failure_dual_model_diagnosis import (
     V2FailureDualModelDiagnosisService,
 )
+from migration_factory.control_tower.application.v2_governed_repair_proposal import (
+    V2GovernedRepairProposalService,
+)
 from migration_factory.control_tower.application.redaction import redact_public_value
 from migration_factory.control_tower.adapters.fastapi.security import (
     MUTATION_METHODS,
@@ -621,6 +624,11 @@ def create_app(
     app.state.v2_dual_model_runtime = _dual_model_runtime
     app.state.v2_failure_dual_model_diagnosis_service = V2FailureDualModelDiagnosisService(
         runtime_service=_dual_model_runtime,
+    )
+    app.state.v2_governed_repair_proposal_service = V2GovernedRepairProposalService(
+        proposer_client=app.state.v2_proposer_client,
+        reviewer_client=app.state.v2_reviewer_client,
+        trace_store=_trace_store,
     )
     _planning_review_service = V2PlanningDualModelReviewService(
         unit_of_work_factory=unit_of_work_factory,
@@ -1629,6 +1637,79 @@ def create_app(
                 content=payload.question,
                 correlation_id=payload.correlation_id,
             )
+            if service.is_repair_intent(payload.question):
+                requested_stage = service.extract_failure_stage_index(payload.question)
+                latest_diagnosis = uow.v2_failure_diagnoses.get_latest_for_job(job_id, stage_index=requested_stage)
+                diagnosis_payload = (
+                    V2FailureDiagnosisService.persisted_record_to_dict(latest_diagnosis)
+                    if latest_diagnosis is not None
+                    else None
+                )
+                bundle = service.build_run_evidence_bundle(
+                    job_id=job_id,
+                    setup=setup,
+                    events=events,
+                    approvals=approvals,
+                    commands=commands,
+                    persisted_diagnosis=diagnosis_payload,
+                )
+                diagnosis_review_payload = None
+                if (
+                    latest_diagnosis is None
+                    and app.state.v2_failure_dual_model_diagnosis_service.should_run(bundle)
+                ):
+                    diagnosis_review = app.state.v2_failure_dual_model_diagnosis_service.diagnose(
+                        question="Why did the migration fail?",
+                        bundle=bundle,
+                        setup=setup,
+                    )
+                    diagnosis_review_payload = diagnosis_review.to_dict()
+                proposal_review = app.state.v2_governed_repair_proposal_service.propose(
+                    question=payload.question,
+                    bundle=bundle,
+                    setup=setup,
+                    diagnosis_review=diagnosis_review_payload,
+                    persisted_diagnosis=diagnosis_payload,
+                )
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=proposal_review.answer,
+                    correlation_id=user_msg.message_id,
+                )
+                model_source = (
+                    "deterministic"
+                    if proposal_review.trace_artifact_refs.get("model1") == {}
+                    else "azure_openai"
+                )
+                provider = (
+                    "deterministic"
+                    if model_source == "deterministic"
+                    else "azure_openai"
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "evidence_bundle": bundle.to_dict(),
+                    "repair_proposal_review": proposal_review.to_dict(),
+                    "diagnosis_review": diagnosis_review_payload,
+                    "model": {
+                        "status": "governed_repair_proposal",
+                        "source": model_source,
+                        "provider": provider,
+                        "role": "assistant",
+                        "failure_reason": "",
+                    },
+                    "guardrails": {
+                        "read_only": True,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
             if service.is_failure_question(payload.question):
                 requested_stage = service.extract_failure_stage_index(payload.question)
                 failure_event, failure_payload = _build_v2_failure_payload_from_job_events(

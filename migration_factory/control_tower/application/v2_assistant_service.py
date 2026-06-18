@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -59,6 +60,10 @@ ALLOWED_TOOLS = (
     "draft_repair_instruction",
     "request_action",
     "show_context",
+)
+
+_REPAIR_INTENT_RE = re.compile(
+    r"(?i)\b(solve this|fix this|repair it|corrige cela|solvez cela|fix it|solve it)\b"
 )
 
 
@@ -245,6 +250,9 @@ class V2AssistantService:
 
     def is_failure_question(self, text: str) -> bool:
         return self._failure_answers.is_failure_question(text)
+
+    def is_repair_intent(self, text: str) -> bool:
+        return bool(_REPAIR_INTENT_RE.search(str(text or "")))
 
     def extract_failure_stage_index(self, text: str) -> int | None:
         return self._failure_answers.extract_stage_index(text)
