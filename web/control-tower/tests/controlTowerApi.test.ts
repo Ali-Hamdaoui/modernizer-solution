@@ -6,6 +6,7 @@ import {
   createDiagnosticJobPayload,
   eventStreamUrl,
   getV2AssistantMessages,
+  getV2EvidenceBundle,
   getV2JobApprovals,
   getV2MigrationJobStages,
   getJob,
@@ -140,6 +141,7 @@ describe("M2-01 frontend diagnostic contracts", () => {
     await Promise.all([
       getV2JobApprovals(jobId),
       getV2MigrationJobStages(jobId),
+      getV2EvidenceBundle(jobId),
       getV2AssistantMessages(jobId),
     ]);
 
@@ -147,6 +149,7 @@ describe("M2-01 frontend diagnostic contracts", () => {
     expect(urls).toEqual([
       expect.stringContaining(`/v1/v2/jobs/${jobId}/approvals`),
       expect.stringContaining(`/v1/v2/migration-jobs/${jobId}/stages`),
+      expect.stringContaining(`/v1/v2/migration-jobs/${jobId}/evidence-bundle`),
       expect.stringContaining(`/v1/v2/jobs/${jobId}/assistant/messages`),
     ]);
     expect(urls.some((url) => url.includes("undefined"))).toBe(false);
@@ -159,6 +162,7 @@ describe("M2-01 frontend diagnostic contracts", () => {
     expect(() => requireJobId(" ")).toThrow(/job id is required/i);
     await expect(getV2JobApprovals("")).rejects.toThrow(/job id is required/i);
     await expect(getV2MigrationJobStages("")).rejects.toThrow(/job id is required/i);
+    await expect(getV2EvidenceBundle("")).rejects.toThrow(/job id is required/i);
     await expect(getV2AssistantMessages("")).rejects.toThrow(/job id is required/i);
 
     expect(fetchMock).not.toHaveBeenCalled();

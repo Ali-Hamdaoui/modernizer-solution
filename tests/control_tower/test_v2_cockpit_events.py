@@ -169,6 +169,12 @@ def test_v2_job_read_stages_and_empty_approvals(tmp_path: Path) -> None:
     assert approvals_response.status_code == 200
     assert approvals_response.json()["approvals"] == []
 
+    evidence_response = client.get(f"/v1/v2/migration-jobs/{job_id}/evidence-bundle")
+    assert evidence_response.status_code == 200
+    evidence_body = evidence_response.json()
+    assert evidence_body["migration_status"] in {"completed", "completed_with_warnings"}
+    assert evidence_body["read_only"] is True
+
 
 def test_valid_job_with_pending_approval_returns_card(tmp_path: Path) -> None:
     client, conn = _api_client(tmp_path)
@@ -220,6 +226,7 @@ def test_v2_nonexistent_reads_return_404(tmp_path: Path) -> None:
     assert client.get("/v1/v2/jobs/missing/approvals").status_code == 404
     assert client.get("/v1/v2/migration-jobs/missing/events/snapshot").status_code == 404
     assert client.get("/v1/v2/migration-jobs/missing/events").status_code == 404
+    assert client.get("/v1/v2/migration-jobs/missing/evidence-bundle").status_code == 404
 
 
 def test_v2_start_stage1_emits_ordered_events_and_resume_cursor(tmp_path: Path) -> None:
@@ -295,6 +302,7 @@ def test_openapi_json_includes_v2_paths(tmp_path: Path) -> None:
     assert "/v1/v2/migration-jobs/{job_id}/events" in paths
     assert "/v1/v2/migration-jobs/{job_id}/pipeline" in paths
     assert "/v1/v2/migration-jobs/{job_id}/failure-summary" in paths
+    assert "/v1/v2/migration-jobs/{job_id}/evidence-bundle" in paths
 
 
 def test_v2_alias_routes_reuse_existing_handlers(tmp_path: Path) -> None:
@@ -306,12 +314,18 @@ def test_v2_alias_routes_reuse_existing_handlers(tmp_path: Path) -> None:
         f"/v1/v2/jobs/{job_id}/pipeline",
         f"/v1/v2/jobs/{job_id}/stages",
         f"/v1/v2/jobs/{job_id}/failure-summary",
+        f"/v1/v2/jobs/{job_id}/evidence-bundle",
         f"/v1/v2/jobs/{job_id}/events/snapshot",
     ]
     for path in aliases:
         response = client.get(path)
         assert response.status_code == 200, f"{path}: {response.text}"
-        assert response.json()["job_id"] == job_id
+        body = response.json()
+        if path.endswith("/evidence-bundle"):
+            assert body["run_id"]
+            assert body["read_only"] is True
+        else:
+            assert body["job_id"] == job_id
 
 
 def test_v2_failure_summary_endpoint_when_no_failures(tmp_path: Path) -> None:
@@ -808,6 +822,95 @@ def test_stage3_completion_is_not_regressed_by_model_invocation_failed(tmp_path:
     summary = client.get(f"/v1/v2/migration-jobs/{job_id}/failure-summary").json()
     assert summary["has_failures"] is False
     assert summary["failures"] == []
+
+    evidence = client.get(f"/v1/v2/migration-jobs/{job_id}/evidence-bundle").json()
+    assert evidence["migration_status"] == "completed_with_warnings"
+    assert evidence["ai_supervision_status"] == "unavailable_fallback"
+    assert evidence["failure_bundle"] is None
+    assert evidence["read_only"] is True
+
+
+def test_evidence_bundle_preserves_real_build_failure(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job_only(client, setup_id, conn)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="build_failed",
+            status="failed",
+            message="Build failed in sandbox",
+            payload={"build_status": "BUILD_FAILED_IN_SANDBOX", "result_kind": "dependency_error"},
+        )
+
+    evidence = client.get(f"/v1/v2/migration-jobs/{job_id}/evidence-bundle")
+    assert evidence.status_code == 200, evidence.text
+    body = evidence.json()
+    assert body["migration_status"] == "failed"
+    assert body["ai_supervision_status"] in {"not_requested", "failed"}
+    assert body["failure_events"]
+    assert body["next_operator_action"] == "review_failure_evidence"
+    assert body["read_only"] is True
+
+
+def test_evidence_bundle_reports_pending_approval_without_build_failure(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job_only(client, setup_id, conn)
+    now = utc_now_text()
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_approvals.save_card(
+            V2ApprovalDecisionRecord(
+                card_id="card-evidence",
+                job_id=job_id,
+                interrupt_id="run-evidence",
+                request_checksum="checksum-evidence",
+                stage_index=2,
+                summary="Human approval required before sandbox transform.",
+                status="pending",
+                created_at=now,
+            )
+        )
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="approval_required",
+            status="blocked",
+            message="Human approval required",
+            payload={"card_id": "card-evidence"},
+        )
+
+    evidence = client.get(f"/v1/v2/migration-jobs/{job_id}/evidence-bundle")
+    assert evidence.status_code == 200, evidence.text
+    body = evidence.json()
+    assert body["migration_status"] == "approval_required"
+    assert body["approval_state"] == "pending_human_approval"
+    assert body["failure_bundle"] is None
+    assert body["next_operator_action"] == "human_approval_required"
+
+
+def test_evidence_bundle_endpoint_is_read_only_and_does_not_mutate(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job_only(client, setup_id, conn)
+
+    with SqliteUnitOfWork(conn) as uow:
+        before_events = len(uow.v2_events.list_by_job(job_id))
+        before_cards = len(uow.v2_approvals.list_cards_by_job(job_id))
+
+    response = client.get(f"/v1/v2/migration-jobs/{job_id}/evidence-bundle")
+    assert response.status_code == 200, response.text
+    assert response.json()["read_only"] is True
+
+    with SqliteUnitOfWork(conn) as uow:
+        after_events = len(uow.v2_events.list_by_job(job_id))
+        after_cards = len(uow.v2_approvals.list_cards_by_job(job_id))
+
+    assert after_events == before_events
+    assert after_cards == before_cards
 
 
 def test_old_blocked_event_does_not_override_later_transform_started(tmp_path: Path) -> None:

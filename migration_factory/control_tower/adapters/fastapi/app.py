@@ -1201,6 +1201,36 @@ def create_app(
             events = uow.v2_events.list_by_job(job_id)
         return redact_public_data(_v2_failure_summary(job_id, events))
 
+    @app.get(
+        "/v1/v2/jobs/{job_id}/evidence-bundle",
+        include_in_schema=False,
+        operation_id="get_v2_job_evidence_bundle_alias",
+    )
+    @app.get("/v1/v2/migration-jobs/{job_id}/evidence-bundle")
+    def get_v2_job_evidence_bundle(job_id: str) -> dict[str, Any]:
+        """Return read-only structured run evidence bundle for cockpit/assistant."""
+        with unit_of_work_factory() as uow:
+            job = _require_v2_job(uow, job_id)
+            setup = uow.v2_setups.get(job.setup_id) if job.setup_id else None
+            events = uow.v2_events.list_by_job(job_id)
+            approvals = uow.v2_approvals.list_cards_by_job(job_id)
+            commands = uow.v2_commands.list_by_job(job_id)
+            latest_diagnosis = uow.v2_failure_diagnoses.get_latest_for_job(job_id)
+            diagnosis_payload = (
+                V2FailureDiagnosisService.persisted_record_to_dict(latest_diagnosis)
+                if latest_diagnosis is not None
+                else None
+            )
+        bundle = V2RunEvidenceBundleService().build_bundle(
+            job_id=job_id,
+            setup=setup,
+            events=events,
+            approvals=approvals,
+            commands=commands,
+            persisted_diagnosis=diagnosis_payload,
+        )
+        return redact_public_data(bundle.to_dict())
+
     @app.get("/v1/v2/jobs/{job_id}/artifacts/{artifact_kind}")
     def get_v2_job_artifact_preview(
         job_id: str,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import MigrationCockpitPage from "../app/migrations/[jobId]/page";
-import { MigrationCockpit, reduceStageStatus } from "../app/migrations/[jobId]/MigrationCockpit";
+import { MigrationCockpit, cockpitEvidenceStatusLines, reduceStageStatus } from "../app/migrations/[jobId]/MigrationCockpit";
 import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, requireJobId, v2EventStreamUrl } from "../lib/controlTowerApi";
 import type { V2JobEvent } from "../lib/contracts";
 
@@ -313,6 +313,94 @@ describe("V2 Migration Cockpit contract", () => {
     expect(assistantModel.status).toBe("live_ok");
     expect(repair.copilot_status).toBe("INVALID_RESPONSE");
     expect(repair.repair_loop_status).toBe("FALLBACK_REPAIR_PLAN");
+  });
+
+  it("cockpit evidence bundle keeps completed migration separate from late model failure", () => {
+    const lines = cockpitEvidenceStatusLines({
+      run_id: "v2-demo-s3",
+      stage_statuses: { "1": "completed", "2": "completed", "3": "completed" },
+      migration_status: "completed_with_warnings",
+      ai_supervision_status: "unavailable_fallback",
+      approval_state: "not_required",
+      final_status: "TRANSFORM_APPLIED_IN_SANDBOX",
+      build_status: "BUILD_PASSED_IN_SANDBOX",
+      test_status: "PASS_WITH_WARNINGS",
+      final_proof_level: "compiled",
+      latest_trustworthy_migration_event: { type: "final_report_completed", status: "completed" },
+      generated_artifact_refs: [],
+      failure_events: [],
+      build_test_error_contracts: [],
+      relevant_log_excerpts: [],
+      pom_excerpts: [],
+      deterministic_failure_classification: null,
+      failure_bundle: null,
+      next_operator_action: "migration_completed_ai_unavailable",
+      read_only: true,
+    });
+    expect(lines).toContain("Migration: completed_with_warnings");
+    expect(lines).toContain("AI supervision: unavailable_fallback");
+  });
+
+  it("cockpit evidence bundle keeps approval state separate from build failure", () => {
+    const lines = cockpitEvidenceStatusLines({
+      run_id: "v2-demo-s2",
+      stage_statuses: { "1": "completed", "2": "blocked" },
+      migration_status: "approval_required",
+      ai_supervision_status: "not_requested",
+      approval_state: "pending_human_approval",
+      final_status: "",
+      build_status: "",
+      test_status: "",
+      final_proof_level: "",
+      latest_trustworthy_migration_event: { type: "approval_required", status: "blocked" },
+      generated_artifact_refs: [],
+      failure_events: [],
+      build_test_error_contracts: [],
+      relevant_log_excerpts: [],
+      pom_excerpts: [],
+      deterministic_failure_classification: null,
+      failure_bundle: null,
+      next_operator_action: "human_approval_required",
+      read_only: true,
+    });
+    expect(lines).toContain("Migration: approval_required");
+    expect(lines).toContain("Approval: pending_human_approval");
+  });
+
+  it("cockpit evidence bundle still surfaces real migration failure", () => {
+    const lines = cockpitEvidenceStatusLines({
+      run_id: "v2-demo-s2",
+      stage_statuses: { "1": "completed", "2": "failed" },
+      migration_status: "failed",
+      ai_supervision_status: "not_requested",
+      approval_state: "not_required",
+      final_status: "BUILD_FAILED_IN_SANDBOX",
+      build_status: "BUILD_FAILED_IN_SANDBOX",
+      test_status: "",
+      final_proof_level: "not_verified",
+      latest_trustworthy_migration_event: { type: "build_failed", status: "failed" },
+      generated_artifact_refs: [],
+      failure_events: [{ type: "build_failed", message: "Build failed in sandbox" }],
+      build_test_error_contracts: [],
+      relevant_log_excerpts: [],
+      pom_excerpts: [],
+      deterministic_failure_classification: { failure_type: "invalid_maven_wildcard_version" },
+      failure_bundle: {
+        failure_type: "invalid_maven_wildcard_version",
+        root_cause: "Wildcard Maven versions generated in pom.xml.",
+        confidence: "high",
+        failure_events: [{ type: "build_failed", message: "Build failed in sandbox" }],
+        missing_artifacts: [],
+        error_contracts: [],
+        log_excerpts: [],
+        pom_excerpts: [],
+        affected_paths: ["pom.xml"],
+      },
+      next_operator_action: "review_failure_evidence",
+      read_only: true,
+    });
+    expect(lines).toContain("Migration: failed");
+    expect(lines).toContain("Root cause: Wildcard Maven versions generated in pom.xml.");
   });
 
   it("IMPORTANT_SSE_TYPES includes all required lifecycle events", () => {

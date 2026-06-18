@@ -497,6 +497,7 @@ export type V2AssistantAskResponse = {
   job_id: string;
   user_message: V2AssistantMessageResponse;
   assistant_message: V2AssistantMessageResponse;
+  evidence_bundle?: V2RunEvidenceBundleResponse;
   model: {
     status: string;
     source: string;
@@ -505,6 +506,46 @@ export type V2AssistantAskResponse = {
     failure_reason?: string;
   };
   guardrails: Record<string, boolean>;
+};
+
+export type V2EvidenceSnippetResponse = {
+  source: string;
+  label: string;
+  text: string;
+};
+
+export type V2FailureEvidenceBundleResponse = {
+  failure_type: string;
+  root_cause: string;
+  confidence: string;
+  failure_events: Array<Record<string, unknown>>;
+  missing_artifacts: string[];
+  error_contracts: V2EvidenceSnippetResponse[];
+  log_excerpts: V2EvidenceSnippetResponse[];
+  pom_excerpts: V2EvidenceSnippetResponse[];
+  affected_paths: string[];
+};
+
+export type V2RunEvidenceBundleResponse = {
+  run_id: string;
+  stage_statuses: Record<string, string>;
+  migration_status: string;
+  ai_supervision_status: string;
+  approval_state: string;
+  final_status: string;
+  build_status: string;
+  test_status: string;
+  final_proof_level: string;
+  latest_trustworthy_migration_event: Record<string, unknown>;
+  generated_artifact_refs: Array<Record<string, string>>;
+  failure_events: Array<Record<string, unknown>>;
+  build_test_error_contracts: V2EvidenceSnippetResponse[];
+  relevant_log_excerpts: V2EvidenceSnippetResponse[];
+  pom_excerpts: V2EvidenceSnippetResponse[];
+  deterministic_failure_classification: Record<string, unknown> | null;
+  failure_bundle: V2FailureEvidenceBundleResponse | null;
+  next_operator_action: string;
+  read_only: boolean;
 };
 
 export type V2ReviewerCritiqueResponse = {

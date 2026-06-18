@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import {
   askV2Assistant,
   approveV2Card,
+  getV2EvidenceBundle,
   getV2AssistantMessages,
   getV2FailureSummary,
   getV2JobEventSnapshot,
@@ -18,6 +19,7 @@ import {
 import type {
   V2ApprovalResponse,
   V2AssistantMessageResponse,
+  V2RunEvidenceBundleResponse,
   V2FailureSummaryResponse,
   V2JobEvent,
   V2MigrationJobResponse,
@@ -38,8 +40,26 @@ interface CockpitData {
   messages: V2AssistantMessageResponse[];
   events: V2JobEvent[];
   pipeline: V2PipelineResponse;
+  evidenceBundle: V2RunEvidenceBundleResponse | null;
   failureSummary: V2FailureSummaryResponse | null;
   assistantModel: { status: string; source: string; provider: string; role: string; failure_reason?: string } | null;
+}
+
+export function cockpitEvidenceStatusLines(bundle: V2RunEvidenceBundleResponse | null): string[] {
+  if (!bundle) {
+    return ["Evidence bundle unavailable."];
+  }
+  const lines = [
+    `Migration: ${bundle.migration_status}`,
+    `AI supervision: ${bundle.ai_supervision_status}`,
+    `Approval: ${bundle.approval_state}`,
+    `Next action: ${bundle.next_operator_action}`,
+  ];
+  if (bundle.final_status) lines.push(`Final: ${bundle.final_status}`);
+  if (bundle.build_status) lines.push(`Build: ${bundle.build_status}`);
+  if (bundle.test_status) lines.push(`Test: ${bundle.test_status}`);
+  if (bundle.failure_bundle?.root_cause) lines.push(`Root cause: ${bundle.failure_bundle.root_cause}`);
+  return lines;
 }
 
 export function MigrationCockpit({ jobId }: { jobId?: string }) {
@@ -62,7 +82,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     async function loadCockpit() {
       try {
         const safeJobId = requireJobId(normalizedJobId);
-        const [job, messagesResponse, approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary] = await Promise.all([
+        const [job, messagesResponse, approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary, evidenceBundle] = await Promise.all([
           getV2MigrationJob(safeJobId),
           getV2AssistantMessages(safeJobId),
           getV2JobApprovals(safeJobId),
@@ -70,6 +90,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           getV2JobEventSnapshot(safeJobId),
           getV2JobPipeline(safeJobId),
           getV2FailureSummary(safeJobId).catch(() => null),
+          getV2EvidenceBundle(safeJobId).catch(() => null),
         ]);
 
         if (cancelled) return;
@@ -81,6 +102,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           messages: messagesResponse.messages,
           events: eventsResponse.events,
           pipeline: pipelineResponse,
+          evidenceBundle: evidenceBundle as V2RunEvidenceBundleResponse | null,
           failureSummary: failureSummary as V2FailureSummaryResponse | null,
           assistantModel: null,
         });
@@ -202,6 +224,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
             response.user_message,
             response.assistant_message,
           ],
+          evidenceBundle: response.evidence_bundle ?? current.evidenceBundle,
           assistantModel: response.model,
         };
       });
@@ -216,12 +239,13 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   async function refreshLiveState() {
     if (!normalizedJobId) return;
     const safeJobId = requireJobId(normalizedJobId);
-    const [approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary] = await Promise.all([
+    const [approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary, evidenceBundle] = await Promise.all([
       getV2JobApprovals(safeJobId),
       getV2MigrationJobStages(safeJobId),
       getV2JobEventSnapshot(safeJobId),
       getV2JobPipeline(safeJobId),
       getV2FailureSummary(safeJobId).catch(() => null),
+      getV2EvidenceBundle(safeJobId).catch(() => null),
     ]);
     setData((current) => current ? {
       ...current,
@@ -229,6 +253,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       stages: stagesResponse.stages,
       events: eventsResponse.events,
       pipeline: pipelineResponse,
+      evidenceBundle: evidenceBundle as V2RunEvidenceBundleResponse | null,
       failureSummary: failureSummary as V2FailureSummaryResponse | null,
     } : current);
   }
@@ -298,6 +323,26 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
             </div>
           ))}
         </div>
+      </section>
+
+      <section className="panel">
+        <h2>Run Evidence</h2>
+        {cockpitEvidenceStatusLines(data.evidenceBundle).map((line) => (
+          <p key={line} className="meta">{line}</p>
+        ))}
+        {data.evidenceBundle?.generated_artifact_refs?.length ? (
+          <p className="meta">
+            Artifacts: {data.evidenceBundle.generated_artifact_refs.map((ref) => ref.label || ref.path).join(", ")}
+          </p>
+        ) : null}
+        {data.evidenceBundle?.failure_bundle?.missing_artifacts?.length ? (
+          <p className="meta">
+            Missing artifacts: {data.evidenceBundle.failure_bundle.missing_artifacts.join(", ")}
+          </p>
+        ) : null}
+        <p className="meta">
+          Read-only: {data.evidenceBundle?.read_only === false ? "false" : "true"}
+        </p>
       </section>
 
       <section className="panel">
