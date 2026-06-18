@@ -203,6 +203,9 @@ from migration_factory.control_tower.application.v2_governed_repair_proposal imp
 from migration_factory.control_tower.application.v2_approved_repair_execution_plan import (
     V2ApprovedRepairExecutionPlanService,
 )
+from migration_factory.control_tower.application.v2_approved_repair_patch_candidate import (
+    V2ApprovedRepairPatchCandidateService,
+)
 from migration_factory.control_tower.application.redaction import redact_public_value
 from migration_factory.control_tower.adapters.fastapi.security import (
     MUTATION_METHODS,
@@ -536,6 +539,10 @@ class ApplyPatchCandidateRequest(BaseModel):
 
 
 class MaterializeExecutionPlanRequest(StrictRequest):
+    pass
+
+
+class MaterializePatchCandidateRequest(StrictRequest):
     pass
 
 
@@ -2232,6 +2239,92 @@ def create_app(
             {
                 "proposal_id": proposal_id,
                 "execution_plan": plan,
+                "applied": False,
+                "read_only": True,
+            }
+        )
+
+    @app.post(
+        "/v1/v2/jobs/{job_id}/repair-proposals/{proposal_id}/materialize-patch-candidate",
+        include_in_schema=False,
+        operation_id="materialize_v2_job_repair_patch_candidate_alias",
+    )
+    @app.post("/v1/v2/migration-jobs/{job_id}/repair-proposals/{proposal_id}/materialize-patch-candidate")
+    def materialize_v2_repair_patch_candidate(
+        job_id: str,
+        proposal_id: str,
+        payload: MaterializePatchCandidateRequest,
+    ) -> dict[str, Any]:
+        del payload
+        _run_id, trace_root = _resolve_v2_job_trace_root(job_id)
+        if trace_root is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "REPAIR_PROPOSAL_NOT_FOUND",
+                "No governed repair proposal artifacts found.",
+            )
+        service = V2ApprovedRepairPatchCandidateService()
+        try:
+            result = service.materialize(
+                trace_root=trace_root,
+                proposal_id=proposal_id,
+            )
+        except FileNotFoundError:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "REPAIR_PROPOSAL_NOT_FOUND",
+                f"Governed repair proposal {proposal_id!r} not found for job {job_id!r}.",
+            )
+        except ValueError as exc:
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                "REPAIR_PATCH_CANDIDATE_MATERIALIZATION_FAILED",
+                str(exc),
+            ) from exc
+        return redact_public_data(result.to_dict())
+
+    @app.get(
+        "/v1/v2/jobs/{job_id}/repair-proposals/{proposal_id}/patch-candidate",
+        include_in_schema=False,
+        operation_id="get_v2_job_repair_patch_candidate_alias",
+    )
+    @app.get("/v1/v2/migration-jobs/{job_id}/repair-proposals/{proposal_id}/patch-candidate")
+    def get_v2_repair_patch_candidate(job_id: str, proposal_id: str) -> dict[str, Any]:
+        _run_id, trace_root = _resolve_v2_job_trace_root(job_id)
+        if trace_root is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "REPAIR_PROPOSAL_NOT_FOUND",
+                "No governed repair proposal artifacts found.",
+            )
+        service = V2ApprovedRepairPatchCandidateService()
+        try:
+            candidate = service.get_candidate(
+                trace_root=trace_root,
+                proposal_id=proposal_id,
+            )
+        except FileNotFoundError:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "REPAIR_PROPOSAL_NOT_FOUND",
+                f"Governed repair proposal {proposal_id!r} not found for job {job_id!r}.",
+            )
+        except ValueError as exc:
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                "REPAIR_PATCH_CANDIDATE_READ_FAILED",
+                str(exc),
+            ) from exc
+        if candidate is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "REPAIR_PATCH_CANDIDATE_NOT_FOUND",
+                f"Patch candidate not found for governed repair proposal {proposal_id!r}.",
+            )
+        return redact_public_data(
+            {
+                "proposal_id": proposal_id,
+                "patch_candidate": candidate,
                 "applied": False,
                 "read_only": True,
             }
