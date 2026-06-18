@@ -219,6 +219,7 @@ from migration_factory.control_tower.application.v2_repair_artifact_preview impo
     V2RepairArtifactPreviewService,
 )
 from migration_factory.control_tower.application.redaction import redact_public_value
+from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.adapters.fastapi.security import (
     MUTATION_METHODS,
     ActorProvider,
@@ -539,6 +540,16 @@ class RepairProposalApprovalRequest(BaseModel):
     note: str = ""
 
 
+class GovernedRepairProposalApprovalRequest(StrictRequest):
+    expected_checksum: str = Field(min_length=1)
+    operator: str = "human"
+
+
+class GovernedRepairProposalRejectRequest(StrictRequest):
+    reason: str = ""
+    operator: str = "human"
+
+
 class CreatePatchCandidateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     materialization_mode: str = Field(default="deterministic_only", pattern="^(deterministic_only)$")
@@ -600,6 +611,7 @@ def create_app(
     worker_terminator: WorkerTerminator | None = None,
     v2_orchestrator_runner: Any | None = None,
     v2_assistant_model_client: Any | None = None,
+    v2_repair_validation_runner: Any | None = None,
     event_replay_config: EventReplayConfig | None = None,
     security_settings: LocalApiSecuritySettings | None = None,
     actor_provider: ActorProvider | None = None,
@@ -620,6 +632,7 @@ def create_app(
     app.state.actor_provider = resolved_actor_provider
     app.state.v2_settings = ControlTowerSettings()
     app.state.v2_assistant_model_client = v2_assistant_model_client or V2AssistantModelClient()
+    app.state.v2_repair_validation_runner = v2_repair_validation_runner
     proposer_client, reviewer_client = build_default_structured_model_clients(app.state.v2_assistant_model_client)
     app.state.v2_proposer_client = proposer_client
     app.state.v2_reviewer_client = reviewer_client
@@ -2241,6 +2254,135 @@ def create_app(
         return redact_public_value(projection)
 
     @app.post(
+        "/v1/v2/jobs/{job_id}/repair-proposals/{proposal_id}/approve",
+        include_in_schema=False,
+        operation_id="approve_v2_job_governed_repair_proposal_alias",
+    )
+    @app.post("/v1/v2/migration-jobs/{job_id}/repair-proposals/{proposal_id}/approve")
+    def approve_v2_governed_repair_proposal(
+        job_id: str,
+        proposal_id: str,
+        payload: GovernedRepairProposalApprovalRequest,
+    ) -> dict[str, Any]:
+        _run_id, trace_root = _resolve_v2_job_trace_root(job_id)
+        if trace_root is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "REPAIR_PROPOSAL_NOT_FOUND",
+                "No governed repair proposal artifacts found.",
+            )
+        try:
+            proposal_dir = (trace_root / "ai_supervision" / "repair_proposals" / proposal_id).resolve()
+            proposal_dir.relative_to((trace_root / "ai_supervision" / "repair_proposals").resolve())
+            proposal_payload = json.loads((proposal_dir / "repair_proposal.json").read_text(encoding="utf-8"))
+            if not isinstance(proposal_payload, dict):
+                raise ValueError("repair_proposal.json must contain a JSON object.")
+            checksum = V2ApprovedRepairExecutionPlanService().compute_proposal_checksum(proposal_payload)
+            if payload.expected_checksum != checksum:
+                raise ValueError("Repair proposal approval checksum mismatch.")
+            approval_state = {
+                "proposal_id": str(proposal_payload.get("proposal_id") or proposal_id),
+                "run_id": str(proposal_payload.get("run_id") or ""),
+                "state": "approved",
+                "checksum": checksum,
+                "approved_at": utc_now_text(),
+                "rejected_at": None,
+                "operator": payload.operator,
+                "read_only_until_apply": True,
+                "no_auto_apply": True,
+            }
+            (proposal_dir / "approval_state.json").write_text(
+                json.dumps(approval_state, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        except FileNotFoundError:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "REPAIR_PROPOSAL_NOT_FOUND",
+                f"Governed repair proposal {proposal_id!r} not found for job {job_id!r}.",
+            )
+        except ValueError as exc:
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                "REPAIR_PROPOSAL_APPROVAL_FAILED",
+                str(exc),
+            ) from exc
+        return redact_public_data(
+            {
+                "proposal_id": proposal_id,
+                "approval_state": approval_state,
+                "approval_result": "approved",
+                "applied": False,
+                "read_only_until_apply": True,
+                "no_auto_apply": True,
+            }
+        )
+
+    @app.post(
+        "/v1/v2/jobs/{job_id}/repair-proposals/{proposal_id}/reject",
+        include_in_schema=False,
+        operation_id="reject_v2_job_governed_repair_proposal_alias",
+    )
+    @app.post("/v1/v2/migration-jobs/{job_id}/repair-proposals/{proposal_id}/reject")
+    def reject_v2_governed_repair_proposal(
+        job_id: str,
+        proposal_id: str,
+        payload: GovernedRepairProposalRejectRequest,
+    ) -> dict[str, Any]:
+        _run_id, trace_root = _resolve_v2_job_trace_root(job_id)
+        if trace_root is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "REPAIR_PROPOSAL_NOT_FOUND",
+                "No governed repair proposal artifacts found.",
+            )
+        try:
+            proposal_dir = (trace_root / "ai_supervision" / "repair_proposals" / proposal_id).resolve()
+            proposal_dir.relative_to((trace_root / "ai_supervision" / "repair_proposals").resolve())
+            proposal_payload = json.loads((proposal_dir / "repair_proposal.json").read_text(encoding="utf-8"))
+            if not isinstance(proposal_payload, dict):
+                raise ValueError("repair_proposal.json must contain a JSON object.")
+            checksum = V2ApprovedRepairExecutionPlanService().compute_proposal_checksum(proposal_payload)
+            approval_state = {
+                "proposal_id": str(proposal_payload.get("proposal_id") or proposal_id),
+                "run_id": str(proposal_payload.get("run_id") or ""),
+                "state": "rejected",
+                "checksum": checksum,
+                "approved_at": None,
+                "rejected_at": utc_now_text(),
+                "operator": payload.operator,
+                "reason": payload.reason,
+                "read_only_until_apply": True,
+                "no_auto_apply": True,
+            }
+            (proposal_dir / "approval_state.json").write_text(
+                json.dumps(approval_state, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        except FileNotFoundError:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "REPAIR_PROPOSAL_NOT_FOUND",
+                f"Governed repair proposal {proposal_id!r} not found for job {job_id!r}.",
+            )
+        except ValueError as exc:
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                "REPAIR_PROPOSAL_REJECTION_FAILED",
+                str(exc),
+            ) from exc
+        return redact_public_data(
+            {
+                "proposal_id": proposal_id,
+                "approval_state": approval_state,
+                "approval_result": "rejected",
+                "applied": False,
+                "read_only_until_apply": True,
+                "no_auto_apply": True,
+            }
+        )
+
+    @app.post(
         "/v1/v2/jobs/{job_id}/repair-proposals/{proposal_id}/materialize-execution-plan",
         include_in_schema=False,
         operation_id="materialize_v2_job_repair_execution_plan_alias",
@@ -2514,9 +2656,12 @@ def create_app(
             )
         service = V2ApprovedRepairSandboxValidationService()
         try:
+            validation_runner = getattr(app.state, "v2_repair_validation_runner", None)
+            kwargs = {"validation_runner": validation_runner} if validation_runner is not None else {}
             result = service.validate(
                 trace_root=trace_root,
                 proposal_id=proposal_id,
+                **kwargs,
             )
         except FileNotFoundError:
             raise _error(
