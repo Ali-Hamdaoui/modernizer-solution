@@ -2582,15 +2582,42 @@ def create_app(
         payload: CreateRepairProposalRequest,
     ) -> dict[str, Any]:
         """Create a repair proposal from failed command evidence."""
-        # Validate against RepairProposal schema at the model-output boundary
         repair_data = {
             "failure_hypothesis": payload.hypothesis,
             "patch_summary": payload.patch_summary,
             "affected_paths": payload.affected_paths,
             "validation_plan": f"Verify repair for {payload.command_id}",
         }
+        model_output = repair_data
+        proposer_client = app.state.v2_assistant_model_client
+        if hasattr(proposer_client, "answer_with_role"):
+            proposer_prompt = (
+                "You are an AI migration repair proposer. "
+                "Produce a bounded RepairProposal for the failed command.\n\n"
+                f"Command ID: {payload.command_id}\n"
+                f"Failure summary: {payload.failure_summary}\n"
+                f"Current hypothesis: {payload.hypothesis}\n"
+                f"Current patch summary: {payload.patch_summary}\n"
+                f"Affected paths: {', '.join(payload.affected_paths) if payload.affected_paths else 'none'}\n\n"
+                "Return JSON with failure_hypothesis, patch_summary, affected_paths, and validation_plan. "
+                "Never include raw commands or legacy source mutation instructions."
+            )
+            fallback_repair = json.dumps(repair_data)
+            model_result = proposer_client.answer_with_role(
+                role=V2ModelRole.PROPOSER,
+                prompt=proposer_prompt,
+                fallback=fallback_repair,
+                output_schema_name="RepairProposal",
+                require_schema=True,
+            )
+            model_output = _parse_and_validate_model_output(
+                model_content=model_result.content,
+                schema_name="RepairProposal",
+                fallback=repair_data,
+            )
+
         try:
-            validate_against_schema("RepairProposal", repair_data)
+            validate_against_schema("RepairProposal", model_output)
         except SchemaValidationError as exc:
             raise _error(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -2605,9 +2632,9 @@ def create_app(
             proposal = service.create_proposal(
                 command_id=payload.command_id,
                 failure_summary=payload.failure_summary,
-                hypothesis=payload.hypothesis,
-                patch_summary=payload.patch_summary,
-                affected_paths=tuple(payload.affected_paths),
+                hypothesis=str(model_output["failure_hypothesis"]),
+                patch_summary=str(model_output["patch_summary"]),
+                affected_paths=tuple(str(path) for path in model_output["affected_paths"]),
             )
         return service.proposal_to_dict(proposal)
 

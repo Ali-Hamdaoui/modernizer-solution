@@ -12,6 +12,7 @@ from migration_factory.control_tower.application.v2_setup_service import (
     CreateSetupRequest,
     V2SetupService,
 )
+from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
@@ -34,7 +35,7 @@ def _mutation_headers():
     }
 
 
-def _api_client(tmp_path: Path):
+def _api_client(tmp_path: Path, *, fake_model_client: object | None = None):
     from migration_factory.control_tower.adapters.fastapi import create_app
     conn = sqlite3.connect(
         tmp_path / "assistant_repair_test.sqlite3",
@@ -46,8 +47,52 @@ def _api_client(tmp_path: Path):
     conn.execute("PRAGMA foreign_keys = ON")
     apply_pending_migrations(conn)
     app = create_app(lambda: SqliteUnitOfWork(conn))
+    if fake_model_client is not None:
+        app.state.v2_assistant_model_client = fake_model_client
     client = TestClient(app, base_url="http://127.0.0.1:8000")
     return client, conn
+
+
+class _RecordingProposerClient:
+    def __init__(self) -> None:
+        self.roles: list[str] = []
+
+    def answer_with_role(
+        self,
+        *,
+        role,
+        prompt: str,
+        fallback: str,
+        conversation_history=None,
+        output_schema_name=None,
+        require_schema: bool = False,
+    ):
+        self.roles.append(role.value)
+        import json as _json
+
+        return type("Result", (), {
+            "content": _json.dumps({
+                "failure_hypothesis": "Model-generated hypothesis",
+                "patch_summary": "Model-generated patch summary",
+                "affected_paths": ["pom.xml"],
+                "validation_plan": "Run mvn -q test",
+            }),
+            "source": "fake",
+            "model_status": "live_ok",
+            "provider": "fake",
+            "role": role.value,
+            "success": True,
+            "redacted_summary": "Fake proposer response",
+            "failure_reason": "",
+        })()
+
+    def answer(self, *, prompt: str, fallback: str, conversation_history=None):
+        return self.answer_with_role(
+            role=V2ModelRole.PROPOSER,
+            prompt=prompt,
+            fallback=fallback,
+            conversation_history=conversation_history,
+        )
 
 
 # ── Assistant API tests ────────────────────────────────────────────
@@ -172,7 +217,8 @@ class TestAssistantAPI:
 class TestRepairAPI:
 
     def test_create_proposal(self, tmp_path: Path) -> None:
-        client, conn = _api_client(tmp_path)
+        fake_client = _RecordingProposerClient()
+        client, conn = _api_client(tmp_path, fake_model_client=fake_client)
         response = client.post(
             "/v1/v2/commands/cmd-1/repair/flow-proposal",
             json={
@@ -187,7 +233,9 @@ class TestRepairAPI:
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["status"] == "draft"
-        assert "Missing import" in body["hypothesis"]
+        assert body["hypothesis"] == "Model-generated hypothesis"
+        assert body["patch_summary"] == "Model-generated patch summary"
+        assert fake_client.roles == ["proposer"]
 
     def test_approve_proposal(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)
