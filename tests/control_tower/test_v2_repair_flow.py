@@ -107,6 +107,7 @@ def test_v2_approved_repair_routes_through_patch_gate_and_writes_ledger(
     assert ledger["final_status"] == "REPAIR_VALIDATED"
     assert ledger["attempts"][0]["patch_gate_status"] == "ALLOWED"
     assert ledger["attempts"][0]["repair_proposal_checksum"]
+    assert ledger["artifact_refs"]["repair_patch_draft"].endswith("patch_draft_1.json")
     assert ledger["attempts"][0]["binding_checksum"] == "binding-1"
     assert ledger["attempts"][0]["status"] == "VALIDATED"
     assert [event[0] for event in events] == [
@@ -116,6 +117,7 @@ def test_v2_approved_repair_routes_through_patch_gate_and_writes_ledger(
     ]
     assert events[0][1]["binding_checksum"] == "binding-1"
     assert events[0][1]["repair_proposal_checksum"]
+    assert events[0][1]["repair_patch_draft_ref"].endswith("patch_draft_1.json")
 
 
 def test_v2_repair_bridge_rejects_legacy_path(tmp_path: Path) -> None:

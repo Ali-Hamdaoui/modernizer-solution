@@ -24,6 +24,7 @@ from migration_factory.repair_loop.ledger import (
     append_attempt,
     base_attempt,
     new_ledger,
+    write_patch_draft,
     write_ledger,
     write_patch_attempt_result,
 )
@@ -361,6 +362,16 @@ class V2RepairFlowService:
             "limitations": list(limitations),
         }
         repair_proposal_checksum = sha256_canonical_json(repair_loop_proposal)
+        draft_path = write_patch_draft(
+            run_dir=run_path,
+            attempt=1,
+            payload={
+                "schema_version": "1.0",
+                "repair_proposal_checksum": repair_proposal_checksum,
+                **repair_loop_proposal,
+            },
+        )
+        artifact_refs["repair_patch_draft"] = str(draft_path)
         gate = evaluate_patch_proposal(
             proposal=repair_loop_proposal,
             sandbox_path=sandbox_path,
@@ -373,6 +384,7 @@ class V2RepairFlowService:
         attempt["deterministic_rule_id"] = gate.rule_id
         attempt["touched_paths"] = list(gate.touched_paths)
         attempt["repair_proposal_checksum"] = repair_proposal_checksum
+        attempt["repair_patch_draft_ref"] = str(draft_path)
         resolved_target_path = ",".join(gate.touched_paths) or "<unresolved>"
         self._emit_repair_event(
             event_recorder,
@@ -380,6 +392,7 @@ class V2RepairFlowService:
             {
                 "proposal_id": proposal.proposal_id,
                 "repair_proposal_checksum": repair_proposal_checksum,
+                "repair_patch_draft_ref": str(draft_path),
                 "binding_checksum": binding_checksum,
                 "patch_gate_status": gate.status,
                 "deterministic_rule_id": gate.rule_id,
