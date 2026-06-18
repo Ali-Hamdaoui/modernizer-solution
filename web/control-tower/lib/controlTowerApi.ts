@@ -14,6 +14,8 @@ import type {
   V2FailureSummaryResponse,
   V2DualModelTraceListResponse,
   V2RepairLifecycleListResponse,
+  V2RepairProposalArtifactListResponse,
+  V2RepairProposalArtifactPreviewResponse,
   V2RunEvidenceBundleResponse,
   V2StageEntry,
   V2StageCommandResponse,
@@ -310,6 +312,39 @@ export async function getV2RepairLifecycle(jobId: string): Promise<V2RepairLifec
   const safeJobId = requireJobId(jobId);
   return getJson<V2RepairLifecycleListResponse>(
     `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/repair-lifecycle`
+  );
+}
+
+export async function getV2RepairProposalArtifacts(
+  jobId: string,
+  proposalId: string
+): Promise<V2RepairProposalArtifactListResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) {
+    throw new Error("Repair proposal id is required.");
+  }
+  return getJson<V2RepairProposalArtifactListResponse>(
+    `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/repair-proposals/${encodeURIComponent(safeProposalId)}/artifacts`
+  );
+}
+
+export async function getV2RepairProposalArtifactPreview(
+  jobId: string,
+  proposalId: string,
+  artifactName: string
+): Promise<V2RepairProposalArtifactPreviewResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  const safeArtifactName = artifactName.trim();
+  if (!safeProposalId) {
+    throw new Error("Repair proposal id is required.");
+  }
+  if (!safeArtifactName) {
+    throw new Error("Repair artifact name is required.");
+  }
+  return getJson<V2RepairProposalArtifactPreviewResponse>(
+    `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/repair-proposals/${encodeURIComponent(safeProposalId)}/artifacts/${encodeURIComponent(safeArtifactName)}`
   );
 }
 

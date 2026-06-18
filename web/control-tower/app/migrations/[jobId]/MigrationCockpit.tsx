@@ -6,6 +6,8 @@ import {
   approveV2Card,
   getV2DualModelTraces,
   getV2EvidenceBundle,
+  getV2RepairProposalArtifactPreview,
+  getV2RepairProposalArtifacts,
   getV2RepairLifecycle,
   getV2AssistantMessages,
   getV2FailureSummary,
@@ -23,6 +25,8 @@ import type {
   V2AssistantMessageResponse,
   V2DualModelTraceListResponse,
   V2RepairLifecycleListResponse,
+  V2RepairProposalArtifactListResponse,
+  V2RepairProposalArtifactPreviewResponse,
   V2RunEvidenceBundleResponse,
   V2FailureSummaryResponse,
   V2JobEvent,
@@ -46,6 +50,8 @@ interface CockpitData {
   pipeline: V2PipelineResponse;
   dualModelTraces: V2DualModelTraceListResponse | null;
   repairLifecycle: V2RepairLifecycleListResponse | null;
+  repairArtifacts: Record<string, V2RepairProposalArtifactListResponse | null>;
+  repairArtifactPreviews: Record<string, V2RepairProposalArtifactPreviewResponse | null>;
   evidenceBundle: V2RunEvidenceBundleResponse | null;
   failureSummary: V2FailureSummaryResponse | null;
   assistantModel: { status: string; source: string; provider: string; role: string; failure_reason?: string } | null;
@@ -66,6 +72,64 @@ export function cockpitEvidenceStatusLines(bundle: V2RunEvidenceBundleResponse |
   if (bundle.test_status) lines.push(`Test: ${bundle.test_status}`);
   if (bundle.failure_bundle?.root_cause) lines.push(`Root cause: ${bundle.failure_bundle.root_cause}`);
   return lines;
+}
+
+const REPAIR_ARTIFACT_PREFERRED_PREVIEW_ORDER = [
+  "repair_proposal.md",
+  "repair_proposal.json",
+  "repair_verification.json",
+  "approval_state.json",
+  "repair_execution_plan.json",
+  "repair_patch_candidate.json",
+  "sandbox_apply_result.json",
+  "sandbox_validation_result.json",
+  "backups/pom.xml.before-repair",
+] as const;
+
+async function loadRepairArtifactState(
+  jobId: string,
+  repairLifecycle: V2RepairLifecycleListResponse | null
+): Promise<{
+  repairArtifacts: Record<string, V2RepairProposalArtifactListResponse | null>;
+  repairArtifactPreviews: Record<string, V2RepairProposalArtifactPreviewResponse | null>;
+}> {
+  if (!repairLifecycle || repairLifecycle.repair_proposals.length === 0) {
+    return { repairArtifacts: {}, repairArtifactPreviews: {} };
+  }
+  const artifactEntries = await Promise.all(
+    repairLifecycle.repair_proposals.map(async (proposal) => {
+      try {
+        const artifacts = await getV2RepairProposalArtifacts(jobId, proposal.proposal_id);
+        return [proposal.proposal_id, artifacts] as const;
+      } catch {
+        return [proposal.proposal_id, null] as const;
+      }
+    })
+  );
+  const repairArtifacts = Object.fromEntries(artifactEntries);
+  const previewEntries = await Promise.all(
+    artifactEntries.map(async ([proposalId, artifactList]) => {
+      if (!artifactList) {
+        return [proposalId, null] as const;
+      }
+      const selected = REPAIR_ARTIFACT_PREFERRED_PREVIEW_ORDER.find((artifactName) =>
+        artifactList.artifacts.some((artifact) => artifact.exists && artifact.artifact_name === artifactName)
+      );
+      if (!selected) {
+        return [proposalId, null] as const;
+      }
+      try {
+        const preview = await getV2RepairProposalArtifactPreview(jobId, proposalId, selected);
+        return [proposalId, preview] as const;
+      } catch {
+        return [proposalId, null] as const;
+      }
+    })
+  );
+  return {
+    repairArtifacts,
+    repairArtifactPreviews: Object.fromEntries(previewEntries),
+  };
 }
 
 export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initialData?: CockpitData | null }) {
@@ -100,6 +164,10 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
           getV2DualModelTraces(safeJobId).catch(() => null),
           getV2RepairLifecycle(safeJobId).catch(() => null),
         ]);
+        const repairArtifactState = await loadRepairArtifactState(
+          safeJobId,
+          repairLifecycle as V2RepairLifecycleListResponse | null,
+        );
 
         if (cancelled) return;
 
@@ -112,6 +180,8 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
           pipeline: pipelineResponse,
           dualModelTraces: dualModelTraces as V2DualModelTraceListResponse | null,
           repairLifecycle: repairLifecycle as V2RepairLifecycleListResponse | null,
+          repairArtifacts: repairArtifactState.repairArtifacts,
+          repairArtifactPreviews: repairArtifactState.repairArtifactPreviews,
           evidenceBundle: evidenceBundle as V2RunEvidenceBundleResponse | null,
           failureSummary: failureSummary as V2FailureSummaryResponse | null,
           assistantModel: null,
@@ -259,6 +329,10 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
       getV2DualModelTraces(safeJobId).catch(() => null),
       getV2RepairLifecycle(safeJobId).catch(() => null),
     ]);
+    const repairArtifactState = await loadRepairArtifactState(
+      safeJobId,
+      repairLifecycle as V2RepairLifecycleListResponse | null,
+    );
     setData((current) => current ? {
       ...current,
       approvals: approvalsResponse.approvals,
@@ -267,6 +341,8 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
       pipeline: pipelineResponse,
       dualModelTraces: dualModelTraces as V2DualModelTraceListResponse | null,
       repairLifecycle: repairLifecycle as V2RepairLifecycleListResponse | null,
+      repairArtifacts: repairArtifactState.repairArtifacts,
+      repairArtifactPreviews: repairArtifactState.repairArtifactPreviews,
       evidenceBundle: evidenceBundle as V2RunEvidenceBundleResponse | null,
       failureSummary: failureSummary as V2FailureSummaryResponse | null,
     } : current);
@@ -422,6 +498,26 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
                 <p className="meta">Sandbox only: {String(proposal.sandbox_only)}</p>
                 <p className="meta">Stage resumed: {String(proposal.stage_resumed)}</p>
                 <p className="meta">Read-only projection: {String(proposal.read_only)}</p>
+                {data.repairArtifacts[proposal.proposal_id]?.artifacts?.some((artifact) => artifact.exists) ? (
+                  <p className="meta">
+                    Repair artifacts: {data.repairArtifacts[proposal.proposal_id]?.artifacts
+                      .filter((artifact) => artifact.exists)
+                      .map((artifact) => artifact.artifact_name)
+                      .join(", ")}
+                  </p>
+                ) : (
+                  <p className="meta">No previewable repair artifacts.</p>
+                )}
+                {data.repairArtifactPreviews[proposal.proposal_id] ? (
+                  <details className="raw-logs">
+                    <summary>
+                      Read-only artifact preview: {data.repairArtifactPreviews[proposal.proposal_id]?.artifact_name}
+                    </summary>
+                    <pre className="raw-log-line">
+                      {data.repairArtifactPreviews[proposal.proposal_id]?.content}
+                    </pre>
+                  </details>
+                ) : null}
                 {Object.keys(proposal.artifact_refs ?? {}).length > 0 ? (
                   <p className="meta">
                     Artifacts: {Object.entries(proposal.artifact_refs).map(([label, path]) => `${label}: ${path}`).join(", ")}

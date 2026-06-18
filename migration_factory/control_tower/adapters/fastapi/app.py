@@ -215,6 +215,9 @@ from migration_factory.control_tower.application.v2_approved_repair_sandbox_vali
 from migration_factory.control_tower.application.v2_repair_lifecycle_projection import (
     V2RepairLifecycleProjectionService,
 )
+from migration_factory.control_tower.application.v2_repair_artifact_preview import (
+    V2RepairArtifactPreviewService,
+)
 from migration_factory.control_tower.application.redaction import redact_public_value
 from migration_factory.control_tower.adapters.fastapi.security import (
     MUTATION_METHODS,
@@ -2622,6 +2625,82 @@ def create_app(
                 "read_only": True,
             }
         )
+
+    @app.get(
+        "/v1/v2/jobs/{job_id}/repair-proposals/{proposal_id}/artifacts",
+        include_in_schema=False,
+        operation_id="list_v2_job_repair_proposal_artifacts_alias",
+    )
+    @app.get("/v1/v2/migration-jobs/{job_id}/repair-proposals/{proposal_id}/artifacts")
+    def list_v2_repair_proposal_artifacts(job_id: str, proposal_id: str) -> dict[str, Any]:
+        _run_id, trace_root = _resolve_v2_job_trace_root(job_id)
+        if trace_root is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "REPAIR_PROPOSAL_NOT_FOUND",
+                "No governed repair proposal artifacts found.",
+            )
+        service = V2RepairArtifactPreviewService()
+        try:
+            artifacts = service.list_artifacts(trace_root=trace_root, proposal_id=proposal_id)
+        except FileNotFoundError:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "REPAIR_PROPOSAL_NOT_FOUND",
+                f"Governed repair proposal {proposal_id!r} not found for job {job_id!r}.",
+            )
+        except ValueError as exc:
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                "REPAIR_ARTIFACT_LIST_FAILED",
+                str(exc),
+            ) from exc
+        return redact_public_data(
+            {
+                "proposal_id": proposal_id,
+                "artifacts": [artifact.to_dict() for artifact in artifacts],
+                "read_only": True,
+            }
+        )
+
+    @app.get(
+        "/v1/v2/jobs/{job_id}/repair-proposals/{proposal_id}/artifacts/{artifact_name:path}",
+        include_in_schema=False,
+        operation_id="get_v2_job_repair_proposal_artifact_preview_alias",
+    )
+    @app.get("/v1/v2/migration-jobs/{job_id}/repair-proposals/{proposal_id}/artifacts/{artifact_name:path}")
+    def get_v2_repair_proposal_artifact_preview(
+        job_id: str,
+        proposal_id: str,
+        artifact_name: str,
+    ) -> dict[str, Any]:
+        _run_id, trace_root = _resolve_v2_job_trace_root(job_id)
+        if trace_root is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "REPAIR_PROPOSAL_NOT_FOUND",
+                "No governed repair proposal artifacts found.",
+            )
+        service = V2RepairArtifactPreviewService()
+        try:
+            preview = service.preview_artifact(
+                trace_root=trace_root,
+                proposal_id=proposal_id,
+                artifact_name=artifact_name,
+            )
+        except FileNotFoundError:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "REPAIR_ARTIFACT_NOT_FOUND",
+                f"Repair artifact {artifact_name!r} not found for governed repair proposal {proposal_id!r}.",
+            )
+        except ValueError as exc:
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                "REPAIR_ARTIFACT_PREVIEW_FAILED",
+                str(exc),
+            ) from exc
+        return redact_public_data(preview.to_dict())
 
     @app.post("/v1/v2/diagnoses/{diagnosis_id}/repair-proposal")
     def create_diagnosis_bound_repair_proposal(

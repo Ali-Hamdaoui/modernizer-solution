@@ -8,6 +8,8 @@ import {
   getV2AssistantMessages,
   getV2EvidenceBundle,
   getV2DualModelTraces,
+  getV2RepairProposalArtifactPreview,
+  getV2RepairProposalArtifacts,
   getV2RepairLifecycle,
   getV2JobApprovals,
   getV2MigrationJobStages,
@@ -137,6 +139,34 @@ describe("M2-01 frontend diagnostic contracts", () => {
         if (url.includes("/repair-lifecycle")) {
           return { job_id: "429a9bb2154b4be7a99a32867780d744", repair_proposals: [], read_only: true };
         }
+        if (url.includes("/repair-proposals/") && url.includes("/artifacts/")) {
+          return {
+            proposal_id: "proposal-1",
+            artifact_name: "repair_proposal.md",
+            kind: "markdown",
+            content: "# Repair proposal",
+            truncated: false,
+            size_bytes: 18,
+            read_only: true,
+          };
+        }
+        if (url.includes("/repair-proposals/") && url.endsWith("/artifacts")) {
+          return {
+            proposal_id: "proposal-1",
+            artifacts: [
+              {
+                proposal_id: "proposal-1",
+                artifact_name: "repair_proposal.md",
+                relative_path: "ai_supervision/repair_proposals/proposal-1/repair_proposal.md",
+                kind: "markdown",
+                exists: true,
+                size_bytes: 18,
+                read_only: true,
+              },
+            ],
+            read_only: true,
+          };
+        }
         if (url.includes("/approvals")) {
           return { approvals: [] };
         }
@@ -152,6 +182,8 @@ describe("M2-01 frontend diagnostic contracts", () => {
       getV2EvidenceBundle(jobId),
       getV2DualModelTraces(jobId),
       getV2RepairLifecycle(jobId),
+      getV2RepairProposalArtifacts(jobId, "proposal-1"),
+      getV2RepairProposalArtifactPreview(jobId, "proposal-1", "repair_proposal.md"),
       getV2AssistantMessages(jobId),
     ]);
 
@@ -162,6 +194,8 @@ describe("M2-01 frontend diagnostic contracts", () => {
       expect.stringContaining(`/v1/v2/migration-jobs/${jobId}/evidence-bundle`),
       expect.stringContaining(`/v1/v2/migration-jobs/${jobId}/dual-model-traces`),
       expect.stringContaining(`/v1/v2/migration-jobs/${jobId}/repair-lifecycle`),
+      expect.stringContaining(`/v1/v2/migration-jobs/${jobId}/repair-proposals/proposal-1/artifacts`),
+      expect.stringContaining(`/v1/v2/migration-jobs/${jobId}/repair-proposals/proposal-1/artifacts/repair_proposal.md`),
       expect.stringContaining(`/v1/v2/jobs/${jobId}/assistant/messages`),
     ]);
     expect(urls.some((url) => url.includes("undefined"))).toBe(false);
@@ -177,6 +211,8 @@ describe("M2-01 frontend diagnostic contracts", () => {
     await expect(getV2EvidenceBundle("")).rejects.toThrow(/job id is required/i);
     await expect(getV2DualModelTraces("")).rejects.toThrow(/job id is required/i);
     await expect(getV2RepairLifecycle("")).rejects.toThrow(/job id is required/i);
+    await expect(getV2RepairProposalArtifacts("", "proposal-1")).rejects.toThrow(/job id is required/i);
+    await expect(getV2RepairProposalArtifactPreview("", "proposal-1", "repair_proposal.md")).rejects.toThrow(/job id is required/i);
     await expect(getV2AssistantMessages("")).rejects.toThrow(/job id is required/i);
 
     expect(fetchMock).not.toHaveBeenCalled();

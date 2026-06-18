@@ -417,6 +417,8 @@ describe("V2 Migration Cockpit contract", () => {
           pipeline: { job_id: "job-123", rows: [], evidence: [], raw_logs: [], active_stage_index: 1 },
           dualModelTraces: { job_id: "job-123", run_id: "v2-demo-s2", trace_count: 0, latest_model1_trace: null, latest_model2_trace: null, traces: [], artifact_refs: [], read_only: true },
           repairLifecycle: { job_id: "job-123", repair_proposals: [], read_only: true },
+          repairArtifacts: {},
+          repairArtifactPreviews: {},
           evidenceBundle: null,
           failureSummary: null,
           assistantModel: null,
@@ -482,6 +484,8 @@ describe("V2 Migration Cockpit contract", () => {
             read_only: true,
           },
           repairLifecycle: { job_id: "job-123", repair_proposals: [], read_only: true },
+          repairArtifacts: {},
+          repairArtifactPreviews: {},
           evidenceBundle: null,
           failureSummary: null,
           assistantModel: null,
@@ -509,6 +513,8 @@ describe("V2 Migration Cockpit contract", () => {
           pipeline: { job_id: "job-123", rows: [], evidence: [], raw_logs: [], active_stage_index: 1 },
           dualModelTraces: { job_id: "job-123", run_id: "v2-demo-s2", trace_count: 0, latest_model1_trace: null, latest_model2_trace: null, traces: [], artifact_refs: [], read_only: true },
           repairLifecycle: { job_id: "job-123", repair_proposals: [], read_only: true },
+          repairArtifacts: {},
+          repairArtifactPreviews: {},
           evidenceBundle: null,
           failureSummary: null,
           assistantModel: null,
@@ -586,6 +592,49 @@ describe("V2 Migration Cockpit contract", () => {
             ],
             read_only: true,
           },
+          repairArtifacts: {
+            "proposal-1": {
+              proposal_id: "proposal-1",
+              artifacts: [
+                {
+                  proposal_id: "proposal-1",
+                  artifact_name: "repair_proposal.md",
+                  relative_path: "ai_supervision/repair_proposals/proposal-1/repair_proposal.md",
+                  kind: "markdown",
+                  exists: true,
+                  size_bytes: 24,
+                  read_only: true,
+                },
+                {
+                  proposal_id: "proposal-1",
+                  artifact_name: "repair_proposal.json",
+                  relative_path: "ai_supervision/repair_proposals/proposal-1/repair_proposal.json",
+                  kind: "json",
+                  exists: true,
+                  size_bytes: 128,
+                  read_only: true,
+                },
+              ],
+              read_only: true,
+            },
+            "proposal-2": {
+              proposal_id: "proposal-2",
+              artifacts: [],
+              read_only: true,
+            },
+          },
+          repairArtifactPreviews: {
+            "proposal-1": {
+              proposal_id: "proposal-1",
+              artifact_name: "repair_proposal.md",
+              kind: "markdown",
+              content: "# Repair proposal\nUpdate sandbox pom.xml only.",
+              truncated: false,
+              size_bytes: 44,
+              read_only: true,
+            },
+            "proposal-2": null,
+          },
           evidenceBundle: null,
           failureSummary: null,
           assistantModel: null,
@@ -602,6 +651,10 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Source mutated: false");
     expect(markup).toContain("Stage resumed: false");
     expect(markup).toContain("Read-only projection: true");
+    expect(markup).toContain("Repair artifacts: repair_proposal.md, repair_proposal.json");
+    expect(markup).toContain("Read-only artifact preview: repair_proposal.md");
+    expect(markup).toContain("Update sandbox pom.xml only.");
+    expect(markup).toContain("No previewable repair artifacts.");
     expect(markup).not.toContain(">Apply<");
     expect(markup).not.toContain(">Validate<");
     expect(markup).not.toContain(">Resume<");

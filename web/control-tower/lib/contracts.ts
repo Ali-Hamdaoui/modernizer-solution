@@ -607,6 +607,32 @@ export type V2RepairLifecycleListResponse = {
   read_only: boolean;
 };
 
+export type V2RepairProposalArtifactMetadata = {
+  proposal_id: string;
+  artifact_name: string;
+  relative_path: string;
+  kind: "json" | "markdown" | "text" | "backup";
+  exists: boolean;
+  size_bytes: number;
+  read_only: boolean;
+};
+
+export type V2RepairProposalArtifactListResponse = {
+  proposal_id: string;
+  artifacts: V2RepairProposalArtifactMetadata[];
+  read_only: boolean;
+};
+
+export type V2RepairProposalArtifactPreviewResponse = {
+  proposal_id: string;
+  artifact_name: string;
+  kind: "json" | "markdown" | "text" | "backup";
+  content: string;
+  truncated: boolean;
+  size_bytes: number;
+  read_only: boolean;
+};
+
 export type V2ReviewerCritiqueResponse = {
   critique_id: string;
   proposal_id: string;
