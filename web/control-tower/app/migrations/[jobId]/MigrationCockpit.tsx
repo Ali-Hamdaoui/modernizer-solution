@@ -6,6 +6,7 @@ import {
   approveV2Card,
   getV2DualModelTraces,
   getV2EvidenceBundle,
+  getV2RepairLifecycle,
   getV2AssistantMessages,
   getV2FailureSummary,
   getV2JobEventSnapshot,
@@ -21,6 +22,7 @@ import type {
   V2ApprovalResponse,
   V2AssistantMessageResponse,
   V2DualModelTraceListResponse,
+  V2RepairLifecycleListResponse,
   V2RunEvidenceBundleResponse,
   V2FailureSummaryResponse,
   V2JobEvent,
@@ -43,6 +45,7 @@ interface CockpitData {
   events: V2JobEvent[];
   pipeline: V2PipelineResponse;
   dualModelTraces: V2DualModelTraceListResponse | null;
+  repairLifecycle: V2RepairLifecycleListResponse | null;
   evidenceBundle: V2RunEvidenceBundleResponse | null;
   failureSummary: V2FailureSummaryResponse | null;
   assistantModel: { status: string; source: string; provider: string; role: string; failure_reason?: string } | null;
@@ -85,7 +88,7 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
     async function loadCockpit() {
       try {
         const safeJobId = requireJobId(normalizedJobId);
-        const [job, messagesResponse, approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary, evidenceBundle, dualModelTraces] = await Promise.all([
+        const [job, messagesResponse, approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary, evidenceBundle, dualModelTraces, repairLifecycle] = await Promise.all([
           getV2MigrationJob(safeJobId),
           getV2AssistantMessages(safeJobId),
           getV2JobApprovals(safeJobId),
@@ -95,6 +98,7 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
           getV2FailureSummary(safeJobId).catch(() => null),
           getV2EvidenceBundle(safeJobId).catch(() => null),
           getV2DualModelTraces(safeJobId).catch(() => null),
+          getV2RepairLifecycle(safeJobId).catch(() => null),
         ]);
 
         if (cancelled) return;
@@ -107,6 +111,7 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
           events: eventsResponse.events,
           pipeline: pipelineResponse,
           dualModelTraces: dualModelTraces as V2DualModelTraceListResponse | null,
+          repairLifecycle: repairLifecycle as V2RepairLifecycleListResponse | null,
           evidenceBundle: evidenceBundle as V2RunEvidenceBundleResponse | null,
           failureSummary: failureSummary as V2FailureSummaryResponse | null,
           assistantModel: null,
@@ -244,7 +249,7 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
   async function refreshLiveState() {
     if (!normalizedJobId) return;
     const safeJobId = requireJobId(normalizedJobId);
-    const [approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary, evidenceBundle, dualModelTraces] = await Promise.all([
+    const [approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary, evidenceBundle, dualModelTraces, repairLifecycle] = await Promise.all([
       getV2JobApprovals(safeJobId),
       getV2MigrationJobStages(safeJobId),
       getV2JobEventSnapshot(safeJobId),
@@ -252,6 +257,7 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
       getV2FailureSummary(safeJobId).catch(() => null),
       getV2EvidenceBundle(safeJobId).catch(() => null),
       getV2DualModelTraces(safeJobId).catch(() => null),
+      getV2RepairLifecycle(safeJobId).catch(() => null),
     ]);
     setData((current) => current ? {
       ...current,
@@ -260,6 +266,7 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
       events: eventsResponse.events,
       pipeline: pipelineResponse,
       dualModelTraces: dualModelTraces as V2DualModelTraceListResponse | null,
+      repairLifecycle: repairLifecycle as V2RepairLifecycleListResponse | null,
       evidenceBundle: evidenceBundle as V2RunEvidenceBundleResponse | null,
       failureSummary: failureSummary as V2FailureSummaryResponse | null,
     } : current);
@@ -387,6 +394,45 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
         )}
         <p className="meta">
           Read-only audit: {data.dualModelTraces?.read_only === false ? "false" : "true"}
+        </p>
+      </section>
+
+      <section className="panel">
+        <h2>Repair Lifecycle</h2>
+        {!data.repairLifecycle || data.repairLifecycle.repair_proposals.length === 0 ? (
+          <p className="meta">No repair proposals yet.</p>
+        ) : (
+          <>
+            {data.repairLifecycle.repair_proposals.map((proposal) => (
+              <div key={proposal.proposal_id} className="trace-section">
+                <strong>{proposal.proposal_id}</strong>
+                <p className="meta">Current state: {proposal.current_state}</p>
+                <p className="meta">Approval state: {proposal.approval_state}</p>
+                <p className="meta">Next operator action: {proposal.next_operator_action}</p>
+                <p className="meta">Failure type: {proposal.failure_type}</p>
+                <p className="meta">Root cause: {proposal.root_cause}</p>
+                <p className="meta">Risk level: {proposal.risk_level ?? "n/a"}</p>
+                <p className="meta">Model 2 verdict: {proposal.model2_verdict ?? "n/a"}</p>
+                <p className="meta">Sandbox apply state: {proposal.sandbox_apply_state}</p>
+                <p className="meta">Sandbox validation state: {proposal.sandbox_validation_state}</p>
+                <p className="meta">Rollback performed: {String(proposal.rollback_performed)}</p>
+                <p className="meta">Has execution plan: {String(proposal.has_execution_plan)}</p>
+                <p className="meta">Has patch candidate: {String(proposal.has_patch_candidate)}</p>
+                <p className="meta">Source mutated: {String(proposal.source_mutated)}</p>
+                <p className="meta">Sandbox only: {String(proposal.sandbox_only)}</p>
+                <p className="meta">Stage resumed: {String(proposal.stage_resumed)}</p>
+                <p className="meta">Read-only projection: {String(proposal.read_only)}</p>
+                {Object.keys(proposal.artifact_refs ?? {}).length > 0 ? (
+                  <p className="meta">
+                    Artifacts: {Object.entries(proposal.artifact_refs).map(([label, path]) => `${label}: ${path}`).join(", ")}
+                  </p>
+                ) : null}
+              </div>
+            ))}
+          </>
+        )}
+        <p className="meta">
+          Read-only list: {data.repairLifecycle?.read_only === false ? "false" : "true"}
         </p>
       </section>
 

@@ -416,6 +416,7 @@ describe("V2 Migration Cockpit contract", () => {
           events: [],
           pipeline: { job_id: "job-123", rows: [], evidence: [], raw_logs: [], active_stage_index: 1 },
           dualModelTraces: { job_id: "job-123", run_id: "v2-demo-s2", trace_count: 0, latest_model1_trace: null, latest_model2_trace: null, traces: [], artifact_refs: [], read_only: true },
+          repairLifecycle: { job_id: "job-123", repair_proposals: [], read_only: true },
           evidenceBundle: null,
           failureSummary: null,
           assistantModel: null,
@@ -480,6 +481,7 @@ describe("V2 Migration Cockpit contract", () => {
             artifact_refs: [],
             read_only: true,
           },
+          repairLifecycle: { job_id: "job-123", repair_proposals: [], read_only: true },
           evidenceBundle: null,
           failureSummary: null,
           assistantModel: null,
@@ -492,6 +494,117 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Latest Model 2");
     expect(markup).toContain("Verdict: accepted");
     expect(markup).toContain("Human approval required: false");
+  });
+
+  it("cockpit renders empty repair lifecycle state", () => {
+    const markup = renderToStaticMarkup(
+      <MigrationCockpit
+        jobId="job-123"
+        initialData={{
+          job: { job_id: "job-123", setup_id: "setup-1", setup_checksum: "chk", pipeline_id: "pipe", stages: [], created_at: "now" },
+          stages: [],
+          approvals: [],
+          messages: [],
+          events: [],
+          pipeline: { job_id: "job-123", rows: [], evidence: [], raw_logs: [], active_stage_index: 1 },
+          dualModelTraces: { job_id: "job-123", run_id: "v2-demo-s2", trace_count: 0, latest_model1_trace: null, latest_model2_trace: null, traces: [], artifact_refs: [], read_only: true },
+          repairLifecycle: { job_id: "job-123", repair_proposals: [], read_only: true },
+          evidenceBundle: null,
+          failureSummary: null,
+          assistantModel: null,
+        }}
+      />
+    );
+    expect(markup).toContain("Repair Lifecycle");
+    expect(markup).toContain("No repair proposals yet.");
+    expect(markup).toContain("Read-only list: true");
+  });
+
+  it("cockpit renders repair lifecycle proposal states and safety flags", () => {
+    const markup = renderToStaticMarkup(
+      <MigrationCockpit
+        jobId="job-123"
+        initialData={{
+          job: { job_id: "job-123", setup_id: "setup-1", setup_checksum: "chk", pipeline_id: "pipe", stages: [], created_at: "now" },
+          stages: [],
+          approvals: [],
+          messages: [],
+          events: [],
+          pipeline: { job_id: "job-123", rows: [], evidence: [], raw_logs: [], active_stage_index: 3 },
+          dualModelTraces: { job_id: "job-123", run_id: "v2-demo-s2", trace_count: 0, latest_model1_trace: null, latest_model2_trace: null, traces: [], artifact_refs: [], read_only: true },
+          repairLifecycle: {
+            job_id: "job-123",
+            repair_proposals: [
+              {
+                job_id: "job-123",
+                run_id: "v2-demo-s2",
+                proposal_id: "proposal-1",
+                failure_type: "invalid_maven_wildcard_version",
+                root_cause: "Wildcard Maven versions remain in sandbox pom.xml.",
+                current_state: "validation_passed",
+                approval_state: "approved",
+                approval_checksum: "chk-123",
+                has_execution_plan: true,
+                has_patch_candidate: true,
+                sandbox_apply_state: "applied",
+                sandbox_validation_state: "passed",
+                rollback_performed: false,
+                source_mutated: false,
+                sandbox_only: true,
+                stage_resumed: false,
+                next_operator_action: "no action required",
+                risk_level: "medium",
+                model2_verdict: "accepted",
+                artifact_refs: {
+                  proposal: "ai_supervision/repair_proposals/proposal-1/repair_proposal.json",
+                },
+                read_only: true,
+              },
+              {
+                job_id: "job-123",
+                run_id: "v2-demo-s2",
+                proposal_id: "proposal-2",
+                failure_type: "invalid_maven_wildcard_version",
+                root_cause: "Rollback performed after failed validation.",
+                current_state: "validation_failed_rolled_back",
+                approval_state: "approved",
+                approval_checksum: "chk-456",
+                has_execution_plan: true,
+                has_patch_candidate: true,
+                sandbox_apply_state: "applied",
+                sandbox_validation_state: "rolled_back",
+                rollback_performed: true,
+                source_mutated: false,
+                sandbox_only: true,
+                stage_resumed: false,
+                next_operator_action: "inspect rollback",
+                risk_level: "high",
+                model2_verdict: "needs_human_review",
+                artifact_refs: {},
+                read_only: true,
+              },
+            ],
+            read_only: true,
+          },
+          evidenceBundle: null,
+          failureSummary: null,
+          assistantModel: null,
+        }}
+      />
+    );
+    expect(markup).toContain("proposal-1");
+    expect(markup).toContain("Current state: validation_passed");
+    expect(markup).toContain("Next operator action: no action required");
+    expect(markup).toContain("Sandbox validation state: passed");
+    expect(markup).toContain("proposal-2");
+    expect(markup).toContain("Rollback performed: true");
+    expect(markup).toContain("Sandbox validation state: rolled_back");
+    expect(markup).toContain("Source mutated: false");
+    expect(markup).toContain("Stage resumed: false");
+    expect(markup).toContain("Read-only projection: true");
+    expect(markup).not.toContain(">Apply<");
+    expect(markup).not.toContain(">Validate<");
+    expect(markup).not.toContain(">Resume<");
   });
 
   it("IMPORTANT_SSE_TYPES includes all required lifecycle events", () => {

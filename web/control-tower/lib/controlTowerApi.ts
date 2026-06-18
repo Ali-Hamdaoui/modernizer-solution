@@ -13,6 +13,7 @@ import type {
   V2PipelineResponse,
   V2FailureSummaryResponse,
   V2DualModelTraceListResponse,
+  V2RepairLifecycleListResponse,
   V2RunEvidenceBundleResponse,
   V2StageEntry,
   V2StageCommandResponse,
@@ -302,6 +303,13 @@ export async function getV2DualModelTraces(jobId: string): Promise<V2DualModelTr
   const safeJobId = requireJobId(jobId);
   return getJson<V2DualModelTraceListResponse>(
     `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/dual-model-traces`
+  );
+}
+
+export async function getV2RepairLifecycle(jobId: string): Promise<V2RepairLifecycleListResponse> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<V2RepairLifecycleListResponse>(
+    `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/repair-lifecycle`
   );
 }
 

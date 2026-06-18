@@ -577,6 +577,36 @@ export type V2DualModelTraceListResponse = {
   read_only: boolean;
 };
 
+export type V2RepairLifecycleProjection = {
+  job_id: string;
+  run_id: string;
+  proposal_id: string;
+  failure_type: string;
+  root_cause: string;
+  current_state: string;
+  approval_state: string;
+  approval_checksum: string | null;
+  has_execution_plan: boolean;
+  has_patch_candidate: boolean;
+  sandbox_apply_state: string;
+  sandbox_validation_state: string;
+  rollback_performed: boolean;
+  source_mutated: boolean;
+  sandbox_only: boolean;
+  stage_resumed: boolean;
+  next_operator_action: string;
+  risk_level: string | null;
+  model2_verdict: string | null;
+  artifact_refs: Record<string, string>;
+  read_only: boolean;
+};
+
+export type V2RepairLifecycleListResponse = {
+  job_id: string;
+  repair_proposals: V2RepairLifecycleProjection[];
+  read_only: boolean;
+};
+
 export type V2ReviewerCritiqueResponse = {
   critique_id: string;
   proposal_id: string;
