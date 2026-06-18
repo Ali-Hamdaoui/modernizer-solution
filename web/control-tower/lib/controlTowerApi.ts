@@ -429,6 +429,21 @@ export async function materializeV2RepairPatchCandidate(
   );
 }
 
+export async function applyV2RepairPatchToSandbox(
+  jobId: string,
+  proposalId: string
+): Promise<Record<string, unknown>> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) {
+    throw new Error("Repair proposal id is required.");
+  }
+  return postJson<Record<string, unknown>>(
+    `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/repair-proposals/${encodeURIComponent(safeProposalId)}/apply-to-sandbox`,
+    {}
+  );
+}
+
 export async function getV2ArtifactPreview(
   jobId: string,
   artifactKind: string

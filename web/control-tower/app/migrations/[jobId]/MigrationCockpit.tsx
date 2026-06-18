@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import {
   approveV2RepairProposal,
+  applyV2RepairPatchToSandbox,
   askV2Assistant,
   approveV2Card,
   getV2DualModelTraces,
@@ -159,12 +160,39 @@ export function canMaterializeRepairPatchCandidate(proposal: {
   );
 }
 
+export function canApplyRepairPatchToSandbox(proposal: {
+  current_state: string;
+  approval_state: string;
+  has_execution_plan: boolean;
+  has_patch_candidate: boolean;
+  sandbox_apply_state: string;
+  sandbox_validation_state: string;
+}): boolean {
+  return (
+    proposal.current_state === "patch_candidate_ready"
+    && proposal.approval_state === "approved"
+    && proposal.has_execution_plan
+    && proposal.has_patch_candidate
+    && proposal.sandbox_apply_state === "not_started"
+    && proposal.sandbox_validation_state === "not_started"
+  );
+}
+
 export async function submitRepairPatchCandidateMaterialization(args: {
   jobId: string;
   proposalId: string;
 }): Promise<Pick<CockpitData, "repairLifecycle" | "repairArtifacts" | "repairArtifactPreviews">> {
   const safeJobId = requireJobId(args.jobId);
   await materializeV2RepairPatchCandidate(safeJobId, args.proposalId);
+  return refreshRepairLifecyclePanelState(safeJobId);
+}
+
+export async function submitRepairPatchSandboxApply(args: {
+  jobId: string;
+  proposalId: string;
+}): Promise<Pick<CockpitData, "repairLifecycle" | "repairArtifacts" | "repairArtifactPreviews">> {
+  const safeJobId = requireJobId(args.jobId);
+  await applyV2RepairPatchToSandbox(safeJobId, args.proposalId);
   return refreshRepairLifecyclePanelState(safeJobId);
 }
 
@@ -235,6 +263,7 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
   const [repairApprovalBusy, setRepairApprovalBusy] = useState<string | null>(null);
   const [repairExecutionBusy, setRepairExecutionBusy] = useState<string | null>(null);
   const [repairPatchBusy, setRepairPatchBusy] = useState<string | null>(null);
+  const [repairApplyBusy, setRepairApplyBusy] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "connected" | "reconnecting">("connecting");
   const normalizedJobId = jobId?.trim() ?? "";
 
@@ -556,6 +585,28 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
     }
   }
 
+  async function applyRepairPatchToSandbox(proposalId: string) {
+    if (!normalizedJobId) return;
+    setRepairApplyBusy(proposalId);
+    try {
+      const refreshState = await submitRepairPatchSandboxApply({
+        jobId: normalizedJobId,
+        proposalId,
+      });
+      setData((current) => current ? {
+        ...current,
+        repairLifecycle: refreshState.repairLifecycle,
+        repairArtifacts: refreshState.repairArtifacts,
+        repairArtifactPreviews: refreshState.repairArtifactPreviews,
+      } : current);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Sandbox apply failed");
+    } finally {
+      setRepairApplyBusy(null);
+    }
+  }
+
   if (error) return <div className="error-box">{error}</div>;
   if (!data) return <div className="info-box">Loading cockpit...</div>;
 
@@ -754,6 +805,23 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
                     <p className="meta">This only creates a read-only patch candidate.</p>
                     <p className="meta">It does not apply patches or run validation.</p>
                     <p className="meta">It does not modify source or sandbox files.</p>
+                  </>
+                ) : null}
+                {canApplyRepairPatchToSandbox(proposal) ? (
+                  <>
+                    <div className="approval-actions">
+                      <button
+                        type="button"
+                        disabled={repairApplyBusy === proposal.proposal_id}
+                        onClick={() => void applyRepairPatchToSandbox(proposal.proposal_id)}
+                      >
+                        Apply to sandbox
+                      </button>
+                    </div>
+                    <p className="meta">This applies the repair to the sandbox workspace only.</p>
+                    <p className="meta">It does not modify the original source project.</p>
+                    <p className="meta">It does not run validation.</p>
+                    <p className="meta">A backup will be used by the backend before sandbox mutation.</p>
                   </>
                 ) : null}
                 {Object.keys(proposal.artifact_refs ?? {}).length > 0 ? (

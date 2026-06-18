@@ -9,6 +9,7 @@ import {
   getV2EvidenceBundle,
   getV2DualModelTraces,
   approveV2RepairProposal,
+  applyV2RepairPatchToSandbox,
   getV2RepairProposalArtifactPreview,
   getV2RepairProposalArtifacts,
   getV2RepairLifecycle,
@@ -318,6 +319,29 @@ describe("M2-01 frontend diagnostic contracts", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       `${DEFAULT_CONTROL_TOWER_API_BASE_URL}/v1/v2/migration-jobs/job-123/repair-proposals/proposal-1/materialize-patch-candidate`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({}),
+      })
+    );
+  });
+
+  it("apply repair patch to sandbox calls sandbox apply endpoint only", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        proposal_id: "proposal-1",
+        sandbox_only: true,
+        source_mutated: false,
+        validation_started: false,
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await applyV2RepairPatchToSandbox("job-123", "proposal-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${DEFAULT_CONTROL_TOWER_API_BASE_URL}/v1/v2/migration-jobs/job-123/repair-proposals/proposal-1/apply-to-sandbox`,
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({}),
