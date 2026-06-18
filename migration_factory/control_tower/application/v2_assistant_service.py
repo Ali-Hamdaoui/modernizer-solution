@@ -18,6 +18,9 @@ from migration_factory.control_tower.application.v2_run_evidence_bundle import (
     RunEvidenceBundle,
     V2RunEvidenceBundleService,
 )
+from migration_factory.control_tower.application.v2_repair_lifecycle_projection import (
+    V2RepairLifecycleProjectionService,
+)
 from migration_factory.control_tower.application.v2_model_schemas import (
     ContextPackBuilder,
     ContextPack,
@@ -119,6 +122,7 @@ class V2AssistantService:
         self._repo = assistant_repo
         self._failure_answers = V2AssistantFailureAnswerService()
         self._run_evidence = V2RunEvidenceBundleService()
+        self._repair_lifecycle = V2RepairLifecycleProjectionService()
 
     def add_message(
         self,
@@ -273,6 +277,9 @@ class V2AssistantService:
     def is_evidence_question(self, text: str) -> bool:
         return self._run_evidence.is_evidence_question(text)
 
+    def is_repair_status_question(self, text: str) -> bool:
+        return self._repair_lifecycle.is_repair_status_question(text)
+
     def build_run_evidence_bundle(
         self,
         *,
@@ -299,6 +306,14 @@ class V2AssistantService:
         bundle: RunEvidenceBundle,
     ) -> str:
         return self._run_evidence.render_answer(question=question, bundle=bundle)
+
+    def answer_repair_status_question(
+        self,
+        *,
+        question: str,
+        projections: list[dict[str, Any]],
+    ) -> str:
+        return self._repair_lifecycle.render_answer(question=question, projections=projections)
 
     def answer_failure_question(
         self,

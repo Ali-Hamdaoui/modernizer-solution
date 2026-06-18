@@ -212,6 +212,9 @@ from migration_factory.control_tower.application.v2_approved_repair_sandbox_appl
 from migration_factory.control_tower.application.v2_approved_repair_sandbox_validation import (
     V2ApprovedRepairSandboxValidationService,
 )
+from migration_factory.control_tower.application.v2_repair_lifecycle_projection import (
+    V2RepairLifecycleProjectionService,
+)
 from migration_factory.control_tower.application.redaction import redact_public_value
 from migration_factory.control_tower.adapters.fastapi.security import (
     MUTATION_METHODS,
@@ -1704,6 +1707,62 @@ def create_app(
                 content=payload.question,
                 correlation_id=payload.correlation_id,
             )
+            if service.is_repair_status_question(payload.question):
+                bundle_service = V2RunEvidenceBundleService()
+                artifact_state = bundle_service._resolve_stage_artifacts(
+                    setup=setup,
+                    commands=commands,
+                    events=events,
+                    stage_index=None,
+                )
+                trace_root: Path | None = None
+                if artifact_state.get("run_dir") is not None:
+                    trace_root = Path(str(artifact_state["run_dir"]))
+                else:
+                    output_parent = str(getattr(setup, "output_parent_path", "") or "").strip()
+                    run_id = str(artifact_state.get("run_id") or "").strip()
+                    if output_parent and run_id:
+                        candidate = Path(output_parent) / ".migration" / "runs" / run_id
+                        if candidate.exists():
+                            trace_root = candidate
+                lifecycle_service = V2RepairLifecycleProjectionService()
+                projections = lifecycle_service.list_projections(
+                    job_id=job_id,
+                    trace_root=trace_root,
+                )
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=service.answer_repair_status_question(
+                        question=payload.question,
+                        projections=projections,
+                    ),
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "repair_lifecycle": {
+                        "proposals": projections,
+                        "read_only": True,
+                    },
+                    "model": {
+                        "status": "repair_lifecycle_projection",
+                        "source": "deterministic",
+                        "provider": "deterministic",
+                        "role": "assistant",
+                        "failure_reason": "",
+                    },
+                    "guardrails": {
+                        "read_only": True,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
             if service.is_repair_intent(payload.question):
                 requested_stage = service.extract_failure_stage_index(payload.question)
                 latest_diagnosis = uow.v2_failure_diagnoses.get_latest_for_job(job_id, stage_index=requested_stage)
@@ -2515,6 +2574,52 @@ def create_app(
                 "sandbox_only": True,
                 "source_mutated": False,
                 "stage_resumed": False,
+            }
+        )
+
+    @app.get(
+        "/v1/v2/jobs/{job_id}/repair-lifecycle",
+        include_in_schema=False,
+        operation_id="list_v2_job_repair_lifecycle_alias",
+    )
+    @app.get("/v1/v2/migration-jobs/{job_id}/repair-lifecycle")
+    def list_v2_repair_lifecycle(job_id: str) -> dict[str, Any]:
+        _run_id, trace_root = _resolve_v2_job_trace_root(job_id)
+        service = V2RepairLifecycleProjectionService()
+        projections = service.list_projections(job_id=job_id, trace_root=trace_root)
+        return redact_public_data(
+            {
+                "job_id": job_id,
+                "repair_proposals": projections,
+                "read_only": True,
+            }
+        )
+
+    @app.get(
+        "/v1/v2/jobs/{job_id}/repair-proposals/{proposal_id}/lifecycle",
+        include_in_schema=False,
+        operation_id="get_v2_job_repair_lifecycle_alias",
+    )
+    @app.get("/v1/v2/migration-jobs/{job_id}/repair-proposals/{proposal_id}/lifecycle")
+    def get_v2_repair_lifecycle(job_id: str, proposal_id: str) -> dict[str, Any]:
+        _run_id, trace_root = _resolve_v2_job_trace_root(job_id)
+        service = V2RepairLifecycleProjectionService()
+        projection = service.get_projection(
+            job_id=job_id,
+            trace_root=trace_root,
+            proposal_id=proposal_id,
+        )
+        if projection is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "REPAIR_PROPOSAL_NOT_FOUND",
+                f"Governed repair proposal {proposal_id!r} not found for job {job_id!r}.",
+            )
+        return redact_public_data(
+            {
+                "job_id": job_id,
+                "repair_lifecycle": projection,
+                "read_only": True,
             }
         )
 
