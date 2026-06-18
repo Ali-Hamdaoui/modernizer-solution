@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import sqlite3
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -188,6 +189,7 @@ from migration_factory.control_tower.application.v2_gate_assistant import (
 )
 from migration_factory.control_tower.application.v2_orchestrator_runner import (
     V2OrchestratorRunner,
+    V2OrchestratorStart,
     _bounded,
 )
 from migration_factory.control_tower.application.v2_failure_diagnosis import (
@@ -197,7 +199,10 @@ from migration_factory.control_tower.application.v2_phase_gate_service import (
     AvailableAction,
     V2PhaseGateService,
 )
-from migration_factory.control_tower.application.redaction import redact_public_value
+from migration_factory.control_tower.application.redaction import (
+    redact_absolute_paths,
+    redact_public_value,
+)
 from migration_factory.control_tower.adapters.fastapi.security import (
     MUTATION_METHODS,
     ActorProvider,
@@ -1907,6 +1912,8 @@ def create_app(
         Validates the expected checksum against the stored card.
         On success, queues a resume command. LLM cannot approve.
         """
+        launch_result: V2OrchestratorStart | None = None
+        launch_status: str | None = None
         with unit_of_work_factory() as uow:
             _require_v2_job(uow, job_id)
             card = uow.v2_approvals.get_card(card_id)
@@ -1930,26 +1937,54 @@ def create_app(
                     run_dir=run_dir,
                 )
                 is_new_approve = card_before is None or card_before.status != "approved"
+                if not is_new_approve and resume.resume_id:
+                    launch_status = _resume_launch_state_from_events(
+                        uow,
+                        job_id=job_id,
+                        resume_id=resume.resume_id,
+                    )
             except ValueError as exc:
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,
                     "APPROVAL_FAILED",
                     str(exc),
                 ) from exc
-            if is_new_approve and resume.resume_id:
+        if is_new_approve and resume.resume_id:
+            launch_result = _start_resume_command(
+                app,
+                job_id=job_id,
+                resume_id=resume.resume_id,
+                stage_index=resume.stage_index,
+            )
+            with unit_of_work_factory() as event_uow:
                 _append_v2_event(
-                    uow,
+                    event_uow,
                     job_id=job_id,
                     stage=resume.stage_index,
                     event_type="approval_resume_queued",
-                    status="queued",
-                    message="Approval accepted; backend-owned resume command queued.",
-                    payload={"card_id": card_id, "resume_id": resume.resume_id},
+                    status="retrying" if launch_result.status == "retrying" else "queued",
+                    message=(
+                        "Approval accepted; backend-owned resume command is retrying."
+                        if launch_result.status == "retrying"
+                        else "Approval accepted; backend-owned resume command queued."
+                    ),
+                    payload={
+                        "card_id": card_id,
+                        "resume_id": resume.resume_id,
+                        "resume_status": launch_result.status,
+                    },
                 )
-        if is_new_approve and resume.resume_id:
-            app.state.v2_orchestrator_runner.start_resume(job_id=job_id, resume_id=resume.resume_id)
         asyncio.run(app.state.public_event_notifier.notify())
-        return service.resume_to_dict(resume)
+        response = service.resume_to_dict(resume)
+        response["launch_status"] = (
+            launch_result.status
+            if launch_result is not None
+            else launch_status
+            if launch_status is not None
+            else ("queued" if resume.resume_id else "")
+        )
+        response["launch_message"] = launch_result.message if launch_result is not None else ""
+        return response
 
     @app.post("/v1/v2/jobs/{job_id}/approvals/{card_id}/reject")
     def reject_decision_card(
@@ -5095,19 +5130,14 @@ def _handle_gate_aware_ask(
                     open_gate.stage_index,
                     pending_card.interrupt_id,
                 )
+                card_before = approval_service.get_card(pending_card.card_id)
+                is_new_approve = card_before is None or card_before.status != "approved"
                 resume = approval_service.approve(
                     card_id=pending_card.card_id,
                     expected_checksum=context.checksum,
                     job_id=job_id,
                     run_dir=run_dir,
                 )
-                if resume.resume_id:
-                    runner = getattr(app.state, "v2_orchestrator_runner", None)
-                    if runner is not None:
-                        runner.start_resume(
-                            job_id=job_id,
-                            resume_id=resume.resume_id,
-                        )
 
                 action_service = V2GateActionService(
                     uow.phase_gates,
@@ -5123,10 +5153,63 @@ def _handle_gate_aware_ask(
                     expected_gate_checksum=context.checksum,
                 )
 
+                existing_resume_status = (
+                    _resume_launch_state_from_events(
+                        uow,
+                        job_id=job_id,
+                        resume_id=resume.resume_id,
+                    )
+                    if resume.resume_id
+                    else None
+                )
+                if hasattr(uow, "connection"):
+                    uow.connection.commit()
+
+                resume_launch: V2OrchestratorStart | None = None
+                if is_new_approve and resume.resume_id:
+                    resume_launch = _start_resume_command(
+                        app,
+                        job_id=job_id,
+                        resume_id=resume.resume_id,
+                        stage_index=resume.stage_index,
+                    )
+                    with unit_of_work_factory() as event_uow:
+                        _append_v2_event(
+                            event_uow,
+                            job_id=job_id,
+                            stage=resume.stage_index,
+                            event_type="approval_resume_queued",
+                            status="retrying" if resume_launch.status == "retrying" else "queued",
+                            message=(
+                                "Approval accepted; backend-owned resume command is retrying."
+                                if resume_launch.status == "retrying"
+                                else "Approval accepted; backend-owned resume command queued."
+                            ),
+                            payload={
+                                "card_id": pending_card.card_id,
+                                "resume_id": resume.resume_id,
+                                "resume_status": resume_launch.status,
+                            },
+                        )
+
+                resume_status = resume_launch.status if resume_launch is not None else existing_resume_status
+                if resume_status is None and resume.resume_id:
+                    resume_status = "queued"
+
+                assistant_content = "Checksum confirmed. Approval review resolved and resume queued."
+                if resume_status == "retrying":
+                    assistant_content = (
+                        "Checksum confirmed. Approval review resolved, but the resume launch is retrying."
+                    )
+                elif existing_resume_status in {"queued", "started"} and not is_new_approve:
+                    assistant_content = (
+                        "Checksum confirmed. Approval review is already resolved and the resume is already queued or running."
+                    )
+
                 assistant_msg = service.add_message(
                     job_id=job_id,
                     role="assistant",
-                    content="Checksum confirmed. Approval review resolved and resume queued.",
+                    content=assistant_content,
                     correlation_id=user_msg.message_id,
                 )
                 return {
@@ -5142,6 +5225,8 @@ def _handle_gate_aware_ask(
                         "decision_id": gate_result.decision_id,
                         "reason": gate_result.reason,
                         "resume_id": resume.resume_id,
+                        "resume_status": resume_status,
+                        "resume_launch_message": resume_launch.message if resume_launch is not None else "",
                     },
                     "guardrails": {
                         "read_only": False,
@@ -5254,14 +5339,16 @@ def _handle_gate_aware_ask(
                 }
 
             if _question_looks_like_approval_review_explanation(question):
+                explanation_text, explanation_model = _format_approval_review_explanation(
+                    app=app,
+                    context=context,
+                    evidence=evidence_pack,
+                    question=question,
+                )
                 assistant_msg = service.add_message(
                     job_id=job_id,
                     role="assistant",
-                    content=_format_approval_review_explanation(
-                        context=context,
-                        evidence=evidence_pack,
-                        question=question,
-                    ),
+                    content=explanation_text,
                     correlation_id=user_msg.message_id,
                 )
                 return {
@@ -5271,6 +5358,7 @@ def _handle_gate_aware_ask(
                     "gate_aware": True,
                     "intent": "status",
                     "executed": False,
+                    "model": explanation_model,
                     "available_actions": _approval_review_available_actions(),
                     "guardrails": {
                         "read_only": True,
@@ -5885,10 +5973,11 @@ def _format_approval_review_preview(context: GateContext, *, action_type: str = 
 
 def _format_approval_review_explanation(
     *,
+    app: FastAPI,
     context: GateContext,
     evidence: Any | None,
     question: str,
-) -> str:
+) -> tuple[str, dict[str, Any] | None]:
     lines: list[str] = []
     lines.append("**Pre-transform review**")
     lines.append("")
@@ -5898,14 +5987,15 @@ def _format_approval_review_explanation(
     lines.append("")
     lines.append(f"Gate checksum: `{context.checksum}`")
 
+    model_payload: dict[str, Any] | None = None
     if evidence is not None:
         happened_lines = _approval_review_evidence_lines(
             evidence,
             topics=(
                 "analysis_report",
+                "analysis_summary",
                 "config_inventory",
                 "dependency_graph",
-                "test_inventory",
                 "assessment_report",
                 "assessment_summary",
             ),
@@ -5949,13 +6039,196 @@ def _format_approval_review_explanation(
             for ref in mismatches:
                 lines.append(f"- {ref}")
 
+        compact_pack = _approval_review_llm_evidence_pack(
+            context=context,
+            evidence=evidence,
+            question=question,
+        )
+        prompt = _approval_review_llm_prompt(
+            context=context,
+            question=question,
+            compact_pack=compact_pack,
+        )
+        fallback_text = "\n".join(lines)
+        try:
+            model_result = app.state.v2_assistant_model_client.answer(
+                prompt=prompt,
+                fallback=fallback_text,
+            )
+        except Exception as exc:
+            safe_reason = redact_model_summary(str(exc))
+            model_result = V2AssistantModelResult(
+                content=fallback_text,
+                source="deterministic",
+                model_status="fallback",
+                provider="deterministic",
+                role="assistant",
+                success=False,
+                redacted_summary=safe_reason,
+                failure_reason=safe_reason,
+            )
+        model_payload = _approval_review_model_payload(model_result)
+        return model_result.content, model_payload
+
     lines.append("")
     lines.append(
         "Ask what happened, what will change, or request a revision before approving."
     )
     if _question_looks_like_approval_review_revision_request(question):
         lines.append("A revision request will be recorded and transform will stay blocked.")
-    return "\n".join(lines)
+    return "\n".join(lines), model_payload
+
+
+def _approval_review_llm_evidence_pack(
+    *,
+    context: GateContext,
+    evidence: Any,
+    question: str,
+) -> dict[str, Any]:
+    pack = evidence_pack_to_dict(evidence)
+    artifact_priority = (
+        "analysis_report",
+        "analysis_summary",
+        "config_inventory",
+        "dependency_graph",
+        "migration_plan",
+        "migration_units",
+        "rewrite_preview",
+        "rewrite_dry_run",
+        "rewrite_impact_summary",
+        "target_dependency_plan",
+        "assessment_report",
+        "assessment_summary",
+        "approval_request",
+        "plan_validation_report",
+    )
+    selected_artifacts: list[dict[str, Any]] = []
+    for artifact in pack.get("artifacts", []):
+        kind = str(artifact.get("kind", "")).lower()
+        if any(token in kind for token in artifact_priority):
+            selected_artifacts.append(artifact)
+    if not selected_artifacts:
+        selected_artifacts = list(pack.get("artifacts", []))[:6]
+    return {
+        "gate": {
+            "gate_id": context.gate_id,
+            "gate_phase": context.gate_phase,
+            "stage_index": context.stage_index,
+            "gate_status": context.gate_status,
+            "gate_checksum": context.checksum,
+        },
+        "question": redact_absolute_paths(redact_model_summary(question)),
+        "focus": {
+            "what_analysis_found": "analysis_report, analysis_summary, config_inventory, dependency_graph",
+            "what_planning_proposes": "migration_plan, migration_units, rewrite_preview, rewrite_dry_run, target_dependency_plan",
+            "what_assessment_says": "assessment_report, assessment_summary",
+            "what_is_blocked": "approval_review blocks transform/build/test until exact checksum confirmation",
+            "available_user_decisions": "explain, request_revision, confirm_checksum",
+        },
+        "evidence": {
+            "summary": redact_absolute_paths(redact_model_summary(str(pack.get("summary", "")))),
+            "artifacts": selected_artifacts,
+            "missing_refs": [redact_absolute_paths(redact_model_summary(str(ref))) for ref in pack.get("missing_refs", [])],
+            "checksum_mismatches": [redact_absolute_paths(redact_model_summary(str(ref))) for ref in pack.get("checksum_mismatches", [])],
+            "failure_message": redact_absolute_paths(redact_model_summary(str(pack.get("failure_message") or ""))),
+        },
+    }
+
+
+def _approval_review_llm_prompt(
+    *,
+    context: GateContext,
+    question: str,
+    compact_pack: dict[str, Any],
+) -> str:
+    safe_pack = redact_absolute_paths(
+        redact_model_summary(json.dumps(compact_pack, sort_keys=True, separators=(",", ":")))
+    )
+    return "\n".join(
+        (
+            "You are explaining an approval_review gate. Advisory only.",
+            "Do not approve, reject, execute, or invent artifact facts.",
+            "Use only the provided evidence pack and stay checksum-bound.",
+            "Answer with these sections: what analysis found, what planning proposes, what assessment/risk says, what will change, what is still blocked, available user decisions.",
+            "",
+            f"Gate checksum: {context.checksum}",
+            f"Question: {redact_absolute_paths(redact_model_summary(question))}",
+            "",
+            "Evidence pack:",
+            safe_pack,
+        )
+    )
+
+
+def _approval_review_model_payload(model_result: V2AssistantModelResult) -> dict[str, Any]:
+    source = "llm" if model_result.success else "deterministic"
+    status = "live_ok" if model_result.success else "fallback"
+    provider = model_result.provider if model_result.success else "deterministic"
+    return {
+        "status": status,
+        "source": source,
+        "provider": provider,
+        "role": model_result.role,
+        "failure_reason": model_result.failure_reason,
+    }
+
+
+def _resume_launch_state_from_events(uow: Any, *, job_id: str, resume_id: str) -> str | None:
+    events = uow.v2_events.list_by_job(job_id)
+    for event in reversed(events):
+        if event.type not in {"approval_resume_queued", "resume_started"}:
+            continue
+        try:
+            payload = json.loads(event.payload_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        event_resume_id = str(payload.get("resume_id") or payload.get("command_id") or "").strip()
+        if event_resume_id != resume_id:
+            continue
+        if event.type == "resume_started":
+            return "started"
+        launch_status = str(payload.get("resume_status") or event.status or "queued").strip()
+        return launch_status or "queued"
+    return None
+
+
+def _start_resume_command(
+    app: FastAPI,
+    *,
+    job_id: str,
+    resume_id: str,
+    stage_index: int,
+) -> V2OrchestratorStart:
+    runner = getattr(app.state, "v2_orchestrator_runner", None)
+    if runner is None:
+        return V2OrchestratorStart(
+            command_id=resume_id,
+            job_id=job_id,
+            stage_index=stage_index,
+            pid=None,
+            status="queued",
+            message="runner unavailable",
+        )
+    try:
+        return runner.start_resume(job_id=job_id, resume_id=resume_id)
+    except sqlite3.OperationalError as exc:
+        if _is_sqlite_locked_error(exc):
+            return V2OrchestratorStart(
+                command_id=resume_id,
+                job_id=job_id,
+                stage_index=stage_index,
+                pid=None,
+                status="retrying",
+                message=str(exc),
+            )
+        raise
+
+
+def _is_sqlite_locked_error(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    lowered = str(exc).lower()
+    return "database is locked" in lowered or "database table is locked" in lowered or "locked" in lowered
 
 
 def _approval_review_revision_payload(

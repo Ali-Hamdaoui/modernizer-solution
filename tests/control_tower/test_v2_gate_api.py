@@ -34,6 +34,10 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository i
     SqliteV2SetupRepository,
     V2PreflightResultRecord,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
+    SqliteV2CommandRepository,
+    V2StageCommandRecord,
+)
 from tests.control_tower.transition_helpers import seed_job
 
 
@@ -238,9 +242,69 @@ def _create_gate(conn: sqlite3.Connection, job_id: str, phase: str = "approval_r
                 source_artifact_checksum="sha256:gate",
                 source_artifact_refs=("analysis:1", "plan:1"),
             )
-        )
+    )
     assert result.status == "created"
     return result.gate_id
+
+
+def _seed_approval_card(
+    conn: sqlite3.Connection,
+    *,
+    job_id: str,
+    checksum: str,
+    stage_index: int = 2,
+) -> str:
+    approval_repo = SqliteV2ApprovalRepository(conn)
+    card_id = f"approval-card-{stage_index}"
+    approval_repo.save_card(
+        V2ApprovalDecisionRecord(
+            card_id=card_id,
+            job_id=job_id,
+            interrupt_id="run-1",
+            request_checksum=checksum,
+            stage_index=stage_index,
+            summary="Pre-transform review",
+            status="pending",
+            created_at=utc_now_text(),
+        )
+    )
+    return card_id
+
+
+def _seed_approval_resume_command(
+    conn: sqlite3.Connection,
+    *,
+    job_id: str,
+    stage_index: int = 2,
+    run_id: str = "run-1",
+) -> str:
+    command_id = f"command-{stage_index}"
+    now = utc_now_text()
+    record = V2StageCommandRecord(
+        command_id=command_id,
+        job_id=job_id,
+        stage_index=stage_index,
+        manifest_checksum="manifest-checksum",
+        argv_json=json.dumps(
+            [
+                "python",
+                "-m",
+                "migration_factory.orchestrator.runner",
+                "--run-id",
+                run_id,
+                "--modernized",
+                "C:/work/modernized",
+            ],
+            separators=(",", ":"),
+        ),
+        env_json="{}",
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result_json=None,
+    )
+    SqliteV2CommandRepository(conn).save(record)
+    return command_id
 
 
 def test_v2_gate_list_open_detail_and_legacy_proof_route(tmp_path: Path) -> None:
@@ -421,6 +485,51 @@ def test_v2_gate_action_rejects_unsafe_fields_and_unsupported_action(tmp_path: P
         headers=_mutation_headers(),
     )
     assert unsupported_response.status_code == 422, unsupported_response.text
+
+
+def test_v2_approval_route_retries_when_resume_launch_is_locked(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    _seed_approval_resume_command(conn, job_id=job_id, stage_index=2, run_id="run-1")
+    gate_id = _create_gate(conn, job_id)
+    checksum = client.get(f"/v1/v2/jobs/{job_id}/gates/{gate_id}").json()["checksum"]
+    card_id = _seed_approval_card(conn, job_id=job_id, checksum=checksum)
+
+    class _LockedRunner:
+        def __init__(self) -> None:
+            self.started: list[str] = []
+
+        def start_resume(self, *, job_id: str, resume_id: str):
+            self.started.append(resume_id)
+            raise sqlite3.OperationalError("database is locked")
+
+        def start(self, *, job_id: str, command_id: str):
+            raise AssertionError("transform commands must not be launched here")
+
+    runner = _LockedRunner()
+    client.app.state.v2_orchestrator_runner = runner
+
+    response = client.post(
+        f"/v1/v2/jobs/{job_id}/approvals/{card_id}/approve",
+        json={"expected_checksum": checksum},
+        headers=_mutation_headers(),
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["launch_status"] == "retrying"
+    assert runner.started == [data["resume_id"]]
+
+    repeat = client.post(
+        f"/v1/v2/jobs/{job_id}/approvals/{card_id}/approve",
+        json={"expected_checksum": checksum},
+        headers=_mutation_headers(),
+    )
+    assert repeat.status_code == 200, repeat.text
+    repeat_data = repeat.json()
+    assert repeat_data["launch_status"] == "retrying"
+    assert runner.started == [data["resume_id"]]
 
 
 class TestV2JobPolicyPersistence:

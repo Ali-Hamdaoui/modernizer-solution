@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import threading
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -106,6 +107,7 @@ class V2OrchestratorStart:
     stage_index: int
     pid: int | None
     status: str
+    message: str = ""
 
 
 class V2OrchestratorRunner:
@@ -170,16 +172,28 @@ class V2OrchestratorRunner:
         )
 
     def start_resume(self, *, job_id: str, resume_id: str) -> V2OrchestratorStart:
-        with self._unit_of_work_factory() as uow:
-            resume = uow.v2_approvals.get_resume(resume_id)
-            if resume is None:
-                raise ValueError(f"V2 resume command {resume_id!r} not found")
-            if resume.job_id != job_id:
-                raise ValueError(f"V2 resume command {resume_id!r} does not belong to job {job_id!r}")
+        try:
+            with self._unit_of_work_factory() as uow:
+                resume = uow.v2_approvals.get_resume(resume_id)
+                if resume is None:
+                    raise ValueError(f"V2 resume command {resume_id!r} not found")
+                if resume.job_id != job_id:
+                    raise ValueError(f"V2 resume command {resume_id!r} does not belong to job {job_id!r}")
 
-            argv = _load_json_list(resume.command_json)
-            stage_index = resume.stage_index
-            env_manifest = _load_env_manifest_for_stage(uow, job_id, stage_index)
+                argv = _load_json_list(resume.command_json)
+                stage_index = resume.stage_index
+                env_manifest = _load_env_manifest_for_stage(uow, job_id, stage_index)
+        except sqlite3.OperationalError as exc:
+            if _is_sqlite_locked_error(exc):
+                return V2OrchestratorStart(
+                    command_id=resume_id,
+                    job_id=job_id,
+                    stage_index=-1,
+                    pid=None,
+                    status="retrying",
+                    message=str(exc),
+                )
+            raise
 
         thread = threading.Thread(
             target=self._run_process,
@@ -202,6 +216,7 @@ class V2OrchestratorRunner:
             stage_index=stage_index,
             pid=None,
             status="started",
+            message="",
         )
 
     def _run_process(
@@ -1956,6 +1971,13 @@ def _bounded(value: str) -> str:
     if len(redacted) <= _MAX_TEXT:
         return redacted
     return redacted[:_MAX_TEXT] + "...[truncated]"
+
+
+def _is_sqlite_locked_error(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    lowered = str(exc).lower()
+    return "database is locked" in lowered or "database table is locked" in lowered or "locked" in lowered
 
 
 def _result_has_warnings(result: dict[str, Any] | None) -> bool:

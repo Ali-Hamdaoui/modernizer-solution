@@ -14,11 +14,17 @@ from migration_factory.control_tower.application.v2_phase_gate_service import (
     CreateGateRequest,
     V2PhaseGateService,
 )
+from migration_factory.control_tower.application.v2_orchestrator_runner import (
+    V2OrchestratorStart,
+)
 from migration_factory.control_tower.application.v2_setup_service import (
     CreateSetupRequest,
     V2SetupService,
 )
 from migration_factory.control_tower.domain.checksums import utc_now_text
+from migration_factory.control_tower.application.v2_assistant_model_client import (
+    V2AssistantModelResult,
+)
 from migration_factory.control_tower.infrastructure.sqlite.migrations import (
     apply_pending_migrations,
 )
@@ -291,6 +297,28 @@ def _seed_approval_card_for_gate(
     return checksum
 
 
+class _RecordingApprovalLlmClient:
+    def __init__(self, *, result: V2AssistantModelResult | None = None, raise_error: Exception | None = None) -> None:
+        self.result = result or V2AssistantModelResult(
+            content="LLM approval explanation",
+            source="azure_openai",
+            model_status="live_ok",
+            provider="azure_openai",
+            role="assistant",
+            success=True,
+            redacted_summary="LLM approval explanation generated.",
+            failure_reason="",
+        )
+        self.raise_error = raise_error
+        self.prompts: list[str] = []
+
+    def answer(self, *, prompt: str, fallback: str, conversation_history: list[dict[str, str]] | None = None) -> V2AssistantModelResult:
+        self.prompts.append(prompt)
+        if self.raise_error is not None:
+            raise self.raise_error
+        return self.result
+
+
 def _create_job(client: TestClient, setup_id: str) -> str:
     resp = client.post(
         "/v1/v2/migration-jobs",
@@ -526,6 +554,121 @@ def test_ask_approval_review_what_will_change_uses_planning_evidence(tmp_path: P
     assert "no evidence" not in content.lower()
 
 
+def test_ask_approval_review_uses_llm_when_available(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    output_root = tmp_path / "out"
+    setup_id = _ready_setup_with_output_root(conn, str(output_root))
+    _seed_approval_review_artifacts(output_root)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    _seed_stage1_command(conn, job_id)
+    _create_gate_with_refs(
+        conn,
+        job_id,
+        refs=(
+            "analysis_report.json",
+            "analysis_summary.md",
+            "config_inventory.json",
+            "dependency_graph.json",
+            "test_inventory.json",
+            "assessment_report.json",
+            "assessment_summary.md",
+            "migration_plan.yaml",
+            "migration_units.yaml",
+            "plan_summary.md",
+            "plan_validation_report.json",
+            "approval_request.json",
+            "rewrite_preview.json",
+            "rewrite_dry_run.patch",
+            "rewrite_impact_summary.json",
+            "target_dependency_plan.json",
+        ),
+        stage_index=1,
+    )
+
+    llm_client = _RecordingApprovalLlmClient(
+        result=V2AssistantModelResult(
+            content="LLM approval explanation: analysis is complete and the plan is ready.",
+            source="azure_openai",
+            model_status="live_ok",
+            provider="azure_openai",
+            role="assistant",
+            success=True,
+            redacted_summary="LLM approval explanation generated.",
+            failure_reason="",
+        )
+    )
+    client.app.state.v2_assistant_model_client = llm_client
+
+    resp = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": "What happened?"},
+        headers=_mutation_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    content = body.get("assistant_message", {}).get("content", "")
+    assert content == "LLM approval explanation: analysis is complete and the plan is ready."
+    assert body.get("model", {}).get("source") == "llm"
+    assert body.get("model", {}).get("status") == "live_ok"
+    assert llm_client.prompts, "model prompt should be captured"
+    prompt = llm_client.prompts[0]
+    assert "C:\\Users\\abdelilah.mortaki\\Desktop\\modernizer-solution" not in prompt
+    assert "[redacted-windows-path]" in prompt
+    assert "analysis_report.json" in prompt
+    assert "migration_plan.yaml" in prompt
+
+
+def test_ask_approval_review_llm_failure_falls_back_to_deterministic(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    output_root = tmp_path / "out"
+    setup_id = _ready_setup_with_output_root(conn, str(output_root))
+    _seed_approval_review_artifacts(output_root)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    _seed_stage1_command(conn, job_id)
+    _create_gate_with_refs(
+        conn,
+        job_id,
+        refs=(
+            "analysis_report.json",
+            "analysis_summary.md",
+            "config_inventory.json",
+            "dependency_graph.json",
+            "test_inventory.json",
+            "assessment_report.json",
+            "assessment_summary.md",
+            "migration_plan.yaml",
+            "migration_units.yaml",
+            "plan_summary.md",
+            "plan_validation_report.json",
+            "approval_request.json",
+            "rewrite_preview.json",
+            "rewrite_dry_run.patch",
+            "rewrite_impact_summary.json",
+            "target_dependency_plan.json",
+        ),
+        stage_index=1,
+    )
+
+    llm_client = _RecordingApprovalLlmClient(raise_error=RuntimeError("llm unavailable"))
+    client.app.state.v2_assistant_model_client = llm_client
+
+    resp = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": "What happened?"},
+        headers=_mutation_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    content = body.get("assistant_message", {}).get("content", "")
+    assert body.get("model", {}).get("source") == "deterministic"
+    assert body.get("model", {}).get("status") == "fallback"
+    assert "Pre-transform review" in content
+    assert "Analysis, planning, and assessment are complete." in content
+    assert llm_client.prompts, "deterministic fallback still sanitizes the prompt first"
+
+
 def test_ask_state_changing_intent_returns_preview(tmp_path: Path) -> None:
     """State-changing intent → action preview with pending_confirmation."""
     client, conn = _api_client(tmp_path)
@@ -634,6 +777,14 @@ def test_ask_preview_then_confirm(tmp_path: Path) -> None:
 
         def start_resume(self, *, job_id: str, resume_id: str):
             self.started.append(resume_id)
+            return V2OrchestratorStart(
+                command_id=resume_id,
+                job_id=job_id,
+                stage_index=1,
+                pid=None,
+                status="started",
+                message="started",
+            )
 
         def start(self, *, job_id: str, command_id: str):
             self.started.append(command_id)
@@ -664,7 +815,19 @@ def test_ask_preview_then_confirm(tmp_path: Path) -> None:
     assert data2.get("executed") is True
     er = data2.get("execution_result", {})
     assert er.get("success") is True
+    assert er.get("resume_status") in {"queued", "started"}
     assert runner.started, "resume must be queued"
+
+    resp3 = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": f"confirm checksum {checksum}"},
+        headers=_mutation_headers(),
+    )
+    assert resp3.status_code == 200, resp3.text
+    data3 = resp3.json()
+    assert data3.get("executed") is True
+    assert data3.get("execution_result", {}).get("resume_status") == er.get("resume_status")
+    assert len(runner.started) == 1, "repeated confirm must not enqueue a duplicate resume"
 
 
 def test_ask_confirm_checksum_rejects_wrong_checksum(tmp_path: Path) -> None:
@@ -699,6 +862,63 @@ def test_ask_confirm_checksum_rejects_wrong_checksum(tmp_path: Path) -> None:
     assert body.get("gate_aware") is True
     assert body.get("executed") is False
     assert "Checksum mismatch" in body.get("assistant_message", {}).get("content", "")
+
+
+def test_ask_confirm_checksum_retry_response_on_locked_resume_launch(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    _seed_stage1_command(conn, job_id)
+    gate_id = _create_gate(conn, job_id, stage_index=1)
+
+    gate_repo = SqlitePhaseGateRepository(conn)
+    gate = gate_repo.get(gate_id)
+    assert gate is not None
+    refs = json.loads(gate.source_artifact_refs_json)
+    checksum = gate_checksum(
+        gate_id=gate.gate_id,
+        job_id=gate.job_id,
+        gate_phase=gate.gate_phase,
+        stage_index=gate.stage_index,
+        source_artifact_checksum=gate.source_artifact_checksum,
+        source_artifact_refs=refs,
+    )
+
+    approval_repo = SqliteV2ApprovalRepository(conn)
+    approval_repo.save_card(
+        V2ApprovalDecisionRecord(
+            card_id="approval-card-lock",
+            job_id=job_id,
+            interrupt_id="run-1",
+            request_checksum=checksum,
+            stage_index=1,
+            summary="Pre-transform review",
+            status="pending",
+            created_at=utc_now_text(),
+        )
+    )
+
+    class _LockedRunner:
+        def start_resume(self, *, job_id: str, resume_id: str):
+            raise sqlite3.OperationalError("database is locked")
+
+        def start(self, *, job_id: str, command_id: str):
+            raise AssertionError("Stage 2 must not start during approval confirmation")
+
+    client.app.state.v2_orchestrator_runner = _LockedRunner()
+
+    resp = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": f"confirm checksum {checksum}"},
+        headers=_mutation_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body.get("executed") is True
+    execution_result = body.get("execution_result", {})
+    assert execution_result.get("resume_status") == "retrying"
+    assert "retrying" in body.get("assistant_message", {}).get("content", "").lower()
 
 
 def test_ask_revision_request_records_blocked_state(tmp_path: Path) -> None:
