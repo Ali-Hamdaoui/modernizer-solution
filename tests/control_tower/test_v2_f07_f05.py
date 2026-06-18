@@ -142,6 +142,16 @@ def _fake_model_client(*, reviewer_decision: str = "accept") -> Any:
             require_schema: bool = False,
         ) -> Any:
             self.roles.append(role.value)
+            if role.value == "proposer":
+                return _FakeResult(
+                    content=_json.dumps({
+                        "failure_hypothesis": "Revised hypothesis from model",
+                        "patch_summary": "Revised patch from model",
+                        "affected_paths": ["pom.xml"],
+                        "validation_plan": "Run mvn test to verify",
+                    }),
+                    role=role.value,
+                )
             if role.value == "reviewer":
                 return _FakeResult(
                     content=_json.dumps({
@@ -1385,13 +1395,38 @@ def _fake_valid_revision_model_client() -> Any:
         failure_reason: str = ""
 
     class _FakeClient:
+        def __init__(self) -> None:
+            self.roles: list[str] = []
+
         def answer(self, *, prompt: str, fallback: str, conversation_history=None) -> Any:
+            self.roles.append("assistant")
             return _FakeResult(content=_json.dumps({
                 "failure_hypothesis": "Revised hypothesis from model",
                 "patch_summary": "Revised patch from model",
                 "affected_paths": ["pom.xml"],
                 "validation_plan": "Run mvn test",
             }))
+
+        def answer_with_role(
+            self,
+            *,
+            role,
+            prompt: str,
+            fallback: str,
+            conversation_history=None,
+            output_schema_name=None,
+            require_schema: bool = False,
+        ) -> Any:
+            self.roles.append(role.value)
+            return _FakeResult(
+                content=_json.dumps({
+                    "failure_hypothesis": "Revised hypothesis from model",
+                    "patch_summary": "Revised patch from model",
+                    "affected_paths": ["pom.xml"],
+                    "validation_plan": "Run mvn test",
+                }),
+                role=role.value,
+            )
 
     return _FakeClient()
 
@@ -1698,6 +1733,7 @@ class TestF05RevisionModelFailClosed:
         assert "revised_proposal" in body
         assert body["revised_proposal"]["status"] == "draft"
         assert body["revised_proposal"]["source_proposal_id"] == proposal_id
+        assert fake_client.roles == ["proposer"]
         # Proposal count increased by 1
         assert _count_proposals(conn) == proposals_before + 1
 

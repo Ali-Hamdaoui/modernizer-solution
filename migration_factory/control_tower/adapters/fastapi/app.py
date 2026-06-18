@@ -2474,15 +2474,26 @@ def create_app(
                 )
 
                 # Call the model — keep fallback for answer() but check success
-                model_result = app.state.v2_assistant_model_client.answer(
-                    prompt=revision_prompt,
-                    fallback=json.dumps({
-                        "failure_hypothesis": source_hypothesis,
-                        "patch_summary": source_patch,
-                        "affected_paths": list(source_paths),
-                        "validation_plan": "Re-validate after revision",
-                    }),
-                )
+                fallback_revision = json.dumps({
+                    "failure_hypothesis": source_hypothesis,
+                    "patch_summary": source_patch,
+                    "affected_paths": list(source_paths),
+                    "validation_plan": "Re-validate after revision",
+                })
+                revision_client = app.state.v2_assistant_model_client
+                if hasattr(revision_client, "answer_with_role"):
+                    model_result = revision_client.answer_with_role(
+                        role=V2ModelRole.PROPOSER,
+                        prompt=revision_prompt,
+                        fallback=fallback_revision,
+                        output_schema_name="RepairProposal",
+                        require_schema=True,
+                    )
+                else:
+                    model_result = revision_client.answer(
+                        prompt=revision_prompt,
+                        fallback=fallback_revision,
+                    )
 
                 # F05: Fail closed — no model output = no revised proposal
                 if not model_result.success:
