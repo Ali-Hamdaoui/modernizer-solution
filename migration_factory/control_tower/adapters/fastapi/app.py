@@ -4771,6 +4771,12 @@ _IMPORTANT_EVENT_TYPES = {
     "result_contract_failed",
 }
 
+_AI_SUPERVISION_EVENT_TYPES = {
+    "model_invocation_started",
+    "model_invocation_completed",
+    "model_invocation_failed",
+}
+
 
 def _active_stage_index(events: tuple[Any, ...]) -> int:
     """Determine the current/active stage from events."""
@@ -5090,8 +5096,13 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
     # Collect failed events (excluding repair events which are attached to root failures)
     failed_events = [
         event for event in events
-        if (event.status == "failed" or event.type.endswith("_failed") or event.type == "result_contract_failed")
+        if (
+            event.status == "failed"
+            or event.type.endswith("_failed")
+            or event.type == "result_contract_failed"
+        )
         and event.type not in _REPAIR_EVENT_TYPES
+        and event.type not in _AI_SUPERVISION_EVENT_TYPES
     ]
     repair_events_typed = [
         event for event in events
@@ -5602,6 +5613,8 @@ def _stage_status_from_event(event_type: str, event_status: str) -> str:
     This is an *input* to the chronological reducer; the label alone does
     NOT determine the final stage status (see ``_reduce_stage_status``).
     """
+    if event_type in _AI_SUPERVISION_EVENT_TYPES:
+        return "pending"
     if event_type == "stage_failed" or event_status == "failed":
         return "failed"
     if event_type == "stage_completed":

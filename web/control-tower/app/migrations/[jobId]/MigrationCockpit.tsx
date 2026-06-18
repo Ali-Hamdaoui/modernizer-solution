@@ -657,6 +657,11 @@ function reduceAllStageStatuses(stages: Stage[], allEvents: V2JobEvent[]): Stage
  *  This is an *input* to the chronological reducer; the label alone does
  *  NOT determine the final stage status (see reduceStageStatus). */
 export function stageStatusFromEvent(event: V2JobEvent): string {
+  if ([
+    "model_invocation_started",
+    "model_invocation_completed",
+    "model_invocation_failed",
+  ].includes(event.type)) return "pending";
   if (event.type === "stage_failed" || event.status === "failed") return "failed";
   if (event.type === "stage_completed") return "completed";
   if (["stage_started", "command_started", "sandbox_transform_started",

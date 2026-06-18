@@ -784,6 +784,32 @@ def test_stage_completed_after_stage_completed(tmp_path: Path) -> None:
     assert stages[1] == "completed", f"Expected completed, got {stages[1]}"
 
 
+def test_stage3_completion_is_not_regressed_by_model_invocation_failed(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job_only(client, setup_id, conn)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(job_id=job_id, stage=3, event_type="stage_started", status="running", message="stage 3 started", payload={})
+        uow.v2_events.save(job_id=job_id, stage=3, event_type="build_completed", status="completed", message="build passed", payload={"build_status": "BUILD_PASSED_IN_SANDBOX"})
+        uow.v2_events.save(job_id=job_id, stage=3, event_type="test_completed", status="completed", message="tests warnings", payload={"test_status": "PASS_WITH_WARNINGS"})
+        uow.v2_events.save(job_id=job_id, stage=3, event_type="stage_completed", status="completed", message="stage 3 completed", payload={"final_status": "TRANSFORM_APPLIED_IN_SANDBOX", "final_proof_level": "compiled"})
+        uow.v2_events.save(job_id=job_id, stage=3, event_type="final_report_completed", status="completed", message="final report completed", payload={})
+        uow.v2_events.save(job_id=job_id, stage=3, event_type="model_invocation_failed", status="failed", message="Azure OpenAI endpoint not configured", payload={"provider": "deterministic", "source": "deterministic", "success": False})
+
+    stages = _stages_status(client, job_id)
+    assert stages[3] == "completed"
+
+    pipeline = client.get(f"/v1/v2/migration-jobs/{job_id}/pipeline").json()
+    final_report = _pipeline_row(client, job_id, "final_report")
+    assert final_report["status"] == "pass"
+    assert pipeline["job_id"] == job_id
+
+    summary = client.get(f"/v1/v2/migration-jobs/{job_id}/failure-summary").json()
+    assert summary["has_failures"] is False
+    assert summary["failures"] == []
+
+
 def test_old_blocked_event_does_not_override_later_transform_started(tmp_path: Path) -> None:
     """An early blocked event must NOT prevent Stage 1 from becoming RUNNING."""
     client, conn = _api_client(tmp_path)

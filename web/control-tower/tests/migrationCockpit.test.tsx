@@ -469,6 +469,17 @@ describe("V2 Migration Cockpit contract", () => {
     expect(actual).toBe("completed");
   });
 
+  it("reduceStageStatus: model invocation failure does not regress completed stage", () => {
+    const events: V2JobEvent[] = [
+      { stage: 3, type: "stage_started", status: "running", sequence: 1 } as V2JobEvent,
+      { stage: 3, type: "stage_completed", status: "completed", sequence: 2 } as V2JobEvent,
+      { stage: 3, type: "final_report_completed", status: "completed", sequence: 3 } as V2JobEvent,
+      { stage: 3, type: "model_invocation_failed", status: "failed", sequence: 4 } as V2JobEvent,
+    ];
+    const actual = reduceStageStatus(events);
+    expect(actual).toBe("completed");
+  });
+
   it("reduceStageStatus: old blocked does not override later running", () => {
     const events: V2JobEvent[] = [
       { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 1 } as V2JobEvent,
