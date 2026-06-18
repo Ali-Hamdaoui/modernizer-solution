@@ -718,7 +718,7 @@ def create_app(
             policy = RunPolicy(**json.loads(run_config.policy_json))
         except Exception:
             return False
-        return policy.stage_continuation_policy != StageContinuationPolicy.AUTO_ON_GREEN
+        return policy.enable_build_repair
 
     def _maybe_create_repair_gate(
         job_id: str,

@@ -84,8 +84,12 @@ def test_create_migration_job_writes_everything_atomically(tmp_path: Path) -> No
             "enabled_gates": list(command.enabled_gates),
             "policy": {
                 "continue_after_warning": False,
+                "enable_build_repair": True,
                 "enable_runtime_gate": False,
                 "enable_endpoint_gate": False,
+                "enable_llm_repair_proposal": True,
+                "max_repair_attempts": 3,
+                "repair_scope": "build_only",
                 "stage_continuation_policy": "auto_on_green",
             },
         }
@@ -199,6 +203,10 @@ def test_create_migration_job_can_persist_manual_stage_continuation_policy(
             "continue_after_warning": False,
             "enable_runtime_gate": False,
             "enable_endpoint_gate": False,
+            "enable_build_repair": True,
+            "enable_llm_repair_proposal": True,
+            "max_repair_attempts": 3,
+            "repair_scope": "build_only",
             "stage_continuation_policy": "manual",
         }
     )

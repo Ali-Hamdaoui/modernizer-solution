@@ -347,8 +347,12 @@ def test_create_job_persists_run_configuration_and_defaults_auto_on_green_policy
     assert run_config_row["policy_json"] == canonical_json_text(
         {
             "continue_after_warning": False,
+            "enable_build_repair": True,
             "enable_runtime_gate": False,
             "enable_endpoint_gate": False,
+            "enable_llm_repair_proposal": True,
+            "max_repair_attempts": 3,
+            "repair_scope": "build_only",
             "stage_continuation_policy": "auto_on_green",
         }
     )
@@ -607,6 +611,10 @@ def test_create_job_endpoint_accepts_partial_policy_payload(tmp_path: Path) -> N
         "continue_after_warning": False,
         "enable_runtime_gate": False,
         "enable_endpoint_gate": False,
+        "enable_build_repair": True,
+        "enable_llm_repair_proposal": True,
+        "max_repair_attempts": 3,
+        "repair_scope": "build_only",
         "stage_continuation_policy": "auto_on_green",
     }
 
@@ -635,7 +643,7 @@ def test_stale_run_configurations_fk_allows_job_id_without_migration_job_row(
         pipeline_version="2026.06",
         target_proof_level=TargetProofLevel.BUILD_TEST_VERIFIED,
         enabled_gates_json="[]",
-        policy_json='{"continue_after_warning":false,"enable_runtime_gate":false,"enable_endpoint_gate":false,"stage_continuation_policy":"auto_on_green"}',
+        policy_json='{"continue_after_warning":false,"enable_runtime_gate":false,"enable_endpoint_gate":false,"enable_build_repair":true,"enable_llm_repair_proposal":true,"max_repair_attempts":3,"repair_scope":"build_only","stage_continuation_policy":"auto_on_green"}',
         payload_json='{"schema_version":"1.0.0"}',
         payload_checksum="checksum",
         created_at=utc_now_text(),

@@ -55,11 +55,15 @@ def test_run_policy_is_immutable() -> None:
         configuration.policy.enable_endpoint_gate = True
 
 
-def test_run_policy_defaults_are_false() -> None:
+def test_run_policy_defaults_include_repair_support() -> None:
     assert RunPolicy() == RunPolicy(
         continue_after_warning=False,
         enable_runtime_gate=False,
         enable_endpoint_gate=False,
+        enable_build_repair=True,
+        enable_llm_repair_proposal=True,
+        max_repair_attempts=3,
+        repair_scope="build_only",
         stage_continuation_policy=StageContinuationPolicy.AUTO_ON_GREEN,
     )
 
@@ -69,6 +73,10 @@ def test_stage_continuation_policy_defaults_to_auto_on_green() -> None:
 
     assert configuration.policy.stage_continuation_policy == StageContinuationPolicy.AUTO_ON_GREEN
     assert configuration.model_dump(mode="json")["policy"]["stage_continuation_policy"] == "auto_on_green"
+    assert configuration.policy.enable_build_repair is True
+    assert configuration.policy.enable_llm_repair_proposal is True
+    assert configuration.policy.max_repair_attempts == 3
+    assert configuration.policy.repair_scope == "build_only"
 
 
 def test_stage_continuation_policy_accepts_manual() -> None:

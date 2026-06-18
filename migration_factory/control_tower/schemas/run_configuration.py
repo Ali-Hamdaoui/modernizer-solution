@@ -21,6 +21,10 @@ class RunPolicy(StrictModel):
     continue_after_warning: bool = False
     enable_runtime_gate: bool = False
     enable_endpoint_gate: bool = False
+    enable_build_repair: bool = True
+    enable_llm_repair_proposal: bool = True
+    max_repair_attempts: int = 3
+    repair_scope: str = "build_only"
     stage_continuation_policy: StageContinuationPolicy = StageContinuationPolicy.AUTO_ON_GREEN
 
     @field_validator("stage_continuation_policy", mode="before")
@@ -29,6 +33,11 @@ class RunPolicy(StrictModel):
         if isinstance(value, StageContinuationPolicy):
             return value
         return StageContinuationPolicy(value)
+
+    @field_validator("repair_scope", mode="after")
+    @classmethod
+    def _validate_repair_scope(cls, value: str) -> str:
+        return require_non_empty_string(value, "repair_scope")
 
     @classmethod
     def f15_manual(cls) -> "RunPolicy":
