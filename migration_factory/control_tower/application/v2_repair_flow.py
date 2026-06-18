@@ -50,6 +50,7 @@ class RepairProposal:
     status: str  # draft, proposed, approved, rejected, applied
     approval_checksum: str | None
     created_at: str
+    proposal_checksum: str = ""
     # F05: revision metadata (None for non-revision proposals)
     source_proposal_id: str | None = None
     revision_of: str | None = None
@@ -98,6 +99,13 @@ class V2RepairFlowService:
         patch_summary: str,
         affected_paths: tuple[str, ...],
     ) -> RepairProposal:
+        proposal_checksum = self._proposal_checksum(
+            command_id=command_id,
+            failure_summary=failure_summary,
+            hypothesis=hypothesis,
+            patch_summary=patch_summary,
+            affected_paths=affected_paths,
+        )
         proposal = RepairProposal(
             proposal_id=uuid4().hex,
             command_id=command_id,
@@ -108,6 +116,7 @@ class V2RepairFlowService:
             status="draft",
             approval_checksum=None,
             created_at=utc_now_text(),
+            proposal_checksum=proposal_checksum,
         )
         self._proposals[proposal.proposal_id] = proposal
         # Persist if repo available
@@ -146,6 +155,18 @@ class V2RepairFlowService:
         separate draft with revision metadata linking back to the source.
         The caller must first validate binding via V2AssistantActionResolver.
         """
+        proposal_checksum = self._proposal_checksum(
+            command_id=command_id,
+            failure_summary=failure_summary,
+            hypothesis=hypothesis,
+            patch_summary=patch_summary,
+            affected_paths=affected_paths,
+            source_proposal_id=source_proposal_id,
+            revision_of=source_proposal_id,
+            revision_number=revision_number,
+            context_pack_checksum=context_pack_checksum,
+            allowed_scope=allowed_scope,
+        )
         proposal = RepairProposal(
             proposal_id=uuid4().hex,
             command_id=command_id,
@@ -156,6 +177,7 @@ class V2RepairFlowService:
             status="draft",
             approval_checksum=None,
             created_at=utc_now_text(),
+            proposal_checksum=proposal_checksum,
             source_proposal_id=source_proposal_id,
             revision_of=source_proposal_id,
             revision_number=revision_number,
@@ -206,6 +228,13 @@ class V2RepairFlowService:
                     status=record.status,
                     approval_checksum=record.approval_checksum,
                     created_at=record.created_at,
+                    proposal_checksum=self._proposal_checksum(
+                        command_id=record.command_id,
+                        failure_summary=record.failure_summary,
+                        hypothesis=record.hypothesis,
+                        patch_summary=record.patch_summary,
+                        affected_paths=tuple(json.loads(record.affected_paths_json)),
+                    ),
                 )
                 self._proposals[proposal_id] = proposal
         if proposal is None:
@@ -239,6 +268,7 @@ class V2RepairFlowService:
             status="approved",
             approval_checksum=approval_checksum,
             created_at=proposal.created_at,
+            proposal_checksum=proposal.proposal_checksum,
         )
         self._proposals[proposal_id] = updated
         # Persist if repo available
@@ -281,6 +311,13 @@ class V2RepairFlowService:
                     status=record.status,
                     approval_checksum=record.approval_checksum,
                     created_at=record.created_at,
+                    proposal_checksum=self._proposal_checksum(
+                        command_id=record.command_id,
+                        failure_summary=record.failure_summary,
+                        hypothesis=record.hypothesis,
+                        patch_summary=record.patch_summary,
+                        affected_paths=tuple(json.loads(record.affected_paths_json)),
+                    ),
                 )
                 self._proposals[proposal_id] = proposal
         if proposal is None:
@@ -574,6 +611,7 @@ class V2RepairFlowService:
             status="applied",
             approval_checksum=proposal.approval_checksum,
             created_at=proposal.created_at,
+            proposal_checksum=proposal.proposal_checksum,
         )
         if self._repo is not None:
             self._repo.update_proposal_status(proposal.proposal_id, "applied")
@@ -590,6 +628,7 @@ class V2RepairFlowService:
             "status": proposal.status,
             "approval_checksum": proposal.approval_checksum,
             "created_at": proposal.created_at,
+            "proposal_checksum": proposal.proposal_checksum,
         }
         # F07: Include reviewer metadata when available
         if reviewer_critique_id is not None:
@@ -615,3 +654,36 @@ class V2RepairFlowService:
             "result_summary": action.result_summary,
             "created_at": action.created_at,
         }
+
+    @staticmethod
+    def _proposal_checksum(
+        *,
+        command_id: str,
+        failure_summary: str,
+        hypothesis: str,
+        patch_summary: str,
+        affected_paths: tuple[str, ...],
+        source_proposal_id: str | None = None,
+        revision_of: str | None = None,
+        revision_number: int | None = None,
+        context_pack_checksum: str | None = None,
+        allowed_scope: str | None = None,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "command_id": command_id,
+            "failure_summary": failure_summary,
+            "hypothesis": hypothesis,
+            "patch_summary": patch_summary,
+            "affected_paths": list(affected_paths),
+        }
+        if source_proposal_id is not None:
+            payload["source_proposal_id"] = source_proposal_id
+        if revision_of is not None:
+            payload["revision_of"] = revision_of
+        if revision_number is not None:
+            payload["revision_number"] = revision_number
+        if context_pack_checksum is not None:
+            payload["context_pack_checksum"] = context_pack_checksum
+        if allowed_scope is not None:
+            payload["allowed_scope"] = allowed_scope
+        return sha256_canonical_json(payload)

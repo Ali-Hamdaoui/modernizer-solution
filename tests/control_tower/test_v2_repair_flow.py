@@ -26,6 +26,7 @@ def test_create_proposal() -> None:
     )
     assert proposal.status == "draft"
     assert proposal.command_id == "cmd-1"
+    assert proposal.proposal_checksum
 
 
 def test_approve_proposal_requires_accepted_reviewer_critique() -> None:

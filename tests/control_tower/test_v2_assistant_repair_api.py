@@ -235,6 +235,7 @@ class TestRepairAPI:
         assert body["status"] == "draft"
         assert body["hypothesis"] == "Model-generated hypothesis"
         assert body["patch_summary"] == "Model-generated patch summary"
+        assert body["proposal_checksum"]
         assert fake_client.roles == ["proposer"]
 
     def test_approve_proposal(self, tmp_path: Path) -> None:
@@ -288,6 +289,7 @@ class TestRepairAPI:
         body = response.json()
         assert body["status"] == "approved"
         assert body["approval_checksum"] == "chk-abc"
+        assert body["proposal_checksum"]
         # Reviewer metadata should be in response
         assert "reviewer_critique_id" in body
 
