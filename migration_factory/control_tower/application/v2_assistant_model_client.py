@@ -12,6 +12,12 @@ from migration_factory.control_tower.application.redaction import (
     redact_model_summary,
     redact_public_value,
 )
+from migration_factory.control_tower.application.v2_model_role_router import (
+    V2ModelRole,
+    V2ModelRoleRouter,
+    V2RoleModelRequest,
+    V2RoleModelResult,
+)
 from migration_factory.control_tower.domain.checksums import utc_now_text
 
 
@@ -186,9 +192,55 @@ class V2AssistantModelClient:
         fallback: str,
         conversation_history: list[dict[str, str]] | None = None,
     ) -> V2AssistantModelResult:
+        return self.answer_with_role(
+            role=V2ModelRole.ASSISTANT,
+            prompt=prompt,
+            fallback=fallback,
+            conversation_history=conversation_history,
+        )
+
+    def answer_with_role(
+        self,
+        *,
+        role: V2ModelRole,
+        prompt: str,
+        fallback: str,
+        conversation_history: list[dict[str, str]] | None = None,
+        output_schema_name: str | None = None,
+        require_schema: bool = False,
+    ) -> V2AssistantModelResult:
+        router = V2ModelRoleRouter()
+        request = V2RoleModelRequest(
+            role=role,
+            prompt=prompt,
+            fallback=fallback,
+            output_schema_name=output_schema_name,
+            require_schema=require_schema,
+            conversation_history=tuple(conversation_history or ()),
+        )
+        routed = router.route(
+            request,
+            invoke=lambda deployment: self._answer_with_deployment(
+                role=role,
+                deployment=deployment,
+                prompt=prompt,
+                fallback=fallback,
+                conversation_history=conversation_history,
+            ),
+        )
+        return self._to_assistant_result(routed)
+
+    def _answer_with_deployment(
+        self,
+        *,
+        role: V2ModelRole,
+        deployment: str,
+        prompt: str,
+        fallback: str,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> V2AssistantModelResult:
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip().rstrip("/")
         api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
-        deployment = os.environ.get("AZURE_OPENAI_ASSISTANT_DEPLOYMENT", "").strip()
 
         if not endpoint:
             return _fallback_result(
@@ -205,7 +257,7 @@ class V2AssistantModelClient:
         if not deployment:
             return _fallback_result(
                 fallback,
-                "Azure OpenAI deployment name not configured.",
+                f"Azure OpenAI deployment name not configured for role {role.value}.",
                 "missing_deployment",
             )
 
@@ -258,7 +310,6 @@ class V2AssistantModelClient:
 
         safe_content = str(redact_public_value(redact_model_summary(content))).strip()
         if not safe_content:
-            # Log empty response diagnostic before returning fallback
             _log_empty_azure_result_summary(endpoint=endpoint, deployment=deployment)
             return _fallback_result(
                 fallback,
@@ -271,10 +322,23 @@ class V2AssistantModelClient:
             source="azure_openai",
             model_status="live_ok",
             provider=self.provider,
-            role=self.role,
+            role=role.value,
             success=True,
             redacted_summary="Azure OpenAI assistant invocation succeeded.",
             failure_reason="",
+        )
+
+    def _to_assistant_result(self, routed: V2RoleModelResult) -> V2AssistantModelResult:
+        redacted_summary = str(redact_model_summary(routed.content)).strip()
+        return V2AssistantModelResult(
+            content=routed.content,
+            source=routed.source,
+            model_status=routed.model_status,
+            provider=routed.provider,
+            role=routed.role,
+            success=routed.success,
+            redacted_summary=redacted_summary,
+            failure_reason=routed.failure_reason,
         )
 
     @staticmethod
