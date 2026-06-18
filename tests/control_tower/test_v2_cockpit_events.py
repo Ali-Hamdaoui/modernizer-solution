@@ -303,6 +303,7 @@ def test_openapi_json_includes_v2_paths(tmp_path: Path) -> None:
     assert "/v1/v2/migration-jobs/{job_id}/pipeline" in paths
     assert "/v1/v2/migration-jobs/{job_id}/failure-summary" in paths
     assert "/v1/v2/migration-jobs/{job_id}/evidence-bundle" in paths
+    assert "/v1/v2/migration-jobs/{job_id}/dual-model-traces" in paths
 
 
 def test_v2_alias_routes_reuse_existing_handlers(tmp_path: Path) -> None:
@@ -315,6 +316,7 @@ def test_v2_alias_routes_reuse_existing_handlers(tmp_path: Path) -> None:
         f"/v1/v2/jobs/{job_id}/stages",
         f"/v1/v2/jobs/{job_id}/failure-summary",
         f"/v1/v2/jobs/{job_id}/evidence-bundle",
+        f"/v1/v2/jobs/{job_id}/dual-model-traces",
         f"/v1/v2/jobs/{job_id}/events/snapshot",
     ]
     for path in aliases:
@@ -322,6 +324,9 @@ def test_v2_alias_routes_reuse_existing_handlers(tmp_path: Path) -> None:
         assert response.status_code == 200, f"{path}: {response.text}"
         body = response.json()
         if path.endswith("/evidence-bundle"):
+            assert body["run_id"]
+            assert body["read_only"] is True
+        elif path.endswith("/dual-model-traces"):
             assert body["run_id"]
             assert body["read_only"] is True
         else:

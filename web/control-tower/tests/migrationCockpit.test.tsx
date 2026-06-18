@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
 import MigrationCockpitPage from "../app/migrations/[jobId]/page";
 import { MigrationCockpit, cockpitEvidenceStatusLines, reduceStageStatus } from "../app/migrations/[jobId]/MigrationCockpit";
 import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, requireJobId, v2EventStreamUrl } from "../lib/controlTowerApi";
@@ -401,6 +402,96 @@ describe("V2 Migration Cockpit contract", () => {
     });
     expect(lines).toContain("Migration: failed");
     expect(lines).toContain("Root cause: Wildcard Maven versions generated in pom.xml.");
+  });
+
+  it("cockpit renders no dual-model traces state", () => {
+    const markup = renderToStaticMarkup(
+      <MigrationCockpit
+        jobId="job-123"
+        initialData={{
+          job: { job_id: "job-123", setup_id: "setup-1", setup_checksum: "chk", pipeline_id: "pipe", stages: [], created_at: "now" },
+          stages: [],
+          approvals: [],
+          messages: [],
+          events: [],
+          pipeline: { job_id: "job-123", rows: [], evidence: [], raw_logs: [], active_stage_index: 1 },
+          dualModelTraces: { job_id: "job-123", run_id: "v2-demo-s2", trace_count: 0, latest_model1_trace: null, latest_model2_trace: null, traces: [], artifact_refs: [], read_only: true },
+          evidenceBundle: null,
+          failureSummary: null,
+          assistantModel: null,
+        }}
+      />
+    );
+    expect(markup).toContain("AI Supervision Traces");
+    expect(markup).toContain("No AI supervision traces yet.");
+    expect(markup).toContain("Read-only audit: true");
+  });
+
+  it("cockpit renders latest dual-model trace summaries", () => {
+    const markup = renderToStaticMarkup(
+      <MigrationCockpit
+        jobId="job-123"
+        initialData={{
+          job: { job_id: "job-123", setup_id: "setup-1", setup_checksum: "chk", pipeline_id: "pipe", stages: [], created_at: "now" },
+          stages: [],
+          approvals: [],
+          messages: [],
+          events: [],
+          pipeline: { job_id: "job-123", rows: [], evidence: [], raw_logs: [], active_stage_index: 2 },
+          dualModelTraces: {
+            job_id: "job-123",
+            run_id: "v2-demo-s2",
+            trace_count: 2,
+            latest_model1_trace: {
+              invocation_id: "inv-1",
+              model_role: "model_1_migration_engineer",
+              provider: "deterministic",
+              fallback_used: true,
+              timestamp: "2026-06-18T00:00:00Z",
+              supervision_context: "stage_2_failure_review",
+              purpose: "Summarize failure.",
+              validation_status: "validated",
+              verdict: null,
+              risk_level: "high",
+              human_approval_required: null,
+              errors: [],
+              warnings: [],
+              artifact_refs: { combined: "ai_supervision/inv-1/dual_model_invocation_trace.json" },
+              read_only: true,
+            },
+            latest_model2_trace: {
+              invocation_id: "inv-2",
+              model_role: "model_2_safety_reviewer",
+              provider: "deterministic",
+              fallback_used: true,
+              timestamp: "2026-06-18T00:01:00Z",
+              supervision_context: "stage_2_failure_review",
+              purpose: "Verify summary.",
+              validation_status: "validated",
+              verdict: "accepted",
+              risk_level: "high",
+              human_approval_required: false,
+              errors: [],
+              warnings: [],
+              artifact_refs: { combined: "ai_supervision/inv-2/dual_model_invocation_trace.json" },
+              read_only: true,
+            },
+            traces: [],
+            artifact_refs: [],
+            read_only: true,
+          },
+          evidenceBundle: null,
+          failureSummary: null,
+          assistantModel: null,
+        }}
+      />
+    );
+    expect(markup).toContain("Latest Model 1");
+    expect(markup).toContain("Purpose: Summarize failure.");
+    expect(markup).toContain("Risk: high");
+    expect(markup).toContain("Latest Model 2");
+    expect(markup).toContain("Verdict: accepted");
+    expect(markup).toContain("Human approval required: false");
   });
 
   it("IMPORTANT_SSE_TYPES includes all required lifecycle events", () => {

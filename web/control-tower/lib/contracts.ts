@@ -548,6 +548,35 @@ export type V2RunEvidenceBundleResponse = {
   read_only: boolean;
 };
 
+export type V2DualModelTraceSummaryResponse = {
+  invocation_id: string;
+  model_role: string;
+  provider: string;
+  fallback_used: boolean;
+  timestamp: string;
+  supervision_context: string;
+  purpose: string;
+  validation_status: string;
+  verdict: string | null;
+  risk_level: string | null;
+  human_approval_required: boolean | null;
+  errors: string[];
+  warnings: string[];
+  artifact_refs: Record<string, string>;
+  read_only: boolean;
+};
+
+export type V2DualModelTraceListResponse = {
+  job_id: string;
+  run_id: string;
+  trace_count: number;
+  latest_model1_trace: V2DualModelTraceSummaryResponse | null;
+  latest_model2_trace: V2DualModelTraceSummaryResponse | null;
+  traces: V2DualModelTraceSummaryResponse[];
+  artifact_refs: Array<Record<string, string>>;
+  read_only: boolean;
+};
+
 export type V2ReviewerCritiqueResponse = {
   critique_id: string;
   proposal_id: string;

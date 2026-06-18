@@ -7,6 +7,7 @@ import {
   eventStreamUrl,
   getV2AssistantMessages,
   getV2EvidenceBundle,
+  getV2DualModelTraces,
   getV2JobApprovals,
   getV2MigrationJobStages,
   getJob,
@@ -129,6 +130,9 @@ describe("M2-01 frontend diagnostic contracts", () => {
         if (url.includes("/assistant/messages")) {
           return { job_id: "429a9bb2154b4be7a99a32867780d744", messages: [] };
         }
+        if (url.includes("/dual-model-traces")) {
+          return { job_id: "429a9bb2154b4be7a99a32867780d744", run_id: "v2-demo-s2", trace_count: 0, latest_model1_trace: null, latest_model2_trace: null, traces: [], artifact_refs: [], read_only: true };
+        }
         if (url.includes("/approvals")) {
           return { approvals: [] };
         }
@@ -142,6 +146,7 @@ describe("M2-01 frontend diagnostic contracts", () => {
       getV2JobApprovals(jobId),
       getV2MigrationJobStages(jobId),
       getV2EvidenceBundle(jobId),
+      getV2DualModelTraces(jobId),
       getV2AssistantMessages(jobId),
     ]);
 
@@ -150,6 +155,7 @@ describe("M2-01 frontend diagnostic contracts", () => {
       expect.stringContaining(`/v1/v2/jobs/${jobId}/approvals`),
       expect.stringContaining(`/v1/v2/migration-jobs/${jobId}/stages`),
       expect.stringContaining(`/v1/v2/migration-jobs/${jobId}/evidence-bundle`),
+      expect.stringContaining(`/v1/v2/migration-jobs/${jobId}/dual-model-traces`),
       expect.stringContaining(`/v1/v2/jobs/${jobId}/assistant/messages`),
     ]);
     expect(urls.some((url) => url.includes("undefined"))).toBe(false);
@@ -163,6 +169,7 @@ describe("M2-01 frontend diagnostic contracts", () => {
     await expect(getV2JobApprovals("")).rejects.toThrow(/job id is required/i);
     await expect(getV2MigrationJobStages("")).rejects.toThrow(/job id is required/i);
     await expect(getV2EvidenceBundle("")).rejects.toThrow(/job id is required/i);
+    await expect(getV2DualModelTraces("")).rejects.toThrow(/job id is required/i);
     await expect(getV2AssistantMessages("")).rejects.toThrow(/job id is required/i);
 
     expect(fetchMock).not.toHaveBeenCalled();

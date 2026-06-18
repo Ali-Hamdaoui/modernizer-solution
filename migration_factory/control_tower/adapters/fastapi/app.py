@@ -188,6 +188,9 @@ from migration_factory.control_tower.application.v2_diagnosis_proposal_flow impo
 from migration_factory.control_tower.application.v2_dual_model_runtime import (
     V2DualModelRuntimeService,
 )
+from migration_factory.control_tower.application.v2_dual_model_invocation_audit import (
+    V2DualModelInvocationAuditStore,
+)
 from migration_factory.control_tower.application.redaction import redact_public_value
 from migration_factory.control_tower.adapters.fastapi.security import (
     MUTATION_METHODS,
@@ -1238,6 +1241,57 @@ def create_app(
     def get_v2_model_runtime_status() -> dict[str, Any]:
         """Return read-only dual-model runtime readiness and fallback status."""
         return redact_public_data(V2DualModelRuntimeService().get_status().to_dict())
+
+    @app.get(
+        "/v1/v2/jobs/{job_id}/dual-model-traces",
+        include_in_schema=False,
+        operation_id="get_v2_job_dual_model_traces_alias",
+    )
+    @app.get("/v1/v2/migration-jobs/{job_id}/dual-model-traces")
+    def get_v2_job_dual_model_traces(job_id: str) -> dict[str, Any]:
+        """Return read-only persisted dual-model supervision traces for cockpit."""
+        with unit_of_work_factory() as uow:
+            job = _require_v2_job(uow, job_id)
+            setup = uow.v2_setups.get(job.setup_id) if job.setup_id else None
+            events = uow.v2_events.list_by_job(job_id)
+            approvals = uow.v2_approvals.list_cards_by_job(job_id)
+            commands = uow.v2_commands.list_by_job(job_id)
+            latest_diagnosis = uow.v2_failure_diagnoses.get_latest_for_job(job_id)
+            diagnosis_payload = (
+                V2FailureDiagnosisService.persisted_record_to_dict(latest_diagnosis)
+                if latest_diagnosis is not None
+                else None
+            )
+        bundle_service = V2RunEvidenceBundleService()
+        bundle = bundle_service.build_bundle(
+            job_id=job_id,
+            setup=setup,
+            events=events,
+            approvals=approvals,
+            commands=commands,
+            persisted_diagnosis=diagnosis_payload,
+        )
+        artifact_state = bundle_service._resolve_stage_artifacts(
+            setup=setup,
+            commands=commands,
+            events=events,
+            stage_index=None,
+        )
+        trace_root: Path | None = None
+        if artifact_state.get("run_dir") is not None:
+            trace_root = Path(artifact_state["run_dir"])
+        else:
+            output_parent = str(getattr(setup, "output_parent_path", "") or "").strip()
+            if output_parent and bundle.run_id:
+                candidate = Path(output_parent) / ".migration" / "runs" / bundle.run_id
+                if candidate.exists():
+                    trace_root = candidate
+        response = V2DualModelInvocationAuditStore().build_response(
+            job_id=job_id,
+            run_id=str(artifact_state.get("run_id") or bundle.run_id or job_id),
+            trace_root=trace_root,
+        )
+        return redact_public_data(response.to_dict())
 
     @app.get("/v1/v2/jobs/{job_id}/artifacts/{artifact_kind}")
     def get_v2_job_artifact_preview(

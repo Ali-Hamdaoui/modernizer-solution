@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import {
   askV2Assistant,
   approveV2Card,
+  getV2DualModelTraces,
   getV2EvidenceBundle,
   getV2AssistantMessages,
   getV2FailureSummary,
@@ -19,6 +20,7 @@ import {
 import type {
   V2ApprovalResponse,
   V2AssistantMessageResponse,
+  V2DualModelTraceListResponse,
   V2RunEvidenceBundleResponse,
   V2FailureSummaryResponse,
   V2JobEvent,
@@ -40,6 +42,7 @@ interface CockpitData {
   messages: V2AssistantMessageResponse[];
   events: V2JobEvent[];
   pipeline: V2PipelineResponse;
+  dualModelTraces: V2DualModelTraceListResponse | null;
   evidenceBundle: V2RunEvidenceBundleResponse | null;
   failureSummary: V2FailureSummaryResponse | null;
   assistantModel: { status: string; source: string; provider: string; role: string; failure_reason?: string } | null;
@@ -62,8 +65,8 @@ export function cockpitEvidenceStatusLines(bundle: V2RunEvidenceBundleResponse |
   return lines;
 }
 
-export function MigrationCockpit({ jobId }: { jobId?: string }) {
-  const [data, setData] = useState<CockpitData | null>(null);
+export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initialData?: CockpitData | null }) {
+  const [data, setData] = useState<CockpitData | null>(initialData ?? null);
   const [error, setError] = useState<string | null>(null);
   const [assistantQuestion, setAssistantQuestion] = useState("");
   const [assistantBusy, setAssistantBusy] = useState(false);
@@ -82,7 +85,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     async function loadCockpit() {
       try {
         const safeJobId = requireJobId(normalizedJobId);
-        const [job, messagesResponse, approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary, evidenceBundle] = await Promise.all([
+        const [job, messagesResponse, approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary, evidenceBundle, dualModelTraces] = await Promise.all([
           getV2MigrationJob(safeJobId),
           getV2AssistantMessages(safeJobId),
           getV2JobApprovals(safeJobId),
@@ -91,6 +94,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           getV2JobPipeline(safeJobId),
           getV2FailureSummary(safeJobId).catch(() => null),
           getV2EvidenceBundle(safeJobId).catch(() => null),
+          getV2DualModelTraces(safeJobId).catch(() => null),
         ]);
 
         if (cancelled) return;
@@ -102,6 +106,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           messages: messagesResponse.messages,
           events: eventsResponse.events,
           pipeline: pipelineResponse,
+          dualModelTraces: dualModelTraces as V2DualModelTraceListResponse | null,
           evidenceBundle: evidenceBundle as V2RunEvidenceBundleResponse | null,
           failureSummary: failureSummary as V2FailureSummaryResponse | null,
           assistantModel: null,
@@ -239,13 +244,14 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   async function refreshLiveState() {
     if (!normalizedJobId) return;
     const safeJobId = requireJobId(normalizedJobId);
-    const [approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary, evidenceBundle] = await Promise.all([
+    const [approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary, evidenceBundle, dualModelTraces] = await Promise.all([
       getV2JobApprovals(safeJobId),
       getV2MigrationJobStages(safeJobId),
       getV2JobEventSnapshot(safeJobId),
       getV2JobPipeline(safeJobId),
       getV2FailureSummary(safeJobId).catch(() => null),
       getV2EvidenceBundle(safeJobId).catch(() => null),
+      getV2DualModelTraces(safeJobId).catch(() => null),
     ]);
     setData((current) => current ? {
       ...current,
@@ -253,6 +259,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       stages: stagesResponse.stages,
       events: eventsResponse.events,
       pipeline: pipelineResponse,
+      dualModelTraces: dualModelTraces as V2DualModelTraceListResponse | null,
       evidenceBundle: evidenceBundle as V2RunEvidenceBundleResponse | null,
       failureSummary: failureSummary as V2FailureSummaryResponse | null,
     } : current);
@@ -342,6 +349,44 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         ) : null}
         <p className="meta">
           Read-only: {data.evidenceBundle?.read_only === false ? "false" : "true"}
+        </p>
+      </section>
+
+      <section className="panel">
+        <h2>AI Supervision Traces</h2>
+        {!data.dualModelTraces || data.dualModelTraces.trace_count === 0 ? (
+          <p className="meta">No AI supervision traces yet.</p>
+        ) : (
+          <>
+            <p className="meta">Trace count: {data.dualModelTraces.trace_count}</p>
+            {data.dualModelTraces.latest_model1_trace ? (
+              <div className="trace-section">
+                <strong>Latest Model 1</strong>
+                <p className="meta">Provider: {data.dualModelTraces.latest_model1_trace.provider}</p>
+                <p className="meta">Fallback: {String(data.dualModelTraces.latest_model1_trace.fallback_used)}</p>
+                <p className="meta">Purpose: {data.dualModelTraces.latest_model1_trace.purpose}</p>
+                <p className="meta">Risk: {data.dualModelTraces.latest_model1_trace.risk_level ?? "n/a"}</p>
+              </div>
+            ) : (
+              <p className="meta">No Model 1 trace yet.</p>
+            )}
+            {data.dualModelTraces.latest_model2_trace ? (
+              <div className="trace-section">
+                <strong>Latest Model 2</strong>
+                <p className="meta">Provider: {data.dualModelTraces.latest_model2_trace.provider}</p>
+                <p className="meta">Fallback: {String(data.dualModelTraces.latest_model2_trace.fallback_used)}</p>
+                <p className="meta">Verdict: {data.dualModelTraces.latest_model2_trace.verdict ?? "n/a"}</p>
+                <p className="meta">
+                  Human approval required: {String(data.dualModelTraces.latest_model2_trace.human_approval_required ?? false)}
+                </p>
+              </div>
+            ) : (
+              <p className="meta">No Model 2 trace yet.</p>
+            )}
+          </>
+        )}
+        <p className="meta">
+          Read-only audit: {data.dualModelTraces?.read_only === false ? "false" : "true"}
         </p>
       </section>
 

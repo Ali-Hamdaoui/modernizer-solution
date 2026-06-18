@@ -48,6 +48,43 @@ class DualModelInvocationTraceRecord:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class DualModelInvocationTraceSummary:
+    invocation_id: str
+    model_role: str
+    provider: str
+    fallback_used: bool
+    timestamp: str
+    supervision_context: str
+    purpose: str
+    validation_status: str
+    verdict: str | None
+    risk_level: str | None
+    human_approval_required: bool | None
+    errors: tuple[str, ...]
+    warnings: tuple[str, ...]
+    artifact_refs: dict[str, str]
+    read_only: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class DualModelInvocationTraceListResponse:
+    job_id: str
+    run_id: str
+    trace_count: int
+    latest_model1_trace: dict[str, Any] | None
+    latest_model2_trace: dict[str, Any] | None
+    traces: tuple[dict[str, Any], ...]
+    artifact_refs: tuple[dict[str, Any], ...]
+    read_only: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 class V2DualModelInvocationAuditStore:
     def persist_trace(self, *, request: ModelInvocationRequest, result: ModelInvocationResult) -> dict[str, str]:
         trace_root = self._resolve_trace_root(request.trace_root)
@@ -89,6 +126,59 @@ class V2DualModelInvocationAuditStore:
             if model_role is None or trace.model_role == model_role:
                 return trace
         return None
+
+    def summarize_trace(self, record: DualModelInvocationTraceRecord) -> DualModelInvocationTraceSummary:
+        structured = record.structured_output if isinstance(record.structured_output, dict) else {}
+        return DualModelInvocationTraceSummary(
+            invocation_id=record.invocation_id,
+            model_role=record.model_role,
+            provider=record.provider,
+            fallback_used=record.fallback_used,
+            timestamp=record.timestamp,
+            supervision_context=record.supervision_context,
+            purpose=record.purpose,
+            validation_status=record.validation_status,
+            verdict=str(structured.get("verdict")) if structured.get("verdict") is not None else None,
+            risk_level=str(structured.get("risk_level")) if structured.get("risk_level") is not None else None,
+            human_approval_required=(
+                bool(structured.get("human_approval_required"))
+                if structured.get("human_approval_required") is not None
+                else None
+            ),
+            errors=record.errors,
+            warnings=record.warnings,
+            artifact_refs=record.artifact_refs,
+            read_only=True,
+        )
+
+    def build_response(
+        self,
+        *,
+        job_id: str,
+        run_id: str,
+        trace_root: str | Path | None,
+    ) -> DualModelInvocationTraceListResponse:
+        traces = self.list_traces(trace_root=trace_root) if trace_root else ()
+        summaries = tuple(self.summarize_trace(trace).to_dict() for trace in traces)
+        latest_model1 = next((summary for summary in summaries if summary["model_role"] == MODEL_1_ROLE), None)
+        latest_model2 = next((summary for summary in summaries if summary["model_role"] == MODEL_2_ROLE), None)
+        artifact_refs = tuple(
+            {
+                "invocation_id": trace.invocation_id,
+                **trace.artifact_refs,
+            }
+            for trace in traces
+        )
+        return DualModelInvocationTraceListResponse(
+            job_id=job_id,
+            run_id=run_id,
+            trace_count=len(traces),
+            latest_model1_trace=latest_model1,
+            latest_model2_trace=latest_model2,
+            traces=summaries,
+            artifact_refs=artifact_refs,
+            read_only=True,
+        )
 
     def _trace_record(
         self,
@@ -186,9 +276,10 @@ class V2DualModelInvocationAuditStore:
         )
 
     def _resolve_trace_root(self, raw_path: str | Path) -> Path:
-        root = Path(str(raw_path or "").strip()).resolve()
-        if not str(root):
+        text = str(raw_path or "").strip()
+        if not text:
             raise ValueError("trace_root is required for invocation audit persistence.")
+        root = Path(text).resolve()
         return root
 
     def _relative_path(self, path: Path, root: Path) -> str:
