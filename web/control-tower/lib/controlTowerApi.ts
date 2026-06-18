@@ -444,6 +444,21 @@ export async function applyV2RepairPatchToSandbox(
   );
 }
 
+export async function validateV2SandboxRepair(
+  jobId: string,
+  proposalId: string
+): Promise<Record<string, unknown>> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) {
+    throw new Error("Repair proposal id is required.");
+  }
+  return postJson<Record<string, unknown>>(
+    `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/repair-proposals/${encodeURIComponent(safeProposalId)}/validate-sandbox-repair`,
+    {}
+  );
+}
+
 export async function getV2ArtifactPreview(
   jobId: string,
   artifactKind: string

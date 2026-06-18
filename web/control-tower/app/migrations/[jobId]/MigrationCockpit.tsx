@@ -22,6 +22,7 @@ import {
   materializeV2RepairPatchCandidate,
   rejectV2Card,
   rejectV2RepairProposal,
+  validateV2SandboxRepair,
   requireJobId,
   v2EventStreamUrl,
 } from "../../../lib/controlTowerApi";
@@ -178,6 +179,24 @@ export function canApplyRepairPatchToSandbox(proposal: {
   );
 }
 
+export function canValidateSandboxRepair(proposal: {
+  current_state: string;
+  approval_state: string;
+  has_execution_plan: boolean;
+  has_patch_candidate: boolean;
+  sandbox_apply_state: string;
+  sandbox_validation_state: string;
+}): boolean {
+  return (
+    proposal.current_state === "applied_to_sandbox"
+    && proposal.approval_state === "approved"
+    && proposal.has_execution_plan
+    && proposal.has_patch_candidate
+    && proposal.sandbox_apply_state === "applied"
+    && proposal.sandbox_validation_state === "not_started"
+  );
+}
+
 export async function submitRepairPatchCandidateMaterialization(args: {
   jobId: string;
   proposalId: string;
@@ -193,6 +212,15 @@ export async function submitRepairPatchSandboxApply(args: {
 }): Promise<Pick<CockpitData, "repairLifecycle" | "repairArtifacts" | "repairArtifactPreviews">> {
   const safeJobId = requireJobId(args.jobId);
   await applyV2RepairPatchToSandbox(safeJobId, args.proposalId);
+  return refreshRepairLifecyclePanelState(safeJobId);
+}
+
+export async function submitRepairSandboxValidation(args: {
+  jobId: string;
+  proposalId: string;
+}): Promise<Pick<CockpitData, "repairLifecycle" | "repairArtifacts" | "repairArtifactPreviews">> {
+  const safeJobId = requireJobId(args.jobId);
+  await validateV2SandboxRepair(safeJobId, args.proposalId);
   return refreshRepairLifecyclePanelState(safeJobId);
 }
 
@@ -264,6 +292,7 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
   const [repairExecutionBusy, setRepairExecutionBusy] = useState<string | null>(null);
   const [repairPatchBusy, setRepairPatchBusy] = useState<string | null>(null);
   const [repairApplyBusy, setRepairApplyBusy] = useState<string | null>(null);
+  const [repairValidateBusy, setRepairValidateBusy] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "connected" | "reconnecting">("connecting");
   const normalizedJobId = jobId?.trim() ?? "";
 
@@ -607,6 +636,28 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
     }
   }
 
+  async function validateSandboxRepair(proposalId: string) {
+    if (!normalizedJobId) return;
+    setRepairValidateBusy(proposalId);
+    try {
+      const refreshState = await submitRepairSandboxValidation({
+        jobId: normalizedJobId,
+        proposalId,
+      });
+      setData((current) => current ? {
+        ...current,
+        repairLifecycle: refreshState.repairLifecycle,
+        repairArtifacts: refreshState.repairArtifacts,
+        repairArtifactPreviews: refreshState.repairArtifactPreviews,
+      } : current);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Sandbox validation failed");
+    } finally {
+      setRepairValidateBusy(null);
+    }
+  }
+
   if (error) return <div className="error-box">{error}</div>;
   if (!data) return <div className="info-box">Loading cockpit...</div>;
 
@@ -822,6 +873,23 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
                     <p className="meta">It does not modify the original source project.</p>
                     <p className="meta">It does not run validation.</p>
                     <p className="meta">A backup will be used by the backend before sandbox mutation.</p>
+                  </>
+                ) : null}
+                {canValidateSandboxRepair(proposal) ? (
+                  <>
+                    <div className="approval-actions">
+                      <button
+                        type="button"
+                        disabled={repairValidateBusy === proposal.proposal_id}
+                        onClick={() => void validateSandboxRepair(proposal.proposal_id)}
+                      >
+                        Validate sandbox repair
+                      </button>
+                    </div>
+                    <p className="meta">This validates the sandbox repair only.</p>
+                    <p className="meta">If validation fails, the backend may roll back the sandbox change.</p>
+                    <p className="meta">It does not modify the original source project.</p>
+                    <p className="meta">It does not resume migration stages.</p>
                   </>
                 ) : null}
                 {Object.keys(proposal.artifact_refs ?? {}).length > 0 ? (

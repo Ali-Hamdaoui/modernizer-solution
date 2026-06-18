@@ -22,6 +22,7 @@ import {
   postJson,
   rejectV2RepairProposal,
   requireJobId,
+  validateV2SandboxRepair,
   resolveControlTowerApiBaseUrl
 } from "../lib/controlTowerApi";
 import { applyPublicEvent, latestAppliedSequence, shouldRefetchJobProjection } from "../lib/eventReplay";
@@ -342,6 +343,29 @@ describe("M2-01 frontend diagnostic contracts", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       `${DEFAULT_CONTROL_TOWER_API_BASE_URL}/v1/v2/migration-jobs/job-123/repair-proposals/proposal-1/apply-to-sandbox`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({}),
+      })
+    );
+  });
+
+  it("validate sandbox repair calls validation endpoint only", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        proposal_id: "proposal-1",
+        sandbox_only: true,
+        source_mutated: false,
+        stage_resumed: false,
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await validateV2SandboxRepair("job-123", "proposal-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${DEFAULT_CONTROL_TOWER_API_BASE_URL}/v1/v2/migration-jobs/job-123/repair-proposals/proposal-1/validate-sandbox-repair`,
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({}),
