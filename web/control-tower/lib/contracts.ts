@@ -765,13 +765,34 @@ export type V2FinalReportResponse = {
   generated_at: string;
   docs_report_json: string;
   docs_report_markdown: string;
+  docs_report_pdf: string;
   run_report_json: string;
   run_report_markdown: string;
+  run_report_pdf: string;
   report_context: string;
   total_duration_seconds: number | null;
   summary: string;
   change_summary: string[];
   warnings: string[];
+  full_migration_source_stack?: Record<string, unknown>;
+  full_migration_target_stack?: Record<string, unknown>;
+  pipeline_history?: Array<{
+    stage_index: number;
+    pipeline_stage: string;
+    input_source_kind: string;
+    profile: string;
+    source_stack: Record<string, unknown>;
+    target_stack: Record<string, unknown>;
+    planned_final_target?: boolean;
+    chain_status: string;
+    build_status: string;
+    test_status: string;
+    transform_status: string;
+    run_id: string;
+    run_dir: string;
+    duration_seconds: number | null;
+    artifact_refs: Record<string, string>;
+  }>;
 };
 
 // ── F14 — Stage 3 POM Dependency Review types ──────────────────────────

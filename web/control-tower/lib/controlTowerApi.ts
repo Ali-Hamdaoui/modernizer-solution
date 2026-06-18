@@ -315,6 +315,11 @@ export async function generateV2FinalReport(jobId: string): Promise<V2FinalRepor
   );
 }
 
+export function v2FinalReportPdfDownloadUrl(jobId: string): string {
+  const safeJobId = requireJobId(jobId);
+  return `${CONTROL_TOWER_API_BASE_URL}/v1/v2/jobs/${encodeURIComponent(safeJobId)}/report.pdf`;
+}
+
 export async function getV2ArtifactPreview(
   jobId: string,
   artifactKind: string,

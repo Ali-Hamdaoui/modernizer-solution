@@ -22,21 +22,23 @@ describe("V2 Migration Cockpit contract", () => {
     expect(cockpit.props.jobId).toBe("429a9bb2154b4be7a99a32867780d744");
   });
 
-  it("displays three stages in order", () => {
+  it("displays four stages in order", () => {
     const stages = [
       { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "queued", input_source_kind: "legacy_source" },
       { stage_index: 2, pipeline_stage: "Stage 2", chain_status: "pending", input_source_kind: "stage_1_sandbox" },
       { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "pending", input_source_kind: "stage_2_sandbox" },
+      { stage_index: 4, pipeline_stage: "Stage 4", chain_status: "pending", input_source_kind: "stage_3_sandbox" },
     ];
-    expect(stages).toHaveLength(3);
+    expect(stages).toHaveLength(4);
     expect(stages[0].input_source_kind).toBe("legacy_source");
     expect(stages[1].input_source_kind).toBe("stage_1_sandbox");
     expect(stages[2].input_source_kind).toBe("stage_2_sandbox");
+    expect(stages[3].input_source_kind).toBe("stage_3_sandbox");
   });
 
-  it("has no Boot 4 stage", () => {
-    const stages = [1, 2, 3];
-    expect(stages).not.toContain(4);
+  it("includes a Boot 4 stage", () => {
+    const stages = [1, 2, 3, 4];
+    expect(stages).toContain(4);
   });
 
   it("has no stage-start buttons", () => {
@@ -138,11 +140,13 @@ describe("V2 Migration Cockpit contract", () => {
       1: "legacy_source",
       2: "stage_1_sandbox",
       3: "stage_2_sandbox",
+      4: "stage_3_sandbox",
     };
     // These must NOT come from user selection
     expect(stageInputs[1]).toBe("legacy_source");
     expect(stageInputs[2]).toBe("stage_1_sandbox");
     expect(stageInputs[3]).toBe("stage_2_sandbox");
+    expect(stageInputs[4]).toBe("stage_3_sandbox");
   });
 
   it("rejects missing route job id before fetch URL construction", () => {
@@ -595,6 +599,11 @@ describe("V2 Migration Cockpit contract", () => {
   it("Stage 3 profile is springboot-3.5-java17-to-java21", () => {
     const stage3Profile = "springboot-3.5-java17-to-java21";
     expect(stage3Profile).toBe("springboot-3.5-java17-to-java21");
+  });
+
+  it("Stage 4 profile is springboot-3.5-java21-to-4.0-java21", () => {
+    const stage4Profile = "springboot-3.5-java21-to-4.0-java21";
+    expect(stage4Profile).toBe("springboot-3.5-java21-to-4.0-java21");
   });
 });
 

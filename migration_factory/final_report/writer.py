@@ -103,6 +103,9 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
         **_object_or_empty((migration_plan or {}).get("target_stack")),
         **_object_or_empty((assessment_report or {}).get("target_stack")),
     }
+    pipeline_history = _pipeline_history_context(state)
+    full_migration_source_stack = _object_or_empty(state.get("full_migration_source_stack")) or source_stack
+    full_migration_target_stack = _object_or_empty(state.get("full_migration_target_stack")) or target_stack
     recipes = _extract_recipes(execution_plan or {})
     profile_governance = _object_or_empty((migration_plan or {}).get("profile_governance"))
     boot4_warnings = _boot4_warnings(target_stack, state, assessment_report, migration_plan)
@@ -111,7 +114,17 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
     dependency_policy = _dependency_policy_context(state, artifact_refs, dependency_policy_report)
     ai_trace = _ai_trace_context(state, artifact_refs, repair_loop, run_dir)
     timing = _timing_context(state, artifact_refs, timing_report)
-    change_summary = _change_summary(source_stack, target_stack, recipes, repair_loop, dependency_policy, ai_trace)
+    change_summary = _change_summary(
+        source_stack,
+        target_stack,
+        full_migration_source_stack,
+        full_migration_target_stack,
+        pipeline_history,
+        recipes,
+        repair_loop,
+        dependency_policy,
+        ai_trace,
+    )
     report_summary = _report_summary(
         approval_decision=(approval_decision or {}).get("decision", state.get("approval_decision")),
         transform_status=state.get("transform_status", ""),
@@ -119,12 +132,16 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
         test_status=test_status,
         total_duration_seconds=timing["total_duration_seconds"],
         change_summary=change_summary,
+        full_migration_source_stack=full_migration_source_stack,
+        full_migration_target_stack=full_migration_target_stack,
     )
 
     report_payload = {
         "run_id": state.get("run_id", ""),
         "source_stack": source_stack,
         "target_stack": target_stack,
+        "full_migration_source_stack": full_migration_source_stack,
+        "full_migration_target_stack": full_migration_target_stack,
         "risk_level": profile_governance.get("risk_level") or (migration_plan or {}).get("risk", ""),
         "strategy": profile_governance.get("strategy", ""),
         "fallback_profile": profile_governance.get("fallback_profile", ""),
@@ -172,9 +189,10 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
             "final_migration_summary": str(md_path),
         },
         "timing": timing,
+        "pipeline_history": pipeline_history,
         "report_summary": report_summary,
         "change_summary": change_summary,
-        "warnings": [*list(state.get("warnings", []) or []), *boot4_warnings],
+        "warnings": _dedupe_strings([*list(state.get("warnings", []) or []), *boot4_warnings]),
         "limitations": [
             "No production promotion performed.",
             "No pull request creation performed.",
@@ -192,10 +210,10 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
         "created_at": _utc_now(),
     }
     if warnings:
-        report_payload["warnings"] = [
+        report_payload["warnings"] = _dedupe_strings([
             *list(report_payload.get("warnings", []) or []),
             *warnings,
-        ]
+        ])
 
     generated_artifact_refs: dict[str, str] = {
         "final_migration_report": str(json_path),
@@ -231,99 +249,194 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
     totals = payload.get("test_totals", {}) or {}
     source_stack = dict(payload.get("source_stack", {}) or {})
     target_stack = dict(payload.get("target_stack", {}) or {})
+    full_source_stack = dict(payload.get("full_migration_source_stack", {}) or {})
+    full_target_stack = dict(payload.get("full_migration_target_stack", {}) or {})
+    pipeline_history = list(payload.get("pipeline_history", []) or [])
+    completed_target_stack = _completed_target_stack(pipeline_history) or full_target_stack or target_stack
+    latest_completed_stage = _latest_completed_stage(pipeline_history)
     recipes = list(payload.get("recipes", []) or [])
     timing = dict(payload.get("timing", {}) or {})
     change_summary = list(payload.get("change_summary", []) or [])
+    approval = dict(payload.get("approval", {}) or {})
+    proof = dict(payload.get("proof", {}) or {})
+    repair_loop = dict(payload.get("repair_loop", {}) or {})
+    dependency_policy = dict(payload.get("dependency_policy", {}) or {})
     lines = [
-        "# Migration Summary",
+        "# Final Migration Report",
         "",
-        f"- Run ID: {payload.get('run_id', '')}",
-        f"- Migration Duration: {_format_duration(timing.get('total_duration_seconds'))}",
-        f"- Source Java: {source_stack.get('java', '')}",
-        f"- Source Spring Boot: {source_stack.get('spring_boot', '')}",
-        f"- Source Spring Framework: {source_stack.get('spring_framework', '')}",
-        f"- Target Java: {target_stack.get('java', '')}",
-        f"- Target Spring Boot: {target_stack.get('spring_boot', '')}",
-        f"- Target Spring Framework: {target_stack.get('spring_framework', '')}",
-        f"- Risk Level: {payload.get('risk_level', '')}",
-        f"- Strategy: {payload.get('strategy', '')}",
-        f"- Fallback Profile: {payload.get('fallback_profile', '')}",
-        f"- Production Allowed: {str(payload.get('production_allowed')).lower()}",
-        f"- Approval: {payload.get('approval', {}).get('decision', '')}",
-        f"- Transform: {payload.get('transform_status', '')}",
-        f"- Build: {payload.get('build_status', '')}",
-        f"- Test: {payload.get('test_status', '')}",
-        f"- Proof Level: {dict(payload.get('proof', {}) or {}).get('final_proof_level', 'not_verified')}",
-        f"- Repair Loop: {dict(payload.get('repair_loop', {}) or {}).get('final_status', 'DISABLED')}",
-        f"- Dependency Policy: {dict(payload.get('dependency_policy', {}) or {}).get('status', 'NOT_RUN')}",
+        "## 1. Executive Summary",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| **Run ID** | `{payload.get('run_id', '')}` |",
+        f"| **Generated At** | `{payload.get('created_at', '')}` |",
+        f"| **Legacy Baseline** | **{_stack_path_text(full_source_stack)}** |",
+        f"| **Current Application State** | **{_stack_path_text(completed_target_stack)}** |",
+        f"| **Latest Completed Stage** | **{_stage_label(latest_completed_stage)}** |",
+        f"| **Migration Duration** | **{_format_duration(timing.get('total_duration_seconds'))}** |",
+        f"| **Approval Decision** | **{approval.get('decision', '') or 'not_captured'}** |",
+        f"| **Transform Status** | **{payload.get('transform_status', '')}** |",
+        f"| **Build Status** | **{payload.get('build_status', '')}** |",
+        f"| **Test Status** | **{payload.get('test_status', '')}** |",
+        f"| **Proof Level** | **{proof.get('final_proof_level', 'not_verified')}** |",
+        f"| **Dependency Policy** | **{dependency_policy.get('status', 'NOT_RUN')}** |",
+        "",
         (
-            "- Test Totals: "
-            f"tests={totals.get('tests', 0)} "
-            f"passed={totals.get('passed', 0)} "
-            f"failures={totals.get('failures', 0)} "
-            f"errors={totals.get('errors', 0)} "
-            f"skipped={totals.get('skipped', 0)}"
+            f"This report describes the full migration journey from **{_stack_path_text(full_source_stack)}** "
+            f"to **{_stack_path_text(completed_target_stack)}**. "
+            "The migration was executed as a controlled sandbox modernization flow with human approval before transformation."
         ),
-        f"- Executed Recipes: {', '.join(str(recipe) for recipe in recipes) if recipes else 'none'}",
-        "- Scope Limits: no production promotion, no PR creation, no deployment, no automatic merge",
-        "",
-        "## Full Migration Summary",
         "",
         str(payload.get("report_summary") or "Migration summary not captured."),
         "",
+        "## 2. Migration Story",
+        "",
+        (
+            f"The application started from **{_stack_path_text(full_source_stack)}** and progressed through the staged migration pipeline "
+            f"until it reached **{_stack_path_text(completed_target_stack)}**. "
+            f"The latest completed stage was **{_stage_label(latest_completed_stage)}**, "
+            f"where the final transition was **{_stack_transition_text(source_stack, target_stack)}**."
+        ),
+        "",
+        "Migration flow followed during this run:",
+        "",
+        "**Analyze -> Plan -> Assess -> Human Approval -> Sandbox Transform -> Build Validation -> Test Validation -> Final Report**",
+        "",
         "## Migration Process",
         "",
-        f"- Human approval decision: {payload.get('approval', {}).get('decision', '') or 'not_captured'}",
+        f"- Legacy application baseline: {_stack_path_text(full_source_stack)}",
+        f"- Latest completed stage: {_stage_label(latest_completed_stage)}",
+        f"- Completed stage transition: {_stack_transition_text(source_stack, target_stack)}",
+        f"- Current application state: {_stack_path_text(completed_target_stack)}",
+        f"- Final executed target: {_stack_path_text(completed_target_stack)}",
+        f"- Human approval decision: {approval.get('decision', '') or 'not_captured'}",
         f"- Sandbox transform result: {payload.get('transform_status', '') or 'not_captured'}",
         f"- Build result: {payload.get('build_status', '') or 'not_captured'}",
         f"- Test result: {payload.get('test_status', '') or 'not_captured'}",
-        f"- Proof level achieved: {dict(payload.get('proof', {}) or {}).get('final_proof_level', 'not_verified')}",
-        f"- Repair loop outcome: {dict(payload.get('repair_loop', {}) or {}).get('final_status', 'DISABLED')}",
-        f"- Dependency policy outcome: {dict(payload.get('dependency_policy', {}) or {}).get('status', 'NOT_RUN')}",
+        f"- Proof level achieved: {proof.get('final_proof_level', 'not_verified')}",
+        f"- Repair loop outcome: {repair_loop.get('final_status', 'DISABLED')}",
+        f"- Dependency policy outcome: {dependency_policy.get('status', 'NOT_RUN')}",
         "",
-        "## What Changed",
+        "## 3. Current Technical State",
         "",
-        *[f"- {item}" for item in change_summary],
+        "| Area | Value |",
+        "|---|---|",
+        f"| **Legacy application baseline** | `{_stack_path_text(full_source_stack)}` |",
+        f"| **Latest completed stage source** | `{_stack_path_text(source_stack)}` |",
+        f"| **Current application state** | **`{_stack_path_text(completed_target_stack)}`** |",
+        f"| **Spring Framework target** | `{target_stack.get('spring_framework', '') or 'not captured'}` |",
+        f"| **Risk Level** | `{payload.get('risk_level', '') or 'not captured'}` |",
+        f"| **Strategy** | `{payload.get('strategy', '') or 'not captured'}` |",
+        f"| **Fallback Profile** | `{payload.get('fallback_profile', '') or 'not captured'}` |",
+        f"| **Production Allowed** | `{str(payload.get('production_allowed')).lower()}` |",
         "",
-        "## Validated",
+        "## 4. Phase Status",
         "",
-        *[f"- {item}" for item in list(payload.get("validated", []) or [])],
+        "| Phase | Status | Explanation |",
+        "|---|---|---|",
+        f"| Human Approval | **{approval.get('decision', '') or 'not_captured'}** | Human approval was required before sandbox transformation. |",
+        f"| Sandbox Transform | **{payload.get('transform_status', '') or 'not_captured'}** | Code changes were applied only inside the sandbox workspace. |",
+        f"| Build Validation | **{payload.get('build_status', '') or 'not_captured'}** | The migrated sandbox candidate was validated by build execution. |",
+        f"| Test Validation | **{payload.get('test_status', '') or 'not_captured'}** | Existing tests were run against the migrated sandbox candidate. |",
+        f"| Proof Level | **{proof.get('final_proof_level', 'not_verified')}** | This is the highest deterministic proof level reached during validation. |",
+        f"| Repair Loop | **{repair_loop.get('final_status', 'DISABLED')}** | Indicates whether repair logic was needed to stabilize the migration. |",
+        f"| Dependency Policy | **{dependency_policy.get('status', 'NOT_RUN')}** | Shows whether dependency policy checks passed or raised review items. |",
         "",
-        "## Not Validated",
+        "## 5. Stage-By-Stage Journey",
         "",
-        *[f"- {item}" for item in list(payload.get("not_validated", []) or [])],
+        "The migration was not a single jump. It was executed as a staged progression so each version boundary could be validated more safely.",
         "",
-        "POC-ready sandbox migration artifacts are captured under this run directory.",
     ]
+    if pipeline_history:
+        lines.extend(
+            [
+                "| Stage | Profile | Transition | Status | Duration |",
+                "|---|---|---|---|---|",
+            ]
+        )
+        for stage in pipeline_history:
+            stage_row = dict(stage or {})
+            source = dict(stage_row.get("source_stack", {}) or {})
+            target = dict(stage_row.get("target_stack", {}) or {})
+            lines.extend(
+                [
+                    (
+                        f"| **Stage {stage_row.get('stage_index', '')}** | "
+                        f"`{stage_row.get('profile', '') or stage_row.get('pipeline_stage', 'not_captured')}` | "
+                        f"`{_stack_transition_text(source, target)}` | "
+                        f"`{stage_row.get('chain_status', 'not_captured')}` | "
+                        f"`{_format_duration(stage_row.get('duration_seconds'))}` |"
+                    ),
+                ]
+            )
+        lines.extend(["", "Narrative highlights:", ""])
+        for stage in pipeline_history:
+            stage_row = dict(stage or {})
+            source = dict(stage_row.get("source_stack", {}) or {})
+            target = dict(stage_row.get("target_stack", {}) or {})
+            lines.append(
+                f"- **Stage {stage_row.get('stage_index', '')}** moved the application from **{_stack_path_text(source)}** "
+                f"to **{_stack_path_text(target)}**, with overall stage status **{stage_row.get('chain_status', 'not_captured')}**."
+            )
+    else:
+        lines.extend(["- Full pipeline history was not captured.", ""])
+    lines.extend(
+        [
+            "",
+            "## 6. What Changed",
+            "",
+            "## What Changed",
+            "",
+            "The most important migration changes recorded for this run are listed below.",
+            "",
+            *([f"- **{item}**" for item in change_summary] if change_summary else ["- No concrete change summary was captured."]),
+            "",
+            "## 7. Validation Outcome",
+            "",
+            "Validated areas:",
+            "",
+            *[f"- **{item}**" for item in list(payload.get("validated", []) or [])],
+            "",
+            "Not validated by this sandbox run:",
+            "",
+            *[f"- {item}" for item in list(payload.get("not_validated", []) or [])],
+            "",
+            (
+                "This means the migration is well described technically, but any production-readiness conclusion "
+                "still requires human review of runtime behavior, infrastructure compatibility, and environment-specific risks."
+            ),
+        ]
+    )
     boot4_warnings = list(payload.get("boot4_warnings", []) or [])
     if boot4_warnings:
-        lines.extend(["", "## Boot 4 Warnings", ""])
-        lines.extend(f"- {warning}" for warning in boot4_warnings)
-    repair_loop = dict(payload.get("repair_loop", {}) or {})
+        lines.extend(["", "## 8. Spring Boot 4 Notes", "", "These are the main points that deserve attention for the final Boot 4 state:", ""])
+        lines.extend(f"- **{warning}**" for warning in boot4_warnings)
     if repair_loop:
         lines.extend(
             [
                 "",
-                "## Repair Loop",
+                "## 9. Repair And Stabilization",
                 "",
-                f"- Enabled: {str(repair_loop.get('enabled', False)).lower()}",
-                f"- Max Attempts: {repair_loop.get('max_attempts', 3)}",
-                f"- Attempts: {repair_loop.get('attempts_count', 0)}",
-                f"- Final Status: {repair_loop.get('final_status', '')}",
-                f"- Ledger: {repair_loop.get('ledger_ref', '')}",
-                f"- Copilot Used: {str(repair_loop.get('copilot_used', False)).lower()}",
-                f"- Safe Patch Applied: {str(repair_loop.get('safe_patch_applied', False)).lower()}",
-                f"- Human Review Required: {str(repair_loop.get('human_review_required', False)).lower()}",
+                "| Field | Value |",
+                "|---|---|",
+                f"| Enabled | `{str(repair_loop.get('enabled', False)).lower()}` |",
+                f"| Max Attempts | `{repair_loop.get('max_attempts', 3)}` |",
+                f"| Attempts Used | `{repair_loop.get('attempts_count', 0)}` |",
+                f"| Final Status | **`{repair_loop.get('final_status', '')}`** |",
+                f"| Ledger | `{repair_loop.get('ledger_ref', '')}` |",
+                f"| Copilot Used | `{str(repair_loop.get('copilot_used', False)).lower()}` |",
+                f"| Safe Patch Applied | `{str(repair_loop.get('safe_patch_applied', False)).lower()}` |",
+                f"| Human Review Required | `{str(repair_loop.get('human_review_required', False)).lower()}` |",
             ]
         )
     ai_trace = list(payload.get("ai_trace", []) or [])
     if ai_trace:
-        lines.extend(["", "## AI Trace", "", _AI_TRACE_GUARDRAIL, ""])
+        lines.extend(["", "## AI Trace", "", "## 10. AI Supervision Trace", "", _AI_TRACE_GUARDRAIL, ""])
         for index, item in enumerate(ai_trace, start=1):
             row = dict(item or {})
             lines.extend(
                 [
-                    f"- Trace {index}: event={row.get('event', '')}; agent={row.get('agent', '')}",
+                    f"- **Trace {index}**: event={row.get('event', '')}; agent={row.get('agent', '')}",
                     f"  - Evidence: {', '.join(str(ref) for ref in list(row.get('evidence_refs', []) or [])) or 'not_captured'}",
                     f"  - Context Pack: {row.get('context_pack_checksum', '') or 'not_captured'}",
                     f"  - Diagnosis: {row.get('diagnosis', '') or 'not_captured'}",
@@ -339,29 +452,35 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
         lines.extend(
             [
                 "",
-                "## Dependency Policy",
+                "## 11. Dependency Policy Review",
                 "",
-                f"- Status: {dependency_policy.get('status', '')}",
-                f"- Risks: {dependency_policy.get('risks_count', 0)}",
-                f"- Blockers: {dependency_policy.get('blockers_count', 0)}",
-                f"- Copilot Advisory: {dependency_policy.get('copilot_advisory_status', 'SKIPPED')}",
-                f"- Policy Patch Applied: {str(dependency_policy.get('policy_patch_applied', False)).lower()}",
-                f"- Report: {dependency_policy.get('report_ref', '')}",
+                "| Field | Value |",
+                "|---|---|",
+                f"| Status | **`{dependency_policy.get('status', '')}`** |",
+                f"| Risks | `{dependency_policy.get('risks_count', 0)}` |",
+                f"| Blockers | `{dependency_policy.get('blockers_count', 0)}` |",
+                f"| Copilot Advisory | `{dependency_policy.get('copilot_advisory_status', 'SKIPPED')}` |",
+                f"| Policy Patch Applied | `{str(dependency_policy.get('policy_patch_applied', False)).lower()}` |",
+                f"| Report | `{dependency_policy.get('report_ref', '')}` |",
             ]
         )
     timing_report = dict(payload.get("timing", {}) or {})
     lines.extend(
         [
             "",
+            "## 12. Timing",
+            "",
             "## Timing",
             "",
-            f"- Total duration: {_format_duration(timing_report.get('total_duration_seconds'))}",
-            f"- Timing report: {timing_report.get('timing_report', '')}",
-            f"- Timing summary: {timing_report.get('timing_summary', '')}",
+            "| Field | Value |",
+            "|---|---|",
+            f"| **Total duration** | **`{_format_duration(timing_report.get('total_duration_seconds'))}`** |",
+            f"| Timing report | `{timing_report.get('timing_report', '')}` |",
+            f"| Timing summary | `{timing_report.get('timing_summary', '')}` |",
         ]
     )
     artifacts = dict(payload.get("artifact_refs", {}) or {})
-    lines.extend(["", "## Related Artifacts", ""])
+    lines.extend(["", "## 13. Related Artifacts", "", "| Artifact | Path |", "|---|---|"])
     for name in (
         "approval_decision",
         "approved_plan_lock",
@@ -376,7 +495,7 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
     ):
         ref = str(artifacts.get(name) or "")
         if ref:
-            lines.append(f"- {name}: {ref}")
+            lines.append(f"| `{name}` | `{ref}` |")
     statement = payload.get("copilot_advisory_statement")
     if isinstance(statement, dict):
         artifact_refs = statement.get("artifact_refs", {})
@@ -387,12 +506,28 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
                 "",
                 "## Copilot Advisory Statement",
                 "",
+                "## 14. Copilot Advisory Statement",
+                "",
                 _SANDBOX_ONLY_DISCLAIMER,
                 "",
-                f"- JSON: {json_ref}",
-                f"- Markdown: {md_ref}",
+                f"- JSON: `{json_ref}`",
+                f"- Markdown: `{md_ref}`",
             ]
         )
+    lines.extend(
+        [
+            "",
+            "## 15. Final Note",
+            "",
+            (
+                "This document is intended to help a reviewer understand what happened during the migration, "
+                "why the application is now in its current state, and which areas still require manual judgment. "
+                "The deterministic run artifacts remain the source of truth."
+            ),
+            "",
+            "**POC-ready sandbox migration artifacts are captured under this run directory.**",
+        ]
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -435,22 +570,36 @@ def _timing_context(
     timing_report = timing_report or {}
     phase_durations = timing_report.get("phase_durations_seconds")
     phase_map = phase_durations if isinstance(phase_durations, dict) else {}
+    pipeline_history = _pipeline_history_context(state)
+    aggregate_duration = sum(
+        duration
+        for duration in (_float_or_none(stage.get("duration_seconds")) for stage in pipeline_history)
+        if duration is not None
+    )
     return {
         "timing_report": artifact_refs.get("timing_report", ""),
         "timing_summary": artifact_refs.get("timing_summary", ""),
-        "total_duration_seconds": _float_or_none(phase_map.get("total_run")),
+        "total_duration_seconds": aggregate_duration or _float_or_none(phase_map.get("total_run")),
     }
 
 
 def _change_summary(
     source_stack: dict[str, Any],
     target_stack: dict[str, Any],
+    full_migration_source_stack: dict[str, Any],
+    full_migration_target_stack: dict[str, Any],
+    pipeline_history: list[dict[str, Any]],
     recipes: list[str],
     repair_loop: dict[str, Any],
     dependency_policy: dict[str, Any],
     ai_trace: list[dict[str, Any]],
 ) -> list[str]:
     changes: list[str] = []
+    if full_migration_source_stack or full_migration_target_stack:
+        changes.append(
+            "Full migration path: "
+            f"{_stack_transition_text(full_migration_source_stack, full_migration_target_stack)}"
+        )
     if source_stack or target_stack:
         java_change = _stack_change_text("Java", source_stack.get("java"), target_stack.get("java"))
         if java_change:
@@ -469,6 +618,16 @@ def _change_summary(
         )
         if framework_change:
             changes.append(framework_change)
+    if pipeline_history:
+        for stage in pipeline_history:
+            stage_row = dict(stage or {})
+            stage_source = dict(stage_row.get("source_stack", {}) or {})
+            stage_target = dict(stage_row.get("target_stack", {}) or {})
+            changes.append(
+                f"Stage {stage_row.get('stage_index', 'not_captured')} "
+                f"({stage_row.get('profile', '') or stage_row.get('pipeline_stage', 'not_captured')}): "
+                f"{_stack_transition_text(stage_source, stage_target)}"
+            )
     if recipes:
         changes.append(f"Executed OpenRewrite recipes: {', '.join(recipes)}.")
     if dependency_policy.get("policy_patch_applied"):
@@ -490,11 +649,14 @@ def _report_summary(
     test_status: str,
     total_duration_seconds: float | None,
     change_summary: list[str],
+    full_migration_source_stack: dict[str, Any],
+    full_migration_target_stack: dict[str, Any],
 ) -> str:
     duration_text = _format_duration(total_duration_seconds)
     lead_change = change_summary[0] if change_summary else "No change summary was captured."
     return (
-        f"Migration completed with approval decision {approval_decision or 'not_captured'}, "
+        f"Migration completed for the full path {_stack_transition_text(full_migration_source_stack, full_migration_target_stack)} "
+        f"with approval decision {approval_decision or 'not_captured'}, "
         f"transform status {transform_status or 'not_captured'}, build status {build_status or 'not_captured'}, "
         f"and test status {test_status or 'not_captured'}. "
         f"Elapsed duration: {duration_text}. "
@@ -938,6 +1100,62 @@ def _stack_change_text(label: str, source: Any, target: Any) -> str:
     if source_text == target_text:
         return f"{label} remained at {target_text}."
     return f"{label} changed from {source_text or 'not_captured'} to {target_text or 'not_captured'}."
+
+
+def _stack_path_text(stack: dict[str, Any]) -> str:
+    spring_boot = str(stack.get("spring_boot", "")).strip() or "not_captured"
+    java = str(stack.get("java", "")).strip() or "not_captured"
+    return f"Spring Boot {spring_boot} / Java {java}"
+
+
+def _stack_transition_text(source_stack: dict[str, Any], target_stack: dict[str, Any]) -> str:
+    return f"{_stack_path_text(source_stack)} -> {_stack_path_text(target_stack)}"
+
+
+def _pipeline_history_context(state: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = state.get("pipeline_history")
+    if not isinstance(rows, list):
+        return []
+    return [dict(row) for row in rows if isinstance(row, dict)]
+
+
+def _completed_target_stack(pipeline_history: list[dict[str, Any]]) -> dict[str, Any]:
+    completed = [
+        dict(stage.get("target_stack", {}) or {})
+        for stage in pipeline_history
+        if isinstance(stage, dict) and str(stage.get("chain_status") or "").upper() not in {"", "PENDING", "FAILED"}
+    ]
+    return completed[-1] if completed else {}
+
+
+def _latest_completed_stage(pipeline_history: list[dict[str, Any]]) -> dict[str, Any]:
+    completed = [
+        dict(stage)
+        for stage in pipeline_history
+        if isinstance(stage, dict) and str(stage.get("chain_status") or "").upper() not in {"", "PENDING", "FAILED", "BLOCKED"}
+    ]
+    return completed[-1] if completed else {}
+
+
+def _stage_label(stage: dict[str, Any]) -> str:
+    if not stage:
+        return "not captured"
+    stage_index = stage.get("stage_index")
+    profile = str(stage.get("profile", "") or stage.get("pipeline_stage", "")).strip()
+    if stage_index is None and not profile:
+        return "not captured"
+    if profile:
+        return f"Stage {stage_index}: {profile}"
+    return f"Stage {stage_index}"
+
+
+def _dedupe_strings(values: list[Any]) -> list[str]:
+    deduped: list[str] = []
+    for value in values:
+        text = str(value).strip()
+        if text and text not in deduped:
+            deduped.append(text)
+    return deduped
 
 
 def _format_duration(value: Any) -> str:

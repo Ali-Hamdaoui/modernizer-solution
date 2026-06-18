@@ -18,6 +18,7 @@ import {
   rejectV2Card,
   requireJobId,
   v2EventStreamUrl,
+  v2FinalReportPdfDownloadUrl,
   v2RootPomDownloadUrl,
 } from "../../../lib/controlTowerApi";
 import type {
@@ -92,6 +93,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [report, setReport] = useState<V2FinalReportResponse | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
   const normalizedJobId = jobId?.trim() ?? "";
+  const reportReady = isReportReady(data?.stages ?? []);
 
   useEffect(() => {
     if (!normalizedJobId) {
@@ -372,6 +374,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       const generated = await generateV2FinalReport(normalizedJobId);
       setReport(generated);
       await refreshLiveState();
+      triggerPdfDownload(normalizedJobId);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Final report generation failed");
     } finally {
@@ -776,15 +779,15 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
             type="button"
             disabled={
               reportBusy
-              || !(data.stages || []).some((stage) => stage.stage_index === 3 && stage.chain_status === "completed")
+              || !reportReady
             }
             onClick={() => void generateReport()}
           >
             {report ? "Regenerate report" : "Generate report"}
           </button>
         </div>
-        {!(data.stages || []).some((stage) => stage.stage_index === 3 && stage.chain_status === "completed") && (
-          <p className="meta">Report generation unlocks after Stage 3 completes successfully.</p>
+        {!reportReady && (
+          <p className="meta">Report generation unlocks after the latest migration stage completes successfully.</p>
         )}
         {report ? (
           <div className="artifact-preview">
@@ -793,14 +796,31 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
             <p className="meta">
               Duration: {report.total_duration_seconds == null ? "not captured" : `${report.total_duration_seconds.toFixed(3)}s`}
             </p>
+            {report.full_migration_source_stack && report.full_migration_target_stack && (
+              <p className="meta">
+                Journey: {formatStack(report.full_migration_source_stack)} {"->"} {formatStack(report.full_migration_target_stack)}
+              </p>
+            )}
             <p className="meta">Markdown: <code>{report.docs_report_markdown}</code></p>
-            <p className="meta">JSON: <code>{report.docs_report_json}</code></p>
+            <p className="meta">PDF: <code>{report.docs_report_pdf}</code></p>
+            {(report.pipeline_history || []).length > 0 && (
+              <div className="trace-section">
+                <strong>Full migration journey</strong>
+                <ul className="meta">
+                  {(report.pipeline_history || []).map((stage, index) => (
+                    <li key={`journey-${stage.stage_index}-${index}`}>
+                      Stage {stage.stage_index}: {stage.profile} | {formatStack(stage.source_stack)} {"->"} {formatStack(stage.target_stack)} | status={stage.chain_status} | duration={formatDuration(stage.duration_seconds)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {report.change_summary.length > 0 && (
               <div className="trace-section">
                 <strong>What changed</strong>
                 <ul className="meta">
-                  {report.change_summary.map((item) => (
-                    <li key={item}>{item}</li>
+                  {report.change_summary.map((item, index) => (
+                    <li key={`change-${index}`}>{item}</li>
                   ))}
                 </ul>
               </div>
@@ -809,8 +829,8 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
               <div className="trace-section">
                 <strong>Warnings</strong>
                 <ul className="meta">
-                  {report.warnings.map((item) => (
-                    <li key={item}>{item}</li>
+                  {report.warnings.map((item, index) => (
+                    <li key={`warning-${index}`}>{item}</li>
                   ))}
                 </ul>
               </div>
@@ -1074,6 +1094,43 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       `}</style>
     </div>
   );
+}
+
+function formatStack(stack: Record<string, unknown> | undefined): string {
+  if (!stack) {
+    return "not captured";
+  }
+  const springBoot = String(stack["spring_boot"] ?? "").trim();
+  const java = String(stack["java"] ?? "").trim();
+  if (!springBoot && !java) {
+    return "not captured";
+  }
+  return `Spring Boot ${springBoot || "?"} / Java ${java || "?"}`;
+}
+
+function formatDuration(value: number | null | undefined): string {
+  return value == null ? "not captured" : `${value.toFixed(3)}s`;
+}
+
+function isReportReady(stages: Stage[]): boolean {
+  if (stages.length === 0) {
+    return false;
+  }
+  const highestStageIndex = stages.reduce((highest, stage) => Math.max(highest, stage.stage_index), 0);
+  return stages.some((stage) => stage.stage_index === highestStageIndex && stage.chain_status === "completed");
+}
+
+function triggerPdfDownload(jobId: string): void {
+  if (typeof document === "undefined") {
+    return;
+  }
+  const anchor = document.createElement("a");
+  anchor.href = v2FinalReportPdfDownloadUrl(jobId);
+  anchor.download = `${jobId}-full-migration-report.pdf`;
+  anchor.rel = "noopener";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
 }
 
 function artifactKindLabel(kind: string): string {
