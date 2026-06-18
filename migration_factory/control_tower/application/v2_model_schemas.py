@@ -18,6 +18,8 @@ REQUIRED_SCHEMAS = (
     "ReviewerCritique",
     "ActionRequest",
     "AssistantAnswer",
+    "Model1ReviewResult",
+    "Model2VerificationResult",
 )
 
 TOKEN_BUDGETS = {
@@ -152,12 +154,63 @@ ASSISTANT_ANSWER_SCHEMA = {
     },
 }
 
+MODEL_1_REVIEW_RESULT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "summary",
+        "root_cause",
+        "confidence",
+        "evidence_refs",
+        "recommended_action",
+        "risk_level",
+        "proposed_next_steps",
+    ],
+    "properties": {
+        "summary": {"type": "string"},
+        "root_cause": {"type": "string"},
+        "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+        "recommended_action": {"type": "string"},
+        "risk_level": {"type": "string", "enum": ["low", "medium", "high"]},
+        "proposed_next_steps": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+MODEL_2_VERIFICATION_RESULT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "verdict",
+        "evidence_alignment",
+        "hallucination_check",
+        "policy_check",
+        "risk_level",
+        "issues_found",
+        "human_approval_required",
+    ],
+    "properties": {
+        "verdict": {
+            "type": "string",
+            "enum": ["accepted", "rejected", "needs_human_review"],
+        },
+        "evidence_alignment": {"type": "string"},
+        "hallucination_check": {"type": "string"},
+        "policy_check": {"type": "string"},
+        "risk_level": {"type": "string", "enum": ["low", "medium", "high"]},
+        "issues_found": {"type": "array", "items": {"type": "string"}},
+        "human_approval_required": {"type": "boolean"},
+    },
+}
+
 SCHEMA_REGISTRY = {
     "PlanProposal": PLAN_PROPOSAL_SCHEMA,
     "RepairProposal": REPAIR_PROPOSAL_SCHEMA,
     "ReviewerCritique": REVIEWER_CRITIQUE_SCHEMA,
     "ActionRequest": ACTION_REQUEST_SCHEMA,
     "AssistantAnswer": ASSISTANT_ANSWER_SCHEMA,
+    "Model1ReviewResult": MODEL_1_REVIEW_RESULT_SCHEMA,
+    "Model2VerificationResult": MODEL_2_VERIFICATION_RESULT_SCHEMA,
 }
 
 

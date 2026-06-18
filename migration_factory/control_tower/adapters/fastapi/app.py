@@ -185,6 +185,9 @@ from migration_factory.control_tower.application.v2_diagnosis_proposal_flow impo
     build_default_structured_model_clients,
     V2DiagnosisProposalFlowService,
 )
+from migration_factory.control_tower.application.v2_dual_model_runtime import (
+    V2DualModelRuntimeService,
+)
 from migration_factory.control_tower.application.redaction import redact_public_value
 from migration_factory.control_tower.adapters.fastapi.security import (
     MUTATION_METHODS,
@@ -1230,6 +1233,11 @@ def create_app(
             persisted_diagnosis=diagnosis_payload,
         )
         return redact_public_data(bundle.to_dict())
+
+    @app.get("/v1/v2/model-runtime/status")
+    def get_v2_model_runtime_status() -> dict[str, Any]:
+        """Return read-only dual-model runtime readiness and fallback status."""
+        return redact_public_data(V2DualModelRuntimeService().get_status().to_dict())
 
     @app.get("/v1/v2/jobs/{job_id}/artifacts/{artifact_kind}")
     def get_v2_job_artifact_preview(
