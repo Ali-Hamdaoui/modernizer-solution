@@ -132,6 +132,12 @@ class V2RepairFlowService:
                 status=proposal.status,
                 approval_checksum=proposal.approval_checksum,
                 created_at=proposal.created_at,
+                proposal_checksum=proposal.proposal_checksum,
+                source_proposal_id=proposal.source_proposal_id,
+                revision_of=proposal.revision_of,
+                revision_number=proposal.revision_number,
+                context_pack_checksum=proposal.context_pack_checksum,
+                allowed_scope=proposal.allowed_scope,
             )
             self._repo.save_proposal(record)
         return proposal
@@ -197,6 +203,12 @@ class V2RepairFlowService:
                 status=proposal.status,
                 approval_checksum=proposal.approval_checksum,
                 created_at=proposal.created_at,
+                proposal_checksum=proposal.proposal_checksum,
+                source_proposal_id=proposal.source_proposal_id,
+                revision_of=proposal.revision_of,
+                revision_number=proposal.revision_number,
+                context_pack_checksum=proposal.context_pack_checksum,
+                allowed_scope=proposal.allowed_scope,
             )
             self._repo.save_proposal(record)
         return proposal
@@ -229,13 +241,24 @@ class V2RepairFlowService:
                     status=record.status,
                     approval_checksum=record.approval_checksum,
                     created_at=record.created_at,
-                    proposal_checksum=self._proposal_checksum(
+                    proposal_checksum=record.proposal_checksum
+                    or self._proposal_checksum(
                         command_id=record.command_id,
                         failure_summary=record.failure_summary,
                         hypothesis=record.hypothesis,
                         patch_summary=record.patch_summary,
                         affected_paths=tuple(json.loads(record.affected_paths_json)),
+                        source_proposal_id=record.source_proposal_id,
+                        revision_of=record.revision_of,
+                        revision_number=record.revision_number,
+                        context_pack_checksum=record.context_pack_checksum,
+                        allowed_scope=record.allowed_scope,
                     ),
+                    source_proposal_id=record.source_proposal_id,
+                    revision_of=record.revision_of,
+                    revision_number=record.revision_number,
+                    context_pack_checksum=record.context_pack_checksum,
+                    allowed_scope=record.allowed_scope,
                 )
                 self._proposals[proposal_id] = proposal
         if proposal is None:
@@ -312,13 +335,24 @@ class V2RepairFlowService:
                     status=record.status,
                     approval_checksum=record.approval_checksum,
                     created_at=record.created_at,
-                    proposal_checksum=self._proposal_checksum(
+                    proposal_checksum=record.proposal_checksum
+                    or self._proposal_checksum(
                         command_id=record.command_id,
                         failure_summary=record.failure_summary,
                         hypothesis=record.hypothesis,
                         patch_summary=record.patch_summary,
                         affected_paths=tuple(json.loads(record.affected_paths_json)),
+                        source_proposal_id=record.source_proposal_id,
+                        revision_of=record.revision_of,
+                        revision_number=record.revision_number,
+                        context_pack_checksum=record.context_pack_checksum,
+                        allowed_scope=record.allowed_scope,
                     ),
+                    source_proposal_id=record.source_proposal_id,
+                    revision_of=record.revision_of,
+                    revision_number=record.revision_number,
+                    context_pack_checksum=record.context_pack_checksum,
+                    allowed_scope=record.allowed_scope,
                 )
                 self._proposals[proposal_id] = proposal
         if proposal is None:

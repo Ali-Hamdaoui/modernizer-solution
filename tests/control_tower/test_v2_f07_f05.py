@@ -1204,6 +1204,45 @@ class TestF05RevisionPersistence:
         loaded = repo.get_proposal(revised.proposal_id)
         assert loaded is not None
         assert loaded.status == "draft"
+        assert loaded.source_proposal_id == "prop-src"
+        assert loaded.revision_of == "prop-src"
+        assert loaded.revision_number == 2
+        assert loaded.context_pack_checksum == "cp-123"
+        assert loaded.allowed_scope == "pom_only"
+        assert loaded.proposal_checksum == revised.proposal_checksum
+
+    def test_reloaded_revision_keeps_checksum_and_metadata(self, tmp_path: Path) -> None:
+        conn = _connection(tmp_path)
+        repo = SqliteV2RepairRepository(conn)
+        service = V2RepairFlowService(repair_repo=repo)
+
+        source = service.create_proposal(
+            command_id="cmd1",
+            failure_summary="Original failure",
+            hypothesis="Original hypothesis",
+            patch_summary="Original patch",
+            affected_paths=("pom.xml",),
+        )
+        revised = service.create_revision_proposal(
+            command_id="cmd1",
+            source_proposal_id=source.proposal_id,
+            failure_summary="Revised failure",
+            hypothesis="Revised hypothesis",
+            patch_summary="Revised patch",
+            affected_paths=("pom.xml",),
+            context_pack_checksum="cp-456",
+            allowed_scope="any",
+            revision_number=3,
+        )
+
+        reloaded = repo.get_proposal(revised.proposal_id)
+        assert reloaded is not None
+        assert reloaded.proposal_checksum == revised.proposal_checksum
+        assert reloaded.source_proposal_id == source.proposal_id
+        assert reloaded.revision_of == source.proposal_id
+        assert reloaded.revision_number == 3
+        assert reloaded.context_pack_checksum == "cp-456"
+        assert reloaded.allowed_scope == "any"
 
     def test_revision_does_not_mutate_source_proposal(self, tmp_path: Path) -> None:
         conn = _connection(tmp_path)
