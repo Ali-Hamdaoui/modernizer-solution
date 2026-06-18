@@ -34,3 +34,6 @@ graphify-out/.graphify_labels.json
 graphify-out/graph.html
 
 .migration/
+
+# Control Tower local test database and runtime state
+.local/
