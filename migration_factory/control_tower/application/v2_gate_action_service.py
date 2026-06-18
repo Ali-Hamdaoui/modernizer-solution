@@ -713,7 +713,18 @@ class V2GateActionService:
         #    of the current gate state.
         effective_idempotency_key = (
             idempotency_key
-            or f"{gate_id}:{GateDecision.CONTINUE.value}"
+            or sha256_canonical_json(
+                {
+                    "gate_id": gate_id,
+                    "job_id": job_id,
+                    "action": GateDecision.CONTINUE.value,
+                    "decided_by": decided_by,
+                    "proposal_id": proposal_id,
+                    "proposal_checksum": proposal_checksum,
+                    "context_pack_checksum": context_pack_checksum,
+                    "actor_type": GateActorType.HUMAN.value,
+                }
+            )
         )
         request_checksum = sha256_canonical_json(
             {
