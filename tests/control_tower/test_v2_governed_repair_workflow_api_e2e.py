@@ -95,6 +95,16 @@ def _approve(client: TestClient, job_id: str, proposal_id: str, checksum: str):
     )
 
 
+def _reject(client: TestClient, job_id: str, proposal_id: str):
+    return _post(
+        client,
+        job_id,
+        proposal_id,
+        "reject",
+        {"reason": "manual review required", "operator": "architect"},
+    )
+
+
 def _run_api_chain_to_apply(client: TestClient, job_id: str, proposal_id: str) -> None:
     for step in (
         "materialize-execution-plan",
@@ -202,3 +212,40 @@ def test_api_governed_repair_workflow_safety_gates(tmp_path: Path) -> None:
     assert "applied to sandbox before validation" in before_apply.text.lower()
     assert not (proposal_dir / "sandbox_validation_result.json").exists()
     assert (run_dir / "workspaces" / "sandbox" / "pom.xml").is_file()
+
+
+def test_api_governed_repair_workflow_reject_path(tmp_path: Path) -> None:
+    client, job_id, run_dir, source_pom, proposal_id, proposal_dir, _checksum = _seed_api_workflow(
+        tmp_path,
+        _validation_success,
+    )
+    sandbox_pom = run_dir / "workspaces" / "sandbox" / "pom.xml"
+    source_before = source_pom.read_text(encoding="utf-8")
+    sandbox_before = sandbox_pom.read_text(encoding="utf-8")
+
+    rejected = _reject(client, job_id, proposal_id)
+    assert rejected.status_code == 200, rejected.text
+    body = rejected.json()
+    assert body["approval_result"] == "rejected"
+    assert body["applied"] is False
+    assert body["approval_state"]["state"] == "rejected"
+    assert body["approval_state"]["operator"] == "architect"
+    assert body["approval_state"]["reason"] == "manual review required"
+
+    lifecycle = client.get(f"/v1/v2/migration-jobs/{job_id}/repair-lifecycle")
+    assert lifecycle.status_code == 200, lifecycle.text
+    lifecycle_proposal = lifecycle.json()["repair_proposals"][0]
+    assert lifecycle_proposal["current_state"] == "rejected"
+    assert lifecycle_proposal["next_operator_action"] == "human review required"
+    assert lifecycle_proposal["stage_resumed"] is False
+    assert lifecycle_proposal["source_mutated"] is False
+
+    for endpoint in ("materialize-execution-plan", "materialize-patch-candidate", "apply-to-sandbox", "validate-sandbox-repair"):
+        response = _post(client, job_id, proposal_id, endpoint)
+        assert response.status_code != 200
+
+    assert source_pom.read_text(encoding="utf-8") == source_before
+    assert sandbox_pom.read_text(encoding="utf-8") == sandbox_before
+    assert not (proposal_dir / "sandbox_apply_result.json").exists()
+    assert not (proposal_dir / "sandbox_validation_result.json").exists()
+    assert (proposal_dir / "approval_state.json").is_file()
