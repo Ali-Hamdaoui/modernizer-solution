@@ -406,6 +406,57 @@ def _seed_stage1_command(
     return command_id
 
 
+def _seed_stage3_completed_job(
+    conn: sqlite3.Connection,
+    *,
+    job_id: str,
+    sandbox_path: Path,
+) -> str:
+    """Seed a completed Stage 3 sandbox and POM so read-only asks can inspect it."""
+    sandbox_path.mkdir(parents=True, exist_ok=True)
+    (sandbox_path / "pom.xml").write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>stage3-smoke</artifactId>
+  <version>1.0.0</version>
+</project>
+""",
+        encoding="utf-8",
+    )
+    command_id = f"stage3-{job_id}"
+    now = utc_now_text()
+    result_json = json.dumps({
+        "sandbox_path": str(sandbox_path),
+        "final_status": "STAGE_3_COMPLETED",
+    })
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=3,
+            event_type="stage_completed",
+            status="completed",
+            message="Stage 3 stage_completed.",
+            payload={"sandbox_path": str(sandbox_path), "command_id": command_id},
+        )
+        uow.v2_commands.save(
+            V2StageCommandRecord(
+                command_id=command_id,
+                job_id=job_id,
+                stage_index=3,
+                manifest_checksum="test-seed-3",
+                argv_json=json.dumps(["test-runner", "--stage", "3", "--modernized", str(sandbox_path)]),
+                env_json=json.dumps({}, separators=(",", ":")),
+                status="completed",
+                created_at=now,
+                updated_at=now,
+                result_json=result_json,
+            )
+        )
+    return command_id
+
+
 # ── Tests ──────────────────────────────────────────────────────────────
 
 
@@ -427,6 +478,36 @@ def test_ask_without_gate_falls_back(tmp_path: Path) -> None:
     assert "assistant_message" in data
     assert "model" in data
     assert data.get("guardrails", {}).get("read_only") is True
+
+
+@pytest.mark.parametrize(
+    ("question", "seed_stage3"),
+    [
+        ("hey", False),
+        ("what about the pom?", True),
+        ("what is the status during Stage 3?", True),
+    ],
+    ids=("simple", "stage3-pom", "stage3-status"),
+)
+def test_read_only_assistant_ask_import_smoke(tmp_path: Path, question: str, seed_stage3: bool) -> None:
+    """Read-only asks must not crash on stale assistant model imports."""
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    if seed_stage3:
+        _seed_stage3_completed_job(conn, job_id=job_id, sandbox_path=tmp_path / "stage3-sandbox")
+
+    resp = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": question},
+        headers=_mutation_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["job_id"] == job_id
+    assert body.get("assistant_message", {}).get("content")
+    assert body.get("guardrails", {}).get("read_only") is True
 
 
 def test_ask_with_open_gate_returns_gate_aware(tmp_path: Path) -> None:

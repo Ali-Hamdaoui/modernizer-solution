@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import MigrationCockpitPage from "../app/migrations/[jobId]/page";
 import {
   MigrationCockpit,
+  AssistantPanelContent,
   GatePanelContent,
   formatGateArtifactRefLabel,
   mergeCockpitLiveRefreshResults,
@@ -110,6 +111,41 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Reject");
     expect(markup).toContain("diagnosis:1");
     expect(markup).toContain("sha256:gate-checksum");
+  });
+
+  it("renders assistant-specific ask failures without collapsing the cockpit shell", () => {
+    const markup = renderToStaticMarkup(
+      <AssistantPanelContent
+        assistantModel={{
+          status: "fallback",
+          source: "deterministic",
+          provider: "backend",
+          role: "assistant",
+          failure_reason: "assistant_ask_failed",
+        }}
+        messages={[
+          {
+            message_id: "msg-1",
+            job_id: "job-1",
+            role: "assistant",
+            content: "Stage 3 is complete and the root POM is available.",
+            correlation_id: null,
+            created_at: "2026-06-18T00:00:00Z",
+          },
+        ]}
+        assistantError="Control Tower mutation failed for /v1/v2/jobs/job-1/assistant/ask: 500 Internal Server Error."
+        assistantQuestion="what about the pom?"
+        assistantBusy={false}
+        approvalReviewOpen={false}
+        onQuestionChange={() => undefined}
+        onAsk={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("Assistant request failed");
+    expect(markup).toContain("Stage 3 is complete and the root POM is available.");
+    expect(markup).toContain("what about the pom?");
+    expect(markup).not.toContain("Failed to fetch");
   });
 
   it("redacts absolute Windows artifact refs down to short labels", () => {

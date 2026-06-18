@@ -6461,7 +6461,6 @@ def _handle_v2_assistant_read_only_ask(
 ) -> dict[str, Any]:
     from migration_factory.control_tower.application.v2_assistant_service import (
         AssistantMessage,
-        V2AssistantModelResult,
         V2AssistantService,
     )
 
@@ -6854,7 +6853,6 @@ def _fallback_to_existing_assistant(
     """Fall back to the existing V2AssistantService when gate load fails."""
     from migration_factory.control_tower.application.v2_assistant_service import (
         V2AssistantService,
-        V2AssistantModelResult,
     )
     with unit_of_work_factory() as uow:
         job = _require_v2_job(uow, job_id)

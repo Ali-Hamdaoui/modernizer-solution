@@ -167,11 +167,81 @@ export function GatePanelContent({ state }: { state: GatePanelState }) {
   );
 }
 
+interface AssistantPanelContentProps {
+  assistantModel: CockpitData["assistantModel"];
+  messages: V2AssistantMessageResponse[];
+  assistantError: string | null;
+  assistantQuestion: string;
+  assistantBusy: boolean;
+  approvalReviewOpen: boolean;
+  onQuestionChange: (value: string) => void;
+  onAsk: () => void;
+}
+
+export function AssistantPanelContent({
+  assistantModel,
+  messages,
+  assistantError,
+  assistantQuestion,
+  assistantBusy,
+  approvalReviewOpen,
+  onQuestionChange,
+  onAsk,
+}: AssistantPanelContentProps) {
+  return (
+    <section className="panel">
+      <h2>Assistant</h2>
+      <p className="meta">
+        Model: {assistantModel?.status ?? "unavailable"} | Source: {assistantModel?.source ?? "deterministic"}
+        {assistantModel?.failure_reason ? ` | Reason: ${assistantModel.failure_reason}` : ""}
+        {assistantModel?.status === "live_ok" ? " | Live Azure OpenAI" : ""}
+      </p>
+      {assistantError && (
+        <p className="assistant-error" role="alert">
+          Assistant request failed: {assistantError}
+        </p>
+      )}
+      {messages.length === 0 ? (
+        <p className="meta">No messages yet. The assistant can explain status and draft instructions.</p>
+      ) : (
+        messages.map((m) => (
+          <div key={m.message_id} className="message">
+            <strong>{m.role}:</strong> {m.content}
+          </div>
+        ))
+      )}
+      <div className="assistant-composer">
+        <input
+          aria-label="Ask assistant"
+          value={assistantQuestion}
+          onChange={(event) => onQuestionChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") void onAsk();
+          }}
+          placeholder="Ask what happened so far"
+        />
+        <button type="button" disabled={assistantBusy || !assistantQuestion.trim()} onClick={() => void onAsk()}>
+          Ask
+        </button>
+      </div>
+      {approvalReviewOpen && (
+        <p className="meta">
+          Pre-transform review is open in the chatbot. Legacy Approve/Reject controls are disabled here; use the assistant to review evidence, request changes, and confirm the exact checksum.
+        </p>
+      )}
+      <p className="meta">
+        Assistant cannot execute, approve, write files, change route, or override proof.
+      </p>
+    </section>
+  );
+}
+
 export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [data, setData] = useState<CockpitData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [assistantQuestion, setAssistantQuestion] = useState("");
   const [assistantBusy, setAssistantBusy] = useState(false);
+  const [assistantError, setAssistantError] = useState<string | null>(null);
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
   const [artifactPreview, setArtifactPreview] = useState<V2ArtifactPreviewResponse | null>(null);
   const [artifactPreviewBusy, setArtifactPreviewBusy] = useState<string | null>(null);
@@ -372,6 +442,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     const question = assistantQuestion.trim();
     if (!question || !normalizedJobId) return;
     setAssistantBusy(true);
+    setAssistantError(null);
     try {
       const response = await askV2Assistant(normalizedJobId, question);
       setData((current) => {
@@ -388,7 +459,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       });
       setAssistantQuestion("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Assistant request failed");
+      setAssistantError(e instanceof Error ? e.message : "Assistant request failed");
     } finally {
       setAssistantBusy(false);
     }
@@ -854,40 +925,16 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       )}
 
       {/* Assistant Panel */}
-      <section className="panel">
-        <h2>Assistant</h2>
-        <p className="meta">
-          Model: {data.assistantModel?.status ?? "unavailable"} | Source: {data.assistantModel?.source ?? "deterministic"}
-          {data.assistantModel?.failure_reason ? ` | Reason: ${data.assistantModel.failure_reason}` : ""}
-          {data.assistantModel?.status === "live_ok" ? " | Live Azure OpenAI" : ""}
-        </p>
-        {data.messages.length === 0 ? (
-          <p className="meta">No messages yet. The assistant can explain status and draft instructions.</p>
-        ) : (
-          data.messages.map((m) => (
-            <div key={m.message_id} className="message">
-              <strong>{m.role}:</strong> {m.content}
-            </div>
-          ))
-        )}
-        <div className="assistant-composer">
-          <input
-            aria-label="Ask assistant"
-            value={assistantQuestion}
-            onChange={(event) => setAssistantQuestion(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void askAssistant();
-            }}
-            placeholder="Ask what happened so far"
-          />
-          <button type="button" disabled={assistantBusy || !assistantQuestion.trim()} onClick={() => void askAssistant()}>
-            Ask
-          </button>
-        </div>
-        <p className="meta">
-          Assistant cannot execute, approve, write files, change route, or override proof.
-        </p>
-      </section>
+      <AssistantPanelContent
+        assistantModel={data.assistantModel}
+        messages={data.messages}
+        assistantError={assistantError}
+        assistantQuestion={assistantQuestion}
+        assistantBusy={assistantBusy}
+        approvalReviewOpen={approvalReviewOpen}
+        onQuestionChange={setAssistantQuestion}
+        onAsk={() => void askAssistant()}
+      />
 
       {/* Proof & Report */}
       <section className="panel">
@@ -951,6 +998,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .assistant-composer input { min-width: 0; padding: 0.5rem; border: 1px solid #aaa; border-radius: 4px; }
         .assistant-composer button { padding: 0.5rem 0.75rem; border: 1px solid #333; border-radius: 4px; background: #fff; }
         .assistant-composer button:disabled { color: #777; border-color: #bbb; }
+        .assistant-error { border: 1px solid #c98300; background: #fff8ea; color: #7a4a00; padding: 0.65rem 0.75rem; border-radius: 4px; margin: 0.5rem 0 0.75rem; }
         .failure-panel { border-color: #a40000; background: #fffafa; }
         .failure-card { border: 1px solid #ffcccc; padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; }
         .failure-card .meta { margin: 0.2rem 0; }
