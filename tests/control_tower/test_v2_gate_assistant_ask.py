@@ -50,6 +50,7 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_reposit
     SqlitePhaseGateRepository,
 )
 from migration_factory.control_tower.domain.gate_checksum import gate_checksum
+from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
 from tests.control_tower.transition_helpers import seed_job
 
 
@@ -319,6 +320,47 @@ class _RecordingApprovalLlmClient:
         return self.result
 
 
+class _RecordingAssistantRoleClient:
+    def __init__(self) -> None:
+        self.roles: list[str] = []
+        self.prompts: list[str] = []
+
+    def answer_with_role(
+        self,
+        *,
+        role,
+        prompt: str,
+        fallback: str,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> V2AssistantModelResult:
+        self.roles.append(role.value)
+        self.prompts.append(prompt)
+        return V2AssistantModelResult(
+            content="assistant role answer",
+            source="azure_openai",
+            model_status="live_ok",
+            provider="azure_openai",
+            role=role.value,
+            success=True,
+            redacted_summary="assistant role answer",
+            failure_reason="",
+        )
+
+    def answer(
+        self,
+        *,
+        prompt: str,
+        fallback: str,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> V2AssistantModelResult:
+        return self.answer_with_role(
+            role=V2ModelRole.ASSISTANT,
+            prompt=prompt,
+            fallback=fallback,
+            conversation_history=conversation_history,
+        )
+
+
 def _create_job(client: TestClient, setup_id: str) -> str:
     resp = client.post(
         "/v1/v2/migration-jobs",
@@ -478,6 +520,28 @@ def test_ask_without_gate_falls_back(tmp_path: Path) -> None:
     assert "assistant_message" in data
     assert "model" in data
     assert data.get("guardrails", {}).get("read_only") is True
+
+
+def test_ask_uses_assistant_role_for_model_client(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+
+    role_client = _RecordingAssistantRoleClient()
+    client.app.state.v2_assistant_model_client = role_client
+
+    resp = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": "What is the status?"},
+        headers=_mutation_headers(),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["assistant_message"]["content"] == "assistant role answer"
+    assert role_client.roles == ["assistant"]
+    assert role_client.prompts
 
 
 @pytest.mark.parametrize(

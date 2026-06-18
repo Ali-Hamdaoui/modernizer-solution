@@ -149,6 +149,7 @@ from migration_factory.control_tower.application.v2_assistant_model_client impor
     V2AssistantModelClient,
     V2AssistantModelResult,
 )
+from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
 from migration_factory.control_tower.application.v2_model_schemas import (
     validate_against_schema,
     SchemaValidationError,
@@ -2230,20 +2231,30 @@ def create_app(
                     failure_reason="",
                 )
             else:
-                model_result = app.state.v2_assistant_model_client.answer(
-                    prompt=_build_v2_assistant_prompt(
-                        question=payload.question,
-                        job=job,
-                        pipeline=pipeline,
-                        events=events,
-                        approvals=approvals,
-                        artifact_previews=artifact_previews if artifact_previews else None,
-                        assistant_intent=assistant_intent,
-                        conversation_history=conversation_history,
-                    ),
-                    fallback=fallback_answer,
+                assistant_prompt = _build_v2_assistant_prompt(
+                    question=payload.question,
+                    job=job,
+                    pipeline=pipeline,
+                    events=events,
+                    approvals=approvals,
+                    artifact_previews=artifact_previews if artifact_previews else None,
+                    assistant_intent=assistant_intent,
                     conversation_history=conversation_history,
                 )
+                assistant_client = app.state.v2_assistant_model_client
+                if hasattr(assistant_client, "answer_with_role"):
+                    model_result = assistant_client.answer_with_role(
+                        role=V2ModelRole.ASSISTANT,
+                        prompt=assistant_prompt,
+                        fallback=fallback_answer,
+                        conversation_history=conversation_history,
+                    )
+                else:
+                    model_result = assistant_client.answer(
+                        prompt=assistant_prompt,
+                        fallback=fallback_answer,
+                        conversation_history=conversation_history,
+                    )
             assistant_msg = service.add_message(
                 job_id=job_id,
                 role="assistant",
@@ -6508,20 +6519,30 @@ def _handle_v2_assistant_read_only_ask(
                     failure_reason="",
                 )
             else:
-                model_result = app.state.v2_assistant_model_client.answer(
-                    prompt=_build_v2_assistant_prompt(
-                        question=question,
-                        job=job,
-                        pipeline=pipeline,
-                        events=events,
-                        approvals=approvals,
-                        artifact_previews=artifact_previews if artifact_previews else None,
-                        assistant_intent=assistant_intent,
-                        conversation_history=(),
-                    ),
-                    fallback=fallback_answer,
+                assistant_client = app.state.v2_assistant_model_client
+                assistant_prompt = _build_v2_assistant_prompt(
+                    question=question,
+                    job=job,
+                    pipeline=pipeline,
+                    events=events,
+                    approvals=approvals,
+                    artifact_previews=artifact_previews if artifact_previews else None,
+                    assistant_intent=assistant_intent,
                     conversation_history=(),
                 )
+                if hasattr(assistant_client, "answer_with_role"):
+                    model_result = assistant_client.answer_with_role(
+                        role=V2ModelRole.ASSISTANT,
+                        prompt=assistant_prompt,
+                        fallback=fallback_answer,
+                        conversation_history=(),
+                    )
+                else:
+                    model_result = assistant_client.answer(
+                        prompt=assistant_prompt,
+                        fallback=fallback_answer,
+                        conversation_history=(),
+                    )
 
             now = utc_now_text()
             user_msg = AssistantMessage(
@@ -6917,20 +6938,30 @@ def _fallback_to_existing_assistant(
                 failure_reason="",
             )
         else:
-            model_result = app.state.v2_assistant_model_client.answer(
-                prompt=_build_v2_assistant_prompt(
-                    question=question,
-                    job=job,
-                    pipeline=pipeline,
-                    events=events,
-                    approvals=approvals,
-                    artifact_previews=artifact_previews if artifact_previews else None,
-                    assistant_intent=assistant_intent,
-                    conversation_history=conversation_history,
-                ),
-                fallback=fallback_answer,
+            assistant_client = app.state.v2_assistant_model_client
+            assistant_prompt = _build_v2_assistant_prompt(
+                question=question,
+                job=job,
+                pipeline=pipeline,
+                events=events,
+                approvals=approvals,
+                artifact_previews=artifact_previews if artifact_previews else None,
+                assistant_intent=assistant_intent,
                 conversation_history=conversation_history,
             )
+            if hasattr(assistant_client, "answer_with_role"):
+                model_result = assistant_client.answer_with_role(
+                    role=V2ModelRole.ASSISTANT,
+                    prompt=assistant_prompt,
+                    fallback=fallback_answer,
+                    conversation_history=conversation_history,
+                )
+            else:
+                model_result = assistant_client.answer(
+                    prompt=assistant_prompt,
+                    fallback=fallback_answer,
+                    conversation_history=conversation_history,
+                )
         assistant_msg = service.add_message(
             job_id=job_id,
             role="assistant",
