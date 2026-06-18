@@ -369,10 +369,11 @@ def test_chatbot_fallback_what_happened_uses_bundle_and_skips_model_call(tmp_pat
     assert response.status_code == 200, response.text
     body = response.json()
     assert fake.calls == []
-    assert body["model"]["status"] == "deterministic_evidence_bundle"
+    assert body["model"]["status"] == "dual_model_failure_diagnosis"
     assert body["evidence_bundle"]["migration_status"] == "failed"
     assert body["evidence_bundle"]["deterministic_failure_classification"]["failure_type"] == "invalid_maven_wildcard_version"
+    assert body["diagnosis_review"]["model2_verdict"] == "accepted"
     lowered = body["assistant_message"]["content"].lower()
-    assert "root cause:" in lowered
-    assert "invalid_maven_wildcard_version" in lowered
-    assert "build failed in sandbox" in lowered
+    assert "verified root cause:" in lowered
+    assert "wildcard maven" in lowered
+    assert "model 2 verdict: accepted" in lowered

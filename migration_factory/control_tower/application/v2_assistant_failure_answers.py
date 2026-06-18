@@ -17,7 +17,7 @@ from migration_factory.control_tower.application.v2_failure_evidence import (
 
 
 _FAILURE_QUESTION_RE = re.compile(
-    r"(?i)\b(why .*fail|why build failed|what is real problem|what should i fix|explain the failure|failure|root cause)\b"
+    r"(?i)\b(why .*fail|why build failed|what is real problem|what should i fix|explain the failure|failure|root cause|pourquoi .*échou|pourquoi .*fail)\b"
 )
 _STAGE_RE = re.compile(r"(?i)\bstage\s+([1-9][0-9]*)\b")
 _SECRET_VALUE_RE = re.compile(

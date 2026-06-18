@@ -194,6 +194,9 @@ from migration_factory.control_tower.application.v2_dual_model_invocation_audit 
 from migration_factory.control_tower.application.v2_planning_dual_model_review import (
     V2PlanningDualModelReviewService,
 )
+from migration_factory.control_tower.application.v2_failure_dual_model_diagnosis import (
+    V2FailureDualModelDiagnosisService,
+)
 from migration_factory.control_tower.application.redaction import redact_public_value
 from migration_factory.control_tower.adapters.fastapi.security import (
     MUTATION_METHODS,
@@ -614,6 +617,10 @@ def create_app(
         model1_client=app.state.v2_proposer_client,
         model2_client=app.state.v2_reviewer_client,
         trace_store=_trace_store,
+    )
+    app.state.v2_dual_model_runtime = _dual_model_runtime
+    app.state.v2_failure_dual_model_diagnosis_service = V2FailureDualModelDiagnosisService(
+        runtime_service=_dual_model_runtime,
     )
     _planning_review_service = V2PlanningDualModelReviewService(
         unit_of_work_factory=unit_of_work_factory,
@@ -1693,6 +1700,79 @@ def create_app(
                         failure_event=failure_event,
                         failure_payload=failure_payload,
                     )
+                bundle = service.build_run_evidence_bundle(
+                    job_id=job_id,
+                    setup=setup,
+                    events=events,
+                    approvals=approvals,
+                    commands=commands,
+                    persisted_diagnosis=diagnosis_payload or None,
+                )
+                if app.state.v2_failure_dual_model_diagnosis_service.should_run(bundle):
+                    diagnosis_review = app.state.v2_failure_dual_model_diagnosis_service.diagnose(
+                        question=payload.question,
+                        bundle=bundle,
+                        setup=setup,
+                    )
+                    assistant_msg = service.add_message(
+                        job_id=job_id,
+                        role="assistant",
+                        content=diagnosis_review.answer,
+                        correlation_id=user_msg.message_id,
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "evidence_bundle": bundle.to_dict(),
+                        "diagnosis_review": diagnosis_review.to_dict(),
+                        "model": {
+                            "status": "dual_model_failure_diagnosis",
+                            "source": "deterministic" if diagnosis_review.model1.get("mode") == "fallback" else "azure_openai",
+                            "provider": diagnosis_review.model1.get("provider") or "deterministic",
+                            "role": "assistant",
+                            "failure_reason": "",
+                        },
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+                if bundle.migration_status.startswith("completed"):
+                    assistant_msg = service.add_message(
+                        job_id=job_id,
+                        role="assistant",
+                        content=service.answer_evidence_question(
+                            question=payload.question,
+                            bundle=bundle,
+                        ),
+                        correlation_id=user_msg.message_id,
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "evidence_bundle": bundle.to_dict(),
+                        "model": {
+                            "status": "deterministic_evidence_bundle",
+                            "source": "deterministic",
+                            "provider": "deterministic",
+                            "role": "assistant",
+                            "failure_reason": "",
+                        },
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
                 deterministic_answer = service.answer_failure_question(
                     job_id=job_id,
                     stage_index=requested_stage,
@@ -1747,6 +1827,40 @@ def create_app(
                     commands=commands,
                     persisted_diagnosis=diagnosis_payload,
                 )
+                if app.state.v2_failure_dual_model_diagnosis_service.should_run(bundle):
+                    diagnosis_review = app.state.v2_failure_dual_model_diagnosis_service.diagnose(
+                        question=payload.question,
+                        bundle=bundle,
+                        setup=setup,
+                    )
+                    assistant_msg = service.add_message(
+                        job_id=job_id,
+                        role="assistant",
+                        content=diagnosis_review.answer,
+                        correlation_id=user_msg.message_id,
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "evidence_bundle": bundle.to_dict(),
+                        "diagnosis_review": diagnosis_review.to_dict(),
+                        "model": {
+                            "status": "dual_model_failure_diagnosis",
+                            "source": "deterministic" if diagnosis_review.model1.get("mode") == "fallback" else "azure_openai",
+                            "provider": diagnosis_review.model1.get("provider") or "deterministic",
+                            "role": "assistant",
+                            "failure_reason": "",
+                        },
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
                 assistant_msg = service.add_message(
                     job_id=job_id,
                     role="assistant",

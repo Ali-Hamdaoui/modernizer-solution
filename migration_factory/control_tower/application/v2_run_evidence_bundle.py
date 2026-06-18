@@ -16,7 +16,7 @@ from migration_factory.control_tower.application.v2_failure_evidence import (
 
 
 _EVIDENCE_QUESTION_RE = re.compile(
-    r"(?i)\b(what happened|current state|where are we|how did .* go|run summary|migration summary)\b"
+    r"(?i)\b(what happened|current state|where are we|how did .* go|run summary|migration summary|qu['’]est-ce qui s['’]est pass[ée])\b"
 )
 _AI_EVENT_TYPES = {
     "model_invocation_started",
@@ -48,6 +48,8 @@ _MAX_EXCERPT_CHARS = 240
 _MAX_ARTIFACT_REFS = 12
 _MAX_FAILURE_EVENTS = 4
 _MAX_SNIPPETS = 5
+_MAVEN_COORD_RE = re.compile(r"\b[\w.\-]+:[\w.\-]+:(?:jar|pom):\d+\.\d+\.x\b")
+_PROPERTY_RE = re.compile(r"\b(?:javax\.persistence\.version|javax\.servlet\.version)\b")
 
 
 @dataclass(frozen=True)
@@ -659,11 +661,28 @@ class V2RunEvidenceBundleService:
         )[:2]
 
     def _snippet_dict(self, snippet: Any) -> dict[str, str]:
+        raw_text = str(getattr(snippet, "text", ""))
         return {
             "source": str(getattr(snippet, "source", "")),
             "label": str(getattr(snippet, "label", "")),
-            "text": self._bounded(str(getattr(snippet, "text", "")), _MAX_EXCERPT_CHARS),
+            "text": self._bounded(self._compress_snippet_text(raw_text), _MAX_EXCERPT_CHARS),
         }
+
+    def _compress_snippet_text(self, text: str) -> str:
+        coords = _MAVEN_COORD_RE.findall(text)
+        props = _PROPERTY_RE.findall(text)
+        fragments: list[str] = []
+        for item in coords:
+            if item not in fragments:
+                fragments.append(item)
+        for item in props:
+            if item not in fragments:
+                fragments.append(item)
+        if "BUILD_FAILED_IN_SANDBOX" in text and "BUILD_FAILED_IN_SANDBOX" not in fragments:
+            fragments.append("BUILD_FAILED_IN_SANDBOX")
+        if fragments:
+            return "; ".join(fragments[:6])
+        return text
 
     def _migration_status(
         self,

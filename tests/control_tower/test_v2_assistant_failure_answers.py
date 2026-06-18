@@ -367,8 +367,10 @@ def test_failure_question_api_uses_deterministic_answer_and_skips_model_call(tmp
     assert response.status_code == 200, response.text
     body = response.json()
     assert fake.calls == []
+    assert body["model"]["status"] == "dual_model_failure_diagnosis"
     assert body["model"]["source"] == "deterministic"
-    assert body["failure_answer"]["failure_type"] == "maven_truststore_pkix"
+    assert body["diagnosis_review"]["model2_verdict"] == "accepted"
+    assert body["diagnosis_review"]["root_cause"] == "Maven/TLS truststore validation failed with PKIX path building error."
     assert "no patch was applied" in body["assistant_message"]["content"].lower()
 
 
@@ -480,14 +482,79 @@ def test_failure_question_api_uses_db_event_derived_stage2_artifacts(tmp_path: P
     assert response.status_code == 200, response.text
     body = response.json()
     assert fake.calls == []
-    assert body["failure_answer"]["failure_type"] == "invalid_maven_wildcard_version"
-    assert "missing failure artifacts" not in body["failure_answer"]["answer"].lower()
-    assert "next action: run_diagnosis" not in body["failure_answer"]["answer"].lower()
-    assert "unknown_build_failure" not in body["failure_answer"]["answer"]
-    assert "unable to deterministically classify" not in body["failure_answer"]["answer"].lower()
-    assert "jakarta.persistence-api:jar:3.0.x" in body["failure_answer"]["answer"]
-    assert "jakarta.servlet-api:jar:5.0.x" in body["failure_answer"]["answer"]
-    assert "javax.persistence.version" in body["failure_answer"]["answer"]
-    assert "javax.servlet.version" in body["failure_answer"]["answer"]
-    assert "pom.xml" in body["failure_answer"]["answer"]
-    assert "BUILD_FAILED_IN_SANDBOX" in body["failure_answer"]["answer"]
+    assert body["model"]["status"] == "dual_model_failure_diagnosis"
+    assert body["diagnosis_review"]["model2_verdict"] == "accepted"
+    assert "wildcard Maven" in body["diagnosis_review"]["root_cause"]
+    assert "missing failure artifacts" not in body["assistant_message"]["content"].lower()
+    assert "next action: run_diagnosis" not in body["assistant_message"]["content"].lower()
+    assert "unknown_build_failure" not in body["assistant_message"]["content"]
+    assert "unable to deterministically classify" not in body["assistant_message"]["content"].lower()
+    assert "jakarta.persistence-api:jar:3.0.x" in body["assistant_message"]["content"]
+    assert "jakarta.servlet-api:jar:5.0.x" in body["assistant_message"]["content"]
+    assert "pom.xml" in body["assistant_message"]["content"]
+    trace_response = client.get(f"/v1/v2/migration-jobs/{job_id}/dual-model-traces")
+    assert trace_response.status_code == 200, trace_response.text
+    trace_body = trace_response.json()
+    contexts = {item["supervision_context"] for item in trace_body["traces"]}
+    assert "failure_diagnosis" in contexts
+    assert "failure_diagnosis_verification" in contexts
+
+
+def test_failure_question_on_completed_run_with_late_model_failure_reports_completion(tmp_path: Path) -> None:
+    fake = _FakeModelClient()
+    client, conn = _client(tmp_path, fake)
+    now = utc_now_text()
+    app_root = tmp_path / "modernized-app"
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_setups.save(
+            V2MigrationSetupRecord(
+                setup_id="setup-complete",
+                run_name="Migration complete",
+                legacy_app_path=str(tmp_path / "legacy-app"),
+                output_parent_path=str(app_root),
+                ai_hub_path=str(tmp_path / "ai-hub"),
+                java11_home="C:/jdk11",
+                java17_home="C:/jdk17",
+                java21_home="C:/jdk21",
+                maven_cmd="mvn",
+                proof_level="standard",
+                skip_endpoint_smoke=False,
+                migration_flags_json="{}",
+                setup_checksum="setup-checksum-complete",
+                checksum_algorithm="sha256",
+                created_at=now,
+                created_by="test",
+                correlation_id=None,
+            )
+        )
+        uow.v2_jobs.save(
+            V2MigrationJobRecord(
+                job_id="job-complete-failure-question",
+                setup_id="setup-complete",
+                setup_checksum="setup-checksum-complete",
+                pipeline_id="springboot-216-to-356-java21-three-stage",
+                stage_chain_json="[]",
+                status="completed",
+                created_at=now,
+                updated_at=now,
+                correlation_id=None,
+            )
+        )
+        uow.v2_events.save(job_id="job-complete-failure-question", stage=3, event_type="stage_completed", status="completed", message="stage 3 completed", payload={"final_status": "TRANSFORM_APPLIED_IN_SANDBOX", "final_proof_level": "compiled"})
+        uow.v2_events.save(job_id="job-complete-failure-question", stage=3, event_type="build_completed", status="completed", message="build passed", payload={"build_status": "BUILD_PASSED_IN_SANDBOX"})
+        uow.v2_events.save(job_id="job-complete-failure-question", stage=3, event_type="test_completed", status="completed", message="tests warnings", payload={"test_status": "PASS_WITH_WARNINGS"})
+        uow.v2_events.save(job_id="job-complete-failure-question", stage=None, event_type="model_invocation_failed", status="failed", message="Azure OpenAI endpoint not configured", payload={"provider": "deterministic"})
+
+    response = client.post(
+        "/v1/v2/jobs/job-complete-failure-question/assistant/ask",
+        json={"question": "why did it fail?"},
+        headers=_mutation_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert fake.calls == []
+    assert body["model"]["status"] == "deterministic_evidence_bundle"
+    assert body["evidence_bundle"]["migration_status"] == "completed_with_warnings"
+    assert "migration evidence shows completion" in body["assistant_message"]["content"].lower()
+    assert "only ai/model supervision is unavailable" in body["assistant_message"]["content"].lower()
