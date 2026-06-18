@@ -78,6 +78,7 @@ def base_attempt(
         "repair_plan_ref": repair_plan_ref,
         "patch_gate_status": "NOT_EVALUATED",
         "deterministic_rule_id": "",
+        "repair_proposal_checksum": "",
         "patch_ref": "",
         "patch_result_ref": "",
         "validation": {

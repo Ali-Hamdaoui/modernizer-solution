@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from migration_factory.control_tower.domain.checksums import utc_now_text
+from migration_factory.control_tower.domain.checksums import (
+    sha256_canonical_json,
+    utc_now_text,
+)
 from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
     SqliteV2RepairRepository,
     V2RepairProposalRecord,
@@ -320,6 +323,7 @@ class V2RepairFlowService:
             "expected_validation": list(expected_validation),
             "limitations": list(limitations),
         }
+        repair_proposal_checksum = sha256_canonical_json(repair_loop_proposal)
         gate = evaluate_patch_proposal(
             proposal=repair_loop_proposal,
             sandbox_path=sandbox_path,
@@ -331,12 +335,14 @@ class V2RepairFlowService:
         attempt["patch_gate_status"] = gate.status
         attempt["deterministic_rule_id"] = gate.rule_id
         attempt["touched_paths"] = list(gate.touched_paths)
+        attempt["repair_proposal_checksum"] = repair_proposal_checksum
         resolved_target_path = ",".join(gate.touched_paths) or "<unresolved>"
         self._emit_repair_event(
             event_recorder,
             "repair_patch_gate_completed",
             {
                 "proposal_id": proposal.proposal_id,
+                "repair_proposal_checksum": repair_proposal_checksum,
                 "binding_checksum": binding_checksum,
                 "patch_gate_status": gate.status,
                 "deterministic_rule_id": gate.rule_id,
