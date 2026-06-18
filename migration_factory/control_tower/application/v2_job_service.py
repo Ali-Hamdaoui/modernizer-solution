@@ -17,9 +17,12 @@ from migration_factory.control_tower.domain.checksums import (
     utc_now_text,
 )
 from migration_factory.control_tower.domain.entities import RunConfigurationRecord
+from migration_factory.control_tower.domain.errors import StorageIntegrityError
 from migration_factory.control_tower.domain.states import TargetProofLevel
 from migration_factory.control_tower.infrastructure.sqlite.repositories import (
+    SqlitePipelineDefinitionRepository,
     SqliteRunConfigurationRepository,
+    SqliteRunnerProfileRepository,
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
     SqliteV2SetupRepository,
@@ -69,10 +72,14 @@ class V2MigrationJobService:
         setup_repo: SqliteV2SetupRepository,
         job_repo: SqliteV2JobRepository | None = None,
         run_config_repo: SqliteRunConfigurationRepository | None = None,
+        runner_profile_repo: SqliteRunnerProfileRepository | None = None,
+        pipeline_repo: SqlitePipelineDefinitionRepository | None = None,
     ) -> None:
         self._setup_service = V2SetupService(setup_repo)
         self._job_repo = job_repo
         self._run_config_repo = run_config_repo
+        self._runner_profile_repo = runner_profile_repo
+        self._pipeline_repo = pipeline_repo
 
     def create_job(self, setup_id: str, policy: RunPolicy | None = None) -> V2MigrationJobResult:
         """Create a V2 parent migration job from a ready setup.
@@ -169,7 +176,14 @@ class V2MigrationJobService:
                 payload_checksum=run_config_checksum,
                 created_at=now,
             )
-            self._run_config_repo.insert(run_config_record)
+            self._validate_run_configuration_dependencies(run_config_payload)
+            try:
+                self._run_config_repo.insert(run_config_record)
+            except StorageIntegrityError as exc:
+                raise ValueError(
+                    "V2 run configuration could not be persisted because the required "
+                    "runner profile or pipeline definition seed is missing."
+                ) from exc
 
         return V2MigrationJobResult(
             job_id=job_id,
@@ -181,6 +195,31 @@ class V2MigrationJobService:
             stage_continuation_policy=effective_policy.stage_continuation_policy.value,
             run_configuration_id=run_configuration_id,
         )
+
+    def _validate_run_configuration_dependencies(self, run_config: RunConfiguration) -> None:
+        if self._runner_profile_repo is not None:
+            runner_profile = self._runner_profile_repo.get_exact(
+                run_config.runner_profile_id,
+                run_config.runner_profile_version,
+            )
+            if runner_profile is None:
+                raise ValueError(
+                    "Required runner profile "
+                    f"{run_config.runner_profile_id!r} version "
+                    f"{run_config.runner_profile_version!r} is missing."
+                )
+
+        if self._pipeline_repo is not None:
+            pipeline = self._pipeline_repo.get_exact(
+                run_config.pipeline_id,
+                run_config.pipeline_version,
+            )
+            if pipeline is None:
+                raise ValueError(
+                    "Required pipeline definition "
+                    f"{run_config.pipeline_id!r} version "
+                    f"{run_config.pipeline_version!r} is missing."
+                )
 
     def get_job(self, job_id: str) -> V2MigrationJobResult | None:
         """Retrieve a persisted job by ID."""

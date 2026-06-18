@@ -469,6 +469,177 @@ def test_continue_does_not_duplicate_planning(tmp_path: Path) -> None:
     )
 
 
+def test_handle_exit_planning_success_creates_review_gate(tmp_path: Path) -> None:
+    """Verify _handle_exit with command_phase=planning and PASS result
+    creates planning_review gate from real planning artifacts
+    WITHOUT requiring transform/build/test success proof."""
+    conn = _connection(tmp_path, "planning_exit_ok.sqlite3")
+    setup_repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_setup(setup_repo)
+    job_repo = SqliteV2JobRepository(conn)
+    job_id = "job-planning-exit-ok"
+    _create_job(job_repo, setup_id, job_id)
+    command_repo = SqliteV2CommandRepository(conn)
+    gate_repo = SqlitePhaseGateRepository(conn)
+
+    # Create planning_pending command
+    now = utc_now_text()
+    cmd_id = uuid4().hex
+    cmd = V2StageCommandRecord(
+        command_id=cmd_id,
+        job_id=job_id,
+        stage_index=1,
+        manifest_checksum="phase:planning",
+        argv_json="[]",
+        env_json="{}",
+        status="planning_pending",
+        created_at=now,
+        updated_at=now,
+        result_json=None,
+    )
+    command_repo.save(cmd)
+
+    # Build runner
+    from migration_factory.control_tower.application.v2_orchestrator_runner import (
+        V2OrchestratorRunner,
+    )
+    from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import (
+        SqliteControlTowerUnitOfWork,
+    )
+
+    def uow_factory():
+        return SqliteControlTowerUnitOfWork(conn)
+
+    runner = V2OrchestratorRunner(unit_of_work_factory=uow_factory)
+
+    # Planning result with ONLY planning fields (NO transform/build/test)
+    planning_result = {
+        "planning_status": "PASS",
+        "orchestration_status": "PASS",
+        "artifact_refs": {
+            "migration_plan": "/tmp/sandbox/planning/migration_plan.yaml",
+            "migration_units": "/tmp/sandbox/planning/migration_units.yaml",
+        },
+        "sandbox_path": "/tmp/sandbox/planning",
+    }
+
+    # Call _handle_exit with command_phase="planning"
+    runner._handle_exit(
+        job_id=job_id,
+        stage_index=1,
+        command_id=cmd_id,
+        exit_code=0,
+        result=planning_result,
+        stderr="",
+        command_phase="planning",
+    )
+
+    # Verify planning_review gate was created
+    gates = gate_repo.list_by_job(job_id)
+    planning_gates = [g for g in gates if g.gate_phase == "planning_review"]
+    assert len(planning_gates) >= 1, "Expected planning_review gate"
+
+    pg = planning_gates[0]
+    refs = json.loads(pg.source_artifact_refs_json)
+    joined = " ".join(refs)
+    assert "migration_plan.yaml" in joined
+    assert pg.gate_status == "open"
+
+    # Verify NO Stage 2 commands
+    stage2 = command_repo.list_by_job_and_stage(job_id, 2)
+    assert len(stage2) == 0, "No Stage 2 commands should exist"
+
+    # Verify planning events were emitted
+    events = conn.execute(
+        "SELECT type, status FROM v2_job_events WHERE job_id=? ORDER BY sequence",
+        (job_id,),
+    ).fetchall()
+    event_types = [e[0] for e in events]
+    assert "planning_completed" in event_types
+    assert "f15_gate_opened" in event_types
+    assert "planning_review_required" in event_types
+
+    # Verify NO transform/build/test events were emitted
+    for etype in ("sandbox_transform_completed", "build_completed", "test_completed",
+                  "transform_completed", "build_failed", "test_failed",
+                  "proof_updated", "stage_completed"):
+        assert etype not in event_types, f"Unexpected event: {etype}"
+
+
+def test_handle_exit_planning_failure_no_review_gate(tmp_path: Path) -> None:
+    """Verify _handle_exit with command_phase=planning and FAIL result
+    does NOT create planning_review gate."""
+    conn = _connection(tmp_path, "planning_exit_fail.sqlite3")
+    setup_repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_setup(setup_repo)
+    job_repo = SqliteV2JobRepository(conn)
+    job_id = "job-planning-exit-fail"
+    _create_job(job_repo, setup_id, job_id)
+    command_repo = SqliteV2CommandRepository(conn)
+    gate_repo = SqlitePhaseGateRepository(conn)
+
+    now = utc_now_text()
+    cmd_id = uuid4().hex
+    cmd = V2StageCommandRecord(
+        command_id=cmd_id,
+        job_id=job_id,
+        stage_index=1,
+        manifest_checksum="phase:planning",
+        argv_json="[]",
+        env_json="{}",
+        status="planning_pending",
+        created_at=now,
+        updated_at=now,
+        result_json=None,
+    )
+    command_repo.save(cmd)
+
+    from migration_factory.control_tower.application.v2_orchestrator_runner import (
+        V2OrchestratorRunner,
+    )
+    from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import (
+        SqliteControlTowerUnitOfWork,
+    )
+
+    def uow_factory():
+        return SqliteControlTowerUnitOfWork(conn)
+
+    runner = V2OrchestratorRunner(unit_of_work_factory=uow_factory)
+
+    # Planning result with FAIL orchestration
+    failed_result = {
+        "planning_status": "FAIL",
+        "orchestration_status": "FAIL",
+        "errors": {"planning_error": "Insufficient analysis data"},
+        "blockers": ["Missing XML config scan"],
+    }
+
+    runner._handle_exit(
+        job_id=job_id,
+        stage_index=1,
+        command_id=cmd_id,
+        exit_code=0,
+        result=failed_result,
+        stderr="Mock planning failure",
+        command_phase="planning",
+    )
+
+    # Verify NO planning_review gate was created
+    gates = gate_repo.list_by_job(job_id)
+    planning_gates = [g for g in gates if g.gate_phase == "planning_review"]
+    assert len(planning_gates) == 0, "No planning_review gate should exist on failure"
+
+    # Verify stage_failed event was emitted
+    events = conn.execute(
+        "SELECT type, status FROM v2_job_events WHERE job_id=? ORDER BY sequence",
+        (job_id,),
+    ).fetchall()
+    event_types = [e[0] for e in events]
+    assert "stage_failed" in event_types
+    assert "planning_completed" not in event_types
+    assert "f15_gate_opened" not in event_types
+
+
 def test_reanalysis_does_not_queue_planning(tmp_path: Path) -> None:
     """Verify request_reanalysis does NOT queue a planning command."""
     conn = _connection(tmp_path, "reanalysis.sqlite3")

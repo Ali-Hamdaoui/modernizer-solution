@@ -445,6 +445,11 @@ def test_migration_jobs_composite_foreign_keys_match_contract(tmp_path: Path) ->
         "to": ["runner_profile_id", "runner_profile_version"],
     } in foreign_keys
     assert {
+        "table": "migration_jobs",
+        "from": ["job_id"],
+        "to": ["job_id"],
+    } not in foreign_keys
+    assert {
         "table": "pipeline_definitions",
         "from": ["pipeline_id", "pipeline_version"],
         "to": ["pipeline_id", "pipeline_version"],
