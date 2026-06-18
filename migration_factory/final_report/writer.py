@@ -85,6 +85,10 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
         Path(str(artifact_refs.get("dependency_policy_report") or run_dir / "assessment" / "dependency_policy_report.json")),
         warnings,
     )
+    timing_report = _read_optional_json(
+        Path(str(artifact_refs.get("timing_report") or run_dir / "performance" / "timing_report.json")),
+        warnings,
+    )
 
     test_status = str(state.get("test_status") or "")
     totals = dict(state.get("test_totals", {}) or {})
@@ -106,6 +110,16 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
     repair_loop = _repair_loop_context(state, artifact_refs)
     dependency_policy = _dependency_policy_context(state, artifact_refs, dependency_policy_report)
     ai_trace = _ai_trace_context(state, artifact_refs, repair_loop, run_dir)
+    timing = _timing_context(state, artifact_refs, timing_report)
+    change_summary = _change_summary(source_stack, target_stack, recipes, repair_loop, dependency_policy, ai_trace)
+    report_summary = _report_summary(
+        approval_decision=(approval_decision or {}).get("decision", state.get("approval_decision")),
+        transform_status=state.get("transform_status", ""),
+        build_status=state.get("build_status", ""),
+        test_status=test_status,
+        total_duration_seconds=timing["total_duration_seconds"],
+        change_summary=change_summary,
+    )
 
     report_payload = {
         "run_id": state.get("run_id", ""),
@@ -157,10 +171,9 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
             "final_migration_report": str(json_path),
             "final_migration_summary": str(md_path),
         },
-        "timing": {
-            "timing_report": artifact_refs.get("timing_report", ""),
-            "timing_summary": artifact_refs.get("timing_summary", ""),
-        },
+        "timing": timing,
+        "report_summary": report_summary,
+        "change_summary": change_summary,
         "warnings": [*list(state.get("warnings", []) or []), *boot4_warnings],
         "limitations": [
             "No production promotion performed.",
@@ -216,12 +229,19 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
 
 def _build_markdown_summary(payload: dict[str, Any]) -> str:
     totals = payload.get("test_totals", {}) or {}
+    source_stack = dict(payload.get("source_stack", {}) or {})
     target_stack = dict(payload.get("target_stack", {}) or {})
     recipes = list(payload.get("recipes", []) or [])
+    timing = dict(payload.get("timing", {}) or {})
+    change_summary = list(payload.get("change_summary", []) or [])
     lines = [
         "# Migration Summary",
         "",
         f"- Run ID: {payload.get('run_id', '')}",
+        f"- Migration Duration: {_format_duration(timing.get('total_duration_seconds'))}",
+        f"- Source Java: {source_stack.get('java', '')}",
+        f"- Source Spring Boot: {source_stack.get('spring_boot', '')}",
+        f"- Source Spring Framework: {source_stack.get('spring_framework', '')}",
         f"- Target Java: {target_stack.get('java', '')}",
         f"- Target Spring Boot: {target_stack.get('spring_boot', '')}",
         f"- Target Spring Framework: {target_stack.get('spring_framework', '')}",
@@ -246,6 +266,24 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
         ),
         f"- Executed Recipes: {', '.join(str(recipe) for recipe in recipes) if recipes else 'none'}",
         "- Scope Limits: no production promotion, no PR creation, no deployment, no automatic merge",
+        "",
+        "## Full Migration Summary",
+        "",
+        str(payload.get("report_summary") or "Migration summary not captured."),
+        "",
+        "## Migration Process",
+        "",
+        f"- Human approval decision: {payload.get('approval', {}).get('decision', '') or 'not_captured'}",
+        f"- Sandbox transform result: {payload.get('transform_status', '') or 'not_captured'}",
+        f"- Build result: {payload.get('build_status', '') or 'not_captured'}",
+        f"- Test result: {payload.get('test_status', '') or 'not_captured'}",
+        f"- Proof level achieved: {dict(payload.get('proof', {}) or {}).get('final_proof_level', 'not_verified')}",
+        f"- Repair loop outcome: {dict(payload.get('repair_loop', {}) or {}).get('final_status', 'DISABLED')}",
+        f"- Dependency policy outcome: {dict(payload.get('dependency_policy', {}) or {}).get('status', 'NOT_RUN')}",
+        "",
+        "## What Changed",
+        "",
+        *[f"- {item}" for item in change_summary],
         "",
         "## Validated",
         "",
@@ -311,6 +349,34 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
                 f"- Report: {dependency_policy.get('report_ref', '')}",
             ]
         )
+    timing_report = dict(payload.get("timing", {}) or {})
+    lines.extend(
+        [
+            "",
+            "## Timing",
+            "",
+            f"- Total duration: {_format_duration(timing_report.get('total_duration_seconds'))}",
+            f"- Timing report: {timing_report.get('timing_report', '')}",
+            f"- Timing summary: {timing_report.get('timing_summary', '')}",
+        ]
+    )
+    artifacts = dict(payload.get("artifact_refs", {}) or {})
+    lines.extend(["", "## Related Artifacts", ""])
+    for name in (
+        "approval_decision",
+        "approved_plan_lock",
+        "transformation_execution_plan",
+        "migration_ledger",
+        "post_transform_test_report",
+        "orchestration_summary",
+        "timing_report",
+        "timing_summary",
+        "final_migration_report",
+        "final_migration_summary",
+    ):
+        ref = str(artifacts.get(name) or "")
+        if ref:
+            lines.append(f"- {name}: {ref}")
     statement = payload.get("copilot_advisory_statement")
     if isinstance(statement, dict):
         artifact_refs = statement.get("artifact_refs", {})
@@ -359,6 +425,81 @@ def _validation_scope(state: dict[str, Any]) -> dict[str, Any]:
             "PR creation/merge",
         ],
     }
+
+
+def _timing_context(
+    state: dict[str, Any],
+    artifact_refs: dict[str, str],
+    timing_report: dict[str, Any] | None,
+) -> dict[str, Any]:
+    timing_report = timing_report or {}
+    phase_durations = timing_report.get("phase_durations_seconds")
+    phase_map = phase_durations if isinstance(phase_durations, dict) else {}
+    return {
+        "timing_report": artifact_refs.get("timing_report", ""),
+        "timing_summary": artifact_refs.get("timing_summary", ""),
+        "total_duration_seconds": _float_or_none(phase_map.get("total_run")),
+    }
+
+
+def _change_summary(
+    source_stack: dict[str, Any],
+    target_stack: dict[str, Any],
+    recipes: list[str],
+    repair_loop: dict[str, Any],
+    dependency_policy: dict[str, Any],
+    ai_trace: list[dict[str, Any]],
+) -> list[str]:
+    changes: list[str] = []
+    if source_stack or target_stack:
+        java_change = _stack_change_text("Java", source_stack.get("java"), target_stack.get("java"))
+        if java_change:
+            changes.append(java_change)
+        boot_change = _stack_change_text(
+            "Spring Boot",
+            source_stack.get("spring_boot"),
+            target_stack.get("spring_boot"),
+        )
+        if boot_change:
+            changes.append(boot_change)
+        framework_change = _stack_change_text(
+            "Spring Framework",
+            source_stack.get("spring_framework"),
+            target_stack.get("spring_framework"),
+        )
+        if framework_change:
+            changes.append(framework_change)
+    if recipes:
+        changes.append(f"Executed OpenRewrite recipes: {', '.join(recipes)}.")
+    if dependency_policy.get("policy_patch_applied"):
+        changes.append("Dependency policy patch was applied during the migration flow.")
+    if repair_loop.get("safe_patch_applied"):
+        changes.append("Repair loop applied a safe patch in the sandbox before validation reran.")
+    if ai_trace:
+        changes.append(f"AI supervision trace captured {len(ai_trace)} governed diagnosis/review record(s).")
+    if not changes:
+        changes.append("No concrete change summary was captured beyond the deterministic status artifacts.")
+    return changes
+
+
+def _report_summary(
+    *,
+    approval_decision: Any,
+    transform_status: str,
+    build_status: str,
+    test_status: str,
+    total_duration_seconds: float | None,
+    change_summary: list[str],
+) -> str:
+    duration_text = _format_duration(total_duration_seconds)
+    lead_change = change_summary[0] if change_summary else "No change summary was captured."
+    return (
+        f"Migration completed with approval decision {approval_decision or 'not_captured'}, "
+        f"transform status {transform_status or 'not_captured'}, build status {build_status or 'not_captured'}, "
+        f"and test status {test_status or 'not_captured'}. "
+        f"Elapsed duration: {duration_text}. "
+        f"Primary change summary: {lead_change}"
+    )
 
 
 def _repair_loop_context(state: dict[str, Any], artifact_refs: dict[str, str]) -> dict[str, Any]:
@@ -787,6 +928,29 @@ def _redact_report_text(text: str) -> str:
     for pattern in _SECRET_VALUE_PATTERNS:
         redacted = pattern.sub("[REDACTED]", redacted)
     return redacted
+
+
+def _stack_change_text(label: str, source: Any, target: Any) -> str:
+    source_text = str(source or "").strip()
+    target_text = str(target or "").strip()
+    if not source_text and not target_text:
+        return ""
+    if source_text == target_text:
+        return f"{label} remained at {target_text}."
+    return f"{label} changed from {source_text or 'not_captured'} to {target_text or 'not_captured'}."
+
+
+def _format_duration(value: Any) -> str:
+    seconds = _float_or_none(value)
+    if seconds is None:
+        return "not captured"
+    return f"{seconds:.3f}s"
+
+
+def _float_or_none(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
 
 
 def _read_json(path: Path, warnings: list[str]) -> dict[str, Any] | None:

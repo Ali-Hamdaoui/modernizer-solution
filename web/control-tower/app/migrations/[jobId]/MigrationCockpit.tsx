@@ -5,6 +5,8 @@ import {
   askV2Assistant,
   approveV2Card,
   getV2ArtifactPreview,
+  generateV2FinalReport,
+  getV2FinalReport,
   getV2RootPomPreview,
   getV2AssistantMessages,
   getV2FailureSummary,
@@ -24,6 +26,7 @@ import type {
   V2AssistantMessageResponse,
   V2FailureSummaryResponse,
   V2JobEvent,
+  V2FinalReportResponse,
   V2MigrationJobResponse,
   V2PipelineResponse,
 } from "../../../lib/contracts";
@@ -86,6 +89,8 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [artifactPreviewBusy, setArtifactPreviewBusy] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "connected" | "reconnecting">("connecting");
   const [liveRefreshWarning, setLiveRefreshWarning] = useState<string | null>(null);
+  const [report, setReport] = useState<V2FinalReportResponse | null>(null);
+  const [reportBusy, setReportBusy] = useState(false);
   const normalizedJobId = jobId?.trim() ?? "";
 
   useEffect(() => {
@@ -99,7 +104,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     async function loadCockpit() {
       try {
         const safeJobId = requireJobId(normalizedJobId);
-        const [job, messagesResponse, approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary] = await Promise.all([
+        const [job, messagesResponse, approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary, finalReport] = await Promise.all([
           getV2MigrationJob(safeJobId),
           getV2AssistantMessages(safeJobId),
           getV2JobApprovals(safeJobId),
@@ -107,6 +112,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           getV2JobEventSnapshot(safeJobId),
           getV2JobPipeline(safeJobId),
           getV2FailureSummary(safeJobId).catch(() => null),
+          getV2FinalReport(safeJobId).catch(() => null),
         ]);
 
         if (cancelled) return;
@@ -121,6 +127,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           failureSummary: failureSummary as V2FailureSummaryResponse | null,
           assistantModel: null,
         });
+        setReport(finalReport as V2FinalReportResponse | null);
         setError(null);
       } catch (e) {
         if (!cancelled) {
@@ -358,13 +365,27 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     }
   }
 
+  async function generateReport() {
+    if (!normalizedJobId) return;
+    setReportBusy(true);
+    try {
+      const generated = await generateV2FinalReport(normalizedJobId);
+      setReport(generated);
+      await refreshLiveState();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Final report generation failed");
+    } finally {
+      setReportBusy(false);
+    }
+  }
+
   if (error) return <div className="error-box">{error}</div>;
   if (!data) return <div className="info-box">Loading cockpit...</div>;
 
   return (
     <div className="cockpit-layout">
       {/* Stage Timeline */}
-      <section className="panel">
+      <section className="panel cockpit-panel">
         <h2>Stage Timeline</h2>
         <p className="meta">Job: {data.job.job_id}</p>
         <div className="stage-list">
@@ -384,7 +405,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       </section>
 
       {/* Evidence Panel */}
-      <section className="panel">
+      <section className="panel cockpit-panel">
         <h2>Pipeline Status</h2>
         <p className="meta">Stream: {streamState}</p>
         {liveRefreshWarning && <p className="warning-text">{liveRefreshWarning}</p>}
@@ -400,7 +421,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         </div>
       </section>
 
-      <section className="panel">
+      <section className="panel cockpit-panel">
         <h2>Evidence</h2>
         {data.pipeline.evidence.length === 0 ? (
           <div className="evidence-placeholder">
@@ -430,7 +451,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       </section>
 
       {/* Decisions Panel */}
-      <section className="panel">
+      <section className="panel cockpit-panel">
         <h2>Approval Decisions</h2>
         {data.approvals.length === 0 ? (
           <p className="meta">No pending decisions.</p>
@@ -466,7 +487,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
 
       {/* Failure Summary Panel */}
       {data.failureSummary?.has_failures && (
-        <section className="panel failure-panel">
+        <section className="panel cockpit-panel failure-panel">
           <h2>Failure & Repair</h2>
           {data.failureSummary.failures.map((f, i) => (
             <div key={i} className={`failure-card ${f.type === "result_contract_failed" ? "contract-failure-card" : ""}`}>
@@ -514,7 +535,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
               {f.java_home && f.type !== "result_contract_failed" && <p className="meta">JAVA_HOME: {f.java_home}</p>}
               {(f.detected_version || f.required_minimum) && f.type !== "result_contract_failed" && (
                 <p className="meta">
-                  Java: {f.detected_version || "?"} → required {f.required_minimum || "?"}
+                  Java: {f.detected_version || "?"} {"->"} required {f.required_minimum || "?"}
                 </p>
               )}
               {f.build_status && f.type !== "result_contract_failed" && <p className="meta">Build: {f.build_status}</p>}
@@ -707,22 +728,24 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       )}
 
       {/* Assistant Panel */}
-      <section className="panel">
+      <section className="panel cockpit-panel assistant-panel">
         <h2>Assistant</h2>
         <p className="meta">
           Model: {data.assistantModel?.status ?? "unavailable"} | Source: {data.assistantModel?.source ?? "deterministic"}
           {data.assistantModel?.failure_reason ? ` | Reason: ${data.assistantModel.failure_reason}` : ""}
           {data.assistantModel?.status === "live_ok" ? " | Live Azure OpenAI" : ""}
         </p>
-        {data.messages.length === 0 ? (
-          <p className="meta">No messages yet. The assistant can explain status and draft instructions.</p>
-        ) : (
-          data.messages.map((m) => (
-            <div key={m.message_id} className="message">
-              <strong>{m.role}:</strong> {m.content}
-            </div>
-          ))
-        )}
+        <div className="assistant-messages">
+          {data.messages.length === 0 ? (
+            <p className="meta">No messages yet. The assistant can explain status and draft instructions.</p>
+          ) : (
+            data.messages.map((m) => (
+              <div key={m.message_id} className="message">
+                <strong>{m.role}:</strong> {m.content}
+              </div>
+            ))
+          )}
+        </div>
         <div className="assistant-composer">
           <input
             aria-label="Ask assistant"
@@ -743,14 +766,64 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       </section>
 
       {/* Proof & Report */}
-      <section className="panel">
+      <section className="panel cockpit-panel">
         <h2>Proof & Report</h2>
-        <p className="meta">Final proof report generated when all three deterministic gates pass.</p>
+        <p className="meta">
+          The final report is generated only when you request it and is stored under <code>docs/migration-reports</code>.
+        </p>
+        <div className="approval-actions">
+          <button
+            type="button"
+            disabled={
+              reportBusy
+              || !(data.stages || []).some((stage) => stage.stage_index === 3 && stage.chain_status === "completed")
+            }
+            onClick={() => void generateReport()}
+          >
+            {report ? "Regenerate report" : "Generate report"}
+          </button>
+        </div>
+        {!(data.stages || []).some((stage) => stage.stage_index === 3 && stage.chain_status === "completed") && (
+          <p className="meta">Report generation unlocks after Stage 3 completes successfully.</p>
+        )}
+        {report ? (
+          <div className="artifact-preview">
+            <strong>Stored report</strong>
+            <p className="meta">{report.summary}</p>
+            <p className="meta">
+              Duration: {report.total_duration_seconds == null ? "not captured" : `${report.total_duration_seconds.toFixed(3)}s`}
+            </p>
+            <p className="meta">Markdown: <code>{report.docs_report_markdown}</code></p>
+            <p className="meta">JSON: <code>{report.docs_report_json}</code></p>
+            {report.change_summary.length > 0 && (
+              <div className="trace-section">
+                <strong>What changed</strong>
+                <ul className="meta">
+                  {report.change_summary.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {report.warnings.length > 0 && (
+              <div className="trace-section">
+                <strong>Warnings</strong>
+                <ul className="meta">
+                  {report.warnings.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        ) : (
+          <p className="meta">No generated report yet.</p>
+        )}
       </section>
 
       {/* F14 — Stage 3 Dependency Review */}
       {data && (
-        <section style={{ gridColumn: "1 / -1" }}>
+        <section className="cockpit-full-span">
           <Stage3DependencyReview
             jobId={normalizedJobId || jobId || ""}
             stage3Completed={
@@ -767,62 +840,237 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       )}
 
       <style>{`
-        .cockpit-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-        .panel { border: 1px solid #ccc; border-radius: 6px; padding: 1rem; }
-        .panel h2 { margin-top: 0; font-size: 1.1rem; }
-        .stage-list { display: flex; flex-direction: column; gap: 0.5rem; }
-        .stage-card { border: 1px solid #ddd; border-radius: 4px; padding: 0.75rem; }
-        .stage-card.queued { border-left: 3px solid #0066cc; }
-        .stage-card.pending { border-left: 3px solid #888; }
-        .stage-header { display: flex; justify-content: space-between; align-items: center; }
-        .status-badge { font-size: 0.75rem; padding: 0.15rem 0.5rem; border-radius: 3px; }
-        .status-badge.queued { background: #e0f0ff; color: #0066cc; }
-        .status-badge.running { background: #fff4cc; color: #886600; }
-        .status-badge.completed { background: #e4f7e8; color: #146c2e; }
+        .cockpit-layout {
+          display: grid;
+          gap: 16px;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          height: 100%;
+          min-height: 0;
+          overflow: hidden;
+        }
+        .cockpit-layout > .panel,
+        .cockpit-full-span {
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 252, 251, 0.96));
+          border: 1px solid #d8dfdc;
+          border-radius: 18px;
+          box-shadow: 0 18px 44px rgba(23, 32, 29, 0.08);
+          min-height: 0;
+          overflow: auto;
+        }
+        .cockpit-layout > .panel {
+          display: flex;
+          flex-direction: column;
+          max-height: 420px;
+          padding: 18px;
+        }
+        .cockpit-panel {
+          scrollbar-gutter: stable;
+        }
+        .assistant-panel {
+          max-height: 520px;
+        }
+        .assistant-messages {
+          display: grid;
+          gap: 0;
+          min-height: 0;
+          overflow: auto;
+        }
+        .cockpit-full-span {
+          grid-column: 1 / -1;
+        }
+        .panel h2 {
+          font-size: 1.08rem;
+          margin-bottom: 0.45rem;
+          margin-top: 0;
+        }
+        .stage-list,
+        .pipeline-list {
+          display: flex;
+          flex-direction: column;
+          gap: 0.65rem;
+          margin-top: 0.9rem;
+        }
+        .stage-card,
+        .approval-card,
+        .failure-card,
+        .repair-card,
+        .artifact-kinds,
+        .artifact-preview {
+          background: rgba(255, 255, 255, 0.92);
+          border: 1px solid #e4ebe8;
+          border-radius: 14px;
+          padding: 0.9rem 1rem;
+        }
+        .stage-card.queued { border-left: 4px solid #2b7fff; }
+        .stage-card.pending { border-left: 4px solid #8a948f; }
+        .stage-card.running { border-left: 4px solid #c98a00; }
+        .stage-card.completed { border-left: 4px solid #0f766e; }
+        .stage-card.failed,
+        .failure-card { border-left: 4px solid #c6392f; }
+        .stage-header {
+          align-items: center;
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.5rem;
+          justify-content: space-between;
+        }
+        .status-badge {
+          border-radius: 999px;
+          display: inline-flex;
+          font-size: 0.72rem;
+          font-weight: 800;
+          letter-spacing: 0.02em;
+          padding: 0.28rem 0.62rem;
+        }
+        .status-badge.queued { background: #e8f1ff; color: #115bb8; }
+        .status-badge.running { background: #fff5d8; color: #8a6100; }
+        .status-badge.completed,
         .status-badge.pass { background: #e4f7e8; color: #146c2e; }
         .status-badge.failed { background: #ffe3e3; color: #a40000; }
         .status-badge.blocked { background: #f5e8ff; color: #5a248a; }
-        .status-badge.pending { background: #eee; color: #666; }
-        .meta { font-size: 0.85rem; color: #666; }
-        .warning-text { font-size: 0.85rem; color: #8a5a00; margin: 0.25rem 0 0.5rem; }
-        .error-box { border: 1px solid #cc0000; background: #fff0f0; padding: 1rem; border-radius: 6px; }
-        .info-box { border: 1px solid #0066cc; background: #f0f6ff; padding: 1rem; border-radius: 6px; }
-        .evidence-placeholder { border: 1px dashed #ccc; padding: 1rem; text-align: center; color: #888; }
-        .event-list { display: flex; flex-direction: column; gap: 0.4rem; }
-        .event-row { display: grid; grid-template-columns: 6rem 10rem 1fr; gap: 0.5rem; align-items: center; border-bottom: 1px solid #eee; padding: 0.35rem 0; }
-        .pipeline-list { display: flex; flex-direction: column; gap: 0.45rem; }
-        .pipeline-row { display: grid; grid-template-columns: 6rem 10rem 1fr 5rem; gap: 0.5rem; align-items: center; border-bottom: 1px solid #eee; padding: 0.45rem 0; }
-        .approval-card { border: 1px solid #eee; padding: 0.5rem; margin: 0.25rem 0; }
-        .approval-actions { display: flex; gap: 0.5rem; }
-        .approval-actions button { padding: 0.45rem 0.7rem; border: 1px solid #333; border-radius: 4px; background: #fff; }
-        .approval-actions button:disabled { color: #777; border-color: #bbb; }
-        .checksum { font-family: monospace; overflow-wrap: anywhere; font-size: 0.82rem; }
-        .raw-logs { margin-top: 0.75rem; }
-        .raw-log-line { white-space: pre-wrap; overflow-wrap: anywhere; border-bottom: 1px solid #eee; margin: 0; padding: 0.35rem 0; }
-        .message { border-bottom: 1px solid #eee; padding: 0.5rem 0; }
-        .assistant-composer { display: grid; grid-template-columns: 1fr auto; gap: 0.5rem; margin-top: 0.75rem; }
-        .assistant-composer input { min-width: 0; padding: 0.5rem; border: 1px solid #aaa; border-radius: 4px; }
-        .assistant-composer button { padding: 0.5rem 0.75rem; border: 1px solid #333; border-radius: 4px; background: #fff; }
-        .assistant-composer button:disabled { color: #777; border-color: #bbb; }
-        .failure-panel { border-color: #a40000; background: #fffafa; }
-        .failure-card { border: 1px solid #ffcccc; padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; }
-        .failure-card .meta { margin: 0.2rem 0; }
-        .contract-failure-card { border: 1px solid #cc8800; background: #fffaf0; }
-        .contract-failure-card .meta { margin: 0.2rem 0; }
-        .supervision-trace { border-top: 1px solid #f1c0c0; margin-top: 0.75rem; padding-top: 0.75rem; }
-        .supervision-trace h3 { margin: 0 0 0.5rem 0; font-size: 1rem; }
-        .trace-section { border-left: 3px solid #6b7a90; padding-left: 0.6rem; margin-top: 0.6rem; }
-        .trace-section ul { margin: 0.25rem 0 0 1rem; padding: 0; }
-        .repair-card { border: 1px solid #ffcc66; background: #fffdf0; padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; }
-        .file-alias-actions { display: flex; align-items: center; gap: 0.6rem; margin: 0.5rem 0; }
-        .file-alias-actions button { padding: 0.35rem 0.6rem; border: 1px solid #333; border-radius: 4px; background: #fff; }
-        .file-alias-actions button:disabled { color: #777; border-color: #bbb; }
-        .artifact-kinds { border: 1px solid #ddd; padding: 0.5rem; margin: 0.5rem 0; }
-        .artifact-kind-link { background: none; border: none; color: #0066cc; cursor: pointer; text-decoration: underline; font-size: 0.85rem; padding: 0; }
-        .artifact-kind-link:hover { color: #004499; }
-        .artifact-kind-link:disabled { color: #888; cursor: wait; text-decoration: none; }
-        .artifact-preview { border: 1px solid #0066cc; background: #f0f6ff; padding: 1rem; margin: 0.75rem 0; border-radius: 4px; }
-        .artifact-preview-content { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 400px; overflow-y: auto; background: #fff; padding: 0.5rem; border: 1px solid #ddd; font-size: 0.8rem; }
+        .status-badge.pending { background: #edf1ef; color: #56615c; }
+        .meta { color: #66736d; font-size: 0.85rem; }
+        .warning-text { color: #8a5a00; font-size: 0.85rem; margin: 0.25rem 0 0.5rem; }
+        .error-box,
+        .info-box,
+        .evidence-placeholder {
+          border-radius: 14px;
+          padding: 1rem;
+        }
+        .error-box { background: #fff0f0; border: 1px solid #e59d9d; }
+        .info-box { background: #eefaf7; border: 1px solid #8ed3c5; }
+        .evidence-placeholder {
+          border: 1px dashed #c9d3cf;
+          color: #7a8580;
+          text-align: center;
+        }
+        .event-list { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.8rem; }
+        .event-row,
+        .pipeline-row {
+          align-items: center;
+          border-bottom: 1px solid #eef2f0;
+          display: grid;
+          gap: 0.6rem;
+          padding: 0.55rem 0;
+        }
+        .event-row { grid-template-columns: 6rem 10rem 1fr; }
+        .pipeline-row { grid-template-columns: 6rem 10rem 1fr 5.5rem; }
+        .approval-actions,
+        .file-alias-actions {
+          align-items: center;
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.6rem;
+          margin-top: 0.75rem;
+        }
+        .approval-actions button,
+        .assistant-composer button,
+        .file-alias-actions button,
+        .artifact-preview button {
+          background: #fff;
+          border: 1px solid #b9c5c0;
+          border-radius: 10px;
+          color: #17201d;
+          padding: 0.5rem 0.8rem;
+        }
+        .approval-actions button:disabled,
+        .assistant-composer button:disabled,
+        .file-alias-actions button:disabled {
+          border-color: #d2d9d6;
+          color: #777;
+        }
+        .checksum {
+          font-family: Consolas, "Cascadia Mono", monospace;
+          font-size: 0.82rem;
+          overflow-wrap: anywhere;
+        }
+        .raw-logs { margin-top: 0.9rem; }
+        .raw-log-line,
+        .artifact-preview-content {
+          background: #111816;
+          border-radius: 12px;
+          color: #d9fff8;
+          margin: 0.45rem 0 0;
+          overflow: auto;
+          padding: 0.8rem;
+          white-space: pre-wrap;
+          word-break: break-word;
+        }
+        .message {
+          border-bottom: 1px solid #eef2f0;
+          padding: 0.7rem 0;
+        }
+        .assistant-composer {
+          display: grid;
+          gap: 0.6rem;
+          grid-template-columns: 1fr auto;
+          margin-top: 0.85rem;
+        }
+        .assistant-composer input {
+          background: #fff;
+          border: 1px solid #c7d0cc;
+          border-radius: 10px;
+          min-width: 0;
+          padding: 0.7rem 0.8rem;
+        }
+        .failure-panel {
+          background: linear-gradient(180deg, rgba(255, 250, 250, 0.98), rgba(255, 244, 244, 0.94));
+          border-color: #e7b4b4;
+        }
+        .contract-failure-card {
+          background: #fff8ef;
+          border-color: #ebc37e;
+        }
+        .supervision-trace {
+          border-top: 1px solid #f1d1d1;
+          margin-top: 0.85rem;
+          padding-top: 0.85rem;
+        }
+        .supervision-trace h3 {
+          font-size: 1rem;
+          margin: 0 0 0.5rem 0;
+        }
+        .trace-section {
+          border-left: 3px solid #7b8d85;
+          margin-top: 0.6rem;
+          padding-left: 0.7rem;
+        }
+        .trace-section ul {
+          margin: 0.25rem 0 0 1rem;
+          padding: 0;
+        }
+        .artifact-kind-link {
+          appearance: none;
+          background: none;
+          border: 0;
+          color: #0f766e;
+          cursor: pointer;
+          font: inherit;
+          font-weight: 700;
+          padding: 0;
+          text-decoration: underline;
+        }
+        .artifact-kind-link:disabled {
+          color: #888;
+          cursor: wait;
+          text-decoration: none;
+        }
+        .operator-action {
+          background: #f7fbfa;
+          border: 1px solid #dce8e3;
+          border-radius: 12px;
+          margin-top: 0.85rem;
+          padding: 0.75rem;
+        }
+        @media (max-width: 980px) {
+          .cockpit-layout {
+            grid-template-columns: 1fr;
+          }
+          .event-row,
+          .pipeline-row {
+            grid-template-columns: 1fr;
+          }
+        }
       `}</style>
     </div>
   );

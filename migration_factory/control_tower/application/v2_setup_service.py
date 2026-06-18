@@ -794,6 +794,7 @@ def _check_ai_hub_profiles(hub: Path) -> bool:
         "springboot-2.1.6-to-2.7-java11",
         "springboot-2.7-to-3.5-java17",
         "springboot-3.5-java17-to-java21",
+        "springboot-3.5-java21-to-4.0-java21",
     )
     return all((profiles_dir / f"{profile}.yaml").is_file() for profile in required)
 
@@ -808,6 +809,7 @@ def _check_ai_hub_catalogs(hub: Path) -> bool:
         "springboot-2.1.6-to-2.7-java11",
         "springboot-2.7-to-3.5-java17",
         "springboot-3.5-java17-to-java21",
+        "springboot-3.5-java21-to-4.0-java21",
     )
     for profile in required_profiles:
         profile_path = profiles_dir / f"{profile}.yaml"

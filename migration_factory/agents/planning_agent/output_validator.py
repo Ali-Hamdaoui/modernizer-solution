@@ -61,6 +61,13 @@ ALLOWED_UNIT_ORDERS: tuple[tuple[str, ...], ...] = (
     ),
     (
         "baseline",
+        "spring-boot-4-0",
+        "jakarta",
+        "dependency-cleanup",
+        "existing-test-migration",
+    ),
+    (
+        "baseline",
         "spring-boot-2-7",
         "dependency-cleanup",
         "existing-test-migration",

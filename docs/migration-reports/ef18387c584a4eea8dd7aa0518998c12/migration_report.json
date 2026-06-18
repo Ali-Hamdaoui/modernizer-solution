@@ -1,0 +1,193 @@
+{
+  "ai_trace": [],
+  "approval": {
+    "approval_ref": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\approval\\approval_decision.json",
+    "approved_by": "human",
+    "decision": "approved",
+    "status": "COMPLETED"
+  },
+  "artifact_refs": {
+    "analysis_report": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\analysis_report.json",
+    "analysis_report.json": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\analysis_report.json",
+    "analysis_summary": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\analysis_summary.md",
+    "analysis_summary.md": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\analysis_summary.md",
+    "approval_decision": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\approval\\approval_decision.json",
+    "approval_request.json": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\planning\\approval_request.json",
+    "approved_plan_lock": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\approval\\approved_plan_lock.json",
+    "assessment_report": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\assessment\\assessment_report.json",
+    "assessment_report.json": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\assessment\\assessment_report.json",
+    "assessment_summary": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\assessment\\assessment_summary.md",
+    "assessment_summary.md": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\assessment\\assessment_summary.md",
+    "config_inventory": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\config_inventory.json",
+    "config_inventory.json": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\config_inventory.json",
+    "copilot_assist": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\copilot_assist.json",
+    "dependency_graph": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\dependency_graph.json",
+    "dependency_graph.json": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\dependency_graph.json",
+    "dependency_policy_report": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\assessment\\dependency_policy_report.json",
+    "dependency_policy_summary": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\assessment\\dependency_policy_report.md",
+    "final_migration_report": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\final\\migration_report.json",
+    "final_migration_summary": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\final\\migration_summary.md",
+    "migration_ledger": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\workspaces\\sandbox\\.migration\\ledger.json",
+    "migration_plan.yaml": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\planning\\migration_plan.yaml",
+    "migration_units.yaml": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\planning\\migration_units.yaml",
+    "openrewrite_plugin_xml": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\transformation\\openrewrite-plugin.xml",
+    "orchestration_summary": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\orchestration\\orchestration_summary.json",
+    "phase2_log": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\logs\\phase2_transform.log",
+    "plan_summary.md": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\planning\\plan_summary.md",
+    "plan_validation_report.json": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\planning\\plan_validation_report.json",
+    "policy_patch_plan": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\assessment\\policy_patch_plan.json",
+    "policy_patch_result": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\assessment\\policy_patch_result.json",
+    "post_transform_test_log": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\test\\post_transform\\test_agent.log",
+    "post_transform_test_report": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\test\\post_transform\\test_report.json",
+    "post_transform_test_summary": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\test\\post_transform\\test_summary.md",
+    "read_only_verification": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\read_only_verification.json",
+    "read_only_verification.json": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\read_only_verification.json",
+    "rewrite_dry_run.patch": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\rewrite_dry_run.patch",
+    "rewrite_impact_summary": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\rewrite_impact_summary.json",
+    "rewrite_impact_summary.json": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\rewrite_impact_summary.json",
+    "rewrite_patch": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\rewrite_dry_run.patch",
+    "rewrite_plugin_plan": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\rewrite_plugin_plan.json",
+    "rewrite_plugin_plan.json": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\rewrite_plugin_plan.json",
+    "rewrite_preview": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\rewrite_preview.json",
+    "rewrite_preview.json": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\rewrite_preview.json",
+    "sandbox": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\workspaces\\sandbox",
+    "target_dependency_plan": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\planning\\target_dependency_plan.json",
+    "test_inventory": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\test_inventory.json",
+    "test_inventory.json": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\analysis\\test_inventory.json",
+    "timing_report": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\performance\\timing_report.json",
+    "timing_summary": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\performance\\timing_summary.md",
+    "transformation_execution_plan": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\transformation\\transformation_execution_plan.yaml"
+  },
+  "boot4_warnings": [],
+  "build_status": "BUILD_PASSED_IN_SANDBOX",
+  "change_summary": [
+    "Java changed from 17 to 21.",
+    "Spring Boot remained at 3.5.",
+    "Spring Framework changed from not_captured to 6.2.18.",
+    "Executed OpenRewrite recipes: org.openrewrite.java.migrate.UpgradeToJava21."
+  ],
+  "copilot_dependency_advisory_status": "SKIPPED",
+  "created_at": "2026-06-18T01:21:16Z",
+  "dependency_policy": {
+    "blockers_count": 0,
+    "copilot_advisory_status": "SKIPPED",
+    "copilot_request_ref": "",
+    "copilot_response_ref": "",
+    "policy_patch_applied": false,
+    "repair_plan_ref": "",
+    "report_ref": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\assessment\\dependency_policy_report.json",
+    "risks_count": 0,
+    "status": "PASS",
+    "summary_ref": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\assessment\\dependency_policy_report.md",
+    "target_plan_ref": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\planning\\target_dependency_plan.json",
+    "unresolved_v2_dependency_risks": []
+  },
+  "dependency_policy_blockers_count": 0,
+  "dependency_policy_report_ref": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\assessment\\dependency_policy_report.json",
+  "dependency_policy_risks_count": 0,
+  "dependency_policy_status": "PASS",
+  "executed_recipes": [
+    "org.openrewrite.java.migrate.UpgradeToJava21"
+  ],
+  "fallback_profile": null,
+  "limitations": [
+    "No production promotion performed.",
+    "No pull request creation performed.",
+    "No deployment performed.",
+    "No automatic merge performed.",
+    "SQL Server production behavior not validated.",
+    "Production DB scripts not validated.",
+    "Endpoint/business behavior not validated.",
+    "Production secrets/JWT/keystore validity not validated.",
+    "Deployment not validated.",
+    "PR creation/merge not validated."
+  ],
+  "lock_status": {
+    "lock_ref": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\approval\\approved_plan_lock.json",
+    "status": "LOCKED"
+  },
+  "log_paths": {
+    "orchestration_log_path": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\logs\\phase2_transform.log",
+    "phase2_log": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\logs\\phase2_transform.log",
+    "post_transform_test_log": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\test\\post_transform\\test_agent.log",
+    "source_log_path": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\logs\\phase2_transform.log",
+    "test_log_path": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\test\\post_transform\\test_agent.log"
+  },
+  "not_validated": [
+    "SQL Server production behavior",
+    "production DB scripts",
+    "endpoint/business behavior",
+    "production secrets/JWT/keystore validity",
+    "deployment",
+    "PR creation/merge"
+  ],
+  "policy_patch_applied": false,
+  "production_allowed": false,
+  "proof": {
+    "final_proof_level": "compiled",
+    "h2_startup_required": false,
+    "h2_startup_status": "H2_STARTUP_SKIPPED",
+    "runtime_security_warnings": []
+  },
+  "recipes": [
+    "org.openrewrite.java.migrate.UpgradeToJava21"
+  ],
+  "repair_loop": {
+    "attempts_count": 0,
+    "copilot_unavailable": false,
+    "copilot_used": false,
+    "enabled": false,
+    "final_status": "NOT_IMPLEMENTED",
+    "human_review_required": false,
+    "invalid_copilot_response": false,
+    "ledger_ref": "",
+    "max_attempts": 3,
+    "safe_patch_applied": false,
+    "validation_after_repair": {
+      "build": "BUILD_PASSED_IN_SANDBOX",
+      "h2": "H2_STARTUP_SKIPPED",
+      "tests": "PASS_WITH_WARNINGS"
+    }
+  },
+  "report_summary": "Migration completed with approval decision approved, transform status TRANSFORM_APPLIED_IN_SANDBOX, build status BUILD_PASSED_IN_SANDBOX, and test status PASS_WITH_WARNINGS. Elapsed duration: 248.429s. Primary change summary: Java changed from 17 to 21.",
+  "requires_human_approval": true,
+  "risk_level": "medium",
+  "run_id": "v2-ef18387c-s3",
+  "sandbox_path": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\workspaces\\sandbox",
+  "source_stack": {
+    "build_tool": "maven",
+    "java": "17",
+    "spring_boot": "3.5"
+  },
+  "strategy": "java21_runtime_validation_only",
+  "target_dependency_plan_ref": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\planning\\target_dependency_plan.json",
+  "target_stack": {
+    "build_tool": "maven",
+    "java": "21",
+    "spring_boot": "3.5",
+    "spring_framework": "6.2.18"
+  },
+  "test_status": "PASS_WITH_WARNINGS",
+  "test_totals": {
+    "errors": 0,
+    "failures": 0,
+    "passed": 0,
+    "skipped": 0,
+    "tests": 0
+  },
+  "timing": {
+    "timing_report": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\performance\\timing_report.json",
+    "timing_summary": "C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.migration\\runs\\v2-ef18387c-s3\\performance\\timing_summary.md",
+    "total_duration_seconds": 248.428636
+  },
+  "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+  "unresolved_v2_dependency_risks": [],
+  "validated": [
+    "sandbox transform applied",
+    "Maven build passed"
+  ],
+  "warnings": [
+    "OPENREWRITE_IMPACT_HIGH: OpenRewrite impact is high; manual review is required before execution.",
+    "OPENREWRITE_HIGH_RISK_FILES: OpenRewrite reported high-risk files: 7."
+  ]
+}

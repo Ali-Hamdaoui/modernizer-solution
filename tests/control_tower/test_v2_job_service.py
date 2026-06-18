@@ -152,7 +152,7 @@ def test_create_job_result_shape(tmp_path: Path) -> None:
 
     # Verify pipeline_id constant
     from migration_factory.control_tower.application.v2_job_service import PIPELINE_ID
-    assert PIPELINE_ID == "springboot-216-to-356-java21-three-stage"
+    assert PIPELINE_ID == "springboot-216-to-400-java21-four-stage"
 
 
 def test_create_job_requires_valid_setup_id(tmp_path: Path) -> None:
@@ -177,8 +177,7 @@ def test_stage_inputs_are_fixed(tmp_path: Path) -> None:
     assert STAGE_INPUTS[1]["input_kind"] == "legacy_source"
     assert STAGE_INPUTS[2]["input_kind"] == "stage_1_sandbox"
     assert STAGE_INPUTS[3]["input_kind"] == "stage_2_sandbox"
-    # No Boot 4 stage
-    assert 4 not in STAGE_INPUTS
+    assert STAGE_INPUTS[4]["input_kind"] == "stage_3_sandbox"
 
 
 def test_create_job_endpoint_rejects_missing_setup(tmp_path: Path) -> None:
@@ -219,7 +218,7 @@ def test_result_to_dict_has_correct_shape(tmp_path: Path) -> None:
         job_id="test-job-id",
         setup_id="test-setup-id",
         setup_checksum="abc123",
-        pipeline_id="springboot-216-to-356-java21-three-stage",
+        pipeline_id="springboot-216-to-400-java21-four-stage",
         stages=(
             {"stage_index": 1, "stage_run_id": "run1", "pipeline_stage": "Stage 1",
              "input_source_kind": "legacy_source", "chain_status": "queued"},
@@ -227,16 +226,19 @@ def test_result_to_dict_has_correct_shape(tmp_path: Path) -> None:
              "input_source_kind": "stage_1_sandbox", "chain_status": "pending"},
             {"stage_index": 3, "stage_run_id": "run3", "pipeline_stage": "Stage 3",
              "input_source_kind": "stage_2_sandbox", "chain_status": "pending"},
+            {"stage_index": 4, "stage_run_id": "run4", "pipeline_stage": "Stage 4",
+             "input_source_kind": "stage_3_sandbox", "chain_status": "pending"},
         ),
         created_at="2026-06-13T00:00:00Z",
     )
     d = service.result_to_dict(result)
     assert d["job_id"] == "test-job-id"
-    assert d["pipeline_id"] == "springboot-216-to-356-java21-three-stage"
-    assert len(d["stages"]) == 3
+    assert d["pipeline_id"] == "springboot-216-to-400-java21-four-stage"
+    assert len(d["stages"]) == 4
     assert d["stages"][0]["chain_status"] == "queued"
     assert d["stages"][1]["chain_status"] == "pending"
     assert d["stages"][2]["input_source_kind"] == "stage_2_sandbox"
+    assert d["stages"][3]["input_source_kind"] == "stage_3_sandbox"
 
 
 def test_create_job_persistence_across_connections(tmp_path: Path) -> None:

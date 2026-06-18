@@ -17,7 +17,10 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: var(--bg);
+  background:
+    radial-gradient(circle at top left, rgba(15, 118, 110, 0.14), transparent 28%),
+    radial-gradient(circle at top right, rgba(17, 94, 89, 0.1), transparent 26%),
+    linear-gradient(180deg, #f7faf9 0%, var(--bg) 38%, #eef3f1 100%);
   color: var(--ink);
   font-family: "Aptos", "Segoe UI", sans-serif;
 }
@@ -56,6 +59,14 @@ h2 {
   padding: 32px 20px;
 }
 
+.shell:has(.new-migration-page),
+.shell:has(.migration-cockpit-page),
+.shell:has(.screen-page),
+.shell:has(.run-page) {
+  max-width: 1680px;
+  width: 100%;
+}
+
 .eyebrow {
   color: var(--accent-dark);
   font-size: 0.78rem;
@@ -68,6 +79,7 @@ h2 {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
+  min-height: 0;
   padding: 20px;
 }
 
@@ -148,12 +160,61 @@ h2 {
 .stack {
   display: grid;
   gap: 16px;
+  min-height: 0;
+}
+
+.new-migration-page,
+.migration-cockpit-page,
+.screen-page,
+.run-page {
+  display: grid;
+  gap: 16px;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: calc(100vh - 64px);
+}
+
+.new-migration-header,
+.migration-cockpit-header,
+.screen-header,
+.run-header {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(237, 247, 245, 0.92));
+  border: 1px solid rgba(15, 118, 110, 0.14);
+  border-radius: 18px;
+  box-shadow: 0 24px 60px rgba(23, 32, 29, 0.08);
+  display: grid;
+  gap: 10px;
+  overflow: hidden;
+  padding: 24px 28px;
+  position: relative;
+}
+
+.new-migration-header::after,
+.migration-cockpit-header::after,
+.screen-header::after,
+.run-header::after {
+  background: linear-gradient(90deg, rgba(15, 118, 110, 0.18), rgba(15, 118, 110, 0));
+  content: "";
+  height: 4px;
+  left: 0;
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+
+.panel-scroll {
+  min-height: 0;
+  overflow: auto;
+}
+
+.screen-body {
+  min-height: 0;
 }
 
 .event-list,
 .table-list {
   border-top: 1px solid var(--line);
   display: grid;
+  min-height: 0;
 }
 
 .event-row,
@@ -189,8 +250,27 @@ h2 {
 }
 
 @media (max-width: 720px) {
+  .shell {
+    padding: 20px 14px 28px;
+  }
+
   .event-row,
   .table-row {
     grid-template-columns: 1fr;
+  }
+
+  .new-migration-page,
+  .migration-cockpit-page,
+  .screen-page,
+  .run-page {
+    min-height: auto;
+  }
+
+  .new-migration-header,
+  .migration-cockpit-header,
+  .screen-header,
+  .run-header {
+    border-radius: 14px;
+    padding: 18px;
   }
 }

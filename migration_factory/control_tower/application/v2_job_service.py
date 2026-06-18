@@ -25,9 +25,10 @@ STAGE_INPUTS = {
     1: {"pipeline_stage": "Stage 1", "input_kind": "legacy_source"},
     2: {"pipeline_stage": "Stage 2", "input_kind": "stage_1_sandbox"},
     3: {"pipeline_stage": "Stage 3", "input_kind": "stage_2_sandbox"},
+    4: {"pipeline_stage": "Stage 4", "input_kind": "stage_3_sandbox"},
 }
 
-PIPELINE_ID = "springboot-216-to-356-java21-three-stage"
+PIPELINE_ID = "springboot-216-to-400-java21-four-stage"
 
 
 @dataclass(frozen=True)
@@ -93,7 +94,7 @@ class V2MigrationJobService:
         now = utc_now_text()
 
         stages = []
-        for idx in (1, 2, 3):
+        for idx in (1, 2, 3, 4):
             stage_info = STAGE_INPUTS[idx]
             stages.append({
                 "stage_index": idx,

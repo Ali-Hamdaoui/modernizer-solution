@@ -121,6 +121,9 @@ from migration_factory.control_tower.application.v2_azure_health_service import 
 from migration_factory.control_tower.application.v2_job_service import (
     V2MigrationJobService,
 )
+from migration_factory.control_tower.application.v2_final_report_service import (
+    V2FinalReportService,
+)
 from migration_factory.control_tower.application.v2_worker_stage import (
     V2WorkerStageService,
 )
@@ -1089,6 +1092,107 @@ def create_app(
             "job_id": job_id,
             "stages": _v2_stages_from_job(job, commands, events),
         }
+
+    @app.get("/v1/v2/jobs/{job_id}/report")
+    def get_v2_final_report(job_id: str) -> dict[str, Any]:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            service = V2FinalReportService(
+                job_repo=uow.v2_jobs,
+                command_repo=uow.v2_commands,
+            )
+            report = service.get_report(job_id)
+        if report is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "V2_REPORT_NOT_FOUND",
+                f"No generated V2 report found for job {job_id!r}.",
+            )
+        return service.snapshot_to_dict(report)
+
+    @app.post("/v1/v2/jobs/{job_id}/report", status_code=status.HTTP_201_CREATED)
+    def generate_v2_final_report(job_id: str) -> dict[str, Any]:
+        actor = resolved_actor_provider.current_actor()
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=3,
+                event_type="final_report_requested",
+                status="queued",
+                message="Final report generation requested by operator.",
+                payload={"actor_id": actor.actor_id},
+            )
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=3,
+                event_type="final_report_started",
+                status="running",
+                message="Final report generation started.",
+                payload={"actor_id": actor.actor_id},
+            )
+            service = V2FinalReportService(
+                job_repo=uow.v2_jobs,
+                command_repo=uow.v2_commands,
+            )
+            try:
+                report = service.generate_report(job_id)
+            except ValueError as exc:
+                _append_v2_event(
+                    uow,
+                    job_id=job_id,
+                    stage=3,
+                    event_type="final_report_failed",
+                    status="failed",
+                    message=str(exc),
+                    payload={"actor_id": actor.actor_id},
+                )
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "V2_REPORT_GENERATION_FAILED",
+                    str(exc),
+                ) from exc
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=3,
+                event_type="artifact_written",
+                status="completed",
+                message="Artifact written: final_migration_report_docs",
+                payload={
+                    "artifact_kind": "final_migration_report_docs",
+                    "relative_path": report.docs_report_json,
+                },
+            )
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=3,
+                event_type="artifact_written",
+                status="completed",
+                message="Artifact written: final_migration_summary_docs",
+                payload={
+                    "artifact_kind": "final_migration_summary_docs",
+                    "relative_path": report.docs_report_markdown,
+                },
+            )
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=3,
+                event_type="final_report_completed",
+                status="completed",
+                message="Final report generated and stored in docs.",
+                payload={
+                    "actor_id": actor.actor_id,
+                    "docs_report_json": report.docs_report_json,
+                    "docs_report_markdown": report.docs_report_markdown,
+                    "total_duration_seconds": report.total_duration_seconds,
+                },
+            )
+        return service.snapshot_to_dict(report)
 
     @app.get("/v1/v2/jobs/{job_id}/approvals")
     def list_v2_job_approvals(job_id: str) -> dict[str, Any]:

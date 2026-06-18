@@ -855,3 +855,48 @@ def _write_sql(directory: Path, name: str, sql: str) -> Path:
     path = directory / name
     path.write_text(sql.strip() + "\n", encoding="utf-8")
     return path
+
+
+def test_v2_stage4_migration_allows_stage4_records(tmp_path: Path) -> None:
+    connection = _migrated_connection(tmp_path)
+    try:
+        connection.execute(
+            """
+            INSERT INTO v2_stage_commands (
+                command_id, job_id, stage_index, manifest_checksum,
+                argv_json, env_json, status, created_at, updated_at, result_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "cmd-s4",
+                "job-1",
+                4,
+                "checksum",
+                "[]",
+                "{}",
+                "manifest_ready",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+                None,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO v2_job_events (
+                event_id, job_id, stage, type, status, message, payload_json, created_at, sequence
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "evt-s4",
+                "job-1",
+                4,
+                "next_stage_queued",
+                "queued",
+                "Stage 4 queued",
+                "{}",
+                "2026-01-01T00:00:00Z",
+                1,
+            ),
+        )
+    finally:
+        connection.close()

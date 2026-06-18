@@ -759,6 +759,21 @@ export type V2ArtifactPreviewResponse = {
   reason?: string | null;
 };
 
+export type V2FinalReportResponse = {
+  job_id: string;
+  status: string;
+  generated_at: string;
+  docs_report_json: string;
+  docs_report_markdown: string;
+  run_report_json: string;
+  run_report_markdown: string;
+  report_context: string;
+  total_duration_seconds: number | null;
+  summary: string;
+  change_summary: string[];
+  warnings: string[];
+};
+
 // ── F14 — Stage 3 POM Dependency Review types ──────────────────────────
 
 export type PomBaseline = {

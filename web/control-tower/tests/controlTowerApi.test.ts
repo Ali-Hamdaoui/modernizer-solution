@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CONTROL_TOWER_API_BASE_URL,
   CONTROL_TOWER_FRONTEND_CLIENT_ID,
   DEFAULT_CONTROL_TOWER_API_BASE_URL,
   allowedStatusCopy,
   createDiagnosticJobPayload,
   eventStreamUrl,
+  generateV2FinalReport,
   getV2AssistantMessages,
+  getV2FinalReport,
   getV2JobApprovals,
   getV2MigrationJobStages,
   getJob,
@@ -160,8 +163,46 @@ describe("M2-01 frontend diagnostic contracts", () => {
     await expect(getV2JobApprovals("")).rejects.toThrow(/job id is required/i);
     await expect(getV2MigrationJobStages("")).rejects.toThrow(/job id is required/i);
     await expect(getV2AssistantMessages("")).rejects.toThrow(/job id is required/i);
+    await expect(getV2FinalReport("")).rejects.toThrow(/job id is required/i);
+    await expect(generateV2FinalReport("")).rejects.toThrow(/job id is required/i);
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("calls the V2 final report endpoints with the route job id", async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => ({
+      ok: true,
+      json: async () => ({
+        job_id: "job-123",
+        status: "generated",
+        generated_at: "2026-06-18T00:00:00Z",
+        docs_report_json: "docs/migration-reports/job-123/migration_report.json",
+        docs_report_markdown: "docs/migration-reports/job-123/migration_summary.md",
+        run_report_json: "C:/tmp/run/final/migration_report.json",
+        run_report_markdown: "C:/tmp/run/final/migration_summary.md",
+        report_context: "docs/migration-reports/job-123/report_context.json",
+        total_duration_seconds: 42.25,
+        summary: "summary",
+        change_summary: ["Java changed from 17 to 21."],
+        warnings: [],
+      }),
+      status: 200,
+      headers: { get: () => null },
+      init,
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const jobId = "job-123";
+    await getV2FinalReport(jobId);
+    await generateV2FinalReport(jobId);
+
+    expect(fetchMock.mock.calls[0][0]).toBe(`${CONTROL_TOWER_API_BASE_URL}/v1/v2/jobs/${jobId}/report`);
+    expect(fetchMock.mock.calls[1][0]).toBe(`${CONTROL_TOWER_API_BASE_URL}/v1/v2/jobs/${jobId}/report`);
+    expect(fetchMock.mock.calls[1][1]).toEqual(
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
   });
 
   it("preview helper uses preview endpoint and safe preview contract", async () => {

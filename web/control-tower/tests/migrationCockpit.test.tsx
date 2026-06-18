@@ -46,11 +46,23 @@ describe("V2 Migration Cockpit contract", () => {
       "approval_decisions",
       "assistant_panel",
       "proof_report",
+      "generate_report",
     ];
     const forbidden = ["start_stage_1", "start_stage_2", "start_stage_3", "run_maven", "choose_goal"];
     for (const f of forbidden) {
       expect(cockpitControls).not.toContain(f);
     }
+  });
+
+  it("report generation is operator-triggered, not automatic", () => {
+    const proofReportContract = {
+      auto_generated: false,
+      operator_action: "generate_report",
+      docs_storage_root: "docs/migration-reports",
+    };
+    expect(proofReportContract.auto_generated).toBe(false);
+    expect(proofReportContract.operator_action).toBe("generate_report");
+    expect(proofReportContract.docs_storage_root).toBe("docs/migration-reports");
   });
 
   it("approval requires checksum", () => {

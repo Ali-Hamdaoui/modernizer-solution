@@ -224,7 +224,7 @@ def test_stage_jdk_map_is_fixed() -> None:
 
 
 def test_pipeline_id_is_constant() -> None:
-    assert PIPELINE_ID == "springboot-216-to-356-java21-three-stage"
+    assert PIPELINE_ID == "springboot-216-to-400-java21-four-stage"
 
 
 def test_result_to_dict_shape(tmp_path: Path) -> None:
@@ -607,13 +607,15 @@ def test_stage1_manifest_matches_terminal_runner_args(tmp_path: Path) -> None:
     assert result.argv[mode_idx] == "full_sandbox_migration"
 
 
-def test_stage2_and_stage3_profiles_are_correct() -> None:
-    """Stage 2 and Stage 3 profiles must match the terminal path."""
+def test_stage2_stage3_and_stage4_profiles_are_correct() -> None:
+    """Stage 2, Stage 3, and Stage 4 profiles must match the terminal path."""
     from migration_factory.control_tower.application.v2_stage_progression import STAGE_CONFIG
     assert STAGE_CONFIG[2]["profile"] == "springboot-2.7-to-3.5-java17"
     assert STAGE_CONFIG[2]["jdk_id"] == "java17"
     assert STAGE_CONFIG[3]["profile"] == "springboot-3.5-java17-to-java21"
     assert STAGE_CONFIG[3]["jdk_id"] == "java21"
+    assert STAGE_CONFIG[4]["profile"] == "springboot-3.5-java21-to-4.0-java21"
+    assert STAGE_CONFIG[4]["jdk_id"] == "java21"
 
 
 def test_stage_run_ids_are_unique(tmp_path: Path) -> None:
@@ -666,6 +668,54 @@ def test_stage_env_includes_all_required_java_maven_vars(tmp_path: Path) -> None
     assert env.get("JAVA17_HOME") == "/usr/lib/jvm/java-17"
     assert env.get("JAVA21_HOME") == "/usr/lib/jvm/java-21"
     assert env.get("MAVEN_CMD") == "/usr/bin/mvn"
+
+
+def test_stage_env_includes_safe_maven_execution_vars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = sqlite3.connect(
+        tmp_path / "sa4_maven_env.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_test_setup(repo)
+    monkeypatch.setenv("MAVEN_OPTS", "-Djavax.net.ssl.trustStore=C:\\trust\\cacerts -Xmx768m")
+    monkeypatch.setenv("MAVEN_USER_HOME", "C:\\Users\\operator\\.m2")
+
+    service = _make_worker_service(conn)
+    result = service.build_stage1_manifest(job_id="j1", setup_id=setup_id)
+
+    record = SqliteV2CommandRepository(conn).get(result.command_id)
+    assert record is not None
+    env = json.loads(record.env_json)
+    assert env.get("MAVEN_OPTS") == "-Djavax.net.ssl.trustStore=C:\\trust\\cacerts -Xmx768m"
+    assert env.get("MAVEN_USER_HOME") == "C:\\Users\\operator\\.m2"
+
+
+def test_stage_env_excludes_secret_like_maven_opts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = sqlite3.connect(
+        tmp_path / "sa4_secret_maven.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_test_setup(repo)
+    monkeypatch.setenv("MAVEN_OPTS", "-Drepo.password=secret")
+    monkeypatch.setenv("MAVEN_USER_HOME", "C:\\Users\\operator\\.m2")
+
+    service = _make_worker_service(conn)
+    result = service.build_stage1_manifest(job_id="j1", setup_id=setup_id)
+
+    record = SqliteV2CommandRepository(conn).get(result.command_id)
+    assert record is not None
+    env = json.loads(record.env_json)
+    assert "MAVEN_OPTS" not in env
+    assert env.get("MAVEN_USER_HOME") == "C:\\Users\\operator\\.m2"
 
 
 def test_stage_env_excludes_secret_keys(tmp_path: Path) -> None:

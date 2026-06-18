@@ -12,6 +12,7 @@ import type {
   V2JobEventSnapshotResponse,
   V2PipelineResponse,
   V2FailureSummaryResponse,
+  V2FinalReportResponse,
   V2StageEntry,
   V2StageCommandResponse,
   V2ApprovalResponse,
@@ -296,6 +297,21 @@ export async function getV2FailureSummary(jobId: string): Promise<V2FailureSumma
   const safeJobId = requireJobId(jobId);
   return getJson<V2FailureSummaryResponse>(
     `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/failure-summary`
+  );
+}
+
+export async function getV2FinalReport(jobId: string): Promise<V2FinalReportResponse> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<V2FinalReportResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/report`
+  );
+}
+
+export async function generateV2FinalReport(jobId: string): Promise<V2FinalReportResponse> {
+  const safeJobId = requireJobId(jobId);
+  return postJson<V2FinalReportResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/report`,
+    {}
   );
 }
 

@@ -121,7 +121,7 @@ export function AssistantPanel({ jobId, initialMessages = [] }: Props) {
   const isConnected = connectionStatus === "connected";
 
   return (
-    <section className="panel stack" aria-label="Assistant panel">
+    <section className="panel stack panel-scroll" aria-label="Assistant panel">
       <header className="stack">
         <h2>Assistant panel</h2>
         <p className="meta">
@@ -183,7 +183,7 @@ export function AssistantPanel({ jobId, initialMessages = [] }: Props) {
       </section>
 
       {/* Streamed messages */}
-      <section className="panel stack">
+      <section className="panel stack panel-scroll">
         <h3>Messages</h3>
         {messages.length === 0 ? (
           <p className="meta">

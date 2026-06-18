@@ -67,6 +67,8 @@ def test_successful_full_sandbox_writes_final_report_and_summary(tmp_path: Path,
     assert payload["test_status"] == "TEST_PASSED"
     assert payload["test_totals"]["tests"] == 3
     assert payload["ai_trace"] == []
+    assert payload["report_summary"]
+    assert "Java changed from 11 to 17." in payload["change_summary"]
     assert payload["approval"]["approval_ref"].endswith("approval_decision.json")
     assert payload["lock_status"]["lock_ref"].endswith("approved_plan_lock.json")
     assert payload["limitations"][:4] == [
@@ -87,6 +89,9 @@ def test_successful_full_sandbox_writes_final_report_and_summary(tmp_path: Path,
     assert not (Path(state["run_dir"]) / "final" / "copilot_migration_report.md").exists()
     assert "Copilot Advisory Statement" not in final_summary.read_text(encoding="utf-8")
     assert "## AI Trace" not in final_summary.read_text(encoding="utf-8")
+    assert "## Migration Process" in final_summary.read_text(encoding="utf-8")
+    assert "## What Changed" in final_summary.read_text(encoding="utf-8")
+    assert "## Timing" in final_summary.read_text(encoding="utf-8")
     assert Path(result["artifact_refs"]["copilot_migration_overview"]).is_file()
     assert Path(result["artifact_refs"]["copilot_technical_changes"]).is_file()
     assert Path(result["artifact_refs"]["copilot_validation_evidence"]).is_file()

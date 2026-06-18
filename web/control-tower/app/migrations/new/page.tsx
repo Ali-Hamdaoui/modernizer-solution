@@ -6,8 +6,8 @@ export const metadata = {
 
 export default function NewMigrationPage() {
   return (
-    <section className="stack">
-      <div>
+    <section className="new-migration-page">
+      <div className="new-migration-header">
         <p className="eyebrow">V2 Local Migration</p>
         <h1>New Migration</h1>
         <p className="meta">

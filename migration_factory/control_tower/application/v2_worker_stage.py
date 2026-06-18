@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import dataclass
 from typing import Any
@@ -25,7 +26,7 @@ STAGE_JDK_MAP = {
     3: {"jdk_id": "java21", "env_var": "JAVA21_HOME", "expected_major": 21},
 }
 
-PIPELINE_ID = "springboot-216-to-356-java21-three-stage"
+PIPELINE_ID = "springboot-216-to-400-java21-four-stage"
 RUNNER_MODULE = "migration_factory.orchestrator.runner"
 RESUME_MODULE = "migration_factory.orchestrator.resume"
 
@@ -91,20 +92,23 @@ class V2WorkerStageService:
 
         # Persist to database
         if self._command_repo is not None:
+            env_manifest = {
+                "JAVA_HOME": jdk_home,
+                "JAVA11_HOME": setup.java11_home,
+                "JAVA17_HOME": setup.java17_home,
+                "JAVA21_HOME": setup.java21_home,
+                "MAVEN_CMD": setup.maven_cmd,
+                "AI_MIGRATION_DEFER_FINAL_REPORT": "1",
+                "PATH_PREPEND": f"{jdk_home}/bin",
+            }
+            env_manifest.update(_safe_maven_env())
             record = V2StageCommandRecord(
                 command_id=command_id,
                 job_id=job_id,
                 stage_index=1,
                 manifest_checksum="v2-stage1",  # Simplified for now
                 argv_json=json.dumps(list(argv), separators=(",", ":")),
-                env_json=json.dumps({
-                    "JAVA_HOME": jdk_home,
-                    "JAVA11_HOME": setup.java11_home,
-                    "JAVA17_HOME": setup.java17_home,
-                    "JAVA21_HOME": setup.java21_home,
-                    "MAVEN_CMD": setup.maven_cmd,
-                    "PATH_PREPEND": f"{jdk_home}/bin",
-                }, separators=(",", ":")),
+                env_json=json.dumps(env_manifest, separators=(",", ":")),
                 status="manifest_ready",
                 created_at=now,
                 updated_at=now,
@@ -159,3 +163,32 @@ def _get_jdk_home(setup: V2MigrationSetupRecord, env_var: str) -> str:
         "JAVA21_HOME": setup.java21_home,
     }
     return mapping.get(env_var, "")
+
+
+def _safe_maven_env() -> dict[str, str]:
+    env: dict[str, str] = {}
+    for key in ("MAVEN_OPTS", "MAVEN_USER_HOME"):
+        value = os.environ.get(key)
+        if value and not _is_secret_like_env(key, value):
+            env[key] = value
+    return env
+
+
+def _is_secret_like_env(key: str, value: str) -> bool:
+    marker = f"{key}={value}".lower()
+    return any(
+        token in marker
+        for token in (
+            "api_key",
+            "apikey",
+            "authorization",
+            "bearer",
+            "client_secret",
+            "connectionstring",
+            "credential",
+            "password",
+            "secret",
+            "sas",
+            "token",
+        )
+    )
