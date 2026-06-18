@@ -26,7 +26,7 @@ _SECRET_VALUE_RE = re.compile(
     r'bearer\s+[A-Za-z0-9._\-]{8,}'
 )
 _MAX_ANSWER_CHARS = 2400
-_MAX_EVIDENCE_ITEMS = 3
+_MAX_EVIDENCE_ITEMS = 4
 
 
 @dataclass(frozen=True)
@@ -157,6 +157,7 @@ class V2AssistantFailureAnswerService:
             classification=diagnosis_data or classification,
             evidence_pack=failure_evidence_pack,
         )
+        execution_status = self._execution_status(payload)
         pretty_missing = tuple(dict.fromkeys(self._humanize_missing_artifact(item) for item in missing_artifacts))
         safety_note = (
             "No patch was applied. Assistant cannot execute commands, apply changes, approve decisions, "
@@ -167,6 +168,7 @@ class V2AssistantFailureAnswerService:
             root_cause=root_cause,
             confidence=confidence,
             evidence=evidence,
+            execution_status=execution_status,
             affected_paths=affected_paths,
             recommended_next_step=recommended_next_step,
             missing_artifacts=pretty_missing,
@@ -227,6 +229,7 @@ class V2AssistantFailureAnswerService:
         root_cause: str,
         confidence: str,
         evidence: tuple[dict[str, str], ...],
+        execution_status: str,
         affected_paths: tuple[str, ...],
         recommended_next_step: str,
         missing_artifacts: tuple[str, ...],
@@ -249,6 +252,7 @@ class V2AssistantFailureAnswerService:
             f"Failure type: {failure_type}\n"
             f"Root cause: {root_cause}\n"
             f"Confidence: {confidence}\n"
+            f"Execution status: {execution_status}\n"
             f"Evidence: {evidence_lines}\n"
             f"Affected paths: {affected}\n"
             f"Missing artifacts: {missing}\n"
@@ -257,6 +261,13 @@ class V2AssistantFailureAnswerService:
             f"Safety: {safety_note}"
         )
         return self._bounded_text(answer, _MAX_ANSWER_CHARS)
+
+    def _execution_status(self, payload: dict[str, Any]) -> str:
+        for key in ("build_status", "final_status", "transform_status", "test_status"):
+            value = str(payload.get(key) or "").strip()
+            if value:
+                return value
+        return "unknown"
 
     def _infer_run_dir(
         self,
@@ -277,12 +288,29 @@ class V2AssistantFailureAnswerService:
                 "orchestration_summary.json",
                 "test_agent.log",
             }:
-                return str(path.parent)
+                return self._run_root_from_known_path(path)
         for raw in candidates:
             path = Path(raw)
             if path.is_absolute():
-                return str(path.parent)
+                return self._run_root_from_known_path(path)
+        sandbox_path = payload.get("sandbox_path")
+        if isinstance(sandbox_path, str) and sandbox_path.strip():
+            return self._run_root_from_known_path(Path(sandbox_path))
         return None
+
+    def _run_root_from_known_path(self, path: Path) -> str:
+        resolved = path.resolve()
+        location = resolved if resolved.is_dir() else resolved.parent
+        lowered = location.name.lower()
+        if lowered in {"logs", "build", "orchestration"}:
+            return str(location.parent)
+        if lowered == "post_transform" and location.parent.name.lower() == "test":
+            return str(location.parent.parent)
+        if lowered == "sandbox" and location.parent.name.lower() == "workspaces":
+            return str(location.parent.parent)
+        if resolved.name == "pom.xml" and resolved.parent.name.lower() == "sandbox" and resolved.parent.parent.name.lower() == "workspaces":
+            return str(resolved.parent.parent.parent)
+        return str(location)
 
     def _humanize_missing_artifact(self, artifact: str) -> str:
         mapping = {

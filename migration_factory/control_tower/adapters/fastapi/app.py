@@ -175,6 +175,9 @@ from migration_factory.control_tower.application.v2_failure_diagnosis import (
     V2FailureDiagnosisService,
     create_orchestrator_diagnosis_callback,
 )
+from migration_factory.control_tower.application.v2_failure_evidence import (
+    infer_stage_run_root,
+)
 from migration_factory.control_tower.application.v2_diagnosis_proposal_flow import (
     build_default_structured_model_clients,
     V2DiagnosisProposalFlowService,
@@ -1498,6 +1501,7 @@ def create_app(
         """Ask the V2 assistant for read-only status guidance."""
         with unit_of_work_factory() as uow:
             job = _require_v2_job(uow, job_id)
+            setup = uow.v2_setups.get(job.setup_id) if job.setup_id else None
             events = uow.v2_events.list_by_job(job_id)
             approvals = uow.v2_approvals.list_cards_by_job(job_id)
             commands = uow.v2_commands.list_by_job(job_id)
@@ -1511,8 +1515,14 @@ def create_app(
             )
             if service.is_failure_question(payload.question):
                 requested_stage = service.extract_failure_stage_index(payload.question)
-                failure_event = _latest_v2_failure_event(events, question=payload.question, stage_index=requested_stage)
-                failure_payload = _safe_json_loads(getattr(failure_event, "payload_json", "{}")) if failure_event is not None else None
+                failure_event, failure_payload = _build_v2_failure_payload_from_job_events(
+                    question=payload.question,
+                    job=job,
+                    setup=setup,
+                    events=events,
+                    commands=commands,
+                    stage_index=requested_stage,
+                )
                 latest_diagnosis = uow.v2_failure_diagnoses.get_latest_for_job(job_id, stage_index=requested_stage)
                 diagnosis_payload = (
                     V2FailureDiagnosisService.persisted_record_to_dict(latest_diagnosis)
@@ -1566,6 +1576,13 @@ def create_app(
                         stage_index=failure_event.stage,
                         event_type=failure_event.type,
                         recent_failure_event_payload=failure_payload,
+                    )
+                    governed_status_payload = _apply_transient_v2_failure_diagnosis(
+                        projection=governed_status_payload,
+                        service=service,
+                        question=payload.question,
+                        failure_event=failure_event,
+                        failure_payload=failure_payload,
                     )
                 deterministic_answer = service.answer_failure_question(
                     job_id=job_id,
@@ -1701,7 +1718,7 @@ def create_app(
         patch_candidate_id: str | None = Query(default=None),
     ) -> dict[str, Any]:
         with unit_of_work_factory() as uow:
-            _require_v2_job(uow, job_id)
+            job = _require_v2_job(uow, job_id)
             service = V2GovernedRepairStatusService(
                 diagnosis_repo=uow.v2_failure_diagnoses,
                 repair_repo=uow.v2_repairs,
@@ -1722,6 +1739,25 @@ def create_app(
                     "GOVERNED_REPAIR_STATUS_FAILED",
                     str(exc),
                 ) from exc
+            if not projection.get("diagnosis"):
+                setup = uow.v2_setups.get(job.setup_id) if job.setup_id else None
+                commands = uow.v2_commands.list_by_job(job_id)
+                events = uow.v2_events.list_by_job(job_id)
+                failure_event, failure_payload = _build_v2_failure_payload_from_job_events(
+                    question=f"why stage {stage_index or ''} failed?",
+                    job=job,
+                    setup=setup,
+                    events=events,
+                    commands=commands,
+                    stage_index=stage_index,
+                )
+                projection = _apply_transient_v2_failure_diagnosis(
+                    projection=projection,
+                    service=V2AssistantService(),
+                    question="status",
+                    failure_event=failure_event,
+                    failure_payload=failure_payload,
+                )
         return redact_public_value(projection)
 
     @app.post("/v1/v2/diagnoses/{diagnosis_id}/repair-proposal")
@@ -4350,17 +4386,17 @@ def _latest_v2_failure_event(
     stage_index: int | None,
 ) -> Any | None:
     lowered = question.lower()
-    preferred_types = ["build_failed", "test_failed", "transform_failed"]
+    preferred_types = ["build_failed", "sandbox_transform_failed", "test_failed", "transform_failed", "stage_failed"]
     if "build" in lowered:
         preferred_types = ["build_failed", *preferred_types]
     elif "test" in lowered:
         preferred_types = ["test_failed", *preferred_types]
     elif "transform" in lowered:
-        preferred_types = ["transform_failed", *preferred_types]
+        preferred_types = ["sandbox_transform_failed", "transform_failed", *preferred_types]
 
     failure_events = [
         event for event in events
-        if event.type in {"build_failed", "test_failed", "transform_failed", "stage_failed"}
+        if event.type in {"build_failed", "test_failed", "transform_failed", "stage_failed", "sandbox_transform_failed"}
         or event.status == "failed"
     ]
     if stage_index is not None:
@@ -4370,6 +4406,166 @@ def _latest_v2_failure_event(
         if typed:
             return typed[-1]
     return failure_events[-1] if failure_events else None
+
+
+def _build_v2_failure_payload_from_job_events(
+    *,
+    question: str,
+    job: Any,
+    setup: Any,
+    events: tuple[Any, ...],
+    commands: tuple[Any, ...],
+    stage_index: int | None,
+) -> tuple[Any | None, dict[str, Any] | None]:
+    failure_event = _latest_v2_failure_event(events, question=question, stage_index=stage_index)
+    if failure_event is None:
+        return None, None
+    payload = _safe_json_loads(getattr(failure_event, "payload_json", "{}"))
+    stage_artifacts = _resolve_v2_stage_failure_artifacts(
+        setup=setup,
+        commands=commands,
+        events=events,
+        stage_index=failure_event.stage,
+    )
+    if stage_artifacts["run_dir"] and not payload.get("run_dir"):
+        payload["run_dir"] = str(stage_artifacts["run_dir"])
+    if stage_artifacts["sandbox_path"] and not payload.get("sandbox_path"):
+        payload["sandbox_path"] = str(stage_artifacts["sandbox_path"])
+    artifact_refs = payload.get("artifact_refs")
+    if not isinstance(artifact_refs, dict):
+        artifact_refs = {}
+    merged_refs = dict(artifact_refs)
+    merged_refs.update(stage_artifacts["artifact_refs"])
+    if merged_refs:
+        payload["artifact_refs"] = merged_refs
+    if not payload.get("command_id"):
+        payload["command_id"] = _latest_stage_command_id(
+            events=events,
+            commands=commands,
+            stage_index=failure_event.stage,
+        )
+    return failure_event, payload
+
+
+def _resolve_v2_stage_failure_artifacts(
+    *,
+    setup: Any,
+    commands: tuple[Any, ...],
+    events: tuple[Any, ...],
+    stage_index: int | None,
+) -> dict[str, Any]:
+    run_root: Path | None = None
+    sandbox_path: Path | None = None
+    for event in events:
+        if event.type != "artifact_written":
+            continue
+        if stage_index is not None and event.stage != stage_index:
+            continue
+        payload = _safe_json_loads(getattr(event, "payload_json", "{}"))
+        artifact_ref = str(payload.get("relative_path") or payload.get("path") or "").strip()
+        if not artifact_ref:
+            continue
+        candidate = _resolve_v2_artifact_ref_path(
+            artifact_ref=artifact_ref,
+            setup=setup,
+            commands=commands,
+        )
+        if candidate is None:
+            continue
+        inferred = infer_stage_run_root(candidate)
+        if inferred is not None:
+            run_root = inferred
+        if str(payload.get("artifact_kind") or "").strip().lower() == "sandbox" and candidate.is_dir():
+            sandbox_path = candidate
+
+    if sandbox_path is None and run_root is not None:
+        default_sandbox = run_root / "workspaces" / "sandbox"
+        if default_sandbox.is_dir():
+            sandbox_path = default_sandbox
+    if run_root is None and sandbox_path is not None:
+        run_root = infer_stage_run_root(sandbox_path)
+
+    artifact_refs: dict[str, str] = {}
+    if run_root is not None:
+        phase2_log = run_root / "logs" / "phase2_transform.log"
+        if phase2_log.is_file():
+            artifact_refs["phase2_log"] = str(phase2_log)
+        orchestration_summary = run_root / "orchestration" / "orchestration_summary.json"
+        if orchestration_summary.is_file():
+            artifact_refs["orchestration_summary"] = str(orchestration_summary)
+        build_errors = sorted((run_root / "build").glob("build-error*.json")) if (run_root / "build").is_dir() else []
+        if build_errors:
+            artifact_refs["build_error"] = str(build_errors[-1])
+        test_log = run_root / "test" / "post_transform" / "test_agent.log"
+        if test_log.is_file():
+            artifact_refs["test_agent_log"] = str(test_log)
+
+    return {
+        "run_dir": run_root,
+        "sandbox_path": sandbox_path,
+        "artifact_refs": artifact_refs,
+    }
+
+
+def _latest_stage_command_id(
+    *,
+    events: tuple[Any, ...],
+    commands: tuple[Any, ...],
+    stage_index: int | None,
+) -> str:
+    for event in reversed(events):
+        if stage_index is not None and event.stage != stage_index:
+            continue
+        payload = _safe_json_loads(getattr(event, "payload_json", "{}"))
+        command_id = str(payload.get("command_id") or "").strip()
+        if command_id:
+            return command_id
+    for command in reversed(commands):
+        if stage_index is not None and getattr(command, "stage_index", None) != stage_index:
+            continue
+        command_id = str(getattr(command, "command_id", "") or "").strip()
+        if command_id:
+            return command_id
+    return ""
+
+
+def _apply_transient_v2_failure_diagnosis(
+    *,
+    projection: dict[str, Any],
+    service: V2AssistantService,
+    question: str,
+    failure_event: Any | None,
+    failure_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if projection.get("diagnosis"):
+        return projection
+    if failure_event is None or not isinstance(failure_payload, dict):
+        return projection
+    evidence_pack, classification = service.build_failure_answer_inputs(
+        stage_index=failure_event.stage,
+        event_type=failure_event.type,
+        recent_failure_event_payload=failure_payload,
+    )
+    if not classification:
+        return projection
+    failure_type = str(classification.get("failure_type") or "")
+    root_cause = str(classification.get("likely_root_cause") or "")
+    if failure_type == "unknown_build_failure" and root_cause.startswith("Missing failure artifacts:"):
+        return projection
+    projection["stage_index"] = projection.get("stage_index") or failure_event.stage
+    projection["diagnosis"] = {
+        "diagnosis_id": None,
+        "failure_type": failure_type,
+        "likely_root_cause": root_cause,
+        "confidence": str(classification.get("confidence") or "low"),
+        "diagnosis_checksum": "",
+        "evidence_pack_checksum": V2FailureDiagnosisService.compute_evidence_pack_checksum(evidence_pack),
+        "created_at": getattr(failure_event, "created_at", ""),
+        "derived_from_events": True,
+    }
+    if projection.get("next_action") == "run_diagnosis":
+        projection["next_action"] = "create_proposal"
+    return projection
 
 
 def _build_v2_assistant_prompt(
@@ -4719,6 +4915,22 @@ def _resolve_v2_artifact_preview_path(
     setup: Any,
     commands: tuple[Any, ...],
 ) -> Path | None:
+    candidate = _resolve_v2_artifact_ref_path(
+        artifact_ref=artifact_ref,
+        setup=setup,
+        commands=commands,
+    )
+    if candidate is None or not candidate.is_file():
+        return None
+    return candidate
+
+
+def _resolve_v2_artifact_ref_path(
+    *,
+    artifact_ref: str,
+    setup: Any,
+    commands: tuple[Any, ...],
+) -> Path | None:
     ref = str(artifact_ref or "").strip()
     if not ref or _is_unsafe_artifact_ref(ref):
         return None
@@ -4726,7 +4938,7 @@ def _resolve_v2_artifact_preview_path(
     relative_ref = Path(ref)
     base_roots = _v2_artifact_base_roots(setup=setup, commands=commands)
     for base_root in base_roots:
-        candidate = _contained_existing_file(base_root, relative_ref)
+        candidate = _contained_existing_path(base_root, relative_ref)
         if candidate is not None:
             return candidate
 
@@ -4736,7 +4948,7 @@ def _resolve_v2_artifact_preview_path(
             try:
                 migration_dirs = base_root.rglob(".migration") if base_root.is_dir() else ()
                 for migration_dir in migration_dirs:
-                    candidate = _contained_existing_file(migration_dir.parent, Path(".migration") / rest)
+                    candidate = _contained_existing_path(migration_dir.parent, Path(".migration") / rest)
                     if candidate is not None:
                         return candidate
             except (OSError, ValueError):
@@ -4790,13 +5002,18 @@ def _v2_artifact_base_roots(*, setup: Any, commands: tuple[Any, ...]) -> tuple[P
 
 
 def _contained_existing_file(base_root: Path, relative_ref: Path) -> Path | None:
+    candidate = _contained_existing_path(base_root, relative_ref)
+    if candidate is None or not candidate.is_file():
+        return None
+    return candidate
+
+
+def _contained_existing_path(base_root: Path, relative_ref: Path) -> Path | None:
     try:
         resolved_base = base_root.resolve(strict=False)
         candidate = (resolved_base / relative_ref).resolve(strict=True)
         candidate.relative_to(resolved_base)
     except (FileNotFoundError, OSError, RuntimeError, ValueError):
-        return None
-    if not candidate.is_file():
         return None
     return candidate
 

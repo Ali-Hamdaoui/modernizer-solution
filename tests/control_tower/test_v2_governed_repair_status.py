@@ -42,6 +42,9 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository
 from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository import (
     V2MigrationJobRecord,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
+    V2MigrationSetupRecord,
+)
 
 
 def _mutation_headers() -> dict[str, str]:
@@ -275,6 +278,118 @@ def _prepare_approved(conn: sqlite3.Connection, tmp_path: Path):
     return diagnosis, proposal, reviewer_service, approval_service, candidate_service, status_service
 
 
+def _seed_event_derived_stage2_job(conn: sqlite3.Connection, tmp_path: Path) -> str:
+    job_id = "ddbbf3172a6d4a028dd9efeed6a1621b"
+    now = utc_now_text()
+    app_root = tmp_path / "modernized-app"
+    run_dir = app_root / ".migration" / "runs" / "v2-ddbbf317-s2"
+    sandbox_dir = run_dir / "workspaces" / "sandbox"
+    (run_dir / "logs").mkdir(parents=True, exist_ok=True)
+    (run_dir / "orchestration").mkdir(parents=True, exist_ok=True)
+    (run_dir / "build").mkdir(parents=True, exist_ok=True)
+    sandbox_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "logs" / "phase2_transform.log").write_text(
+        "Failed to read artifact descriptor for jakarta.persistence:jakarta.persistence-api:jar:3.0.x\n"
+        "PKIX path building failed\nBUILD_FAILED_IN_SANDBOX\n",
+        encoding="utf-8",
+    )
+    (run_dir / "orchestration" / "orchestration_summary.json").write_text(
+        json.dumps({"final_status": "BUILD_FAILED_IN_SANDBOX"}),
+        encoding="utf-8",
+    )
+    (run_dir / "build" / "build-error-20260618-004516-dependency_error.json").write_text(
+        json.dumps({"message": "Failed to read artifact descriptor for jakarta.servlet:jakarta.servlet-api:jar:5.0.x"}),
+        encoding="utf-8",
+    )
+    (sandbox_dir / "pom.xml").write_text(
+        "<project><dependencies>"
+        "<dependency><groupId>jakarta.persistence</groupId><artifactId>jakarta.persistence-api</artifactId><version>3.0.x</version></dependency>"
+        "<dependency><groupId>jakarta.servlet</groupId><artifactId>jakarta.servlet-api</artifactId><version>5.0.x</version></dependency>"
+        "</dependencies></project>",
+        encoding="utf-8",
+    )
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_setups.save(
+            V2MigrationSetupRecord(
+                setup_id="setup-stage2",
+                run_name="Migration v2-ddbbf317",
+                legacy_app_path=str(tmp_path / "legacy-app"),
+                output_parent_path=str(app_root),
+                ai_hub_path=str(tmp_path / "ai-hub"),
+                java11_home="C:/jdk11",
+                java17_home="C:/jdk17",
+                java21_home="C:/jdk21",
+                maven_cmd="mvn",
+                proof_level="standard",
+                skip_endpoint_smoke=False,
+                migration_flags_json="{}",
+                setup_checksum="setup-checksum-stage2",
+                checksum_algorithm="sha256",
+                created_at=now,
+                created_by="test",
+                correlation_id=None,
+            )
+        )
+        uow.v2_jobs.save(
+            V2MigrationJobRecord(
+                job_id=job_id,
+                setup_id="setup-stage2",
+                setup_checksum="setup-checksum-stage2",
+                pipeline_id="springboot-216-to-356-java21-three-stage",
+                stage_chain_json="[]",
+                status="failed",
+                created_at=now,
+                updated_at=now,
+                correlation_id=None,
+            )
+        )
+        uow.v2_commands.save(
+            V2StageCommandRecord(
+                command_id="9bdd74daf848439eae7aebed9cee8716",
+                job_id=job_id,
+                stage_index=2,
+                manifest_checksum="manifest-stage2",
+                argv_json=json.dumps(["python", "runner.py", "--modernized", str(app_root)]),
+                env_json="{}",
+                status="failed",
+                created_at=now,
+                updated_at=now,
+                result_json=json.dumps({"sandbox_path": str(sandbox_dir)}),
+            )
+        )
+        for artifact_kind, relative_path in (
+            ("sandbox", ".migration\\runs\\v2-ddbbf317-s2\\workspaces\\sandbox"),
+            ("orchestration_summary", ".migration\\runs\\v2-ddbbf317-s2\\orchestration\\orchestration_summary.json"),
+            ("build_error", ".migration\\runs\\v2-ddbbf317-s2\\build\\build-error-20260618-004516-dependency_error.json"),
+        ):
+            uow.v2_events.save(
+                job_id=job_id,
+                stage=2,
+                event_type="artifact_written",
+                status="completed",
+                message=artifact_kind,
+                payload={"artifact_kind": artifact_kind, "relative_path": relative_path},
+            )
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="stage_failed",
+            status="failed",
+            message="BUILD_FAILED_IN_SANDBOX",
+            payload={
+                "build_status": "BUILD_FAILED_IN_SANDBOX",
+                "command_id": "9bdd74daf848439eae7aebed9cee8716",
+                "final_status": "BUILD_FAILED_IN_SANDBOX",
+                "orchestration_status": "FAIL",
+                "repair_loop_status": "DISABLED",
+                "test_status": "",
+                "transform_status": "BUILD_FAILED_IN_SANDBOX",
+            },
+        )
+    return job_id
+
+
 def test_no_diagnosis_maps_to_run_diagnosis(tmp_path: Path) -> None:
     conn = _connection(tmp_path / "none.sqlite3")
     run_dir, sandbox = _fixture_dirs(tmp_path / "none")
@@ -297,6 +412,17 @@ def test_diagnosis_only_maps_to_create_proposal(tmp_path: Path) -> None:
 
     assert status["diagnosis"]["diagnosis_id"] == diagnosis.diagnosis_id
     assert status["next_action"] == "create_proposal"
+
+
+def test_stage2_run_diagnosis_available_does_not_map_to_run_diagnosis(tmp_path: Path) -> None:
+    conn = _connection(tmp_path / "stage2.sqlite3")
+    diagnosis, _ = _prepare_diagnosis(conn, tmp_path / "stage2")
+    _, _, _, _, status_service = _services(conn)
+
+    status = status_service.get_status(job_id="job-1", stage_index=2, diagnosis_id=diagnosis.diagnosis_id)
+
+    assert status["diagnosis"]["diagnosis_id"] == diagnosis.diagnosis_id
+    assert status["next_action"] != "run_diagnosis"
 
 
 def test_proposal_without_review_maps_to_review_proposal(tmp_path: Path) -> None:
@@ -435,3 +561,22 @@ def test_status_endpoint_is_read_only_and_assistant_can_mention_next_action(tmp_
         headers=_mutation_headers(),
     )
     assert post_response.status_code == 405, post_response.text
+
+
+def test_status_endpoint_uses_event_derived_failure_diagnosis_without_persisted_row(tmp_path: Path) -> None:
+    conn = _connection(tmp_path / "event-derived.sqlite3")
+    fake_assistant = _NoAssistantModelClient()
+    client = _client(conn, fake_assistant)
+    job_id = _seed_event_derived_stage2_job(conn, tmp_path / "event-derived")
+
+    with SqliteUnitOfWork(conn) as uow:
+        assert uow.v2_failure_diagnoses.list_for_job(job_id) == ()
+
+    response = client.get(f"/v1/v2/jobs/{job_id}/governed-repair/status?stage_index=2")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["diagnosis"]["failure_type"] == "invalid_maven_wildcard_version"
+    assert body["next_action"] == "create_proposal"
+    assert "invalid wildcard maven versions" in body["diagnosis"]["likely_root_cause"].lower()
+    assert fake_assistant.calls == []

@@ -14,9 +14,15 @@ _ALLOWED_RUN_FILENAMES = (
     "orchestration_summary.json",
     "test_agent.log",
 )
+_RUN_FILE_LOCATIONS = {
+    "phase2_transform.log": ("phase2_transform.log", "logs/phase2_transform.log"),
+    "orchestration_summary.json": ("orchestration_summary.json", "orchestration/orchestration_summary.json"),
+    "test_agent.log": ("test_agent.log", "test/post_transform/test_agent.log"),
+}
 _ALLOWED_BUILD_ERROR_GLOB = "build-error*.json"
 _MAX_SNIPPET_CHARS = 700
 _MAX_TOTAL_CHARS = 3200
+_MAX_CLASSIFICATION_TEXT_CHARS = 2200
 _SECRET_PATTERNS = (
     re.compile(r"gh[pousr]_[A-Za-z0-9_]{8,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{8,}"),
@@ -27,6 +33,23 @@ _SECRET_PATTERNS = (
     re.compile(r"(?i)(password|secret|token|api[_-]?key)\s*[:=]\s*[^\s,;]+"),
 )
 _PATH_TRAVERSAL_MARKERS = ("..", "~")
+_MAVEN_COORDINATE_RE = re.compile(
+    r"\b[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:(?:[A-Za-z0-9_.-]+:)?[A-Za-z0-9_.-]+(?:\.x)?\b"
+)
+_POM_CLASSIFICATION_PATTERNS = (
+    re.compile(r"<javax\.(?:persistence|servlet)\.version>\s*[^<\s]+\.x\s*</javax\.(?:persistence|servlet)\.version>", re.IGNORECASE),
+    re.compile(r"<artifactId>jakarta\.(?:persistence|servlet)-api</artifactId>", re.IGNORECASE),
+)
+_BUILD_ERROR_CLASSIFICATION_PATTERNS = (
+    re.compile(r"Failed to read artifact descriptor[^\r\n]*", re.IGNORECASE),
+    re.compile(r"[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:(?:jar|pom):[0-9]+(?:\.[0-9]+)*\.x\b", re.IGNORECASE),
+    re.compile(r"PKIX path building failed", re.IGNORECASE),
+)
+_TRANSFORM_LOG_CLASSIFICATION_PATTERNS = (
+    re.compile(r"Failed to download[^\r\n]*", re.IGNORECASE),
+    re.compile(r"[A-Za-z0-9_.-]+/[0-9]+(?:\.[0-9]+)*\.x/[A-Za-z0-9_.-]+(?:-[0-9]+(?:\.[0-9]+)*\.x)?\.(?:pom|jar)\b", re.IGNORECASE),
+    re.compile(r"jakarta\.(?:persistence|servlet)-api", re.IGNORECASE),
+)
 
 
 @dataclass(frozen=True)
@@ -34,6 +57,8 @@ class EvidenceSnippet:
     source: str
     label: str
     text: str
+    raw_text: str = ""
+    classification_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -68,8 +93,11 @@ class FailureEvidenceCollector:
         payload: dict[str, Any] | None,
     ) -> FailureEvidencePack:
         payload_data = payload if isinstance(payload, dict) else {}
+        artifact_refs_data = artifact_refs if isinstance(artifact_refs, dict) else {}
         run_root = self._resolve_root(run_dir)
         sandbox_root = self._resolve_root(sandbox_path)
+        if run_root is None:
+            run_root = self._infer_run_root(artifact_refs=artifact_refs_data, sandbox_root=sandbox_root)
         allowed_roots = tuple(root for root in (run_root, sandbox_root) if root is not None)
 
         snippets: list[EvidenceSnippet] = []
@@ -81,14 +109,25 @@ class FailureEvidenceCollector:
             nonlocal total_chars
             if total_chars >= self._max_total_chars:
                 return
+            remaining = self._max_total_chars - total_chars
+            bounded_raw = str(text or "")[: min(self._max_snippet_chars, remaining)].strip()
+            if not bounded_raw:
+                return
             cleaned = self._sanitize_text(text)
             if not cleaned:
                 return
-            remaining = self._max_total_chars - total_chars
             bounded = cleaned[: min(self._max_snippet_chars, remaining)].strip()
             if not bounded:
                 return
-            snippets.append(EvidenceSnippet(source=source, label=label, text=bounded))
+            snippets.append(
+                EvidenceSnippet(
+                    source=source,
+                    label=label,
+                    text=bounded,
+                    raw_text=bounded_raw,
+                    classification_text=self._extract_classification_text(source=source, label=label, text=str(text or "")),
+                )
+            )
             total_chars += len(bounded)
 
         for field in (
@@ -103,7 +142,6 @@ class FailureEvidenceCollector:
             if isinstance(value, str) and value.strip():
                 add_snippet("event_payload", field, value)
 
-        artifact_refs_data = artifact_refs if isinstance(artifact_refs, dict) else {}
         if artifact_refs_data:
             add_snippet(
                 "event_payload",
@@ -155,13 +193,10 @@ class FailureEvidenceCollector:
                 add_snippet("artifact_ref", "test_agent.log", self._read_text(test_log_path))
                 affected_paths.append(test_log_path.name)
 
-        if sandbox_root is not None:
-            pom_path = self._resolve_allowed_path(sandbox_root / "pom.xml", (sandbox_root,))
-            if pom_path is not None and pom_path.is_file():
-                add_snippet("sandbox", "pom.xml", self._read_text(pom_path))
-                affected_paths.append("pom.xml")
-            else:
-                missing.append("pom.xml")
+        pom_path = self._candidate_pom_path(run_root=run_root, sandbox_root=sandbox_root)
+        if pom_path is not None and pom_path.is_file():
+            add_snippet("sandbox", "pom.xml", self._read_text(pom_path))
+            affected_paths.append("pom.xml")
         else:
             missing.append("pom.xml")
 
@@ -190,8 +225,52 @@ class FailureEvidenceCollector:
     def _candidate_in_run(self, run_root: Path | None, filename: str) -> Path | None:
         if run_root is None:
             return None
-        candidate = (run_root / filename).resolve()
+        fallback: Path | None = None
+        for relative_path in _RUN_FILE_LOCATIONS.get(filename, (filename,)):
+            candidate = (run_root / relative_path).resolve()
+            if not self._is_within(candidate, run_root):
+                continue
+            if candidate.is_file():
+                return candidate
+            if fallback is None:
+                fallback = candidate
+        return fallback
+
+    def _candidate_pom_path(
+        self,
+        *,
+        run_root: Path | None,
+        sandbox_root: Path | None,
+    ) -> Path | None:
+        if sandbox_root is not None:
+            pom_path = self._resolve_allowed_path(sandbox_root / "pom.xml", (sandbox_root,))
+            if pom_path is not None:
+                return pom_path
+        if run_root is None:
+            return None
+        candidate = (run_root / "workspaces" / "sandbox" / "pom.xml").resolve()
         return candidate if self._is_within(candidate, run_root) else None
+
+    def _infer_run_root(
+        self,
+        *,
+        artifact_refs: dict[str, Any],
+        sandbox_root: Path | None,
+    ) -> Path | None:
+        candidates = [value for value in artifact_refs.values() if isinstance(value, str) and value.strip()]
+        for raw_path in candidates:
+            resolved = self._resolve_root(raw_path)
+            if resolved is None:
+                continue
+            inferred = self._stage_run_root_for_path(resolved)
+            if inferred is not None:
+                return inferred
+        if sandbox_root is not None:
+            return self._stage_run_root_for_path(sandbox_root)
+        return None
+
+    def _stage_run_root_for_path(self, path: Path) -> Path | None:
+        return infer_stage_run_root(path)
 
     def _resolve_allowed_path(
         self,
@@ -249,7 +328,66 @@ class FailureEvidenceCollector:
 
     def _sanitize_text(self, text: str) -> str:
         result = text
+        protected_coordinates: list[str] = []
+
+        def protect_coordinate(match: re.Match[str]) -> str:
+            protected_coordinates.append(match.group(0))
+            return f"__MVN_COORD_{len(protected_coordinates) - 1}__"
+
+        result = _MAVEN_COORDINATE_RE.sub(protect_coordinate, result)
         for pattern in _SECRET_PATTERNS:
             result = pattern.sub("[REDACTED]", result)
         result = redact_model_summary(result)
+        for index, coordinate in enumerate(protected_coordinates):
+            result = result.replace(f"__MVN_COORD_{index}__", coordinate)
         return result.strip()
+
+    def _extract_classification_text(self, *, source: str, label: str, text: str) -> str:
+        patterns = self._classification_patterns(source=source, label=label)
+        if not patterns:
+            return text[:_MAX_CLASSIFICATION_TEXT_CHARS].strip()
+        matches: list[str] = []
+        seen: set[str] = set()
+        for pattern in patterns:
+            for match in pattern.finditer(text):
+                value = match.group(0).strip()
+                if not value or value in seen:
+                    continue
+                matches.append(value)
+                seen.add(value)
+                if len("\n".join(matches)) >= _MAX_CLASSIFICATION_TEXT_CHARS:
+                    return "\n".join(matches)[:_MAX_CLASSIFICATION_TEXT_CHARS].strip()
+        if matches:
+            return "\n".join(matches)[:_MAX_CLASSIFICATION_TEXT_CHARS].strip()
+        return text[:_MAX_CLASSIFICATION_TEXT_CHARS].strip()
+
+    def _classification_patterns(self, *, source: str, label: str) -> tuple[re.Pattern[str], ...]:
+        lowered = f"{source} {label}".lower()
+        if "pom.xml" in lowered:
+            return _POM_CLASSIFICATION_PATTERNS
+        if "build-error" in lowered or source == "build_error_contract":
+            return _BUILD_ERROR_CLASSIFICATION_PATTERNS
+        if "phase2_transform.log" in lowered:
+            return _TRANSFORM_LOG_CLASSIFICATION_PATTERNS
+        return ()
+
+
+def infer_stage_run_root(path: str | Path | None) -> Path | None:
+    if path in (None, ""):
+        return None
+    resolved = Path(path).resolve()
+    location = resolved if resolved.is_dir() else resolved.parent
+    lowered = location.name.lower()
+    if lowered in {"logs", "build", "orchestration", "analysis", "transformation"}:
+        return location.parent.resolve()
+    if lowered == "post_transform" and location.parent.name.lower() == "test":
+        return location.parent.parent.resolve()
+    if lowered == "sandbox" and location.parent.name.lower() == "workspaces":
+        return location.parent.parent.resolve()
+    if (
+        resolved.name == "pom.xml"
+        and resolved.parent.name.lower() == "sandbox"
+        and resolved.parent.parent.name.lower() == "workspaces"
+    ):
+        return resolved.parent.parent.parent.resolve()
+    return location.resolve()
