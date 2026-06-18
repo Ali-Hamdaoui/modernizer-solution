@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import {
+  approveV2RepairProposal,
   askV2Assistant,
   approveV2Card,
   getV2DualModelTraces,
@@ -17,6 +18,7 @@ import {
   getV2JobPipeline,
   getV2MigrationJobStages,
   rejectV2Card,
+  rejectV2RepairProposal,
   requireJobId,
   v2EventStreamUrl,
 } from "../../../lib/controlTowerApi";
@@ -72,6 +74,42 @@ export function cockpitEvidenceStatusLines(bundle: V2RunEvidenceBundleResponse |
   if (bundle.test_status) lines.push(`Test: ${bundle.test_status}`);
   if (bundle.failure_bundle?.root_cause) lines.push(`Root cause: ${bundle.failure_bundle.root_cause}`);
   return lines;
+}
+
+export async function refreshRepairLifecyclePanelState(
+  jobId: string
+): Promise<Pick<CockpitData, "repairLifecycle" | "repairArtifacts" | "repairArtifactPreviews">> {
+  const safeJobId = requireJobId(jobId);
+  const repairLifecycle = await getV2RepairLifecycle(safeJobId).catch(() => null);
+  const repairArtifactState = await loadRepairArtifactState(
+    safeJobId,
+    repairLifecycle as V2RepairLifecycleListResponse | null,
+  );
+  return {
+    repairLifecycle: repairLifecycle as V2RepairLifecycleListResponse | null,
+    repairArtifacts: repairArtifactState.repairArtifacts,
+    repairArtifactPreviews: repairArtifactState.repairArtifactPreviews,
+  };
+}
+
+export async function submitRepairProposalCockpitDecision(args: {
+  jobId: string;
+  proposalId: string;
+  approvalState: string;
+  approvalChecksum: string;
+  operator?: string;
+  reason?: string;
+}): Promise<Pick<CockpitData, "repairLifecycle" | "repairArtifacts" | "repairArtifactPreviews">> {
+  const safeJobId = requireJobId(args.jobId);
+  if ((args.approvalState || "").trim() !== "pending_approval") {
+    throw new Error(`Repair proposal ${args.proposalId} is not pending approval.`);
+  }
+  if ((args.reason || "").trim()) {
+    await rejectV2RepairProposal(safeJobId, args.proposalId, args.reason, args.operator);
+  } else {
+    await approveV2RepairProposal(safeJobId, args.proposalId, args.approvalChecksum, args.operator);
+  }
+  return refreshRepairLifecyclePanelState(safeJobId);
 }
 
 const REPAIR_ARTIFACT_PREFERRED_PREVIEW_ORDER = [
@@ -138,6 +176,7 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
   const [assistantQuestion, setAssistantQuestion] = useState("");
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
+  const [repairApprovalBusy, setRepairApprovalBusy] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "connected" | "reconnecting">("connecting");
   const normalizedJobId = jobId?.trim() ?? "";
 
@@ -152,7 +191,7 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
     async function loadCockpit() {
       try {
         const safeJobId = requireJobId(normalizedJobId);
-        const [job, messagesResponse, approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary, evidenceBundle, dualModelTraces, repairLifecycle] = await Promise.all([
+        const [job, messagesResponse, approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary, evidenceBundle, dualModelTraces] = await Promise.all([
           getV2MigrationJob(safeJobId),
           getV2AssistantMessages(safeJobId),
           getV2JobApprovals(safeJobId),
@@ -162,12 +201,8 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
           getV2FailureSummary(safeJobId).catch(() => null),
           getV2EvidenceBundle(safeJobId).catch(() => null),
           getV2DualModelTraces(safeJobId).catch(() => null),
-          getV2RepairLifecycle(safeJobId).catch(() => null),
         ]);
-        const repairArtifactState = await loadRepairArtifactState(
-          safeJobId,
-          repairLifecycle as V2RepairLifecycleListResponse | null,
-        );
+        const repairArtifactState = await refreshRepairLifecyclePanelState(safeJobId);
 
         if (cancelled) return;
 
@@ -179,7 +214,7 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
           events: eventsResponse.events,
           pipeline: pipelineResponse,
           dualModelTraces: dualModelTraces as V2DualModelTraceListResponse | null,
-          repairLifecycle: repairLifecycle as V2RepairLifecycleListResponse | null,
+          repairLifecycle: repairArtifactState.repairLifecycle,
           repairArtifacts: repairArtifactState.repairArtifacts,
           repairArtifactPreviews: repairArtifactState.repairArtifactPreviews,
           evidenceBundle: evidenceBundle as V2RunEvidenceBundleResponse | null,
@@ -319,7 +354,7 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
   async function refreshLiveState() {
     if (!normalizedJobId) return;
     const safeJobId = requireJobId(normalizedJobId);
-    const [approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary, evidenceBundle, dualModelTraces, repairLifecycle] = await Promise.all([
+    const [approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary, evidenceBundle, dualModelTraces] = await Promise.all([
       getV2JobApprovals(safeJobId),
       getV2MigrationJobStages(safeJobId),
       getV2JobEventSnapshot(safeJobId),
@@ -327,12 +362,8 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
       getV2FailureSummary(safeJobId).catch(() => null),
       getV2EvidenceBundle(safeJobId).catch(() => null),
       getV2DualModelTraces(safeJobId).catch(() => null),
-      getV2RepairLifecycle(safeJobId).catch(() => null),
     ]);
-    const repairArtifactState = await loadRepairArtifactState(
-      safeJobId,
-      repairLifecycle as V2RepairLifecycleListResponse | null,
-    );
+    const repairArtifactState = await refreshRepairLifecyclePanelState(safeJobId);
     setData((current) => current ? {
       ...current,
       approvals: approvalsResponse.approvals,
@@ -340,7 +371,7 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
       events: eventsResponse.events,
       pipeline: pipelineResponse,
       dualModelTraces: dualModelTraces as V2DualModelTraceListResponse | null,
-      repairLifecycle: repairLifecycle as V2RepairLifecycleListResponse | null,
+      repairLifecycle: repairArtifactState.repairLifecycle,
       repairArtifacts: repairArtifactState.repairArtifacts,
       repairArtifactPreviews: repairArtifactState.repairArtifactPreviews,
       evidenceBundle: evidenceBundle as V2RunEvidenceBundleResponse | null,
@@ -371,6 +402,55 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
       setError(e instanceof Error ? e.message : "Rejection failed");
     } finally {
       setApprovalBusy(null);
+    }
+  }
+
+  async function approveRepairProposal(proposalId: string, approvalChecksum: string) {
+    if (!normalizedJobId) return;
+    setRepairApprovalBusy(proposalId);
+    try {
+      const refreshState = await submitRepairProposalCockpitDecision({
+        jobId: normalizedJobId,
+        proposalId,
+        approvalState: "pending_approval",
+        approvalChecksum,
+      });
+      setData((current) => current ? {
+        ...current,
+        repairLifecycle: refreshState.repairLifecycle,
+        repairArtifacts: refreshState.repairArtifacts,
+        repairArtifactPreviews: refreshState.repairArtifactPreviews,
+      } : current);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Repair proposal approval failed");
+    } finally {
+      setRepairApprovalBusy(null);
+    }
+  }
+
+  async function rejectRepairProposal(proposalId: string) {
+    if (!normalizedJobId) return;
+    setRepairApprovalBusy(proposalId);
+    try {
+      const refreshState = await submitRepairProposalCockpitDecision({
+        jobId: normalizedJobId,
+        proposalId,
+        approvalState: "pending_approval",
+        approvalChecksum: "reject",
+        reason: "Rejected in cockpit.",
+      });
+      setData((current) => current ? {
+        ...current,
+        repairLifecycle: refreshState.repairLifecycle,
+        repairArtifacts: refreshState.repairArtifacts,
+        repairArtifactPreviews: refreshState.repairArtifactPreviews,
+      } : current);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Repair proposal rejection failed");
+    } finally {
+      setRepairApprovalBusy(null);
     }
   }
 
@@ -484,6 +564,9 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
                 <strong>{proposal.proposal_id}</strong>
                 <p className="meta">Current state: {proposal.current_state}</p>
                 <p className="meta">Approval state: {proposal.approval_state}</p>
+                {proposal.approval_checksum ? (
+                  <p className="checksum">Approval checksum: {proposal.approval_checksum}</p>
+                ) : null}
                 <p className="meta">Next operator action: {proposal.next_operator_action}</p>
                 <p className="meta">Failure type: {proposal.failure_type}</p>
                 <p className="meta">Root cause: {proposal.root_cause}</p>
@@ -517,6 +600,28 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
                       {data.repairArtifactPreviews[proposal.proposal_id]?.content}
                     </pre>
                   </details>
+                ) : null}
+                {proposal.approval_state === "pending_approval" && proposal.approval_checksum ? (
+                  <>
+                    <div className="approval-actions">
+                      <button
+                        type="button"
+                        disabled={repairApprovalBusy === proposal.proposal_id}
+                        onClick={() => void approveRepairProposal(proposal.proposal_id, proposal.approval_checksum ?? "")}
+                      >
+                        Approve proposal
+                      </button>
+                      <button
+                        type="button"
+                        disabled={repairApprovalBusy === proposal.proposal_id}
+                        onClick={() => void rejectRepairProposal(proposal.proposal_id)}
+                      >
+                        Reject proposal
+                      </button>
+                    </div>
+                    <p className="meta">Approving this proposal does not apply any repair.</p>
+                    <p className="meta">No sandbox or source files will be modified by this action.</p>
+                  </>
                 ) : null}
                 {Object.keys(proposal.artifact_refs ?? {}).length > 0 ? (
                   <p className="meta">

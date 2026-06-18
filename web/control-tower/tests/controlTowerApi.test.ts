@@ -8,6 +8,7 @@ import {
   getV2AssistantMessages,
   getV2EvidenceBundle,
   getV2DualModelTraces,
+  approveV2RepairProposal,
   getV2RepairProposalArtifactPreview,
   getV2RepairProposalArtifacts,
   getV2RepairLifecycle,
@@ -16,6 +17,7 @@ import {
   getJob,
   previewPlanAmendment,
   postJson,
+  rejectV2RepairProposal,
   requireJobId,
   resolveControlTowerApiBaseUrl
 } from "../lib/controlTowerApi";
@@ -216,6 +218,67 @@ describe("M2-01 frontend diagnostic contracts", () => {
     await expect(getV2AssistantMessages("")).rejects.toThrow(/job id is required/i);
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("approve repair proposal sends expected checksum only to approval endpoint", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        proposal: {},
+        proposal_status: "approved",
+        proposal_checksum: "chk-123",
+        reviewer_gate_status: "accepted",
+        approval_result: "approved",
+        latest_reviewer_decision: "accept",
+        approval_decision: {},
+        applied: false,
+      })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await approveV2RepairProposal("job-123", "proposal-1", "chk-123", "architect");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${DEFAULT_CONTROL_TOWER_API_BASE_URL}/v1/v2/repair-proposals/proposal-1/approval`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          decision: "approve",
+          approval_checksum: "chk-123",
+          note: "Approved by architect",
+        }),
+      })
+    );
+  });
+
+  it("reject repair proposal sends reject request without execution endpoint", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        proposal: {},
+        proposal_status: "rejected",
+        proposal_checksum: "chk-123",
+        reviewer_gate_status: "accepted",
+        approval_result: "rejected",
+        latest_reviewer_decision: "accept",
+        approval_decision: {},
+        applied: false,
+      })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await rejectV2RepairProposal("job-123", "proposal-1", "Needs human review", "architect");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe(`${DEFAULT_CONTROL_TOWER_API_BASE_URL}/v1/v2/repair-proposals/proposal-1/approval`);
+    expect(String(url)).not.toContain("apply");
+    expect(String(url)).not.toContain("materialize");
+    expect(String(url)).not.toContain("validate");
+    expect(JSON.parse(String(init.body))).toEqual({
+      decision: "reject",
+      approval_checksum: "reject",
+      note: "Operator: architect - Needs human review",
+    });
   });
 
   it("preview helper uses preview endpoint and safe preview contract", async () => {

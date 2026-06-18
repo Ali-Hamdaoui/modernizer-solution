@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import MigrationCockpitPage from "../app/migrations/[jobId]/page";
-import { MigrationCockpit, cockpitEvidenceStatusLines, reduceStageStatus } from "../app/migrations/[jobId]/MigrationCockpit";
+import { MigrationCockpit, cockpitEvidenceStatusLines, reduceStageStatus, submitRepairProposalCockpitDecision } from "../app/migrations/[jobId]/MigrationCockpit";
 import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, requireJobId, v2EventStreamUrl } from "../lib/controlTowerApi";
 import type { V2JobEvent } from "../lib/contracts";
 
@@ -658,6 +658,272 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).not.toContain(">Apply<");
     expect(markup).not.toContain(">Validate<");
     expect(markup).not.toContain(">Resume<");
+  });
+
+  it("cockpit renders approve and reject buttons for pending repair proposal", () => {
+    const markup = renderToStaticMarkup(
+      <MigrationCockpit
+        jobId="job-123"
+        initialData={{
+          job: { job_id: "job-123", setup_id: "setup-1", setup_checksum: "chk", pipeline_id: "pipe", stages: [], created_at: "now" },
+          stages: [],
+          approvals: [],
+          messages: [],
+          events: [],
+          pipeline: { job_id: "job-123", rows: [], evidence: [], raw_logs: [], active_stage_index: 3 },
+          dualModelTraces: { job_id: "job-123", run_id: "v2-demo-s2", trace_count: 0, latest_model1_trace: null, latest_model2_trace: null, traces: [], artifact_refs: [], read_only: true },
+          repairLifecycle: {
+            job_id: "job-123",
+            repair_proposals: [
+              {
+                job_id: "job-123",
+                run_id: "v2-demo-s2",
+                proposal_id: "proposal-pending",
+                failure_type: "invalid_maven_wildcard_version",
+                root_cause: "Wildcard Maven versions remain in sandbox pom.xml.",
+                current_state: "pending_approval",
+                approval_state: "pending_approval",
+                approval_checksum: "chk-pending",
+                has_execution_plan: false,
+                has_patch_candidate: false,
+                sandbox_apply_state: "not_started",
+                sandbox_validation_state: "not_started",
+                rollback_performed: false,
+                source_mutated: false,
+                sandbox_only: true,
+                stage_resumed: false,
+                next_operator_action: "approve repair proposal",
+                risk_level: "medium",
+                model2_verdict: "accepted",
+                artifact_refs: {},
+                read_only: true,
+              },
+            ],
+            read_only: true,
+          },
+          repairArtifacts: {},
+          repairArtifactPreviews: {},
+          evidenceBundle: null,
+          failureSummary: null,
+          assistantModel: null,
+        }}
+      />
+    );
+    expect(markup).toContain("Approval checksum: chk-pending");
+    expect(markup).toContain("Approve proposal");
+    expect(markup).toContain("Reject proposal");
+    expect(markup).toContain("Approving this proposal does not apply any repair.");
+    expect(markup).toContain("No sandbox or source files will be modified by this action.");
+  });
+
+  it("cockpit hides approve and reject buttons for approved or rejected repair proposal", () => {
+    const approvedMarkup = renderToStaticMarkup(
+      <MigrationCockpit
+        jobId="job-123"
+        initialData={{
+          job: { job_id: "job-123", setup_id: "setup-1", setup_checksum: "chk", pipeline_id: "pipe", stages: [], created_at: "now" },
+          stages: [],
+          approvals: [],
+          messages: [],
+          events: [],
+          pipeline: { job_id: "job-123", rows: [], evidence: [], raw_logs: [], active_stage_index: 3 },
+          dualModelTraces: { job_id: "job-123", run_id: "v2-demo-s2", trace_count: 0, latest_model1_trace: null, latest_model2_trace: null, traces: [], artifact_refs: [], read_only: true },
+          repairLifecycle: {
+            job_id: "job-123",
+            repair_proposals: [
+              {
+                job_id: "job-123",
+                run_id: "v2-demo-s2",
+                proposal_id: "proposal-approved",
+                failure_type: "invalid_maven_wildcard_version",
+                root_cause: "root",
+                current_state: "approved",
+                approval_state: "approved",
+                approval_checksum: "chk-approved",
+                has_execution_plan: false,
+                has_patch_candidate: false,
+                sandbox_apply_state: "not_started",
+                sandbox_validation_state: "not_started",
+                rollback_performed: false,
+                source_mutated: false,
+                sandbox_only: true,
+                stage_resumed: false,
+                next_operator_action: "materialize execution plan",
+                risk_level: "medium",
+                model2_verdict: "accepted",
+                artifact_refs: {},
+                read_only: true,
+              },
+            ],
+            read_only: true,
+          },
+          repairArtifacts: {},
+          repairArtifactPreviews: {},
+          evidenceBundle: null,
+          failureSummary: null,
+          assistantModel: null,
+        }}
+      />
+    );
+    const rejectedMarkup = renderToStaticMarkup(
+      <MigrationCockpit
+        jobId="job-123"
+        initialData={{
+          job: { job_id: "job-123", setup_id: "setup-1", setup_checksum: "chk", pipeline_id: "pipe", stages: [], created_at: "now" },
+          stages: [],
+          approvals: [],
+          messages: [],
+          events: [],
+          pipeline: { job_id: "job-123", rows: [], evidence: [], raw_logs: [], active_stage_index: 3 },
+          dualModelTraces: { job_id: "job-123", run_id: "v2-demo-s2", trace_count: 0, latest_model1_trace: null, latest_model2_trace: null, traces: [], artifact_refs: [], read_only: true },
+          repairLifecycle: {
+            job_id: "job-123",
+            repair_proposals: [
+              {
+                job_id: "job-123",
+                run_id: "v2-demo-s2",
+                proposal_id: "proposal-rejected",
+                failure_type: "invalid_maven_wildcard_version",
+                root_cause: "root",
+                current_state: "rejected",
+                approval_state: "rejected",
+                approval_checksum: "chk-rejected",
+                has_execution_plan: false,
+                has_patch_candidate: false,
+                sandbox_apply_state: "not_started",
+                sandbox_validation_state: "not_started",
+                rollback_performed: false,
+                source_mutated: false,
+                sandbox_only: true,
+                stage_resumed: false,
+                next_operator_action: "human review required",
+                risk_level: "high",
+                model2_verdict: "needs_human_review",
+                artifact_refs: {},
+                read_only: true,
+              },
+            ],
+            read_only: true,
+          },
+          repairArtifacts: {},
+          repairArtifactPreviews: {},
+          evidenceBundle: null,
+          failureSummary: null,
+          assistantModel: null,
+        }}
+      />
+    );
+    expect(approvedMarkup).not.toContain("Approve proposal");
+    expect(approvedMarkup).not.toContain("Reject proposal");
+    expect(rejectedMarkup).not.toContain("Approve proposal");
+    expect(rejectedMarkup).not.toContain("Reject proposal");
+  });
+
+  it("approve action refreshes lifecycle and avoids apply materialize validate endpoints", async () => {
+    const fetchMock = vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () => {
+        if (url.includes("/repair-proposals/proposal-1/approval")) {
+          return {
+            proposal: {},
+            proposal_status: "approved",
+            proposal_checksum: "chk-1",
+            reviewer_gate_status: "accepted",
+            approval_result: "approved",
+            latest_reviewer_decision: "accept",
+            approval_decision: {},
+            applied: false,
+          };
+        }
+        if (url.includes("/repair-lifecycle")) {
+          return {
+            job_id: "job-123",
+            repair_proposals: [],
+            read_only: true,
+          };
+        }
+        return { proposal_id: "proposal-1", artifacts: [], read_only: true };
+      },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await submitRepairProposalCockpitDecision({
+      jobId: "job-123",
+      proposalId: "proposal-1",
+      approvalState: "pending_approval",
+      approvalChecksum: "chk-1",
+    });
+
+    expect(result.repairLifecycle?.repair_proposals).toEqual([]);
+    const urls = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(urls[0]).toContain("/v1/v2/repair-proposals/proposal-1/approval");
+    expect(urls.some((url) => url.includes("/repair-lifecycle"))).toBe(true);
+    expect(urls.some((url) => url.includes("apply-to-sandbox"))).toBe(false);
+    expect(urls.some((url) => url.includes("materialize-execution-plan"))).toBe(false);
+    expect(urls.some((url) => url.includes("materialize-patch-candidate"))).toBe(false);
+    expect(urls.some((url) => url.includes("validate-sandbox-repair"))).toBe(false);
+  });
+
+  it("reject action refreshes lifecycle and avoids apply materialize validate endpoints", async () => {
+    const fetchMock = vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () => {
+        if (url.includes("/repair-proposals/proposal-1/approval")) {
+          return {
+            proposal: {},
+            proposal_status: "rejected",
+            proposal_checksum: "chk-1",
+            reviewer_gate_status: "accepted",
+            approval_result: "rejected",
+            latest_reviewer_decision: "accept",
+            approval_decision: {},
+            applied: false,
+          };
+        }
+        if (url.includes("/repair-lifecycle")) {
+          return {
+            job_id: "job-123",
+            repair_proposals: [],
+            read_only: true,
+          };
+        }
+        return { proposal_id: "proposal-1", artifacts: [], read_only: true };
+      },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await submitRepairProposalCockpitDecision({
+      jobId: "job-123",
+      proposalId: "proposal-1",
+      approvalState: "pending_approval",
+      approvalChecksum: "chk-1",
+      reason: "Rejected in cockpit.",
+    });
+
+    const urls = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(urls[0]).toContain("/v1/v2/repair-proposals/proposal-1/approval");
+    expect(urls.some((url) => url.includes("/repair-lifecycle"))).toBe(true);
+    expect(urls.some((url) => url.includes("apply-to-sandbox"))).toBe(false);
+    expect(urls.some((url) => url.includes("materialize-execution-plan"))).toBe(false);
+    expect(urls.some((url) => url.includes("materialize-patch-candidate"))).toBe(false);
+    expect(urls.some((url) => url.includes("validate-sandbox-repair"))).toBe(false);
+  });
+
+  it("approve action surfaces API failure", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      json: async () => ({ error: { code: "FAILED" } }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      submitRepairProposalCockpitDecision({
+        jobId: "job-123",
+        proposalId: "proposal-1",
+        approvalState: "pending_approval",
+        approvalChecksum: "chk-1",
+      })
+    ).rejects.toThrow(/control tower mutation failed/i);
   });
 
   it("IMPORTANT_SSE_TYPES includes all required lifecycle events", () => {

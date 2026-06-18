@@ -14,6 +14,7 @@ import type {
   V2FailureSummaryResponse,
   V2DualModelTraceListResponse,
   V2RepairLifecycleListResponse,
+  V2RepairProposalApprovalActionResponse,
   V2RepairProposalArtifactListResponse,
   V2RepairProposalArtifactPreviewResponse,
   V2RunEvidenceBundleResponse,
@@ -345,6 +346,56 @@ export async function getV2RepairProposalArtifactPreview(
   }
   return getJson<V2RepairProposalArtifactPreviewResponse>(
     `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/repair-proposals/${encodeURIComponent(safeProposalId)}/artifacts/${encodeURIComponent(safeArtifactName)}`
+  );
+}
+
+export async function approveV2RepairProposal(
+  jobId: string,
+  proposalId: string,
+  expectedChecksum: string,
+  operator?: string
+): Promise<V2RepairProposalApprovalActionResponse> {
+  requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  const safeChecksum = expectedChecksum.trim();
+  if (!safeProposalId) {
+    throw new Error("Repair proposal id is required.");
+  }
+  if (!safeChecksum) {
+    throw new Error("Expected checksum is required.");
+  }
+  return postJson<V2RepairProposalApprovalActionResponse>(
+    `/v1/v2/repair-proposals/${encodeURIComponent(safeProposalId)}/approval`,
+    {
+      decision: "approve",
+      approval_checksum: safeChecksum,
+      note: operator ? `Approved by ${operator}` : "",
+    }
+  );
+}
+
+export async function rejectV2RepairProposal(
+  jobId: string,
+  proposalId: string,
+  reason?: string,
+  operator?: string
+): Promise<V2RepairProposalApprovalActionResponse> {
+  requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) {
+    throw new Error("Repair proposal id is required.");
+  }
+  const noteParts = [
+    operator ? `Operator: ${operator}` : "",
+    reason?.trim() || "Rejected in cockpit.",
+  ].filter(Boolean);
+  return postJson<V2RepairProposalApprovalActionResponse>(
+    `/v1/v2/repair-proposals/${encodeURIComponent(safeProposalId)}/approval`,
+    {
+      decision: "reject",
+      approval_checksum: "reject",
+      note: noteParts.join(" - "),
+    }
   );
 }
 

@@ -633,6 +633,17 @@ export type V2RepairProposalArtifactPreviewResponse = {
   read_only: boolean;
 };
 
+export type V2RepairProposalApprovalActionResponse = {
+  proposal: Record<string, unknown>;
+  proposal_status: string;
+  proposal_checksum: string;
+  reviewer_gate_status: string;
+  approval_result: string;
+  latest_reviewer_decision: string | null;
+  approval_decision: Record<string, unknown>;
+  applied: false;
+};
+
 export type V2ReviewerCritiqueResponse = {
   critique_id: string;
   proposal_id: string;
