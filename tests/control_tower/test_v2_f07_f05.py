@@ -107,8 +107,10 @@ def _fake_model_client(*, reviewer_decision: str = "accept") -> Any:
     class _FakeClient:
         def __init__(self, decision: str):
             self._decision = decision
+            self.roles: list[str] = []
 
         def answer(self, *, prompt: str, fallback: str, conversation_history=None) -> Any:
+            self.roles.append("assistant")
             # Return appropriate JSON based on what's being asked
             if "ReviewerCritique" in prompt or "migration reviewer" in prompt.lower():
                 return _FakeResult(
@@ -127,6 +129,33 @@ def _fake_model_client(*, reviewer_decision: str = "accept") -> Any:
                     "affected_paths": ["pom.xml"],
                     "validation_plan": "Run mvn test to verify",
                 }),
+            )
+
+        def answer_with_role(
+            self,
+            *,
+            role,
+            prompt: str,
+            fallback: str,
+            conversation_history=None,
+            output_schema_name=None,
+            require_schema: bool = False,
+        ) -> Any:
+            self.roles.append(role.value)
+            if role.value == "reviewer":
+                return _FakeResult(
+                    content=_json.dumps({
+                        "decision": self._decision,
+                        "reasoning": f"Fake reviewer model: {self._decision}.",
+                        "missing_evidence": [],
+                        "unsafe_assumptions": [],
+                    }),
+                    role=role.value,
+                )
+            return self.answer(
+                prompt=prompt,
+                fallback=fallback,
+                conversation_history=conversation_history,
             )
 
     return _FakeClient(decision=reviewer_decision)
@@ -924,6 +953,7 @@ class TestF07ReviewerCritiqueAPI:
         assert data["critique_id"]
         assert data["decision"] == "accept"  # From fake model, not client body
         assert data["proposal_checksum"] == "cs-abc"
+        assert fake_client.roles == ["reviewer"]
 
     def test_create_reviewer_critique_rejects_invalid_schema(self, tmp_path: Path) -> None:
         """Client cannot send decision in body — extra fields rejected."""

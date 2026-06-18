@@ -2718,10 +2718,20 @@ def create_app(
                 "missing_evidence": ["Model output unavailable"],
                 "unsafe_assumptions": ["Reviewer model did not respond"],
             })
-            model_result = app.state.v2_assistant_model_client.answer(
-                prompt=reviewer_prompt,
-                fallback=fallback_json,
-            )
+            reviewer_client = app.state.v2_assistant_model_client
+            if hasattr(reviewer_client, "answer_with_role"):
+                model_result = reviewer_client.answer_with_role(
+                    role=V2ModelRole.REVIEWER,
+                    prompt=reviewer_prompt,
+                    fallback=fallback_json,
+                    output_schema_name="ReviewerCritique",
+                    require_schema=True,
+                )
+            else:
+                model_result = reviewer_client.answer(
+                    prompt=reviewer_prompt,
+                    fallback=fallback_json,
+                )
 
             # Parse and validate model output
             reviewer_output = _parse_and_validate_model_output(
