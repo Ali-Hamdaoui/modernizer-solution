@@ -223,6 +223,20 @@ export function getRepairValidationStatusMessages(currentState: string): string[
   }
 }
 
+function parseSandboxValidationPreview(
+  preview: V2RepairProposalArtifactPreviewResponse | null
+): Record<string, unknown> | null {
+  if (!preview || preview.artifact_name !== "sandbox_validation_result.json") {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(preview.content);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function submitRepairPatchCandidateMaterialization(args: {
   jobId: string;
   proposalId: string;
@@ -836,6 +850,62 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
                     <summary>
                       Read-only artifact preview: {data.repairArtifactPreviews[proposal.proposal_id]?.artifact_name}
                     </summary>
+                    {parseSandboxValidationPreview(data.repairArtifactPreviews[proposal.proposal_id]) ? (
+                      <div className="meta">
+                        <p className="meta">
+                          Parsed validation status:{" "}
+                          {String(parseSandboxValidationPreview(data.repairArtifactPreviews[proposal.proposal_id])?.status ?? "n/a")}
+                        </p>
+                        <p className="meta">
+                          Exit code:{" "}
+                          {String(parseSandboxValidationPreview(data.repairArtifactPreviews[proposal.proposal_id])?.exit_code ?? "n/a")}
+                        </p>
+                        <p className="meta">
+                          Commands run:{" "}
+                          {Array.isArray(parseSandboxValidationPreview(data.repairArtifactPreviews[proposal.proposal_id])?.commands_run)
+                            ? (parseSandboxValidationPreview(data.repairArtifactPreviews[proposal.proposal_id])?.commands_run as unknown[])
+                                .map((command) => String(command))
+                                .join(", ")
+                            : String(parseSandboxValidationPreview(data.repairArtifactPreviews[proposal.proposal_id])?.commands_run ?? "n/a")}
+                        </p>
+                        <p className="meta">
+                          Rollback performed:{" "}
+                          {String(parseSandboxValidationPreview(data.repairArtifactPreviews[proposal.proposal_id])?.rollback_performed ?? "n/a")}
+                        </p>
+                        {parseSandboxValidationPreview(data.repairArtifactPreviews[proposal.proposal_id])?.rollback_reason ? (
+                          <p className="meta">
+                            Rollback reason:{" "}
+                            {String(parseSandboxValidationPreview(data.repairArtifactPreviews[proposal.proposal_id])?.rollback_reason)}
+                          </p>
+                        ) : null}
+                        {parseSandboxValidationPreview(data.repairArtifactPreviews[proposal.proposal_id])?.rollback_error ? (
+                          <p className="meta">
+                            Rollback error:{" "}
+                            {String(parseSandboxValidationPreview(data.repairArtifactPreviews[proposal.proposal_id])?.rollback_error)}
+                          </p>
+                        ) : null}
+                        {parseSandboxValidationPreview(data.repairArtifactPreviews[proposal.proposal_id])?.stdout_excerpt ? (
+                          <p className="meta">
+                            Stdout excerpt:{" "}
+                            {String(parseSandboxValidationPreview(data.repairArtifactPreviews[proposal.proposal_id])?.stdout_excerpt)}
+                          </p>
+                        ) : null}
+                        {parseSandboxValidationPreview(data.repairArtifactPreviews[proposal.proposal_id])?.stderr_excerpt ? (
+                          <p className="meta">
+                            Stderr excerpt:{" "}
+                            {String(parseSandboxValidationPreview(data.repairArtifactPreviews[proposal.proposal_id])?.stderr_excerpt)}
+                          </p>
+                        ) : null}
+                        <p className="meta">
+                          Source mutated:{" "}
+                          {String(parseSandboxValidationPreview(data.repairArtifactPreviews[proposal.proposal_id])?.source_mutated ?? "n/a")}
+                        </p>
+                        <p className="meta">
+                          Sandbox only:{" "}
+                          {String(parseSandboxValidationPreview(data.repairArtifactPreviews[proposal.proposal_id])?.sandbox_only ?? "n/a")}
+                        </p>
+                      </div>
+                    ) : null}
                     <pre className="raw-log-line">
                       {data.repairArtifactPreviews[proposal.proposal_id]?.content}
                     </pre>

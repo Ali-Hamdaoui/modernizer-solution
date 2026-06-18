@@ -635,9 +635,10 @@ describe("V2 Migration Cockpit contract", () => {
           repairArtifactPreviews: {
             "proposal-1": {
               proposal_id: "proposal-1",
-              artifact_name: "repair_proposal.md",
-              kind: "markdown",
-              content: "# Repair proposal\nUpdate sandbox pom.xml only.",
+              artifact_name: "sandbox_validation_result.json",
+              kind: "json",
+              content:
+                '{"proposal_id":"proposal-1","run_id":"v2-demo-s2","target_workspace":"sandbox","commands_run":["mvn -q test"],"exit_code":0,"status":"passed","stdout_excerpt":"build ok","stderr_excerpt":"","validation_started_at":"2026-06-19T00:00:00Z","validation_finished_at":"2026-06-19T00:01:00Z","rollback_performed":false,"source_mutated":false,"sandbox_only":true}',
               truncated: false,
               size_bytes: 44,
               read_only: true,
@@ -668,9 +669,16 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain(
       "Repair artifacts: repair_proposal.md, repair_proposal.json, sandbox_validation_result.json"
     );
-    expect(markup).toContain("Read-only artifact preview: repair_proposal.md");
+    expect(markup).toContain("Read-only artifact preview: sandbox_validation_result.json");
+    expect(markup).toContain("Parsed validation status: passed");
+    expect(markup).toContain("Exit code: 0");
+    expect(markup).toContain("Commands run: mvn -q test");
+    expect(markup).toContain("Rollback performed: false");
+    expect(markup).toContain("Stdout excerpt: build ok");
+    expect(markup).toContain("Source mutated: false");
+    expect(markup).toContain("Sandbox only: true");
     expect(markup).toContain("Validation artifact: sandbox_validation_result.json");
-    expect(markup).toContain("Update sandbox pom.xml only.");
+    expect(markup).toContain("validation_finished_at");
     expect(markup).toContain("No previewable repair artifacts.");
     expect(markup).not.toContain(">Apply<");
     expect(markup).not.toContain(">Validate<");
@@ -732,6 +740,87 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Source mutated: false");
     expect(markup).toContain("Sandbox only: true");
     expect(markup).toContain("Stage resumed: false");
+    expect(markup).not.toContain("Validate sandbox repair");
+  });
+
+  it("cockpit keeps raw validation preview when JSON is invalid", () => {
+    const markup = renderToStaticMarkup(
+      <MigrationCockpit
+        jobId="job-123"
+        initialData={{
+          job: { job_id: "job-123", setup_id: "setup-1", setup_checksum: "chk", pipeline_id: "pipe", stages: [], created_at: "now" },
+          stages: [],
+          approvals: [],
+          messages: [],
+          events: [],
+          pipeline: { job_id: "job-123", rows: [], evidence: [], raw_logs: [], active_stage_index: 3 },
+          dualModelTraces: { job_id: "job-123", run_id: "v2-demo-s2", trace_count: 0, latest_model1_trace: null, latest_model2_trace: null, traces: [], artifact_refs: [], read_only: true },
+          repairLifecycle: {
+            job_id: "job-123",
+            repair_proposals: [
+              {
+                job_id: "job-123",
+                run_id: "v2-demo-s2",
+                proposal_id: "proposal-invalid-json",
+                failure_type: "invalid_maven_wildcard_version",
+                root_cause: "root",
+                current_state: "validation_passed",
+                approval_state: "approved",
+                approval_checksum: "chk-invalid",
+                has_execution_plan: true,
+                has_patch_candidate: true,
+                sandbox_apply_state: "applied",
+                sandbox_validation_state: "passed",
+                rollback_performed: false,
+                source_mutated: false,
+                sandbox_only: true,
+                stage_resumed: false,
+                next_operator_action: "no action required",
+                risk_level: "medium",
+                model2_verdict: "accepted",
+                artifact_refs: {},
+                read_only: true,
+              },
+            ],
+            read_only: true,
+          },
+          repairArtifacts: {
+            "proposal-invalid-json": {
+              proposal_id: "proposal-invalid-json",
+              artifacts: [
+                {
+                  proposal_id: "proposal-invalid-json",
+                  artifact_name: "sandbox_validation_result.json",
+                  relative_path: "ai_supervision/repair_proposals/proposal-invalid-json/sandbox_validation_result.json",
+                  kind: "json",
+                  exists: true,
+                  size_bytes: 24,
+                  read_only: true,
+                },
+              ],
+              read_only: true,
+            },
+          },
+          repairArtifactPreviews: {
+            "proposal-invalid-json": {
+              proposal_id: "proposal-invalid-json",
+              artifact_name: "sandbox_validation_result.json",
+              kind: "json",
+              content: "{not valid json",
+              truncated: false,
+              size_bytes: 24,
+              read_only: true,
+            },
+          },
+          evidenceBundle: null,
+          failureSummary: null,
+          assistantModel: null,
+        }}
+      />
+    );
+    expect(markup).toContain("Read-only artifact preview: sandbox_validation_result.json");
+    expect(markup).toContain("{not valid json");
+    expect(markup).not.toContain("Parsed validation status:");
     expect(markup).not.toContain("Validate sandbox repair");
   });
 
