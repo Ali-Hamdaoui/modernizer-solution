@@ -178,6 +178,9 @@ from migration_factory.control_tower.application.v2_failure_diagnosis import (
 from migration_factory.control_tower.application.v2_failure_evidence import (
     infer_stage_run_root,
 )
+from migration_factory.control_tower.application.v2_run_evidence_bundle import (
+    V2RunEvidenceBundleService,
+)
 from migration_factory.control_tower.application.v2_diagnosis_proposal_flow import (
     build_default_structured_model_clients,
     V2DiagnosisProposalFlowService,
@@ -1623,6 +1626,51 @@ def create_app(
                         "cannot_override_proof": True,
                     },
                 }
+            if service.is_evidence_question(payload.question):
+                latest_diagnosis = uow.v2_failure_diagnoses.get_latest_for_job(job_id)
+                diagnosis_payload = (
+                    V2FailureDiagnosisService.persisted_record_to_dict(latest_diagnosis)
+                    if latest_diagnosis is not None
+                    else None
+                )
+                bundle = service.build_run_evidence_bundle(
+                    job_id=job_id,
+                    setup=setup,
+                    events=events,
+                    approvals=approvals,
+                    commands=commands,
+                    persisted_diagnosis=diagnosis_payload,
+                )
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=service.answer_evidence_question(
+                        question=payload.question,
+                        bundle=bundle,
+                    ),
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "evidence_bundle": bundle.to_dict(),
+                    "model": {
+                        "status": "deterministic_evidence_bundle",
+                        "source": "deterministic",
+                        "provider": "deterministic",
+                        "role": "assistant",
+                        "failure_reason": "",
+                    },
+                    "guardrails": {
+                        "read_only": True,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
             # Emit model_invocation_started event before model call
             uow.v2_events.save(
                 job_id=job_id,
@@ -1634,6 +1682,8 @@ def create_app(
             )
             fallback_answer = _build_v2_assistant_answer(
                 question=payload.question,
+                job_id=job_id,
+                setup=setup,
                 events=events,
                 approvals=approvals,
                 commands=commands,
@@ -4239,10 +4289,24 @@ def _emit_v2_stage1_uat_events(uow: Any, *, job_id: str, command_id: str) -> Non
 def _build_v2_assistant_answer(
     *,
     question: str,
+    job_id: str = "",
+    setup: Any | None = None,
     events: tuple[Any, ...],
     approvals: tuple[Any, ...],
     commands: tuple[Any, ...],
 ) -> str:
+    evidence_service = V2RunEvidenceBundleService()
+    if evidence_service.is_evidence_question(question):
+        bundle = evidence_service.build_bundle(
+            job_id=job_id or "unknown-job",
+            setup=setup,
+            events=events,
+            approvals=approvals,
+            commands=commands,
+            persisted_diagnosis=None,
+        )
+        return evidence_service.render_answer(question=question, bundle=bundle)
+
     latest = events[-1] if events else None
     failures = [event for event in events if event.status == "failed" or event.type in {"stage_failed", "transform_failed", "build_failed"}]
     pending_approvals = [card for card in approvals if card.status == "pending"]

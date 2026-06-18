@@ -13,6 +13,10 @@ from migration_factory.control_tower.application.v2_assistant_failure_answers im
     V2AssistantFailureAnswer,
     V2AssistantFailureAnswerService,
 )
+from migration_factory.control_tower.application.v2_run_evidence_bundle import (
+    RunEvidenceBundle,
+    V2RunEvidenceBundleService,
+)
 from migration_factory.control_tower.application.v2_model_schemas import (
     ContextPackBuilder,
     ContextPack,
@@ -109,6 +113,7 @@ class V2AssistantService:
         self._drafts: dict[str, PendingActionDraft] = {}
         self._repo = assistant_repo
         self._failure_answers = V2AssistantFailureAnswerService()
+        self._run_evidence = V2RunEvidenceBundleService()
 
     def add_message(
         self,
@@ -256,6 +261,36 @@ class V2AssistantService:
             event_type=event_type,
             recent_failure_event_payload=recent_failure_event_payload,
         )
+
+    def is_evidence_question(self, text: str) -> bool:
+        return self._run_evidence.is_evidence_question(text)
+
+    def build_run_evidence_bundle(
+        self,
+        *,
+        job_id: str,
+        setup: Any,
+        events: tuple[Any, ...],
+        approvals: tuple[Any, ...],
+        commands: tuple[Any, ...],
+        persisted_diagnosis: dict[str, Any] | None = None,
+    ) -> RunEvidenceBundle:
+        return self._run_evidence.build_bundle(
+            job_id=job_id,
+            setup=setup,
+            events=events,
+            approvals=approvals,
+            commands=commands,
+            persisted_diagnosis=persisted_diagnosis,
+        )
+
+    def answer_evidence_question(
+        self,
+        *,
+        question: str,
+        bundle: RunEvidenceBundle,
+    ) -> str:
+        return self._run_evidence.render_answer(question=question, bundle=bundle)
 
     def answer_failure_question(
         self,
