@@ -165,6 +165,10 @@ class V2FailureDualModelDiagnosisService:
             f"Question: {self._bounded(question, 180)}",
             f"Migration status: {bundle.migration_status}",
         ]
+        if not model1.success or not model2.success:
+            lines.append(
+                "Model diagnosis failed; deterministic fallback was used, and evidence is still available."
+            )
         if bundle.ai_supervision_status == "unavailable_fallback" and bundle.migration_status.startswith("completed"):
             lines.append("Root cause: Migration completed. Only AI/model supervision is unavailable, so deterministic fallback is active.")
         elif verdict == "accepted":

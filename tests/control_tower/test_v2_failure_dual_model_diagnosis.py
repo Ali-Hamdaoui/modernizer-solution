@@ -128,10 +128,13 @@ def test_failure_dual_model_diagnosis_invokes_both_roles_and_persists_traces(tmp
 
     assert len(model1.calls) == 1
     assert len(model2.calls) == 1
-    assert model1.calls[0].supervision_context == "failure_diagnosis"
-    assert model2.calls[0].supervision_context == "failure_diagnosis_verification"
-    assert model2.calls[0].model1_output == result.model1["structured_output"]
-    assert model1.calls[0].evidence_bundle["run_id"] == model2.calls[0].evidence_bundle["run_id"]
+    assert model1.calls[0].event_type == "failure_diagnosis"
+    assert model2.calls[0].event_type == "failure_diagnosis_verification"
+    assert model1.calls[0].prompt_text != model2.calls[0].prompt_text
+    assert "failure_diagnosis" in model1.calls[0].prompt_text
+    assert "failure_diagnosis_verification" in model2.calls[0].prompt_text
+    assert model1.calls[0].context_pack_checksum
+    assert model2.calls[0].context_pack_checksum
     assert result.model2_verdict == "accepted"
     assert "Verified root cause: Wildcard Maven versions in pom.xml." in result.answer
     assert "Model 2 verdict: accepted" in result.answer

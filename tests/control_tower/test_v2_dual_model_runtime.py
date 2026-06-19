@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelResult
+from migration_factory.control_tower.application.v2_diagnosis_proposal_flow import (
+    RoleAwareStructuredModelClient,
+)
+from migration_factory.control_tower.application.v2_dual_model_invocation_audit import (
+    V2DualModelInvocationAuditStore,
+)
 from migration_factory.control_tower.application.v2_dual_model_runtime import (
     MODEL_1_ROLE,
     MODEL_2_ROLE,
@@ -66,6 +74,56 @@ def _bundle(*, status: str = "failed", root_cause: str = "Wildcard Maven version
         "next_operator_action": "review_failure_evidence" if status == "failed" else ("human_approval_required" if status == "approval_required" else "migration_completed_ai_unavailable"),
         "read_only": True,
     }
+
+
+class _KeywordOnlyStructuredRawClient:
+    def __init__(self, *, summary: str, root_cause: str, kind: str = "model1") -> None:
+        self.summary = summary
+        self.root_cause = root_cause
+        self.kind = kind
+        self.calls: list[dict[str, str]] = []
+
+    def answer_for_role(self, *, prompt: str, fallback: str, role: str) -> V2AssistantModelResult:
+        self.calls.append({"prompt": prompt, "fallback": fallback, "role": role})
+        if self.kind == "model2":
+            content = json.dumps(
+                {
+                    "verdict": "accepted",
+                    "evidence_alignment": "aligned",
+                    "hallucination_check": "passed",
+                    "policy_check": "passed",
+                    "risk_level": "high",
+                    "issues_found": [],
+                    "human_approval_required": False,
+                }
+            )
+        else:
+            content = json.dumps(
+                {
+                    "summary": self.summary,
+                    "root_cause": self.root_cause,
+                    "confidence": "high",
+                    "evidence_refs": ["pom.xml"],
+                    "recommended_action": "review_failure_evidence",
+                    "risk_level": "high",
+                    "proposed_next_steps": ["Review evidence."],
+                }
+            )
+        return V2AssistantModelResult(
+            content=content,
+            source="azure_openai",
+            model_status="live_ok",
+            provider="azure_openai",
+            role=role,
+            success=True,
+            redacted_summary="ok",
+            failure_reason="",
+        )
+
+
+class _ExplodingStructuredRawClient:
+    def answer_for_role(self, *, prompt: str, fallback: str, role: str) -> V2AssistantModelResult:
+        raise RuntimeError(f"{role} model unavailable")
 
 
 def test_runtime_status_endpoint_reports_deterministic_fallback_when_provider_missing(tmp_path: Path, monkeypatch) -> None:
@@ -210,3 +268,94 @@ def test_runtime_is_read_only_and_does_not_mutate_run_artifacts(tmp_path: Path) 
     )
 
     assert pom.read_text(encoding="utf-8") == original
+
+
+def test_runtime_accepts_keyword_only_role_aware_model_clients(monkeypatch) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("AZURE_OPENAI_PROPOSER_DEPLOYMENT", "model1")
+    monkeypatch.setenv("AZURE_OPENAI_REVIEWER_DEPLOYMENT", "model2")
+    bundle = _bundle(status="failed")
+    proposer_raw = _KeywordOnlyStructuredRawClient(
+        summary="LIVE MODEL 1 REVIEW",
+        root_cause="LIVE WILDCARD ROOT CAUSE",
+    )
+    reviewer_raw = _KeywordOnlyStructuredRawClient(
+        summary="LIVE MODEL 2 REVIEW",
+        root_cause="LIVE WILDCARD ROOT CAUSE",
+        kind="model2",
+    )
+    runtime = V2DualModelRuntimeService(
+        model1_client=RoleAwareStructuredModelClient(proposer_raw, role="proposer"),
+        model2_client=RoleAwareStructuredModelClient(reviewer_raw, role="reviewer"),
+    )
+    assert runtime.get_status().model1_ready is True
+    assert runtime.get_status().model2_ready is True
+
+    model1 = runtime.invoke_model_1(
+        ModelInvocationRequest(
+            role=MODEL_1_ROLE,
+            objective="Summarize migration state.",
+            evidence_bundle=bundle,
+        )
+    )
+    model2 = runtime.invoke_model_2(
+        ModelInvocationRequest(
+            role=MODEL_2_ROLE,
+            objective="Verify migration state.",
+            evidence_bundle=bundle,
+            model1_output=model1.structured_output,
+        )
+    )
+
+    assert model1.success is True
+    assert model2.success is True
+    assert proposer_raw.calls and proposer_raw.calls[0]["role"] == "proposer"
+    assert reviewer_raw.calls and reviewer_raw.calls[0]["role"] == "reviewer"
+    assert model1.structured_output["summary"] == "LIVE MODEL 1 REVIEW"
+    assert model1.structured_output["root_cause"] == "LIVE WILDCARD ROOT CAUSE"
+    assert model2.structured_output["verdict"] == "accepted"
+    assert model2.structured_output["evidence_alignment"] == "aligned"
+
+
+def test_runtime_converts_model_invocation_exception_into_safe_fallback_and_trace(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("AZURE_OPENAI_PROPOSER_DEPLOYMENT", "model1")
+    monkeypatch.setenv("AZURE_OPENAI_REVIEWER_DEPLOYMENT", "model2")
+    trace_root = tmp_path / "modernized-app" / ".migration" / "runs" / "v2-failure-s2"
+    runtime = V2DualModelRuntimeService(
+        model1_client=RoleAwareStructuredModelClient(_ExplodingStructuredRawClient(), role="proposer"),
+        model2_client=RoleAwareStructuredModelClient(_ExplodingStructuredRawClient(), role="reviewer"),
+        trace_store=V2DualModelInvocationAuditStore(),
+    )
+    assert runtime.get_status().model1_ready is True
+    assert runtime.get_status().model2_ready is True
+
+    model1 = runtime.invoke_model_1(
+        ModelInvocationRequest(
+            role=MODEL_1_ROLE,
+            objective="Summarize migration state.",
+            evidence_bundle=_bundle(status="failed"),
+            trace_root=str(trace_root),
+        )
+    )
+    model2 = runtime.invoke_model_2(
+        ModelInvocationRequest(
+            role=MODEL_2_ROLE,
+            objective="Verify migration state.",
+            evidence_bundle=_bundle(status="failed"),
+            model1_output=model1.structured_output,
+            trace_root=str(trace_root),
+        )
+    )
+
+    assert model1.success is False
+    assert model1.mode == "fallback"
+    assert any("model_invocation_failed" in error for error in model1.errors)
+    assert model2.success is False
+    assert model2.mode == "fallback"
+    assert any("model_invocation_failed" in error for error in model2.errors)
+    assert model1.trace_artifact_refs
+    assert model2.trace_artifact_refs
+    assert (trace_root / "ai_supervision").is_dir()

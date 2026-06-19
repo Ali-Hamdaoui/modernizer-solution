@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import asdict, dataclass, field
@@ -9,6 +10,7 @@ from uuid import uuid4
 
 from migration_factory.control_tower.application.redaction import redact_model_summary
 from migration_factory.control_tower.application.v2_model_schemas import validate_model_output
+from migration_factory.control_tower.application.v2_prompt_router import ModelCallRequest
 from migration_factory.control_tower.domain.checksums import utc_now_text
 
 
@@ -99,7 +101,12 @@ class ModelInvocationResult:
 
 
 class StructuredModelRuntimeClient(Protocol):
-    def invoke(self, request: ModelInvocationRequest) -> dict[str, Any]:
+    def invoke(
+        self,
+        *,
+        request: ModelCallRequest,
+        schema_name: str,
+    ) -> Any:
         ...
 
 
@@ -153,19 +160,53 @@ class V2DualModelRuntimeService:
         invocation_id = uuid4().hex
         created_at = utc_now_text()
         if status.model1_ready and self._model1_client is not None:
-            structured = validate_model_output("Model1ReviewResult", self._model1_client.invoke(request))
-            result = ModelInvocationResult(
-                role=MODEL_1_ROLE,
-                provider=self.provider,
-                mode="live",
-                success=True,
-                structured_output=structured,
-                invocation_id=invocation_id,
-                created_at=created_at,
-                warnings=status.warnings,
-                errors=status.errors,
-            )
-            return self._persist_if_configured(request=request, result=result)
+            try:
+                model_call_request = self._build_model_call_request(
+                    request=request,
+                    schema_name="Model1ReviewResult",
+                )
+                structured = validate_model_output(
+                    "Model1ReviewResult",
+                    self._normalize_structured_output(
+                        self._invoke_structured_client(
+                            self._model1_client,
+                            request=model_call_request,
+                            schema_name="Model1ReviewResult",
+                        )
+                    ),
+                )
+                result = ModelInvocationResult(
+                    role=MODEL_1_ROLE,
+                    provider=self.provider,
+                    mode="live",
+                    success=True,
+                    structured_output=structured,
+                    invocation_id=invocation_id,
+                    created_at=created_at,
+                    warnings=status.warnings,
+                    errors=status.errors,
+                )
+                return self._persist_if_configured(request=request, result=result)
+            except Exception as exc:
+                fallback = self._deterministic_model1(request.evidence_bundle)
+                result = ModelInvocationResult(
+                    role=MODEL_1_ROLE,
+                    provider=self.provider,
+                    mode="fallback",
+                    success=False,
+                    structured_output=fallback.to_dict(),
+                    invocation_id=invocation_id,
+                    created_at=created_at,
+                    warnings=(
+                        status.warnings
+                        + ("Model 1 invocation failed; deterministic fallback used.",)
+                    ),
+                    errors=(
+                        status.errors
+                        + (redact_model_summary(f"model_invocation_failed:{type(exc).__name__}"),)
+                    ),
+                )
+                return self._persist_if_configured(request=request, result=result)
         deterministic = self._deterministic_model1(request.evidence_bundle)
         result = ModelInvocationResult(
             role=MODEL_1_ROLE,
@@ -187,19 +228,56 @@ class V2DualModelRuntimeService:
         invocation_id = uuid4().hex
         created_at = utc_now_text()
         if status.model2_ready and self._model2_client is not None:
-            structured = validate_model_output("Model2VerificationResult", self._model2_client.invoke(request))
-            result = ModelInvocationResult(
-                role=MODEL_2_ROLE,
-                provider=self.provider,
-                mode="live",
-                success=True,
-                structured_output=structured,
-                invocation_id=invocation_id,
-                created_at=created_at,
-                warnings=status.warnings,
-                errors=status.errors,
-            )
-            return self._persist_if_configured(request=request, result=result)
+            try:
+                model_call_request = self._build_model_call_request(
+                    request=request,
+                    schema_name="Model2VerificationResult",
+                )
+                structured = validate_model_output(
+                    "Model2VerificationResult",
+                    self._normalize_structured_output(
+                        self._invoke_structured_client(
+                            self._model2_client,
+                            request=model_call_request,
+                            schema_name="Model2VerificationResult",
+                        )
+                    ),
+                )
+                result = ModelInvocationResult(
+                    role=MODEL_2_ROLE,
+                    provider=self.provider,
+                    mode="live",
+                    success=True,
+                    structured_output=structured,
+                    invocation_id=invocation_id,
+                    created_at=created_at,
+                    warnings=status.warnings,
+                    errors=status.errors,
+                )
+                return self._persist_if_configured(request=request, result=result)
+            except Exception as exc:
+                fallback = self._deterministic_model2(
+                    evidence_bundle=request.evidence_bundle,
+                    model1_output=request.model1_output or {},
+                )
+                result = ModelInvocationResult(
+                    role=MODEL_2_ROLE,
+                    provider=self.provider,
+                    mode="fallback",
+                    success=False,
+                    structured_output=fallback.to_dict(),
+                    invocation_id=invocation_id,
+                    created_at=created_at,
+                    warnings=(
+                        status.warnings
+                        + ("Model 2 invocation failed; deterministic fallback used.",)
+                    ),
+                    errors=(
+                        status.errors
+                        + (redact_model_summary(f"model_invocation_failed:{type(exc).__name__}"),)
+                    ),
+                )
+                return self._persist_if_configured(request=request, result=result)
         deterministic = self._deterministic_model2(
             evidence_bundle=request.evidence_bundle,
             model1_output=request.model1_output or {},
@@ -216,6 +294,71 @@ class V2DualModelRuntimeService:
             errors=status.errors,
         )
         return self._persist_if_configured(request=request, result=result)
+
+    def _invoke_structured_client(
+        self,
+        client: StructuredModelRuntimeClient,
+        *,
+        request: ModelCallRequest,
+        schema_name: str,
+    ) -> Any:
+        try:
+            return client.invoke(request=request, schema_name=schema_name)
+        except TypeError:
+            pass
+        try:
+            return client.invoke(request=request)  # type: ignore[misc]
+        except TypeError:
+            return client.invoke(request)  # type: ignore[misc]
+
+    def _build_model_call_request(
+        self,
+        *,
+        request: ModelInvocationRequest,
+        schema_name: str,
+    ) -> ModelCallRequest:
+        request_id = request.correlation_id or uuid4().hex
+        return ModelCallRequest(
+            request_id=request_id,
+            event_type=request.supervision_context or request.role,
+            prompt_template_id=f"v2-dual-model-runtime:{request.role}:{schema_name}",
+            output_schema_name=schema_name,
+            prompt_text=self._build_prompt_text(request=request, schema_name=schema_name),
+            token_budget_input=8000,
+            token_budget_output=2000,
+            context_pack_checksum=str(request.evidence_bundle.get("run_id") or request.correlation_id or request_id),
+            created_at=utc_now_text(),
+        )
+
+    def _build_prompt_text(
+        self,
+        *,
+        request: ModelInvocationRequest,
+        schema_name: str,
+    ) -> str:
+        payload = {
+            "role": request.role,
+            "objective": request.objective,
+            "supervision_context": request.supervision_context,
+            "schema_name": schema_name,
+            "source_input": request.source_input,
+            "evidence_bundle": request.evidence_bundle,
+            "model1_output": request.model1_output or {},
+            "correlation_id": request.correlation_id,
+        }
+        return json.dumps(payload, sort_keys=True, default=str)
+
+    def _normalize_structured_output(self, raw_result: Any) -> dict[str, Any]:
+        if isinstance(raw_result, dict):
+            return raw_result
+        validated_output = getattr(raw_result, "validated_output", None)
+        if isinstance(validated_output, dict):
+            return dict(validated_output)
+        if hasattr(raw_result, "to_dict") and callable(getattr(raw_result, "to_dict")):
+            candidate = raw_result.to_dict()
+            if isinstance(candidate, dict):
+                return candidate
+        raise ValueError(f"Unsupported structured model result type: {type(raw_result).__name__}")
 
     def _persist_if_configured(
         self,
