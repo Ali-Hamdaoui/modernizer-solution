@@ -71,3 +71,14 @@ def test_draft_to_dict() -> None:
     d = service.draft_to_dict(draft)
     assert d["status"] == "draft"
     assert d["action_type"] == "repair"
+
+
+def test_repair_intent_matches_governed_repair_prompt_phrases() -> None:
+    service = V2AssistantService()
+
+    assert service.is_repair_intent("solve this")
+    assert service.is_repair_intent("fix this")
+    assert service.is_repair_intent("create a repair proposal")
+    assert service.is_repair_intent(
+        "Create a governed repair proposal for this BUILD_FAILED_IN_SANDBOX compilation error. Do not apply any change."
+    )

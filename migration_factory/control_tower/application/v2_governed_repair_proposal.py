@@ -13,6 +13,9 @@ from migration_factory.control_tower.application.v2_diagnosis_proposal_flow impo
     StructuredModelCallResult,
     StructuredModelClient,
 )
+from migration_factory.control_tower.application.v2_failure_evidence import (
+    infer_stage_run_root,
+)
 from migration_factory.control_tower.application.v2_dual_model_invocation_audit import (
     V2DualModelInvocationAuditStore,
 )
@@ -79,6 +82,11 @@ class V2GovernedRepairProposalResult:
     read_only: bool = True
     no_auto_apply: bool = True
     human_approval_required: bool = True
+    manual_review_required: bool = True
+    patch_candidate_supported: bool = False
+    sandbox_only: bool = True
+    source_mutated: bool = False
+    stage_resumed: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -138,6 +146,18 @@ class V2GovernedRepairProposalService:
                 no_auto_apply=True,
                 evidence_refs=self._evidence_refs(bundle),
             ).to_dict()
+            proposal.update(
+                {
+                    "manual_review_required": True,
+                    "patch_candidate_supported": False,
+                    "read_only": True,
+                    "source_mutated": False,
+                    "sandbox_only": True,
+                    "stage_resumed": False,
+                    "risk": proposal.get("risk_level", "low"),
+                    "recommended_actions": [proposal.get("recommended_action", "")],
+                }
+            )
             verification = Model2VerificationResult(
                 verdict="accepted",
                 evidence_alignment="aligned",
@@ -228,21 +248,36 @@ class V2GovernedRepairProposalService:
     ) -> ModelInvocationResult:
         created_at = utc_now_text()
         if self._live_ready(role="proposer") and self._proposer_client is not None:
-            call_request = self._request_to_model_call_request(request)
-            call = self._proposer_client.invoke(
-                request=call_request,
-                schema_name="GovernedRepairProposal",
-            )
-            result = ModelInvocationResult(
-                role=MODEL_1_ROLE,
-                provider=call.provider,
-                mode="live",
-                success=call.success,
-                structured_output=call.validated_output,
-                invocation_id=call.model_invocation_id,
-                created_at=created_at,
-            )
-            return self._persist_trace_if_possible(request=request, result=result)
+            try:
+                call_request = self._request_to_model_call_request(request)
+                call = self._proposer_client.invoke(
+                    request=call_request,
+                    schema_name="GovernedRepairProposal",
+                )
+                result = ModelInvocationResult(
+                    role=MODEL_1_ROLE,
+                    provider=call.provider,
+                    mode="live",
+                    success=call.success,
+                    structured_output=call.validated_output,
+                    invocation_id=call.model_invocation_id,
+                    created_at=created_at,
+                )
+                return self._persist_trace_if_possible(request=request, result=result)
+            except Exception as exc:
+                proposal = self._fallback_proposal(bundle=bundle, diagnosis=diagnosis)
+                result = ModelInvocationResult(
+                    role=MODEL_1_ROLE,
+                    provider="deterministic",
+                    mode="fallback",
+                    success=False,
+                    structured_output=proposal,
+                    invocation_id=f"repair-proposal-{uuid4().hex}",
+                    created_at=created_at,
+                    warnings=self._fallback_warnings(role="proposer"),
+                    errors=(*self._fallback_errors(), str(exc)),
+                )
+                return self._persist_trace_if_possible(request=request, result=result)
 
         proposal = self._fallback_proposal(bundle=bundle, diagnosis=diagnosis)
         result = ModelInvocationResult(
@@ -267,21 +302,36 @@ class V2GovernedRepairProposalService:
     ) -> ModelInvocationResult:
         created_at = utc_now_text()
         if self._live_ready(role="reviewer") and self._reviewer_client is not None:
-            call_request = self._request_to_model_call_request(request)
-            call = self._reviewer_client.invoke(
-                request=call_request,
-                schema_name="Model2VerificationResult",
-            )
-            result = ModelInvocationResult(
-                role=MODEL_2_ROLE,
-                provider=call.provider,
-                mode="live",
-                success=call.success,
-                structured_output=call.validated_output,
-                invocation_id=call.model_invocation_id,
-                created_at=created_at,
-            )
-            return self._persist_trace_if_possible(request=request, result=result)
+            try:
+                call_request = self._request_to_model_call_request(request)
+                call = self._reviewer_client.invoke(
+                    request=call_request,
+                    schema_name="Model2VerificationResult",
+                )
+                result = ModelInvocationResult(
+                    role=MODEL_2_ROLE,
+                    provider=call.provider,
+                    mode="live",
+                    success=call.success,
+                    structured_output=call.validated_output,
+                    invocation_id=call.model_invocation_id,
+                    created_at=created_at,
+                )
+                return self._persist_trace_if_possible(request=request, result=result)
+            except Exception as exc:
+                verification = self._fallback_verification(bundle=bundle, proposal=proposal)
+                result = ModelInvocationResult(
+                    role=MODEL_2_ROLE,
+                    provider="deterministic",
+                    mode="fallback",
+                    success=False,
+                    structured_output=verification,
+                    invocation_id=f"repair-verification-{uuid4().hex}",
+                    created_at=created_at,
+                    warnings=self._fallback_warnings(role="reviewer"),
+                    errors=(*self._fallback_errors(), str(exc)),
+                )
+                return self._persist_trace_if_possible(request=request, result=result)
 
         verification = self._fallback_verification(bundle=bundle, proposal=proposal)
         result = ModelInvocationResult(
@@ -333,7 +383,22 @@ class V2GovernedRepairProposalService:
                 no_auto_apply=True,
                 evidence_refs=evidence_refs,
             )
-            return payload.to_dict()
+            proposal_payload = payload.to_dict()
+            proposal_payload.update(
+                {
+                    "manual_review_required": True,
+                    "patch_candidate_supported": True,
+                    "read_only": True,
+                    "no_auto_apply": True,
+                    "human_approval_required": True,
+                    "source_mutated": False,
+                    "sandbox_only": True,
+                    "stage_resumed": False,
+                    "risk": proposal_payload.get("risk_level", "medium"),
+                    "recommended_actions": [proposal_payload.get("recommended_action", "")],
+                }
+            )
+            return proposal_payload
         payload = GovernedRepairProposal(
             summary="Prepared cautious repair proposal shell from deterministic failure evidence. Human review still required.",
             failure_type=failure_type,
@@ -342,14 +407,29 @@ class V2GovernedRepairProposalService:
             recommended_action="Review evidence and decide whether to prepare a narrower bounded proposal before any approval.",
             risk_level="high",
             affected_paths=tuple(diagnosis.get("affected_paths") or (bundle.failure_bundle.affected_paths if bundle.failure_bundle is not None else ())),
-            proposed_file_changes=("No deterministic safe file change could be proposed automatically for this failure class.",),
-            validation_commands=("Use existing governed validation only after human-reviewed bounded proposal exists.",),
+            proposed_file_changes=(),
+            validation_commands=(),
             rollback_plan="No patch applied in this ticket.",
             human_approval_required=True,
             no_auto_apply=True,
             evidence_refs=evidence_refs,
         )
-        return payload.to_dict()
+        proposal_payload = payload.to_dict()
+        proposal_payload.update(
+            {
+                "manual_review_required": True,
+                "patch_candidate_supported": False,
+                "read_only": True,
+                "no_auto_apply": True,
+                "human_approval_required": True,
+                "source_mutated": False,
+                "sandbox_only": True,
+                "stage_resumed": False,
+                "risk": proposal_payload.get("risk_level", "high"),
+                "recommended_actions": [proposal_payload.get("recommended_action", "")],
+            }
+        )
+        return proposal_payload
 
     def _fallback_verification(
         self,
@@ -539,9 +619,14 @@ class V2GovernedRepairProposalService:
             "model1_result": proposal,
             "model2_result": verification,
             "diagnosis": diagnosis,
+            "manual_review_required": bool(proposal.get("manual_review_required", True)),
+            "patch_candidate_supported": bool(proposal.get("patch_candidate_supported", False)),
             "human_approval_required": True,
             "no_auto_apply": True,
             "read_only": True,
+            "source_mutated": bool(proposal.get("source_mutated", False)),
+            "stage_resumed": bool(proposal.get("stage_resumed", False)),
+            "sandbox_only": bool(proposal.get("sandbox_only", True)),
         }
         verification_payload = {
             "proposal_id": proposal_id,
@@ -593,12 +678,37 @@ class V2GovernedRepairProposalService:
         trace_root: str | Path | None,
     ) -> Path | None:
         if trace_root not in (None, ""):
-            return Path(str(trace_root)).resolve()
+            resolved = infer_stage_run_root(Path(str(trace_root))) or Path(str(trace_root)).resolve()
+            return resolved
         output_parent = str(getattr(setup, "output_parent_path", "") or "").strip()
         run_id = str(bundle.run_id or "").strip()
         if output_parent and run_id:
-            return (Path(output_parent) / ".migration" / "runs" / run_id).resolve()
+            candidates = [
+                Path(output_parent) / ".migration" / "runs" / run_id,
+                Path(output_parent) / ".migration" / "runs" / f"{run_id}-s1",
+                Path(output_parent) / ".migration" / "runs" / f"{run_id}-s2",
+                Path(output_parent) / ".migration" / "runs" / f"{run_id}-s3",
+            ]
+            for candidate in candidates:
+                inferred = infer_stage_run_root(candidate)
+                if inferred is not None:
+                    return inferred
+            return candidates[0].resolve()
+        for candidate in self._bundle_trace_root_candidates(bundle=bundle):
+            inferred = infer_stage_run_root(candidate)
+            if inferred is not None:
+                return inferred
         return None
+
+    def _bundle_trace_root_candidates(self, *, bundle: RunEvidenceBundle) -> tuple[Path, ...]:
+        candidates: list[Path] = []
+        for item in bundle.generated_artifact_refs:
+            if isinstance(item, dict):
+                for key in ("path", "label", "source"):
+                    value = str(item.get(key) or "").strip()
+                    if value and ".migration" in value and "runs" in value:
+                        candidates.append(Path(value))
+        return tuple(candidates)
 
     def _diagnosis_payload(
         self,

@@ -66,7 +66,7 @@ ALLOWED_TOOLS = (
 )
 
 _REPAIR_INTENT_RE = re.compile(
-    r"(?i)\b(solve this|fix this|repair it|corrige cela|solvez cela|fix it|solve it)\b"
+    r"(?i)\b(solve this|fix this|repair it|corrige cela|solvez cela|fix it|solve it|create a repair proposal|create a governed repair proposal)\b"
 )
 
 

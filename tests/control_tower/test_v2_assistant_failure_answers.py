@@ -58,9 +58,20 @@ class _FakeModelClient:
         )
 
 
+class _ExplodingRoleAwareModelClient(_FakeModelClient):
+    def answer(self, *, prompt: str, fallback: str) -> V2AssistantModelResult:
+        self.calls.append({"prompt": prompt, "fallback": fallback})
+        raise RuntimeError("assistant model unavailable")
+
+    def answer_for_role(self, *, prompt: str, fallback: str, role: str) -> V2AssistantModelResult:
+        self.calls.append({"prompt": prompt, "fallback": fallback, "role": role})
+        raise RuntimeError(f"{role} model unavailable")
+
+
 def _client(tmp_path: Path, model_client: _FakeModelClient) -> tuple[TestClient, sqlite3.Connection]:
     from migration_factory.control_tower.adapters.fastapi import create_app
 
+    tmp_path.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(
         tmp_path / "assistant_failure_answers.sqlite3",
         check_same_thread=False,
@@ -500,6 +511,44 @@ def test_failure_question_api_uses_db_event_derived_stage2_artifacts(tmp_path: P
     assert "failure_diagnosis_verification" in contexts
 
 
+def test_failure_question_api_returns_200_when_dual_model_invocation_fails(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("AZURE_OPENAI_PROPOSER_DEPLOYMENT", "model1")
+    monkeypatch.setenv("AZURE_OPENAI_REVIEWER_DEPLOYMENT", "model2")
+    fake = _ExplodingRoleAwareModelClient()
+    client, conn = _client(tmp_path, fake)
+    job_id, _run_dir = _seed_event_derived_stage2_job(conn, tmp_path)
+
+    response = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": "what happened?"},
+        headers=_mutation_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert "diagnosis_review" in body
+    assert "assistant_message" in body
+
+
+def test_failure_question_api_returns_200_when_dual_model_invocation_fails(tmp_path: Path) -> None:
+    fake = _ExplodingRoleAwareModelClient()
+    client, conn = _client(tmp_path, fake)
+    job_id, _run_dir = _seed_event_derived_stage2_job(conn, tmp_path)
+
+    response = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": "what happened?"},
+        headers=_mutation_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert "diagnosis_review" in body
+    assert "assistant_message" in body
+
+
 def test_failure_question_on_completed_run_with_late_model_failure_reports_completion(tmp_path: Path) -> None:
     fake = _FakeModelClient()
     client, conn = _client(tmp_path, fake)
@@ -579,6 +628,10 @@ def test_repair_intent_api_uses_governed_repair_proposal_flow(tmp_path: Path) ->
     assert body["repair_proposal_review"]["verification"]["verdict"] == "accepted"
     assert body["repair_proposal_review"]["proposal"]["no_auto_apply"] is True
     assert body["repair_proposal_review"]["proposal"]["human_approval_required"] is True
+    assert body["repair_proposal_review"]["proposal"]["manual_review_required"] is True
+    assert body["repair_proposal_review"]["proposal"]["read_only"] is True
+    assert body["repair_proposal_review"]["proposal"]["source_mutated"] is False
+    assert body["repair_proposal_review"]["proposal"]["stage_resumed"] is False
     assert "I prepared a repair proposal; I did not apply it." in body["assistant_message"]["content"]
     assert "jakarta.persistence-api:jar:3.0.x" in body["assistant_message"]["content"]
     assert "jakarta.servlet-api:jar:5.0.x" in body["assistant_message"]["content"]
@@ -588,6 +641,17 @@ def test_repair_intent_api_uses_governed_repair_proposal_flow(tmp_path: Path) ->
     contexts = {item["supervision_context"] for item in trace_body["traces"]}
     assert "repair_proposal" in contexts
     assert "repair_proposal_verification" in contexts
+
+    lifecycle_response = client.get(f"/v1/v2/migration-jobs/{job_id}/repair-lifecycle")
+    assert lifecycle_response.status_code == 200
+    lifecycle_body = lifecycle_response.json()
+    assert lifecycle_body["repair_proposals"]
+    lifecycle_proposal = lifecycle_body["repair_proposals"][0]
+    assert lifecycle_proposal["proposal_id"] == body["repair_proposal_review"]["proposal_id"]
+    assert lifecycle_proposal["current_state"] in {"proposal_created", "pending_approval", "approved"}
+    assert lifecycle_proposal["read_only"] is True
+    assert lifecycle_proposal["source_mutated"] is False
+    assert lifecycle_proposal["stage_resumed"] is False
 
 
 def test_repair_intent_on_completed_run_reports_no_repair_needed(tmp_path: Path) -> None:

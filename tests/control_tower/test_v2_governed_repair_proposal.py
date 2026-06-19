@@ -175,6 +175,10 @@ def test_governed_repair_proposal_fallback_persists_traces_and_artifacts(tmp_pat
     assert proposal_payload["read_only"] is True
     assert proposal_payload["no_auto_apply"] is True
     assert proposal_payload["human_approval_required"] is True
+    assert proposal_payload["manual_review_required"] is True
+    assert proposal_payload["sandbox_only"] is True
+    assert proposal_payload["source_mutated"] is False
+    assert proposal_payload["stage_resumed"] is False
 
 
 def test_governed_repair_proposal_completed_run_reports_no_repair_needed(tmp_path: Path) -> None:
