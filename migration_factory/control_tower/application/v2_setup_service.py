@@ -615,7 +615,8 @@ def _check_jdk_path(path: str, expected_major: int | None = None) -> bool:
 def _java_major_matches(version_output: str, expected_major: int) -> bool:
     """Parse java -version output for the reported major version.
 
-    Handles both legacy (1.8.0_...) and modern (11.0.x, 17.0.x,...) formats.
+    Handles legacy (1.8.0_...), modern feature-only (21), and
+    modern feature-update (11.0.x, 17.0.x,...) formats.
     """
     # Legacy format first: "1.8.0_..." (major = 8).
     # Must check before modern regex since "1.8.0" would
@@ -624,8 +625,8 @@ def _java_major_matches(version_output: str, expected_major: int) -> bool:
     if match:
         major = int(match.group(1))
         return major == expected_major
-    # Modern format: "11.0.21" or "17.0.13" etc.
-    match = re.search(r'version\s+"?(\d+)\.', version_output)
+    # Modern format: "21", "11.0.21", "17.0.13", etc.
+    match = re.search(r'version\s+"?(\d+)(?:\.|")', version_output)
     if match:
         major = int(match.group(1))
         return major == expected_major
@@ -793,6 +794,7 @@ def _check_ai_hub_profiles(hub: Path) -> bool:
         "springboot-2.1.6-to-2.7-java11",
         "springboot-2.7-to-3.5-java17",
         "springboot-3.5-java17-to-java21",
+        "springboot-3.5-java21-to-4.0-java21",
     )
     return all((profiles_dir / f"{profile}.yaml").is_file() for profile in required)
 
@@ -807,6 +809,7 @@ def _check_ai_hub_catalogs(hub: Path) -> bool:
         "springboot-2.1.6-to-2.7-java11",
         "springboot-2.7-to-3.5-java17",
         "springboot-3.5-java17-to-java21",
+        "springboot-3.5-java21-to-4.0-java21",
     )
     for profile in required_profiles:
         profile_path = profiles_dir / f"{profile}.yaml"

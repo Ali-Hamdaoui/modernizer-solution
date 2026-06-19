@@ -86,6 +86,8 @@ def _save_command(conn: sqlite3.Connection, *, command_id: str = "cmd-1", job_id
                 "JAVA17_HOME": "C:/jdk17",
                 "JAVA21_HOME": "C:/jdk21",
                 "MAVEN_CMD": "C:/maven/bin/mvn.cmd",
+                "MAVEN_OPTS": "-Djavax.net.ssl.trustStore=C:/trust/cacerts",
+                "MAVEN_USER_HOME": "C:/Users/operator/.m2",
                 "PATH_PREPEND": "C:/jdk11/bin",
             }),
             status="manifest_ready",
@@ -125,8 +127,8 @@ def _seed_stage_pipeline(conn: sqlite3.Connection, *, job_id: str = "job-1") -> 
                 job_id=job_id,
                 setup_id="setup-1",
                 setup_checksum="checksum-setup-1",
-                pipeline_id="springboot-216-to-356-java21-three-stage",
-                stage_chain_json='[{"stage_index":1},{"stage_index":2},{"stage_index":3}]',
+                pipeline_id="springboot-216-to-400-java21-four-stage",
+                stage_chain_json='[{"stage_index":1},{"stage_index":2},{"stage_index":3},{"stage_index":4}]',
                 status="running",
                 created_at=now,
                 updated_at=now,
@@ -144,6 +146,16 @@ def _wait_for_event(conn: sqlite3.Connection, job_id: str, event_type: str) -> N
             return
         time.sleep(0.02)
     raise AssertionError(f"event {event_type!r} not persisted")
+
+
+def _wait_for_stage_event(conn: sqlite3.Connection, job_id: str, stage: int, event_type: str) -> None:
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        events = SqliteUnitOfWork(conn).v2_events.list_by_job(job_id)
+        if any(event.type == event_type and event.stage == stage for event in events):
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"stage event {event_type!r} for stage {stage} not persisted")
 
 
 def _success_result(**overrides: Any) -> dict[str, Any]:
@@ -165,6 +177,7 @@ def _run_success_chain(tmp_path: Path, conn: sqlite3.Connection) -> tuple[_Seque
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-1")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"], [], 0),
     ])
     runner = V2OrchestratorRunner(
         unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
@@ -172,7 +185,7 @@ def _run_success_chain(tmp_path: Path, conn: sqlite3.Connection) -> tuple[_Seque
         cwd=tmp_path,
     )
     runner.start(job_id="job-1", command_id="cmd-1")
-    _wait_for_event(conn, "job-1", "final_report_completed")
+    _wait_for_stage_event(conn, "job-1", 4, "stage_completed")
     events = list(SqliteUnitOfWork(conn).v2_events.list_by_job("job-1"))
     return popen, events
 
@@ -205,6 +218,8 @@ def test_v2_runner_launches_manifest_with_shell_false_and_safe_env(tmp_path: Pat
     assert call["shell"] is False
     assert call["cwd"] == str(tmp_path)
     assert "MAVEN_CMD" in call["env"]
+    assert call["env"].get("MAVEN_OPTS") == "-Djavax.net.ssl.trustStore=C:/trust/cacerts"
+    assert call["env"].get("MAVEN_USER_HOME") == "C:/Users/operator/.m2"
     assert "AZURE_OPENAI_API_KEY" not in call["env"]
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
@@ -570,11 +585,11 @@ def test_stage_failed_not_emitted_for_valid_pass_contract(tmp_path: Path) -> Non
     event_types = [event.type for event in events]
     assert "stage_failed" not in event_types
     assert "next_stage_queued" in event_types
-    assert len(popen.calls) == 3
+    assert len(popen.calls) == 4
 
 
-def test_v2_runner_emits_final_report_events_for_stage3(tmp_path: Path) -> None:
-    """Stage 3 completion emits final_report_started + final_report_completed."""
+def test_v2_runner_does_not_auto_generate_final_report_events_for_stage3(tmp_path: Path) -> None:
+    """Stage 3 completion stays complete without auto-generating the final report."""
     conn = _conn(tmp_path)
     # Save a Stage 3 command directly (not via _save_command which defaults to stage_index=1)
     now = utc_now_text()
@@ -599,13 +614,13 @@ def test_v2_runner_emits_final_report_events_for_stage3(tmp_path: Path) -> None:
         cwd=tmp_path,
     )
     runner.start(job_id="job-1", command_id="cmd-s3")
-    _wait_for_event(conn, "job-1", "final_report_completed")
+    _wait_for_stage_event(conn, "job-1", 3, "stage_completed")
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     event_types = [event.type for event in events]
-    assert "final_report_started" in event_types
-    assert "final_report_completed" in event_types
     assert "stage_completed" in event_types
+    assert "final_report_started" not in event_types
+    assert "final_report_completed" not in event_types
     # Stage 3 must NOT queue a next stage
     assert "next_stage_queued" not in event_types
 
@@ -617,6 +632,7 @@ def test_stage1_pass_contract_with_pass_with_warnings_auto_queues_stage2(tmp_pat
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-1")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"], [], 0),
     ])
     runner = V2OrchestratorRunner(
         unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
@@ -625,7 +641,7 @@ def test_stage1_pass_contract_with_pass_with_warnings_auto_queues_stage2(tmp_pat
     )
 
     runner.start(job_id="job-1", command_id="cmd-1")
-    _wait_for_event(conn, "job-1", "final_report_completed")
+    _wait_for_stage_event(conn, "job-1", 4, "stage_completed")
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     event_types = [event.type for event in events]
@@ -634,7 +650,7 @@ def test_stage1_pass_contract_with_pass_with_warnings_auto_queues_stage2(tmp_pat
     assert "stage_failed" not in event_types
     assert any(event.type == "stage_completed" and event.stage == 1 for event in events)
     assert any(event.type == "stage_started" and event.stage == 2 for event in events)
-    assert len(popen.calls) == 3
+    assert len(popen.calls) == 4
 
 
 def test_stage2_pass_contract_with_pass_with_warnings_auto_queues_stage3(tmp_path: Path) -> None:
@@ -644,6 +660,7 @@ def test_stage2_pass_contract_with_pass_with_warnings_auto_queues_stage3(tmp_pat
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-1")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"], [], 0),
     ])
     runner = V2OrchestratorRunner(
         unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
@@ -652,23 +669,24 @@ def test_stage2_pass_contract_with_pass_with_warnings_auto_queues_stage3(tmp_pat
     )
 
     runner.start(job_id="job-1", command_id="cmd-1")
-    _wait_for_event(conn, "job-1", "final_report_completed")
+    _wait_for_stage_event(conn, "job-1", 4, "stage_completed")
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     assert any(event.type == "next_stage_queued" and json.loads(event.payload_json or "{}").get("to_stage") == 3 for event in events)
     assert any(event.type == "stage_completed" and event.stage == 2 for event in events)
     assert any(event.type == "stage_started" and event.stage == 3 for event in events)
     assert "stage_failed" not in [event.type for event in events]
-    assert len(popen.calls) == 3
+    assert len(popen.calls) == 4
 
 
-def test_stage3_pass_contract_completes_pipeline_without_stage4(tmp_path: Path) -> None:
+def test_stage3_pass_contract_auto_queues_stage4(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _seed_stage_pipeline(conn)
     popen = _SequentialFakePopen([
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-1")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"], [], 0),
     ])
     runner = V2OrchestratorRunner(
         unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
@@ -677,16 +695,17 @@ def test_stage3_pass_contract_completes_pipeline_without_stage4(tmp_path: Path) 
     )
 
     runner.start(job_id="job-1", command_id="cmd-1")
-    _wait_for_event(conn, "job-1", "final_report_completed")
+    _wait_for_stage_event(conn, "job-1", 4, "stage_completed")
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     event_types = [event.type for event in events]
-    assert "final_report_started" in event_types
-    assert "final_report_completed" in event_types
+    assert "final_report_started" not in event_types
+    assert "final_report_completed" not in event_types
     assert "stage_failed" not in event_types
     assert "next_stage_queued" in event_types
-    assert not any(json.loads(event.payload_json or "{}").get("to_stage") == 4 for event in events if event.type == "next_stage_queued")
-    assert len(popen.calls) == 3
+    assert any(json.loads(event.payload_json or "{}").get("to_stage") == 4 for event in events if event.type == "next_stage_queued")
+    assert any(event.type == "stage_completed" and event.stage == 4 for event in events)
+    assert len(popen.calls) == 4
 
 
 def test_v2_runner_does_not_progress_past_unapproved_card(tmp_path: Path) -> None:
@@ -807,6 +826,8 @@ def test_v2_runner_resume_passes_env_manifest_from_original_command(tmp_path: Pa
     env = popen.calls[0]["env"]
     # Must inherit MAVEN_CMD and JAVA_HOME from the original command's env_json
     assert env.get("MAVEN_CMD") == "C:/maven/bin/mvn.cmd"
+    assert env.get("MAVEN_OPTS") == "-Djavax.net.ssl.trustStore=C:/trust/cacerts"
+    assert env.get("MAVEN_USER_HOME") == "C:/Users/operator/.m2"
     assert env.get("JAVA_HOME") == "C:/jdk11"
     assert env.get("JAVA11_HOME") == "C:/jdk11"
     assert env.get("JAVA17_HOME") == "C:/jdk17"

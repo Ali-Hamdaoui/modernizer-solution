@@ -112,7 +112,7 @@ export type ProofReportContentProps = {
 export function ProofReportContent({ state }: ProofReportContentProps) {
   if (state.status === "loading") {
     return (
-      <section className="panel stack" aria-label="Proof and final report">
+      <section className="panel stack panel-scroll" aria-label="Proof and final report">
         <h2>Proof &amp; final report</h2>
         <p className="meta">Loading proof gates and final report...</p>
       </section>
@@ -121,7 +121,7 @@ export function ProofReportContent({ state }: ProofReportContentProps) {
 
   if (state.status === "error") {
     return (
-      <section className="panel stack" aria-label="Proof and final report">
+      <section className="panel stack panel-scroll" aria-label="Proof and final report">
         <h2>Proof &amp; final report</h2>
         <p className="meta" role="alert">Failed to load proof report: {state.message}</p>
       </section>
@@ -130,7 +130,7 @@ export function ProofReportContent({ state }: ProofReportContentProps) {
 
   if (state.status === "empty") {
     return (
-      <section className="panel stack" aria-label="Proof and final report">
+      <section className="panel stack panel-scroll" aria-label="Proof and final report">
         <h2>Proof &amp; final report</h2>
         <p className="meta">No proof report available yet. The final report is generated after all three stages complete and proof gates are computed.</p>
       </section>
@@ -140,7 +140,7 @@ export function ProofReportContent({ state }: ProofReportContentProps) {
   const { report } = state;
 
   return (
-    <section className="panel stack" aria-label="Proof and final report">
+    <section className="panel stack panel-scroll" aria-label="Proof and final report">
       <h2>Proof &amp; final report</h2>
       <p className="meta">
         All paths, secrets, and identifiers are redacted.

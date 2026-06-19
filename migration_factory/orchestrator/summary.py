@@ -31,6 +31,7 @@ EXECUTION_CLAIMS = {
 
 _COPILOT_REPORT_ENV = "AI_MIGRATION_ENABLE_COPILOT_REPORT"
 _COPILOT_PROVIDER_ENV = "AI_MIGRATION_COPILOT_PROVIDER"
+_DEFER_FINAL_REPORT_ENV = "AI_MIGRATION_DEFER_FINAL_REPORT"
 _COPILOT_TRUE_VALUES = {"1", "true", "yes", "on"}
 _COPILOT_CLI_PROVIDER = "copilot_cli"
 
@@ -125,6 +126,29 @@ def finalize_orchestration_state(
         return result  # type: ignore[return-value]
 
     summary_writer(result)  # type: ignore[arg-type]
+
+    if _defer_final_report():
+        result["final_report_deferred"] = True
+        result["artifact_refs"] = dict(result.get("artifact_refs", {}) or {})
+        validation = validate_successful_full_sandbox_orchestration(result)  # type: ignore[arg-type]
+        result["orchestration_artifacts_valid"] = validation.valid
+        result["artifact_refs"] = {
+            **dict(result.get("artifact_refs", {}) or {}),
+            **validation.artifact_refs,
+        }
+        if validation.blockers:
+            result["blockers"] = [
+                *list(result.get("blockers", []) or []),
+                *validation.blockers,
+            ]
+        if validation.warnings:
+            result["warnings"] = [
+                *list(result.get("warnings", []) or []),
+                *validation.warnings,
+            ]
+        result = _normalize_output_paths(result)
+        summary_writer(result)  # type: ignore[arg-type]
+        return result  # type: ignore[return-value]
 
     final_report_started = time.monotonic()
     final_report = generate_final_migration_report(result)
@@ -240,6 +264,10 @@ def _maybe_generate_copilot_final_report(state: dict[str, Any]) -> None:
         return
 
     _merge_copilot_report_result(state, result)
+
+
+def _defer_final_report() -> bool:
+    return os.getenv(_DEFER_FINAL_REPORT_ENV, "").strip().lower() in _COPILOT_TRUE_VALUES
 
 
 def _merge_copilot_report_result(state: dict[str, Any], result: dict[str, Any]) -> None:

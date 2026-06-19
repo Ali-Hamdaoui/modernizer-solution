@@ -12,6 +12,7 @@ import type {
   V2JobEventSnapshotResponse,
   V2PipelineResponse,
   V2FailureSummaryResponse,
+  V2FinalReportResponse,
   V2StageEntry,
   V2StageCommandResponse,
   V2ApprovalResponse,
@@ -35,7 +36,17 @@ import type {
   PublicEventReplayResponse,
   RepairProposalListResponse,
   RunnerProfileOption,
-  StageChainResponse
+  StageChainResponse,
+  // F14 types
+  PomView,
+  PomDependencyReview,
+  PomChangeProposal,
+  PomApplyResult,
+  PomChangeRecordSummary,
+  PomValidationRun,
+  PomRollbackResult,
+  PomProposeRequest,
+  PomApplyRequest,
 } from "./contracts";
 
 export const CONTROL_TOWER_FRONTEND_CLIENT_ID = "control-tower-frontend";
@@ -289,18 +300,57 @@ export async function getV2FailureSummary(jobId: string): Promise<V2FailureSumma
   );
 }
 
+export async function getV2FinalReport(jobId: string): Promise<V2FinalReportResponse> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<V2FinalReportResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/report`
+  );
+}
+
+export async function generateV2FinalReport(jobId: string): Promise<V2FinalReportResponse> {
+  const safeJobId = requireJobId(jobId);
+  return postJson<V2FinalReportResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/report`,
+    {}
+  );
+}
+
+export function v2FinalReportPdfDownloadUrl(jobId: string): string {
+  const safeJobId = requireJobId(jobId);
+  return `${CONTROL_TOWER_API_BASE_URL}/v1/v2/jobs/${encodeURIComponent(safeJobId)}/report.pdf`;
+}
+
 export async function getV2ArtifactPreview(
   jobId: string,
-  artifactKind: string
+  artifactKind: string,
+  stage?: number
 ): Promise<V2ArtifactPreviewResponse> {
   const safeJobId = requireJobId(jobId);
   const safeKind = artifactKind.trim();
   if (!safeKind) {
     throw new Error("Artifact kind is required.");
   }
+  const params = stage != null ? `?stage=${stage}` : "";
   return getJson<V2ArtifactPreviewResponse>(
-    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/artifacts/${encodeURIComponent(safeKind)}`
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/artifacts/${encodeURIComponent(safeKind)}${params}`
   );
+}
+
+export async function getV2RootPomPreview(
+  jobId: string,
+  stage: number
+): Promise<V2ArtifactPreviewResponse> {
+  const safeJobId = requireJobId(jobId);
+  const params = new URLSearchParams({ stage: String(stage), mode: "preview" });
+  return getJson<V2ArtifactPreviewResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/files/root-pom?${params}`
+  );
+}
+
+export function v2RootPomDownloadUrl(jobId: string, stage: number): string {
+  const safeJobId = requireJobId(jobId);
+  const params = new URLSearchParams({ stage: String(stage), mode: "download" });
+  return `${CONTROL_TOWER_API_BASE_URL}/v1/v2/jobs/${encodeURIComponent(safeJobId)}/files/root-pom?${params}`;
 }
 
 export function v2EventStreamUrl(jobId: string, after: number = 0): string {
@@ -444,6 +494,87 @@ export async function getV2ReviewerCritiques(
   );
 }
 
+// ── F14 — Stage 3 POM Dependency Editor API ──────────────────────────────
+
+export async function getStage3Pom(jobId: string): Promise<PomView> {
+  return getJson<PomView>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/pom`
+  );
+}
+
+export async function getStage3DependencyReview(jobId: string): Promise<PomDependencyReview> {
+  return getJson<PomDependencyReview>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/dependency-review`
+  );
+}
+
+export async function proposePomChange(
+  jobId: string,
+  request: PomProposeRequest
+): Promise<PomChangeProposal> {
+  return postJson<PomChangeProposal>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/pom/propose-change`,
+    request
+  );
+}
+
+export async function applyPomChange(
+  jobId: string,
+  request: PomApplyRequest
+): Promise<PomApplyResult> {
+  return postJson<PomApplyResult>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/pom/apply-change`,
+    request
+  );
+}
+
+export async function listPomChanges(
+  jobId: string
+): Promise<{ job_id: string; changes: PomChangeRecordSummary[] }> {
+  return getJson<{ job_id: string; changes: PomChangeRecordSummary[] }>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/pom/changes`
+  );
+}
+
+export async function getPomChange(
+  jobId: string,
+  changeId: string
+): Promise<PomChangeRecordSummary> {
+  return getJson<PomChangeRecordSummary>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/pom/changes/${encodeURIComponent(changeId)}`
+  );
+}
+
+export async function getPomValidationResult(
+  jobId: string,
+  validationId: string
+): Promise<PomValidationRun> {
+  return getJson<PomValidationRun>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/pom/validation/${encodeURIComponent(validationId)}`
+  );
+}
+
+export async function applyPomRepairPlan(
+  jobId: string,
+  repairPlanId: string,
+  idempotencyKey: string
+): Promise<PomApplyResult> {
+  return postJson<PomApplyResult>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/pom/repair`,
+    { repair_plan_id: repairPlanId, idempotency_key: idempotencyKey }
+  );
+}
+
+export async function rollbackPomChange(
+  jobId: string,
+  changeId: string,
+  idempotencyKey: string
+): Promise<PomRollbackResult> {
+  return postJson<PomRollbackResult>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/pom/rollback`,
+    { change_id: changeId, idempotency_key: idempotencyKey }
+  );
+}
 
 
 export async function postJson<TResponse>(
@@ -461,7 +592,9 @@ export async function postJson<TResponse>(
     }
   });
   if (!response.ok) {
-    throw new Error(`Control Tower mutation failed for ${path}.`);
+    throw new Error(
+      `Control Tower mutation failed for ${path}: ${response.status} ${response.statusText || "HTTP error"}.`
+    );
   }
   return (await response.json()) as TResponse;
 }
@@ -469,7 +602,9 @@ export async function postJson<TResponse>(
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`${CONTROL_TOWER_API_BASE_URL}${path}`, { cache: "no-store" });
   if (!response.ok) {
-    throw new Error(`Control Tower request failed for ${path}.`);
+    throw new Error(
+      `Control Tower request failed for ${path}: ${response.status} ${response.statusText || "HTTP error"}.`
+    );
   }
   return (await response.json()) as T;
 }

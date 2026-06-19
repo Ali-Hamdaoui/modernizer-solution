@@ -48,6 +48,9 @@ _MANIFEST_ENV_KEYS = (
     "JAVA17_HOME",
     "JAVA21_HOME",
     "MAVEN_CMD",
+    "MAVEN_OPTS",
+    "MAVEN_USER_HOME",
+    "AI_MIGRATION_DEFER_FINAL_REPORT",
 )
 
 _COPILOT_ENV_KEYS = (
@@ -673,31 +676,6 @@ class V2OrchestratorRunner:
             },
         )
 
-        # Emit report completion events based on stage index
-        if stage_index == 3:
-            report_type = "final_report"
-            report_label = "Final migration proof report"
-        else:
-            report_type = "stage_report"
-            report_label = f"Stage {stage_index} report"
-
-        self._event(
-            job_id=job_id,
-            stage=stage_index,
-            event_type=f"{report_type}_started",
-            status="running",
-            message=f"{report_label} generation started.",
-            payload={"command_id": command_id, "sandbox_path": sandbox_path},
-        )
-        self._event(
-            job_id=job_id,
-            stage=stage_index,
-            event_type=f"{report_type}_completed",
-            status="completed",
-            message=f"{report_label} completed.",
-            payload={"command_id": command_id, "final_status": final_status},
-        )
-
         self._auto_queue_next_stage(
             job_id=job_id,
             stage_index=stage_index,
@@ -960,6 +938,9 @@ class V2OrchestratorRunner:
         from migration_factory.control_tower.application.v2_stage_progression import (
             V2StageProgressionService,
         )
+
+        if stage_index >= 4:
+            return
 
         next_stage = stage_index + 1
         next_command_id: str | None = None

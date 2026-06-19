@@ -37,7 +37,7 @@ export function CreateDiagnosticJobForm({ catalog }: Props) {
   }
 
   return (
-    <form action={submit} className="panel stack">
+    <form action={submit} className="panel stack panel-scroll">
       <div className="grid">
         <label className="field">
           <span>Runner profile</span>

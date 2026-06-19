@@ -746,8 +746,200 @@ export type V2FailureSummaryResponse = {
 export type V2ArtifactPreviewResponse = {
   job_id: string;
   artifact_kind: string;
+  source_type?: "artifact" | "file_alias";
+  file_alias?: string;
+  stage_index?: number;
   exists: boolean;
   preview: string;
+  content?: string;
   truncated: boolean;
   content_type: string;
+  download_url?: string | null;
+  source_ref?: Record<string, string> | null;
+  reason?: string | null;
+};
+
+export type V2FinalReportResponse = {
+  job_id: string;
+  status: string;
+  generated_at: string;
+  docs_report_json: string;
+  docs_report_markdown: string;
+  docs_report_pdf: string;
+  run_report_json: string;
+  run_report_markdown: string;
+  run_report_pdf: string;
+  report_context: string;
+  total_duration_seconds: number | null;
+  summary: string;
+  change_summary: string[];
+  warnings: string[];
+  full_migration_source_stack?: Record<string, unknown>;
+  full_migration_target_stack?: Record<string, unknown>;
+  pipeline_history?: Array<{
+    stage_index: number;
+    pipeline_stage: string;
+    input_source_kind: string;
+    profile: string;
+    source_stack: Record<string, unknown>;
+    target_stack: Record<string, unknown>;
+    planned_final_target?: boolean;
+    chain_status: string;
+    build_status: string;
+    test_status: string;
+    transform_status: string;
+    run_id: string;
+    run_dir: string;
+    duration_seconds: number | null;
+    artifact_refs: Record<string, string>;
+  }>;
+};
+
+// ── F14 — Stage 3 POM Dependency Review types ──────────────────────────
+
+export type PomBaseline = {
+  java_version: string;
+  spring_boot_version: string;
+  spring_boot_version_location: string;
+  detected_from: string[];
+};
+
+export type PomDependencyFinding = {
+  dependency_name: string;
+  current_version: string;
+  source_location: string;
+  bucket: string;
+  control_mode: string;
+  risk: string;
+  recommended_action: string;
+  can_apply_now: boolean;
+  reason: string;
+  evidence_source: string;
+};
+
+export type PomDependencyReview = {
+  job_id: string;
+  stage: number;
+  baseline: PomBaseline;
+  buckets: Record<string, PomDependencyFinding[]>;
+  findings: PomDependencyFinding[];
+  evidence_loaded: string[];
+  evidence_missing: string[];
+  warnings: string[];
+  created_at: string;
+};
+
+export type PomChangeProposal = {
+  proposal_id: string;
+  server_validated_plan_preview: Record<string, unknown>;
+  risk: string;
+  can_apply: boolean;
+  warnings: string[];
+  applied: boolean;
+  control_mode: string;
+  created_at: string;
+};
+
+export type PomApplyResult = {
+  change_id: string;
+  status: string;
+  operation: string;
+  target_desc: string;
+  before_version: string;
+  after_version: string;
+  before_checksum: string;
+  after_checksum: string;
+  diff_summary: string;
+  validation_id: string | null;
+  rollback_available: boolean;
+  idempotency_key: string | null;
+  created_at: string;
+  message: string;
+};
+
+export type PomValidationFailureDiagnosis = {
+  failure_classification: string;
+  failed_phase: string;
+  exit_code: number;
+  log_excerpt: string;
+  log_ref: string;
+  root_cause: string;
+  evidence_sufficient: boolean;
+  missing_evidence: string[];
+};
+
+export type PomRepairPlan = {
+  repair_plan_id: string;
+  change_id: string;
+  summary: string;
+  detailed_steps: string[];
+  confidence: string;
+  evidence_sources: string[];
+  actions_available: string[];
+  created_at: string;
+};
+
+export type PomValidationRun = {
+  validation_id: string;
+  change_id: string;
+  status: string;
+  command: string;
+  build_status: string;
+  test_status: string;
+  exit_code: number | null;
+  duration_ms: number | null;
+  log_ref: string | null;
+  test_log_ref: string | null;
+  diagnosis: PomValidationFailureDiagnosis | null;
+  repair_plan: PomRepairPlan | null;
+  created_at: string;
+  completed_at: string | null;
+};
+
+export type PomRollbackResult = {
+  change_id: string;
+  rollback_id: string;
+  status: string;
+  checksum_restored: boolean;
+  validation_triggered: boolean;
+  validation_id: string | null;
+  created_at: string;
+};
+
+export type PomView = {
+  job_id: string;
+  stage: number;
+  exists: boolean;
+  content: string;
+  truncated: boolean;
+  content_type: string;
+  redaction_applied: boolean;
+  detected_baseline: PomBaseline | null;
+  reason?: string | null;
+};
+
+export type PomChangeRecordSummary = {
+  change_id: string;
+  operation: string;
+  target_desc: string;
+  before_version: string;
+  after_version: string;
+  before_checksum: string;
+  after_checksum: string;
+  diff_summary: string;
+  status: string;
+  validation_id: string | null;
+  rollback_id: string | null;
+  created_at: string;
+};
+
+export type PomProposeRequest = {
+  user_request: string;
+  idempotency_key?: string;
+};
+
+export type PomApplyRequest = {
+  proposal_id?: string;
+  user_request?: string;
+  idempotency_key?: string;
 };

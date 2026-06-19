@@ -122,7 +122,7 @@ export type RepairContentProps = {
 export function RepairContent({ state }: RepairContentProps) {
   if (state.status === "loading") {
     return (
-      <section className="panel stack" aria-label="Repair panel">
+      <section className="panel stack panel-scroll" aria-label="Repair panel">
         <h2>Repair panel</h2>
         <p className="meta">Loading repair classifications and proposals...</p>
       </section>
@@ -131,7 +131,7 @@ export function RepairContent({ state }: RepairContentProps) {
 
   if (state.status === "error") {
     return (
-      <section className="panel stack" aria-label="Repair panel">
+      <section className="panel stack panel-scroll" aria-label="Repair panel">
         <h2>Repair panel</h2>
         <p className="meta" role="alert">Failed to load repair data: {state.message}</p>
       </section>
@@ -140,7 +140,7 @@ export function RepairContent({ state }: RepairContentProps) {
 
   if (state.status === "empty") {
     return (
-      <section className="panel stack" aria-label="Repair panel">
+      <section className="panel stack panel-scroll" aria-label="Repair panel">
         <h2>Repair panel</h2>
         <p className="meta">No repair data available yet. Repair classifications and proposals appear after a command fails and is classified for repair.</p>
       </section>
@@ -148,7 +148,7 @@ export function RepairContent({ state }: RepairContentProps) {
   }
 
   return (
-    <section className="panel stack" aria-label="Repair panel">
+    <section className="panel stack panel-scroll" aria-label="Repair panel">
       <h2>Repair panel</h2>
       <p className="meta">
         All paths, secrets, and identifiers are redacted.

@@ -123,7 +123,7 @@ export type ApprovalContentProps = {
 export function ApprovalContent({ state }: ApprovalContentProps) {
   if (state.status === "loading") {
     return (
-      <section className="panel stack" aria-label="Approvals and action cards">
+      <section className="panel stack panel-scroll" aria-label="Approvals and action cards">
         <h2>Approvals &amp; action cards</h2>
         <p className="meta">Loading approvals and pending actions...</p>
       </section>
@@ -132,7 +132,7 @@ export function ApprovalContent({ state }: ApprovalContentProps) {
 
   if (state.status === "error") {
     return (
-      <section className="panel stack" aria-label="Approvals and action cards">
+      <section className="panel stack panel-scroll" aria-label="Approvals and action cards">
         <h2>Approvals &amp; action cards</h2>
         <p className="meta" role="alert">Failed to load approvals: {state.message}</p>
       </section>
@@ -141,7 +141,7 @@ export function ApprovalContent({ state }: ApprovalContentProps) {
 
   if (state.status === "empty") {
     return (
-      <section className="panel stack" aria-label="Approvals and action cards">
+      <section className="panel stack panel-scroll" aria-label="Approvals and action cards">
         <h2>Approvals &amp; action cards</h2>
         <p className="meta">No approvals or pending actions yet. Approvals and action cards appear after a migration job reaches a privileged action step.</p>
       </section>
@@ -149,7 +149,7 @@ export function ApprovalContent({ state }: ApprovalContentProps) {
   }
 
   return (
-    <section className="panel stack" aria-label="Approvals and action cards">
+    <section className="panel stack panel-scroll" aria-label="Approvals and action cards">
       <h2>Approvals &amp; action cards</h2>
       <p className="meta">
         All paths, secrets, and identifiers are redacted.

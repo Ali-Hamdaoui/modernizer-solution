@@ -179,8 +179,8 @@ export function CurrentRunClient({ initialEvents, initialJob }: Props) {
   }, [jobId]);
 
   return (
-    <section className="stack">
-      <header className="panel stack">
+    <section className="run-page">
+      <header className="run-header panel stack">
         <div>
           <p className="eyebrow">Foundation diagnostic</p>
           <h1>{jobStatusCopy(job.job)}</h1>
@@ -197,6 +197,7 @@ export function CurrentRunClient({ initialEvents, initialJob }: Props) {
         </div>
       </header>
 
+      <section className="screen-body stack">
       <section className="grid">
         <StatusCard label="Job state" value={job.job.state} />
         <StatusCard label="Version" value={String(job.job.version)} />
@@ -204,7 +205,7 @@ export function CurrentRunClient({ initialEvents, initialJob }: Props) {
         <StatusCard label="Active command" value={activeCommand?.status ?? "None"} />
       </section>
 
-      <section className="panel stack">
+      <section className="panel stack panel-scroll">
         <h2>Command state</h2>
         {commands.length ? (
           <div className="table-list">
@@ -227,7 +228,7 @@ export function CurrentRunClient({ initialEvents, initialJob }: Props) {
         <LogViewer title="Stderr" window={logs.stderr} />
       </section>
 
-      <section className="panel stack">
+      <section className="panel stack panel-scroll">
         <h2>Artifacts</h2>
         {artifacts.length ? (
           <div className="table-list">
@@ -245,7 +246,7 @@ export function CurrentRunClient({ initialEvents, initialJob }: Props) {
         )}
       </section>
 
-      <section className="panel stack" aria-label="Committed public events">
+      <section className="panel stack panel-scroll" aria-label="Committed public events">
         <h2>Public event timeline</h2>
         <div className="event-list">
           {events.map((event) => (
@@ -263,6 +264,7 @@ export function CurrentRunClient({ initialEvents, initialJob }: Props) {
       <RepairPanel commandId={activeCommand?.command_id ?? null} />
 
       <ApprovalPanel jobId={jobId} />
+      </section>
     </section>
   );
 }
@@ -278,7 +280,7 @@ function StatusCard({ label, value }: { label: string; value: string }) {
 
 function LogViewer({ title, window }: { title: string; window: CommandOutputWindow | null }) {
   return (
-    <section className="panel stack">
+    <section className="panel stack panel-scroll">
       <div>
         <h2>{title}</h2>
         <p className="meta">

@@ -129,6 +129,7 @@ def _create_ai_hub_layout(root: Path) -> Path:
         "springboot-2.1.6-to-2.7-java11": "catalogs/openrewrite/springboot-2.1.6-to-2.7-java11.yaml",
         "springboot-2.7-to-3.5-java17": "catalogs/openrewrite/springboot-3.5-java17.yaml",
         "springboot-3.5-java17-to-java21": "catalogs/openrewrite/springboot-3.5-java17-to-java21.yaml",
+        "springboot-3.5-java21-to-4.0-java21": "catalogs/openrewrite/springboot-3.5-java21-to-4.0-java21.yaml",
     }
     for profile, catalog_path in profiles.items():
         (root / "profiles" / f"{profile}.yaml").write_text(
@@ -140,6 +141,7 @@ def _create_ai_hub_layout(root: Path) -> Path:
         "springboot-2.1.6-to-2.7-java11.yaml",
         "springboot-3.5-java17.yaml",
         "springboot-3.5-java17-to-java21.yaml",
+        "springboot-3.5-java21-to-4.0-java21.yaml",
     ):
         (root / "catalogs" / "openrewrite" / catalog).write_text("recipes: []\n", encoding="utf-8")
 
@@ -802,6 +804,16 @@ class TestJdkSubprocessValidation:
         )
 
     @staticmethod
+    def _fake_subprocess_java21_ga(*args, **kwargs):
+        from subprocess import CompletedProcess
+        return CompletedProcess(
+            args=list(args),
+            returncode=0,
+            stdout="",
+            stderr='openjdk version "21" 2023-09-19\nOpenJDK Runtime Environment (build 21+35-2513)\n',
+        )
+
+    @staticmethod
     def _fake_subprocess_java_wrong_version(*args, **kwargs):
         from subprocess import CompletedProcess
         return CompletedProcess(
@@ -859,6 +871,21 @@ class TestJdkSubprocessValidation:
 
         import subprocess as sp
         monkeypatch.setattr(sp, "run", self._fake_subprocess_java21)
+
+        assert _check_jdk_path_with_version(str(jdk_home), 21)
+
+    def test_jdk21_ga_version_without_minor_is_accepted(self, monkeypatch, tmp_path: Path) -> None:
+        """JDK 21 GA output reports version "21", not always "21.0.x"."""
+        from migration_factory.control_tower.application.v2_setup_service import (
+            _check_jdk_path_with_version,
+        )
+        jdk_home = tmp_path / "jdk-21"
+        bin_dir = jdk_home / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "java").touch()
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, "run", self._fake_subprocess_java21_ga)
 
         assert _check_jdk_path_with_version(str(jdk_home), 21)
 

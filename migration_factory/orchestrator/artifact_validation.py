@@ -145,6 +145,7 @@ def validate_successful_full_sandbox_orchestration(state: MigrationState) -> Art
     artifact_refs = dict(state.get("artifact_refs", {}) or {})
     blockers: list[str] = []
     warnings: list[str] = []
+    defer_final_report = bool(state.get("final_report_deferred", False))
 
     expected_values = {
         "approval_status": "COMPLETED",
@@ -170,7 +171,16 @@ def validate_successful_full_sandbox_orchestration(state: MigrationState) -> Art
     elif not Path(sandbox_path).is_dir():
         blockers.append(f"Missing required sandbox_path: {sandbox_path}")
 
-    for ref_name in SUCCESSFUL_FULL_SANDBOX_REQUIRED_ARTIFACT_REFS:
+    required_refs = SUCCESSFUL_FULL_SANDBOX_REQUIRED_ARTIFACT_REFS
+    if defer_final_report:
+        required_refs = tuple(
+            ref_name
+            for ref_name in SUCCESSFUL_FULL_SANDBOX_REQUIRED_ARTIFACT_REFS
+            if ref_name not in {"final_migration_report", "final_migration_summary"}
+        )
+        warnings.append("final report generation deferred until explicit operator request")
+
+    for ref_name in required_refs:
         ref = artifact_refs.get(ref_name)
         if not ref:
             blockers.append(f"Missing required orchestration artifact ref: {ref_name}")
@@ -188,7 +198,7 @@ def validate_successful_full_sandbox_orchestration(state: MigrationState) -> Art
         artifact_refs={
             name: artifact_refs[name]
             for name in (
-                *SUCCESSFUL_FULL_SANDBOX_REQUIRED_ARTIFACT_REFS,
+                *required_refs,
                 *SUCCESSFUL_FULL_SANDBOX_OPTIONAL_ARTIFACT_REFS,
             )
             if name in artifact_refs

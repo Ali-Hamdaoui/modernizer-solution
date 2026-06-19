@@ -1,0 +1,30 @@
+id: springboot-3.5-java21-to-4.0-java21
+kind: openrewrite-catalog
+verification_status: recipe-doc
+verified_on: "2026-06-18"
+verification_sources:
+  - https://docs.openrewrite.org/recipes/java/spring/boot4/upgradespringboot_4_0
+plugin:
+  group_id: org.openrewrite.maven
+  artifact_id: rewrite-maven-plugin
+  version: "6.40.0"
+recipe_artifacts:
+  - group_id: org.openrewrite.recipe
+    artifact_id: rewrite-spring
+    version: "6.31.0"
+active_recipes:
+  - org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0
+preview_goals:
+  - dryRun
+  - dryRunNoFork
+  - discover
+defaults:
+  export_datatables: true
+  fail_on_dry_run_results: false
+apply_goal: runNoFork
+rewrite_run_allowed: true
+code_modification_allowed: true
+notes:
+  - Use only after the Spring Boot 3.5.6 / Java 21 migration is green.
+  - This catalog upgrades Spring Boot dependencies and plugins from 3.5.x to 4.x.
+  - Spring Boot 4 runtime, dependency, and ecosystem compatibility still require sandbox validation and human review.

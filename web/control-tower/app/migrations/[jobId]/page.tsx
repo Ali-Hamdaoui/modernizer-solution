@@ -12,8 +12,8 @@ export default async function MigrationCockpitPage({
   const { jobId } = await params;
 
   return (
-    <section className="stack">
-      <div>
+    <section className="migration-cockpit-page">
+      <div className="migration-cockpit-header">
         <p className="eyebrow">V2 Migration Cockpit</p>
         <h1>Migration {jobId}</h1>
         <p className="meta">

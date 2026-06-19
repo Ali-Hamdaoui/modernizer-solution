@@ -99,6 +99,11 @@ F05_ALLOWED_ACTION_TYPES = (
     "prepare_approval_request",
     "prepare_sandbox_repair",
     "request_validation_rerun_after_apply",
+    # F14: POM dependency change actions
+    "apply_dependency_change",
+    "rollback_pom_change",
+    "explain_validation_result",
+    "apply_repair_plan_action",
 )
 
 # F05: Explicitly blocked action types — reject at service boundary

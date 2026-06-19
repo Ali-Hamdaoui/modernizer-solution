@@ -202,10 +202,11 @@ class TestV2EndToEndFlow:
         from migration_factory.control_tower.application.v2_worker_stage import STAGE_JDK_MAP
         from migration_factory.control_tower.application.v2_stage_progression import STAGE_CONFIG
 
-        assert PIPELINE_ID == "springboot-216-to-356-java21-three-stage"
+        assert PIPELINE_ID == "springboot-216-to-400-java21-four-stage"
         assert STAGE_JDK_MAP[1]["jdk_id"] == "java11"
         assert STAGE_JDK_MAP[2]["jdk_id"] == "java17"
         assert STAGE_JDK_MAP[3]["jdk_id"] == "java21"
+        assert STAGE_CONFIG[4]["jdk_id"] == "java21"
         assert STAGE_CONFIG[2]["profile"] == "springboot-2.7-to-3.5-java17"
         assert STAGE_CONFIG[3]["profile"] == "springboot-3.5-java17-to-java21"
-        assert 4 not in STAGE_CONFIG
+        assert STAGE_CONFIG[4]["profile"] == "springboot-3.5-java21-to-4.0-java21"

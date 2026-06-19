@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import dataclass
 from typing import Any
@@ -32,6 +33,12 @@ STAGE_CONFIG = {
         "jdk_id": "java21",
         "expected_major": 21,
     },
+    4: {
+        "profile": "springboot-3.5-java21-to-4.0-java21",
+        "jdk_env": "JAVA21_HOME",
+        "jdk_id": "java21",
+        "expected_major": 21,
+    },
 }
 
 RUNNER_MODULE = "migration_factory.orchestrator.runner"
@@ -50,7 +57,7 @@ class StageContinuationResult:
 
 
 class V2StageProgressionService:
-    """Auto-queue Stage 2 and Stage 3 from previous stage sandbox."""
+    """Auto-queue Stage 2, Stage 3, and Stage 4 from previous stage sandbox."""
 
     def __init__(
         self,
@@ -114,20 +121,23 @@ class V2StageProgressionService:
         if self._command_repo is not None:
             command_id = uuid4().hex
             now = utc_now_text()
+            env_manifest = {
+                "JAVA_HOME": jdk_home,
+                "JAVA11_HOME": setup.java11_home,
+                "JAVA17_HOME": setup.java17_home,
+                "JAVA21_HOME": setup.java21_home,
+                "MAVEN_CMD": setup.maven_cmd,
+                "AI_MIGRATION_DEFER_FINAL_REPORT": "1",
+                "PATH_PREPEND": f"{jdk_home}/bin",
+            }
+            env_manifest.update(_safe_maven_env())
             command_record = V2StageCommandRecord(
                 command_id=command_id,
                 job_id=job_id,
                 stage_index=next_stage,
                 manifest_checksum=f"v2-stage{next_stage}",
                 argv_json=json.dumps(list(argv), separators=(",", ":")),
-                env_json=json.dumps({
-                    "JAVA_HOME": jdk_home,
-                    "JAVA11_HOME": setup.java11_home,
-                    "JAVA17_HOME": setup.java17_home,
-                    "JAVA21_HOME": setup.java21_home,
-                    "MAVEN_CMD": setup.maven_cmd,
-                    "PATH_PREPEND": f"{jdk_home}/bin",
-                }, separators=(",", ":")),
+                env_json=json.dumps(env_manifest, separators=(",", ":")),
                 status="manifest_ready",
                 created_at=now,
                 updated_at=now,
@@ -165,3 +175,32 @@ def _get_jdk_home(setup: V2MigrationSetupRecord, env_var: str) -> str:
         "JAVA21_HOME": setup.java21_home,
     }
     return mapping.get(env_var, "")
+
+
+def _safe_maven_env() -> dict[str, str]:
+    env: dict[str, str] = {}
+    for key in ("MAVEN_OPTS", "MAVEN_USER_HOME"):
+        value = os.environ.get(key)
+        if value and not _is_secret_like_env(key, value):
+            env[key] = value
+    return env
+
+
+def _is_secret_like_env(key: str, value: str) -> bool:
+    marker = f"{key}={value}".lower()
+    return any(
+        token in marker
+        for token in (
+            "api_key",
+            "apikey",
+            "authorization",
+            "bearer",
+            "client_secret",
+            "connectionstring",
+            "credential",
+            "password",
+            "secret",
+            "sas",
+            "token",
+        )
+    )

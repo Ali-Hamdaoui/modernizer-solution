@@ -1,18 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CONTROL_TOWER_API_BASE_URL,
   CONTROL_TOWER_FRONTEND_CLIENT_ID,
   DEFAULT_CONTROL_TOWER_API_BASE_URL,
   allowedStatusCopy,
   createDiagnosticJobPayload,
   eventStreamUrl,
+  generateV2FinalReport,
   getV2AssistantMessages,
+  getV2FinalReport,
   getV2JobApprovals,
   getV2MigrationJobStages,
   getJob,
   previewPlanAmendment,
   postJson,
   requireJobId,
-  resolveControlTowerApiBaseUrl
+  resolveControlTowerApiBaseUrl,
+  v2FinalReportPdfDownloadUrl,
 } from "../lib/controlTowerApi";
 import { applyPublicEvent, latestAppliedSequence, shouldRefetchJobProjection } from "../lib/eventReplay";
 
@@ -160,8 +164,69 @@ describe("M2-01 frontend diagnostic contracts", () => {
     await expect(getV2JobApprovals("")).rejects.toThrow(/job id is required/i);
     await expect(getV2MigrationJobStages("")).rejects.toThrow(/job id is required/i);
     await expect(getV2AssistantMessages("")).rejects.toThrow(/job id is required/i);
+    await expect(getV2FinalReport("")).rejects.toThrow(/job id is required/i);
+    await expect(generateV2FinalReport("")).rejects.toThrow(/job id is required/i);
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("calls the V2 final report endpoints with the route job id", async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => ({
+      ok: true,
+      json: async () => ({
+        job_id: "job-123",
+        status: "generated",
+        generated_at: "2026-06-18T00:00:00Z",
+        docs_report_json: "docs/migration-reports/job-123/migration_report.json",
+        docs_report_markdown: "docs/migration-reports/job-123/full_migration_report.md",
+        docs_report_pdf: "docs/migration-reports/job-123/full_migration_report.pdf",
+        run_report_json: "C:/tmp/run/final/migration_report.json",
+        run_report_markdown: "C:/tmp/run/final/migration_summary.md",
+        run_report_pdf: "C:/tmp/run/final/full_migration_report.pdf",
+        report_context: "docs/migration-reports/job-123/report_context.json",
+        total_duration_seconds: 42.25,
+        summary: "summary",
+        change_summary: ["Java changed from 17 to 21."],
+        warnings: [],
+        full_migration_source_stack: { spring_boot: "2.1.6", java: "11" },
+        full_migration_target_stack: { spring_boot: "4.0.7", java: "21" },
+        pipeline_history: [
+          {
+            stage_index: 1,
+            pipeline_stage: "baseline",
+            input_source_kind: "legacy",
+            profile: "springboot-2.1.6-to-2.7-java11",
+            source_stack: { spring_boot: "2.1.6", java: "11" },
+            target_stack: { spring_boot: "2.7.18", java: "11" },
+            chain_status: "completed",
+            build_status: "BUILD_PASSED_IN_SANDBOX",
+            test_status: "TEST_PASSED",
+            transform_status: "TRANSFORM_APPLIED_IN_SANDBOX",
+            run_id: "run-1",
+            run_dir: "C:/tmp/run-1",
+            duration_seconds: 12.5,
+            artifact_refs: {},
+          },
+        ],
+      }),
+      status: 200,
+      headers: { get: () => null },
+      init,
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const jobId = "job-123";
+    await getV2FinalReport(jobId);
+    await generateV2FinalReport(jobId);
+
+    expect(fetchMock.mock.calls[0][0]).toBe(`${CONTROL_TOWER_API_BASE_URL}/v1/v2/jobs/${jobId}/report`);
+    expect(fetchMock.mock.calls[1][0]).toBe(`${CONTROL_TOWER_API_BASE_URL}/v1/v2/jobs/${jobId}/report`);
+    expect(v2FinalReportPdfDownloadUrl(jobId)).toBe(`${CONTROL_TOWER_API_BASE_URL}/v1/v2/jobs/${jobId}/report.pdf`);
+    expect(fetchMock.mock.calls[1][1]).toEqual(
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
   });
 
   it("preview helper uses preview endpoint and safe preview contract", async () => {
