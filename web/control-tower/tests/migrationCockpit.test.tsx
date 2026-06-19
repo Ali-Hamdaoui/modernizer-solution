@@ -645,6 +645,36 @@ describe("V2 Migration Cockpit contract", () => {
             },
             "proposal-2": null,
           },
+          repairActionResults: {
+            "proposal-1": {
+              job_id: "job-123",
+              run_id: "v2-demo-s2",
+              proposal_id: "proposal-1",
+              proposal: {},
+              proposal_status: "approved",
+              proposal_checksum: "chk-123",
+              reviewer_gate_status: "accepted",
+              approval_result: "approved",
+              approval_state: {
+                state: "approved",
+                checksum: "chk-123",
+                approved_at: "2026-06-19T00:00:00Z",
+                read_only_until_apply: true,
+                no_auto_apply: true,
+              },
+              latest_reviewer_decision: "accept",
+              approval_decision: {},
+              applied: false,
+              read_only: true,
+              source_mutated: false,
+              stage_resumed: false,
+              sandbox_only: true,
+              validation_started: false,
+              rollback_performed: false,
+              requires_sandbox_apply: true,
+              requires_validation: true,
+            },
+          },
           evidenceBundle: null,
           failureSummary: null,
           assistantModel: null,
@@ -679,6 +709,15 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Sandbox only: true");
     expect(markup).toContain("Validation artifact: sandbox_validation_result.json");
     expect(markup).toContain("validation_finished_at");
+    expect(markup).toContain("Latest action response");
+    expect(markup).toContain("Approval result: approved");
+    expect(markup).toContain("Applied: false");
+    expect(markup).toContain("Read-only: true");
+    expect(markup).toContain("Validation started: false");
+    expect(markup).toContain("Stage resumed: false");
+    expect(markup).toContain("Rollback performed: false");
+    expect(markup).toContain("Requires sandbox apply: true");
+    expect(markup).toContain("Requires validation: true");
     expect(markup).toContain("No previewable repair artifacts.");
     expect(markup).not.toContain(">Apply<");
     expect(markup).not.toContain(">Validate<");
@@ -989,14 +1028,30 @@ describe("V2 Migration Cockpit contract", () => {
       json: async () => {
         if (url.includes("/repair-proposals/proposal-1/approval")) {
           return {
+            job_id: "job-123",
+            run_id: "v2-demo-s2",
+            proposal_id: "proposal-1",
             proposal: {},
             proposal_status: "approved",
             proposal_checksum: "chk-1",
             reviewer_gate_status: "accepted",
             approval_result: "approved",
+            approval_state: {
+              state: "approved",
+              checksum: "chk-1",
+              approved_at: "2026-06-19T00:00:00Z",
+              read_only_until_apply: true,
+              no_auto_apply: true,
+            },
             latest_reviewer_decision: "accept",
             approval_decision: {},
             applied: false,
+            read_only: true,
+            source_mutated: false,
+            stage_resumed: false,
+            sandbox_only: true,
+            validation_started: false,
+            rollback_performed: false,
           };
         }
         if (url.includes("/repair-lifecycle")) {
@@ -1044,6 +1099,12 @@ describe("V2 Migration Cockpit contract", () => {
 
     expect(result.repairLifecycle?.repair_proposals).toHaveLength(1);
     expect(result.repairLifecycle?.repair_proposals[0].current_state).toBe("execution_plan_ready");
+    expect(result.actionResponse.approval_result).toBe("approved");
+    expect(result.actionResponse.approval_state?.state).toBe("approved");
+    expect(result.actionResponse.applied).toBe(false);
+    expect(result.actionResponse.read_only).toBe(true);
+    expect(result.actionResponse.source_mutated).toBe(false);
+    expect(result.actionResponse.stage_resumed).toBe(false);
     const urls = fetchMock.mock.calls.map(([url]) => String(url));
     expect(urls[0]).toContain("/v1/v2/repair-proposals/proposal-1/approval");
     expect(urls.some((url) => url.includes("/repair-lifecycle"))).toBe(true);
@@ -1059,14 +1120,30 @@ describe("V2 Migration Cockpit contract", () => {
       json: async () => {
         if (url.includes("/repair-proposals/proposal-1/approval")) {
           return {
+            job_id: "job-123",
+            run_id: "v2-demo-s2",
+            proposal_id: "proposal-1",
             proposal: {},
             proposal_status: "rejected",
             proposal_checksum: "chk-1",
             reviewer_gate_status: "accepted",
             approval_result: "rejected",
+            approval_state: {
+              state: "rejected",
+              checksum: "chk-1",
+              rejected_at: "2026-06-19T00:00:00Z",
+              read_only_until_apply: true,
+              no_auto_apply: true,
+            },
             latest_reviewer_decision: "accept",
             approval_decision: {},
             applied: false,
+            read_only: true,
+            source_mutated: false,
+            stage_resumed: false,
+            sandbox_only: true,
+            validation_started: false,
+            rollback_performed: false,
           };
         }
         if (url.includes("/repair-lifecycle")) {
@@ -1105,7 +1182,7 @@ describe("V2 Migration Cockpit contract", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await submitRepairProposalCockpitDecision({
+    const result = await submitRepairProposalCockpitDecision({
       jobId: "job-123",
       proposalId: "proposal-1",
       approvalState: "pending_approval",
@@ -1120,6 +1197,12 @@ describe("V2 Migration Cockpit contract", () => {
     expect(urls.some((url) => url.includes("materialize-execution-plan"))).toBe(false);
     expect(urls.some((url) => url.includes("materialize-patch-candidate"))).toBe(false);
     expect(urls.some((url) => url.includes("validate-sandbox-repair"))).toBe(false);
+    expect(result.actionResponse.approval_result).toBe("rejected");
+    expect(result.actionResponse.approval_state?.state).toBe("rejected");
+    expect(result.actionResponse.applied).toBe(false);
+    expect(result.actionResponse.read_only).toBe(true);
+    expect(result.actionResponse.source_mutated).toBe(false);
+    expect(result.actionResponse.stage_resumed).toBe(false);
   });
 
   it("approve action surfaces API failure", async () => {
@@ -1881,7 +1964,23 @@ describe("V2 Migration Cockpit contract", () => {
         if (url.includes("/materialize-execution-plan")) {
           return {
             proposal_id: "proposal-1",
-            execution_plan: { applied: false, read_only: true },
+            run_id: "v2-demo-s2",
+            approval_checksum: "chk-1",
+            failure_type: "invalid_maven_wildcard_version",
+            root_cause: "root",
+            affected_paths: ["pom.xml"],
+            planned_operations: [{ kind: "update_property" }],
+            validation_commands: ["mvn -q -DskipTests package"],
+            rollback_plan: { restore: ["pom.xml"] },
+            source_artifact_refs: { proposal: "ai_supervision/repair_proposals/proposal-1/repair_proposal.json" },
+            approved: true,
+            human_approved: true,
+            requires_sandbox_apply: true,
+            requires_validation: true,
+            applied: false,
+            read_only: true,
+            source_mutated: false,
+            stage_resumed: false,
           };
         }
         if (url.includes("/repair-lifecycle")) {
@@ -1927,6 +2026,10 @@ describe("V2 Migration Cockpit contract", () => {
 
     expect(result.repairLifecycle?.repair_proposals).toHaveLength(1);
     expect(result.repairLifecycle?.repair_proposals[0].has_execution_plan).toBe(true);
+    expect(result.actionResponse.applied).toBe(false);
+    expect(result.actionResponse.read_only).toBe(true);
+    expect(result.actionResponse.requires_sandbox_apply).toBe(true);
+    expect(result.actionResponse.requires_validation).toBe(true);
     const urls = fetchMock.mock.calls.map(([url]) => String(url));
     expect(urls[0]).toContain("/materialize-execution-plan");
     expect(urls.some((url) => url.includes("/repair-lifecycle"))).toBe(true);
@@ -1959,9 +2062,17 @@ describe("V2 Migration Cockpit contract", () => {
         if (url.includes("/apply-to-sandbox")) {
           return {
             proposal_id: "proposal-1",
+            run_id: "v2-demo-s2",
+            target_workspace: "sandbox",
+            modified_files: ["pom.xml"],
+            operations_applied: [{ kind: "update_property" }],
+            backup_refs: { "pom.xml": "ai_supervision/repair_proposals/proposal-1/backups/pom.xml.before-repair" },
+            applied: true,
+            validation_required: true,
+            validation_started: false,
             sandbox_only: true,
             source_mutated: false,
-            validation_started: false,
+            read_only: true,
           };
         }
         if (url.includes("/repair-lifecycle")) {
@@ -2007,6 +2118,10 @@ describe("V2 Migration Cockpit contract", () => {
 
     expect(result.repairLifecycle?.repair_proposals).toHaveLength(1);
     expect(result.repairLifecycle?.repair_proposals[0].sandbox_apply_state).toBe("applied");
+    expect(result.actionResponse.applied).toBe(true);
+    expect(result.actionResponse.sandbox_only).toBe(true);
+    expect(result.actionResponse.source_mutated).toBe(false);
+    expect(result.actionResponse.validation_started).toBe(false);
     const urls = fetchMock.mock.calls.map(([url]) => String(url));
     expect(urls[0]).toContain("/apply-to-sandbox");
     expect(urls.some((url) => url.includes("/repair-lifecycle"))).toBe(true);
@@ -2024,9 +2139,22 @@ describe("V2 Migration Cockpit contract", () => {
         if (url.includes("/validate-sandbox-repair")) {
           return {
             proposal_id: "proposal-1",
+            run_id: "v2-demo-s2",
+            target_workspace: "sandbox",
+            commands_run: ["mvn -q test"],
+            exit_code: 0,
+            status: "passed",
+            stdout_excerpt: "ok",
+            stderr_excerpt: "",
+            validation_started_at: "2026-06-19T00:00:00Z",
+            validation_finished_at: "2026-06-19T00:01:00Z",
+            rollback_performed: false,
+            rollback_reason: null,
+            rollback_error: null,
             sandbox_only: true,
             source_mutated: false,
             stage_resumed: false,
+            read_only: true,
           };
         }
         if (url.includes("/repair-lifecycle")) {
@@ -2072,6 +2200,11 @@ describe("V2 Migration Cockpit contract", () => {
 
     expect(result.repairLifecycle?.repair_proposals).toHaveLength(1);
     expect(result.repairLifecycle?.repair_proposals[0].sandbox_validation_state).toBe("passed");
+    expect(result.actionResponse.status).toBe("passed");
+    expect(result.actionResponse.rollback_performed).toBe(false);
+    expect(result.actionResponse.sandbox_only).toBe(true);
+    expect(result.actionResponse.source_mutated).toBe(false);
+    expect(result.actionResponse.stage_resumed).toBe(false);
     const urls = fetchMock.mock.calls.map(([url]) => String(url));
     expect(urls[0]).toContain("/validate-sandbox-repair");
     expect(urls.some((url) => url.includes("/repair-lifecycle"))).toBe(true);
@@ -2119,7 +2252,25 @@ describe("V2 Migration Cockpit contract", () => {
         if (url.includes("/materialize-patch-candidate")) {
           return {
             proposal_id: "proposal-1",
-            patch_candidate: { applied: false, read_only: true },
+            run_id: "v2-demo-s2",
+            approval_checksum: "chk-1",
+            execution_plan_ref: "ai_supervision/repair_proposals/proposal-1/repair_execution_plan.json",
+            failure_type: "invalid_maven_wildcard_version",
+            root_cause: "root",
+            affected_paths: ["pom.xml"],
+            planned_operations: [{ kind: "update_property" }],
+            patch_strategy: "bounded_maven_property_update",
+            patch_operations: [{ kind: "update_property", path: "pom.xml" }],
+            validation_commands: ["mvn -q -DskipTests package"],
+            rollback_plan: { restore: ["pom.xml"] },
+            requires_sandbox_apply: true,
+            requires_validation: true,
+            human_approved: true,
+            applied: false,
+            read_only: true,
+            no_source_mutation: true,
+            source_mutated: false,
+            stage_resumed: false,
           };
         }
         if (url.includes("/repair-lifecycle")) {
@@ -2169,6 +2320,9 @@ describe("V2 Migration Cockpit contract", () => {
 
     expect(result.repairLifecycle?.repair_proposals).toHaveLength(1);
     expect(result.repairLifecycle?.repair_proposals[0].has_patch_candidate).toBe(true);
+    expect(result.actionResponse.applied).toBe(false);
+    expect(result.actionResponse.read_only).toBe(true);
+    expect(result.actionResponse.no_source_mutation).toBe(true);
     const urls = fetchMock.mock.calls.map(([url]) => String(url));
     expect(urls[0]).toContain("/materialize-patch-candidate");
     expect(urls.some((url) => url.includes("/repair-lifecycle"))).toBe(true);

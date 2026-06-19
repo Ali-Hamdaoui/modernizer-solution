@@ -30,9 +30,14 @@ import type {
   V2ApprovalResponse,
   V2AssistantMessageResponse,
   V2DualModelTraceListResponse,
+  V2RepairExecutionPlanResponse,
   V2RepairLifecycleListResponse,
+  V2RepairPatchCandidateResponse,
   V2RepairProposalArtifactListResponse,
+  V2RepairProposalApprovalActionResponse,
   V2RepairProposalArtifactPreviewResponse,
+  V2RepairSandboxApplyResponse,
+  V2RepairSandboxValidationResponse,
   V2RunEvidenceBundleResponse,
   V2FailureSummaryResponse,
   V2JobEvent,
@@ -58,10 +63,22 @@ interface CockpitData {
   repairLifecycle: V2RepairLifecycleListResponse | null;
   repairArtifacts: Record<string, V2RepairProposalArtifactListResponse | null>;
   repairArtifactPreviews: Record<string, V2RepairProposalArtifactPreviewResponse | null>;
+  repairActionResults?: Record<string, RepairActionResult | null>;
   evidenceBundle: V2RunEvidenceBundleResponse | null;
   failureSummary: V2FailureSummaryResponse | null;
   assistantModel: { status: string; source: string; provider: string; role: string; failure_reason?: string } | null;
 }
+
+type RepairActionResult =
+  | V2RepairProposalApprovalActionResponse
+  | V2RepairExecutionPlanResponse
+  | V2RepairPatchCandidateResponse
+  | V2RepairSandboxApplyResponse
+  | V2RepairSandboxValidationResponse;
+
+type RepairMutationRefreshState<T> = Pick<CockpitData, "repairLifecycle" | "repairArtifacts" | "repairArtifactPreviews"> & {
+  actionResponse: T;
+};
 
 export function cockpitEvidenceStatusLines(bundle: V2RunEvidenceBundleResponse | null): string[] {
   if (!bundle) {
@@ -103,17 +120,16 @@ export async function submitRepairProposalCockpitDecision(args: {
   approvalChecksum: string;
   operator?: string;
   reason?: string;
-}): Promise<Pick<CockpitData, "repairLifecycle" | "repairArtifacts" | "repairArtifactPreviews">> {
+}): Promise<RepairMutationRefreshState<V2RepairProposalApprovalActionResponse>> {
   const safeJobId = requireJobId(args.jobId);
   if ((args.approvalState || "").trim() !== "pending_approval") {
     throw new Error(`Repair proposal ${args.proposalId} is not pending approval.`);
   }
-  if ((args.reason || "").trim()) {
-    await rejectV2RepairProposal(safeJobId, args.proposalId, args.reason, args.operator);
-  } else {
-    await approveV2RepairProposal(safeJobId, args.proposalId, args.approvalChecksum, args.operator);
-  }
-  return refreshRepairLifecyclePanelState(safeJobId);
+  const actionResponse = (args.reason || "").trim()
+    ? await rejectV2RepairProposal(safeJobId, args.proposalId, args.reason, args.operator)
+    : await approveV2RepairProposal(safeJobId, args.proposalId, args.approvalChecksum, args.operator);
+  const refreshState = await refreshRepairLifecyclePanelState(safeJobId);
+  return { ...refreshState, actionResponse };
 }
 
 export function canMaterializeRepairExecutionPlan(proposal: {
@@ -137,10 +153,11 @@ export function canMaterializeRepairExecutionPlan(proposal: {
 export async function submitRepairExecutionPlanMaterialization(args: {
   jobId: string;
   proposalId: string;
-}): Promise<Pick<CockpitData, "repairLifecycle" | "repairArtifacts" | "repairArtifactPreviews">> {
+}): Promise<RepairMutationRefreshState<V2RepairExecutionPlanResponse>> {
   const safeJobId = requireJobId(args.jobId);
-  await materializeV2RepairExecutionPlan(safeJobId, args.proposalId);
-  return refreshRepairLifecyclePanelState(safeJobId);
+  const actionResponse = await materializeV2RepairExecutionPlan(safeJobId, args.proposalId);
+  const refreshState = await refreshRepairLifecyclePanelState(safeJobId);
+  return { ...refreshState, actionResponse };
 }
 
 export function canMaterializeRepairPatchCandidate(proposal: {
@@ -237,31 +254,78 @@ function parseSandboxValidationPreview(
   }
 }
 
+function repairActionResponseLines(action: RepairActionResult | null | undefined): string[] {
+  if (!action) {
+    return [];
+  }
+  const lines: string[] = [];
+  if ("approval_result" in action && action.approval_result) lines.push(`Approval result: ${action.approval_result}`);
+  if ("proposal_status" in action && action.proposal_status) lines.push(`Proposal status: ${action.proposal_status}`);
+  if ("status" in action && action.status) lines.push(`Status: ${action.status}`);
+  if ("approval_state" in action && action.approval_state && typeof action.approval_state === "object") {
+    if (action.approval_state.state) lines.push(`Approval state: ${action.approval_state.state}`);
+    if (action.approval_state.checksum) lines.push(`Approval checksum: ${action.approval_state.checksum}`);
+    if (action.approval_state.read_only_until_apply != null) {
+      lines.push(`Read-only until apply: ${String(action.approval_state.read_only_until_apply)}`);
+    }
+    if (action.approval_state.no_auto_apply != null) {
+      lines.push(`No auto apply: ${String(action.approval_state.no_auto_apply)}`);
+    }
+  }
+  if ("applied" in action && typeof action.applied === "boolean") lines.push(`Applied: ${String(action.applied)}`);
+  if ("read_only" in action && typeof action.read_only === "boolean") lines.push(`Read-only: ${String(action.read_only)}`);
+  if ("sandbox_only" in action && typeof action.sandbox_only === "boolean") lines.push(`Sandbox only: ${String(action.sandbox_only)}`);
+  if ("source_mutated" in action && typeof action.source_mutated === "boolean") lines.push(`Source mutated: ${String(action.source_mutated)}`);
+  if ("validation_started" in action && typeof action.validation_started === "boolean") {
+    lines.push(`Validation started: ${String(action.validation_started)}`);
+  }
+  if ("stage_resumed" in action && typeof action.stage_resumed === "boolean") lines.push(`Stage resumed: ${String(action.stage_resumed)}`);
+  if ("rollback_performed" in action && typeof action.rollback_performed === "boolean") {
+    lines.push(`Rollback performed: ${String(action.rollback_performed)}`);
+  }
+  if ("requires_sandbox_apply" in action && typeof action.requires_sandbox_apply === "boolean") {
+    lines.push(`Requires sandbox apply: ${String(action.requires_sandbox_apply)}`);
+  }
+  if ("requires_validation" in action && typeof action.requires_validation === "boolean") {
+    lines.push(`Requires validation: ${String(action.requires_validation)}`);
+  }
+  if ((action as { human_approved?: boolean }).human_approved != null) {
+    lines.push(`Human approved: ${String((action as { human_approved?: boolean }).human_approved)}`);
+  }
+  if ((action as { patch_operations?: unknown[] }).patch_operations) {
+    lines.push(`Patch operations: ${(action as { patch_operations?: unknown[] }).patch_operations?.length ?? 0}`);
+  }
+  return lines;
+}
+
 export async function submitRepairPatchCandidateMaterialization(args: {
   jobId: string;
   proposalId: string;
-}): Promise<Pick<CockpitData, "repairLifecycle" | "repairArtifacts" | "repairArtifactPreviews">> {
+}): Promise<RepairMutationRefreshState<V2RepairPatchCandidateResponse>> {
   const safeJobId = requireJobId(args.jobId);
-  await materializeV2RepairPatchCandidate(safeJobId, args.proposalId);
-  return refreshRepairLifecyclePanelState(safeJobId);
+  const actionResponse = await materializeV2RepairPatchCandidate(safeJobId, args.proposalId);
+  const refreshState = await refreshRepairLifecyclePanelState(safeJobId);
+  return { ...refreshState, actionResponse };
 }
 
 export async function submitRepairPatchSandboxApply(args: {
   jobId: string;
   proposalId: string;
-}): Promise<Pick<CockpitData, "repairLifecycle" | "repairArtifacts" | "repairArtifactPreviews">> {
+}): Promise<RepairMutationRefreshState<V2RepairSandboxApplyResponse>> {
   const safeJobId = requireJobId(args.jobId);
-  await applyV2RepairPatchToSandbox(safeJobId, args.proposalId);
-  return refreshRepairLifecyclePanelState(safeJobId);
+  const actionResponse = await applyV2RepairPatchToSandbox(safeJobId, args.proposalId);
+  const refreshState = await refreshRepairLifecyclePanelState(safeJobId);
+  return { ...refreshState, actionResponse };
 }
 
 export async function submitRepairSandboxValidation(args: {
   jobId: string;
   proposalId: string;
-}): Promise<Pick<CockpitData, "repairLifecycle" | "repairArtifacts" | "repairArtifactPreviews">> {
+}): Promise<RepairMutationRefreshState<V2RepairSandboxValidationResponse>> {
   const safeJobId = requireJobId(args.jobId);
-  await validateV2SandboxRepair(safeJobId, args.proposalId);
-  return refreshRepairLifecyclePanelState(safeJobId);
+  const actionResponse = await validateV2SandboxRepair(safeJobId, args.proposalId);
+  const refreshState = await refreshRepairLifecyclePanelState(safeJobId);
+  return { ...refreshState, actionResponse };
 }
 
 const REPAIR_ARTIFACT_PREFERRED_PREVIEW_ORDER = [
@@ -576,6 +640,10 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
         repairLifecycle: refreshState.repairLifecycle,
         repairArtifacts: refreshState.repairArtifacts,
         repairArtifactPreviews: refreshState.repairArtifactPreviews,
+        repairActionResults: {
+          ...(current.repairActionResults ?? {}),
+          [proposalId]: refreshState.actionResponse,
+        },
       } : current);
       setError(null);
     } catch (e) {
@@ -601,6 +669,10 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
         repairLifecycle: refreshState.repairLifecycle,
         repairArtifacts: refreshState.repairArtifacts,
         repairArtifactPreviews: refreshState.repairArtifactPreviews,
+        repairActionResults: {
+          ...(current.repairActionResults ?? {}),
+          [proposalId]: refreshState.actionResponse,
+        },
       } : current);
       setError(null);
     } catch (e) {
@@ -623,6 +695,10 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
         repairLifecycle: refreshState.repairLifecycle,
         repairArtifacts: refreshState.repairArtifacts,
         repairArtifactPreviews: refreshState.repairArtifactPreviews,
+        repairActionResults: {
+          ...(current.repairActionResults ?? {}),
+          [proposalId]: refreshState.actionResponse,
+        },
       } : current);
       setError(null);
     } catch (e) {
@@ -645,6 +721,10 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
         repairLifecycle: refreshState.repairLifecycle,
         repairArtifacts: refreshState.repairArtifacts,
         repairArtifactPreviews: refreshState.repairArtifactPreviews,
+        repairActionResults: {
+          ...(current.repairActionResults ?? {}),
+          [proposalId]: refreshState.actionResponse,
+        },
       } : current);
       setError(null);
     } catch (e) {
@@ -667,6 +747,10 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
         repairLifecycle: refreshState.repairLifecycle,
         repairArtifacts: refreshState.repairArtifacts,
         repairArtifactPreviews: refreshState.repairArtifactPreviews,
+        repairActionResults: {
+          ...(current.repairActionResults ?? {}),
+          [proposalId]: refreshState.actionResponse,
+        },
       } : current);
       setError(null);
     } catch (e) {
@@ -910,6 +994,16 @@ export function MigrationCockpit({ jobId, initialData }: { jobId?: string; initi
                       {data.repairArtifactPreviews[proposal.proposal_id]?.content}
                     </pre>
                   </details>
+                ) : null}
+                {data.repairActionResults?.[proposal.proposal_id] ? (
+                  <div className="trace-section">
+                    <strong>Latest action response</strong>
+                    {repairActionResponseLines(data.repairActionResults[proposal.proposal_id]).map((line) => (
+                      <p key={`${proposal.proposal_id}-${line}`} className="meta">
+                        {line}
+                      </p>
+                    ))}
+                  </div>
                 ) : null}
                 {proposal.approval_state === "pending_approval" && proposal.approval_checksum ? (
                   <>

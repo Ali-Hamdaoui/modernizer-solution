@@ -633,15 +633,123 @@ export type V2RepairProposalArtifactPreviewResponse = {
   read_only: boolean;
 };
 
+export type V2RepairApprovalState = {
+  state: string;
+  checksum?: string | null;
+  approved_at?: string | null;
+  rejected_at?: string | null;
+  operator?: string | null;
+  read_only_until_apply?: boolean;
+  no_auto_apply?: boolean;
+};
+
+export type V2RepairExecutionPlanResponse = {
+  proposal_id: string;
+  run_id?: string | null;
+  approval_checksum?: string | null;
+  failure_type?: string | null;
+  root_cause?: string | null;
+  affected_paths?: string[];
+  planned_operations?: unknown[];
+  validation_commands?: string[];
+  rollback_plan?: unknown;
+  source_artifact_refs?: Record<string, string>;
+  approved?: boolean;
+  human_approved?: boolean;
+  requires_sandbox_apply?: boolean;
+  requires_validation?: boolean;
+  applied?: false;
+  read_only?: boolean;
+  source_mutated?: false;
+  stage_resumed?: false;
+  sandbox_only?: boolean;
+  status?: string;
+};
+
+export type V2RepairPatchCandidateResponse = {
+  proposal_id: string;
+  run_id?: string | null;
+  approval_checksum?: string | null;
+  execution_plan_ref?: string | null;
+  failure_type?: string | null;
+  root_cause?: string | null;
+  affected_paths?: string[];
+  planned_operations?: unknown[];
+  patch_strategy?: string | null;
+  patch_operations?: unknown[];
+  validation_commands?: string[];
+  rollback_plan?: unknown;
+  requires_sandbox_apply?: boolean;
+  requires_validation?: boolean;
+  human_approved?: boolean;
+  applied?: false;
+  read_only?: boolean;
+  no_source_mutation?: boolean;
+  source_mutated?: false;
+  stage_resumed?: false;
+  sandbox_only?: boolean;
+  status?: string;
+  unsupported_reason?: string | null;
+};
+
+export type V2RepairSandboxApplyResponse = {
+  proposal_id: string;
+  run_id?: string | null;
+  target_workspace?: string | null;
+  modified_files?: string[];
+  operations_applied?: unknown[];
+  backup_refs?: Record<string, string>;
+  applied?: true;
+  validation_required?: boolean;
+  validation_started?: false;
+  source_mutated?: false;
+  sandbox_only?: true;
+  read_only?: boolean;
+  created_at?: string;
+};
+
+export type V2RepairSandboxValidationResponse = {
+  proposal_id: string;
+  run_id?: string | null;
+  target_workspace?: string | null;
+  commands_run?: string[];
+  exit_code?: number | null;
+  status?: string;
+  stdout_excerpt?: string;
+  stderr_excerpt?: string;
+  validation_started_at?: string;
+  validation_finished_at?: string;
+  rollback_performed?: boolean;
+  rollback_reason?: string | null;
+  rollback_error?: string | null;
+  source_mutated?: false;
+  sandbox_only?: true;
+  stage_resumed?: false;
+  applied?: boolean;
+  read_only?: boolean;
+};
+
 export type V2RepairProposalApprovalActionResponse = {
+  job_id?: string | null;
+  run_id?: string | null;
+  proposal_id?: string | null;
   proposal: Record<string, unknown>;
   proposal_status: string;
   proposal_checksum: string;
   reviewer_gate_status: string;
   approval_result: string;
+  approval_state?: V2RepairApprovalState | null;
   latest_reviewer_decision: string | null;
   approval_decision: Record<string, unknown>;
+  read_only?: boolean;
   applied: false;
+  source_mutated?: false;
+  stage_resumed?: false;
+  sandbox_only?: boolean;
+  validation_started?: boolean;
+  rollback_performed?: boolean;
+  requires_sandbox_apply?: boolean;
+  requires_validation?: boolean;
 };
 
 export type V2ReviewerCritiqueResponse = {
@@ -869,6 +977,15 @@ export type V2RepairValidationResponse = {
   rollback_reason?: string;
   ledger_ref?: string;
   updated_at?: string;
+  status?: string;
+  rollback_performed?: boolean;
+  rollback_error?: string | null;
+  source_mutated?: false;
+  sandbox_only?: true;
+  stage_resumed?: false;
+  read_only?: boolean;
+  validation_started_at?: string;
+  validation_finished_at?: string;
 };
 
 export type V2FailureSummaryResponse = {

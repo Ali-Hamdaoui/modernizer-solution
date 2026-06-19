@@ -228,19 +228,35 @@ describe("M2-01 frontend diagnostic contracts", () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => ({
+        job_id: "job-123",
+        run_id: "v2-demo-s2",
+        proposal_id: "proposal-1",
         proposal: {},
         proposal_status: "approved",
         proposal_checksum: "chk-123",
         reviewer_gate_status: "accepted",
         approval_result: "approved",
+        approval_state: {
+          state: "approved",
+          checksum: "chk-123",
+          approved_at: "2026-06-19T00:00:00Z",
+          read_only_until_apply: true,
+          no_auto_apply: true,
+        },
         latest_reviewer_decision: "accept",
         approval_decision: {},
         applied: false,
+        read_only: true,
+        source_mutated: false,
+        stage_resumed: false,
+        sandbox_only: true,
+        validation_started: false,
+        rollback_performed: false,
       })
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await approveV2RepairProposal("job-123", "proposal-1", "chk-123", "architect");
+    const result = await approveV2RepairProposal("job-123", "proposal-1", "chk-123", "architect");
 
     expect(fetchMock).toHaveBeenCalledWith(
       `${DEFAULT_CONTROL_TOWER_API_BASE_URL}/v1/v2/repair-proposals/proposal-1/approval`,
@@ -253,25 +269,48 @@ describe("M2-01 frontend diagnostic contracts", () => {
         }),
       })
     );
+    expect(result.applied).toBe(false);
+    expect(result.read_only).toBe(true);
+    expect(result.source_mutated).toBe(false);
+    expect(result.stage_resumed).toBe(false);
+    expect(result.sandbox_only).toBe(true);
+    expect(result.validation_started).toBe(false);
+    expect(result.approval_state?.state).toBe("approved");
   });
 
   it("reject repair proposal sends reject request without execution endpoint", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => ({
+        job_id: "job-123",
+        run_id: "v2-demo-s2",
+        proposal_id: "proposal-1",
         proposal: {},
         proposal_status: "rejected",
         proposal_checksum: "chk-123",
         reviewer_gate_status: "accepted",
         approval_result: "rejected",
+        approval_state: {
+          state: "rejected",
+          checksum: "chk-123",
+          rejected_at: "2026-06-19T00:00:00Z",
+          read_only_until_apply: true,
+          no_auto_apply: true,
+        },
         latest_reviewer_decision: "accept",
         approval_decision: {},
         applied: false,
+        read_only: true,
+        source_mutated: false,
+        stage_resumed: false,
+        sandbox_only: true,
+        validation_started: false,
+        rollback_performed: false,
       })
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await rejectV2RepairProposal("job-123", "proposal-1", "Needs human review", "architect");
+    const result = await rejectV2RepairProposal("job-123", "proposal-1", "Needs human review", "architect");
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toBe(`${DEFAULT_CONTROL_TOWER_API_BASE_URL}/v1/v2/repair-proposals/proposal-1/approval`);
@@ -283,6 +322,13 @@ describe("M2-01 frontend diagnostic contracts", () => {
       approval_checksum: "reject",
       note: "Operator: architect - Needs human review",
     });
+    expect(result.applied).toBe(false);
+    expect(result.read_only).toBe(true);
+    expect(result.source_mutated).toBe(false);
+    expect(result.stage_resumed).toBe(false);
+    expect(result.sandbox_only).toBe(true);
+    expect(result.validation_started).toBe(false);
+    expect(result.approval_state?.state).toBe("rejected");
   });
 
   it("materialize repair execution plan calls read-write execution-plan endpoint only", async () => {
@@ -290,12 +336,28 @@ describe("M2-01 frontend diagnostic contracts", () => {
       ok: true,
       json: async () => ({
         proposal_id: "proposal-1",
-        execution_plan: { applied: false, read_only: true },
+        run_id: "v2-demo-s2",
+        approval_checksum: "chk-1",
+        failure_type: "invalid_maven_wildcard_version",
+        root_cause: "root",
+        affected_paths: ["pom.xml"],
+        planned_operations: [{ kind: "update_property" }],
+        validation_commands: ["mvn -q -DskipTests package"],
+        rollback_plan: { restore: ["pom.xml"] },
+        source_artifact_refs: { proposal: "ai_supervision/repair_proposals/proposal-1/repair_proposal.json" },
+        approved: true,
+        human_approved: true,
+        requires_sandbox_apply: true,
+        requires_validation: true,
+        applied: false,
+        read_only: true,
+        source_mutated: false,
+        stage_resumed: false,
       })
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await materializeV2RepairExecutionPlan("job-123", "proposal-1");
+    const result = await materializeV2RepairExecutionPlan("job-123", "proposal-1");
 
     expect(fetchMock).toHaveBeenCalledWith(
       `${DEFAULT_CONTROL_TOWER_API_BASE_URL}/v1/v2/migration-jobs/job-123/repair-proposals/proposal-1/materialize-execution-plan`,
@@ -304,6 +366,10 @@ describe("M2-01 frontend diagnostic contracts", () => {
         body: JSON.stringify({}),
       })
     );
+    expect(result.applied).toBe(false);
+    expect(result.read_only).toBe(true);
+    expect(result.requires_sandbox_apply).toBe(true);
+    expect(result.requires_validation).toBe(true);
   });
 
   it("materialize patch candidate calls read-write patch-candidate endpoint only", async () => {
@@ -311,12 +377,30 @@ describe("M2-01 frontend diagnostic contracts", () => {
       ok: true,
       json: async () => ({
         proposal_id: "proposal-1",
-        patch_candidate: { applied: false, read_only: true },
+        run_id: "v2-demo-s2",
+        approval_checksum: "chk-1",
+        execution_plan_ref: "ai_supervision/repair_proposals/proposal-1/repair_execution_plan.json",
+        failure_type: "invalid_maven_wildcard_version",
+        root_cause: "root",
+        affected_paths: ["pom.xml"],
+        planned_operations: [{ kind: "update_property" }],
+        patch_strategy: "bounded_maven_property_update",
+        patch_operations: [{ kind: "update_property", path: "pom.xml" }],
+        validation_commands: ["mvn -q -DskipTests package"],
+        rollback_plan: { restore: ["pom.xml"] },
+        requires_sandbox_apply: true,
+        requires_validation: true,
+        human_approved: true,
+        applied: false,
+        read_only: true,
+        no_source_mutation: true,
+        source_mutated: false,
+        stage_resumed: false,
       })
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await materializeV2RepairPatchCandidate("job-123", "proposal-1");
+    const result = await materializeV2RepairPatchCandidate("job-123", "proposal-1");
 
     expect(fetchMock).toHaveBeenCalledWith(
       `${DEFAULT_CONTROL_TOWER_API_BASE_URL}/v1/v2/migration-jobs/job-123/repair-proposals/proposal-1/materialize-patch-candidate`,
@@ -325,6 +409,9 @@ describe("M2-01 frontend diagnostic contracts", () => {
         body: JSON.stringify({}),
       })
     );
+    expect(result.applied).toBe(false);
+    expect(result.read_only).toBe(true);
+    expect(result.no_source_mutation).toBe(true);
   });
 
   it("apply repair patch to sandbox calls sandbox apply endpoint only", async () => {
@@ -332,14 +419,22 @@ describe("M2-01 frontend diagnostic contracts", () => {
       ok: true,
       json: async () => ({
         proposal_id: "proposal-1",
+        run_id: "v2-demo-s2",
+        target_workspace: "sandbox",
+        modified_files: ["pom.xml"],
+        operations_applied: [{ kind: "update_property" }],
+        backup_refs: { "pom.xml": "ai_supervision/repair_proposals/proposal-1/backups/pom.xml.before-repair" },
+        applied: true,
+        validation_required: true,
+        validation_started: false,
         sandbox_only: true,
         source_mutated: false,
-        validation_started: false,
+        read_only: true,
       }),
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await applyV2RepairPatchToSandbox("job-123", "proposal-1");
+    const result = await applyV2RepairPatchToSandbox("job-123", "proposal-1");
 
     expect(fetchMock).toHaveBeenCalledWith(
       `${DEFAULT_CONTROL_TOWER_API_BASE_URL}/v1/v2/migration-jobs/job-123/repair-proposals/proposal-1/apply-to-sandbox`,
@@ -348,6 +443,10 @@ describe("M2-01 frontend diagnostic contracts", () => {
         body: JSON.stringify({}),
       })
     );
+    expect(result.applied).toBe(true);
+    expect(result.sandbox_only).toBe(true);
+    expect(result.source_mutated).toBe(false);
+    expect(result.validation_started).toBe(false);
   });
 
   it("validate sandbox repair calls validation endpoint only", async () => {
@@ -355,14 +454,27 @@ describe("M2-01 frontend diagnostic contracts", () => {
       ok: true,
       json: async () => ({
         proposal_id: "proposal-1",
+        run_id: "v2-demo-s2",
+        target_workspace: "sandbox",
+        commands_run: ["mvn -q test"],
+        exit_code: 0,
+        status: "passed",
+        stdout_excerpt: "ok",
+        stderr_excerpt: "",
+        validation_started_at: "2026-06-19T00:00:00Z",
+        validation_finished_at: "2026-06-19T00:01:00Z",
+        rollback_performed: false,
+        rollback_reason: null,
+        rollback_error: null,
         sandbox_only: true,
         source_mutated: false,
         stage_resumed: false,
+        read_only: true,
       }),
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await validateV2SandboxRepair("job-123", "proposal-1");
+    const result = await validateV2SandboxRepair("job-123", "proposal-1");
 
     expect(fetchMock).toHaveBeenCalledWith(
       `${DEFAULT_CONTROL_TOWER_API_BASE_URL}/v1/v2/migration-jobs/job-123/repair-proposals/proposal-1/validate-sandbox-repair`,
@@ -371,6 +483,11 @@ describe("M2-01 frontend diagnostic contracts", () => {
         body: JSON.stringify({}),
       })
     );
+    expect(result.status).toBe("passed");
+    expect(result.rollback_performed).toBe(false);
+    expect(result.sandbox_only).toBe(true);
+    expect(result.source_mutated).toBe(false);
+    expect(result.stage_resumed).toBe(false);
   });
 
   it("preview helper uses preview endpoint and safe preview contract", async () => {

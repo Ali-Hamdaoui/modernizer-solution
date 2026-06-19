@@ -17,6 +17,10 @@ import type {
   V2RepairProposalApprovalActionResponse,
   V2RepairProposalArtifactListResponse,
   V2RepairProposalArtifactPreviewResponse,
+  V2RepairExecutionPlanResponse,
+  V2RepairPatchCandidateResponse,
+  V2RepairSandboxApplyResponse,
+  V2RepairSandboxValidationResponse,
   V2RunEvidenceBundleResponse,
   V2StageEntry,
   V2StageCommandResponse,
@@ -402,7 +406,7 @@ export async function rejectV2RepairProposal(
 export async function materializeV2RepairExecutionPlan(
   jobId: string,
   proposalId: string
-): Promise<Record<string, unknown>> {
+): Promise<V2RepairExecutionPlanResponse> {
   const safeJobId = requireJobId(jobId);
   const safeProposalId = proposalId.trim();
   if (!safeProposalId) {
@@ -417,13 +421,13 @@ export async function materializeV2RepairExecutionPlan(
 export async function materializeV2RepairPatchCandidate(
   jobId: string,
   proposalId: string
-): Promise<Record<string, unknown>> {
+): Promise<V2RepairPatchCandidateResponse> {
   const safeJobId = requireJobId(jobId);
   const safeProposalId = proposalId.trim();
   if (!safeProposalId) {
     throw new Error("Repair proposal id is required.");
   }
-  return postJson<Record<string, unknown>>(
+  return postJson<V2RepairPatchCandidateResponse>(
     `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/repair-proposals/${encodeURIComponent(safeProposalId)}/materialize-patch-candidate`,
     {}
   );
@@ -432,13 +436,13 @@ export async function materializeV2RepairPatchCandidate(
 export async function applyV2RepairPatchToSandbox(
   jobId: string,
   proposalId: string
-): Promise<Record<string, unknown>> {
+): Promise<V2RepairSandboxApplyResponse> {
   const safeJobId = requireJobId(jobId);
   const safeProposalId = proposalId.trim();
   if (!safeProposalId) {
     throw new Error("Repair proposal id is required.");
   }
-  return postJson<Record<string, unknown>>(
+  return postJson<V2RepairSandboxApplyResponse>(
     `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/repair-proposals/${encodeURIComponent(safeProposalId)}/apply-to-sandbox`,
     {}
   );
@@ -447,13 +451,13 @@ export async function applyV2RepairPatchToSandbox(
 export async function validateV2SandboxRepair(
   jobId: string,
   proposalId: string
-): Promise<Record<string, unknown>> {
+): Promise<V2RepairSandboxValidationResponse> {
   const safeJobId = requireJobId(jobId);
   const safeProposalId = proposalId.trim();
   if (!safeProposalId) {
     throw new Error("Repair proposal id is required.");
   }
-  return postJson<Record<string, unknown>>(
+  return postJson<V2RepairSandboxValidationResponse>(
     `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/repair-proposals/${encodeURIComponent(safeProposalId)}/validate-sandbox-repair`,
     {}
   );
