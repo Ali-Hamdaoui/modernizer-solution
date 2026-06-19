@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -9,8 +8,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
-from migration_factory.contracts import SCHEMA_VERSION
 
 
 @dataclass(frozen=True)
@@ -20,8 +17,6 @@ class FinalReportResult:
     warnings: list[str]
 
 
-_COPILOT_STATEMENT_ENV = "AI_MIGRATION_ENABLE_COPILOT_STATEMENT"
-_TRUE_VALUES = {"1", "true", "yes", "on"}
 _SANDBOX_ONLY_DISCLAIMER = (
     "This is a sandbox migration candidate only; no production promotion, no PR, no deployment."
 )
@@ -177,7 +172,6 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
         "dependency_policy_status": dependency_policy["status"],
         "dependency_policy_risks_count": dependency_policy["risks_count"],
         "dependency_policy_blockers_count": dependency_policy["blockers_count"],
-        "copilot_dependency_advisory_status": dependency_policy["copilot_advisory_status"],
         "policy_patch_applied": dependency_policy["policy_patch_applied"],
         "unresolved_v2_dependency_risks": dependency_policy["unresolved_v2_dependency_risks"],
         "recipes": recipes,
@@ -219,22 +213,6 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
         "final_migration_report": str(json_path),
         "final_migration_summary": str(md_path),
     }
-    if _copilot_statement_enabled():
-        try:
-            copilot_artifact_refs = _generate_copilot_advisory_statement(report_payload, final_dir)
-        except Exception as exc:  # pragma: no cover - exercised through monkeypatched failure
-            warning = f"copilot advisory statement generation failed: {exc}"
-            warnings.append(warning)
-            report_payload["warnings"] = [
-                *list(report_payload.get("warnings", []) or []),
-                warning,
-            ]
-        else:
-            generated_artifact_refs.update(copilot_artifact_refs)
-            report_payload["artifact_refs"] = {
-                **dict(report_payload.get("artifact_refs", {}) or {}),
-                **copilot_artifact_refs,
-            }
 
     json_path.write_text(json.dumps(report_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     md_path.write_text(_build_markdown_summary(report_payload), encoding="utf-8")
@@ -424,7 +402,6 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
                 f"| Attempts Used | `{repair_loop.get('attempts_count', 0)}` |",
                 f"| Final Status | **`{repair_loop.get('final_status', '')}`** |",
                 f"| Ledger | `{repair_loop.get('ledger_ref', '')}` |",
-                f"| Copilot Used | `{str(repair_loop.get('copilot_used', False)).lower()}` |",
                 f"| Safe Patch Applied | `{str(repair_loop.get('safe_patch_applied', False)).lower()}` |",
                 f"| Human Review Required | `{str(repair_loop.get('human_review_required', False)).lower()}` |",
             ]
@@ -459,7 +436,6 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
                 f"| Status | **`{dependency_policy.get('status', '')}`** |",
                 f"| Risks | `{dependency_policy.get('risks_count', 0)}` |",
                 f"| Blockers | `{dependency_policy.get('blockers_count', 0)}` |",
-                f"| Copilot Advisory | `{dependency_policy.get('copilot_advisory_status', 'SKIPPED')}` |",
                 f"| Policy Patch Applied | `{str(dependency_policy.get('policy_patch_applied', False)).lower()}` |",
                 f"| Report | `{dependency_policy.get('report_ref', '')}` |",
             ]
@@ -496,28 +472,10 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
         ref = str(artifacts.get(name) or "")
         if ref:
             lines.append(f"| `{name}` | `{ref}` |")
-    statement = payload.get("copilot_advisory_statement")
-    if isinstance(statement, dict):
-        artifact_refs = statement.get("artifact_refs", {})
-        json_ref = artifact_refs.get("json", "") if isinstance(artifact_refs, dict) else ""
-        md_ref = artifact_refs.get("markdown", "") if isinstance(artifact_refs, dict) else ""
-        lines.extend(
-            [
-                "",
-                "## Copilot Advisory Statement",
-                "",
-                "## 14. Copilot Advisory Statement",
-                "",
-                _SANDBOX_ONLY_DISCLAIMER,
-                "",
-                f"- JSON: `{json_ref}`",
-                f"- Markdown: `{md_ref}`",
-            ]
-        )
     lines.extend(
         [
             "",
-            "## 15. Final Note",
+            "## 14. Final Note",
             "",
             (
                 "This document is intended to help a reviewer understand what happened during the migration, "
@@ -529,10 +487,6 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
         ]
     )
     return "\n".join(lines) + "\n"
-
-
-def _copilot_statement_enabled() -> bool:
-    return os.getenv(_COPILOT_STATEMENT_ENV, "").strip().lower() in _TRUE_VALUES
 
 
 def _validation_scope(state: dict[str, Any]) -> dict[str, Any]:
@@ -671,9 +625,6 @@ def _repair_loop_context(state: dict[str, Any], artifact_refs: dict[str, str]) -
         "ledger_ref": artifact_refs.get("repair_ledger", ""),
         "attempts_count": int(state.get("repair_attempts_count") or 0),
         "final_status": state.get("repair_loop_status", "DISABLED"),
-        "copilot_used": state.get("copilot_invocation_status") == "USED",
-        "copilot_unavailable": state.get("repair_loop_status") == "COPILOT_UNAVAILABLE",
-        "invalid_copilot_response": state.get("repair_loop_status") == "INVALID_COPILOT_RESPONSE",
         "safe_patch_applied": bool(state.get("repair_safe_patch_applied", False)),
         "human_review_required": bool(state.get("repair_human_review_required", False)),
         "validation_after_repair": {
@@ -798,150 +749,10 @@ def _dependency_policy_context(
             state.get("dependency_policy_blockers_count")
             or len([risk for risk in risks if isinstance(risk, dict) and risk.get("blocks_v1_build_test")])
         ),
-        "copilot_advisory_status": state.get("copilot_dependency_advisory_status", "SKIPPED"),
-        "copilot_request_ref": artifact_refs.get("dependency_copilot_request", ""),
-        "copilot_response_ref": artifact_refs.get("dependency_copilot_response", ""),
         "repair_plan_ref": artifact_refs.get("dependency_repair_plan", ""),
         "policy_patch_applied": bool(state.get("policy_patch_applied", False)),
         "unresolved_v2_dependency_risks": unresolved_runtime,
     }
-
-
-def _generate_copilot_advisory_statement(payload: dict[str, Any], final_dir: Path) -> dict[str, str]:
-    json_path = final_dir / "copilot_migration_statement.json"
-    md_path = final_dir / "copilot_migration_statement.md"
-    statement_payload = _build_copilot_statement_payload(payload, json_path, md_path)
-    json_path.write_text(json.dumps(statement_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    md_path.write_text(_build_copilot_statement_markdown(statement_payload), encoding="utf-8")
-    payload["copilot_advisory_statement"] = {
-        "status": "USED",
-        "provider": statement_payload["provider"],
-        "adapter": statement_payload["adapter"],
-        "disclaimer": statement_payload["disclaimer"],
-        "artifact_refs": {
-            "json": str(json_path),
-            "markdown": str(md_path),
-        },
-    }
-    return {
-        "copilot_migration_statement_json": str(json_path),
-        "copilot_migration_statement_md": str(md_path),
-    }
-
-
-def _build_copilot_statement_payload(payload: dict[str, Any], json_path: Path, md_path: Path) -> dict[str, Any]:
-    artifact_refs = dict(payload.get("artifact_refs", {}) or {})
-    approval = dict(payload.get("approval", {}) or {})
-    timing = dict(payload.get("timing", {}) or {})
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "run_id": payload.get("run_id", ""),
-        "provider": "github_copilot",
-        "adapter": "local_template_stub",
-        "status": "USED",
-        "advisory_only": True,
-        "can_approve": False,
-        "can_transform": False,
-        "can_change_gates": False,
-        "can_mutate_source": False,
-        "can_override_status": False,
-        "disclaimer": _SANDBOX_ONLY_DISCLAIMER,
-        "facts": {
-            "approval_decision": approval.get("decision", ""),
-            "approval_status": approval.get("status", ""),
-            "approved_plan_lock": artifact_refs.get("approved_plan_lock", ""),
-            "transform_status": payload.get("transform_status", ""),
-            "build_status": payload.get("build_status", ""),
-            "test_status": payload.get("test_status", ""),
-            "test_totals": dict(payload.get("test_totals", {}) or {}),
-            "target_versions": dict(payload.get("target_stack", {}) or {}),
-            "warnings": list(payload.get("warnings", []) or []),
-            "timing": {
-                **timing,
-                "timing_report": artifact_refs.get("timing_report", timing.get("timing_report", "")),
-                "timing_summary": artifact_refs.get("timing_summary", timing.get("timing_summary", "")),
-            },
-            "limitations": list(payload.get("limitations", []) or []),
-            "sandbox_path": payload.get("sandbox_path", ""),
-        },
-        "statement": _statement_text(payload),
-        "artifact_refs": {
-            "self": str(json_path),
-            "markdown": str(md_path),
-        },
-        "created_at": _utc_now(),
-    }
-
-
-def _statement_text(payload: dict[str, Any]) -> str:
-    approval = dict(payload.get("approval", {}) or {})
-    totals = dict(payload.get("test_totals", {}) or {})
-    target_stack = dict(payload.get("target_stack", {}) or {})
-    target_versions = ", ".join(f"{key}={value}" for key, value in sorted(target_stack.items())) or "not recorded"
-    return (
-        "GitHub Copilot advisory review is based only on deterministic final report facts. "
-        f"Approval decision is {approval.get('decision', '')}; "
-        f"transform status is {payload.get('transform_status', '')}; "
-        f"build status is {payload.get('build_status', '')}; "
-        f"test status is {payload.get('test_status', '')} with "
-        f"{totals.get('tests', 0)} tests, {totals.get('passed', 0)} passed, "
-        f"{totals.get('failures', 0)} failures, {totals.get('errors', 0)} errors, "
-        f"and {totals.get('skipped', 0)} skipped. "
-        f"Target versions: {target_versions}. "
-        f"Sandbox path: {payload.get('sandbox_path', '')}. "
-        f"{_SANDBOX_ONLY_DISCLAIMER}"
-    )
-
-
-def _build_copilot_statement_markdown(payload: dict[str, Any]) -> str:
-    facts = dict(payload.get("facts", {}) or {})
-    totals = dict(facts.get("test_totals", {}) or {})
-    lines = [
-        "# Copilot Advisory Statement",
-        "",
-        str(payload.get("disclaimer", _SANDBOX_ONLY_DISCLAIMER)),
-        "",
-        "## Guardrails",
-        "",
-        f"- advisory_only: {str(payload.get('advisory_only')).lower()}",
-        f"- can_approve: {str(payload.get('can_approve')).lower()}",
-        f"- can_transform: {str(payload.get('can_transform')).lower()}",
-        f"- can_change_gates: {str(payload.get('can_change_gates')).lower()}",
-        f"- can_mutate_source: {str(payload.get('can_mutate_source')).lower()}",
-        f"- can_override_status: {str(payload.get('can_override_status')).lower()}",
-        "",
-        "## Deterministic Facts",
-        "",
-        f"- Approval decision: {facts.get('approval_decision', '')}",
-        f"- Approved plan lock: {facts.get('approved_plan_lock', '')}",
-        f"- Transform status: {facts.get('transform_status', '')}",
-        f"- Build status: {facts.get('build_status', '')}",
-        f"- Test status: {facts.get('test_status', '')}",
-        (
-            "- Test totals: "
-            f"tests={totals.get('tests', 0)} "
-            f"passed={totals.get('passed', 0)} "
-            f"failures={totals.get('failures', 0)} "
-            f"errors={totals.get('errors', 0)} "
-            f"skipped={totals.get('skipped', 0)}"
-        ),
-        f"- Target versions: {json.dumps(facts.get('target_versions', {}), sort_keys=True)}",
-        f"- Timing summary: {dict(facts.get('timing', {}) or {}).get('timing_summary', '')}",
-        f"- Sandbox path: {facts.get('sandbox_path', '')}",
-        "",
-        "## Advisory",
-        "",
-        str(payload.get("statement", "")),
-    ]
-    warnings = list(facts.get("warnings", []) or [])
-    if warnings:
-        lines.extend(["", "## Warnings", ""])
-        lines.extend(f"- {warning}" for warning in warnings)
-    limitations = list(facts.get("limitations", []) or [])
-    if limitations:
-        lines.extend(["", "## Limitations", ""])
-        lines.extend(f"- {limitation}" for limitation in limitations)
-    return "\n".join(lines) + "\n"
 
 
 def _collect_log_paths(

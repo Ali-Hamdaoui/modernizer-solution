@@ -1,0 +1,2950 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique >>
+endobj
+4 0 obj
+<< /Length 5883 >>
+stream
+0.090 0.200 0.370 rg
+44.00 656.00 524.00 94.00 re f
+0.100 0.500 0.540 rg
+44.00 656.00 10.00 94.00 re f
+BT
+1.000 1.000 1.000 rg
+/F2 24.00 Tf
+1 0 0 1 64.00 712.00 Tm
+(Final Migration Report) Tj
+ET
+BT
+0.880 0.930 0.970 rg
+/F1 11.00 Tf
+1 0 0 1 64.00 684.00 Tm
+(Governed sandbox migration report) Tj
+ET
+0.800 0.840 0.880 RG
+1.20 w
+44.00 631.00 m
+568.00 631.00 l S
+BT
+0.090 0.200 0.370 rg
+/F2 18.00 Tf
+1 0 0 1 44.00 606.00 Tm
+(1. Executive Summary) Tj
+ET
+0.170 0.300 0.480 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 574.00 524.00 24.00 re B
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 50.00 583.50 Tm
+(Field) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+301.56 598.00 m
+301.56 574.00 l S
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 307.56 583.50 Tm
+(Value) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 549.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 558.50 Tm
+(Run ID) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+301.56 574.00 m
+301.56 549.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 307.56 558.50 Tm
+(v2-21cfb72c-s4) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 524.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 533.50 Tm
+(Generated At) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+301.56 549.00 m
+301.56 524.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 307.56 533.50 Tm
+(2026-06-19T10:20:11Z) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 499.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 508.50 Tm
+(Legacy Baseline) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+301.56 524.00 m
+301.56 499.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 307.56 508.50 Tm
+(Spring Boot 2.1.6.RELEASE / Java 11) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 474.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 483.50 Tm
+(Current Application State) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+301.56 499.00 m
+301.56 474.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 307.56 483.50 Tm
+(Spring Boot 4.0 / Java 21) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 449.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 458.50 Tm
+(Latest Completed Stage) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+301.56 474.00 m
+301.56 449.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 307.56 458.50 Tm
+(Stage 4: springboot-3.5-java21-to-4.0-java21) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 424.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 433.50 Tm
+(Migration Duration) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+301.56 449.00 m
+301.56 424.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 307.56 433.50 Tm
+(1867.147s) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 399.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 408.50 Tm
+(Approval Decision) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+301.56 424.00 m
+301.56 399.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 307.56 408.50 Tm
+(approved) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 374.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 383.50 Tm
+(Transform Status) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+301.56 399.00 m
+301.56 374.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 307.56 383.50 Tm
+(TRANSFORM_APPLIED_IN_SANDBOX) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 349.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 358.50 Tm
+(Build Status) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+301.56 374.00 m
+301.56 349.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 307.56 358.50 Tm
+(BUILD_PASSED_IN_SANDBOX) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 324.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 333.50 Tm
+(Test Status) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+301.56 349.00 m
+301.56 324.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 307.56 333.50 Tm
+(PASS_WITH_WARNINGS) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 299.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 308.50 Tm
+(Proof Level) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+301.56 324.00 m
+301.56 299.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 307.56 308.50 Tm
+(compiled) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 274.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 283.50 Tm
+(Dependency Policy) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+301.56 299.00 m
+301.56 274.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 307.56 283.50 Tm
+(PASS) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 253.50 Tm
+(This report describes the full migration journey from Spring Boot 2.1.6.RELEASE / Java 11 to) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 239.00 Tm
+(Spring Boot 4.0 / Java 21. The migration was executed as a controlled sandbox modernization) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 224.50 Tm
+(flow with human approval before transformation.) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 200.00 Tm
+(Migration completed for the full path Spring Boot 2.1.6.RELEASE / Java 11 -> Spring Boot 4.0 /) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 185.50 Tm
+(Java 21 with approval decision approved, transform status TRANSFORM_APPLIED_IN_SANDBOX, build) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 171.00 Tm
+(status BUILD_PASSED_IN_SANDBOX, and test status PASS_WITH_WARNINGS. Elapsed duration:) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 156.50 Tm
+(1867.147s. Primary change summary: Full migration path: Spring Boot 2.1.6.RELEASE / Java 11 ->) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 142.00 Tm
+(Spring Boot 4.0 / Java 21) Tj
+ET
+0.800 0.840 0.880 RG
+1.20 w
+44.00 125.00 m
+568.00 125.00 l S
+BT
+0.090 0.200 0.370 rg
+/F2 18.00 Tf
+1 0 0 1 44.00 100.00 Tm
+(2. Migration Story) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Length 6522 >>
+stream
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 739.50 Tm
+(The application started from Spring Boot 2.1.6.RELEASE / Java 11 and progressed through the) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 725.00 Tm
+(staged migration pipeline until it reached Spring Boot 4.0 / Java 21. The latest completed) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 710.50 Tm
+(stage was Stage 4: springboot-3.5-java21-to-4.0-java21, where the final transition was Spring) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 696.00 Tm
+(Boot 3.5 / Java 21 -> Spring Boot 4.0 / Java 21.) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 671.50 Tm
+(Migration flow followed during this run:) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 647.00 Tm
+(Analyze -> Plan -> Assess -> Human Approval -> Sandbox Transform -> Build Validation -> Test) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 632.50 Tm
+(Validation -> Final Report) Tj
+ET
+0.800 0.840 0.880 RG
+1.20 w
+44.00 615.50 m
+568.00 615.50 l S
+BT
+0.090 0.200 0.370 rg
+/F2 18.00 Tf
+1 0 0 1 44.00 590.50 Tm
+(Migration Process) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 572.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 572.00 Tm
+(Legacy application baseline: Spring Boot 2.1.6.RELEASE / Java 11) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 554.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 554.50 Tm
+(Latest completed stage: Stage 4: springboot-3.5-java21-to-4.0-java21) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 537.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 537.00 Tm
+(Completed stage transition: Spring Boot 3.5 / Java 21 -> Spring Boot 4.0 / Java 21) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 519.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 519.50 Tm
+(Current application state: Spring Boot 4.0 / Java 21) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 502.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 502.00 Tm
+(Final executed target: Spring Boot 4.0 / Java 21) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 484.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 484.50 Tm
+(Human approval decision: approved) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 467.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 467.00 Tm
+(Sandbox transform result: TRANSFORM_APPLIED_IN_SANDBOX) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 449.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 449.50 Tm
+(Build result: BUILD_PASSED_IN_SANDBOX) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 432.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 432.00 Tm
+(Test result: PASS_WITH_WARNINGS) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 414.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 414.50 Tm
+(Proof level achieved: compiled) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 397.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 397.00 Tm
+(Repair loop outcome: NOT_IMPLEMENTED) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 379.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 379.50 Tm
+(Dependency policy outcome: PASS) Tj
+ET
+0.800 0.840 0.880 RG
+1.20 w
+44.00 369.50 m
+568.00 369.50 l S
+BT
+0.090 0.200 0.370 rg
+/F2 18.00 Tf
+1 0 0 1 44.00 344.50 Tm
+(3. Current Technical State) Tj
+ET
+0.170 0.300 0.480 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 312.50 524.00 24.00 re B
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 50.00 322.00 Tm
+(Area) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 336.50 m
+306.00 312.50 l S
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 312.00 322.00 Tm
+(Value) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 287.50 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 297.00 Tm
+(Legacy application baseline) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 312.50 m
+306.00 287.50 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 297.00 Tm
+(Spring Boot 2.1.6.RELEASE / Java 11) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 262.50 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 272.00 Tm
+(Latest completed stage source) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 287.50 m
+306.00 262.50 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 272.00 Tm
+(Spring Boot 3.5 / Java 21) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 237.50 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 247.00 Tm
+(Current application state) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 262.50 m
+306.00 237.50 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 247.00 Tm
+(Spring Boot 4.0 / Java 21) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 212.50 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 222.00 Tm
+(Spring Framework target) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 237.50 m
+306.00 212.50 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 222.00 Tm
+(7.0.x) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 187.50 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 197.00 Tm
+(Risk Level) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 212.50 m
+306.00 187.50 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 197.00 Tm
+(high) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 162.50 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 172.00 Tm
+(Strategy) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 187.50 m
+306.00 162.50 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 172.00 Tm
+(staged_openrewrite_sandbox) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 137.50 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 147.00 Tm
+(Fallback Profile) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 162.50 m
+306.00 137.50 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 147.00 Tm
+(not captured) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 112.50 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 122.00 Tm
+(Production Allowed) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 137.50 m
+306.00 112.50 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 122.00 Tm
+(false) Tj
+ET
+0.800 0.840 0.880 RG
+1.20 w
+44.00 99.50 m
+568.00 99.50 l S
+BT
+0.090 0.200 0.370 rg
+/F2 18.00 Tf
+1 0 0 1 44.00 74.50 Tm
+(4. Phase Status) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Length 10305 >>
+stream
+0.170 0.300 0.480 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 726.00 524.00 24.00 re B
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 50.00 735.50 Tm
+(Phase) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+159.69 750.00 m
+159.69 726.00 l S
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 165.69 735.50 Tm
+(Status) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+363.84 750.00 m
+363.84 726.00 l S
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 369.84 735.50 Tm
+(Explanation) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 688.00 524.00 38.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 710.50 Tm
+(Human Approval) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+159.69 726.00 m
+159.69 688.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 165.69 710.50 Tm
+(approved) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+363.84 726.00 m
+363.84 688.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 369.84 710.50 Tm
+(Human approval was required before) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 369.84 697.50 Tm
+(sandbox transformation.) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 650.00 524.00 38.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 672.50 Tm
+(Sandbox Transform) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+159.69 688.00 m
+159.69 650.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 165.69 672.50 Tm
+(TRANSFORM_APPLIED_IN_SANDBOX) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+363.84 688.00 m
+363.84 650.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 369.84 672.50 Tm
+(Code changes were applied only) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 369.84 659.50 Tm
+(inside the sandbox workspace.) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 612.00 524.00 38.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 634.50 Tm
+(Build Validation) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+159.69 650.00 m
+159.69 612.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 165.69 634.50 Tm
+(BUILD_PASSED_IN_SANDBOX) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+363.84 650.00 m
+363.84 612.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 369.84 634.50 Tm
+(The migrated sandbox candidate was) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 369.84 621.50 Tm
+(validated by build execution.) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 574.00 524.00 38.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 596.50 Tm
+(Test Validation) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+159.69 612.00 m
+159.69 574.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 165.69 596.50 Tm
+(PASS_WITH_WARNINGS) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+363.84 612.00 m
+363.84 574.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 369.84 596.50 Tm
+(Existing tests were run against the) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 369.84 583.50 Tm
+(migrated sandbox candidate.) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 523.00 524.00 51.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 558.50 Tm
+(Proof Level) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+159.69 574.00 m
+159.69 523.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 165.69 558.50 Tm
+(compiled) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+363.84 574.00 m
+363.84 523.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 369.84 558.50 Tm
+(This is the highest deterministic) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 369.84 545.50 Tm
+(proof level reached during) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 369.84 532.50 Tm
+(validation.) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 485.00 524.00 38.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 507.50 Tm
+(Repair Loop) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+159.69 523.00 m
+159.69 485.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 165.69 507.50 Tm
+(NOT_IMPLEMENTED) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+363.84 523.00 m
+363.84 485.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 369.84 507.50 Tm
+(Indicates whether repair logic was) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 369.84 494.50 Tm
+(needed to stabilize the migration.) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 434.00 524.00 51.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 469.50 Tm
+(Dependency Policy) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+159.69 485.00 m
+159.69 434.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 165.69 469.50 Tm
+(PASS) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+363.84 485.00 m
+363.84 434.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 369.84 469.50 Tm
+(Shows whether dependency policy) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 369.84 456.50 Tm
+(checks passed or raised review) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 369.84 443.50 Tm
+(items.) Tj
+ET
+0.800 0.840 0.880 RG
+1.20 w
+44.00 421.00 m
+568.00 421.00 l S
+BT
+0.090 0.200 0.370 rg
+/F2 18.00 Tf
+1 0 0 1 44.00 396.00 Tm
+(5. Stage-By-Stage Journey) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 377.50 Tm
+(The migration was not a single jump. It was executed as a staged progression so each version) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 363.00 Tm
+(boundary could be validated more safely.) Tj
+ET
+0.170 0.300 0.480 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 325.00 524.00 24.00 re B
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 50.00 334.50 Tm
+(Stage) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+99.92 349.00 m
+99.92 325.00 l S
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 105.92 334.50 Tm
+(Profile) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+237.31 349.00 m
+237.31 325.00 l S
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 243.31 334.50 Tm
+(Transition) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+374.69 349.00 m
+374.69 325.00 l S
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 380.69 334.50 Tm
+(Status) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+512.08 349.00 m
+512.08 325.00 l S
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 518.08 334.50 Tm
+(Duration) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 261.00 524.00 64.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 309.50 Tm
+(Stage 1) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+99.92 325.00 m
+99.92 261.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 105.92 309.50 Tm
+(springboot-2.1.6-to-2.) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 105.92 296.50 Tm
+(7-java11) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+237.31 325.00 m
+237.31 261.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 243.31 309.50 Tm
+(Spring Boot) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 243.31 296.50 Tm
+(2.1.6.RELEASE / Java) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 243.31 283.50 Tm
+(11 -> Spring Boot 2.7) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 243.31 270.50 Tm
+(/ Java 11) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+374.69 325.00 m
+374.69 261.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 380.69 309.50 Tm
+(TRANSFORM_APPLIED_IN_) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 380.69 296.50 Tm
+(SANDBOX) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+512.08 325.00 m
+512.08 261.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 518.08 309.50 Tm
+(513.511s) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 210.00 524.00 51.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 245.50 Tm
+(Stage 2) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+99.92 261.00 m
+99.92 210.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 105.92 245.50 Tm
+(springboot-2.7-to-3.5-) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 105.92 232.50 Tm
+(java17) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+237.31 261.00 m
+237.31 210.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 243.31 245.50 Tm
+(Spring Boot 2.7 / Java) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 243.31 232.50 Tm
+(11 -> Spring Boot 3.5) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 243.31 219.50 Tm
+(/ Java 17) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+374.69 261.00 m
+374.69 210.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 380.69 245.50 Tm
+(TRANSFORM_APPLIED_IN_) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 380.69 232.50 Tm
+(SANDBOX) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+512.08 261.00 m
+512.08 210.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 518.08 245.50 Tm
+(449.339s) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 159.00 524.00 51.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 194.50 Tm
+(Stage 3) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+99.92 210.00 m
+99.92 159.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 105.92 194.50 Tm
+(springboot-3.5-java17-) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 105.92 181.50 Tm
+(to-java21) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+237.31 210.00 m
+237.31 159.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 243.31 194.50 Tm
+(Spring Boot 3.5 / Java) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 243.31 181.50 Tm
+(17 -> Spring Boot 3.5) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 243.31 168.50 Tm
+(/ Java 21) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+374.69 210.00 m
+374.69 159.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 380.69 194.50 Tm
+(TRANSFORM_APPLIED_IN_) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 380.69 181.50 Tm
+(SANDBOX) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+512.08 210.00 m
+512.08 159.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 518.08 194.50 Tm
+(337.086s) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 108.00 524.00 51.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 143.50 Tm
+(Stage 4) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+99.92 159.00 m
+99.92 108.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 105.92 143.50 Tm
+(springboot-3.5-java21-) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 105.92 130.50 Tm
+(to-4.0-java21) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+237.31 159.00 m
+237.31 108.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 243.31 143.50 Tm
+(Spring Boot 3.5 / Java) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 243.31 130.50 Tm
+(21 -> Spring Boot 4.0) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 243.31 117.50 Tm
+(/ Java 21) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+374.69 159.00 m
+374.69 108.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 380.69 143.50 Tm
+(TRANSFORM_APPLIED_IN_) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 380.69 130.50 Tm
+(SANDBOX) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+512.08 159.00 m
+512.08 108.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 518.08 143.50 Tm
+(567.210s) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 87.50 Tm
+(Narrative highlights:) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Length 5753 >>
+stream
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 739.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 739.50 Tm
+(Stage 1 moved the application from Spring Boot 2.1.6.RELEASE / Java 11 to Spring Boot 2.7 /) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 725.00 Tm
+(Java 11, with overall stage status TRANSFORM_APPLIED_IN_SANDBOX.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 707.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 707.50 Tm
+(Stage 2 moved the application from Spring Boot 2.7 / Java 11 to Spring Boot 3.5 / Java 17,) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 693.00 Tm
+(with overall stage status TRANSFORM_APPLIED_IN_SANDBOX.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 675.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 675.50 Tm
+(Stage 3 moved the application from Spring Boot 3.5 / Java 17 to Spring Boot 3.5 / Java 21,) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 661.00 Tm
+(with overall stage status TRANSFORM_APPLIED_IN_SANDBOX.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 643.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 643.50 Tm
+(Stage 4 moved the application from Spring Boot 3.5 / Java 21 to Spring Boot 4.0 / Java 21,) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 629.00 Tm
+(with overall stage status TRANSFORM_APPLIED_IN_SANDBOX.) Tj
+ET
+0.800 0.840 0.880 RG
+1.20 w
+44.00 619.00 m
+568.00 619.00 l S
+BT
+0.090 0.200 0.370 rg
+/F2 18.00 Tf
+1 0 0 1 44.00 594.00 Tm
+(6. What Changed) Tj
+ET
+0.800 0.840 0.880 RG
+1.20 w
+44.00 583.00 m
+568.00 583.00 l S
+BT
+0.090 0.200 0.370 rg
+/F2 18.00 Tf
+1 0 0 1 44.00 558.00 Tm
+(What Changed) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 539.50 Tm
+(The most important migration changes recorded for this run are listed below.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 515.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 515.00 Tm
+(Full migration path: Spring Boot 2.1.6.RELEASE / Java 11 -> Spring Boot 4.0 / Java 21) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 497.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 497.50 Tm
+(Java remained at 21.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 480.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 480.00 Tm
+(Spring Boot changed from 3.5 to 4.0.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 462.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 462.50 Tm
+(Spring Framework changed from not_captured to 7.0.x.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 445.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 445.00 Tm
+(Stage 1 \(springboot-2.1.6-to-2.7-java11\): Spring Boot 2.1.6.RELEASE / Java 11 -> Spring Boot) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 430.50 Tm
+(2.7 / Java 11) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 413.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 413.00 Tm
+(Stage 2 \(springboot-2.7-to-3.5-java17\): Spring Boot 2.7 / Java 11 -> Spring Boot 3.5 / Java) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 398.50 Tm
+(17) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 381.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 381.00 Tm
+(Stage 3 \(springboot-3.5-java17-to-java21\): Spring Boot 3.5 / Java 17 -> Spring Boot 3.5 /) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 366.50 Tm
+(Java 21) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 349.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 349.00 Tm
+(Stage 4 \(springboot-3.5-java21-to-4.0-java21\): Spring Boot 3.5 / Java 21 -> Spring Boot 4.0 /) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 334.50 Tm
+(Java 21) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 317.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 317.00 Tm
+(Executed OpenRewrite recipes: org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0.) Tj
+ET
+0.800 0.840 0.880 RG
+1.20 w
+44.00 307.00 m
+568.00 307.00 l S
+BT
+0.090 0.200 0.370 rg
+/F2 18.00 Tf
+1 0 0 1 44.00 282.00 Tm
+(7. Validation Outcome) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 263.50 Tm
+(Validated areas:) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 239.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 239.00 Tm
+(sandbox transform applied) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 221.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 221.50 Tm
+(Maven build passed) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 204.00 Tm
+(Not validated by this sandbox run:) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 179.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 179.50 Tm
+(SQL Server production behavior) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 162.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 162.00 Tm
+(production DB scripts) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 144.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 144.50 Tm
+(endpoint/business behavior) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 127.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 127.00 Tm
+(production secrets/JWT/keystore validity) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 109.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 109.50 Tm
+(deployment) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 92.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 92.00 Tm
+(PR creation/merge) Tj
+ET
+endstream
+endobj
+8 0 obj
+<< /Length 4817 >>
+stream
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 739.50 Tm
+(This means the migration is well described technically, but any production-readiness conclusion) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 725.00 Tm
+(still requires human review of runtime behavior, infrastructure compatibility, and) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 710.50 Tm
+(environment-specific risks.) Tj
+ET
+0.800 0.840 0.880 RG
+1.20 w
+44.00 693.50 m
+568.00 693.50 l S
+BT
+0.090 0.200 0.370 rg
+/F2 18.00 Tf
+1 0 0 1 44.00 668.50 Tm
+(8. Spring Boot 4 Notes) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 650.00 Tm
+(These are the main points that deserve attention for the final Boot 4 state:) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 625.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 625.50 Tm
+(Spring Boot 4 target requires Spring Framework 7.x.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 608.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 608.00 Tm
+(Spring Boot 4 target carries Jakarta EE 11 / Servlet 6.1 baseline risk.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 590.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 590.50 Tm
+(Boot 3 deprecated APIs removed in Boot 4 must be reviewed.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 573.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 573.00 Tm
+(Spring Cloud compatibility must be reviewed before sandbox execution.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 555.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 555.50 Tm
+(Spring Security, Spring Data, Hibernate, and custom starter compatibility risk requires human) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 541.00 Tm
+(review.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 523.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 523.50 Tm
+(javax.* leftovers must be treated as blockers for Boot 4 readiness.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 506.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 506.00 Tm
+(Maven version and Java runtime must match Boot 4 / Java 21 validation gates.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 488.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 488.50 Tm
+(Official Spring Boot guidance prefers upgrading to the latest 3.5.x before Boot 4; direct) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 474.00 Tm
+(migration is sandbox-only and should fall back if unstable.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 456.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 456.50 Tm
+(OPENREWRITE_IMPACT_HIGH: OpenRewrite impact is high; manual review is required before) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 442.00 Tm
+(execution.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 424.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 424.50 Tm
+(OPENREWRITE_HIGH_RISK_FILES: OpenRewrite reported high-risk files: 42.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 407.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 407.00 Tm
+(Spring Framework 7.x is required for Spring Boot 4.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 389.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 389.50 Tm
+(Jakarta EE 11 / Servlet 6.1 baseline applies.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 372.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 372.00 Tm
+(Spring Cloud compatibility must be reviewed.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 354.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 354.50 Tm
+(Spring Security, Spring Data, Hibernate, and custom starter risk requires human review.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 337.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 337.00 Tm
+(javax.* leftovers must be eliminated.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 319.50 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 319.50 Tm
+(Maven >= 3.6.3 and Java 21 runtime validation are required for this sandbox profile.) Tj
+ET
+BT
+0.100 0.500 0.540 rg
+/F2 11.50 Tf
+1 0 0 1 44.00 302.00 Tm
+(*) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 302.00 Tm
+(Official Boot guidance prefers latest 3.5.x before Boot 4; direct migration must use the) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 60.00 287.50 Tm
+(fallback profile if unstable.) Tj
+ET
+0.800 0.840 0.880 RG
+1.20 w
+44.00 277.50 m
+568.00 277.50 l S
+BT
+0.090 0.200 0.370 rg
+/F2 18.00 Tf
+1 0 0 1 44.00 252.50 Tm
+(9. Repair And Stabilization) Tj
+ET
+endstream
+endobj
+9 0 obj
+<< /Length 6717 >>
+stream
+0.170 0.300 0.480 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 726.00 524.00 24.00 re B
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 50.00 735.50 Tm
+(Field) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 750.00 m
+306.00 726.00 l S
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 312.00 735.50 Tm
+(Value) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 701.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 710.50 Tm
+(Enabled) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 726.00 m
+306.00 701.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 710.50 Tm
+(false) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 676.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 685.50 Tm
+(Max Attempts) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 701.00 m
+306.00 676.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 685.50 Tm
+(3) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 651.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 660.50 Tm
+(Attempts Used) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 676.00 m
+306.00 651.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 660.50 Tm
+(0) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 626.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 635.50 Tm
+(Final Status) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 651.00 m
+306.00 626.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 635.50 Tm
+(NOT_IMPLEMENTED) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 601.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 610.50 Tm
+(Ledger) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 626.00 m
+306.00 601.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 610.50 Tm
+() Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 576.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 585.50 Tm
+(Safe Patch Applied) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 601.00 m
+306.00 576.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 585.50 Tm
+(false) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 551.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 560.50 Tm
+(Human Review Required) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 576.00 m
+306.00 551.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 560.50 Tm
+(false) Tj
+ET
+0.800 0.840 0.880 RG
+1.20 w
+44.00 538.00 m
+568.00 538.00 l S
+BT
+0.090 0.200 0.370 rg
+/F2 18.00 Tf
+1 0 0 1 44.00 513.00 Tm
+(11. Dependency Policy Review) Tj
+ET
+0.170 0.300 0.480 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 481.00 524.00 24.00 re B
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 50.00 490.50 Tm
+(Field) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+253.60 505.00 m
+253.60 481.00 l S
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 259.60 490.50 Tm
+(Value) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 456.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 465.50 Tm
+(Status) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+253.60 481.00 m
+253.60 456.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 259.60 465.50 Tm
+(PASS) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 431.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 440.50 Tm
+(Risks) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+253.60 456.00 m
+253.60 431.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 259.60 440.50 Tm
+(0) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 406.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 415.50 Tm
+(Blockers) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+253.60 431.00 m
+253.60 406.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 259.60 415.50 Tm
+(0) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 381.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 390.50 Tm
+(Policy Patch Applied) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+253.60 406.00 m
+253.60 381.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 259.60 390.50 Tm
+(false) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 330.00 524.00 51.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 365.50 Tm
+(Report) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+253.60 381.00 m
+253.60 330.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 259.60 365.50 Tm
+(C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 259.60 352.50 Tm
+(migration\\runs\\v2-21cfb72c-s4\\assessment\\dependency_) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 259.60 339.50 Tm
+(policy_report.json) Tj
+ET
+0.800 0.840 0.880 RG
+1.20 w
+44.00 317.00 m
+568.00 317.00 l S
+BT
+0.090 0.200 0.370 rg
+/F2 18.00 Tf
+1 0 0 1 44.00 292.00 Tm
+(12. Timing) Tj
+ET
+0.800 0.840 0.880 RG
+1.20 w
+44.00 281.00 m
+568.00 281.00 l S
+BT
+0.090 0.200 0.370 rg
+/F2 18.00 Tf
+1 0 0 1 44.00 256.00 Tm
+(Timing) Tj
+ET
+0.170 0.300 0.480 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 224.00 524.00 24.00 re B
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 50.00 233.50 Tm
+(Field) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+240.50 248.00 m
+240.50 224.00 l S
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 246.50 233.50 Tm
+(Value) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 199.00 524.00 25.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 208.50 Tm
+(Total duration) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+240.50 224.00 m
+240.50 199.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 246.50 208.50 Tm
+(1867.147s) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 148.00 524.00 51.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 183.50 Tm
+(Timing report) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+240.50 199.00 m
+240.50 148.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 246.50 183.50 Tm
+(C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 246.50 170.50 Tm
+(migration\\runs\\v2-21cfb72c-s4\\performance\\timing_report.) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 246.50 157.50 Tm
+(json) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 97.00 524.00 51.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 132.50 Tm
+(Timing summary) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+240.50 148.00 m
+240.50 97.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 246.50 132.50 Tm
+(C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-STG1\\.) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 246.50 119.50 Tm
+(migration\\runs\\v2-21cfb72c-s4\\performance\\timing_summary.) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 246.50 106.50 Tm
+(md) Tj
+ET
+0.800 0.840 0.880 RG
+1.20 w
+44.00 84.00 m
+568.00 84.00 l S
+BT
+0.090 0.200 0.370 rg
+/F2 18.00 Tf
+1 0 0 1 44.00 59.00 Tm
+(13. Related Artifacts) Tj
+ET
+endstream
+endobj
+10 0 obj
+<< /Length 6781 >>
+stream
+0.170 0.300 0.480 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 726.00 524.00 24.00 re B
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 50.00 735.50 Tm
+(Artifact) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 750.00 m
+306.00 726.00 l S
+BT
+1.000 1.000 1.000 rg
+/F2 9.50 Tf
+1 0 0 1 312.00 735.50 Tm
+(Path) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 675.00 524.00 51.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 710.50 Tm
+(approval_decision) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 726.00 m
+306.00 675.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 710.50 Tm
+(C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 697.50 Tm
+(STG1\\.migration\\runs\\v2-21cfb72c-s4\\approval\\) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 684.50 Tm
+(approval_decision.json) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 624.00 524.00 51.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 659.50 Tm
+(approved_plan_lock) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 675.00 m
+306.00 624.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 659.50 Tm
+(C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 646.50 Tm
+(STG1\\.migration\\runs\\v2-21cfb72c-s4\\approval\\) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 633.50 Tm
+(approved_plan_lock.json) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 560.00 524.00 64.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 608.50 Tm
+(transformation_execution_plan) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 624.00 m
+306.00 560.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 608.50 Tm
+(C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 595.50 Tm
+(STG1\\.migration\\runs\\v2-21cfb72c-s4\\) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 582.50 Tm
+(transformation\\transformation_execution_plan.) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 569.50 Tm
+(yaml) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 509.00 524.00 51.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 544.50 Tm
+(migration_ledger) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 560.00 m
+306.00 509.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 544.50 Tm
+(C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 531.50 Tm
+(STG1\\.migration\\runs\\v2-21cfb72c-s4\\) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 518.50 Tm
+(workspaces\\sandbox\\.migration\\ledger.json) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 458.00 524.00 51.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 493.50 Tm
+(post_transform_test_report) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 509.00 m
+306.00 458.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 493.50 Tm
+(C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 480.50 Tm
+(STG1\\.migration\\runs\\v2-21cfb72c-s4\\test\\) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 467.50 Tm
+(post_transform\\test_report.json) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 407.00 524.00 51.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 442.50 Tm
+(orchestration_summary) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 458.00 m
+306.00 407.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 442.50 Tm
+(C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 429.50 Tm
+(STG1\\.migration\\runs\\v2-21cfb72c-s4\\) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 416.50 Tm
+(orchestration\\orchestration_summary.json) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 356.00 524.00 51.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 391.50 Tm
+(timing_report) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 407.00 m
+306.00 356.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 391.50 Tm
+(C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 378.50 Tm
+(STG1\\.migration\\runs\\v2-21cfb72c-s4\\) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 365.50 Tm
+(performance\\timing_report.json) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 305.00 524.00 51.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 340.50 Tm
+(timing_summary) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 356.00 m
+306.00 305.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 340.50 Tm
+(C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 327.50 Tm
+(STG1\\.migration\\runs\\v2-21cfb72c-s4\\) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 314.50 Tm
+(performance\\timing_summary.md) Tj
+ET
+1.000 1.000 1.000 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 254.00 524.00 51.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 289.50 Tm
+(final_migration_report) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 305.00 m
+306.00 254.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 289.50 Tm
+(C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 276.50 Tm
+(STG1\\.migration\\runs\\v2-21cfb72c-s4\\final\\) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 263.50 Tm
+(migration_report.json) Tj
+ET
+0.970 0.980 0.990 rg
+0.800 0.840 0.880 RG
+0.80 w
+44.00 203.00 524.00 51.00 re B
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 50.00 238.50 Tm
+(final_migration_summary) Tj
+ET
+0.800 0.840 0.880 RG
+0.80 w
+306.00 254.00 m
+306.00 203.00 l S
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 238.50 Tm
+(C:\\Users\\hamdaoui.ali\\Downloads\\MSA-COMMON-) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 225.50 Tm
+(STG1\\.migration\\runs\\v2-21cfb72c-s4\\final\\) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 312.00 212.50 Tm
+(migration_summary.md) Tj
+ET
+0.800 0.840 0.880 RG
+1.20 w
+44.00 190.00 m
+568.00 190.00 l S
+BT
+0.090 0.200 0.370 rg
+/F2 18.00 Tf
+1 0 0 1 44.00 165.00 Tm
+(14. Final Note) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 146.50 Tm
+(This document is intended to help a reviewer understand what happened during the migration, why) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 132.00 Tm
+(the application is now in its current state, and which areas still require manual judgment. The) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 117.50 Tm
+(deterministic run artifacts remain the source of truth.) Tj
+ET
+BT
+0.140 0.160 0.200 rg
+/F1 10.50 Tf
+1 0 0 1 44.00 93.00 Tm
+(POC-ready sandbox migration artifacts are captured under this run directory.) Tj
+ET
+endstream
+endobj
+11 0 obj
+<< /Type /Pages /Kids [12 0 R 13 0 R 14 0 R 15 0 R 16 0 R 17 0 R 18 0 R] /Count 7 >>
+endobj
+12 0 obj
+<< /Type /Page /Parent 11 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 4 0 R >>
+endobj
+13 0 obj
+<< /Type /Page /Parent 11 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 5 0 R >>
+endobj
+14 0 obj
+<< /Type /Page /Parent 11 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 6 0 R >>
+endobj
+15 0 obj
+<< /Type /Page /Parent 11 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 7 0 R >>
+endobj
+16 0 obj
+<< /Type /Page /Parent 11 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 8 0 R >>
+endobj
+17 0 obj
+<< /Type /Page /Parent 11 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 9 0 R >>
+endobj
+18 0 obj
+<< /Type /Page /Parent 11 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 10 0 R >>
+endobj
+19 0 obj
+<< /Type /Catalog /Pages 11 0 R >>
+endobj
+xref
+0 20
+0000000000 65535 f 
+0000000015 00000 n 
+0000000085 00000 n 
+0000000160 00000 n 
+0000000238 00000 n 
+0000006173 00000 n 
+0000012747 00000 n 
+0000023105 00000 n 
+0000028910 00000 n 
+0000033779 00000 n 
+0000040548 00000 n 
+0000047382 00000 n 
+0000047483 00000 n 
+0000047631 00000 n 
+0000047779 00000 n 
+0000047927 00000 n 
+0000048075 00000 n 
+0000048223 00000 n 
+0000048371 00000 n 
+0000048520 00000 n 
+trailer
+<< /Size 20 /Root 19 0 R >>
+startxref
+48571
+%%EOF

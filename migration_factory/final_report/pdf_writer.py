@@ -334,20 +334,48 @@ def _table_row_height(row: list[str], widths: list[float], font_size: float) -> 
 
 def _wrap_text(text: str, font_size: float, width: float) -> list[str]:
     plain = text.replace("**", "").replace("`", "")
-    words = plain.split()
-    if not words:
-        return [""]
     lines: list[str] = []
-    current = words[0]
-    for word in words[1:]:
-        candidate = f"{current} {word}"
-        if _estimate_text_width(candidate, font_size) <= width:
-            current = candidate
-        else:
-            lines.append(current)
-            current = word
-    lines.append(current)
+    for paragraph in plain.replace("<br />", "\n").replace("<br>", "\n").splitlines() or [""]:
+        words = [
+            chunk
+            for word in paragraph.split()
+            for chunk in _split_long_word(word, font_size, width)
+        ]
+        if not words:
+            lines.append("")
+            continue
+        current = words[0]
+        for word in words[1:]:
+            candidate = f"{current} {word}"
+            if _estimate_text_width(candidate, font_size) <= width:
+                current = candidate
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
     return lines
+
+
+def _split_long_word(word: str, font_size: float, width: float) -> list[str]:
+    if _estimate_text_width(word, font_size) <= width:
+        return [word]
+
+    max_chars = max(1, int(width / (font_size * 0.52)))
+    chunks: list[str] = []
+    remaining = word
+    separators = ("/", "\\", "_", "-", ".", ":")
+    while remaining:
+        if _estimate_text_width(remaining, font_size) <= width:
+            chunks.append(remaining)
+            break
+        split_at = max_chars
+        for index in range(min(max_chars, len(remaining) - 1), 0, -1):
+            if remaining[index - 1] in separators:
+                split_at = index
+                break
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:]
+    return chunks
 
 
 def _estimate_text_width(text: str, font_size: float) -> float:

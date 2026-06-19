@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 import subprocess
 
-import migration_factory.final_report.writer as final_report_writer
 import pytest
 import migration_factory.copilot_cli as copilot_cli_module
 import migration_factory.agents.copilot_doc_agent.agent as copilot_doc_agent
@@ -363,51 +362,8 @@ def test_copilot_documentation_cli_outside_write_is_rejected_and_falls_back(tmp_
     assert protected.read_bytes() == before
 
 
-def test_enabled_copilot_advisory_writes_artifacts_and_summary_reference(tmp_path: Path, monkeypatch) -> None:
+def test_final_report_omits_copilot_advisory_even_when_legacy_env_is_set(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AI_MIGRATION_ENABLE_COPILOT_STATEMENT", "true")
-    state = _successful_state(tmp_path)
-
-    result = finalize_orchestration_state(state)
-
-    json_ref = Path(result["artifact_refs"]["copilot_migration_statement_json"])
-    md_ref = Path(result["artifact_refs"]["copilot_migration_statement_md"])
-    assert json_ref.is_file()
-    assert md_ref.is_file()
-
-    statement = json.loads(json_ref.read_text(encoding="utf-8"))
-    assert statement["advisory_only"] is True
-    assert statement["can_approve"] is False
-    assert statement["can_transform"] is False
-    assert statement["can_change_gates"] is False
-    assert statement["can_mutate_source"] is False
-    assert statement["can_override_status"] is False
-    assert "sandbox migration candidate only" in statement["disclaimer"]
-    assert "no production promotion, no PR, no deployment" in statement["disclaimer"]
-    assert statement["facts"]["approval_decision"] == "approved"
-    assert statement["facts"]["test_totals"]["tests"] == 3
-    assert statement["facts"]["target_versions"] == {"java": "17"}
-
-    advisory_md = md_ref.read_text(encoding="utf-8")
-    assert "Copilot Advisory Statement" in advisory_md
-    assert "sandbox migration candidate only" in advisory_md
-
-    final_summary = Path(result["artifact_refs"]["final_migration_summary"]).read_text(encoding="utf-8")
-    assert "## Copilot Advisory Statement" in final_summary
-    assert "copilot_migration_statement.json" in final_summary
-    assert "copilot_migration_statement.md" in final_summary
-
-    final_report = json.loads(Path(result["artifact_refs"]["final_migration_report"]).read_text(encoding="utf-8"))
-    assert final_report["artifact_refs"]["copilot_migration_statement_json"] == str(json_ref)
-    assert final_report["artifact_refs"]["copilot_migration_statement_md"] == str(md_ref)
-
-
-def test_copilot_advisory_failure_records_warning_without_failing_report(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("AI_MIGRATION_ENABLE_COPILOT_STATEMENT", "true")
-
-    def fail_generation(payload, final_dir):
-        raise RuntimeError("template unavailable")
-
-    monkeypatch.setattr(final_report_writer, "_generate_copilot_advisory_statement", fail_generation)
     state = _successful_state(tmp_path)
 
     result = finalize_orchestration_state(state)
@@ -415,10 +371,15 @@ def test_copilot_advisory_failure_records_warning_without_failing_report(tmp_pat
     assert result["orchestration_status"] == "PASS"
     assert result["final_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
     assert result["orchestration_artifacts_valid"] is True
-    assert Path(result["artifact_refs"]["final_migration_report"]).is_file()
     assert "copilot_migration_statement_json" not in result["artifact_refs"]
     assert "copilot_migration_statement_md" not in result["artifact_refs"]
-    assert any("copilot advisory statement generation failed" in warning for warning in result["warnings"])
+    assert not (Path(state["run_dir"]) / "final" / "copilot_migration_statement.json").exists()
+    assert not (Path(state["run_dir"]) / "final" / "copilot_migration_statement.md").exists()
+
+    final_summary = Path(result["artifact_refs"]["final_migration_summary"]).read_text(encoding="utf-8")
+    final_report = Path(result["artifact_refs"]["final_migration_report"]).read_text(encoding="utf-8")
+    assert "copilot" not in final_summary.lower()
+    assert "copilot" not in final_report.lower()
 
 
 def test_missing_test_report_blocks_final_report_generation(tmp_path: Path) -> None:

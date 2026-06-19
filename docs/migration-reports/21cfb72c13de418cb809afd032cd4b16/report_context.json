@@ -1,0 +1,419 @@
+{
+  "ai_trace": [],
+  "approval": {
+    "decided_at": "2026-06-19T10:06:08Z",
+    "decided_by": "human",
+    "decision": "approved",
+    "lock_status": "LOCKED",
+    "plan_lock_ref": "approved_plan_lock.json",
+    "status": "COMPLETED"
+  },
+  "artifact_refs": {
+    "analysis_report": "analysis/analysis_report.json",
+    "analysis_report.json": "analysis/analysis_report.json",
+    "analysis_summary": "analysis/analysis_summary.md",
+    "analysis_summary.md": "analysis/analysis_summary.md",
+    "approval_decision": "approval/approval_decision.json",
+    "approval_request": "planning/approval_request.json",
+    "approval_request.json": "planning/approval_request.json",
+    "approved_plan_lock": "approval/approved_plan_lock.json",
+    "assessment_report": "assessment/assessment_report.json",
+    "assessment_report.json": "assessment/assessment_report.json",
+    "assessment_summary": "assessment/assessment_summary.md",
+    "assessment_summary.md": "assessment/assessment_summary.md",
+    "config_inventory": "analysis/config_inventory.json",
+    "config_inventory.json": "analysis/config_inventory.json",
+    "copilot_assist": "analysis/copilot_assist.json",
+    "dependency_graph": "analysis/dependency_graph.json",
+    "dependency_graph.json": "analysis/dependency_graph.json",
+    "dependency_policy_report": "assessment/dependency_policy_report.json",
+    "dependency_policy_summary": "assessment/dependency_policy_report.md",
+    "final_migration_report": "final/migration_report.json",
+    "final_migration_summary": "final/migration_summary.md",
+    "migration_ledger": "workspaces/sandbox/.migration/ledger.json",
+    "migration_plan": "planning/migration_plan.yaml",
+    "migration_plan.yaml": "planning/migration_plan.yaml",
+    "migration_units": "planning/migration_units.yaml",
+    "migration_units.yaml": "planning/migration_units.yaml",
+    "openrewrite_plugin_xml": "transformation/openrewrite-plugin.xml",
+    "orchestration_summary": "orchestration/orchestration_summary.json",
+    "phase2_log": "logs/phase2_transform.log",
+    "plan_summary.md": "planning/plan_summary.md",
+    "plan_validation_report.json": "planning/plan_validation_report.json",
+    "policy_patch_plan": "assessment/policy_patch_plan.json",
+    "policy_patch_result": "assessment/policy_patch_result.json",
+    "post_transform_test_log": "test/post_transform/test_agent.log",
+    "post_transform_test_report": "test/post_transform/test_report.json",
+    "post_transform_test_summary": "test/post_transform/test_summary.md",
+    "read_only_verification": "analysis/read_only_verification.json",
+    "read_only_verification.json": "analysis/read_only_verification.json",
+    "report_context": "final/report_context.json",
+    "rewrite_dry_run.patch": "analysis/rewrite_dry_run.patch",
+    "rewrite_impact_summary": "analysis/rewrite_impact_summary.json",
+    "rewrite_impact_summary.json": "analysis/rewrite_impact_summary.json",
+    "rewrite_patch": "analysis/rewrite_dry_run.patch",
+    "rewrite_plugin_plan": "analysis/rewrite_plugin_plan.json",
+    "rewrite_plugin_plan.json": "analysis/rewrite_plugin_plan.json",
+    "rewrite_preview": "analysis/rewrite_preview.json",
+    "rewrite_preview.json": "analysis/rewrite_preview.json",
+    "sandbox": "workspaces/sandbox",
+    "target_dependency_plan": "planning/target_dependency_plan.json",
+    "test_inventory": "analysis/test_inventory.json",
+    "test_inventory.json": "analysis/test_inventory.json",
+    "timing_report": "performance/timing_report.json",
+    "timing_summary": "performance/timing_summary.md",
+    "transformation_execution_plan": "transformation/transformation_execution_plan.yaml"
+  },
+  "blockers": [],
+  "build": {
+    "command": [
+      "C:\\Tools\\apache-maven-3.9.15\\bin\\mvn.cmd",
+      "clean",
+      "test"
+    ],
+    "log_ref": "logs/phase2_transform.log",
+    "status": "BUILD_PASSED_IN_SANDBOX",
+    "validations": {
+      "command": [
+        "C:\\Tools\\apache-maven-3.9.15\\bin\\mvn.cmd",
+        "clean",
+        "test"
+      ],
+      "command_duration_seconds": 32.8856114000082,
+      "cwd": "workspaces/sandbox",
+      "exit_code": 0,
+      "matched_line": null,
+      "message": "Build completed successfully",
+      "required": true,
+      "result_kind": "success",
+      "status": "passed",
+      "unit_id": "existing-test-migration",
+      "validated_at": "2026-06-19T11:11:45+01:00",
+      "warnings": []
+    }
+  },
+  "dependency_policy": {
+    "blockers_count": 0,
+    "copilot_advisory_status": "not_run",
+    "policy_patch_applied": false,
+    "report_ref": "assessment/dependency_policy_report.json",
+    "risks_count": 0,
+    "status": "PASS",
+    "target_dependency_plan_ref": "planning/target_dependency_plan.json",
+    "unresolved_v2_dependency_risks": []
+  },
+  "errors": [],
+  "migration_units": {
+    "count": 5,
+    "source": "transformation_execution_plan",
+    "units": [
+      {
+        "expected_artifacts": [],
+        "goal": "Establish baseline build and test posture before migration changes.",
+        "id": "baseline",
+        "status": "completed",
+        "transformations": [
+          {
+            "status": "not_captured",
+            "type": "custom_code_change"
+          }
+        ],
+        "validation": [
+          {
+            "command": "mvn clean test",
+            "id": "validation",
+            "required": true
+          }
+        ],
+        "writes_source": "not_captured"
+      },
+      {
+        "expected_artifacts": [],
+        "goal": "Upgrade Spring Boot dependencies and plugins to 4.0.",
+        "id": "spring-boot-4-0",
+        "status": "completed",
+        "transformations": [
+          {
+            "status": "not_captured",
+            "type": "openrewrite"
+          },
+          {
+            "status": "not_captured",
+            "type": "custom_code_change"
+          }
+        ],
+        "validation": [
+          {
+            "command": "mvn clean test",
+            "id": "validation",
+            "required": true
+          }
+        ],
+        "writes_source": "not_captured"
+      },
+      {
+        "expected_artifacts": [],
+        "goal": "Migrate javax usages to Jakarta namespace and APIs.",
+        "id": "jakarta",
+        "status": "completed",
+        "transformations": [
+          {
+            "status": "not_captured",
+            "type": "custom_code_change"
+          }
+        ],
+        "validation": [
+          {
+            "command": "mvn clean test",
+            "id": "validation",
+            "required": true
+          }
+        ],
+        "writes_source": "not_captured"
+      },
+      {
+        "expected_artifacts": [],
+        "goal": "Resolve obsolete and incompatible dependencies after platform upgrades.",
+        "id": "dependency-cleanup",
+        "status": "completed",
+        "transformations": [
+          {
+            "status": "not_captured",
+            "type": "custom_code_change"
+          }
+        ],
+        "validation": [
+          {
+            "command": "mvn clean test",
+            "id": "validation",
+            "required": true
+          }
+        ],
+        "writes_source": "not_captured"
+      },
+      {
+        "expected_artifacts": [],
+        "goal": "Adapt existing test suites and test infrastructure to upgraded stack.",
+        "id": "existing-test-migration",
+        "status": "completed",
+        "transformations": [
+          {
+            "status": "not_captured",
+            "type": "custom_code_change"
+          }
+        ],
+        "validation": [
+          {
+            "command": "mvn clean test",
+            "id": "validation",
+            "required": true
+          }
+        ],
+        "writes_source": "not_captured"
+      }
+    ]
+  },
+  "openrewrite": {
+    "active_recipes": [
+      "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"
+    ],
+    "apply_goal": "runNoFork",
+    "apply_maven_args": [],
+    "plugin": "org.openrewrite.maven:rewrite-maven-plugin:6.40.0",
+    "recipe_artifacts": [
+      "org.openrewrite.recipe:rewrite-spring:6.31.0"
+    ],
+    "status": "used",
+    "unit_id": "spring-boot-4-0"
+  },
+  "profile": {
+    "fallback_profile": "not_applicable",
+    "id": "springboot-3.5-java21-to-4.0-java21",
+    "production_allowed": false,
+    "requires_human_approval": true,
+    "risk_level": "high",
+    "source_stack": {
+      "build_tool": "maven",
+      "java": "21",
+      "spring_boot": "3.5"
+    },
+    "strategy": "staged_openrewrite_sandbox",
+    "target_stack": {
+      "build_tool": "maven",
+      "java": "21",
+      "spring_boot": "4.0",
+      "spring_framework": "7.0.x"
+    }
+  },
+  "provenance": {
+    "ai_trace": [
+      "final/migration_report.json#/ai_trace",
+      "final/ai_trace.json"
+    ],
+    "approval.decision": [
+      "approval/approval_decision.json#/decision",
+      "final/migration_report.json#/approval/decision"
+    ],
+    "build.status": [
+      "final/migration_report.json#/build_status",
+      "orchestration/orchestration_summary.json#/build_status"
+    ],
+    "dependency_policy.status": [
+      "final/migration_report.json#/dependency_policy/status",
+      "assessment/dependency_policy_report.json#/status"
+    ],
+    "migration_units.units": [
+      "transformation/transformation_execution_plan.yaml#/migration_units"
+    ],
+    "openrewrite.active_recipes": [
+      "transformation/transformation_execution_plan.yaml#/migration_units",
+      "analysis/rewrite_plugin_plan.json#/active_recipes"
+    ],
+    "profile.id": [
+      "planning/migration_plan.yaml#/profile",
+      "assessment/assessment_report.json#/profile"
+    ],
+    "profile.risk_level": [
+      "final/migration_report.json#/risk_level",
+      "planning/migration_plan.yaml#/risk"
+    ],
+    "profile.source_stack": [
+      "final/migration_report.json#/source_stack",
+      "assessment/assessment_report.json#/source_stack"
+    ],
+    "profile.target_stack": [
+      "final/migration_report.json#/target_stack",
+      "planning/migration_plan.yaml#/target_stack"
+    ],
+    "run_id": [
+      "final/migration_report.json#/run_id",
+      "orchestration/orchestration_summary.json#/run_id",
+      "approval/approval_decision.json#/run_id"
+    ],
+    "scope_limits": [
+      "final/migration_report.json#/limitations"
+    ],
+    "security.warnings": [
+      "final/migration_report.json#/warnings",
+      "assessment/assessment_report.json#/warnings"
+    ],
+    "statuses.analysis": [
+      "orchestration/orchestration_summary.json#/analysis_status",
+      "final/migration_report.json#/analysis_status"
+    ],
+    "statuses.approval": [
+      "orchestration/orchestration_summary.json#/approval_status",
+      "final/migration_report.json#/approval_status"
+    ],
+    "statuses.assessment": [
+      "orchestration/orchestration_summary.json#/assessment_status",
+      "final/migration_report.json#/assessment_status"
+    ],
+    "statuses.build": [
+      "orchestration/orchestration_summary.json#/build_status",
+      "final/migration_report.json#/build_status"
+    ],
+    "statuses.final": [
+      "orchestration/orchestration_summary.json#/final_status",
+      "final/migration_report.json#/final_status"
+    ],
+    "statuses.orchestration": [
+      "orchestration/orchestration_summary.json#/orchestration_status",
+      "final/migration_report.json#/orchestration_status"
+    ],
+    "statuses.planning": [
+      "orchestration/orchestration_summary.json#/planning_status",
+      "final/migration_report.json#/planning_status"
+    ],
+    "statuses.tests": [
+      "orchestration/orchestration_summary.json#/test_status",
+      "final/migration_report.json#/test_status"
+    ],
+    "statuses.transform": [
+      "orchestration/orchestration_summary.json#/transform_status",
+      "final/migration_report.json#/transform_status"
+    ],
+    "tests.totals": [
+      "test/post_transform/test_report.json#/totals",
+      "final/migration_report.json#/test_totals"
+    ],
+    "transformation.status": [
+      "final/migration_report.json#/transform_status",
+      "orchestration/orchestration_summary.json#/transform_status"
+    ]
+  },
+  "run_id": "v2-21cfb72c-s4",
+  "schema_version": "1.0.0",
+  "scope_limits": [
+    "No production promotion performed.",
+    "No pull request creation performed.",
+    "No deployment performed.",
+    "No automatic merge performed.",
+    "SQL Server production behavior not validated.",
+    "Production DB scripts not validated.",
+    "Endpoint/business behavior not validated.",
+    "Production secrets/JWT/keystore validity not validated.",
+    "Deployment not validated.",
+    "PR creation/merge not validated."
+  ],
+  "security": {
+    "security_config_touched": "not_captured",
+    "status": "review_required",
+    "warnings": [
+      "Spring Security, Spring Data, Hibernate, and custom starter compatibility risk requires human review.",
+      "Spring Security, Spring Data, Hibernate, and custom starter risk requires human review.",
+      "Spring Security, Spring Data, Hibernate, and custom starter compatibility risk requires human review."
+    ]
+  },
+  "statuses": {
+    "analysis": "PASS",
+    "approval": "COMPLETED",
+    "assessment": "PASS",
+    "build": "BUILD_PASSED_IN_SANDBOX",
+    "final": "TRANSFORM_APPLIED_IN_SANDBOX",
+    "orchestration": "PASS",
+    "planning": "PASS",
+    "tests": "PASS_WITH_WARNINGS",
+    "transform": "TRANSFORM_APPLIED_IN_SANDBOX"
+  },
+  "tests": {
+    "execution_mode": "parse_existing_surefire",
+    "execution_owner": "build-agent",
+    "report_paths": [],
+    "status": "PASS_WITH_WARNINGS",
+    "totals": {
+      "errors": 0,
+      "failures": 0,
+      "passed": 0,
+      "skipped": 0,
+      "tests": 0
+    }
+  },
+  "transformation": {
+    "blocked_unit": "not_applicable",
+    "current_unit": "existing-test-migration",
+    "next_unit_index": 5,
+    "plan_target": "not_captured",
+    "sandbox_path": "workspaces/sandbox",
+    "status": "TRANSFORM_APPLIED_IN_SANDBOX"
+  },
+  "warnings": [
+    "Spring Boot 4 target requires Spring Framework 7.x.",
+    "Spring Boot 4 target carries Jakarta EE 11 / Servlet 6.1 baseline risk.",
+    "Boot 3 deprecated APIs removed in Boot 4 must be reviewed.",
+    "Spring Cloud compatibility must be reviewed before sandbox execution.",
+    "Spring Security, Spring Data, Hibernate, and custom starter compatibility risk requires human review.",
+    "javax.* leftovers must be treated as blockers for Boot 4 readiness.",
+    "Maven version and Java runtime must match Boot 4 / Java 21 validation gates.",
+    "Official Spring Boot guidance prefers upgrading to the latest 3.5.x before Boot 4; direct migration is sandbox-only and should fall back if unstable.",
+    "OPENREWRITE_IMPACT_HIGH: OpenRewrite impact is high; manual review is required before execution.",
+    "OPENREWRITE_HIGH_RISK_FILES: OpenRewrite reported high-risk files: 42.",
+    "Spring Framework 7.x is required for Spring Boot 4.",
+    "Jakarta EE 11 / Servlet 6.1 baseline applies.",
+    "Spring Cloud compatibility must be reviewed.",
+    "Spring Security, Spring Data, Hibernate, and custom starter risk requires human review.",
+    "javax.* leftovers must be eliminated.",
+    "Maven >= 3.6.3 and Java 21 runtime validation are required for this sandbox profile.",
+    "Official Boot guidance prefers latest 3.5.x before Boot 4; direct migration must use the fallback profile if unstable."
+  ]
+}
