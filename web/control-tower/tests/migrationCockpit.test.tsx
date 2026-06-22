@@ -1,3 +1,4 @@
+import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import MigrationCockpitPage from "../app/migrations/[jobId]/page";
@@ -816,7 +817,7 @@ describe("F15 Final Report and Stage 4 cockpit", () => {
     const markup = renderToStaticMarkup(<MigrationCockpit jobId="job-123" />);
     expect(markup).toContain("Loading cockpit");
 
-    const cockpitFunc = cockpit.type as () => JSX.Element;
+    const cockpitFunc = cockpit.type as () => React.JSX.Element;
     const source = cockpitFunc.toString();
     // All expected panel headings must appear in the component's rendering logic
     expect(source).toContain("Stage Timeline");

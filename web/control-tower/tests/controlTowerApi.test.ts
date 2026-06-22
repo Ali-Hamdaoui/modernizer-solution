@@ -514,7 +514,7 @@ describe("F15 Final Report API contracts", () => {
   });
 
   it("getV2FinalReport encodes job IDs properly", async () => {
-    const fetchMock = vi.fn(async () => ({
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
       ok: true,
       json: async () => ({
         job_id: "job-abc",
@@ -526,7 +526,7 @@ describe("F15 Final Report API contracts", () => {
         redacted_summary: "",
         artifacts: [],
       }),
-    }));
+    } as Response));
     vi.stubGlobal("fetch", fetchMock);
 
     await getV2FinalReport("job+special");
@@ -537,7 +537,7 @@ describe("F15 Final Report API contracts", () => {
   });
 
   it("generateV2FinalReport encodes job IDs properly", async () => {
-    const fetchMock = vi.fn(async () => ({
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
       ok: true,
       json: async () => ({
         job_id: "job-abc",
@@ -549,7 +549,7 @@ describe("F15 Final Report API contracts", () => {
         redacted_summary: "report generated",
         artifacts: [],
       }),
-    }));
+    } as Response));
     vi.stubGlobal("fetch", fetchMock);
 
     await generateV2FinalReport("job+special");
