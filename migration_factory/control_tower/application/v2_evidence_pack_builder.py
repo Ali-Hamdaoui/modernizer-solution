@@ -394,9 +394,15 @@ def evidence_pack_to_dict(pack: EvidencePack) -> dict[str, Any]:
 def _migration_intelligence_context(artifacts: tuple[ResolvedArtifact, ...]) -> tuple[dict[str, Any], list[str]] | dict[str, Any]:
     warnings: list[str] = []
     lookup = {art.kind: art for art in artifacts}
-    runtime = _summarize_runtime_contract(lookup.get(ArtifactKind.RUNTIME_CONTRACT.value))
-    reference = _summarize_reference_delta(lookup.get(ArtifactKind.REFERENCE_DELTA.value))
-    failure = _summarize_failure_classification(lookup.get(ArtifactKind.POST_TRANSFORM_FAILURE_CLASSIFICATION.value))
+    runtime = _summarize_runtime_contract(
+        _lookup_artifact_kind(lookup, ArtifactKind.RUNTIME_CONTRACT.value)
+    )
+    reference = _summarize_reference_delta(
+        _lookup_artifact_kind(lookup, ArtifactKind.REFERENCE_DELTA.value)
+    )
+    failure = _summarize_failure_classification(
+        _lookup_artifact_kind(lookup, ArtifactKind.POST_TRANSFORM_FAILURE_CLASSIFICATION.value)
+    )
     payload = {
         "runtime_contract": runtime,
         "reference_delta": reference,
@@ -407,6 +413,26 @@ def _migration_intelligence_context(artifacts: tuple[ResolvedArtifact, ...]) -> 
         if warning:
             warnings.append(str(warning))
     return payload, warnings
+
+
+def _lookup_artifact_kind(
+    lookup: dict[str, ResolvedArtifact],
+    kind: str,
+) -> ResolvedArtifact | None:
+    if kind in lookup:
+        return lookup[kind]
+    aliases = {
+        f"{kind}.json",
+        f"{kind}.md",
+        f"{kind}.yaml",
+        f"{kind}.yml",
+        kind.replace("_", "-"),
+        f"{kind.replace('_', '-')}.json",
+    }
+    for alias in aliases:
+        if alias in lookup:
+            return lookup[alias]
+    return None
 
 
 def _summarize_runtime_contract(artifact: ResolvedArtifact | None) -> dict[str, Any]:

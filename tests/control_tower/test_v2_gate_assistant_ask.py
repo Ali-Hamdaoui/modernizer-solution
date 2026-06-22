@@ -361,6 +361,65 @@ class _RecordingAssistantRoleClient:
         )
 
 
+class _RecordingGovernedRepairClient:
+    def __init__(self) -> None:
+        self.roles: list[str] = []
+        self.prompts: list[str] = []
+
+    def answer_with_role(
+        self,
+        *,
+        role,
+        prompt: str,
+        fallback: str,
+        conversation_history: list[dict[str, str]] | None = None,
+        output_schema_name: str | None = None,
+        require_schema: bool = False,
+    ) -> V2AssistantModelResult:
+        self.roles.append(role.value)
+        self.prompts.append(prompt)
+        if role == V2ModelRole.PROPOSER:
+            content = json.dumps({
+                "failure_hypothesis": "Dependency drift and build/test failure need governed repair.",
+                "patch_summary": "Prepare a sandbox-only repair proposal from deterministic evidence.",
+                "affected_paths": ["pom.xml"],
+                "validation_plan": "Review the evidence, then validate in sandbox after human approval.",
+            })
+            summary = "Proposer reply"
+        else:
+            content = json.dumps({
+                "decision": "accept",
+                "reasoning": "Proposal is bounded, evidence-backed, and sandbox-only.",
+                "missing_evidence": [],
+                "unsafe_assumptions": [],
+            })
+            summary = "Reviewer reply"
+        return V2AssistantModelResult(
+            content=content,
+            source="azure_openai",
+            model_status="live_ok",
+            provider="azure_openai",
+            role=role.value,
+            success=True,
+            redacted_summary=summary,
+            failure_reason="",
+        )
+
+    def answer(
+        self,
+        *,
+        prompt: str,
+        fallback: str,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> V2AssistantModelResult:
+        return self.answer_with_role(
+            role=V2ModelRole.PROPOSER,
+            prompt=prompt,
+            fallback=fallback,
+            conversation_history=conversation_history,
+        )
+
+
 def _create_job(client: TestClient, setup_id: str) -> str:
     resp = client.post(
         "/v1/v2/migration-jobs",
@@ -497,6 +556,130 @@ def _seed_stage3_completed_job(
             )
         )
     return command_id
+
+
+def _seed_failed_stage3_command(
+    conn: sqlite3.Connection,
+    job_id: str,
+    sandbox_path: str = "C:/work/sandbox/failure-001",
+) -> str:
+    """Seed a failed Stage 3 command so solve-this can bind repair evidence."""
+    from uuid import uuid4
+
+    now = utc_now_text()
+    command_id = uuid4().hex
+    result_json = json.dumps({
+        "sandbox_path": sandbox_path,
+        "final_status": "BUILD_FAILED_IN_SANDBOX",
+        "build_status": "BUILD_FAILED_IN_SANDBOX",
+        "test_status": "TEST_FAILED",
+        "orchestration_status": "FAILED",
+    })
+    record = V2StageCommandRecord(
+        command_id=command_id,
+        job_id=job_id,
+        stage_index=3,
+        manifest_checksum="test-seed-failed-3",
+        argv_json=json.dumps(["test-runner", "--stage", "3", "--modernized", "C:/work/modernized"], separators=(",", ":")),
+        env_json=json.dumps({}, separators=(",", ":")),
+        status="failed",
+        created_at=now,
+        updated_at=now,
+        result_json=result_json,
+    )
+    repo = SqliteV2CommandRepository(conn)
+    repo.save(record)
+    return command_id
+
+
+def _seed_migration_intelligence_artifacts(root: Path, *, malformed_reference_delta: bool = False) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "runtime_contract.json").write_text(
+        json.dumps(
+            {
+                "detected_risks": [
+                    "JDK 17 is pinned",
+                    "Private registry must remain allowlisted",
+                ],
+                "recommended_actions": [
+                    "Keep the sandbox on Java 21",
+                    "Retain registry allowlist checks",
+                ],
+                "jdk_requirements": {
+                    "java_version": "21",
+                    "compiler_release": "21",
+                    "workflow_setup_java_versions": ["17", "21"],
+                    "hardcoded_jdk_paths": ["C:/java/17"],
+                    "environment_variables": ["JAVA_HOME"],
+                },
+                "maven_requirements": {
+                    "wrapper_present": True,
+                    "settings_files": ["settings.xml"],
+                    "workflow_maven_versions": ["3.9.9"],
+                },
+                "private_registry_requirements": {
+                    "detected": True,
+                    "registries": ["repo.local"],
+                },
+                "internal_dependencies": ["com.total.corp:shared-lib"],
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    if malformed_reference_delta:
+        (root / "reference_delta.json").write_text("{\"dependency_delta\":", encoding="utf-8")
+    else:
+        (root / "reference_delta.json").write_text(
+            json.dumps(
+                {
+                    "dependency_delta": {
+                        "added": ["org.example:metrics"],
+                        "removed": [],
+                        "version_changed": ["org.example:legacy"],
+                    },
+                    "source_delta": {
+                        "added_imports": ["jakarta.servlet.http.HttpServletRequest"],
+                        "removed_imports": ["javax.servlet.http.HttpServletRequest"],
+                        "javax_to_jakarta_imports": ["javax.servlet.http.HttpServletRequest -> jakarta.servlet.http.HttpServletRequest"],
+                    },
+                    "api_migration_indicators": {
+                        "jakarta": {"detected": True},
+                        "security": {"detected": False},
+                    },
+                    "recommended_capability_packs": ["boot4", "security"],
+                    "suspicious_artifacts": ["pom.xml"],
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+    (root / "post_transform_failure_classification.json").write_text(
+        json.dumps(
+            {
+                "unit_id": "stage3-test",
+                "failure_count": 1,
+                "suite_count": 1,
+                "category_counts": {"TEST": 1},
+                "failures": [
+                    {
+                        "test_class": "ExampleTest",
+                        "test_method": "should_fail",
+                        "outcome": "failed",
+                        "category": "TEST",
+                        "exception_type": "AssertionError",
+                        "symptom": "expected x but got y",
+                        "suggested_next_action": "Fix the failing assertion in the sandbox only.",
+                    }
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
 
 
 # ── Tests ──────────────────────────────────────────────────────────────
@@ -1120,6 +1303,97 @@ def test_ask_read_only_question_survives_busy_database(tmp_path: Path) -> None:
         if lock_conn.in_transaction:
             lock_conn.execute("ROLLBACK")
         lock_conn.close()
+
+
+def test_ask_solve_this_creates_governed_repair_proposal(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    output_root = tmp_path / "out"
+    setup_id = _ready_setup_with_output_root(conn, str(output_root))
+    _seed_migration_intelligence_artifacts(output_root)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    _seed_failed_stage3_command(conn, job_id)
+    _create_gate_with_refs(
+        conn,
+        job_id,
+        refs=(
+            "runtime_contract.json",
+            "reference_delta.json",
+            "post_transform_failure_classification.json",
+        ),
+        phase="approval_review",
+        stage_index=3,
+    )
+
+    repair_client = _RecordingGovernedRepairClient()
+    client.app.state.v2_assistant_model_client = repair_client
+
+    resp = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": "solve this"},
+        headers=_mutation_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body.get("intent") == "solve_failure"
+    assert body.get("executed") is False
+    assert body.get("repair_proposal") is not None
+    assert body.get("repair_proposal", {}).get("status") == "draft"
+    assert body.get("governance", {}).get("human_approval_required") is True
+    assert body.get("governance", {}).get("no_auto_apply") is True
+    assert body.get("governance", {}).get("sandbox_only") is True
+    assert body.get("governance", {}).get("source_mutated") is False
+    assert body.get("governance", {}).get("stage_resumed") is False
+    assert body.get("governance", {}).get("reviewer_required") is True
+    assert body.get("migration_intelligence", {}).get("runtime_contract", {}).get("status") == "generated"
+    assert body.get("migration_intelligence", {}).get("reference_delta", {}).get("status") == "generated"
+    assert body.get("migration_intelligence", {}).get("post_transform_failure_classification", {}).get("status") == "generated"
+    assert body.get("migration_intelligence_warnings", []) == []
+    assert repair_client.roles == ["proposer", "reviewer"]
+    content = body.get("assistant_message", {}).get("content", "")
+    assert "Human approval required" in content
+    assert "No auto apply" in content
+    assert "Sandbox only" in content
+    assert "Source mutated false" in content
+    assert "Stage resumed false" in content
+
+
+def test_ask_solve_this_reports_migration_intelligence_warnings(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    output_root = tmp_path / "out"
+    setup_id = _ready_setup_with_output_root(conn, str(output_root))
+    _seed_migration_intelligence_artifacts(output_root, malformed_reference_delta=True)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    _seed_failed_stage3_command(conn, job_id)
+    _create_gate_with_refs(
+        conn,
+        job_id,
+        refs=(
+            "runtime_contract.json",
+            "reference_delta.json",
+            "post_transform_failure_classification.json",
+        ),
+        phase="approval_review",
+        stage_index=3,
+    )
+
+    repair_client = _RecordingGovernedRepairClient()
+    client.app.state.v2_assistant_model_client = repair_client
+
+    resp = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": "please solve this"},
+        headers=_mutation_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    warnings = body.get("migration_intelligence_warnings", [])
+    assert warnings
+    assert any("reference_delta" in warning for warning in warnings)
+    assert body.get("migration_intelligence", {}).get("reference_delta", {}).get("status") == "failed_best_effort"
+    assert body.get("repair_proposal") is not None
+    assert repair_client.roles == ["proposer", "reviewer"]
 
 
 def test_ask_revision_request_records_blocked_state(tmp_path: Path) -> None:

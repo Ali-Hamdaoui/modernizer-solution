@@ -2118,6 +2118,14 @@ def create_app(
             open_gates = uow.phase_gates.list_open(job_id)
 
         assistant_intent = _classify_v2_assistant_intent(question_lower)
+        if _question_requests_governed_repair_proposal(question_lower):
+            return _handle_governed_repair_proposal_ask(
+                app=app,
+                job_id=job_id,
+                question=payload.question,
+                correlation_id=payload.correlation_id,
+                unit_of_work_factory=unit_of_work_factory,
+            )
 
         if open_gates:
             open_gate = open_gates[0]
@@ -6630,6 +6638,519 @@ def _assistant_question_requires_write(*, question_lower: str, assistant_intent:
         or question_lower.startswith(pattern + ".")
         for pattern in confirm_patterns
     )
+
+
+def _question_requests_governed_repair_proposal(question_lower: str) -> bool:
+    lowered = str(question_lower or "").strip().lower()
+    if not lowered:
+        return False
+    solve_terms = (
+        "solve this",
+        "solve the failure",
+        "solve failure",
+        "solve this failure",
+        "fix this",
+        "fix the failure",
+        "repair this",
+        "repair the failure",
+        "help me solve",
+        "governed repair proposal",
+        "create repair proposal",
+    )
+    if any(term in lowered for term in solve_terms):
+        return True
+    if "solve" in lowered and any(term in lowered for term in ("issue", "problem", "failure", "bug")):
+        return True
+    return False
+
+
+def _handle_governed_repair_proposal_ask(
+    app: Any,
+    job_id: str,
+    question: str,
+    correlation_id: str | None,
+    unit_of_work_factory: Any,
+) -> dict[str, Any]:
+    from migration_factory.control_tower.application.v2_assistant_response_composer import (
+        AssistantResponseCard,
+        AssistantResponseSection,
+        V2AssistantResponseComposer,
+    )
+    from migration_factory.control_tower.application.v2_assistant_service import (
+        V2AssistantService,
+    )
+    from migration_factory.control_tower.application.v2_evidence_pack_builder import (
+        evidence_pack_to_dict,
+    )
+    from migration_factory.control_tower.application.v2_model_schemas import (
+        ContextPackBuilder,
+    )
+    from migration_factory.control_tower.application.v2_model_role_router import (
+        V2ModelRole,
+    )
+    from migration_factory.control_tower.application.v2_prompt_router import (
+        EventPromptRouter,
+    )
+    from migration_factory.control_tower.application.v2_gate_artifact_resolver import (
+        V2GateArtifactResolver,
+    )
+    from migration_factory.control_tower.application.v2_gate_assistant import (
+        GateContextLoader,
+    )
+    from migration_factory.control_tower.application.v2_phase_gate_service import (
+        V2PhaseGateService,
+    )
+    from migration_factory.control_tower.application.v2_repair_flow import (
+        V2RepairFlowService,
+    )
+    from migration_factory.control_tower.application.v2_reviewer_service import (
+        V2ReviewerService,
+    )
+    from migration_factory.control_tower.domain.checksums import utc_now_text
+    from migration_factory.control_tower.application.redaction import (
+        redact_absolute_paths,
+        redact_model_summary,
+    )
+
+    def _latest_failed_command(commands: tuple[Any, ...]) -> Any | None:
+        failed = [cmd for cmd in commands if str(getattr(cmd, "status", "")).lower() == "failed"]
+        if not failed:
+            return None
+        failed.sort(
+            key=lambda cmd: (
+                int(getattr(cmd, "stage_index", 0) or 0),
+                str(getattr(cmd, "created_at", "")),
+            ),
+            reverse=True,
+        )
+        return failed[0]
+
+    def _select_gate_for_failure(uow: Any, *, stage_index: int | None) -> Any | None:
+        gates = list(uow.phase_gates.list_open(job_id))
+        if not gates:
+            gates = list(uow.phase_gates.list_by_job(job_id))
+        if not gates:
+            return None
+        if stage_index is not None:
+            stage_matches = [gate for gate in gates if int(getattr(gate, "stage_index", -1)) == stage_index]
+            if stage_matches:
+                gates = stage_matches
+        gates.sort(
+            key=lambda gate: (
+                int(getattr(gate, "stage_index", 0) or 0),
+                str(getattr(gate, "created_at", "")),
+            ),
+            reverse=True,
+        )
+        return gates[0]
+
+    def _compact_intelligence_lines(migration_intelligence: dict[str, Any], warnings: list[str]) -> tuple[str, ...]:
+        runtime = migration_intelligence.get("runtime_contract", {}) if isinstance(migration_intelligence, dict) else {}
+        reference = migration_intelligence.get("reference_delta", {}) if isinstance(migration_intelligence, dict) else {}
+        failure = migration_intelligence.get("post_transform_failure_classification", {}) if isinstance(migration_intelligence, dict) else {}
+        lines: list[str] = []
+        lines.append(
+            "- runtime_contract: "
+            f"status={runtime.get('status', 'not_available')}; "
+            f"risks={runtime.get('detected_risks_count', 0)}; "
+            f"actions={runtime.get('recommended_actions_count', 0)}; "
+            f"jdk={runtime.get('jdk_requirements', {}).get('java_version', '') or 'n/a'}; "
+            f"maven_wrapper={bool(runtime.get('maven_requirements', {}).get('wrapper_present', False))}"
+        )
+        lines.append(
+            "- reference_delta: "
+            f"status={reference.get('status', 'not_available')}; "
+            f"dependency_delta={reference.get('dependency_delta', {})}; "
+            f"source_delta={reference.get('source_delta', {})}; "
+            f"packs={reference.get('recommended_capability_packs', [])}"
+        )
+        lines.append(
+            "- failure_classification: "
+            f"status={failure.get('status', 'not_available')}; "
+            f"failed_unit={failure.get('failed_unit', '') or 'n/a'}; "
+            f"categories={failure.get('categories', {})}"
+        )
+        if warnings:
+            lines.append("- warnings:")
+            lines.extend(f"  - {warning}" for warning in warnings[:5])
+        return tuple(redact_model_summary(redact_absolute_paths(line)) for line in lines)
+
+    with _read_unit_of_work(unit_of_work_factory) as uow:
+        _require_v2_job(uow, job_id)
+        commands = tuple(uow.v2_commands.list_by_job(job_id))
+        failed_command = _latest_failed_command(commands)
+        if failed_command is None:
+            service = V2AssistantService(assistant_repo=uow.v2_assistant)
+            user_msg = service.add_message(
+                job_id=job_id,
+                role="user",
+                content=question,
+                correlation_id=correlation_id,
+            )
+            assistant_msg = service.add_message(
+                job_id=job_id,
+                role="assistant",
+                content=(
+                    "I could not find a failed build/test command to repair. "
+                    "Provide the failure or rerun the migration, then ask again."
+                ),
+                correlation_id=user_msg.message_id,
+            )
+            return {
+                "job_id": job_id,
+                "user_message": service.message_to_dict(user_msg),
+                "assistant_message": service.message_to_dict(assistant_msg),
+                "intent": "solve_failure",
+                "executed": False,
+                "repair_proposal": None,
+                "governance": {
+                    "human_approval_required": True,
+                    "no_auto_apply": True,
+                    "sandbox_only": True,
+                    "source_mutated": False,
+                    "stage_resumed": False,
+                    "manual_review_required": True,
+                    "reviewer_required": True,
+                },
+                "guardrails": {
+                    "read_only": True,
+                    "cannot_execute": True,
+                    "cannot_approve": True,
+                    "cannot_write_files": True,
+                    "cannot_change_route_or_stage": True,
+                    "cannot_override_proof": True,
+                },
+            }
+
+        job = uow.v2_jobs.get(job_id)
+        setup = uow.v2_setups.get(job.setup_id) if job is not None and job.setup_id else None
+        storage_root = getattr(setup, "output_parent_path", None) if setup is not None else None
+        gate = _select_gate_for_failure(uow, stage_index=getattr(failed_command, "stage_index", None))
+        gate_context = None
+        evidence_pack = None
+        if gate is not None:
+            gate_service = V2PhaseGateService(uow.phase_gates)
+            resolver = V2GateArtifactResolver(uow.phase_gates, storage_root=storage_root)
+            loader = GateContextLoader(gate_service=gate_service, resolver=resolver)
+            gate_context, evidence_pack = loader.load_gate_with_evidence(gate.gate_id)
+        evidence_dict = evidence_pack_to_dict(evidence_pack) if evidence_pack is not None else {
+            "migration_intelligence": {
+                "runtime_contract": {"status": "not_available"},
+                "reference_delta": {"status": "not_available"},
+                "post_transform_failure_classification": {"status": "not_available"},
+            }
+        }
+        migration_intelligence = evidence_dict.get("migration_intelligence", {})
+        warnings = list(evidence_dict.get("migration_intelligence_warnings", []))
+
+        failure_summary_bits = [
+            f"Command {getattr(failed_command, 'command_id', 'unknown')} failed at stage {getattr(failed_command, 'stage_index', 'n/a')}",
+        ]
+        failed_result = getattr(failed_command, "result_json", None)
+        if isinstance(failed_result, str) and failed_result.strip():
+            failure_summary_bits.append(redact_model_summary(redact_absolute_paths(failed_result))[:300])
+        failure_summary_bits.extend(_compact_intelligence_lines(migration_intelligence, warnings))
+        failure_summary = " | ".join(failure_summary_bits)
+
+        evidence_refs = (
+            "runtime_contract",
+            "reference_delta",
+            "post_transform_failure_classification",
+        )
+        repair_pack = ContextPackBuilder.build_context_pack(
+            pack_type="repair_proposal",
+            title="Governed repair proposal",
+            description=failure_summary,
+            evidence_refs=evidence_refs,
+            command_id=getattr(failed_command, "command_id", None),
+            stage_index=getattr(failed_command, "stage_index", None),
+            failure_type=str(
+                migration_intelligence.get("post_transform_failure_classification", {}).get("status", "")
+                if isinstance(migration_intelligence, dict)
+                else ""
+            ) or None,
+            artifact_refs_used=evidence_refs,
+            redaction_status="evidence_redacted" if evidence_pack is not None else "evidence_unavailable",
+        )
+        route_event_type = "transform_failed"
+        failed_status = str(getattr(failed_command, "status", "")).lower()
+        if failed_status == "failed":
+            result_data = {}
+            try:
+                result_data = json.loads(str(getattr(failed_command, "result_json", "") or "{}"))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                result_data = {}
+            build_status = str(result_data.get("build_status", "")).lower()
+            test_status = str(result_data.get("test_status", "")).lower()
+            if "build" in build_status and "fail" in build_status:
+                route_event_type = "build_failed"
+            elif "test" in test_status and "fail" in test_status:
+                route_event_type = "test_failed"
+
+        route_payload = {
+            "event_type": route_event_type,
+            "stage_index": getattr(failed_command, "stage_index", 0),
+            "failure_summary": failure_summary,
+            "evidence_refs": ", ".join(repair_pack.evidence_refs),
+            "command_id": getattr(failed_command, "command_id", ""),
+            "proposal_checksum": repair_pack.checksum,
+            "context_pack_checksum": repair_pack.checksum,
+        }
+        repair_route = EventPromptRouter.route(
+            event_type=route_event_type,
+            pack=repair_pack,
+            payload=route_payload,
+        )
+        repair_prompt = (
+            f"{repair_route.prompt_text}\n\n"
+            "Migration intelligence:\n"
+            f"{chr(10).join(_compact_intelligence_lines(migration_intelligence, warnings))}\n\n"
+            "Governance:\n"
+            "- Human approval required.\n"
+            "- No auto apply.\n"
+            "- Sandbox only.\n"
+            "- Source mutated false.\n"
+            "- Stage resumed false.\n"
+            "- Reviewer required.\n"
+        )
+        proposer_fallback = {
+            "failure_hypothesis": "Evidence-bound failure diagnosis pending human approval.",
+            "patch_summary": "Prepare a governed sandbox-only repair proposal from the failed command evidence.",
+            "affected_paths": ["pom.xml"],
+            "validation_plan": "Review the evidence, validate in sandbox, and wait for human approval.",
+        }
+        proposer_client = app.state.v2_assistant_model_client
+        if hasattr(proposer_client, "answer_with_role"):
+            proposer_result = proposer_client.answer_with_role(
+                role=V2ModelRole.PROPOSER,
+                prompt=repair_prompt,
+                fallback=json.dumps(proposer_fallback),
+                output_schema_name="RepairProposal",
+                require_schema=True,
+            )
+        else:
+            proposer_result = proposer_client.answer(
+                prompt=repair_prompt,
+                fallback=json.dumps(proposer_fallback),
+            )
+        proposer_output = _parse_and_validate_model_output(
+            model_content=proposer_result.content,
+            schema_name="RepairProposal",
+            fallback=proposer_fallback,
+        )
+        validate_against_schema("RepairProposal", proposer_output)
+
+        review_pack = ContextPackBuilder.build_context_pack(
+            pack_type="reviewer_critique",
+            title="Repair proposal review",
+            description=failure_summary,
+            evidence_refs=evidence_refs,
+            command_id=getattr(failed_command, "command_id", None),
+            stage_index=getattr(failed_command, "stage_index", None),
+            failure_type=str(
+                migration_intelligence.get("post_transform_failure_classification", {}).get("status", "")
+                if isinstance(migration_intelligence, dict)
+                else ""
+            ) or None,
+            artifact_refs_used=evidence_refs,
+            redaction_status="evidence_redacted" if evidence_pack is not None else "evidence_unavailable",
+        )
+        reviewer_prompt_payload = {
+            "event_type": "review_requested",
+            "stage_index": str(getattr(failed_command, "stage_index", 0)),
+            "failure_summary": failure_summary,
+            "evidence_refs": ", ".join(review_pack.evidence_refs),
+            "sandbox_binding_ref": "sandbox-only",
+            "pom_summary_ref": "governed repair proposal",
+            "safety_policy": "No legacy source mutation. Only sandbox changes. Human approval required.",
+            "proposal_checksum": repair_pack.checksum,
+            "context_pack_checksum": review_pack.checksum,
+        }
+        review_route = EventPromptRouter.route(
+            event_type="review_requested",
+            pack=review_pack,
+            payload=reviewer_prompt_payload,
+        )
+        review_prompt = (
+            f"{review_route.prompt_text}\n\n"
+            "Migration intelligence:\n"
+            f"{chr(10).join(_compact_intelligence_lines(migration_intelligence, warnings))}\n\n"
+            "Governance:\n"
+            "- Human approval required.\n"
+            "- No auto apply.\n"
+            "- Sandbox only.\n"
+            "- Source mutated false.\n"
+            "- Stage resumed false.\n"
+            "- Reviewer required.\n"
+        )
+        reviewer_fallback = {
+            "decision": "revise",
+            "reasoning": "Reviewer model unavailable; keep proposal under human review.",
+            "missing_evidence": ["Reviewer model unavailable"],
+            "unsafe_assumptions": ["Reviewer path could not validate the proposal"],
+        }
+        reviewer_service = V2ReviewerService(reviewer_repo=uow.v2_reviewer)
+        if hasattr(proposer_client, "answer_with_role"):
+            reviewer_result = proposer_client.answer_with_role(
+                role=V2ModelRole.REVIEWER,
+                prompt=review_prompt,
+                fallback=json.dumps(reviewer_fallback),
+                output_schema_name="ReviewerCritique",
+                require_schema=True,
+            )
+        else:
+            reviewer_result = proposer_client.answer(
+                prompt=review_prompt,
+                fallback=json.dumps(reviewer_fallback),
+            )
+        reviewer_output = _parse_and_validate_model_output(
+            model_content=reviewer_result.content,
+            schema_name="ReviewerCritique",
+            fallback=reviewer_fallback,
+        )
+        validate_against_schema("ReviewerCritique", reviewer_output)
+
+        repair_flow = V2RepairFlowService(
+            repair_repo=uow.v2_repairs,
+            reviewer_service=reviewer_service,
+        )
+        proposal = repair_flow.create_proposal(
+            command_id=getattr(failed_command, "command_id", ""),
+            failure_summary=failure_summary,
+            hypothesis=str(proposer_output.get("failure_hypothesis", proposer_fallback["failure_hypothesis"])),
+            patch_summary=str(proposer_output.get("patch_summary", proposer_fallback["patch_summary"])),
+            affected_paths=tuple(str(path) for path in proposer_output.get("affected_paths", []) or ("pom.xml",)),
+        )
+        critique = reviewer_service.record_critique(
+            proposal_id=proposal.proposal_id,
+            proposal_type="repair",
+            proposal_checksum=repair_pack.checksum,
+            context_pack_checksum=review_pack.checksum,
+            decision=str(reviewer_output.get("decision", "revise")),
+            reasoning=str(reviewer_output.get("reasoning", "")),
+            missing_evidence=tuple(str(item) for item in reviewer_output.get("missing_evidence", []) or ()),
+            unsafe_assumptions=tuple(str(item) for item in reviewer_output.get("unsafe_assumptions", []) or ()),
+        )
+        proposal_payload = repair_flow.proposal_to_dict(
+            proposal,
+            reviewer_critique_id=critique.critique_id,
+            reviewer_decision=critique.decision,
+        )
+
+        composer = V2AssistantResponseComposer()
+        assistant_content = composer.render(
+            AssistantResponseCard(
+                headline="Governed repair proposal ready",
+                status="pending",
+                summary="Deterministic evidence was used to create a governed repair proposal. Human approval is still required.",
+                sections=(
+                    AssistantResponseSection(
+                        title="Change",
+                        lines=(
+                            f"Command `{getattr(failed_command, 'command_id', '')}` failed at stage `{getattr(failed_command, 'stage_index', '')}`.",
+                            f"Proposal ID: `{proposal.proposal_id}`",
+                            f"Proposal checksum: `{proposal.proposal_checksum}`",
+                            f"Reviewer decision: `{critique.decision}`",
+                        ),
+                    ),
+                    AssistantResponseSection(
+                        title="Validation",
+                        lines=(
+                            str(proposer_output.get("validation_plan", proposer_fallback["validation_plan"])),
+                        ),
+                    ),
+                    AssistantResponseSection(
+                        title="Reason",
+                        lines=(
+                            "Evidence-bound proposal only.",
+                            "Human approval required.",
+                            "No auto apply.",
+                            "Sandbox only.",
+                            "Source mutated false.",
+                            "Stage resumed false.",
+                            "Reviewer required.",
+                        ),
+                    ),
+                    AssistantResponseSection(
+                        title="Artifacts",
+                        lines=tuple(
+                            f"`{line}`"
+                            for line in (
+                                "runtime_contract",
+                                "reference_delta",
+                                "post_transform_failure_classification",
+                            )
+                        ),
+                    ),
+                ),
+                safety_note="Human approval required before any sandbox execution.",
+                evidence_refs=evidence_refs,
+            )
+        )
+        service = V2AssistantService(assistant_repo=uow.v2_assistant)
+        user_msg = service.add_message(
+            job_id=job_id,
+            role="user",
+            content=question,
+            correlation_id=correlation_id,
+        )
+        assistant_msg = service.add_message(
+            job_id=job_id,
+            role="assistant",
+            content=assistant_content,
+            correlation_id=user_msg.message_id,
+        )
+        return {
+            "job_id": job_id,
+            "user_message": service.message_to_dict(user_msg),
+            "assistant_message": service.message_to_dict(assistant_msg),
+            "intent": "solve_failure",
+            "executed": False,
+            "repair_proposal": proposal_payload,
+            "repair_context": {
+                "command_id": getattr(failed_command, "command_id", ""),
+                "stage_index": getattr(failed_command, "stage_index", None),
+                "failure_summary": failure_summary,
+                "context_pack_checksum": repair_pack.checksum,
+                "review_context_pack_checksum": review_pack.checksum,
+                "gate_id": getattr(gate_context, "gate_id", None) if gate_context is not None else None,
+                "migration_intelligence": migration_intelligence,
+                "migration_intelligence_warnings": warnings,
+            },
+            "migration_intelligence": migration_intelligence,
+            "migration_intelligence_warnings": warnings,
+            "proposal_model": {
+                "status": proposer_result.model_status,
+                "source": proposer_result.source,
+                "provider": proposer_result.provider,
+                "role": proposer_result.role,
+                "failure_reason": proposer_result.failure_reason,
+            },
+            "reviewer_model": {
+                "status": reviewer_result.model_status,
+                "source": reviewer_result.source,
+                "provider": reviewer_result.provider,
+                "role": reviewer_result.role,
+                "failure_reason": reviewer_result.failure_reason,
+            },
+            "governance": {
+                "human_approval_required": True,
+                "no_auto_apply": True,
+                "sandbox_only": True,
+                "source_mutated": False,
+                "stage_resumed": False,
+                "manual_review_required": True,
+                "reviewer_required": True,
+            },
+            "guardrails": {
+                "read_only": True,
+                "cannot_execute": True,
+                "cannot_approve": True,
+                "cannot_write_files": True,
+                "cannot_change_route_or_stage": True,
+                "cannot_override_proof": True,
+            },
+        }
 
 
 def _handle_v2_assistant_read_only_ask(
