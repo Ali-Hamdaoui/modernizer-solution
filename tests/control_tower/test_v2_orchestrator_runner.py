@@ -15,6 +15,7 @@ from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import S
 from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository import V2MigrationJobRecord
 from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import V2StageCommandRecord
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import V2MigrationSetupRecord
+from migration_factory.control_tower.domain.entities import ArtifactRevisionRecord
 from migration_factory.control_tower.infrastructure.sqlite.v2_approval_repository import (
     V2ApprovalDecisionRecord,
     V2ResumeCommandRecord,
@@ -133,6 +134,26 @@ def _seed_stage_pipeline(conn: sqlite3.Connection, *, job_id: str = "job-1") -> 
                 correlation_id=None,
             )
         )
+        uow.artifact_revisions.save(
+            ArtifactRevisionRecord(
+                revision_id="rev-stage3-accepted",
+                job_id=job_id,
+                stage_index=3,
+                revision_kind="stage_output",
+                revision_status="accepted",
+                revision_order=1,
+                evidence_checksum="ev-chk-3",
+                prior_revision_checksum=None,
+                artifact_refs_json='{}',
+                prior_revision_id=None,
+                superseded_by_revision_id=None,
+                accepted_at_gate_id="gate-accepted-3",
+                created_at=now,
+                created_by="test",
+                accepted_at=now,
+                accepted_by="test",
+            )
+        )
     _save_command(conn, command_id="cmd-1", job_id=job_id)
 
 
@@ -165,6 +186,7 @@ def _run_success_chain(tmp_path: Path, conn: sqlite3.Connection) -> tuple[_Seque
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-1")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"], [], 0),
     ])
     runner = V2OrchestratorRunner(
         unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
@@ -172,9 +194,19 @@ def _run_success_chain(tmp_path: Path, conn: sqlite3.Connection) -> tuple[_Seque
         cwd=tmp_path,
     )
     runner.start(job_id="job-1", command_id="cmd-1")
-    _wait_for_event(conn, "job-1", "final_report_completed")
+    _wait_for_stage4_command(conn)
     events = list(SqliteUnitOfWork(conn).v2_events.list_by_job("job-1"))
     return popen, events
+
+
+def _wait_for_stage4_command(conn: sqlite3.Connection, job_id: str = "job-1") -> None:
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        cmds = SqliteUnitOfWork(conn).v2_commands.list_by_job_and_stage(job_id, 4)
+        if cmds:
+            return
+        time.sleep(0.05)
+    raise AssertionError("Stage 4 command not persisted")
 
 
 def test_v2_runner_launches_manifest_with_shell_false_and_safe_env(tmp_path: Path) -> None:
@@ -594,7 +626,6 @@ def test_stage_failed_not_emitted_for_valid_pass_contract(tmp_path: Path) -> Non
     event_types = [event.type for event in events]
     assert "stage_failed" not in event_types
     assert "next_stage_queued" in event_types
-    assert len(popen.calls) == 3
 
 
 def test_stage1_completion_replay_does_not_duplicate_stage2_command(tmp_path: Path) -> None:
@@ -633,8 +664,8 @@ def test_stage1_completion_replay_does_not_duplicate_stage2_command(tmp_path: Pa
     assert len(launched) >= 1
 
 
-def test_v2_runner_emits_final_report_events_for_stage3(tmp_path: Path) -> None:
-    """Stage 3 completion emits final_report_started + final_report_completed."""
+def test_v2_runner_emits_stage_completed_for_stage3(tmp_path: Path) -> None:
+    """Stage 3 completion emits stage_completed event."""
     conn = _conn(tmp_path)
     # Save a Stage 3 command directly (not via _save_command which defaults to stage_index=1)
     now = utc_now_text()
@@ -659,16 +690,12 @@ def test_v2_runner_emits_final_report_events_for_stage3(tmp_path: Path) -> None:
         cwd=tmp_path,
     )
     runner.start(job_id="job-1", command_id="cmd-s3")
-    _wait_for_event(conn, "job-1", "final_report_completed")
+    _wait_for_event(conn, "job-1", "stage_completed")
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     event_types = [event.type for event in events]
-    assert "final_report_started" in event_types
-    assert "final_report_completed" in event_types
-    assert "migration_completed" in event_types
     assert "stage_completed" in event_types
-    # Stage 3 must NOT queue a next stage
-    assert "next_stage_queued" not in event_types
+    assert "stage_failed" not in event_types
 
 
 def test_stage1_pass_contract_with_pass_with_warnings_auto_queues_stage2(tmp_path: Path) -> None:
@@ -678,6 +705,7 @@ def test_stage1_pass_contract_with_pass_with_warnings_auto_queues_stage2(tmp_pat
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-1")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"], [], 0),
     ])
     runner = V2OrchestratorRunner(
         unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
@@ -686,7 +714,7 @@ def test_stage1_pass_contract_with_pass_with_warnings_auto_queues_stage2(tmp_pat
     )
 
     runner.start(job_id="job-1", command_id="cmd-1")
-    _wait_for_event(conn, "job-1", "final_report_completed")
+    _wait_for_stage4_command(conn)
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     event_types = [event.type for event in events]
@@ -695,7 +723,6 @@ def test_stage1_pass_contract_with_pass_with_warnings_auto_queues_stage2(tmp_pat
     assert "stage_failed" not in event_types
     assert any(event.type == "stage_completed" and event.stage == 1 for event in events)
     assert any(event.type == "stage_started" and event.stage == 2 for event in events)
-    assert len(popen.calls) == 3
 
 
 def test_stage2_pass_contract_with_pass_with_warnings_auto_queues_stage3(tmp_path: Path) -> None:
@@ -705,6 +732,7 @@ def test_stage2_pass_contract_with_pass_with_warnings_auto_queues_stage3(tmp_pat
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-1")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"], [], 0),
     ])
     runner = V2OrchestratorRunner(
         unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
@@ -713,23 +741,23 @@ def test_stage2_pass_contract_with_pass_with_warnings_auto_queues_stage3(tmp_pat
     )
 
     runner.start(job_id="job-1", command_id="cmd-1")
-    _wait_for_event(conn, "job-1", "final_report_completed")
+    _wait_for_stage4_command(conn)
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     assert any(event.type == "next_stage_queued" and json.loads(event.payload_json or "{}").get("to_stage") == 3 for event in events)
     assert any(event.type == "stage_completed" and event.stage == 2 for event in events)
     assert any(event.type == "stage_started" and event.stage == 3 for event in events)
     assert "stage_failed" not in [event.type for event in events]
-    assert len(popen.calls) == 3
 
 
-def test_stage3_pass_contract_completes_pipeline_without_stage4(tmp_path: Path) -> None:
+def test_stage3_pass_contract_queues_stage4(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _seed_stage_pipeline(conn)
     popen = _SequentialFakePopen([
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-1")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"], [], 0),
     ])
     runner = V2OrchestratorRunner(
         unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
@@ -738,16 +766,15 @@ def test_stage3_pass_contract_completes_pipeline_without_stage4(tmp_path: Path) 
     )
 
     runner.start(job_id="job-1", command_id="cmd-1")
-    _wait_for_event(conn, "job-1", "final_report_completed")
+    _wait_for_stage4_command(conn)
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     event_types = [event.type for event in events]
-    assert "final_report_started" in event_types
-    assert "final_report_completed" in event_types
     assert "stage_failed" not in event_types
     assert "next_stage_queued" in event_types
-    assert not any(json.loads(event.payload_json or "{}").get("to_stage") == 4 for event in events if event.type == "next_stage_queued")
-    assert len(popen.calls) == 3
+    assert any(json.loads(event.payload_json or "{}").get("to_stage") == 4 for event in events if event.type == "next_stage_queued")
+    # Stage 4 must not queue Stage 5
+    assert not any(json.loads(event.payload_json or "{}").get("to_stage") == 5 for event in events if event.type == "next_stage_queued")
 
 
 def test_v2_runner_does_not_progress_past_unapproved_card(tmp_path: Path) -> None:

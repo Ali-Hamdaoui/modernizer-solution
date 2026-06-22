@@ -129,6 +129,7 @@ def _create_ai_hub_layout(root: Path) -> Path:
         "springboot-2.1.6-to-2.7-java11": "catalogs/openrewrite/springboot-2.1.6-to-2.7-java11.yaml",
         "springboot-2.7-to-3.5-java17": "catalogs/openrewrite/springboot-3.5-java17.yaml",
         "springboot-3.5-java17-to-java21": "catalogs/openrewrite/springboot-3.5-java17-to-java21.yaml",
+        "springboot-3.5-java21-to-4.0-java21": "catalogs/openrewrite/springboot-3.5-java21-to-4.0-java21.yaml",
     }
     for profile, catalog_path in profiles.items():
         (root / "profiles" / f"{profile}.yaml").write_text(
@@ -140,6 +141,7 @@ def _create_ai_hub_layout(root: Path) -> Path:
         "springboot-2.1.6-to-2.7-java11.yaml",
         "springboot-3.5-java17.yaml",
         "springboot-3.5-java17-to-java21.yaml",
+        "springboot-3.5-java21-to-4.0-java21.yaml",
     ):
         (root / "catalogs" / "openrewrite" / catalog).write_text("recipes: []\n", encoding="utf-8")
 

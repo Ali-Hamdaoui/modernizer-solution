@@ -422,14 +422,16 @@ def test_dev_app_seeds_exact_v2_dependencies(tmp_path: Path, monkeypatch: pytest
     assert pipeline_row is not None
     pipeline = PipelineDefinition.model_validate_json(pipeline_row["payload_json"])
     assert pipeline.pipeline_id == PIPELINE_ID
-    assert len(pipeline.stages) == 3
+    assert len(pipeline.stages) == 4
     assert [stage.input_source.kind for stage in pipeline.stages] == [
         "legacy_source",
+        "previous_stage",
         "previous_stage",
         "previous_stage",
     ]
     assert pipeline.stages[1].input_source.previous_stage_index == 1
     assert pipeline.stages[2].input_source.previous_stage_index == 2
+    assert pipeline.stages[3].input_source.previous_stage_index == 3
 
 
 def test_dev_app_repairs_invalid_seeded_v2_pipeline_definition(
@@ -534,9 +536,11 @@ def test_dev_app_repairs_invalid_seeded_v2_pipeline_definition(
         "legacy_source",
         "previous_stage",
         "previous_stage",
+        "previous_stage",
     ]
     assert pipeline.stages[1].input_source.previous_stage_index == 1
     assert pipeline.stages[2].input_source.previous_stage_index == 2
+    assert pipeline.stages[3].input_source.previous_stage_index == 3
 
 
 def test_create_job_endpoint_returns_201_with_seeded_dependencies(tmp_path: Path) -> None:
@@ -680,7 +684,7 @@ def test_stage_inputs_are_fixed(tmp_path: Path) -> None:
     assert STAGE_INPUTS[1]["input_kind"] == "legacy_source"
     assert STAGE_INPUTS[2]["input_kind"] == "stage_1_sandbox"
     assert STAGE_INPUTS[3]["input_kind"] == "stage_2_sandbox"
-    assert 4 not in STAGE_INPUTS
+    assert STAGE_INPUTS[4]["input_kind"] == "stage_3_sandbox"
 
 
 def test_create_job_endpoint_rejects_missing_setup(tmp_path: Path) -> None:
@@ -730,16 +734,19 @@ def test_result_to_dict_has_correct_shape(tmp_path: Path) -> None:
              "input_source_kind": "stage_1_sandbox", "chain_status": "pending"},
             {"stage_index": 3, "stage_run_id": "run3", "pipeline_stage": "Stage 3",
              "input_source_kind": "stage_2_sandbox", "chain_status": "pending"},
+            {"stage_index": 4, "stage_run_id": "run4", "pipeline_stage": "Stage 4",
+             "input_source_kind": "stage_3_sandbox", "chain_status": "pending"},
         ),
         created_at="2026-06-13T00:00:00Z",
     )
     d = service.result_to_dict(result)
     assert d["job_id"] == "test-job-id"
     assert d["pipeline_id"] == PIPELINE_ID
-    assert len(d["stages"]) == 3
+    assert len(d["stages"]) == 4
     assert d["stages"][0]["chain_status"] == "queued"
     assert d["stages"][1]["chain_status"] == "pending"
     assert d["stages"][2]["input_source_kind"] == "stage_2_sandbox"
+    assert d["stages"][3]["stage_index"] == 4
 
 
 def test_create_job_persistence_across_connections(tmp_path: Path) -> None:

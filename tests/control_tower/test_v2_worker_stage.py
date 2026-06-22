@@ -224,7 +224,7 @@ def test_stage_jdk_map_is_fixed() -> None:
 
 
 def test_pipeline_id_is_constant() -> None:
-    assert PIPELINE_ID == "springboot-216-to-356-java21-three-stage"
+    assert PIPELINE_ID == "springboot-216-to-400-java21-four-stage"
 
 
 def test_result_to_dict_shape(tmp_path: Path) -> None:
