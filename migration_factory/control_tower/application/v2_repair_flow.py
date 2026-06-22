@@ -691,6 +691,8 @@ class V2RepairFlowService:
                 self._proposals[proposal_id] = proposal
         if proposal is None:
             raise ValueError(f"Proposal {proposal_id!r} not found")
+        if proposal.status == "applied":
+            return self._idempotent_applied_action(proposal_id, proposal)
         if proposal.status != "approved":
             raise ValueError(f"Proposal {proposal_id!r} must be approved first")
         if proposal.command_id != command_id:
@@ -790,6 +792,56 @@ class V2RepairFlowService:
             event_recorder=event_recorder,
         )
 
+    def _latest_action_for_proposal(
+        self,
+        proposal_id: str,
+    ) -> SandboxAction | None:
+        if proposal_id in {action.proposal_id for action in self._actions.values()}:
+            for action in reversed(list(self._actions.values())):
+                if action.proposal_id == proposal_id:
+                    return action
+        if self._repo is not None:
+            records = self._repo.list_actions_by_proposal(proposal_id)
+            if records:
+                record = records[0]
+                return SandboxAction(
+                    action_id=record.action_id,
+                    proposal_id=record.proposal_id,
+                    target_path=record.target_path,
+                    patch_content=record.patch_content,
+                    status=record.status,
+                    result_summary=record.result_summary,
+                    created_at=record.created_at,
+                )
+        return None
+
+    def _idempotent_applied_action(
+        self,
+        proposal_id: str,
+        proposal: RepairProposal,
+    ) -> SandboxAction:
+        existing = self._latest_action_for_proposal(proposal_id)
+        if existing is not None:
+            return SandboxAction(
+                action_id=existing.action_id,
+                proposal_id=existing.proposal_id,
+                target_path=existing.target_path,
+                patch_content=existing.patch_content,
+                status="idempotent",
+                result_summary="Proposal already applied; sandbox unchanged",
+                created_at=existing.created_at,
+            )
+        target_path = proposal.affected_paths[0] if proposal.affected_paths else ""
+        return SandboxAction(
+            action_id=uuid4().hex,
+            proposal_id=proposal.proposal_id,
+            target_path=target_path,
+            patch_content="",
+            status="idempotent",
+            result_summary="Proposal already applied; sandbox unchanged",
+            created_at=utc_now_text(),
+        )
+
     def _mark_proposal_applied(self, proposal: RepairProposal) -> None:
         updated = RepairProposal(
             proposal_id=proposal.proposal_id,
@@ -875,6 +927,14 @@ class V2RepairFlowService:
             "status": action.status,
             "result_summary": action.result_summary,
             "created_at": action.created_at,
+            "human_approved": True,
+            "sandbox_only": True,
+            "source_mutated": False,
+            "sandbox_mutated": action.status == "applied",
+            "stage_resumed": False,
+            "backend_runner_invoked": False,
+            "llm_invoked": False,
+            "approval_bypass": False,
         }
 
     @staticmethod

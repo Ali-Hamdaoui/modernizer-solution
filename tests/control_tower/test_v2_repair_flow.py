@@ -361,6 +361,159 @@ def test_apply_approved_proposal_uses_persisted_context(
     assert calls[0]["sandbox_path"] == str(run_dir / "sandbox")
 
 
+def test_apply_approved_proposal_is_idempotent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = sqlite3.connect(str(tmp_path / "bridge-idempotent.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+
+    apply_pending_migrations(conn)
+
+    setup_repo = SqliteV2SetupRepository(conn)
+    job_repo = SqliteV2JobRepository(conn)
+    command_repo = SqliteV2CommandRepository(conn)
+    service = V2RepairFlowService(
+        repair_repo=None,
+        job_repo=job_repo,
+        setup_repo=setup_repo,
+        command_repo=command_repo,
+    )
+
+    setup = V2MigrationSetupRecord(
+        setup_id="setup-idem",
+        run_name="bridge",
+        legacy_app_path=str(tmp_path / "legacy"),
+        output_parent_path=str(tmp_path / "out"),
+        ai_hub_path=str(tmp_path / "ai"),
+        java11_home="C:/java11",
+        java17_home="C:/java17",
+        java21_home="C:/java21",
+        maven_cmd="mvn",
+        proof_level="build_test_verified",
+        skip_endpoint_smoke=False,
+        migration_flags_json="{}",
+        setup_checksum="setup-chk",
+        checksum_algorithm="sha256",
+        created_at="2026-06-18T00:00:00Z",
+        created_by="test",
+        correlation_id=None,
+    )
+    setup_repo.save(setup)
+    job_repo.save(
+        V2MigrationJobRecord(
+            job_id="job-idem",
+            setup_id="setup-idem",
+            setup_checksum="setup-chk",
+            pipeline_id="pipe-idem",
+            stage_chain_json="[]",
+            status="created",
+            created_at="2026-06-18T00:00:00Z",
+            updated_at="2026-06-18T00:00:00Z",
+            correlation_id=None,
+        )
+    )
+
+    proposal = service.create_proposal(
+        command_id="cmd-idem",
+        failure_summary="Test failed",
+        hypothesis="Missing dependency",
+        patch_summary="Add dependency",
+        affected_paths=("pom.xml",),
+    )
+    service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        decision="accept",
+        reasoning="Looks good",
+    )
+    approved = service.approve_proposal(
+        proposal_id=proposal.proposal_id,
+        approval_checksum="abc123",
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+    )
+    assert approved.status == "approved"
+
+    run_id = "run-idem-1"
+    run_dir = Path(tmp_path / "out" / ".migration" / "runs" / run_id)
+    draft_path = run_dir / "repairs" / "patch_draft_1.json"
+    draft_path.parent.mkdir(parents=True, exist_ok=True)
+    draft_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "proposal_id": proposal.proposal_id,
+                "repair_proposal_checksum": proposal.proposal_checksum,
+                "target_path": "pom.xml",
+                "deterministic_rule_id": "DEPENDENCY_ADD_H2_RUNTIME",
+                "risk": "LOW",
+                "requires_human_review": False,
+                "binding_checksum": "binding-1",
+                "h2_required": True,
+                "unified_diff": _h2_patch(),
+                "expected_validation": ["mvn test"],
+                "limitations": [],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    command_repo.save(
+        V2StageCommandRecord(
+            command_id="cmd-idem",
+            job_id="job-idem",
+            stage_index=3,
+            manifest_checksum="manifest-chk",
+            argv_json="[]",
+            env_json="{}",
+            status="failed",
+            created_at="2026-06-18T00:00:00Z",
+            updated_at="2026-06-18T00:00:00Z",
+            result_json=json.dumps(
+                {
+                    "run_id": run_id,
+                    "sandbox_path": str(run_dir / "sandbox"),
+                    "modernized_app_path": str(tmp_path / "out"),
+                }
+            ),
+            gate_id=None,
+            decision_id=None,
+        )
+    )
+    (tmp_path / "legacy").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "out" / ".migration" / "runs" / run_id / "sandbox").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "out" / ".migration" / "runs" / run_id / "sandbox" / "pom.xml").write_text(
+        "<project/>",
+        encoding="utf-8",
+    )
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        v2_repair_flow,
+        "apply_patch_to_sandbox",
+        lambda **kwargs: calls.append(kwargs) or _apply_result(Path(kwargs["run_dir"])),
+    )
+    monkeypatch.setattr(v2_repair_flow, "run_validation_after_patch", lambda **kwargs: _validation(True))
+    first = service.apply_approved_proposal(
+        proposal_id=proposal.proposal_id,
+        command_id="cmd-idem",
+    )
+    second = service.apply_approved_proposal(
+        proposal_id=proposal.proposal_id,
+        command_id="cmd-idem",
+    )
+
+    assert first.status == "applied"
+    assert second.status == "idempotent"
+    assert second.action_id == first.action_id
+    assert len(calls) == 1
+
+
 def test_cannot_approve_twice() -> None:
     service = V2RepairFlowService()
     proposal = _proposal(service)

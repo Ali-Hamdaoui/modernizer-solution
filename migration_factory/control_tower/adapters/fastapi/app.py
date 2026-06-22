@@ -2767,12 +2767,19 @@ def create_app(
                 command_repo=uow.v2_commands,
             )
             try:
-                proposal = service.approve_proposal(
-                    proposal_id=proposal_id,
-                    approval_checksum=payload.approval_checksum,
-                    proposal_checksum=payload.proposal_checksum,
-                    context_pack_checksum=payload.context_pack_checksum,
-                )
+                proposal_record = uow.v2_repairs.get_proposal(proposal_id)
+                if proposal_record is None:
+                    raise ValueError(f"Proposal {proposal_id!r} not found")
+                proposal = service._record_to_proposal(proposal_record)
+                if proposal_record.status == "rejected":
+                    raise ValueError(f"Proposal {proposal_id!r} is rejected")
+                if proposal_record.status == "draft":
+                    proposal = service.approve_proposal(
+                        proposal_id=proposal_id,
+                        approval_checksum=payload.approval_checksum,
+                        proposal_checksum=payload.proposal_checksum,
+                        context_pack_checksum=payload.context_pack_checksum,
+                    )
                 repair_action = service.apply_approved_proposal(
                     proposal_id=proposal_id,
                     command_id=command_id,

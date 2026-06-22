@@ -473,7 +473,33 @@ class TestRepairAPI:
         # Reviewer metadata should be in response
         assert "reviewer_critique_id" in body
         assert body["repair_action"]["status"] == "applied"
+        assert body["repair_action"]["human_approved"] is True
+        assert body["repair_action"]["sandbox_only"] is True
+        assert body["repair_action"]["source_mutated"] is False
+        assert body["repair_action"]["sandbox_mutated"] is True
+        assert body["repair_action"]["stage_resumed"] is False
+        assert body["repair_action"]["backend_runner_invoked"] is False
+        assert body["repair_action"]["llm_invoked"] is False
         assert (run_dir / "repairs" / "patch_draft_1.json").is_file()
+
+        repeat_response = client.post(
+            f"/v1/v2/commands/cmd-2/repair/proposal/{proposal_id}/approve",
+            json={
+                "approval_checksum": "chk-abc",
+                "proposal_checksum": "pc-test",
+                "context_pack_checksum": "cp-test",
+            },
+            headers=_mutation_headers(),
+        )
+        assert repeat_response.status_code == 200, repeat_response.text
+        repeat_body = repeat_response.json()
+        assert repeat_body["repair_action"]["status"] == "idempotent"
+        assert repeat_body["repair_action"]["sandbox_only"] is True
+        assert repeat_body["repair_action"]["source_mutated"] is False
+        assert repeat_body["repair_action"]["stage_resumed"] is False
+        assert repeat_body["repair_action"]["backend_runner_invoked"] is False
+        assert repeat_body["repair_action"]["llm_invoked"] is False
+        assert repeat_body["repair_action"]["approval_bypass"] is False
         monkeypatch.undo()
 
     def test_approve_missing_proposal(self, tmp_path: Path) -> None:
