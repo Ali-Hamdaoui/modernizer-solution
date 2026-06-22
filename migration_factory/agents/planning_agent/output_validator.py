@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 from migration_factory.agents.planning_agent.paths import get_run_planning_dir
+from migration_factory.agents.planning_agent.unit_builder import ROUTE_UNIT_ORDERS
 from migration_factory.contracts.schema_validation import validate_against_schema
 from migration_factory.contracts.constants import APPROVAL_DECISION_VALUES
 
@@ -65,6 +66,7 @@ ALLOWED_UNIT_ORDERS: tuple[tuple[str, ...], ...] = (
         "dependency-cleanup",
         "existing-test-migration",
     ),
+    *ROUTE_UNIT_ORDERS.values(),
 )
 APPROVAL_OPTIONS = APPROVAL_DECISION_VALUES
 

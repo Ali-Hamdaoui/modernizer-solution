@@ -70,6 +70,44 @@ def test_javax_count_creates_jakarta_warning() -> None:
     )
 
 
+def test_internal_dependency_candidates_create_route_review_warning() -> None:
+    loaded = LoadedAnalysisArtifacts(
+        required={
+            "analysis_report.json": {
+                "internal_dependencies": [
+                    {
+                        "groupId": "acme.internal",
+                        "artifactId": "billing-core",
+                        "version": "1.0.0",
+                    }
+                ],
+                "dependency_graph.json": {},
+                "test_inventory.json": {},
+                "analysis_summary.md": "ok\n",
+            },
+            "dependency_graph.json": {},
+            "test_inventory.json": {},
+            "analysis_summary.md": "ok\n",
+        },
+        optional={},
+        errors=[],
+        ok=True,
+    )
+
+    result = classify_planning_risks(
+        loaded,
+        StackFingerprint(build_tool="maven", java="11", spring_boot="2.7"),
+        target_stack=StackFingerprint(build_tool="maven", java="17", spring_boot="3.5.14"),
+    )
+
+    assert any(
+        r.code == "INTERNAL_DEPENDENCY_MIGRATION_ORDER_REVIEW"
+        and r.severity == "WARNING"
+        and "internal dependency candidate" in r.message.lower()
+        for r in result.risks
+    )
+
+
 def test_deterministic_blocker_sets_migration_plan_executable_false(tmp_path) -> None:
     app_dir = tmp_path / "app"
     run_id = "risk-blocker"

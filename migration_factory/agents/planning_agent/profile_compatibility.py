@@ -21,6 +21,13 @@ class ProfileCompatibilityResult:
     warnings: list[str] = field(default_factory=list)
     source_stack: StackFingerprint = field(default_factory=StackFingerprint)
     target_stack: StackFingerprint = field(default_factory=StackFingerprint)
+    selected_route_id: str | None = None
+    selected_route_strategy: str | None = None
+    route_strategy: str | None = None
+    route_risk_level: str | None = None
+    route_production_allowed: bool | None = None
+    recommended_intermediate: dict[str, str] | None = None
+    selected_hops: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 
 
 def validate_profile_compatibility(
@@ -31,42 +38,51 @@ def validate_profile_compatibility(
     warnings: list[str] = []
 
     source_stack = _extract_source_stack(loaded_artifacts)
-    target_stack = _extract_target_stack(loaded_profile)
+    selected_route = _select_route(loaded_profile, source_stack)
+    if selected_route is not None:
+        route_errors, route_warnings = _validate_route_compatibility(selected_route, source_stack, loaded_profile)
+        errors.extend(route_errors)
+        warnings.extend(route_warnings)
+        target_stack = _target_stack_from_route(selected_route)
+        warnings.extend(_route_risk_warnings(selected_route))
+    else:
+        target_stack = _extract_target_stack(loaded_profile)
 
-    allowed_build_tools = _profile_allowed_build_tools(loaded_profile)
-    if source_stack.build_tool:
-        if allowed_build_tools:
-            if source_stack.build_tool.lower() not in allowed_build_tools:
+    if selected_route is None:
+        allowed_build_tools = _profile_allowed_build_tools(loaded_profile)
+        if source_stack.build_tool:
+            if allowed_build_tools:
+                if source_stack.build_tool.lower() not in allowed_build_tools:
+                    errors.append(
+                        "Source build tool incompatible with selected profile: "
+                        f"{source_stack.build_tool}. Expected one of: {', '.join(sorted(allowed_build_tools))}."
+                    )
+            elif source_stack.build_tool.lower() != "maven":
                 errors.append(
-                    "Source build tool incompatible with selected profile: "
-                    f"{source_stack.build_tool}. Expected one of: {', '.join(sorted(allowed_build_tools))}."
+                    "Source build tool incompatible with planning target. Expected Maven-compatible source build metadata."
                 )
-        elif source_stack.build_tool.lower() != "maven":
-            errors.append(
-                "Source build tool incompatible with planning target. Expected Maven-compatible source build metadata."
-            )
-    else:
-        warnings.append("Source build tool unknown from analysis artifacts.")
+        else:
+            warnings.append("Source build tool unknown from analysis artifacts.")
 
-    allowed_java = _profile_allowed_java_versions(loaded_profile)
-    if source_stack.java:
-        if source_stack.java not in allowed_java:
-            errors.append(
-                "Source Java version unsupported for selected profile: "
-                f"{source_stack.java}. Expected one of: {', '.join(sorted(allowed_java))}."
-            )
-    else:
-        warnings.append("Source Java version missing or unknown in analysis artifacts.")
+        allowed_java = _profile_allowed_java_versions(loaded_profile)
+        if source_stack.java:
+            if source_stack.java not in allowed_java:
+                errors.append(
+                    "Source Java version unsupported for selected profile: "
+                    f"{source_stack.java}. Expected one of: {', '.join(sorted(allowed_java))}."
+                )
+        else:
+            warnings.append("Source Java version missing or unknown in analysis artifacts.")
 
-    allowed_boot_prefixes = _profile_allowed_spring_boot_prefixes(loaded_profile)
-    if source_stack.spring_boot:
-        if not _matches_any_prefix(source_stack.spring_boot, allowed_boot_prefixes):
-            errors.append(
-                "Source Spring Boot version unsupported for selected profile: "
-                f"{source_stack.spring_boot}. Expected prefixes: {', '.join(allowed_boot_prefixes)}."
-            )
-    else:
-        warnings.append("Source Spring Boot version missing or unknown in analysis artifacts.")
+        allowed_boot_prefixes = _profile_allowed_spring_boot_prefixes(loaded_profile)
+        if source_stack.spring_boot:
+            if not _matches_any_prefix(source_stack.spring_boot, allowed_boot_prefixes):
+                errors.append(
+                    "Source Spring Boot version unsupported for selected profile: "
+                    f"{source_stack.spring_boot}. Expected prefixes: {', '.join(allowed_boot_prefixes)}."
+                )
+        else:
+            warnings.append("Source Spring Boot version missing or unknown in analysis artifacts.")
 
     if not target_stack.java:
         errors.append("Target Java missing from selected profile.")
@@ -85,6 +101,13 @@ def validate_profile_compatibility(
         warnings=warnings,
         source_stack=source_stack,
         target_stack=target_stack,
+        selected_route_id=_normalize_version_text(selected_route.get("id")) if isinstance(selected_route, dict) else None,
+        selected_route_strategy=_normalize_version_text(selected_route.get("strategy")) if isinstance(selected_route, dict) else None,
+        route_strategy=_normalize_version_text(selected_route.get("strategy")) if isinstance(selected_route, dict) else None,
+        route_risk_level=_normalize_version_text(selected_route.get("risk_level")) if isinstance(selected_route, dict) else None,
+        route_production_allowed=selected_route.get("production_allowed") if isinstance(selected_route, dict) and isinstance(selected_route.get("production_allowed"), bool) else None,
+        recommended_intermediate=_normalize_string_map(selected_route.get("recommended_intermediate")) if isinstance(selected_route, dict) else None,
+        selected_hops=_selected_hops(selected_route) if isinstance(selected_route, dict) else (),
     )
 
 
@@ -160,6 +183,10 @@ def _extract_source_stack(loaded_artifacts: LoadedAnalysisArtifacts) -> StackFin
 
 def _extract_target_stack(loaded_profile: LoadedMigrationProfile) -> StackFingerprint:
     target = loaded_profile.profile.get("target")
+    return _extract_target_stack_from_mapping(target)
+
+
+def _extract_target_stack_from_mapping(target: Any) -> StackFingerprint:
     if not isinstance(target, dict):
         return StackFingerprint()
 
@@ -176,8 +203,136 @@ def _extract_target_stack(loaded_profile: LoadedMigrationProfile) -> StackFinger
     )
 
 
+def _target_stack_from_route(route: dict[str, Any]) -> StackFingerprint:
+    target = route.get("target")
+    if isinstance(target, dict):
+        return _extract_target_stack_from_mapping(target)
+
+    hops = _selected_hops(route)
+    if hops:
+        last_target = hops[-1].get("target")
+        return _extract_target_stack_from_mapping(last_target)
+    return StackFingerprint()
+
+
+def _select_route(loaded_profile: LoadedMigrationProfile, source_stack: StackFingerprint) -> dict[str, Any] | None:
+    routes = loaded_profile.profile.get("routes")
+    if not isinstance(routes, list) or not routes:
+        return None
+
+    matches: list[tuple[tuple[int, int, int, int, int], dict[str, Any]]] = []
+    available_route_ids = [str(route.get("id")).strip() for route in routes if isinstance(route, dict) and str(route.get("id")).strip()]
+    for index, route in enumerate(routes):
+        if not isinstance(route, dict):
+            continue
+        source = _route_source(route)
+        if not isinstance(source, dict):
+            continue
+        if not _route_matches_source(source, source_stack):
+            continue
+        matches.append((_route_specificity_key(route, index), route))
+
+    if matches:
+        matches.sort(key=lambda item: item[0], reverse=True)
+        return matches[0][1]
+
+    raise_no_match = {
+        "source_java": source_stack.java or "unknown",
+        "source_spring_boot": source_stack.spring_boot or "unknown",
+        "source_build_tool": source_stack.build_tool or "unknown",
+        "available_route_ids": available_route_ids,
+    }
+    return {
+        "__route_match_error__": (
+            "No migration route matched detected source stack. "
+            f"Detected java={raise_no_match['source_java']}, "
+            f"spring_boot={raise_no_match['source_spring_boot']}, "
+            f"build_tool={raise_no_match['source_build_tool']}. "
+            f"Available route ids: {', '.join(available_route_ids) if available_route_ids else 'none'}."
+        )
+    }
+
+
+def _validate_route_compatibility(
+    selected_route: dict[str, Any],
+    source_stack: StackFingerprint,
+    loaded_profile: LoadedMigrationProfile,
+) -> tuple[list[str], list[str]]:
+    error = selected_route.get("__route_match_error__")
+    if isinstance(error, str):
+        return [error], _unknown_source_warnings(source_stack)
+
+    errors: list[str] = []
+    warnings = _unknown_source_warnings(source_stack)
+    if selected_route.get("supported") is False:
+        route_id = _normalize_version_text(selected_route.get("id")) or "unknown"
+        errors.append(f"Selected migration route explicitly unsupported: {route_id}.")
+
+    return errors, warnings
+
+
+def _route_source(route: dict[str, Any]) -> dict[str, Any] | None:
+    source = route.get("source")
+    if isinstance(source, dict):
+        return source
+    hops = _selected_hops(route)
+    if hops:
+        hop_source = hops[0].get("source")
+        if isinstance(hop_source, dict):
+            return hop_source
+    return None
+
+
+def _selected_hops(route: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    hops = route.get("hops")
+    if not isinstance(hops, list):
+        return ()
+    return tuple(hop for hop in hops if isinstance(hop, dict))
+
+
+def _route_matches_source(route_source: dict[str, Any], source_stack: StackFingerprint) -> bool:
+    build_allowed = _allowed_build_tools_from_source(route_source)
+    if build_allowed:
+        if not source_stack.build_tool or source_stack.build_tool.lower() not in build_allowed:
+            return False
+    elif source_stack.build_tool and source_stack.build_tool.lower() != "maven":
+        return False
+
+    java_allowed = _allowed_java_versions_from_source(route_source)
+    if java_allowed:
+        if not source_stack.java or source_stack.java not in java_allowed:
+            return False
+
+    boot_prefixes = _allowed_spring_boot_prefixes_from_source(route_source)
+    if boot_prefixes:
+        if not source_stack.spring_boot or not _matches_any_prefix(source_stack.spring_boot, boot_prefixes):
+            return False
+
+    return True
+
+
+def _route_specificity_key(route: dict[str, Any], index: int) -> tuple[int, int, int, int, int]:
+    source = _route_source(route) if isinstance(route, dict) else {}
+    boot_prefixes = _allowed_spring_boot_prefixes_from_source(source) if isinstance(source, dict) else ()
+    java_allowed = _allowed_java_versions_from_source(source) if isinstance(source, dict) else set()
+    build_allowed = _allowed_build_tools_from_source(source) if isinstance(source, dict) else set()
+    longest_prefix = max((len(prefix) for prefix in boot_prefixes), default=0)
+    return (
+        1 if route.get("preferred") is True else 0,
+        longest_prefix,
+        -len(java_allowed) if java_allowed else 0,
+        -len(build_allowed) if build_allowed else 0,
+        1 if route.get("supported") is False else 2,
+        -index,
+    )
+
+
 def _profile_allowed_build_tools(loaded_profile: LoadedMigrationProfile) -> set[str]:
     source = loaded_profile.profile.get("source")
+    return _allowed_build_tools_from_source(source)
+
+
+def _allowed_build_tools_from_source(source: Any) -> set[str]:
     if not isinstance(source, dict):
         return set()
     build = source.get("build")
@@ -196,6 +351,11 @@ def _profile_allowed_build_tools(loaded_profile: LoadedMigrationProfile) -> set[
 
 def _profile_allowed_java_versions(loaded_profile: LoadedMigrationProfile) -> set[str]:
     source = loaded_profile.profile.get("source")
+    allowed = _allowed_java_versions_from_source(source)
+    return allowed or {"8", "11"}
+
+
+def _allowed_java_versions_from_source(source: Any) -> set[str]:
     values: list[Any] = []
     if isinstance(source, dict):
         java = source.get("java")
@@ -204,12 +364,16 @@ def _profile_allowed_java_versions(loaded_profile: LoadedMigrationProfile) -> se
             values = raw if isinstance(raw, list) else []
         elif java:
             values = [java]
-    allowed = {normalized for value in values if (normalized := _normalize_java(value))}
-    return allowed or {"8", "11"}
+    return {normalized for value in values if (normalized := _normalize_java(value))}
 
 
 def _profile_allowed_spring_boot_prefixes(loaded_profile: LoadedMigrationProfile) -> tuple[str, ...]:
     source = loaded_profile.profile.get("source")
+    prefixes = _allowed_spring_boot_prefixes_from_source(source)
+    return prefixes or ("2.7",)
+
+
+def _allowed_spring_boot_prefixes_from_source(source: Any) -> tuple[str, ...]:
     values: list[Any] = []
     if isinstance(source, dict):
         spring_boot = source.get("spring_boot")
@@ -218,8 +382,7 @@ def _profile_allowed_spring_boot_prefixes(loaded_profile: LoadedMigrationProfile
             values = raw if isinstance(raw, list) else []
         elif spring_boot:
             values = [spring_boot]
-    prefixes = tuple(str(value).strip() for value in values if str(value).strip())
-    return prefixes or ("2.7",)
+    return tuple(str(value).strip() for value in values if str(value).strip())
 
 
 def _matches_any_prefix(value: str, prefixes: tuple[str, ...]) -> bool:
@@ -246,6 +409,44 @@ def _profile_risk_warnings(
     fallback = loaded_profile.profile.get("fallback_profile")
     if fallback:
         warnings.append(f"Fallback profile configured for direct Boot 4 risk: {fallback}.")
+    return warnings
+
+
+def _route_risk_warnings(route: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    route_id = _normalize_version_text(route.get("id")) or "unknown"
+    strategy = _normalize_version_text(route.get("strategy"))
+    risk_level = (_normalize_version_text(route.get("risk_level")) or "").lower()
+    production_allowed = route.get("production_allowed")
+    recommended_intermediate = _normalize_string_map(route.get("recommended_intermediate"))
+
+    if risk_level == "high":
+        warnings.append(f"Selected migration route {route_id} is marked high risk.")
+    if strategy:
+        warnings.append(f"Selected migration route strategy: {strategy}.")
+    if production_allowed is False:
+        warnings.append(f"Selected migration route {route_id} is not production allowed.")
+    if recommended_intermediate:
+        parts = ", ".join(f"{key}={value}" for key, value in sorted(recommended_intermediate.items()))
+        warnings.append(f"Selected migration route {route_id} recommends intermediate step: {parts}.")
+    hops = _selected_hops(route)
+    if hops:
+        warnings.append(
+            f"Selected migration route {route_id} uses {len(hops)} hop(s): "
+            + ", ".join(str(hop.get("id") or "unknown") for hop in hops)
+            + "."
+        )
+    return warnings
+
+
+def _unknown_source_warnings(source_stack: StackFingerprint) -> list[str]:
+    warnings: list[str] = []
+    if not source_stack.build_tool:
+        warnings.append("Source build tool unknown from analysis artifacts.")
+    if not source_stack.java:
+        warnings.append("Source Java version missing or unknown in analysis artifacts.")
+    if not source_stack.spring_boot:
+        warnings.append("Source Spring Boot version missing or unknown in analysis artifacts.")
     return warnings
 
 
@@ -341,6 +542,17 @@ def _normalize_version_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _normalize_string_map(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    normalized = {
+        str(key): str(item).strip()
+        for key, item in value.items()
+        if str(key).strip() and str(item).strip()
+    }
+    return normalized or None
 
 
 def _major_version(value: Any) -> int | None:

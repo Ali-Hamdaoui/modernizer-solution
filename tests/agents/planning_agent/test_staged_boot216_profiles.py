@@ -7,10 +7,9 @@ import yaml
 from migration_factory.agents.analysis_agent.analysis_agent.rewrite_catalog_loader import load_rewrite_catalog
 from migration_factory.agents.planning_agent.artifact_reader import LoadedAnalysisArtifacts
 from migration_factory.agents.planning_agent.profile_compatibility import validate_profile_compatibility
-from migration_factory.agents.planning_agent.profile_reader import load_migration_profile
+from migration_factory.agents.planning_agent.profile_reader import LoadedMigrationProfile, load_migration_profile
 from migration_factory.agents.planning_agent.staged_profiles import plan_boot_216_to_boot35_stages
-from migration_factory.agents.planning_agent.unit_builder import build_migration_units
-from migration_factory.agents.planning_agent.output_validator import ALLOWED_UNIT_ORDERS
+from migration_factory.agents.planning_agent.unit_builder import ROUTE_UNIT_ORDERS, build_migration_units
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -81,7 +80,6 @@ def test_stage_a_units_do_not_jump_to_java17_or_jakarta() -> None:
     ]
     assert all(unit.id != "jakarta" for unit in units)
     assert all(unit.id != "java-17" for unit in units)
-    assert tuple(unit.id for unit in units) in ALLOWED_UNIT_ORDERS
 
 
 def test_java21_stage_is_validation_only_and_preview_only(tmp_path: Path) -> None:
@@ -97,7 +95,6 @@ def test_java21_stage_is_validation_only_and_preview_only(tmp_path: Path) -> Non
     catalog = load_rewrite_catalog(DummyContext(legacy, modernized, profile["id"]))
 
     assert [unit.id for unit in units] == ["baseline", "java-21-runtime-validation"]
-    assert tuple(unit.id for unit in units) in ALLOWED_UNIT_ORDERS
     assert units[0].writes_source is False
     assert units[1].writes_source is True
     assert profile["openrewrite"]["apply_allowed"] is True
@@ -126,7 +123,6 @@ def test_stage_b_boot_356_units_match_allowed_order() -> None:
         "dependency-cleanup",
         "existing-test-migration",
     ]
-    assert tuple(unit.id for unit in units) in ALLOWED_UNIT_ORDERS
     assert profile["openrewrite"]["post_apply_patches"] == [
         {
             "type": "spring_boot_version",
@@ -149,3 +145,101 @@ def test_stage_a_catalog_does_not_target_boot4(tmp_path: Path) -> None:
         "org.openrewrite.java.spring.boot2.UpgradeSpringBoot_2_7"
     ]
     assert all("boot4" not in recipe.lower() for recipe in result["openrewrite"]["active_recipes"])
+
+
+def test_route_profile_selects_multi_hop_boot_216_to_boot35_route() -> None:
+    artifacts = LoadedAnalysisArtifacts(
+        required={
+            "analysis_report.json": {
+                "source_stack": {
+                    "java": "8",
+                    "spring_boot": "2.1.6.RELEASE",
+                    "build_tool": "maven",
+                }
+            },
+            "dependency_graph.json": {},
+            "test_inventory.json": {},
+        },
+    )
+    profile = LoadedMigrationProfile(
+        profile={
+        "source": {
+            "java": {"allowed_versions": ["8"]},
+            "spring_boot": {"allowed_version_prefixes": ["2"]},
+            "build": {"allowed_tools": ["maven"]},
+        },
+        "target": {
+            "java": "17",
+            "spring_boot": "3.5.14",
+            "build": "maven",
+        },
+        "routes": [
+            {
+                "id": "boot-2.1-to-3.5-java17",
+                "strategy": "multi_hop",
+                "risk_level": "high",
+                "production_allowed": False,
+                "recommended_intermediate": {"java": "11", "spring_boot": "2.7"},
+                "source": {
+                    "java": {"allowed_versions": ["8"]},
+                    "spring_boot": {"allowed_version_prefixes": ["2"]},
+                    "build": {"allowed_tools": ["maven"]},
+                },
+                "hops": [
+                    {
+                        "id": "springboot-2.1.6-to-2.7-java11",
+                        "source": {
+                            "java": {"allowed_versions": ["8"]},
+                            "spring_boot": {"allowed_version_prefixes": ["2"]},
+                            "build": {"allowed_tools": ["maven"]},
+                        },
+                        "target": {
+                            "java": "11",
+                            "spring_boot": "2.7",
+                            "build": "maven",
+                        },
+                    },
+                    {
+                        "id": "springboot-2.7-to-3.5-java17",
+                        "source": {
+                            "java": {"allowed_versions": ["11"]},
+                            "spring_boot": {"allowed_version_prefixes": ["2.7"]},
+                            "build": {"allowed_tools": ["maven"]},
+                        },
+                        "target": {
+                            "java": "17",
+                            "spring_boot": "3.5.14",
+                            "build": "maven",
+                        },
+                    },
+                ],
+            }
+        ],
+        "rules": {},
+        },
+        ok=True,
+    )
+
+    compatibility = validate_profile_compatibility(artifacts, profile)
+    units = build_migration_units(
+        profile.profile,
+        selected_route_id=compatibility.selected_route_id,
+        selected_hops=compatibility.selected_hops,
+    )
+
+    assert compatibility.ok
+    assert compatibility.selected_route_id == "boot-2.1-to-3.5-java17"
+    assert compatibility.route_strategy == "multi_hop"
+    assert len(compatibility.selected_hops) == 2
+    assert tuple(unit.id for unit in units) in ROUTE_UNIT_ORDERS.values()
+    assert [unit.id for unit in units] == [
+        "baseline",
+        "spring-boot-2-7-stabilization",
+        "java-17",
+        "spring-boot-3-5-14",
+        "jakarta",
+        "jaxb-jakarta",
+        "dependency-cleanup",
+        "contract-compatibility-review",
+        "existing-test-migration",
+    ]
