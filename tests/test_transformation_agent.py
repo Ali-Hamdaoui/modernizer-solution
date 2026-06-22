@@ -439,6 +439,78 @@ migration_units:
             self.assertEqual(unit["transformations"][0]["spring_boot_version_location"], "property")
             verify_mock.assert_called_once()
 
+    def test_maven_pom_patch_updates_sandbox_pom_and_leaves_legacy_copy_untouched(self) -> None:
+        with workspace_temp_dir() as tmp:
+            legacy = tmp / "legacy-app"
+            app = tmp / "modernized-app"
+            run_id = "run-maven-pom-patch"
+            legacy.mkdir()
+            app.mkdir()
+            legacy_pom = legacy / "pom.xml"
+            app_pom = app / "pom.xml"
+            legacy_pom.write_text(
+                """<project>
+  <modelVersion>4.0.0</modelVersion>
+  <properties>
+    <java.version>11</java.version>
+  </properties>
+</project>
+""",
+                encoding="utf-8",
+            )
+            app_pom.write_text(legacy_pom.read_text(encoding="utf-8"), encoding="utf-8")
+
+            plan = _write_maven_pom_patch_plan(app, run_id=run_id)
+            with mock.patch(
+                "migration_factory.agents.transformation_agent.agent._verify_build_validation",
+                return_value=BuildValidationStatus.PASSED,
+            ):
+                result = run_transformation_agent(app, plan["plugin_xml"], plan["plan_yaml"], wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            unit = ledger["units"]["pom-patch-1"]
+            self.assertEqual(result.status, LedgerStatus.COMPLETED)
+            self.assertEqual(ledger["status"], LedgerStatus.COMPLETED)
+            self.assertEqual(unit["transformations"][0]["type"], "maven_pom_patch")
+            self.assertEqual(unit["transformations"][0]["status"], "applied")
+            self.assertEqual(unit["transformations"][0]["operation_count"], 1)
+            self.assertEqual(unit["transformations"][0]["files_changed"], ["pom.xml"])
+            self.assertIn("<java.version>21</java.version>", app_pom.read_text(encoding="utf-8"))
+            self.assertIn("<java.version>11</java.version>", legacy_pom.read_text(encoding="utf-8"))
+
+    def test_maven_pom_patch_rejects_path_escape_and_blocks_unit(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            outside = tmp / "outside"
+            run_id = "run-maven-pom-patch-escape"
+            app.mkdir()
+            outside.mkdir()
+            (app / "pom.xml").write_text(
+                """<project>
+  <modelVersion>4.0.0</modelVersion>
+</project>
+""",
+                encoding="utf-8",
+            )
+            (outside / "pom.xml").write_text(
+                """<project>
+  <modelVersion>4.0.0</modelVersion>
+</project>
+""",
+                encoding="utf-8",
+            )
+
+            plan = _write_maven_pom_patch_escape_plan(app, run_id=run_id)
+            with self.assertRaises(TransformationAgentError):
+                run_transformation_agent(app, plan["plugin_xml"], plan["plan_yaml"], wait_for_continue=False)
+
+            ledger = load_ledger(app / ".migration" / "ledger.json")
+            self.assertEqual(ledger["status"], LedgerStatus.BLOCKED)
+            self.assertEqual(ledger["blocked_unit"], "pom-patch-escape")
+            self.assertIn("POM_PATH_OUTSIDE_SANDBOX", ledger["units"]["pom-patch-escape"]["blocking_reason"])
+            self.assertIn("<modelVersion>4.0.0</modelVersion>", (app / "pom.xml").read_text(encoding="utf-8"))
+            self.assertIn("<modelVersion>4.0.0</modelVersion>", (outside / "pom.xml").read_text(encoding="utf-8"))
+
     def test_spring_boot_version_accepts_bom_property_reference_35x(self) -> None:
         with workspace_temp_dir() as tmp:
             app = tmp / "modernized-app"
@@ -2121,6 +2193,84 @@ migration_units:
     checks:
       - id: "build"
         command: "mvn clean test -DskipITs"
+        required: true
+""",
+        encoding="utf-8",
+    )
+    return {"plugin_xml": plugin_xml, "plan_yaml": plan_yaml}
+
+
+def _write_maven_pom_patch_plan(app: Path, *, run_id: str) -> dict[str, Path]:
+    run_dir = app / ".migration" / "runs" / run_id
+    plugin_xml = run_dir / "rewrite-plugin.xml"
+    plan_yaml = run_dir / "transformation" / "transformation_execution_plan.yaml"
+    plugin_xml.parent.mkdir(parents=True, exist_ok=True)
+    plan_yaml.parent.mkdir(parents=True, exist_ok=True)
+    plugin_xml.write_text(PLUGIN_XML, encoding="utf-8")
+    plan_yaml.write_text(
+        f"""schema_version: "1.3"
+migration:
+  id: "{run_id}"
+  name: "Deterministic POM patch"
+workspaces:
+  target:
+    path: "{app.as_posix()}"
+    migration_dir: ".migration"
+    ledger_file: ".migration/ledger.json"
+migration_units:
+  - id: "pom-patch-1"
+    title: "Update pom.xml"
+    expected_files:
+      - "pom.xml"
+    transformations:
+      - type: "maven_pom_patch"
+        pom_path: "pom.xml"
+        operations:
+          - op: "update_property"
+            name: "java.version"
+            value: "21"
+    checks:
+      - id: "build"
+        command: "mvn clean test"
+        required: true
+""",
+        encoding="utf-8",
+    )
+    return {"plugin_xml": plugin_xml, "plan_yaml": plan_yaml}
+
+
+def _write_maven_pom_patch_escape_plan(app: Path, *, run_id: str) -> dict[str, Path]:
+    run_dir = app / ".migration" / "runs" / run_id
+    plugin_xml = run_dir / "rewrite-plugin.xml"
+    plan_yaml = run_dir / "transformation" / "transformation_execution_plan.yaml"
+    plugin_xml.parent.mkdir(parents=True, exist_ok=True)
+    plan_yaml.parent.mkdir(parents=True, exist_ok=True)
+    plugin_xml.write_text(PLUGIN_XML, encoding="utf-8")
+    plan_yaml.write_text(
+        f"""schema_version: "1.3"
+migration:
+  id: "{run_id}"
+  name: "Deterministic POM patch escape"
+workspaces:
+  target:
+    path: "{app.as_posix()}"
+    migration_dir: ".migration"
+    ledger_file: ".migration/ledger.json"
+migration_units:
+  - id: "pom-patch-escape"
+    title: "Reject sandbox escape"
+    expected_files:
+      - "pom.xml"
+    transformations:
+      - type: "maven_pom_patch"
+        pom_path: "../outside/pom.xml"
+        operations:
+          - op: "update_property"
+            name: "java.version"
+            value: "21"
+    checks:
+      - id: "build"
+        command: "mvn clean test"
         required: true
 """,
         encoding="utf-8",

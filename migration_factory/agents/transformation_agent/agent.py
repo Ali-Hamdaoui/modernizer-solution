@@ -27,6 +27,7 @@ from .pom_patches import (
     patch_spring_boot_version,
     is_stable_spring_boot_35_version,
 )
+from .maven_pom_patcher import MavenPomPatchError, apply_maven_pom_patch
 from .rewrite import build_rewrite_run_command, rewrite_plugin_version_from_xml
 
 
@@ -138,6 +139,85 @@ def _run_unit(
             if not result.succeeded:
                 _mark_unit_blocked(plan, unit, f"OpenRewrite command failed: {command}", command_results)
                 raise TransformationAgentError(f"OpenRewrite command failed for {unit.id}: {command}")
+            continue
+
+        if _transformation_kind_matches(transformation, "maven_pom_patch", "pom_patch"):
+            pom_path = str(
+                transformation.get("pom_path")
+                or transformation.get("path")
+                or "pom.xml"
+            )
+            operations = transformation.get("operations") or []
+            required = transformation.get("required", True) is not False
+            if dry_run:
+                recorded_transformations.append(
+                    {
+                        "type": "maven_pom_patch",
+                        "status": "dry_run",
+                        "pom_path": pom_path,
+                        "operation_count": len(operations) if isinstance(operations, list) else 0,
+                    }
+                )
+                continue
+
+            try:
+                patch_result = apply_maven_pom_patch(
+                    plan.target_path,
+                    unit_id=unit.id,
+                    operations=operations,
+                    pom_path=pom_path,
+                )
+            except MavenPomPatchError as exc:
+                reason = (
+                    "REQUIRED_POM_PATCH_NOT_APPLIED maven_pom_patch "
+                    f"code={exc.code} message={exc.message}"
+                )
+                if required:
+                    _mark_unit_blocked(
+                        plan,
+                        unit,
+                        reason,
+                        command_results,
+                        recorded_transformations=recorded_transformations,
+                    )
+                    raise TransformationAgentError(reason) from exc
+                recorded_transformations.append(
+                    {
+                        "type": "maven_pom_patch",
+                        "status": "failed",
+                        "pom_path": pom_path,
+                        "error": exc.to_record(),
+                    }
+                )
+                continue
+
+            if required and patch_result.status == "no_change":
+                reason = f"REQUIRED_POM_PATCH_NOT_APPLIED maven_pom_patch pom_path={patch_result.pom_file}"
+                _mark_unit_blocked(
+                    plan,
+                    unit,
+                    reason,
+                    command_results,
+                    recorded_transformations=recorded_transformations,
+                )
+                raise TransformationAgentError(reason)
+
+            for operation in patch_result.operations_applied:
+                print(
+                    f"unit={patch_result.unit_id} patch=maven_pom_patch "
+                    f"file={patch_result.pom_file} op={operation.get('op')} "
+                    f"status={operation.get('status')}"
+                )
+            recorded_transformations.append(
+                {
+                    "type": "maven_pom_patch",
+                    "status": patch_result.status,
+                    "pom_path": patch_result.pom_file,
+                    "operation_count": patch_result.operation_count,
+                    "operations_applied": patch_result.operations_applied,
+                    "files_changed": patch_result.files_changed,
+                }
+            )
             continue
 
         if transformation_type == "maven_enforcer_java_version":
@@ -460,3 +540,13 @@ def _result_from_ledger(ledger_file: Path, ledger: dict[str, Any]) -> Transforma
         completed_units=[str(item) for item in ledger.get("completed_units", [])],
         blocked_unit=ledger.get("blocked_unit"),
     )
+
+
+def _transformation_kind_matches(transformation: dict[str, Any], *expected: str) -> bool:
+    keys = ("type", "tool", "kind", "action", "name")
+    expected_values = {str(item).strip() for item in expected if str(item).strip()}
+    for key in keys:
+        value = str(transformation.get(key) or "").strip()
+        if value in expected_values:
+            return True
+    return False
