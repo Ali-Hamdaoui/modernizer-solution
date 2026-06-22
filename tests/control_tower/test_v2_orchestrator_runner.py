@@ -844,7 +844,7 @@ def test_v2_runner_emits_approval_started_on_resume(tmp_path: Path) -> None:
     )
 
     runner.start_resume(job_id="job-1", resume_id="resume-1")
-    _wait_for_event(conn, "job-1", "approval_started")
+    _wait_for_event(conn, "job-1", "resume_started")
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     event_types = [event.type for event in events]
