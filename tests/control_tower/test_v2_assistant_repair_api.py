@@ -37,6 +37,12 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
     V2MigrationSetupRecord,
 )
+from tests.control_tower.test_v2_gate_assistant_ask import (
+    _RecordingGovernedRepairClient,
+    _create_gate_with_refs,
+    _ready_setup_with_output_root,
+    _seed_migration_intelligence_artifacts,
+)
 
 
 def _mutation_headers():
@@ -73,12 +79,16 @@ def _seed_repair_apply_context(
     proposal_id: str,
     proposal_checksum: str,
     command_id: str,
+    job_id: str = "job-2",
+    create_job_row: bool = True,
+    create_command_row: bool = True,
+    run_id: str = "run-apply-1",
 ) -> Path:
     setup_repo = SqliteV2SetupRepository(conn)
     job_repo = SqliteV2JobRepository(conn)
     command_repo = SqliteV2CommandRepository(conn)
     legacy_root = Path(tmp_path / "legacy")
-    sandbox_root = Path(tmp_path / "out" / ".migration" / "runs" / "run-apply-1" / "sandbox")
+    sandbox_root = Path(tmp_path / "out" / ".migration" / "runs" / run_id / "sandbox")
     legacy_root.mkdir(parents=True, exist_ok=True)
     sandbox_root.mkdir(parents=True, exist_ok=True)
     (sandbox_root / "pom.xml").write_text("<project/>", encoding="utf-8")
@@ -103,21 +113,45 @@ def _seed_repair_apply_context(
         correlation_id=None,
     )
     setup_repo.save(setup)
-    job_repo.save(
-        V2MigrationJobRecord(
-            job_id="job-2",
-            setup_id=setup.setup_id,
-            setup_checksum="setup-chk",
-            pipeline_id="pipeline-1",
-            stage_chain_json="[]",
-            status="created",
-            created_at="2026-06-18T00:00:00Z",
-            updated_at="2026-06-18T00:00:00Z",
-            correlation_id=None,
-        )
+    job_record = V2MigrationJobRecord(
+        job_id=job_id,
+        setup_id=setup.setup_id,
+        setup_checksum="setup-chk",
+        pipeline_id="pipeline-1",
+        stage_chain_json="[]",
+        status="created",
+        created_at="2026-06-18T00:00:00Z",
+        updated_at="2026-06-18T00:00:00Z",
+        correlation_id=None,
     )
+    if create_job_row:
+        try:
+            job_repo.save(job_record)
+        except sqlite3.IntegrityError:
+            conn.execute(
+                """UPDATE v2_migration_jobs
+                SET setup_id = ?,
+                    setup_checksum = ?,
+                    pipeline_id = ?,
+                    stage_chain_json = ?,
+                    status = ?,
+                    created_at = ?,
+                    updated_at = ?,
+                    correlation_id = ?
+                WHERE job_id = ?""",
+                (
+                    job_record.setup_id,
+                    job_record.setup_checksum,
+                    job_record.pipeline_id,
+                    job_record.stage_chain_json,
+                    job_record.status,
+                    job_record.created_at,
+                    job_record.updated_at,
+                    job_record.correlation_id,
+                    job_record.job_id,
+                ),
+            )
 
-    run_id = "run-apply-1"
     run_dir = Path(tmp_path / "out" / ".migration" / "runs" / run_id)
     draft_path = run_dir / "repairs" / "patch_draft_1.json"
     draft_path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,28 +177,59 @@ def _seed_repair_apply_context(
         + "\n",
         encoding="utf-8",
     )
-    command_repo.save(
-        V2StageCommandRecord(
-            command_id=command_id,
-            job_id="job-2",
-            stage_index=3,
-            manifest_checksum="manifest-chk",
-            argv_json="[]",
-            env_json="{}",
-            status="failed",
-            created_at="2026-06-18T00:00:00Z",
-            updated_at="2026-06-18T00:00:00Z",
-            result_json=json.dumps(
-                {
-                    "run_id": run_id,
-                    "sandbox_path": str(run_dir / "sandbox"),
-                    "modernized_app_path": str(tmp_path / "out"),
-                }
-            ),
-            gate_id=None,
-            decision_id=None,
-        )
+    command_record = V2StageCommandRecord(
+        command_id=command_id,
+        job_id=job_id,
+        stage_index=3,
+        manifest_checksum="manifest-chk",
+        argv_json="[]",
+        env_json="{}",
+        status="failed",
+        created_at="2026-06-18T00:00:00Z",
+        updated_at="2026-06-18T00:00:00Z",
+        result_json=json.dumps(
+            {
+                "run_id": run_id,
+                "sandbox_path": str(run_dir / "sandbox"),
+                "modernized_app_path": str(tmp_path / "out"),
+            }
+        ),
+        gate_id=None,
+        decision_id=None,
     )
+    if create_command_row:
+        try:
+            command_repo.save(command_record)
+        except sqlite3.IntegrityError:
+            conn.execute(
+                """UPDATE v2_stage_commands
+                SET job_id = ?,
+                    stage_index = ?,
+                    manifest_checksum = ?,
+                    argv_json = ?,
+                    env_json = ?,
+                    status = ?,
+                    created_at = ?,
+                    updated_at = ?,
+                    result_json = ?,
+                    gate_id = ?,
+                    decision_id = ?
+                WHERE command_id = ?""",
+                (
+                    command_record.job_id,
+                    command_record.stage_index,
+                    command_record.manifest_checksum,
+                    command_record.argv_json,
+                    command_record.env_json,
+                    command_record.status,
+                    command_record.created_at,
+                    command_record.updated_at,
+                    command_record.result_json,
+                    command_record.gate_id,
+                    command_record.decision_id,
+                    command_record.command_id,
+                ),
+            )
     return run_dir
 
 
@@ -187,7 +252,7 @@ def _fake_apply_result(run_dir: Path):
     )
 
 
-def _fake_validation(passed: bool):
+def _fake_validation(passed: bool, *, artifact_refs: dict[str, str] | None = None):
     from migration_factory.repair_loop.validation_runner import ValidationResult
 
     return ValidationResult(
@@ -196,7 +261,7 @@ def _fake_validation(passed: bool):
         test_status="TEST_PASSED" if passed else "TEST_FAILED",
         h2_status="H2_STARTUP_PASSED" if passed else "H2_STARTUP_FAILED",
         validation_commands=[["mvn", "test"]],
-        artifact_refs={},
+        artifact_refs=artifact_refs or {},
         warnings=[],
         errors=[] if passed else ["validation failed"],
     )
@@ -510,6 +575,205 @@ class TestRepairAPI:
         assert repeat_body["repair_action"]["verification_build_status"] == "BUILD_PASSED_IN_SANDBOX"
         assert repeat_body["repair_action"]["verification_test_status"] == "TEST_PASSED"
         assert repeat_body["repair_action"]["verification_h2_status"] == "H2_STARTUP_PASSED"
+        monkeypatch.undo()
+
+    def test_governed_repair_workflow_dry_run_end_to_end(self, tmp_path: Path) -> None:
+        client, conn = _api_client(tmp_path)
+        output_root = tmp_path / "out"
+        setup_id = _ready_setup_with_output_root(conn, str(output_root))
+        _seed_migration_intelligence_artifacts(output_root)
+        job_id = "job-e2e"
+        run_id = "run-e2e-1"
+        run_dir = Path(tmp_path / "out" / ".migration" / "runs" / run_id)
+        sandbox_dir = run_dir / "sandbox"
+        sandbox_dir.mkdir(parents=True, exist_ok=True)
+        v2_job_repo = SqliteV2JobRepository(conn)
+        v2_job_repo.save(
+            V2MigrationJobRecord(
+                job_id=job_id,
+                setup_id=setup_id,
+                setup_checksum="setup-chk",
+                pipeline_id="pipeline-1",
+                stage_chain_json="[]",
+                status="created",
+                created_at="2026-06-18T00:00:00Z",
+                updated_at="2026-06-18T00:00:00Z",
+                correlation_id=None,
+            )
+        )
+        command_id = "cmd-e2e"
+        SqliteV2CommandRepository(conn).save(
+            V2StageCommandRecord(
+                command_id=command_id,
+                job_id=job_id,
+                stage_index=3,
+                manifest_checksum="manifest-e2e",
+                argv_json="[]",
+                env_json="{}",
+                status="failed",
+                created_at="2026-06-18T00:00:00Z",
+                updated_at="2026-06-18T00:00:00Z",
+                result_json=json.dumps(
+                    {
+                        "run_id": run_id,
+                        "sandbox_path": str(sandbox_dir),
+                        "modernized_app_path": str(tmp_path / "out"),
+                    }
+                ),
+                gate_id=None,
+                decision_id=None,
+            )
+        )
+        _create_gate_with_refs(
+            conn,
+            job_id,
+            refs=(
+                "runtime_contract.json",
+                "reference_delta.json",
+                "post_transform_failure_classification.json",
+            ),
+            phase="approval_review",
+            stage_index=3,
+        )
+
+        repair_client = _RecordingGovernedRepairClient()
+        client.app.state.v2_assistant_model_client = repair_client
+
+        ask_response = client.post(
+            f"/v1/v2/jobs/{job_id}/assistant/ask",
+            json={"question": "solve this"},
+            headers=_mutation_headers(),
+        )
+        assert ask_response.status_code == 200, ask_response.text
+        ask_body = ask_response.json()
+        assert ask_body["intent"] == "solve_failure"
+        assert ask_body["executed"] is False
+        assert ask_body["repair_proposal"] is not None
+        proposal = ask_body["repair_proposal"]
+        assert proposal["status"] == "draft"
+        assert proposal["proposal_id"]
+        assert proposal["proposal_checksum"]
+        assert ask_body["proposal_model"]["role"] == "proposer"
+        assert ask_body["reviewer_model"]["role"] == "reviewer"
+        assert ask_body["governance"]["human_approval_required"] is True
+        assert ask_body["governance"]["no_auto_apply"] is True
+        assert ask_body["governance"]["sandbox_only"] is True
+        assert ask_body["governance"]["source_mutated"] is False
+        assert ask_body["governance"]["stage_resumed"] is False
+        assert ask_body["governance"]["reviewer_required"] is True
+        assert ask_body["migration_intelligence"]["runtime_contract"]["status"] == "generated"
+        assert ask_body["migration_intelligence"]["reference_delta"]["status"] == "generated"
+        assert ask_body["migration_intelligence"]["post_transform_failure_classification"]["status"] == "generated"
+        assert ask_body["migration_intelligence_warnings"] == []
+        assert repair_client.roles == ["proposer", "reviewer"]
+        assert "Human approval required" in ask_body["assistant_message"]["content"]
+        assert "No auto apply" in ask_body["assistant_message"]["content"]
+        assert "Sandbox only" in ask_body["assistant_message"]["content"]
+
+        proposal_id = proposal["proposal_id"]
+        proposal_checksum = proposal["proposal_checksum"]
+        approval_proposal_checksum = ask_body["repair_context"]["context_pack_checksum"]
+        review_context_pack_checksum = ask_body["repair_context"]["review_context_pack_checksum"]
+        run_dir = _seed_repair_apply_context(
+            conn,
+            tmp_path,
+            job_id=job_id,
+            proposal_id=proposal_id,
+            proposal_checksum=proposal_checksum,
+            command_id=command_id,
+            create_job_row=False,
+            create_command_row=False,
+            run_id=run_id,
+        )
+        from migration_factory.control_tower.application.v2_reviewer_service import (
+            V2ReviewerService,
+        )
+        from migration_factory.control_tower.infrastructure.sqlite.v2_reviewer_repository import (
+            SqliteV2ReviewerRepository,
+        )
+
+        reviewer_repo = SqliteV2ReviewerRepository(conn)
+        reviewer_service = V2ReviewerService(reviewer_repo=reviewer_repo)
+        reviewer_service.record_critique(
+            proposal_id=proposal_id,
+            proposal_type="repair",
+            proposal_checksum="pc-test",
+            context_pack_checksum="cp-test",
+            decision="accept",
+            reasoning="Dry run approved.",
+            missing_evidence=(),
+            unsafe_assumptions=(),
+        )
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(
+            v2_repair_flow,
+            "apply_patch_to_sandbox",
+            lambda **kwargs: _fake_apply_result(Path(kwargs["run_dir"])),
+        )
+        monkeypatch.setattr(
+            v2_repair_flow,
+            "run_validation_after_patch",
+            lambda **kwargs: _fake_validation(
+                True,
+                artifact_refs={
+                    "verification_report": str(run_dir / "repairs" / "verification.json"),
+                    "test_log": str(run_dir / "repairs" / "test.log"),
+                },
+            ),
+        )
+
+        approve_response = client.post(
+            f"/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/approve",
+            json={
+                "approval_checksum": "chk-end-to-end",
+                "proposal_checksum": approval_proposal_checksum,
+                "context_pack_checksum": review_context_pack_checksum,
+            },
+            headers=_mutation_headers(),
+        )
+        assert approve_response.status_code == 200, approve_response.text
+        approve_body = approve_response.json()
+        assert approve_body["status"] == "approved"
+        assert approve_body["approval_checksum"] == "chk-end-to-end"
+        assert approve_body["proposal_checksum"]
+        assert approve_body["repair_action"]["status"] == "applied"
+        assert approve_body["repair_action"]["human_approved"] is True
+        assert approve_body["repair_action"]["sandbox_only"] is True
+        assert approve_body["repair_action"]["source_mutated"] is False
+        assert approve_body["repair_action"]["sandbox_mutated"] is True
+        assert approve_body["repair_action"]["stage_resumed"] is False
+        assert approve_body["repair_action"]["backend_runner_invoked"] is False
+        assert approve_body["repair_action"]["llm_invoked"] is False
+        assert approve_body["repair_action"]["verification_status"] == "passed"
+        assert approve_body["repair_action"]["verification_build_status"] == "BUILD_PASSED_IN_SANDBOX"
+        assert approve_body["repair_action"]["verification_test_status"] == "TEST_PASSED"
+        assert approve_body["repair_action"]["verification_h2_status"] == "H2_STARTUP_PASSED"
+        assert approve_body["repair_action"]["verification_artifact_refs"] == {
+            "verification_report": str(run_dir / "repairs" / "verification.json"),
+            "test_log": str(run_dir / "repairs" / "test.log"),
+        }
+        assert approve_body["repair_action"]["verification_failure_classification_ref"] == ""
+        assert (run_dir / "repairs" / "patch_draft_1.json").is_file()
+
+        repeat_response = client.post(
+            f"/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/approve",
+            json={
+                "approval_checksum": "chk-end-to-end",
+                "proposal_checksum": approval_proposal_checksum,
+                "context_pack_checksum": review_context_pack_checksum,
+            },
+            headers=_mutation_headers(),
+        )
+        assert repeat_response.status_code == 200, repeat_response.text
+        repeat_body = repeat_response.json()
+        assert repeat_body["repair_action"]["status"] == "idempotent"
+        assert repeat_body["repair_action"]["verification_status"] == "passed"
+        assert repeat_body["repair_action"]["verification_artifact_refs"] == {
+            "verification_report": str(run_dir / "repairs" / "verification.json"),
+            "test_log": str(run_dir / "repairs" / "test.log"),
+        }
+        assert repeat_body["repair_action"]["verification_failure_classification_ref"] == ""
         monkeypatch.undo()
 
     def test_approve_missing_proposal(self, tmp_path: Path) -> None:
