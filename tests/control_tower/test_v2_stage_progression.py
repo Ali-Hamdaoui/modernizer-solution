@@ -74,7 +74,7 @@ def test_queue_stage3_from_stage2(tmp_path: Path) -> None:
     assert "springboot-3.5-java17-to-java21" in " ".join(result.argv)
 
 
-def test_cannot_progress_beyond_stage3(tmp_path: Path) -> None:
+def test_stage4_requires_accepted_artifact_revision(tmp_path: Path) -> None:
     conn = sqlite3.connect(str(tmp_path / "test3.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
     conn.row_factory = sqlite3.Row
     apply_pending_migrations(conn)
@@ -82,7 +82,7 @@ def test_cannot_progress_beyond_stage3(tmp_path: Path) -> None:
     setup_id = _create_setup(repo)
 
     service = V2StageProgressionService(repo)
-    with pytest.raises(ValueError, match="Cannot progress"):
+    with pytest.raises(ValueError, match="Stage 3 has no completed output"):
         service.queue_next_stage(
             job_id="job-1",
             setup_id=setup_id,
@@ -129,16 +129,20 @@ def test_sandbox_path_is_input(tmp_path: Path) -> None:
     assert "/tmp/sandbox/stage1-output" in " ".join(result.argv)
 
 
-def test_no_boot4_path(tmp_path: Path) -> None:
-    """Boot 4 is not a valid stage target."""
-    assert 4 not in STAGE_CONFIG
+def test_boot4_path_is_valid(tmp_path: Path) -> None:
+    """Boot 4 is a valid stage target in the four-stage pipeline."""
+    assert 4 in STAGE_CONFIG
+    assert STAGE_CONFIG[4]["profile"] == "springboot-3.5-java21-to-4.0-java21"
+    assert STAGE_CONFIG[4]["jdk_id"] == "java21"
 
 
 def test_stage_profiles_are_correct() -> None:
     assert STAGE_CONFIG[2]["profile"] == "springboot-2.7-to-3.5-java17"
     assert STAGE_CONFIG[3]["profile"] == "springboot-3.5-java17-to-java21"
+    assert STAGE_CONFIG[4]["profile"] == "springboot-3.5-java21-to-4.0-java21"
     assert STAGE_CONFIG[2]["jdk_id"] == "java17"
     assert STAGE_CONFIG[3]["jdk_id"] == "java21"
+    assert STAGE_CONFIG[4]["jdk_id"] == "java21"
 
 
 def test_missing_setup_rejected(tmp_path: Path) -> None:
