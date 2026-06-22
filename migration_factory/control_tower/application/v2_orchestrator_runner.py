@@ -790,19 +790,10 @@ class V2OrchestratorRunner:
             },
         )
 
-        # Emit stage-specific events
+        # Terminal Stage 4: emit stage_completed only.
+        # migration_completed is deferred to backend governance
+        # after terminal gate/artifact acceptance.
         if stage_index == 4:
-            self._event(
-                job_id=job_id,
-                stage=stage_index,
-                event_type="migration_completed",
-                status="completed",
-                message="Governed Stage 4 migration completed.",
-                payload={
-                    "command_id": command_id,
-                    "final_status": final_status,
-                },
-            )
             return
 
         if stage_index == 3:
@@ -1152,6 +1143,7 @@ class V2OrchestratorRunner:
                 service = V2StageProgressionService(
                     setup_repo=uow.v2_setups,
                     command_repo=uow.v2_commands,
+                    artifact_revision_repo=uow.artifact_revisions,
                 )
                 queued = service.queue_next_stage(
                     job_id=job_id,
