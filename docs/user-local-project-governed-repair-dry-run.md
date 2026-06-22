@@ -90,6 +90,30 @@ It uses the existing governed repair flow, sandbox copy, reviewer gate, human ap
    - `verification_artifact_refs`
    - `verification_failure_classification_ref`
 
+## Harness command
+
+Use the guarded CLI harness for the same safety checks:
+
+```powershell
+python -m scripts.governed_repair_local_dry_run --legacy-project-path <USER_LEGACY_PROJECT_PATH> --output dry-run-report.json
+```
+
+Default stub mode only prepares the sandbox and reports safety state. It does **not** run the real validation runner or apply changes.
+
+### Stub mode
+
+```powershell
+python -m scripts.governed_repair_local_dry_run --legacy-project-path <USER_LEGACY_PROJECT_PATH> --output dry-run-report.json --keep-sandbox
+```
+
+### Real validation opt-in
+
+```powershell
+python -m scripts.governed_repair_local_dry_run --legacy-project-path <USER_LEGACY_PROJECT_PATH> --real-validation --approve --output dry-run-report.json --keep-sandbox
+```
+
+Real validation runs only against the sandbox copy. The original project remains read-only.
+
 ## Real validation runner
 
 The repo already has a real validation runner in `migration_factory/repair_loop/validation_runner.py`. It runs build/test/H2 work on the sandbox copy and records artifact refs for the repair flow.
@@ -108,9 +132,10 @@ Use the existing stubbed dry-run tests when:
 
 ## Known limitations
 
-- This repo does not add a new generic CLI for arbitrary user project paths in this ticket.
-- The runbook assumes the operator or a later harness will pass the user path into the same governed flow that already handles sandbox paths internally.
+- The harness is conservative and does not yet execute the full governed proposal/reviewer/apply path.
+- It prepares the sandbox, records checksums, and can run validation on the sandbox copy.
 - If the user project needs a new integration seam, add that seam in a later ticket instead of hardcoding paths now.
+- Cleanup removes the temporary sandbox unless `--keep-sandbox` is set.
 
 ## Recommended proof points
 
