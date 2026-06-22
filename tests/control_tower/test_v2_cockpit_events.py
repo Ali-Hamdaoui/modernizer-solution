@@ -18,6 +18,9 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository i
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_approval_repository import V2ApprovalDecisionRecord
 
+from tests.control_tower._helpers import canonical_json, seed_runner_profile, sha256_json
+from tests.control_tower.v1_fixtures import make_v1_pipeline_definition
+
 
 def _mutation_headers() -> dict[str, str]:
     from migration_factory.control_tower.adapters.fastapi.security import DEFAULT_FRONTEND_CLIENT_ID
@@ -41,8 +44,35 @@ def _api_client(tmp_path: Path) -> tuple[TestClient, sqlite3.Connection]:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     apply_pending_migrations(conn)
+    seed_runner_profile(conn)
+    _seed_v1_pipeline_definition(conn)
     app = create_app(lambda: SqliteUnitOfWork(conn), v2_orchestrator_runner=_FakeV2Runner(lambda: SqliteUnitOfWork(conn)))
     return TestClient(app, base_url="http://127.0.0.1:8000"), conn
+
+
+def _seed_v1_pipeline_definition(conn: sqlite3.Connection) -> None:
+    payload = make_v1_pipeline_definition()
+    conn.execute(
+        """
+        INSERT INTO pipeline_definitions (
+            pipeline_id, pipeline_version, display_name, schema_version,
+            graph_version, graph_state_schema_version, payload_json, payload_checksum,
+            created_at, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            payload["pipeline_id"],
+            payload["pipeline_version"],
+            payload["display_name"],
+            payload["schema_version"],
+            payload["graph_version"],
+            payload["graph_state_schema_version"],
+            canonical_json(payload),
+            sha256_json(payload),
+            utc_now_text(),
+            "tester",
+        ),
+    )
 
 
 class _FakeV2Runner:

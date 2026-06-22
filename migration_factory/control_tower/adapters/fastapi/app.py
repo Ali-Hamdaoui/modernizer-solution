@@ -1963,22 +1963,32 @@ def create_app(
                 resume_id=resume.resume_id,
                 stage_index=resume.stage_index,
             )
+            launch_status_value = (
+                launch_result.status
+                if launch_result is not None
+                else "queued"
+            )
+            launch_message_value = (
+                launch_result.message
+                if launch_result is not None
+                else "Approval accepted; backend-owned resume command queued."
+            )
             with unit_of_work_factory() as event_uow:
                 _append_v2_event(
                     event_uow,
                     job_id=job_id,
                     stage=resume.stage_index,
                     event_type="approval_resume_queued",
-                    status="retrying" if launch_result.status == "retrying" else "queued",
+                    status="retrying" if launch_status_value == "retrying" else "queued",
                     message=(
                         "Approval accepted; backend-owned resume command is retrying."
-                        if launch_result.status == "retrying"
+                        if launch_status_value == "retrying"
                         else "Approval accepted; backend-owned resume command queued."
                     ),
                     payload={
                         "card_id": card_id,
                         "resume_id": resume.resume_id,
-                        "resume_status": launch_result.status,
+                        "resume_status": launch_status_value,
                     },
                 )
         asyncio.run(app.state.public_event_notifier.notify())
@@ -1990,7 +2000,7 @@ def create_app(
             if launch_status is not None
             else ("queued" if resume.resume_id else "")
         )
-        response["launch_message"] = launch_result.message if launch_result is not None else ""
+        response["launch_message"] = launch_message_value if launch_result is not None else ""
         return response
 
     @app.post("/v1/v2/jobs/{job_id}/approvals/{card_id}/reject")
