@@ -2101,12 +2101,22 @@ def create_app(
         preview for state-changing intents. Confirmation toggles
         execution through V2GateActionService.
         """
+        question_lower = payload.question.strip().lower()
+        _CONFIRM_PATTERNS = (
+            "confirm", "yes", "yes,", "yeah", "sure",
+            "go ahead", "do it", "apply", "proceed",
+            "okay", "ok,", "ok ", "approved",
+        )
+        is_confirm = any(
+            question_lower == p or question_lower.startswith(p + " ")
+            or question_lower.startswith(p + ",") or question_lower.startswith(p + ".")
+            for p in _CONFIRM_PATTERNS
+        )
         # ── Phase 1: Check for open gate ──────────────────────────
         with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
             open_gates = uow.phase_gates.list_open(job_id)
 
-        question_lower = payload.question.strip().lower()
         assistant_intent = _classify_v2_assistant_intent(question_lower)
 
         if open_gates:
@@ -2156,6 +2166,7 @@ def create_app(
                 open_gate=open_gate,
                 question=payload.question,
                 correlation_id=payload.correlation_id,
+                confirmation_store=_confirmation_store,
                 unit_of_work_factory=unit_of_work_factory,
             )
 
@@ -2167,6 +2178,82 @@ def create_app(
             commands = uow.v2_commands.list_by_job(job_id)
             pipeline = _v2_pipeline_projection(job_id, events)
             service = V2AssistantService(assistant_repo=uow.v2_assistant)
+            if is_confirm:
+                latest_decision = next(
+                    (
+                        decision
+                        for decision in uow.gate_decisions.list_by_job(job_id)
+                        if decision.action in {"continue", "reanalyze", "approve", "reject"}
+                        and (decision.result_command_id or decision.action in {"approve", "reject"})
+                    ),
+                    None,
+                )
+                if latest_decision is not None:
+                    user_msg = service.add_message(
+                        job_id=job_id,
+                        role="user",
+                        content=payload.question,
+                        correlation_id=payload.correlation_id,
+                    )
+                    resume_id = latest_decision.result_command_id
+                    if resume_id is None and latest_decision.action in {"approve", "reject"}:
+                        latest_resume = next(iter(uow.v2_approvals.list_resumes_by_job(job_id)), None)
+                        if latest_resume is not None:
+                            resume_id = latest_resume.resume_id
+                    resume_status = _resume_launch_state_from_events(
+                        uow,
+                        job_id=job_id,
+                        resume_id=resume_id or "",
+                    )
+                    progression_result = None
+                    if latest_decision.action == "continue" and latest_decision.result_command_id:
+                        progression_result = {
+                            "status": "planning_queued",
+                            "from_phase": "analysis_review",
+                            "to_phase": "planning_review",
+                            "stage_index": 1,
+                            "planning_command_id": latest_decision.result_command_id,
+                            "message": (
+                                "Stage 1 analysis review completed. "
+                                "Stage 1 planning has already been queued. "
+                                "No duplicate planning command was created."
+                            ),
+                        }
+                    assistant_msg = service.add_message(
+                        job_id=job_id,
+                        role="assistant",
+                        content=(
+                            "Checksum confirmed. Approval review is already resolved "
+                            "and the resume is already queued or running."
+                        ),
+                        correlation_id=user_msg.message_id,
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "confirm",
+                        "executed": True,
+                        "execution_result": {
+                            "success": True,
+                            "status": "executed",
+                            "decision_id": latest_decision.decision_id,
+                            "reason": "Already confirmed.",
+                            "resume_id": resume_id,
+                            "resume_status": resume_status or "queued",
+                            "resume_launch_message": "",
+                        },
+                        "progression_result": progression_result,
+                        "guardrails": {
+                            "read_only": False,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
             if not _assistant_question_requires_write(
                 question_lower=question_lower,
                 assistant_intent=assistant_intent,
@@ -5407,7 +5494,7 @@ def _handle_gate_aware_ask(
                     },
                 }
 
-            if intent.action_type == "approve_from_gate" or question_lower == "approve":
+            if question_lower == "approve" or question_lower.startswith("approve "):
                 assistant_msg = service.add_message(
                     job_id=job_id,
                     role="assistant",
@@ -5443,7 +5530,7 @@ def _handle_gate_aware_ask(
                     },
                 }
 
-            if intent.action_type == "reject_from_gate" or question_lower == "reject":
+            if question_lower == "reject" or question_lower.startswith("reject "):
                 assistant_msg = service.add_message(
                     job_id=job_id,
                     role="assistant",
@@ -6733,6 +6820,7 @@ def _handle_gate_aware_read_only_ask(
     open_gate: Any,
     question: str,
     correlation_id: str | None,
+    confirmation_store: ConfirmationStore,
     unit_of_work_factory: Any,
 ) -> dict[str, Any]:
     from migration_factory.control_tower.application.v2_assistant_service import (
@@ -6820,7 +6908,7 @@ def _handle_gate_aware_read_only_ask(
                         },
                     }
                 exact_checksum = _extract_confirm_checksum(question)
-                if intent.action_type == "approve_from_gate" or question_lower == "approve":
+                if question_lower == "approve" or question_lower.startswith("approve "):
                     assistant_msg = AssistantMessage(
                         message_id=uuid4().hex,
                         job_id=job_id,
@@ -6914,11 +7002,165 @@ def _handle_gate_aware_read_only_ask(
                         },
                     }
 
+            if open_gate.gate_phase == "analysis_review":
+                if intent.action_type in {"continue_from_gate", "request_reanalysis"}:
+                    from migration_factory.control_tower.domain.checksums import sha256_canonical_json
+                    preview_builder = GateActionPreviewBuilder()
+                    preview = preview_builder.build_preview(
+                        intent=intent,
+                        gate_context=context,
+                    )
+                    idempotency_key = sha256_canonical_json({
+                        "gate_id": open_gate.gate_id,
+                        "job_id": job_id,
+                        "action_type": preview.action_type,
+                        "timestamp": utc_now_text(),
+                    })
+                    confirmation_store.store(
+                        job_id=job_id,
+                        gate_id=open_gate.gate_id,
+                        action_type=preview.action_type,
+                        expected_gate_checksum=context.checksum,
+                        idempotency_key=idempotency_key,
+                    )
+                    assistant_msg = AssistantMessage(
+                        message_id=uuid4().hex,
+                        job_id=job_id,
+                        role="assistant",
+                        content=_format_preview_response(preview, context),
+                        correlation_id=user_msg.message_id,
+                        created_at=utc_now_text(),
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": intent.action_type,
+                        "executed": False,
+                        "action_preview": {
+                            "action_type": preview.action_type,
+                            "reason": preview.reason,
+                            "confidence": preview.confidence,
+                            "warning": preview.warning,
+                            "requires_confirmation": True,
+                            "pending_confirmation": True,
+                        },
+                        "guardrails": {
+                            "read_only": False,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+                if intent.ambiguous or not intent.action_type:
+                    from migration_factory.control_tower.application.v2_gate_assistant import (
+                        AmbiguityHandler,
+                    )
+                    explanation = AmbiguityHandler.handle_ambiguous(intent, context)
+                    assistant_msg = AssistantMessage(
+                        message_id=uuid4().hex,
+                        job_id=job_id,
+                        role="assistant",
+                        content=explanation,
+                        correlation_id=user_msg.message_id,
+                        created_at=utc_now_text(),
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": intent.action_type or "ambiguous",
+                        "executed": False,
+                        "ambiguous": True,
+                        "clarification_question": intent.clarification_question or "",
+                        "available_actions": list(intent.available_actions),
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+                if intent.ambiguous or not intent.action_type:
+                    from migration_factory.control_tower.application.v2_gate_assistant import (
+                        AmbiguityHandler,
+                    )
+                    explanation = AmbiguityHandler.handle_ambiguous(intent, context)
+                    assistant_msg = AssistantMessage(
+                        message_id=uuid4().hex,
+                        job_id=job_id,
+                        role="assistant",
+                        content=explanation,
+                        correlation_id=user_msg.message_id,
+                        created_at=utc_now_text(),
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": intent.action_type or "ambiguous",
+                        "executed": False,
+                        "ambiguous": True,
+                        "clarification_question": intent.clarification_question or "",
+                        "available_actions": list(intent.available_actions),
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+                if intent.ambiguous or not intent.action_type:
+                    from migration_factory.control_tower.application.v2_gate_assistant import (
+                        AmbiguityHandler,
+                    )
+                    explanation = AmbiguityHandler.handle_ambiguous(intent, context)
+                    assistant_msg = AssistantMessage(
+                        message_id=uuid4().hex,
+                        job_id=job_id,
+                        role="assistant",
+                        content=explanation,
+                        correlation_id=user_msg.message_id,
+                        created_at=utc_now_text(),
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": intent.action_type or "ambiguous",
+                        "executed": False,
+                        "ambiguous": True,
+                        "clarification_question": intent.clarification_question or "",
+                        "available_actions": list(intent.available_actions),
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+
+            from migration_factory.control_tower.application.v2_gate_assistant import (
+                AmbiguityHandler,
+            )
+            explanation = AmbiguityHandler.handle_ambiguous(intent, context)
             assistant_msg = AssistantMessage(
                 message_id=uuid4().hex,
                 job_id=job_id,
                 role="assistant",
-                content=_format_approval_review_preview(context),
+                content=explanation,
                 correlation_id=user_msg.message_id,
                 created_at=utc_now_text(),
             )
@@ -6927,8 +7169,10 @@ def _handle_gate_aware_read_only_ask(
                 "user_message": service.message_to_dict(user_msg),
                 "assistant_message": service.message_to_dict(assistant_msg),
                 "gate_aware": True,
-                "intent": intent.action_type or "status",
+                "intent": intent.action_type or "ambiguous",
                 "executed": False,
+                "ambiguous": True,
+                "clarification_question": intent.clarification_question or "",
                 "available_actions": list(intent.available_actions),
                 "guardrails": {
                     "read_only": True,

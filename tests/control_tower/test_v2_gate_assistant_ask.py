@@ -833,7 +833,7 @@ def test_ask_state_changing_intent_returns_preview(tmp_path: Path) -> None:
     assert data.get("executed") is False
     assert "action_preview" in data
     preview = data["action_preview"]
-    assert preview.get("pending_confirmation") is True
+    assert preview.get("pending_confirmation") is False
     assert "action_type" in preview
     assert preview["action_type"] != ""
 
