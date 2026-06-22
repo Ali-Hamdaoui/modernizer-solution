@@ -2219,6 +2219,16 @@ def create_app(
                 artifact_previews=artifact_previews if artifact_previews else None,
                 assistant_intent=assistant_intent,
             )
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=None,
+                event_type="model_invocation_started",
+                status="running",
+                message="Assistant model invocation started.",
+                payload={"provider": "azure_openai", "role": "assistant"},
+            )
+
             if assistant_intent in {"apply_dependency_change", "rollback_pom_change"}:
                 model_result = V2AssistantModelResult(
                     content=fallback_answer,
@@ -6564,6 +6574,15 @@ def _handle_v2_assistant_read_only_ask(
                 artifact_previews=artifact_previews if artifact_previews else None,
                 assistant_intent=assistant_intent,
             )
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=None,
+                event_type="model_invocation_started",
+                status="running",
+                message="Assistant model invocation started.",
+                payload={"provider": "azure_openai", "role": "assistant"},
+            )
             if assistant_intent in {"apply_dependency_change", "rollback_pom_change"}:
                 model_result = V2AssistantModelResult(
                     content=fallback_answer,
@@ -6600,6 +6619,26 @@ def _handle_v2_assistant_read_only_ask(
                         fallback=fallback_answer,
                         conversation_history=(),
                     )
+
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=None,
+                event_type="model_invocation_completed" if model_result.success else "model_invocation_failed",
+                status="completed" if model_result.success else (
+                    "fallback" if model_result.source == "deterministic" else "failed"
+                ),
+                message=model_result.redacted_summary,
+                payload={
+                    "provider": model_result.provider,
+                    "role": model_result.role,
+                    "source": model_result.source,
+                    "success": model_result.success,
+                    "is_fallback": (
+                        not model_result.success and model_result.source == "deterministic"
+                    ),
+                },
+            )
 
             now = utc_now_text()
             user_msg = AssistantMessage(
