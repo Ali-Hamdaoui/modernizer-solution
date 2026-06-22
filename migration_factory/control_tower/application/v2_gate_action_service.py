@@ -1048,7 +1048,11 @@ class V2GateActionService:
 
         # 2. Idempotency check (before status check — idempotent
         #    requests return the same result regardless of gate state)
-        effective_idempotency_key = idempotency_key or f"{gate_id}:{action.value}"
+        # Default key stays stable for same actor on same gate/action,
+        # but no longer collides across different actors.
+        effective_idempotency_key = (
+            idempotency_key or f"{gate_id}:{action.value}:{decided_by}"
+        )
         request_checksum = request_checksum or sha256_canonical_json(
             {
                 "gate_id": gate_id,
