@@ -543,6 +543,64 @@ migration_units:
     assert "No automatic merge performed." in payload["limitations"]
 
 
+def test_final_report_exposes_migration_intelligence_artifacts_when_present(tmp_path: Path) -> None:
+    state = _successful_state(tmp_path)
+    _write_migration_intelligence_artifacts(state)
+
+    result = finalize_orchestration_state(state)
+
+    payload = json.loads(Path(result["artifact_refs"]["final_migration_report"]).read_text(encoding="utf-8"))
+    assert payload["runtime_contract"]["status"] == "generated"
+    assert payload["reference_delta"]["status"] == "generated"
+    assert payload["post_transform_failure_classification"]["status"] == "generated"
+    assert payload["runtime_contract"]["detected_risks"]
+    assert payload["reference_delta"]["recommended_capability_packs"]
+    assert payload["post_transform_failure_classification"]["category_counts"] == {"HTTP_STATUS_CONTRACT_DRIFT": 1}
+    assert payload["artifact_refs"]["runtime_contract"].endswith("runtime_contract.json")
+    assert payload["artifact_refs"]["reference_delta"].endswith("reference_delta.json")
+    assert payload["artifact_refs"]["failure_classification"].endswith("post_transform_failure_classification.json")
+
+    summary = Path(result["artifact_refs"]["final_migration_summary"]).read_text(encoding="utf-8")
+    assert "## Runtime Contract" in summary
+    assert "## Reference Delta" in summary
+    assert "## Post-Transform Failure Classification" in summary
+
+
+def test_final_report_best_effort_optional_artifacts_do_not_block_report(tmp_path: Path) -> None:
+    state = _successful_state(tmp_path)
+    analysis_dir = Path(state["analysis_dir"])
+    build_dir = Path(state["run_dir"]) / "build"
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    build_dir.mkdir(parents=True, exist_ok=True)
+    (analysis_dir / "runtime_contract.json").write_text("{not-json}\n", encoding="utf-8")
+    (build_dir / "post_transform_failure_classification.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0.0",
+                "agent": "build-agent",
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "project_path": str(Path(state["legacy_app_path"])),
+                "unit_id": "unit-1",
+                "suite_count": 1,
+                "failure_count": 1,
+                "category_counts": {"UNKNOWN_TEST_FAILURE": 1},
+                "failures": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = finalize_orchestration_state(state)
+
+    payload = json.loads(Path(result["artifact_refs"]["final_migration_report"]).read_text(encoding="utf-8"))
+    assert payload["runtime_contract"]["status"] == "failed_best_effort"
+    assert payload["reference_delta"]["status"] == "not_available"
+    assert payload["post_transform_failure_classification"]["status"] == "generated"
+    assert any("runtime_contract.json" in warning for warning in result["warnings"])
+    assert Path(result["artifact_refs"]["final_migration_summary"]).is_file()
+
+
 def _successful_state(tmp_path: Path) -> dict:
     legacy = tmp_path / "legacy"
     modernized = tmp_path / "modernized"
@@ -647,6 +705,99 @@ def _successful_state(tmp_path: Path) -> dict:
         }
     )
     return state
+
+
+def _write_migration_intelligence_artifacts(state: dict) -> None:
+    analysis_dir = Path(state["analysis_dir"])
+    build_dir = Path(state["run_dir"]) / "build"
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    build_dir.mkdir(parents=True, exist_ok=True)
+    (analysis_dir / "runtime_contract.json").write_text(
+        json.dumps(
+            {
+                "project_path": state["legacy_app_path"],
+                "jdk_requirements": {
+                    "java_version": "17",
+                    "compiler_release": "17",
+                    "workflow_setup_java_versions": ["17"],
+                    "hardcoded_jdk_paths": [],
+                    "environment_variables": ["JAVA_HOME"],
+                },
+                "maven_requirements": {
+                    "wrapper_present": True,
+                    "settings_files": ["settings.xml"],
+                    "workflow_maven_versions": ["3.9.9"],
+                    "hardcoded_maven_paths": [],
+                },
+                "private_registry_requirements": {
+                    "repository_urls": ["https://repo.example.com"],
+                    "detected_indicators": ["maven-settings"],
+                    "environment_variables": ["MAVEN_OPTS"],
+                    "evidence": [{"path": "settings.xml", "type": "private_registry_hint"}],
+                },
+                "internal_dependencies": [{"coordinate": "com.example:shared", "reasons": ["reference_delta_context"]}],
+                "configuration_files": [{"path": "src/main/resources/application.yml", "kind": "yaml"}],
+                "security_materials": [{"path": "src/main/resources/keystore.p12", "kind": "keystore"}],
+                "detected_risks": [{"code": "MISSING_PRIVATE_MAVEN_SETTINGS", "evidence": []}],
+                "recommended_actions": [{"code": "REVIEW_JDK_PATHS", "description": "Review JDK paths"}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (analysis_dir / "reference_delta.json").write_text(
+        json.dumps(
+            {
+                "legacy": {"root_basename": "legacy"},
+                "reference": {"root_basename": "reference"},
+                "dependency_delta": {
+                    "added": [{"coordinate": "com.example:new"}],
+                    "removed": [],
+                    "version_changed": [{"coordinate": "com.example:old"}],
+                },
+                "source_delta": {
+                    "added_imports": ["jakarta.servlet.http.HttpServletRequest"],
+                    "removed_imports": [],
+                    "javax_to_jakarta_imports": [{"legacy": "javax.servlet", "reference": "jakarta.servlet"}],
+                },
+                "api_migration_indicators": {
+                    "spring_security_5_to_6": {"detected": True},
+                    "jjwt_parser_api": {"detected": False},
+                },
+                "suspicious_artifacts": [{"path": "README.md", "type": "test_hint"}],
+                "recommended_capability_packs": ["spring-security-6", "jakarta-boost"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (build_dir / "post_transform_failure_classification.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0.0",
+                "agent": "build-agent",
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "project_path": state["legacy_app_path"],
+                "unit_id": "unit-123",
+                "suite_count": 1,
+                "failure_count": 1,
+                "category_counts": {"HTTP_STATUS_CONTRACT_DRIFT": 1},
+                "failures": [
+                    {
+                        "test_class": "com.example.DemoTest",
+                        "test_method": "fails",
+                        "outcome": "failure",
+                        "symptom": "expected:<200> but was:<500>",
+                        "exception_type": "java.lang.AssertionError",
+                        "category": "HTTP_STATUS_CONTRACT_DRIFT",
+                        "suggested_next_action": "Review expected HTTP status codes and exception-to-response mappings under Spring Boot 3.",
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _as_posix(path: str) -> str:

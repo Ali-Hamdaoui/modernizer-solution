@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from migration_factory.contracts import SCHEMA_VERSION
+from migration_factory.agents.build_agent.failure_classifier import ARTIFACT_NAME as FAILURE_CLASSIFICATION_ARTIFACT_NAME
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,36 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
         Path(str(artifact_refs.get("dependency_policy_report") or run_dir / "assessment" / "dependency_policy_report.json")),
         warnings,
     )
+    runtime_contract_artifact = _load_optional_artifact(
+        run_dir,
+        artifact_refs,
+        warnings,
+        artifact_key="runtime_contract",
+        name="runtime_contract.json",
+        key_candidates=("runtime_contract", "runtime_contract_artifact"),
+        default_candidates=(run_dir / "analysis" / "runtime_contract.json",),
+    )
+    reference_delta_artifact = _load_optional_artifact(
+        run_dir,
+        artifact_refs,
+        warnings,
+        artifact_key="reference_delta",
+        name="reference_delta.json",
+        key_candidates=("reference_delta", "reference_delta_artifact"),
+        default_candidates=(run_dir / "analysis" / "reference_delta.json",),
+    )
+    failure_classification_artifact = _load_optional_artifact(
+        run_dir,
+        artifact_refs,
+        warnings,
+        artifact_key="failure_classification",
+        name=FAILURE_CLASSIFICATION_ARTIFACT_NAME,
+        key_candidates=("failure_classification", "post_transform_failure_classification"),
+        default_candidates=(
+            run_dir / "build" / FAILURE_CLASSIFICATION_ARTIFACT_NAME,
+            run_dir / "contracts" / "build" / FAILURE_CLASSIFICATION_ARTIFACT_NAME,
+        ),
+    )
 
     test_status = str(state.get("test_status") or "")
     totals = dict(state.get("test_totals", {}) or {})
@@ -106,6 +137,9 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
     repair_loop = _repair_loop_context(state, artifact_refs)
     dependency_policy = _dependency_policy_context(state, artifact_refs, dependency_policy_report)
     ai_trace = _ai_trace_context(state, artifact_refs, repair_loop, run_dir)
+    runtime_contract = _runtime_contract_context(runtime_contract_artifact)
+    reference_delta = _reference_delta_context(reference_delta_artifact)
+    failure_classification = _failure_classification_context(failure_classification_artifact)
 
     report_payload = {
         "run_id": state.get("run_id", ""),
@@ -141,6 +175,9 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
         "repair_loop": repair_loop,
         "ai_trace": ai_trace,
         "dependency_policy": dependency_policy,
+        "runtime_contract": runtime_contract,
+        "reference_delta": reference_delta,
+        "post_transform_failure_classification": failure_classification,
         "target_dependency_plan_ref": artifact_refs.get("target_dependency_plan", ""),
         "dependency_policy_report_ref": artifact_refs.get("dependency_policy_report", ""),
         "dependency_policy_status": dependency_policy["status"],
@@ -156,6 +193,11 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
             **artifact_refs,
             "final_migration_report": str(json_path),
             "final_migration_summary": str(md_path),
+            **_optional_artifact_refs(
+                runtime_contract_artifact,
+                reference_delta_artifact,
+                failure_classification_artifact,
+            ),
         },
         "timing": {
             "timing_report": artifact_refs.get("timing_report", ""),
@@ -310,6 +352,20 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
                 f"- Policy Patch Applied: {str(dependency_policy.get('policy_patch_applied', False)).lower()}",
                 f"- Report: {dependency_policy.get('report_ref', '')}",
             ]
+        )
+    runtime_contract = dict(payload.get("runtime_contract", {}) or {})
+    if runtime_contract:
+        lines.extend(_optional_artifact_markdown_section("Runtime Contract", runtime_contract))
+    reference_delta = dict(payload.get("reference_delta", {}) or {})
+    if reference_delta:
+        lines.extend(_optional_artifact_markdown_section("Reference Delta", reference_delta))
+    failure_classification = dict(payload.get("post_transform_failure_classification", {}) or {})
+    if failure_classification:
+        lines.extend(
+            _optional_artifact_markdown_section(
+                "Post-Transform Failure Classification",
+                failure_classification,
+            )
         )
     statement = payload.get("copilot_advisory_statement")
     if isinstance(statement, dict):
@@ -805,6 +861,225 @@ def _read_optional_json(path: Path, warnings: list[str]) -> dict[str, Any] | Non
     if not path.is_file():
         return None
     return _read_json(path, warnings)
+
+
+def _load_optional_artifact(
+    run_dir: Path,
+    artifact_refs: dict[str, str],
+    warnings: list[str],
+    *,
+    artifact_key: str,
+    name: str,
+    key_candidates: tuple[str, ...],
+    default_candidates: tuple[Path, ...],
+) -> dict[str, Any]:
+    artifact_path = _resolve_optional_artifact_path(artifact_refs, key_candidates, default_candidates)
+    if artifact_path is None:
+        return {
+            "name": name,
+            "artifact_key": artifact_key,
+            "status": "not_available",
+            "artifact_ref": "",
+            "artifact_path": "",
+        }
+    payload = _read_optional_json(artifact_path, warnings)
+    if not isinstance(payload, dict):
+        if artifact_path.is_file():
+            return {
+                "name": name,
+                "artifact_key": artifact_key,
+                "status": "failed_best_effort",
+                "artifact_ref": str(artifact_path),
+                "artifact_path": str(artifact_path),
+                "warning": f"unable to load {name}",
+            }
+        return {
+            "name": name,
+            "artifact_key": artifact_key,
+            "status": "not_available",
+            "artifact_ref": "",
+            "artifact_path": "",
+        }
+    summary = _summarize_optional_artifact(name, payload)
+    summary["status"] = "generated"
+    summary["artifact_ref"] = str(artifact_path)
+    summary["artifact_path"] = str(artifact_path)
+    summary["artifact_key"] = artifact_key
+    return summary
+
+
+def _resolve_optional_artifact_path(
+    artifact_refs: dict[str, str],
+    key_candidates: tuple[str, ...],
+    default_candidates: tuple[Path, ...],
+) -> Path | None:
+    for key in key_candidates:
+        ref = str(artifact_refs.get(key) or "")
+        if ref:
+            path = Path(ref)
+            if path.is_file():
+                return path
+    for path in default_candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def _optional_artifact_refs(
+    *artifacts: dict[str, Any],
+) -> dict[str, str]:
+    refs: dict[str, str] = {}
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        ref = str(artifact.get("artifact_ref") or "")
+        if not ref:
+            continue
+        key = str(artifact.get("artifact_key") or artifact.get("name") or "")
+        if key:
+            refs[key] = ref
+    return refs
+
+
+def _summarize_optional_artifact(name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if name == "runtime_contract.json":
+        jdk = _object_or_empty(payload.get("jdk_requirements"))
+        maven = _object_or_empty(payload.get("maven_requirements"))
+        registry = _object_or_empty(payload.get("private_registry_requirements"))
+        return {
+            "name": name,
+            "project_path": payload.get("project_path", ""),
+            "jdk_requirements": {
+                "java_version": jdk.get("java_version", ""),
+                "compiler_source": jdk.get("compiler_source", ""),
+                "compiler_target": jdk.get("compiler_target", ""),
+                "compiler_release": jdk.get("compiler_release", ""),
+                "workflow_setup_java_versions": list(jdk.get("workflow_setup_java_versions", []) or [])[:10],
+                "hardcoded_jdk_paths": list(jdk.get("hardcoded_jdk_paths", []) or [])[:10],
+                "environment_variables": list(jdk.get("environment_variables", []) or [])[:10],
+            },
+            "maven_requirements": {
+                "wrapper_present": bool(maven.get("wrapper_present", False)),
+                "settings_files": list(maven.get("settings_files", []) or [])[:10],
+                "workflow_maven_versions": list(maven.get("workflow_maven_versions", []) or [])[:10],
+                "hardcoded_maven_paths": list(maven.get("hardcoded_maven_paths", []) or [])[:10],
+            },
+            "private_registry_requirements": {
+                "repository_urls": list(registry.get("repository_urls", []) or [])[:10],
+                "detected_indicators": list(registry.get("detected_indicators", []) or [])[:10],
+                "environment_variables": list(registry.get("environment_variables", []) or [])[:10],
+                "evidence": list(registry.get("evidence", []) or [])[:10],
+            },
+            "internal_dependencies": list(payload.get("internal_dependencies", []) or [])[:10],
+            "configuration_files": list(payload.get("configuration_files", []) or [])[:10],
+            "security_materials": list(payload.get("security_materials", []) or [])[:10],
+            "detected_risks": list(payload.get("detected_risks", []) or [])[:10],
+            "recommended_actions": list(payload.get("recommended_actions", []) or [])[:10],
+        }
+    if name == "reference_delta.json":
+        return {
+            "name": name,
+            "legacy": _object_or_empty(payload.get("legacy")),
+            "reference": _object_or_empty(payload.get("reference")),
+            "dependency_delta": _object_or_empty(payload.get("dependency_delta")),
+            "source_delta": _object_or_empty(payload.get("source_delta")),
+            "api_migration_indicators": _object_or_empty(payload.get("api_migration_indicators")),
+            "suspicious_artifacts": list(payload.get("suspicious_artifacts", []) or [])[:10],
+            "recommended_capability_packs": list(payload.get("recommended_capability_packs", []) or [])[:10],
+        }
+    if name == FAILURE_CLASSIFICATION_ARTIFACT_NAME:
+        failures = list(payload.get("failures", []) or [])
+        return {
+            "name": name,
+            "project_path": payload.get("project_path", ""),
+            "unit_id": payload.get("unit_id"),
+            "suite_count": payload.get("suite_count", 0),
+            "failure_count": payload.get("failure_count", len(failures)),
+            "category_counts": _object_or_empty(payload.get("category_counts")),
+            "failures": [
+                {
+                    "test_class": str(item.get("test_class", "")),
+                    "test_method": str(item.get("test_method", "")),
+                    "outcome": str(item.get("outcome", "")),
+                    "category": str(item.get("category", "")),
+                    "exception_type": str(item.get("exception_type", "")),
+                    "symptom": str(item.get("symptom", "")),
+                    "suggested_next_action": str(item.get("suggested_next_action", "")),
+                }
+                for item in failures[:10]
+                if isinstance(item, dict)
+            ],
+            "behavioral_context": payload.get("behavioral_context"),
+            "test_failure_summary": payload.get("test_failure_summary"),
+        }
+    return {"name": name}
+
+
+def _optional_artifact_markdown_section(title: str, payload: dict[str, Any]) -> list[str]:
+    if payload.get("status") == "not_available":
+        return ["", f"## {title}", "", "- not_available"]
+    lines = ["", f"## {title}", ""]
+    status = str(payload.get("status", "not_available"))
+    lines.append(f"- Status: {status}")
+    artifact_ref = str(payload.get("artifact_ref") or "")
+    if artifact_ref:
+        lines.append(f"- Artifact: {artifact_ref}")
+    if title == "Runtime Contract":
+        jdk = _object_or_empty(payload.get("jdk_requirements"))
+        maven = _object_or_empty(payload.get("maven_requirements"))
+        registry = _object_or_empty(payload.get("private_registry_requirements"))
+        lines.extend(
+            [
+                f"- JDK: {jdk.get('java_version', '')} / release {jdk.get('compiler_release', '')}",
+                f"- Maven Wrapper: {str(bool(maven.get('wrapper_present'))).lower()}",
+                f"- Private Registry URLs: {len(list(registry.get('repository_urls', []) or []))}",
+                f"- Internal Dependencies: {len(list(payload.get('internal_dependencies', []) or []))}",
+                f"- Risks: {len(list(payload.get('detected_risks', []) or []))}",
+            ]
+        )
+    elif title == "Reference Delta":
+        dep = _object_or_empty(payload.get("dependency_delta"))
+        src = _object_or_empty(payload.get("source_delta"))
+        api = _object_or_empty(payload.get("api_migration_indicators"))
+        lines.extend(
+            [
+                f"- Dependency Delta: added={len(list(dep.get('added', []) or []))} removed={len(list(dep.get('removed', []) or []))} version_changed={len(list(dep.get('version_changed', []) or []))}",
+                f"- Source Delta: added_imports={len(list(src.get('added_imports', []) or []))} removed_imports={len(list(src.get('removed_imports', []) or []))}",
+                f"- API Indicators: {', '.join(sorted(api.keys())) if api else 'none'}",
+                f"- Capability Packs: {', '.join(str(item) for item in list(payload.get('recommended_capability_packs', []) or [])[:6]) or 'none'}",
+                f"- Suspicious Artifacts: {len(list(payload.get('suspicious_artifacts', []) or []))}",
+            ]
+        )
+    elif title == "Post-Transform Failure Classification":
+        lines.extend(
+            [
+                f"- Unit: {payload.get('unit_id') or 'not_captured'}",
+                f"- Failure Count: {payload.get('failure_count', 0)}",
+                f"- Categories: {', '.join(f'{key}={value}' for key, value in dict(payload.get('category_counts', {}) or {}).items()) or 'none'}",
+            ]
+        )
+        failures = list(payload.get("failures", []) or [])
+        if failures:
+            first = dict(failures[0])
+            lines.extend(
+                [
+                    f"- First Failure: {first.get('test_class', '')}::{first.get('test_method', '')}",
+                    f"- Suggested Action: {first.get('suggested_next_action', '')}",
+                ]
+            )
+    return lines
+
+
+def _runtime_contract_context(payload: dict[str, Any] | None) -> dict[str, Any]:
+    return dict(payload or {"status": "not_available"})
+
+
+def _reference_delta_context(payload: dict[str, Any] | None) -> dict[str, Any]:
+    return dict(payload or {"status": "not_available"})
+
+
+def _failure_classification_context(payload: dict[str, Any] | None) -> dict[str, Any]:
+    return dict(payload or {"status": "not_available"})
 
 
 def _read_yaml(path: Path, warnings: list[str]) -> dict[str, Any] | None:
