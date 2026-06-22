@@ -9,6 +9,7 @@ from config_scanner import save_config_inventory, scan_config_files
 from context_manager import MigrationContext
 from copilot_enricher import enrich_with_ai
 from dependency_adapter import run_dependency_tree
+from analysis_artifacts import generate_analysis_artifacts
 from import_scanner import scan_java_imports
 from maven_scanner import load_profile_target_stack, scan_root_pom
 from openrewrite_adapter import run_openrewrite_dryrun
@@ -62,8 +63,27 @@ def run_analysis_agent(context: MigrationContext) -> AnalysisResult:
     warnings.extend(maven_results.get("warnings", []))
     warnings.extend(rewrite_result.get("warnings", []))
 
+    analysis_artifacts = generate_analysis_artifacts(context, legacy_root)
+    artifact_paths = {
+        "runtime_contract": analysis_artifacts["artifact_paths"]["runtime_contract"],
+        "reference_delta": analysis_artifacts["artifact_paths"]["reference_delta"],
+    }
+    warnings.extend(
+        warning
+        for warning in (
+            analysis_artifacts["analysis_artifacts"]["reference_delta"].get("error"),
+            analysis_artifacts["analysis_artifacts"]["runtime_contract"].get("error"),
+        )
+        if warning
+    )
+
     report_data = assemble_report(context, maven_results, import_results)
     final_report = enrich_with_ai(context, report_data)
+    if isinstance(final_report, dict):
+        final_report["analysis_artifacts"] = analysis_artifacts["analysis_artifacts"]
+        artifact_refs = final_report.setdefault("artifact_refs", {})
+        artifact_refs["runtime_contract"] = "runtime_contract.json"
+        artifact_refs["reference_delta"] = "reference_delta.json"
 
     report_path = context.get_output_path("analysis_report.json")
     with open(report_path, "w", encoding="utf-8") as handle:
@@ -89,6 +109,7 @@ def run_analysis_agent(context: MigrationContext) -> AnalysisResult:
         "copilot_assist": context.get_output_path("copilot_assist.json"),
         "read_only_verification": context.get_output_path("read_only_verification.json"),
     }
+    artifact_paths.update(analysis_artifacts["artifact_paths"])
 
     read_only_verification = write_read_only_verification(context, before_legacy, before_modernized)
     if read_only_verification["source_modified"]:
