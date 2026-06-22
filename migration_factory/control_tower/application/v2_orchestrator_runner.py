@@ -17,6 +17,7 @@ from migration_factory.control_tower.application.redaction import (
     redact_public_value,
 )
 from migration_factory.control_tower.application.v2_approval_mapping import V2ApprovalMappingService
+from migration_factory.control_tower.application.v2_stage_progression import TERMINAL_STAGE_INDEX
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json
 from migration_factory.control_tower.domain.gate_checksum import gate_checksum
 from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
@@ -789,45 +790,50 @@ class V2OrchestratorRunner:
             },
         )
 
-        # Emit report completion events based on stage index
-        if stage_index == 3:
-            report_type = "final_report"
-            report_label = "Final migration proof report"
-        else:
-            report_type = "stage_report"
-            report_label = f"Stage {stage_index} report"
-
-        self._event(
-            job_id=job_id,
-            stage=stage_index,
-            event_type=f"{report_type}_started",
-            status="running",
-            message=f"{report_label} generation started.",
-            payload={"command_id": command_id, "sandbox_path": sandbox_path},
-        )
-        self._event(
-            job_id=job_id,
-            stage=stage_index,
-            event_type=f"{report_type}_completed",
-            status="completed",
-            message=f"{report_label} completed.",
-            payload={"command_id": command_id, "final_status": final_status},
-        )
-
-        if stage_index == 3:
+        # Emit stage-specific events
+        if stage_index == 4:
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="migration_completed",
                 status="completed",
-                message="Migration completed successfully.",
+                message="Governed Stage 4 migration completed.",
                 payload={
                     "command_id": command_id,
                     "final_status": final_status,
-                    "sandbox_path": sandbox_path,
                 },
             )
             return
+
+        if stage_index == 3:
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="stage_completed",
+                status="completed",
+                message=f"Stage {stage_index} completed.",
+                payload={
+                    "command_id": command_id,
+                    "final_status": final_status,
+                },
+            )
+        else:
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="stage_report_started",
+                status="running",
+                message=f"Stage {stage_index} report started.",
+                payload={"command_id": command_id},
+            )
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="stage_report_completed",
+                status="completed",
+                message=f"Stage {stage_index} report completed.",
+                payload={"command_id": command_id, "final_status": final_status},
+            )
 
         if command_phase == "planning":
             self._handle_planning_phase_completed(
