@@ -16,6 +16,9 @@ import {
   getV2JobGates,
   getV2OpenGate,
   getV2MigrationJobStages,
+  getV2FinalReport,
+  generateV2FinalReport,
+  resolveReportDownloadUrl,
   rejectV2Card,
   requireJobId,
   v2EventStreamUrl,
@@ -26,6 +29,7 @@ import type {
   V2ArtifactPreviewResponse,
   V2AssistantMessageResponse,
   V2FailureSummaryResponse,
+  V2FinalReportResponse,
   V2JobEvent,
   V2MigrationJobResponse,
   V2PipelineResponse,
@@ -249,6 +253,8 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [streamState, setStreamState] = useState<"connecting" | "connected" | "reconnecting">("connecting");
   const [liveRefreshWarning, setLiveRefreshWarning] = useState<string | null>(null);
   const [gateState, setGateState] = useState<GatePanelState>({ status: "loading" });
+  const [report, setReport] = useState<V2FinalReportResponse | null>(null);
+  const [reportBusy, setReportBusy] = useState(false);
   const normalizedJobId = jobId?.trim() ?? "";
   const approvalReviewOpen = gateState.status === "success" && gateState.openGate?.gate_phase === "approval_review";
 
@@ -286,6 +292,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           assistantModel: null,
         });
         setError(null);
+        void refreshReport();
       } catch (e) {
         if (!cancelled) {
           setError(e instanceof Error ? e.message : "Failed to load cockpit");
@@ -295,6 +302,25 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     loadCockpit();
     return () => { cancelled = true; };
   }, [normalizedJobId]);
+
+  async function refreshReport() {
+    if (!normalizedJobId) return;
+    try {
+      setReport(await getV2FinalReport(normalizedJobId));
+    } catch {
+      // report state stays null if not available
+    }
+  }
+
+  async function handleGenerateReport() {
+    if (!normalizedJobId || !report?.eligible) return;
+    setReportBusy(true);
+    try {
+      setReport(await generateV2FinalReport(normalizedJobId));
+    } finally {
+      setReportBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (!normalizedJobId) {
@@ -943,6 +969,37 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         <p className="meta">Final proof report generated when all three deterministic gates pass.</p>
       </section>
 
+      {/* Final Report Panel */}
+      <section className="panel">
+        <h2>Final Report</h2>
+        {report && report.blockers.length > 0 && report.blockers.map((blocker) => (
+          <p className="warning-text" key={blocker}>{blocker}</p>
+        ))}
+        {report && !report.eligible && (
+          <p className="meta">Report generation not yet available for this job.</p>
+        )}
+        <button
+          type="button"
+          disabled={reportBusy || !report?.eligible}
+          onClick={() => void handleGenerateReport()}
+        >
+          {report?.status === "generated" ? "Regenerate report" : "Generate report"}
+        </button>
+        {reportBusy && <span className="meta"> Generating...</span>}
+        {report?.artifacts.map((artifact) => (
+          <div key={artifact.artifact_id} className="report-artifact-row">
+            <span className="meta">{artifact.kind}</span>
+            <span className="checksum">{artifact.checksum_sha256.slice(0, 16)}...</span>
+            <a
+              href={resolveReportDownloadUrl(artifact.download_url)}
+              download
+            >
+              Download
+            </a>
+          </div>
+        ))}
+      </section>
+
       {/* F14 — Stage 3 Dependency Review */}
       {data && (
         <section style={{ gridColumn: "1 / -1" }}>
@@ -1020,6 +1077,8 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .artifact-kind-link:disabled { color: #888; cursor: wait; text-decoration: none; }
         .artifact-preview { border: 1px solid #0066cc; background: #f0f6ff; padding: 1rem; margin: 0.75rem 0; border-radius: 4px; }
         .artifact-preview-content { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 400px; overflow-y: auto; background: #fff; padding: 0.5rem; border: 1px solid #ddd; font-size: 0.8rem; }
+        .report-artifact-row { display: flex; gap: 0.5rem; align-items: center; padding: 0.35rem 0; border-bottom: 1px solid #eee; }
+        .report-artifact-row a { color: #0066cc; text-decoration: underline; font-size: 0.85rem; }
       `}</style>
     </div>
   );
