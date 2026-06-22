@@ -10,11 +10,11 @@ from uuid import uuid4
 from migration_factory.control_tower.application.v2_stage_progression import (
     TERMINAL_STAGE_INDEX,
 )
+from migration_factory.control_tower.domain.entities import ArtifactRecord
 from migration_factory.final_report.writer import generate_final_migration_report
 from migration_factory.final_report.pdf_writer import write_text_pdf_from_markdown
 
 UnitOfWorkFactory = Callable[[], Any]
-
 
 REPORT_ARTIFACT_KINDS = frozenset({
     "final_report_json",
@@ -27,6 +27,8 @@ REPORT_CONTENT_TYPES = {
     "final_report_markdown": "text/markdown",
     "final_report_pdf": "application/pdf",
 }
+
+_ARTIFACT_CREATED_BY = "v2-final-report-service"
 
 
 @dataclass(frozen=True)
@@ -126,6 +128,30 @@ class V2FinalReportService:
                     artifacts=(),
                 )
 
+            # Idempotency: return existing artifacts if already generated
+            existing = self._load_report_artifacts(uow, job_id)
+            if existing:
+                return V2FinalReportResult(
+                    job_id=job_id,
+                    status="generated",
+                    eligible=True,
+                    blockers=[],
+                    generated_at=existing[0].generated_at,
+                    input_checksum=existing[0].input_checksum,
+                    redacted_summary="Final report generated for this migration.",
+                    artifacts=tuple(
+                        V2ReportArtifactSummary(
+                            artifact_id=a.artifact_id,
+                            kind=a.kind,
+                            checksum_sha256=a.checksum_sha256,
+                            size_bytes=a.size_bytes,
+                            content_type=a.content_type,
+                            download_url=a.download_url,
+                        )
+                        for a in existing
+                    ),
+                )
+
             artifacts = self._generate_report_artifacts(uow, job_id)
 
             return V2FinalReportResult(
@@ -177,15 +203,15 @@ class V2FinalReportService:
                 if not _looks_like_success(result):
                     blockers.append("Stage 4 did not complete successfully.")
 
-        if hasattr(uow, "v2_phase_gates"):
-            open_gates = uow.v2_phase_gates.list_open(job_id) if hasattr(uow.v2_phase_gates, "list_open") else []
+        if hasattr(uow, "phase_gates"):
+            open_gates = uow.phase_gates.list_open(job_id) if hasattr(uow.phase_gates, "list_open") else []
             if open_gates:
                 blockers.append("There are open phase gates that must be resolved.")
 
-        if hasattr(uow, "v2_artifact_revisions"):
+        if hasattr(uow, "artifact_revisions"):
             accepted = (
-                uow.v2_artifact_revisions.find_accepted(job_id, TERMINAL_STAGE_INDEX, "stage_output")
-                if hasattr(uow.v2_artifact_revisions, "find_accepted")
+                uow.artifact_revisions.find_accepted(job_id, TERMINAL_STAGE_INDEX, "stage_output")
+                if hasattr(uow.artifact_revisions, "find_accepted")
                 else None
             )
             if accepted is None:
@@ -199,21 +225,23 @@ class V2FinalReportService:
         uow: Any,
         job_id: str,
     ) -> list[_ArtifactSnapshot]:
-        artifacts: list[_ArtifactSnapshot] = []
-        if hasattr(uow, "v2_report_artifacts") and hasattr(uow.v2_report_artifacts, "list_for_job"):
-            records = uow.v2_report_artifacts.list_for_job(job_id)
+        snapshots: list[_ArtifactSnapshot] = []
+        if hasattr(uow, "artifacts") and hasattr(uow.artifacts, "list_for_job"):
+            records = uow.artifacts.list_for_job(job_id)
             for rec in records:
-                artifacts.append(_ArtifactSnapshot(
+                if rec.artifact_type not in REPORT_ARTIFACT_KINDS:
+                    continue
+                snapshots.append(_ArtifactSnapshot(
                     artifact_id=rec.artifact_id,
-                    kind=rec.kind,
-                    checksum_sha256=rec.checksum_sha256,
+                    kind=rec.artifact_type,
+                    checksum_sha256=rec.checksum,
                     size_bytes=rec.size_bytes,
-                    content_type=rec.content_type,
+                    content_type=rec.content_type or "",
                     download_url=f"/v1/v2/jobs/{job_id}/report-artifacts/{rec.artifact_id}/download",
                     generated_at=rec.created_at,
-                    input_checksum=getattr(rec, "input_checksum", None),
+                    input_checksum=rec.checksum,
                 ))
-        return artifacts
+        return snapshots
 
     def _generate_report_artifacts(
         self,
@@ -243,6 +271,13 @@ class V2FinalReportService:
 
         report_dir.mkdir(parents=True, exist_ok=True)
 
+        input_checksum = _compute_input_checksum(state)
+
+        # Idempotency: check if artifacts with same input checksum already exist
+        existing = self._load_report_artifacts(uow, job_id)
+        if existing:
+            return existing
+
         writer_result = generate_final_migration_report(state)
         if writer_result.blockers:
             raise ValueError(f"Report generation failed: {'; '.join(writer_result.blockers)}")
@@ -254,8 +289,8 @@ class V2FinalReportService:
         if md_path.is_file():
             write_text_pdf_from_markdown(str(md_path), str(pdf_path))
 
-        created_at = ""
-        input_checksum = _compute_input_checksum(state)
+        from migration_factory.control_tower.domain.checksums import utc_now_text
+        created_at = utc_now_text()
 
         for artifact_info in [
             (json_path, "final_report_json", "application/json"),
@@ -268,6 +303,24 @@ class V2FinalReportService:
             sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
             size = path.stat().st_size
             artifact_id = f"report-{uuid4().hex}"
+            relative_path = str(path.resolve())
+            normalized = f"reports/{job_id}/{kind}"
+            artifact_record = ArtifactRecord(
+                artifact_id=artifact_id,
+                job_id=job_id,
+                stage_run_id=None,
+                artifact_type=kind,
+                registered_root_id="",
+                relative_path=relative_path,
+                normalized_relative_path=normalized,
+                content_type=content_type,
+                size_bytes=size,
+                checksum_algorithm="sha256",
+                checksum=sha256,
+                created_at=created_at,
+                created_by=_ARTIFACT_CREATED_BY,
+            )
+            uow.artifacts.insert(artifact_record)
             download_url = f"/v1/v2/jobs/{job_id}/report-artifacts/{artifact_id}/download"
             result.append(_ArtifactSnapshot(
                 artifact_id=artifact_id,
