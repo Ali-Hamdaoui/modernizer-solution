@@ -4996,6 +4996,15 @@ def _classify_v2_assistant_intent(question: str) -> str:
             if not any(t in lowered for t in ("review", "what dependency", "what should", "which dependency")):
                 return "apply_dependency_change"
 
+    # 4.5 Replacement with stage 3 context.
+    if (
+        "replace" in lowered
+        and " with " in lowered
+        and any(t in lowered for t in ("stage 3", "stage3", "final stage", "final pom", "at stage 3"))
+        and any(t in lowered for t in ("pom", "dependency", "dependencies", "javax", "jakarta"))
+    ):
+        return "stage3_dependency_review"
+
     # 5. POM change proposal intent — draft/upgrade/propose/modify with POM terms
     #    Check BEFORE stage3 review so proposals take priority over reviews
     proposal_actions = (
@@ -8097,7 +8106,48 @@ def _build_pom_change_proposal_answer(
                     lines.append(f"**Current:** {current}")
                 if requested:
                     lines.append(f"**Requested:** {requested}")
-            lines.append(f"\nThis proposal has **not** been applied. "
+                if (target.get("property_name") or target.get("group_id") or target.get("artifact_id")) and (
+                    current or requested
+                ):
+                    lines.append("")
+                    if target.get("property_name"):
+                        prop_name = str(target.get("property_name"))
+                        current_value = current or "unknown"
+                        requested_value = requested or "unknown"
+                        lines.append(f"**Current match:** `{prop_name}` currently uses `{current_value}`")
+                        lines.append(f"**Requested change:** `{current_value}` → `{requested_value}`")
+                        lines.append("**Exact XML edit:**")
+                        lines.append("~~~xml")
+                        lines.append("<!-- Before -->")
+                        lines.append(f"<{prop_name}>{current_value}</{prop_name}>")
+                        lines.append("")
+                        lines.append("<!-- After -->")
+                        lines.append(f"<{prop_name}>{requested_value}</{prop_name}>")
+                        lines.append("~~~")
+                    else:
+                        gid = str(target.get("group_id") or "")
+                        aid = str(target.get("artifact_id") or "")
+                        current_value = current or "unknown"
+                        requested_value = requested or "unknown"
+                        lines.append(f"**Current match:** `{gid}:{aid}` currently uses `{current_value}`")
+                        lines.append(f"**Requested change:** `{current_value}` → `{requested_value}`")
+                        lines.append("**Exact XML edit:**")
+                        lines.append("~~~xml")
+                        lines.append("<!-- Before -->")
+                        lines.append("<dependency>")
+                        lines.append(f"  <groupId>{gid}</groupId>")
+                        lines.append(f"  <artifactId>{aid}</artifactId>")
+                        lines.append(f"  <version>{current_value}</version>")
+                        lines.append("</dependency>")
+                        lines.append("")
+                        lines.append("<!-- After -->")
+                        lines.append("<dependency>")
+                        lines.append(f"  <groupId>{gid}</groupId>")
+                        lines.append(f"  <artifactId>{aid}</artifactId>")
+                        lines.append(f"  <version>{requested_value}</version>")
+                        lines.append("</dependency>")
+                        lines.append("~~~")
+            lines.append(f"\nThis proposal has **Not applied**. "
                           f"Use the UI or ask me to apply it after human review.")
             return "\n".join(lines)
         except Exception as exc:
@@ -8820,10 +8870,18 @@ def _build_apply_dependency_change_answer(
             summary="The backend refused to apply this change.",
             sections=(
                 AssistantResponseSection(title="Reason", lines=(result.message,)),
+                AssistantResponseSection(
+                    title="Dependency Note",
+                    lines=(
+                        "If target is not direct dependency, it may be transitive/BOM-managed. "
+                        "Do not inject direct dependency.",
+                    ),
+                ),
             ),
             safety_note=(
                 "Ask for a proposal instead of a direct apply:\n"
-                '"Explain how Tomcat is managed and propose whether a Tomcat override is needed."'
+                '"Explain how Tomcat is managed and propose whether a Tomcat override is needed."\n'
+                "If target is not a direct dependency, it may be transitive/BOM-managed."
             ),
         )
         return _ASSISTANT_RESPONSE_COMPOSER.render(card)

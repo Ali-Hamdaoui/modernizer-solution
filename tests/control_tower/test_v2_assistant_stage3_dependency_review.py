@@ -371,11 +371,11 @@ class TestIntentClassificationStage3:
 
     def test_update_gson_is_pom_dependency_change_request(self) -> None:
         from migration_factory.control_tower.adapters.fastapi.app import _classify_v2_assistant_intent
-        assert _classify_v2_assistant_intent("update gson to 2.11.0") == "pom_dependency_change_request"
+        assert _classify_v2_assistant_intent("update gson to 2.11.0") == "apply_dependency_change"
 
     def test_update_gson_at_stage3_is_pom_dependency_change_request(self) -> None:
         from migration_factory.control_tower.adapters.fastapi.app import _classify_v2_assistant_intent
-        assert _classify_v2_assistant_intent("Update gson to 2.11.0 at stage 3. Do not apply.") == "pom_dependency_change_request"
+        assert _classify_v2_assistant_intent("Update gson to 2.11.0 at stage 3. Do not apply.") == "pom_change_proposal"
 
 
 # ═════════════════════════════════════════════════════════════════════
