@@ -1000,12 +1000,89 @@ export type RepairGateEvidence = {
   } | null;
   remaining_attempts: number;
   max_attempts: number;
+  migration_intelligence?: MigrationIntelligenceSummary;
+  migration_intelligence_warnings?: string[];
 };
 
 export type GateDetailResponse = {
   gate: GateRepresentation;
   evidence: RepairGateEvidence | null;
   checksum: string;
+};
+
+export type MigrationIntelligenceSummary = {
+  runtime_contract: RuntimeContractSummary;
+  reference_delta: ReferenceDeltaSummary;
+  post_transform_failure_classification: FailureClassificationSummary;
+};
+
+export type RuntimeContractSummary = {
+  status: string;
+  detected_risks_count?: number;
+  detected_risks?: string[];
+  recommended_actions_count?: number;
+  recommended_actions?: string[];
+  jdk_requirements?: RuntimeRequirementSummary;
+  maven_requirements?: RuntimeRequirementSummary;
+  private_registry_requirements?: RuntimeRequirementSummary;
+  internal_dependencies_count?: number;
+  internal_dependencies?: string[];
+  warning?: string | null;
+};
+
+export type RuntimeRequirementSummary = {
+  java_version?: string;
+  compiler_release?: string;
+  wrapper_present?: boolean;
+  settings_files?: string[];
+  workflow_setup_java_versions?: string[];
+  workflow_maven_versions?: string[];
+  hardcoded_jdk_paths?: string[];
+  hardcoded_maven_paths?: string[];
+  repository_urls?: string[];
+  detected_indicators?: string[];
+  environment_variables?: string[];
+  evidence?: string[];
+};
+
+export type ReferenceDeltaSummary = {
+  status: string;
+  dependency_delta?: {
+    added_count?: number;
+    removed_count?: number;
+    version_changed_count?: number;
+  };
+  source_delta?: {
+    added_imports_count?: number;
+    removed_imports_count?: number;
+    javax_to_jakarta_count?: number;
+  };
+  api_migration_indicators?: Record<string, boolean>;
+  recommended_capability_packs?: string[];
+  suspicious_artifacts_count?: number;
+  suspicious_artifacts?: string[];
+  warning?: string | null;
+};
+
+export type FailureClassificationSummary = {
+  status: string;
+  categories?: Record<string, number>;
+  category_counts?: Record<string, number>;
+  failed_unit?: string | null;
+  failure_count?: number;
+  suggested_actions?: string[];
+  test_failure_summary?: {
+    suite_count?: number;
+    first_failure?: {
+      test_class?: string;
+      test_method?: string;
+      outcome?: string;
+      category?: string;
+      exception_type?: string;
+      symptom?: string;
+    };
+  };
+  warning?: string | null;
 };
 
 export type GateListResponse = {

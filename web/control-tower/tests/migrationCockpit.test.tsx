@@ -11,7 +11,7 @@ import {
   type CockpitData,
 } from "../app/migrations/[jobId]/MigrationCockpit";
 import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, requireJobId, v2EventStreamUrl } from "../lib/controlTowerApi";
-import type { GateRepresentation, V2JobEvent } from "../lib/contracts";
+import type { GateRepresentation, MigrationIntelligenceSummary, V2JobEvent } from "../lib/contracts";
 
 describe("V2 Migration Cockpit contract", () => {
   it("passes the awaited route job id into MigrationCockpit", async () => {
@@ -63,6 +63,82 @@ describe("V2 Migration Cockpit contract", () => {
   });
 
   it("renders the open gate panel with gate-safe details", () => {
+    const migrationIntelligence: MigrationIntelligenceSummary = {
+      runtime_contract: {
+        status: "generated",
+        detected_risks_count: 2,
+        detected_risks: ["hardcoded JDK path", "private registry requirement"],
+        recommended_actions_count: 1,
+        recommended_actions: ["use backend-owned Java selection"],
+        jdk_requirements: {
+          java_version: "21",
+          compiler_release: "21",
+          workflow_setup_java_versions: ["21"],
+          hardcoded_jdk_paths: ["C:/Java"],
+          environment_variables: ["JAVA_HOME"],
+        },
+        maven_requirements: {
+          wrapper_present: true,
+          settings_files: ["settings.xml"],
+          workflow_maven_versions: ["3.9.9"],
+          hardcoded_maven_paths: [],
+        },
+        private_registry_requirements: {
+          repository_urls: ["https://repo.example.invalid"],
+          detected_indicators: ["internal dependency"],
+          environment_variables: ["MAVEN_REPO_URL"],
+          evidence: ["pom.xml"],
+        },
+        internal_dependencies_count: 1,
+        internal_dependencies: ["com.example:shared-lib"],
+      },
+      reference_delta: {
+        status: "generated",
+        dependency_delta: {
+          added_count: 1,
+          removed_count: 0,
+          version_changed_count: 2,
+        },
+        source_delta: {
+          added_imports_count: 3,
+          removed_imports_count: 1,
+          javax_to_jakarta_count: 2,
+        },
+        api_migration_indicators: {
+          security: true,
+          persistence: false,
+        },
+        recommended_capability_packs: ["security-hardening", "jakarta-migration"],
+        suspicious_artifacts_count: 1,
+        suspicious_artifacts: ["legacy-api.jar"],
+      },
+      post_transform_failure_classification: {
+        status: "generated",
+        categories: {
+          dependency_mismatch: 2,
+          test_failure: 1,
+        },
+        category_counts: {
+          dependency_mismatch: 2,
+          test_failure: 1,
+        },
+        failed_unit: "stage2",
+        failure_count: 3,
+        suggested_actions: ["review dependency graph", "rerun tests"],
+        test_failure_summary: {
+          suite_count: 1,
+          first_failure: {
+            test_class: "ExampleTest",
+            test_method: "failsWhenLegacyApiMissing",
+            outcome: "failed",
+            category: "test_failure",
+            exception_type: "AssertionError",
+            symptom: "expected true",
+          },
+        },
+      },
+    };
+
     const gate: GateRepresentation = {
       gate_id: "gate-1",
       job_id: "job-1",
@@ -97,6 +173,8 @@ describe("V2 Migration Cockpit contract", () => {
             reviewer_critique: null,
             remaining_attempts: 2,
             max_attempts: 3,
+            migration_intelligence: migrationIntelligence,
+            migration_intelligence_warnings: ["runtime_contract: warn"],
           },
           checksum: gate.checksum,
         },
@@ -107,6 +185,11 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("repair_review");
     expect(markup).toContain("Stage 2");
     expect(markup).toContain("build failed in sandbox");
+    expect(markup).toContain("Migration Intelligence");
+    expect(markup).toContain("Runtime Contract");
+    expect(markup).toContain("Reference Delta");
+    expect(markup).toContain("Failure Classification");
+    expect(markup).toContain("runtime_contract: warn");
     expect(markup).toContain("Revise");
     expect(markup).toContain("Reject");
     expect(markup).toContain("diagnosis:1");

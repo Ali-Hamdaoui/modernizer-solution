@@ -31,6 +31,7 @@ import type {
   V2PipelineResponse,
   GateDetailResponse,
   GateRepresentation,
+  MigrationIntelligenceSummary,
 } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
 
@@ -45,6 +46,32 @@ export function formatGateArtifactRefLabel(ref: string): string {
 
 function formatGateArtifactRefs(refs: string[]): string {
   return refs.map((ref) => formatGateArtifactRefLabel(ref)).join(", ");
+}
+
+function summarizeList(values: string[] | undefined, limit: number = 3): string {
+  const items = (values ?? []).filter(Boolean);
+  if (items.length === 0) {
+    return "None";
+  }
+  const preview = items.slice(0, limit);
+  const extra = items.length - preview.length;
+  return extra > 0 ? `${preview.join(", ")} +${extra} more` : preview.join(", ");
+}
+
+function formatCountSummary(count: number | undefined, noun: string): string {
+  const value = count ?? 0;
+  return `${value} ${noun}${value === 1 ? "" : "s"}`;
+}
+
+function hasMigrationIntelligence(migrationIntelligence: MigrationIntelligenceSummary | null | undefined): boolean {
+  if (!migrationIntelligence) {
+    return false;
+  }
+  return [
+    migrationIntelligence.runtime_contract?.status,
+    migrationIntelligence.reference_delta?.status,
+    migrationIntelligence.post_transform_failure_classification?.status,
+  ].some((status) => status && status !== "not_available");
 }
 
 interface Stage {
@@ -135,12 +162,20 @@ export function GatePanelContent({ state }: { state: GatePanelState }) {
 
   const gate = state.openGate;
   const detail = state.openGateDetail;
+  const migrationIntelligence = detail?.evidence?.migration_intelligence ?? null;
+  const migrationWarnings = [
+    ...(detail?.evidence?.migration_intelligence_warnings ?? []),
+    migrationIntelligence?.runtime_contract?.warning ?? "",
+    migrationIntelligence?.reference_delta?.warning ?? "",
+    migrationIntelligence?.post_transform_failure_classification?.warning ?? "",
+  ].filter(Boolean);
 
   return (
     <section className="panel stack" aria-label="Open gate panel">
       <h2>Open gate</h2>
       <p className="meta">All gate data comes from backend-owned, gate-bound artifacts and checksums.</p>
       {gate ? (
+        <>
         <div className="table-list">
           <div className="table-row">
             <span className="meta">Type</span>
@@ -160,6 +195,120 @@ export function GatePanelContent({ state }: { state: GatePanelState }) {
             <span className="meta">Gate count: {state.gates.length}</span>
           </div>
         </div>
+        <div className="migration-intelligence stack">
+          <strong>Migration Intelligence</strong>
+          {hasMigrationIntelligence(migrationIntelligence) || migrationWarnings.length > 0 ? (
+            <>
+              <div className="trace-section">
+                <strong>Runtime Contract</strong>
+                <p className="meta">Status: {migrationIntelligence?.runtime_contract?.status ?? "not_available"}</p>
+                <p className="meta">
+                  {formatCountSummary(migrationIntelligence?.runtime_contract?.detected_risks_count, "risk")}
+                  {migrationIntelligence?.runtime_contract?.detected_risks?.length
+                    ? ` · ${summarizeList(migrationIntelligence.runtime_contract.detected_risks)}`
+                    : ""}
+                </p>
+                <p className="meta">
+                  {formatCountSummary(migrationIntelligence?.runtime_contract?.recommended_actions_count, "recommended action")}
+                  {migrationIntelligence?.runtime_contract?.recommended_actions?.length
+                    ? ` · ${summarizeList(migrationIntelligence.runtime_contract.recommended_actions)}`
+                    : ""}
+                </p>
+                <p className="meta">
+                  JDK: {migrationIntelligence?.runtime_contract?.jdk_requirements?.java_version || "?"}
+                  {migrationIntelligence?.runtime_contract?.jdk_requirements?.compiler_release
+                    ? ` / release ${migrationIntelligence.runtime_contract.jdk_requirements.compiler_release}`
+                    : ""}
+                </p>
+                <p className="meta">
+                  Maven: {migrationIntelligence?.runtime_contract?.maven_requirements?.wrapper_present ? "wrapper present" : "wrapper absent"}
+                  {migrationIntelligence?.runtime_contract?.private_registry_requirements?.repository_urls?.length
+                    ? ` · private registry ${summarizeList(migrationIntelligence.runtime_contract.private_registry_requirements.repository_urls)}`
+                    : " · no private registry"}
+                </p>
+                <p className="meta">
+                  Internal deps: {formatCountSummary(migrationIntelligence?.runtime_contract?.internal_dependencies_count, "item")}
+                  {migrationIntelligence?.runtime_contract?.internal_dependencies?.length
+                    ? ` · ${summarizeList(migrationIntelligence.runtime_contract.internal_dependencies)}`
+                    : ""}
+                </p>
+              </div>
+
+              <div className="trace-section">
+                <strong>Reference Delta</strong>
+                <p className="meta">Status: {migrationIntelligence?.reference_delta?.status ?? "not_available"}</p>
+                <p className="meta">
+                  Dependency delta: +{migrationIntelligence?.reference_delta?.dependency_delta?.added_count ?? 0}
+                  / -{migrationIntelligence?.reference_delta?.dependency_delta?.removed_count ?? 0}
+                  / version {migrationIntelligence?.reference_delta?.dependency_delta?.version_changed_count ?? 0}
+                </p>
+                <p className="meta">
+                  Source delta: imports +{migrationIntelligence?.reference_delta?.source_delta?.added_imports_count ?? 0}
+                  / -{migrationIntelligence?.reference_delta?.source_delta?.removed_imports_count ?? 0}
+                  / javax→jakarta {migrationIntelligence?.reference_delta?.source_delta?.javax_to_jakarta_count ?? 0}
+                </p>
+                <p className="meta">
+                  API indicators: {formatCountSummary(Object.keys(migrationIntelligence?.reference_delta?.api_migration_indicators ?? {}).length, "flag")}
+                  {Object.keys(migrationIntelligence?.reference_delta?.api_migration_indicators ?? {}).length > 0
+                    ? ` · ${Object.entries(migrationIntelligence?.reference_delta?.api_migration_indicators ?? {})
+                        .filter(([, value]) => value)
+                        .map(([key]) => key)
+                        .slice(0, 3)
+                        .join(", ")}`
+                    : ""}
+                </p>
+                <p className="meta">
+                  Capability packs: {summarizeList(migrationIntelligence?.reference_delta?.recommended_capability_packs)}
+                </p>
+                <p className="meta">
+                  Suspicious artifacts: {formatCountSummary(migrationIntelligence?.reference_delta?.suspicious_artifacts_count, "item")}
+                  {migrationIntelligence?.reference_delta?.suspicious_artifacts?.length
+                    ? ` · ${summarizeList(migrationIntelligence.reference_delta.suspicious_artifacts)}`
+                    : ""}
+                </p>
+              </div>
+
+              <div className="trace-section">
+                <strong>Failure Classification</strong>
+                <p className="meta">Status: {migrationIntelligence?.post_transform_failure_classification?.status ?? "not_available"}</p>
+                <p className="meta">
+                  Categories: {formatCountSummary(Object.keys(migrationIntelligence?.post_transform_failure_classification?.categories ?? {}).length, "kind")}
+                  {Object.keys(migrationIntelligence?.post_transform_failure_classification?.categories ?? {}).length > 0
+                    ? ` · ${Object.entries(migrationIntelligence?.post_transform_failure_classification?.categories ?? {})
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 3)
+                        .map(([key, value]) => `${key}=${value}`)
+                        .join(", ")}`
+                    : ""}
+                </p>
+                <p className="meta">Failed unit: {migrationIntelligence?.post_transform_failure_classification?.failed_unit ?? "n/a"}</p>
+                <p className="meta">
+                  Suggested actions: {summarizeList(migrationIntelligence?.post_transform_failure_classification?.suggested_actions)}
+                </p>
+                <p className="meta">
+                  Test failures: {migrationIntelligence?.post_transform_failure_classification?.test_failure_summary?.suite_count ?? 0}
+                  {migrationIntelligence?.post_transform_failure_classification?.test_failure_summary?.first_failure?.test_class
+                    ? ` · ${migrationIntelligence.post_transform_failure_classification.test_failure_summary.first_failure.test_class}`
+                    : ""}
+                </p>
+              </div>
+
+              {migrationWarnings.length > 0 && (
+                <div className="trace-section">
+                  <strong>Warnings</strong>
+                  <ul className="meta">
+                    {migrationWarnings.slice(0, 5).map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="meta">No migration intelligence artifacts available yet.</p>
+          )}
+        </div>
+        </>
       ) : (
         <p className="meta">No gate is currently open for this job.</p>
       )}
@@ -1010,6 +1159,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .supervision-trace h3 { margin: 0 0 0.5rem 0; font-size: 1rem; }
         .trace-section { border-left: 3px solid #6b7a90; padding-left: 0.6rem; margin-top: 0.6rem; }
         .trace-section ul { margin: 0.25rem 0 0 1rem; padding: 0; }
+        .migration-intelligence { border-top: 1px solid #ddd; margin-top: 0.75rem; padding-top: 0.75rem; }
         .repair-card { border: 1px solid #ffcc66; background: #fffdf0; padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; }
         .file-alias-actions { display: flex; align-items: center; gap: 0.6rem; margin: 0.5rem 0; }
         .file-alias-actions button { padding: 0.35rem 0.6rem; border: 1px solid #333; border-radius: 4px; background: #fff; }
