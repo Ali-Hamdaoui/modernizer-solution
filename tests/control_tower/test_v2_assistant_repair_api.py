@@ -480,6 +480,12 @@ class TestRepairAPI:
         assert body["repair_action"]["stage_resumed"] is False
         assert body["repair_action"]["backend_runner_invoked"] is False
         assert body["repair_action"]["llm_invoked"] is False
+        assert body["repair_action"]["verification_status"] == "passed"
+        assert body["repair_action"]["verification_build_status"] == "BUILD_PASSED_IN_SANDBOX"
+        assert body["repair_action"]["verification_test_status"] == "TEST_PASSED"
+        assert body["repair_action"]["verification_h2_status"] == "H2_STARTUP_PASSED"
+        assert body["repair_action"]["verification_artifact_refs"] == {}
+        assert body["repair_action"]["verification_failure_classification_ref"] == ""
         assert (run_dir / "repairs" / "patch_draft_1.json").is_file()
 
         repeat_response = client.post(
@@ -500,6 +506,10 @@ class TestRepairAPI:
         assert repeat_body["repair_action"]["backend_runner_invoked"] is False
         assert repeat_body["repair_action"]["llm_invoked"] is False
         assert repeat_body["repair_action"]["approval_bypass"] is False
+        assert repeat_body["repair_action"]["verification_status"] == "passed"
+        assert repeat_body["repair_action"]["verification_build_status"] == "BUILD_PASSED_IN_SANDBOX"
+        assert repeat_body["repair_action"]["verification_test_status"] == "TEST_PASSED"
+        assert repeat_body["repair_action"]["verification_h2_status"] == "H2_STARTUP_PASSED"
         monkeypatch.undo()
 
     def test_approve_missing_proposal(self, tmp_path: Path) -> None:

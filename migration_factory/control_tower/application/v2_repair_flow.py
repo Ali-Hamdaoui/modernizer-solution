@@ -78,6 +78,12 @@ class SandboxAction:
     status: str  # pending, applied, failed, rolled_back
     result_summary: str
     created_at: str
+    verification_status: str = "not_available"
+    verification_build_status: str = ""
+    verification_test_status: str = ""
+    verification_h2_status: str = ""
+    verification_artifact_refs_json: str = "{}"
+    verification_failure_classification_ref: str = ""
 
 
 class V2RepairFlowService:
@@ -526,12 +532,18 @@ class V2RepairFlowService:
             h2_required=h2_required,
             h2_enabled=h2_required,
         )
+        verification_artifact_refs = dict(validation.artifact_refs)
+        build_error_ref = verification_artifact_refs.get("repair_build_error_contract", "")
+        if build_error_ref:
+            failure_classification_ref = str(Path(build_error_ref).parent / "post_transform_failure_classification.json")
+            if Path(failure_classification_ref).is_file():
+                verification_artifact_refs["post_transform_failure_classification"] = failure_classification_ref
         attempt["validation"] = {
             "build_status": validation.build_status,
             "test_status": validation.test_status,
             "h2_status": validation.h2_status,
         }
-        artifact_refs.update(validation.artifact_refs)
+        artifact_refs.update(verification_artifact_refs)
         self._emit_repair_event(
             event_recorder,
             "repair_validation_completed",
@@ -541,7 +553,7 @@ class V2RepairFlowService:
                 "build_status": validation.build_status,
                 "test_status": validation.test_status,
                 "h2_status": validation.h2_status,
-                "artifact_refs": dict(validation.artifact_refs),
+                "artifact_refs": dict(verification_artifact_refs),
                 "ledger_ref": artifact_refs["repair_ledger"],
             },
         )
@@ -573,6 +585,12 @@ class V2RepairFlowService:
                 patch_content=patch_content,
                 status="applied",
                 result_summary=f"Patch applied to {resolved_target_path} and validation passed",
+                verification_status="passed",
+                verification_build_status=validation.build_status,
+                verification_test_status=validation.test_status,
+                verification_h2_status=validation.h2_status,
+                verification_artifact_refs_json=json.dumps(verification_artifact_refs, separators=(",", ":"), sort_keys=True),
+                verification_failure_classification_ref="",
             )
             self._mark_proposal_applied(proposal)
             return action
@@ -626,6 +644,12 @@ class V2RepairFlowService:
             patch_content=patch_content,
             status="rolled_back" if rolled_back else "failed",
             result_summary=rollback_reason,
+            verification_status="failed",
+            verification_build_status=validation.build_status,
+            verification_test_status=validation.test_status,
+            verification_h2_status=validation.h2_status,
+            verification_artifact_refs_json=json.dumps(verification_artifact_refs, separators=(",", ":"), sort_keys=True),
+            verification_failure_classification_ref=build_error_ref,
         )
 
     def _emit_repair_event(
@@ -645,6 +669,12 @@ class V2RepairFlowService:
         patch_content: str,
         status: str,
         result_summary: str,
+        verification_status: str = "not_available",
+        verification_build_status: str = "",
+        verification_test_status: str = "",
+        verification_h2_status: str = "",
+        verification_artifact_refs_json: str = "{}",
+        verification_failure_classification_ref: str = "",
     ) -> SandboxAction:
         action = SandboxAction(
             action_id=uuid4().hex,
@@ -654,6 +684,12 @@ class V2RepairFlowService:
             status=status,
             result_summary=result_summary,
             created_at=utc_now_text(),
+            verification_status=verification_status,
+            verification_build_status=verification_build_status,
+            verification_test_status=verification_test_status,
+            verification_h2_status=verification_h2_status,
+            verification_artifact_refs_json=verification_artifact_refs_json,
+            verification_failure_classification_ref=verification_failure_classification_ref,
         )
         self._actions[action.action_id] = action
         if self._repo is not None:
@@ -665,6 +701,12 @@ class V2RepairFlowService:
                 status=action.status,
                 result_summary=action.result_summary,
                 created_at=action.created_at,
+                verification_status=action.verification_status,
+                verification_build_status=action.verification_build_status,
+                verification_test_status=action.verification_test_status,
+                verification_h2_status=action.verification_h2_status,
+                verification_artifact_refs_json=action.verification_artifact_refs_json,
+                verification_failure_classification_ref=action.verification_failure_classification_ref,
             )
             self._repo.save_action(action_record)
         return action
@@ -812,6 +854,12 @@ class V2RepairFlowService:
                     status=record.status,
                     result_summary=record.result_summary,
                     created_at=record.created_at,
+                    verification_status=record.verification_status,
+                    verification_build_status=record.verification_build_status,
+                    verification_test_status=record.verification_test_status,
+                    verification_h2_status=record.verification_h2_status,
+                    verification_artifact_refs_json=record.verification_artifact_refs_json,
+                    verification_failure_classification_ref=record.verification_failure_classification_ref,
                 )
         return None
 
@@ -830,6 +878,12 @@ class V2RepairFlowService:
                 status="idempotent",
                 result_summary="Proposal already applied; sandbox unchanged",
                 created_at=existing.created_at,
+                verification_status=existing.verification_status,
+                verification_build_status=existing.verification_build_status,
+                verification_test_status=existing.verification_test_status,
+                verification_h2_status=existing.verification_h2_status,
+                verification_artifact_refs_json=existing.verification_artifact_refs_json,
+                verification_failure_classification_ref=existing.verification_failure_classification_ref,
             )
         target_path = proposal.affected_paths[0] if proposal.affected_paths else ""
         return SandboxAction(
@@ -840,6 +894,7 @@ class V2RepairFlowService:
             status="idempotent",
             result_summary="Proposal already applied; sandbox unchanged",
             created_at=utc_now_text(),
+            verification_status="already_completed",
         )
 
     def _mark_proposal_applied(self, proposal: RepairProposal) -> None:
@@ -927,6 +982,12 @@ class V2RepairFlowService:
             "status": action.status,
             "result_summary": action.result_summary,
             "created_at": action.created_at,
+            "verification_status": action.verification_status,
+            "verification_build_status": action.verification_build_status,
+            "verification_test_status": action.verification_test_status,
+            "verification_h2_status": action.verification_h2_status,
+            "verification_artifact_refs": json.loads(action.verification_artifact_refs_json or "{}"),
+            "verification_failure_classification_ref": action.verification_failure_classification_ref,
             "human_approved": True,
             "sandbox_only": True,
             "source_mutated": False,

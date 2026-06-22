@@ -36,6 +36,12 @@ class V2SandboxActionRecord:
     status: str
     result_summary: str
     created_at: str
+    verification_status: str = "not_available"
+    verification_build_status: str = ""
+    verification_test_status: str = ""
+    verification_h2_status: str = ""
+    verification_artifact_refs_json: str = "{}"
+    verification_failure_classification_ref: str = ""
 
 
 class SqliteV2RepairRepository:
@@ -105,8 +111,12 @@ class SqliteV2RepairRepository:
         self._connection.execute(
             """INSERT INTO v2_sandbox_actions (
                 action_id, proposal_id, target_path, patch_content,
-                status, result_summary, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                status, result_summary, created_at,
+                verification_status, verification_build_status,
+                verification_test_status, verification_h2_status,
+                verification_artifact_refs_json,
+                verification_failure_classification_ref
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 record.action_id,
                 record.proposal_id,
@@ -115,6 +125,12 @@ class SqliteV2RepairRepository:
                 record.status,
                 record.result_summary,
                 record.created_at,
+                record.verification_status,
+                record.verification_build_status,
+                record.verification_test_status,
+                record.verification_h2_status,
+                record.verification_artifact_refs_json,
+                record.verification_failure_classification_ref,
             ),
         )
 
@@ -162,4 +178,10 @@ class SqliteV2RepairRepository:
             status=str(row["status"]),
             result_summary=str(row["result_summary"]),
             created_at=str(row["created_at"]),
+            verification_status=str(row["verification_status"]) if "verification_status" in row.keys() and row["verification_status"] else "not_available",
+            verification_build_status=str(row["verification_build_status"]) if "verification_build_status" in row.keys() and row["verification_build_status"] else "",
+            verification_test_status=str(row["verification_test_status"]) if "verification_test_status" in row.keys() and row["verification_test_status"] else "",
+            verification_h2_status=str(row["verification_h2_status"]) if "verification_h2_status" in row.keys() and row["verification_h2_status"] else "",
+            verification_artifact_refs_json=str(row["verification_artifact_refs_json"]) if "verification_artifact_refs_json" in row.keys() and row["verification_artifact_refs_json"] else "{}",
+            verification_failure_classification_ref=str(row["verification_failure_classification_ref"]) if "verification_failure_classification_ref" in row.keys() and row["verification_failure_classification_ref"] else "",
         )

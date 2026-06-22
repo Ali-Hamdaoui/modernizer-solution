@@ -123,6 +123,12 @@ def test_v2_approved_repair_routes_through_patch_gate_and_writes_ledger(
     assert ledger["artifact_refs"]["repair_patch_draft"].endswith("patch_draft_1.json")
     assert ledger["attempts"][0]["binding_checksum"] == "binding-1"
     assert ledger["attempts"][0]["status"] == "VALIDATED"
+    assert action.verification_status == "passed"
+    assert action.verification_build_status == "BUILD_PASSED_IN_SANDBOX"
+    assert action.verification_test_status == "TEST_PASSED"
+    assert action.verification_h2_status == "H2_STARTUP_PASSED"
+    assert json.loads(action.verification_artifact_refs_json) == {}
+    assert action.verification_failure_classification_ref == ""
     assert [event[0] for event in events] == [
         "repair_patch_gate_completed",
         "repair_patch_applied",
@@ -169,6 +175,11 @@ def test_v2_repair_bridge_rolls_back_on_validation_failure(
     run_dir = tmp_path / "run"
     rollbacks: list[dict] = []
     events: list[tuple[str, dict]] = []
+    build_error_contract = run_dir / "repair_build_error_contract.json"
+    failure_classification = run_dir / "post_transform_failure_classification.json"
+    build_error_contract.parent.mkdir(parents=True, exist_ok=True)
+    build_error_contract.write_text("{}", encoding="utf-8")
+    failure_classification.write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(
         v2_repair_flow,
@@ -192,13 +203,24 @@ def test_v2_repair_bridge_rolls_back_on_validation_failure(
         legacy_path=tmp_path / "legacy",
         deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
         h2_required=True,
-        validation_runner=lambda **kwargs: _validation(False),
+        validation_runner=lambda **kwargs: _validation(
+            False,
+            artifact_refs={"repair_build_error_contract": str(build_error_contract)},
+        ),
         event_recorder=lambda event_type, payload: events.append((event_type, payload)),
     )
     ledger = _ledger(run_dir)
 
     assert rollbacks
     assert action.status == "rolled_back"
+    assert action.verification_status == "failed"
+    assert action.verification_build_status == "BUILD_FAILED_IN_SANDBOX"
+    assert action.verification_test_status == "TEST_FAILED"
+    assert action.verification_h2_status == "H2_STARTUP_FAILED"
+    assert action.verification_failure_classification_ref == str(build_error_contract)
+    assert json.loads(action.verification_artifact_refs_json)[
+        "post_transform_failure_classification"
+    ] == str(failure_classification)
     assert ledger["final_status"] == "REPAIR_FAILED"
     assert ledger["attempts"][0]["rollback"]["status"] == "ROLLED_BACK"
     assert ledger["attempts"][0]["status"] == "ROLLED_BACK"
@@ -511,6 +533,11 @@ def test_apply_approved_proposal_is_idempotent(
     assert first.status == "applied"
     assert second.status == "idempotent"
     assert second.action_id == first.action_id
+    assert first.verification_status == "passed"
+    assert second.verification_status == "passed"
+    assert second.verification_build_status == first.verification_build_status
+    assert second.verification_test_status == first.verification_test_status
+    assert second.verification_h2_status == first.verification_h2_status
     assert len(calls) == 1
 
 
@@ -629,14 +656,14 @@ def _apply_result(run_dir: Path) -> PatchApplyResult:
     )
 
 
-def _validation(passed: bool) -> ValidationResult:
+def _validation(passed: bool, *, artifact_refs: dict[str, str] | None = None) -> ValidationResult:
     return ValidationResult(
         passed=passed,
         build_status="BUILD_PASSED_IN_SANDBOX" if passed else "BUILD_FAILED_IN_SANDBOX",
         test_status="TEST_PASSED" if passed else "TEST_FAILED",
         h2_status="H2_STARTUP_PASSED" if passed else "H2_STARTUP_FAILED",
         validation_commands=[["mvn", "test"]],
-        artifact_refs={},
+        artifact_refs=artifact_refs or {},
         warnings=[],
         errors=[] if passed else ["validation failed"],
     )
