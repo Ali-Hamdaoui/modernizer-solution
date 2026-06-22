@@ -552,6 +552,12 @@ export type GovernedRepairProposalResponse = {
   evidence_references?: string[];
   evidence_checksums?: string[];
   governance?: GovernedRepairProposalGovernanceSummary | null;
+  verification_status?: string;
+  verification_build_status?: string;
+  verification_test_status?: string;
+  verification_h2_status?: string;
+  verification_artifact_refs?: Record<string, string> | string[];
+  verification_failure_classification_ref?: string;
   warnings?: string[];
 };
 

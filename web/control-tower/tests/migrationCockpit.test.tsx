@@ -112,6 +112,16 @@ const GOVERNED_REPAIR_PROPOSAL: GovernedRepairProposalResponse = {
     manual_review_required: true,
     status: "Awaiting human approval",
   },
+  verification_status: "passed",
+  verification_build_status: "BUILD_PASSED_IN_SANDBOX",
+  verification_test_status: "TEST_PASSED",
+  verification_h2_status: "H2_STARTUP_PASSED",
+  verification_artifact_refs: {
+    repair_ledger: "C:/work/out/.migration/runs/run-9a/repairs/ledger.json",
+    repair_validation_report: "C:/work/out/.migration/runs/run-9a/repairs/validation_report.json",
+    post_transform_failure_classification: "C:/work/out/.migration/runs/run-9a/post_transform_failure_classification.json",
+  },
+  verification_failure_classification_ref: "C:/work/out/.migration/runs/run-9a/post_transform_failure_classification.json",
   warnings: ["Governed repair proposal is evidence-bound."],
 };
 
@@ -398,8 +408,44 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Failure classification: generated");
     expect(markup).toContain("Runtime contract: generated");
     expect(markup).toContain("Reference delta: generated");
+    expect(markup).toContain("Post-Apply Verification");
+    expect(markup).toContain("Status: passed");
+    expect(markup).toContain("Build: BUILD_PASSED_IN_SANDBOX");
+    expect(markup).toContain("Test: TEST_PASSED");
+    expect(markup).toContain("H2: H2_STARTUP_PASSED");
+    expect(markup).toContain("Artifact refs:");
+    expect(markup).toContain("Failure classification ref:");
+    expect(markup).toContain("Verification passed in sandbox. No automatic production promotion happened.");
     expect(markup).toContain("runtime_contract: warn");
     expect(markup).toContain("Ask");
+  });
+
+  it("renders failed verification state in governed repair proposal card", () => {
+    const failedProposal: GovernedRepairProposalResponse = {
+      ...GOVERNED_REPAIR_PROPOSAL,
+      verification_status: "failed",
+      verification_build_status: "BUILD_FAILED_IN_SANDBOX",
+      verification_test_status: "TEST_FAILED",
+      verification_h2_status: "H2_STARTUP_FAILED",
+      verification_artifact_refs: {
+        repair_build_error_contract: "C:/work/out/.migration/runs/run-9a/repair_build_error_contract.json",
+        post_transform_failure_classification: "C:/work/out/.migration/runs/run-9a/post_transform_failure_classification.json",
+      },
+      verification_failure_classification_ref: "C:/work/out/.migration/runs/run-9a/repair_build_error_contract.json",
+    };
+
+    const markup = renderToStaticMarkup(
+      <GovernedRepairProposalCard proposal={failedProposal} />
+    );
+
+    expect(markup).toContain("Post-Apply Verification");
+    expect(markup).toContain("Status: failed");
+    expect(markup).toContain("Build: BUILD_FAILED_IN_SANDBOX");
+    expect(markup).toContain("Test: TEST_FAILED");
+    expect(markup).toContain("H2: H2_STARTUP_FAILED");
+    expect(markup).toContain("Artifact refs:");
+    expect(markup).toContain("Failure classification ref:");
+    expect(markup).toContain("Use Solve This again to generate a new governed proposal.");
   });
 
   it("governed repair proposal card has no approve apply run or resume controls", () => {
@@ -410,9 +456,9 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Governed Repair Proposal");
     expect(markup).not.toContain("<button");
     expect(markup).not.toContain("Approve");
-    expect(markup).not.toContain("Apply");
     expect(markup).not.toContain(">Run<");
     expect(markup).not.toContain("Resume");
+    expect(markup).not.toContain(">Verify<");
   });
 
   it("redacts absolute Windows artifact refs down to short labels", () => {

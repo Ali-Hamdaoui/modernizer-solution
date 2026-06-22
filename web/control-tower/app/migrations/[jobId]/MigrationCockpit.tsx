@@ -64,6 +64,26 @@ function formatCountSummary(count: number | undefined, noun: string): string {
   return `${value} ${noun}${value === 1 ? "" : "s"}`;
 }
 
+function summarizeArtifactRefs(
+  refs: Record<string, string> | string[] | undefined,
+  limit: number = 3,
+): string {
+  if (!refs) {
+    return "None";
+  }
+  const items = Array.isArray(refs)
+    ? refs.filter(Boolean).map((ref) => formatGateArtifactRefLabel(ref))
+    : Object.entries(refs)
+        .filter(([, ref]) => Boolean(ref))
+        .map(([kind, ref]) => `${kind}: ${formatGateArtifactRefLabel(ref)}`);
+  if (items.length === 0) {
+    return "None";
+  }
+  const preview = items.slice(0, limit);
+  const extra = items.length - preview.length;
+  return extra > 0 ? `${preview.join(", ")} +${extra} more` : preview.join(", ");
+}
+
 function formatFlag(value: boolean | undefined | null): string {
   if (value === true) return "true";
   if (value === false) return "false";
@@ -79,6 +99,23 @@ function hasMigrationIntelligence(migrationIntelligence: MigrationIntelligenceSu
     migrationIntelligence.reference_delta?.status,
     migrationIntelligence.post_transform_failure_classification?.status,
   ].some((status) => status && status !== "not_available");
+}
+
+function hasVerificationFields(proposal: GovernedRepairProposalResponse): boolean {
+  const artifactRefs = proposal.verification_artifact_refs;
+  const artifactValues = Array.isArray(artifactRefs)
+    ? artifactRefs
+    : artifactRefs
+      ? Object.values(artifactRefs)
+      : [];
+  return [
+    proposal.verification_status,
+    proposal.verification_build_status,
+    proposal.verification_test_status,
+    proposal.verification_h2_status,
+    proposal.verification_failure_classification_ref,
+    ...artifactValues,
+  ].some(Boolean);
 }
 
 interface Stage {
@@ -335,6 +372,8 @@ export function GovernedRepairProposalCard({ proposal }: { proposal: GovernedRep
   const runtimeContract = evidence?.runtime_contract ?? proposal.migration_intelligence?.runtime_contract ?? null;
   const referenceDelta = evidence?.reference_delta ?? proposal.migration_intelligence?.reference_delta ?? null;
   const failureClassification = evidence?.failure_classification ?? proposal.migration_intelligence?.post_transform_failure_classification ?? null;
+  const verificationStatus = proposal.verification_status ?? "not_available";
+  const verificationArtifactRefs = proposal.verification_artifact_refs;
   const warnings = [
     ...(proposal.warnings ?? []),
     ...(proposal.migration_intelligence_warnings ?? []),
@@ -416,6 +455,27 @@ export function GovernedRepairProposalCard({ proposal }: { proposal: GovernedRep
           <p className="meta">Warnings: {summarizeList(warnings)}</p>
         )}
       </div>
+
+      {hasVerificationFields(proposal) && (
+        <div className="trace-section">
+          <strong>Post-Apply Verification</strong>
+          <p className="meta">Status: {verificationStatus}</p>
+          <p className="meta">Build: {proposal.verification_build_status ?? "not_available"}</p>
+          <p className="meta">Test: {proposal.verification_test_status ?? "not_available"}</p>
+          <p className="meta">H2: {proposal.verification_h2_status ?? "not_available"}</p>
+          <p className="meta">Artifact refs: {summarizeArtifactRefs(verificationArtifactRefs)}</p>
+          <p className="meta">
+            Failure classification ref: {proposal.verification_failure_classification_ref ?? "not_available"}
+          </p>
+          {verificationStatus === "passed" ? (
+            <p className="meta">Verification passed in sandbox. No automatic production promotion happened.</p>
+          ) : verificationStatus === "failed" ? (
+            <p className="meta">Verification failed in sandbox. Use Solve This again to generate a new governed proposal.</p>
+          ) : (
+            <p className="meta">Verification not available yet.</p>
+          )}
+        </div>
+      )}
 
       <div className="trace-section">
         <strong>Governance</strong>
