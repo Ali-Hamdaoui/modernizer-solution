@@ -1019,3 +1019,25 @@ export type GateActionResponse = {
 export type OpenGateForJobResponse = {
   gate: GateRepresentation | null;
 };
+
+// ── F15 Final Report types (Stage 4 / V2 Final Report) ──────────────────
+
+export type V2ReportArtifactSummary = {
+  artifact_id: string;
+  kind: "final_report_json" | "final_report_markdown" | "final_report_pdf";
+  checksum_sha256: string;
+  size_bytes: number;
+  content_type: "application/json" | "text/markdown" | "application/pdf";
+  download_url: string;
+};
+
+export type V2FinalReportResponse = {
+  job_id: string;
+  status: "not_generated" | "generating" | "generated" | "blocked" | "failed";
+  eligible: boolean;
+  blockers: string[];
+  generated_at: string | null;
+  input_checksum: string | null;
+  redacted_summary: string;
+  artifacts: V2ReportArtifactSummary[];
+};

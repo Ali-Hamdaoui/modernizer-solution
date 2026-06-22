@@ -4440,6 +4440,97 @@ def create_app(
             pass
         return "mvn clean compile test"
 
+    # ── V2 Final Report routes ───────────────────────────────────
+    from migration_factory.control_tower.application.v2_final_report_service import (
+        V2FinalReportService,
+        REPORT_ARTIFACT_KINDS,
+        REPORT_CONTENT_TYPES,
+    )
+
+    _report_service = V2FinalReportService(unit_of_work_factory)
+
+    @app.get("/v1/v2/jobs/{job_id}/report")
+    def get_v2_final_report(job_id: str) -> dict[str, Any]:
+        from migration_factory.control_tower.application.v2_final_report_service import (
+            V2FinalReportResult,
+        )
+        try:
+            result = _report_service.get_report_status(job_id)
+        except ValueError as exc:
+            raise _error(404, "V2_JOB_NOT_FOUND", str(exc))
+        return _report_result_to_dict(result)
+
+    @app.post("/v1/v2/jobs/{job_id}/report")
+    def generate_v2_final_report(job_id: str) -> dict[str, Any]:
+        try:
+            result = _report_service.generate_report(job_id)
+        except ValueError as exc:
+            raise _error(404, "V2_JOB_NOT_FOUND", str(exc))
+        return _report_result_to_dict(result)
+
+    @app.get("/v1/v2/jobs/{job_id}/report-artifacts/{artifact_id}/download")
+    def download_v2_report_artifact(job_id: str, artifact_id: str):
+        from fastapi.responses import StreamingResponse
+        import hashlib
+
+        with unit_of_work_factory() as uow:
+            job = uow.v2_jobs.get(job_id) if hasattr(uow, "v2_jobs") else None
+            if job is None:
+                raise _error(404, "V2_JOB_NOT_FOUND", "V2 job not found.")
+            report_service = V2FinalReportService(unit_of_work_factory)
+            result = report_service.get_report_status(job_id)
+            found = None
+            for art in result.artifacts:
+                if art.artifact_id == artifact_id:
+                    found = art
+                    break
+            if found is None:
+                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
+            if found.kind not in REPORT_ARTIFACT_KINDS:
+                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
+
+            sandbox_path = None
+            commands = uow.v2_commands.list_by_job_and_stage(job_id, 4) if hasattr(uow, "v2_commands") else []
+            if commands and commands[0].result_json:
+                try:
+                    result_data = json.loads(commands[0].result_json)
+                    if isinstance(result_data, dict):
+                        sp = result_data.get("sandbox_path")
+                        if sp:
+                            sandbox_path = sp
+                    target_path = str(Path(str(sandbox_path)) / "final")
+                    if found.kind == "final_report_json":
+                        file_path = Path(target_path) / "migration_report.json"
+                    elif found.kind == "final_report_markdown":
+                        file_path = Path(target_path) / "migration_summary.md"
+                    elif found.kind == "final_report_pdf":
+                        file_path = Path(target_path) / "full_migration_report.pdf"
+                    else:
+                        raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
+
+                    if not file_path.is_file():
+                        raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact file not found.")
+
+                    actual_sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
+                    if actual_sha256 != found.checksum_sha256:
+                        raise _error(409, "V2_REPORT_ARTIFACT_CHECKSUM_MISMATCH", "Artifact integrity check failed.")
+
+                    filename = f"{job_id}_{found.kind}.{found.content_type.split('/')[-1]}"
+                    media_type = REPORT_CONTENT_TYPES.get(found.kind, "application/octet-stream")
+
+                    return StreamingResponse(
+                        content=open(file_path, "rb"),
+                        media_type=media_type,
+                        headers={
+                            "Content-Disposition": f'attachment; filename="{filename}"',
+                            "Content-Length": str(file_path.stat().st_size),
+                        },
+                    )
+                except (json.JSONDecodeError, TypeError, OSError) as exc:
+                    raise _error(500, "V2_REPORT_ARTIFACT_ERROR", f"Error reading artifact: {exc}")
+
+            raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
+
     return app
 
 
@@ -11510,6 +11601,29 @@ def _error(status_code: int, code: str, message: str) -> HTTPException:
         status_code=status_code,
         detail={"code": code, "message": message},
     )
+
+
+def _report_result_to_dict(result: Any) -> dict[str, Any]:
+    return {
+        "job_id": result.job_id,
+        "status": result.status,
+        "eligible": result.eligible,
+        "blockers": list(result.blockers),
+        "generated_at": result.generated_at,
+        "input_checksum": result.input_checksum,
+        "redacted_summary": result.redacted_summary,
+        "artifacts": [
+            {
+                "artifact_id": a.artifact_id,
+                "kind": a.kind,
+                "checksum_sha256": a.checksum_sha256,
+                "size_bytes": a.size_bytes,
+                "content_type": a.content_type,
+                "download_url": a.download_url,
+            }
+            for a in result.artifacts
+        ],
+    }
 
 
 def _parse_and_validate_model_output(

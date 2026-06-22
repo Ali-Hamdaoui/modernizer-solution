@@ -41,6 +41,7 @@ import type {
   RunnerProfileOption,
   StageChainResponse,
   OpenGateForJobResponse,
+  V2FinalReportResponse,
   // F14 types
   PomView,
   PomDependencyReview,
@@ -557,6 +558,34 @@ export async function getV2ReviewerCritiques(
   return getJson<V2ReviewerCritiquesListResponse>(
     `/v1/v2/commands/${encodeURIComponent(commandId)}/repair/proposal/${encodeURIComponent(proposalId)}/reviewer-critiques`
   );
+}
+
+// ── F15 Final Report API ────────────────────────────────────────────────
+
+export async function getV2FinalReport(
+  jobId: string,
+): Promise<V2FinalReportResponse> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<V2FinalReportResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/report`,
+  );
+}
+
+export async function generateV2FinalReport(
+  jobId: string,
+): Promise<V2FinalReportResponse> {
+  const safeJobId = requireJobId(jobId);
+  return postJson<V2FinalReportResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/report`,
+    {},
+  );
+}
+
+export function resolveReportDownloadUrl(downloadUrl: string): string {
+  if (!downloadUrl.startsWith("/v1/")) {
+    throw new Error("Invalid report download URL.");
+  }
+  return `${CONTROL_TOWER_API_BASE_URL}${downloadUrl}`;
 }
 
 // ── F14 — Stage 3 POM Dependency Editor API ──────────────────────────────
