@@ -1105,6 +1105,12 @@ def _namespace(tag: str) -> str:
     return ""
 
 
+def _tag_name(tag: str) -> str:
+    if tag.startswith("{") and "}" in tag:
+        return tag[tag.index("}") + 1 :]
+    return tag
+
+
 def _tag(namespace: str, name: str) -> str:
     if namespace:
         return f"{{{namespace}}}{name}"
