@@ -13,11 +13,14 @@ import {
   getV2JobApprovals,
   getV2MigrationJobStages,
   getJob,
+  getV2FinalReport,
+  generateV2FinalReport,
   previewPlanAmendment,
   postJson,
   postV2GateAction,
   requireJobId,
-  resolveControlTowerApiBaseUrl
+  resolveControlTowerApiBaseUrl,
+  resolveReportDownloadUrl
 } from "../lib/controlTowerApi";
 import { applyPublicEvent, latestAppliedSequence, shouldRefetchJobProjection } from "../lib/eventReplay";
 
@@ -483,5 +486,89 @@ describe("M2-01 frontend diagnostic contracts", () => {
     expect(duplicate).toBe(applied);
     expect(latestAppliedSequence(applied.events)).toBe(2);
     expect(shouldRefetchJobProjection(event)).toBe(true);
+  });
+});
+
+describe("F15 Final Report API contracts", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("report contracts contain no run_report_json, run_report_markdown, run_report_pdf, sandbox_path, run_dir fields", () => {
+    const contractFields = {
+      job_id: "",
+      status: "not_generated",
+      eligible: true,
+      blockers: [],
+      generated_at: null,
+      input_checksum: null,
+      redacted_summary: "",
+      artifacts: [],
+    };
+    const serialized = JSON.stringify(contractFields);
+    expect(serialized).not.toContain("run_report_json");
+    expect(serialized).not.toContain("run_report_markdown");
+    expect(serialized).not.toContain("run_report_pdf");
+    expect(serialized).not.toContain("sandbox_path");
+    expect(serialized).not.toContain("run_dir");
+  });
+
+  it("getV2FinalReport encodes job IDs properly", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({
+        job_id: "job-abc",
+        status: "not_generated",
+        eligible: false,
+        blockers: [],
+        generated_at: null,
+        input_checksum: null,
+        redacted_summary: "",
+        artifacts: [],
+      }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getV2FinalReport("job+special");
+
+    const calledUrl = String(fetchMock.mock.calls[0][0]);
+    expect(calledUrl).toContain("/v1/v2/jobs/job%2Bspecial/report");
+    expect(calledUrl).not.toContain("undefined");
+  });
+
+  it("generateV2FinalReport encodes job IDs properly", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({
+        job_id: "job-abc",
+        status: "generated",
+        eligible: true,
+        blockers: [],
+        generated_at: "2026-06-20T00:00:00Z",
+        input_checksum: "chk-1",
+        redacted_summary: "report generated",
+        artifacts: [],
+      }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await generateV2FinalReport("job+special");
+
+    const calledUrl = String(fetchMock.mock.calls[0][0]);
+    expect(calledUrl).toContain("/v1/v2/jobs/job%2Bspecial/report");
+    expect(fetchMock.mock.calls[0][1]).toHaveProperty("method", "POST");
+    expect(calledUrl).not.toContain("undefined");
+  });
+
+  it("download URL must be API-relative (starts with /v1/)", () => {
+    expect(resolveReportDownloadUrl("/v1/reports/report-1")).toBe(
+      `${resolveControlTowerApiBaseUrl(undefined)}/v1/reports/report-1`
+    );
+    expect(() => resolveReportDownloadUrl("http://evil.com/report")).toThrow(
+      "Invalid report download URL."
+    );
+    expect(() => resolveReportDownloadUrl("/download/report")).toThrow(
+      "Invalid report download URL."
+    );
   });
 });

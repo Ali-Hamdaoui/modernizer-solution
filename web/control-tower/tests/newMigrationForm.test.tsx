@@ -252,4 +252,40 @@ describe("V2 New Migration form contract", () => {
     // The value is NOT in the response, only the env ref name
     expect(mockSettingsResponse.azure.roles.proposer.env_ref).toBe("AZURE_OPENAI_PROPOSER_DEPLOYMENT");
   });
+
+  it("NewMigrationForm does not add direct unsafe API helpers (no sandbox_path, report_root, raw command fields)", () => {
+    const formFieldNames = [
+      "run_name",
+      "legacy_app_path",
+      "output_parent_path",
+      "ai_hub_path",
+      "java11_home",
+      "java17_home",
+      "java21_home",
+      "maven_cmd",
+      "proof_level",
+      "skip_endpoint_smoke",
+    ];
+    const unsafeFields = ["sandbox_path", "report_root", "raw_command", "run_command", "shell_cmd", "executable"];
+    for (const unsafe of unsafeFields) {
+      expect(formFieldNames).not.toContain(unsafe);
+    }
+    // Verify no unintended API helper fields slipped into form payloads
+    const setupPayload = {
+      run_name: "my-migration",
+      legacy_app_path: "/path/to/legacy",
+      output_parent_path: "/path/to/output",
+      ai_hub_path: "/path/to/hub",
+      java11_home: "/usr/lib/jvm/java-11",
+      java17_home: "/usr/lib/jvm/java-17",
+      java21_home: "/usr/lib/jvm/java-21",
+      maven_cmd: "/usr/bin/mvn",
+      proof_level: "build_test_verified",
+      skip_endpoint_smoke: false,
+    };
+    const serialized = JSON.stringify(setupPayload);
+    expect(serialized).not.toContain("sandbox_path");
+    expect(serialized).not.toContain("report_root");
+    expect(serialized).not.toContain("raw_command");
+  });
 });

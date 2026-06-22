@@ -23,9 +23,10 @@ STAGE_JDK_MAP = {
     1: {"jdk_id": "java11", "env_var": "JAVA11_HOME", "expected_major": 11},
     2: {"jdk_id": "java17", "env_var": "JAVA17_HOME", "expected_major": 17},
     3: {"jdk_id": "java21", "env_var": "JAVA21_HOME", "expected_major": 21},
+    4: {"jdk_id": "java21", "env_var": "JAVA21_HOME", "expected_major": 21},
 }
 
-PIPELINE_ID = "springboot-216-to-356-java21-three-stage"
+PIPELINE_ID = "springboot-216-to-400-java21-four-stage"
 RUNNER_MODULE = "migration_factory.orchestrator.runner"
 RESUME_MODULE = "migration_factory.orchestrator.resume"
 

@@ -363,6 +363,16 @@ class StartJobRequest(StrictRequest):
     pass
 
 
+class GenerateReportRequest(StrictRequest):
+    """Strict request model for report generation.
+
+    Only allows approved idempotency metadata.
+    Extra fields (path, command, env, argv, stage, profile,
+    sandbox, report_root, filesystem_target) are rejected.
+    """
+    pass
+
+
 class LaunchWorkerRequest(StrictRequest):
     command_id: str
 
@@ -2908,6 +2918,7 @@ def create_app(
             service = V2StageProgressionService(
                 setup_repo=uow.v2_setups,
                 command_repo=uow.v2_commands,
+                artifact_revision_repo=uow.artifact_revisions,
             )
             try:
                 result = service.queue_next_stage(
@@ -3987,9 +3998,17 @@ def create_app(
 
         # Collect continuation events
         events = query_service.get_continuation_policy_events(job_id)
+
+        # Resolve pipeline_id from run configuration
+        resolved_pipeline_id = "springboot-216-to-356-java21-three-stage"
+        with unit_of_work_factory() as uow:
+            run_config = uow.run_configurations.get_for_job(job_id) if hasattr(uow, "run_configurations") else None
+            if run_config is not None:
+                resolved_pipeline_id = run_config.pipeline_id
+
         return {
             "job_id": job_id,
-            "pipeline_id": "springboot-216-to-356-java21-three-stage",
+            "pipeline_id": resolved_pipeline_id,
             "stages": stages,
             "continuation_events": [
                 {
@@ -4439,6 +4458,89 @@ def create_app(
         except Exception:
             pass
         return "mvn clean compile test"
+
+    # ── V2 Final Report routes ───────────────────────────────────
+    from migration_factory.control_tower.application.v2_final_report_service import (
+        V2FinalReportService,
+        REPORT_ARTIFACT_KINDS,
+        REPORT_CONTENT_TYPES,
+    )
+
+    _report_service = V2FinalReportService(unit_of_work_factory)
+
+    @app.get("/v1/v2/jobs/{job_id}/report")
+    def get_v2_final_report(job_id: str) -> dict[str, Any]:
+        from migration_factory.control_tower.application.v2_final_report_service import (
+            V2FinalReportResult,
+        )
+        try:
+            result = _report_service.get_report_status(job_id)
+        except ValueError as exc:
+            raise _error(404, "V2_JOB_NOT_FOUND", str(exc))
+        return _report_result_to_dict(result)
+
+    @app.post("/v1/v2/jobs/{job_id}/report")
+    def generate_v2_final_report(job_id: str, request: GenerateReportRequest = None) -> dict[str, Any]:
+        del request
+        try:
+            result = _report_service.generate_report(job_id)
+        except ValueError as exc:
+            raise _error(404, "V2_JOB_NOT_FOUND", str(exc))
+        return _report_result_to_dict(result)
+
+    @app.get("/v1/v2/jobs/{job_id}/report-artifacts/{artifact_id}/download")
+    def download_v2_report_artifact(job_id: str, artifact_id: str):
+        from fastapi.responses import StreamingResponse
+        import hashlib
+
+        with unit_of_work_factory() as uow:
+            job = uow.v2_jobs.get(job_id) if hasattr(uow, "v2_jobs") else None
+            if job is None:
+                raise _error(404, "V2_JOB_NOT_FOUND", "V2 job not found.")
+
+            # Resolve artifact from artifact repository
+            from migration_factory.control_tower.domain.entities import ArtifactRecord
+            artifact = None
+            if hasattr(uow, "artifacts") and hasattr(uow.artifacts, "list_for_job"):
+                for art in uow.artifacts.list_for_job(job_id):
+                    if art.artifact_id == artifact_id:
+                        artifact = art
+                        break
+            if artifact is None:
+                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
+            if artifact.artifact_type not in REPORT_ARTIFACT_KINDS:
+                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
+            if artifact.job_id != job_id:
+                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
+
+            # Resolve file path from artifact record
+            file_path = Path(artifact.relative_path).resolve()
+
+            # Containment check: ensure the resolved path is within
+            # a reports/ directory or the sandbox final directory
+            file_path_str = str(file_path).replace("\\", "/")
+            if not any(marker in file_path_str for marker in ("/reports/", "/final/", "\\reports\\", "\\final\\")):
+                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
+
+            if not file_path.is_file():
+                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact file not found.")
+
+            actual_sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
+            if actual_sha256 != artifact.checksum:
+                raise _error(409, "V2_REPORT_ARTIFACT_CHECKSUM_MISMATCH", "Artifact integrity check failed.")
+
+            ext = REPORT_CONTENT_TYPES.get(artifact.artifact_type, "application/octet-stream").split("/")[-1]
+            filename = f"{job_id}_{artifact.artifact_type}.{ext}"
+            media_type = REPORT_CONTENT_TYPES.get(artifact.artifact_type, "application/octet-stream")
+
+            return StreamingResponse(
+                content=open(file_path, "rb"),
+                media_type=media_type,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Length": str(file_path.stat().st_size),
+                },
+            )
 
     return app
 
@@ -11510,6 +11612,29 @@ def _error(status_code: int, code: str, message: str) -> HTTPException:
         status_code=status_code,
         detail={"code": code, "message": message},
     )
+
+
+def _report_result_to_dict(result: Any) -> dict[str, Any]:
+    return {
+        "job_id": result.job_id,
+        "status": result.status,
+        "eligible": result.eligible,
+        "blockers": list(result.blockers),
+        "generated_at": result.generated_at,
+        "input_checksum": result.input_checksum,
+        "redacted_summary": result.redacted_summary,
+        "artifacts": [
+            {
+                "artifact_id": a.artifact_id,
+                "kind": a.kind,
+                "checksum_sha256": a.checksum_sha256,
+                "size_bytes": a.size_bytes,
+                "content_type": a.content_type,
+                "download_url": a.download_url,
+            }
+            for a in result.artifacts
+        ],
+    }
 
 
 def _parse_and_validate_model_output(

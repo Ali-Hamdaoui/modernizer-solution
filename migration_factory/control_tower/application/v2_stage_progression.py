@@ -17,8 +17,13 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository
     SqliteV2CommandRepository,
     V2StageCommandRecord,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_artifact_revision_repository import (
+    SqliteArtifactRevisionRepository,
+)
 from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
 
+
+TERMINAL_STAGE_INDEX = 4
 
 STAGE_CONFIG = {
     2: {
@@ -33,9 +38,19 @@ STAGE_CONFIG = {
         "jdk_id": "java21",
         "expected_major": 21,
     },
+    4: {
+        "profile": "springboot-3.5-java21-to-4.0-java21",
+        "jdk_env": "JAVA21_HOME",
+        "jdk_id": "java21",
+        "expected_major": 21,
+    },
 }
 
 RUNNER_MODULE = "migration_factory.orchestrator.runner"
+
+
+def is_terminal_stage(stage_index: int) -> bool:
+    return stage_index == TERMINAL_STAGE_INDEX
 
 
 @dataclass(frozen=True)
@@ -58,9 +73,11 @@ class V2StageProgressionService:
         self,
         setup_repo: SqliteV2SetupRepository,
         command_repo: SqliteV2CommandRepository | None = None,
+        artifact_revision_repo: SqliteArtifactRevisionRepository | None = None,
     ) -> None:
         self._setup_repo = setup_repo
         self._command_repo = command_repo
+        self._artifact_revision_repo = artifact_revision_repo
 
     def queue_next_stage(
         self,
@@ -98,6 +115,9 @@ class V2StageProgressionService:
             )
 
         policy = _coerce_stage_continuation_policy(stage_continuation_policy)
+        if next_stage == TERMINAL_STAGE_INDEX:
+            self._validate_stage4_input(job_id, current_stage)
+
         if policy in (StageContinuationPolicy.MANUAL, StageContinuationPolicy.MANUAL_ON_WARNING_OR_FAILURE):
             reason = (
                 "stage_continuation_policy_manual"
@@ -252,13 +272,13 @@ class V2StageProgressionService:
                 f"must progress one stage at a time",
             )
 
-        if current_stage < 1 or current_stage > 3:
+        if current_stage < 1 or current_stage > TERMINAL_STAGE_INDEX:
             return (
                 False,
-                f"Current stage {current_stage} is out of range (1-3)",
+                f"Current stage {current_stage} is out of range (1-{TERMINAL_STAGE_INDEX})",
             )
 
-        if target_stage not in STAGE_CONFIG and target_stage not in (2, 3):
+        if target_stage not in STAGE_CONFIG and target_stage not in (2, 3, 4):
             return (
                 False,
                 f"Target stage {target_stage} is not a valid migration stage",
@@ -381,6 +401,44 @@ class V2StageProgressionService:
             sandbox_path=sandbox_path,
             stage_continuation_policy=stage_continuation_policy,
         )
+
+    def _validate_stage4_input(
+        self,
+        job_id: str,
+        current_stage: int,
+    ) -> None:
+        if current_stage != 3:
+            raise ValueError(
+                f"Cannot progress from stage {current_stage} to stage 4: "
+                "must progress from stage 3"
+            )
+
+        if self._artifact_revision_repo is not None:
+            accepted = self._artifact_revision_repo.find_accepted(
+                job_id, 3, "stage_output"
+            )
+            if accepted is None:
+                raise ValueError(
+                    "Stage 4 requires an accepted Stage 3 artifact revision. "
+                    "No accepted Stage 3 output revision found."
+                )
+            if accepted.revision_status != "accepted":
+                raise ValueError(
+                    f"Stage 4 requires an accepted Stage 3 artifact revision, "
+                    f"but found status {accepted.revision_status!r}."
+                )
+            if accepted.superseded_by_revision_id is not None:
+                raise ValueError(
+                    "Stage 4 requires an accepted Stage 3 artifact revision "
+                    "that has not been superseded."
+                )
+        else:
+            stage3_output = self.resolve_prior_stage_output(job_id, 3)
+            if stage3_output is None:
+                raise ValueError(
+                    "Stage 4 requires accepted Stage 3 output. "
+                    "Stage 3 has no completed output."
+                )
 
     def continuation_to_dict(self, result: StageContinuationResult) -> dict[str, Any]:
         return {

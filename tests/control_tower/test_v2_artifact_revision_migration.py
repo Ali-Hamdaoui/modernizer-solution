@@ -197,3 +197,90 @@ def test_accepted_at_gate_id_nullable(tmp_path: Path) -> None:
     )
     row = conn.execute("SELECT accepted_at_gate_id FROM v2_artifact_revisions WHERE revision_id = 'rev-g1'").fetchone()
     assert row["accepted_at_gate_id"] == "gate-001"
+
+
+def _apply_up_to_0045(conn: sqlite3.Connection) -> None:
+    from migration_factory.control_tower.infrastructure.sqlite.migrations import (
+        _apply_single_migration,
+        discover_migrations,
+    )
+    for m in discover_migrations():
+        _apply_single_migration(conn, m)
+        if m.version == 45:
+            break
+
+
+def test_migration_0046_artifact_revisions_stage4(tmp_path: Path) -> None:
+    conn = sqlite3.connect(
+        str(tmp_path / "test_0046_rev.sqlite3"),
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    try:
+        _apply_up_to_0045(conn)
+
+        job = "job-0046-r"
+
+        # Seed with Stage 1-3 data
+        conn.execute(
+            "INSERT INTO v2_artifact_revisions (revision_id, job_id, stage_index, revision_kind, revision_status, revision_order, evidence_checksum, artifact_refs_json, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("r-pre1", job, 1, "analysis", "draft", 0, "chk1", "[]", "2026-06-17T12:00:00Z", "system"),
+        )
+        conn.execute(
+            "INSERT INTO v2_artifact_revisions (revision_id, job_id, stage_index, revision_kind, revision_status, revision_order, evidence_checksum, artifact_refs_json, created_at, created_by, accepted_at, accepted_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("r-pre2", job, 2, "planning", "accepted", 0, "chk2", "[]", "2026-06-17T13:00:00Z", "system", "2026-06-17T14:00:00Z", "user"),
+        )
+
+        # Apply 0046
+        from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+        apply_pending_migrations(conn)
+
+        # Verify Stage 1-3 values survive
+        row = conn.execute("SELECT stage_index FROM v2_artifact_revisions WHERE revision_id = 'r-pre1'").fetchone()
+        assert row["stage_index"] == 1
+        row = conn.execute("SELECT stage_index FROM v2_artifact_revisions WHERE revision_id = 'r-pre2'").fetchone()
+        assert row["stage_index"] == 2
+
+        # Stage 4 insert succeeds
+        conn.execute(
+            "INSERT INTO v2_artifact_revisions (revision_id, job_id, stage_index, revision_kind, revision_status, evidence_checksum, artifact_refs_json, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("r-s4", job, 4, "analysis", "draft", "chk4", "[]", "2026-06-17T15:00:00Z", "system"),
+        )
+
+        # Stage 5 insert fails
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO v2_artifact_revisions (revision_id, job_id, stage_index, revision_kind, evidence_checksum, artifact_refs_json, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("r-s5", job, 5, "analysis", "chk5", "[]", "2026-06-17T16:00:00Z", "system"),
+            )
+
+        # Accepted uniqueness still enforced for Stage 4
+        conn.execute(
+            "INSERT INTO v2_artifact_revisions (revision_id, job_id, stage_index, revision_kind, revision_status, evidence_checksum, artifact_refs_json, created_at, created_by, accepted_at, accepted_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("r-s4acc", job, 4, "planning", "accepted", "chk4a", "[]", "2026-06-17T17:00:00Z", "system", "2026-06-17T18:00:00Z", "user"),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO v2_artifact_revisions (revision_id, job_id, stage_index, revision_kind, revision_status, evidence_checksum, artifact_refs_json, created_at, created_by, accepted_at, accepted_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("r-s4acc2", job, 4, "planning", "accepted", "chk4b", "[]", "2026-06-17T19:00:00Z", "system", "2026-06-17T20:00:00Z", "user"),
+            )
+
+        # Different kind at same job+stage+accepted is still allowed
+        conn.execute(
+            "INSERT INTO v2_artifact_revisions (revision_id, job_id, stage_index, revision_kind, revision_status, evidence_checksum, artifact_refs_json, created_at, created_by, accepted_at, accepted_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("r-s4acc3", job, 4, "analysis", "accepted", "chk4c", "[]", "2026-06-17T21:00:00Z", "system", "2026-06-17T22:00:00Z", "user"),
+        )
+
+        # UPDATE still blocked
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "UPDATE v2_artifact_revisions SET revision_status = 'accepted' WHERE revision_id = 'r-pre1'"
+            )
+
+        # DELETE still blocked
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("DELETE FROM v2_artifact_revisions WHERE revision_id = 'r-pre1'")
+    finally:
+        conn.close()
