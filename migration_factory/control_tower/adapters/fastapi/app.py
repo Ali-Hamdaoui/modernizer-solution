@@ -363,6 +363,16 @@ class StartJobRequest(StrictRequest):
     pass
 
 
+class GenerateReportRequest(StrictRequest):
+    """Strict request model for report generation.
+
+    Only allows approved idempotency metadata.
+    Extra fields (path, command, env, argv, stage, profile,
+    sandbox, report_root, filesystem_target) are rejected.
+    """
+    pass
+
+
 class LaunchWorkerRequest(StrictRequest):
     command_id: str
 
@@ -2908,6 +2918,7 @@ def create_app(
             service = V2StageProgressionService(
                 setup_repo=uow.v2_setups,
                 command_repo=uow.v2_commands,
+                artifact_revision_repo=uow.artifact_revisions,
             )
             try:
                 result = service.queue_next_stage(
@@ -3987,9 +3998,17 @@ def create_app(
 
         # Collect continuation events
         events = query_service.get_continuation_policy_events(job_id)
+
+        # Resolve pipeline_id from run configuration
+        resolved_pipeline_id = "springboot-216-to-356-java21-three-stage"
+        with unit_of_work_factory() as uow:
+            run_config = uow.run_configurations.get_for_job(job_id) if hasattr(uow, "run_configurations") else None
+            if run_config is not None:
+                resolved_pipeline_id = run_config.pipeline_id
+
         return {
             "job_id": job_id,
-            "pipeline_id": "springboot-216-to-356-java21-three-stage",
+            "pipeline_id": resolved_pipeline_id,
             "stages": stages,
             "continuation_events": [
                 {
@@ -4461,7 +4480,8 @@ def create_app(
         return _report_result_to_dict(result)
 
     @app.post("/v1/v2/jobs/{job_id}/report")
-    def generate_v2_final_report(job_id: str) -> dict[str, Any]:
+    def generate_v2_final_report(job_id: str, request: GenerateReportRequest = None) -> dict[str, Any]:
+        del request
         try:
             result = _report_service.generate_report(job_id)
         except ValueError as exc:
@@ -4477,59 +4497,50 @@ def create_app(
             job = uow.v2_jobs.get(job_id) if hasattr(uow, "v2_jobs") else None
             if job is None:
                 raise _error(404, "V2_JOB_NOT_FOUND", "V2 job not found.")
-            report_service = V2FinalReportService(unit_of_work_factory)
-            result = report_service.get_report_status(job_id)
-            found = None
-            for art in result.artifacts:
-                if art.artifact_id == artifact_id:
-                    found = art
-                    break
-            if found is None:
+
+            # Resolve artifact from artifact repository
+            from migration_factory.control_tower.domain.entities import ArtifactRecord
+            artifact = None
+            if hasattr(uow, "artifacts") and hasattr(uow.artifacts, "list_for_job"):
+                for art in uow.artifacts.list_for_job(job_id):
+                    if art.artifact_id == artifact_id:
+                        artifact = art
+                        break
+            if artifact is None:
                 raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
-            if found.kind not in REPORT_ARTIFACT_KINDS:
+            if artifact.artifact_type not in REPORT_ARTIFACT_KINDS:
+                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
+            if artifact.job_id != job_id:
                 raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
 
-            sandbox_path = None
-            commands = uow.v2_commands.list_by_job_and_stage(job_id, 4) if hasattr(uow, "v2_commands") else []
-            if commands and commands[0].result_json:
-                try:
-                    result_data = json.loads(commands[0].result_json)
-                    if isinstance(result_data, dict):
-                        sp = result_data.get("sandbox_path")
-                        if sp:
-                            sandbox_path = sp
-                    target_path = str(Path(str(sandbox_path)) / "final")
-                    if found.kind == "final_report_json":
-                        file_path = Path(target_path) / "migration_report.json"
-                    elif found.kind == "final_report_markdown":
-                        file_path = Path(target_path) / "migration_summary.md"
-                    elif found.kind == "final_report_pdf":
-                        file_path = Path(target_path) / "full_migration_report.pdf"
-                    else:
-                        raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
+            # Resolve file path from artifact record
+            file_path = Path(artifact.relative_path).resolve()
 
-                    if not file_path.is_file():
-                        raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact file not found.")
+            # Containment check: ensure the resolved path is within
+            # a reports/ directory or the sandbox final directory
+            file_path_str = str(file_path).replace("\\", "/")
+            if not any(marker in file_path_str for marker in ("/reports/", "/final/", "\\reports\\", "\\final\\")):
+                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
 
-                    actual_sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
-                    if actual_sha256 != found.checksum_sha256:
-                        raise _error(409, "V2_REPORT_ARTIFACT_CHECKSUM_MISMATCH", "Artifact integrity check failed.")
+            if not file_path.is_file():
+                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact file not found.")
 
-                    filename = f"{job_id}_{found.kind}.{found.content_type.split('/')[-1]}"
-                    media_type = REPORT_CONTENT_TYPES.get(found.kind, "application/octet-stream")
+            actual_sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
+            if actual_sha256 != artifact.checksum:
+                raise _error(409, "V2_REPORT_ARTIFACT_CHECKSUM_MISMATCH", "Artifact integrity check failed.")
 
-                    return StreamingResponse(
-                        content=open(file_path, "rb"),
-                        media_type=media_type,
-                        headers={
-                            "Content-Disposition": f'attachment; filename="{filename}"',
-                            "Content-Length": str(file_path.stat().st_size),
-                        },
-                    )
-                except (json.JSONDecodeError, TypeError, OSError) as exc:
-                    raise _error(500, "V2_REPORT_ARTIFACT_ERROR", f"Error reading artifact: {exc}")
+            ext = REPORT_CONTENT_TYPES.get(artifact.artifact_type, "application/octet-stream").split("/")[-1]
+            filename = f"{job_id}_{artifact.artifact_type}.{ext}"
+            media_type = REPORT_CONTENT_TYPES.get(artifact.artifact_type, "application/octet-stream")
 
-            raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
+            return StreamingResponse(
+                content=open(file_path, "rb"),
+                media_type=media_type,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Length": str(file_path.stat().st_size),
+                },
+            )
 
     return app
 
