@@ -27,6 +27,7 @@ from .detection import (
     is_startup_validation_command,
     plan_validation_command,
 )
+from .failure_classifier import classify_post_transform_test_failures
 from .runner import ProcessRunResult, command_diagnostics, run_until_build_result, run_until_exit
 
 
@@ -85,6 +86,7 @@ def run_build_agent(
             unit_id=validation_unit_id,
         )
         error_path = write_build_error(contract, resolved_output_dir)
+        _write_post_transform_failure_classification(project_root, resolved_output_dir, validation_unit_id)
         build_result = BuildRunResult(
             succeeded=False,
             result_kind=classification.kind.value,
@@ -135,6 +137,7 @@ def run_build_agent(
             target_unit=gate_failure.target_unit,
         )
         error_path = write_build_error(contract, resolved_output_dir)
+        _write_post_transform_failure_classification(project.path, resolved_output_dir, validation_unit_id)
         build_result = BuildRunResult(
             succeeded=False,
             result_kind=classification.kind.value,
@@ -238,6 +241,7 @@ def run_build_agent(
         diagnostics=result.diagnostics or command_diagnostics(command, command, env=command_env),
     )
     error_path = write_build_error(contract, resolved_output_dir)
+    _write_post_transform_failure_classification(project.path, resolved_output_dir, validation_unit_id)
 
     build_result = BuildRunResult(
         succeeded=False,
@@ -253,6 +257,25 @@ def run_build_agent(
     )
     _update_ledger(ledger_file, build_result)
     return build_result
+
+
+def _write_post_transform_failure_classification(
+    project_root: Path,
+    output_dir: Path,
+    validation_unit_id: str | None,
+) -> None:
+    try:
+        result = classify_post_transform_test_failures(
+            project_root,
+            output_dir=output_dir,
+            unit_id=validation_unit_id,
+        )
+    except Exception as exc:  # pragma: no cover - fail-safe guard
+        LOGGER.warning("Post-transform failure classification failed: %s", exc, exc_info=True)
+        return
+
+    if result.artifact_path is not None:
+        LOGGER.info("Wrote post-transform failure classification artifact: %s", result.artifact_path)
 
 
 def _validation_mode(

@@ -10,6 +10,12 @@ from unittest.mock import patch
 from helpers import workspace_temp_dir
 from migration_factory.agents.build_agent import run_build_agent
 from migration_factory.agents.build_agent.classifier import BuildClassification, BuildResultKind, classify_line
+from migration_factory.agents.build_agent.failure_classifier import (
+    APPLICATION_BEHAVIOR_REGRESSION,
+    JAKARTA_VALIDATION_HANDLER_MISMATCH,
+    ARTIFACT_NAME,
+    classify_post_transform_test_failures,
+)
 from migration_factory.agents.build_agent.detection import (
     BuildTool,
     JavaProjectInfo,
@@ -729,6 +735,122 @@ public class Application {
             self.assertEqual(ledger["build_validation"]["cwd"], str(tmp))
             self.assertIn("command_duration_seconds", ledger["build_validation"])
             self.assertGreaterEqual(ledger["build_validation"]["command_duration_seconds"], 0)
+
+    def test_failure_classifier_classifies_surefire_report(self) -> None:
+        with workspace_temp_dir() as project:
+            (project / "pom.xml").write_text("<project />", encoding="utf-8")
+            source = project / "src" / "main" / "java" / "com" / "example"
+            source.mkdir(parents=True)
+            (source / "LegacyAdvice.java").write_text(
+                """
+package com.example;
+
+public class LegacyAdvice {
+    void handleConstraintViolation() {
+        throw new RuntimeException("javax.validation.ConstraintViolationException");
+    }
+}
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            reports = project / "target" / "surefire-reports"
+            reports.mkdir(parents=True)
+            (reports / "TEST-com.example.LegacyAdviceTest.xml").write_text(
+                """
+<testsuite name="com.example.LegacyAdviceTest" tests="1" failures="1" errors="0">
+  <testcase classname="com.example.LegacyAdviceTest" name="handlesConstraintViolation">
+    <failure type="jakarta.validation.ConstraintViolationException" message="jakarta.validation.ConstraintViolationException: boom">
+      jakarta.validation.ConstraintViolationException: boom
+    </failure>
+  </testcase>
+</testsuite>
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            result = classify_post_transform_test_failures(project, output_dir=project / "contracts", unit_id="java-17")
+
+            self.assertIsNotNone(result.artifact_path)
+            self.assertTrue(result.artifact_path.is_file())
+            self.assertEqual(result.category_counts, {JAKARTA_VALIDATION_HANDLER_MISMATCH: 1})
+            self.assertEqual(result.failures[0].category, JAKARTA_VALIDATION_HANDLER_MISMATCH)
+            self.assertIn("legacy javax handler signatures", result.failures[0].suggested_next_action)
+            artifact = json.loads(result.artifact_path.read_text(encoding="utf-8"))
+            self.assertEqual(artifact["agent"], "build-agent")
+            self.assertEqual(artifact["failure_count"], 1)
+            self.assertEqual(artifact["category_counts"], {JAKARTA_VALIDATION_HANDLER_MISMATCH: 1})
+            self.assertEqual(artifact["failures"][0]["category"], JAKARTA_VALIDATION_HANDLER_MISMATCH)
+            self.assertEqual(artifact["failures"][0]["suggested_next_action"], result.failures[0].suggested_next_action)
+            self.assertEqual(result.artifact_path.name, ARTIFACT_NAME)
+
+    def test_failing_build_writes_post_transform_failure_artifact(self) -> None:
+        with workspace_temp_dir() as project:
+            (project / "pom.xml").write_text("<project />", encoding="utf-8")
+            reports = project / "target" / "surefire-reports"
+            reports.mkdir(parents=True)
+            (reports / "TEST-com.example.DemoTest.xml").write_text(
+                """
+<testsuite name="com.example.DemoTest" tests="1" failures="1" errors="0">
+  <testcase classname="com.example.DemoTest" name="fails">
+    <failure type="java.lang.AssertionError" message="expected:&lt;200&gt; but was:&lt;500&gt;">
+      expected:&lt;200&gt; but was:&lt;500&gt;
+    </failure>
+  </testcase>
+</testsuite>
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            output_dir = project / "contracts"
+            failing_result = ProcessRunResult(
+                classification=BuildClassification(BuildResultKind.COMPILATION_ERROR, "Build failed", "[ERROR]"),
+                exit_code=1,
+                stdout=["[ERROR]"], stderr=["[ERROR]"],
+            )
+
+            with patch("migration_factory.agents.build_agent.agent.run_until_exit", return_value=failing_result):
+                result = run_build_agent(
+                    project,
+                    output_dir=output_dir,
+                    stream_output=False,
+                    validation_command=["mvn", "clean", "test"],
+                )
+
+            self.assertFalse(result.succeeded)
+            self.assertIsNotNone(result.error_contract_path)
+            self.assertTrue(result.error_contract_path.is_file())
+            classification_path = output_dir / ARTIFACT_NAME
+            self.assertTrue(classification_path.is_file())
+            classification = json.loads(classification_path.read_text(encoding="utf-8"))
+            self.assertEqual(classification["failure_count"], 1)
+            self.assertEqual(classification["category_counts"], {"HTTP_STATUS_CONTRACT_DRIFT": 1})
+            self.assertEqual(result.result_kind, BuildResultKind.COMPILATION_ERROR)
+
+    def test_failure_classifier_exception_does_not_hide_build_failure(self) -> None:
+        with workspace_temp_dir() as project:
+            (project / "pom.xml").write_text("<project />", encoding="utf-8")
+            output_dir = project / "contracts"
+            failing_result = ProcessRunResult(
+                classification=BuildClassification(BuildResultKind.COMPILATION_ERROR, "Build failed", "[ERROR]"),
+                exit_code=1,
+                stdout=["[ERROR]"], stderr=["[ERROR]"],
+            )
+
+            with patch("migration_factory.agents.build_agent.agent.classify_post_transform_test_failures", side_effect=RuntimeError("boom")):
+                with patch("migration_factory.agents.build_agent.agent.run_until_exit", return_value=failing_result):
+                    result = run_build_agent(
+                        project,
+                        output_dir=output_dir,
+                        stream_output=False,
+                        validation_command=["mvn", "clean", "test"],
+                    )
+
+            self.assertFalse(result.succeeded)
+            self.assertIsNotNone(result.error_contract_path)
+            self.assertTrue(result.error_contract_path.is_file())
+            self.assertFalse((output_dir / ARTIFACT_NAME).exists())
 
 
 def _write_multi_module_project(project: Path) -> None:
