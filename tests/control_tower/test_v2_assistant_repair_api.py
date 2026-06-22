@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import difflib
+import hashlib
 import json
 import sqlite3
+import shutil
 from pathlib import Path
 
 import pytest
@@ -14,11 +17,13 @@ from migration_factory.control_tower.application.v2_setup_service import (
     CreateSetupRequest,
     V2SetupService,
 )
+from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
     SqliteV2SetupRepository,
+    V2PreflightResultRecord,
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_assistant_repository import (
     SqliteV2AssistantRepository,
@@ -233,6 +238,154 @@ def _seed_repair_apply_context(
     return run_dir
 
 
+def _seed_real_local_project_repair_apply_context(
+    conn: sqlite3.Connection,
+    tmp_path: Path,
+    *,
+    command_id: str,
+    job_id: str = "job-2",
+    create_job_row: bool = True,
+    create_command_row: bool = True,
+    run_id: str = "run-apply-1",
+    proposal_id: str | None = None,
+    proposal_checksum: str | None = None,
+) -> tuple[Path, Path, Path, Path]:
+    source_fixture = Path(".migration/golden-references/repos/msa-utils-legacy/common-utils").resolve()
+    legacy_root = tmp_path / "legacy-project"
+    shutil.copytree(source_fixture, legacy_root)
+    output_root = tmp_path / "out"
+    run_dir = output_root / ".migration" / "runs" / run_id
+    sandbox_root = run_dir / "sandbox"
+    sandbox_root.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(legacy_root, sandbox_root)
+
+    setup_id = _ready_setup_with_paths(
+        conn,
+        legacy_app_path=str(legacy_root),
+        output_parent_path=str(output_root),
+    )
+    job_repo = SqliteV2JobRepository(conn)
+    command_repo = SqliteV2CommandRepository(conn)
+    job_record = V2MigrationJobRecord(
+        job_id=job_id,
+        setup_id=setup_id,
+        setup_checksum="setup-chk",
+        pipeline_id="pipeline-1",
+        stage_chain_json="[]",
+        status="created",
+        created_at="2026-06-18T00:00:00Z",
+        updated_at="2026-06-18T00:00:00Z",
+        correlation_id=None,
+    )
+    if create_job_row:
+        try:
+            job_repo.save(job_record)
+        except sqlite3.IntegrityError:
+            conn.execute(
+                """UPDATE v2_migration_jobs
+                SET setup_id = ?,
+                    setup_checksum = ?,
+                    pipeline_id = ?,
+                    stage_chain_json = ?,
+                    status = ?,
+                    created_at = ?,
+                    updated_at = ?,
+                    correlation_id = ?
+                WHERE job_id = ?""",
+                (
+                    job_record.setup_id,
+                    job_record.setup_checksum,
+                    job_record.pipeline_id,
+                    job_record.stage_chain_json,
+                    job_record.status,
+                    job_record.created_at,
+                    job_record.updated_at,
+                    job_record.correlation_id,
+                    job_record.job_id,
+                ),
+            )
+
+    if proposal_id is not None and proposal_checksum is not None:
+        draft_path = run_dir / "repairs" / "patch_draft_1.json"
+        draft_path.parent.mkdir(parents=True, exist_ok=True)
+        draft_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "proposal_id": proposal_id,
+                    "repair_proposal_checksum": proposal_checksum,
+                    "target_path": "pom.xml",
+                    "deterministic_rule_id": "DEPENDENCY_ADD_H2_RUNTIME",
+                    "risk": "LOW",
+                    "requires_human_review": False,
+                    "binding_checksum": "binding-1",
+                    "h2_required": True,
+                    "unified_diff": _real_h2_patch((legacy_root / "pom.xml").read_text(encoding="utf-8")),
+                    "expected_validation": ["mvn test"],
+                    "limitations": [],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    command_record = V2StageCommandRecord(
+        command_id=command_id,
+        job_id=job_id,
+        stage_index=3,
+        manifest_checksum="manifest-chk",
+        argv_json="[]",
+        env_json="{}",
+        status="failed",
+        created_at="2026-06-18T00:00:00Z",
+        updated_at="2026-06-18T00:00:00Z",
+        result_json=json.dumps(
+            {
+                "run_id": run_id,
+                "sandbox_path": str(sandbox_root),
+                "modernized_app_path": str(output_root),
+            }
+        ),
+        gate_id=None,
+        decision_id=None,
+    )
+    if create_command_row:
+        try:
+            command_repo.save(command_record)
+        except sqlite3.IntegrityError:
+            conn.execute(
+                """UPDATE v2_stage_commands
+                SET job_id = ?,
+                    stage_index = ?,
+                    manifest_checksum = ?,
+                    argv_json = ?,
+                    env_json = ?,
+                    status = ?,
+                    created_at = ?,
+                    updated_at = ?,
+                    result_json = ?,
+                    gate_id = ?,
+                    decision_id = ?
+                WHERE command_id = ?""",
+                (
+                    command_record.job_id,
+                    command_record.stage_index,
+                    command_record.manifest_checksum,
+                    command_record.argv_json,
+                    command_record.env_json,
+                    command_record.status,
+                    command_record.created_at,
+                    command_record.updated_at,
+                    command_record.result_json,
+                    command_record.gate_id,
+                    command_record.decision_id,
+                    command_record.command_id,
+                ),
+            )
+    return run_dir, legacy_root, sandbox_root, source_fixture
+
+
 def _fake_apply_result(run_dir: Path):
     from migration_factory.repair_loop.patch_apply import PatchApplyResult
 
@@ -265,6 +418,198 @@ def _fake_validation(passed: bool, *, artifact_refs: dict[str, str] | None = Non
         warnings=[],
         errors=[] if passed else ["validation failed"],
     )
+
+
+def _fake_validation_with_artifacts(
+    passed: bool,
+    *,
+    run_dir: Path,
+    artifact_refs: dict[str, str] | None = None,
+):
+    refs = artifact_refs or {
+        "verification_report": str(run_dir / "repairs" / "verification.json"),
+        "test_log": str(run_dir / "repairs" / "test.log"),
+        "h2_log": str(run_dir / "repairs" / "h2.log"),
+    }
+    for artifact_ref in refs.values():
+        artifact_path = Path(artifact_ref)
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(
+            json.dumps(
+                {
+                    "status": "passed" if passed else "failed",
+                    "artifact": artifact_path.name,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    return _fake_validation(passed, artifact_refs=refs)
+
+
+def _snapshot_directory(root: Path) -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        snapshot[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return snapshot
+
+
+def _apply_real_fixture_patch(kwargs: dict[str, object], *, expected_file_before: str):
+    from migration_factory.repair_loop.patch_apply import PatchApplyResult
+
+    run_dir = Path(kwargs["run_dir"])  # type: ignore[arg-type]
+    sandbox_path = Path(kwargs["sandbox_path"])  # type: ignore[arg-type]
+    unified_diff = str(kwargs["unified_diff"])
+    touched_paths = [str(path) for path in kwargs.get("touched_paths", ["pom.xml"])]
+    target_rel_path = touched_paths[0]
+    repairs_dir = run_dir / "repairs"
+    repairs_dir.mkdir(parents=True, exist_ok=True)
+    patch_path = repairs_dir / "patch_attempt_1.diff"
+    patch_path.write_text(unified_diff.rstrip() + "\n", encoding="utf-8")
+
+    snapshot_dir = repairs_dir / "snapshots" / "attempt_1"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    target_path = sandbox_path / target_rel_path
+    before_text = target_path.read_text(encoding="utf-8")
+    assert before_text == expected_file_before
+    (snapshot_dir / target_rel_path).parent.mkdir(parents=True, exist_ok=True)
+    (snapshot_dir / target_rel_path).write_text(before_text, encoding="utf-8")
+    before_hashes = {target_rel_path: hashlib.sha256(before_text.encode("utf-8")).hexdigest()}
+    if target_rel_path.endswith(".java"):
+        after_text = before_text.replace("import javax.", "import jakarta.")
+        after_text = after_text.replace("package javax.", "package jakarta.")
+    else:
+        after_text = before_text.replace(
+            "    </dependencies>\n",
+            (
+                "        <dependency>\n"
+                "            <groupId>com.h2database</groupId>\n"
+                "            <artifactId>h2</artifactId>\n"
+                "            <scope>runtime</scope>\n"
+                "        </dependency>\n"
+                "    </dependencies>\n"
+            ),
+            1,
+        )
+    target_path.write_text(after_text, encoding="utf-8")
+    after_hashes = {target_rel_path: hashlib.sha256(after_text.encode("utf-8")).hexdigest()}
+    return PatchApplyResult(
+        status="APPLIED",
+        reason="patch applied inside sandbox",
+        patch_path=patch_path,
+        touched_paths=touched_paths,
+        before_hashes=before_hashes,
+        after_hashes=after_hashes,
+        snapshot_dir=snapshot_dir,
+        created_paths=[],
+        errors=[],
+    )
+
+
+def _real_h2_patch(before_pom: str) -> str:
+    after_pom = before_pom.replace(
+        "    </dependencies>\n",
+        (
+            "        <dependency>\n"
+            "            <groupId>com.h2database</groupId>\n"
+            "            <artifactId>h2</artifactId>\n"
+            "            <scope>runtime</scope>\n"
+            "        </dependency>\n"
+            "    </dependencies>\n"
+        ),
+        1,
+    )
+    diff = difflib.unified_diff(
+        before_pom.splitlines(keepends=True),
+        after_pom.splitlines(keepends=True),
+        fromfile="a/pom.xml",
+        tofile="b/pom.xml",
+        lineterm="",
+    )
+    return "\n".join(["diff --git a/pom.xml b/pom.xml", *diff]) + "\n"
+
+
+def _real_java_import_patch(before_text: str, *, rel_path: str) -> str:
+    after_text = before_text.replace("import javax.", "import jakarta.")
+    after_text = after_text.replace("package javax.", "package jakarta.")
+    diff = difflib.unified_diff(
+        before_text.splitlines(keepends=True),
+        after_text.splitlines(keepends=True),
+        fromfile=f"a/{rel_path}",
+        tofile=f"b/{rel_path}",
+        lineterm="",
+    )
+    return "\n".join([f"diff --git a/{rel_path} b/{rel_path}", *diff]) + "\n"
+
+
+def _ready_setup_with_paths(conn: sqlite3.Connection, *, legacy_app_path: str, output_parent_path: str) -> str:
+    repo = SqliteV2SetupRepository(conn)
+    service = V2SetupService(repo)
+    setup = service.create_setup(
+        CreateSetupRequest(
+            run_name="repair-apply",
+            legacy_app_path=legacy_app_path,
+            output_parent_path=output_parent_path,
+            ai_hub_path="C:/work/ai-hub",
+            java11_home="C:/java/11",
+            java17_home="C:/java/17",
+            java21_home="C:/java/21",
+            maven_cmd="C:/maven/bin/mvn.cmd",
+        )
+    )
+    ready_json = json.dumps({
+        "legacy_app_exists": True,
+        "legacy_app_has_project_file": True,
+        "legacy_app_not_in_output_parent": True,
+        "output_parent_writable": True,
+        "ai_hub_root_exists": True,
+        "ai_hub_profiles_ready": True,
+        "ai_hub_catalogs_ready": True,
+        "ai_hub_policies_ready": True,
+        "jdk11_ready": True,
+        "jdk17_ready": True,
+        "jdk21_ready": True,
+        "maven_ready": True,
+        "pipeline_route_ready": True,
+        "legacy_marker_ready": True,
+        "output_parent_gate_ready": True,
+        "azure_model_ready": True,
+    })
+    repo.save_preflight(
+        V2PreflightResultRecord(
+            preflight_id="pf-ready",
+            setup_id=setup.setup_id,
+            setup_checksum=setup.setup_checksum,
+            all_ready=True,
+            legacy_app_exists=True,
+            legacy_app_has_project_file=True,
+            legacy_app_not_in_output_parent=True,
+            output_parent_writable=True,
+            ai_hub_root_exists=True,
+            ai_hub_profiles_ready=True,
+            ai_hub_catalogs_ready=True,
+            ai_hub_policies_ready=True,
+            jdk11_ready=True,
+            jdk17_ready=True,
+            jdk21_ready=True,
+            maven_ready=True,
+            pipeline_route_ready=True,
+            legacy_marker_ready=True,
+            output_parent_gate_ready=True,
+            readiness_json=ready_json,
+            warnings_json="[]",
+            errors_json="[]",
+            checked_at=utc_now_text(),
+            checked_by="test",
+            correlation_id=None,
+        )
+    )
+    return setup.setup_id
 
 
 def _h2_patch() -> str:
@@ -774,6 +1119,259 @@ class TestRepairAPI:
             "test_log": str(run_dir / "repairs" / "test.log"),
         }
         assert repeat_body["repair_action"]["verification_failure_classification_ref"] == ""
+        monkeypatch.undo()
+
+    def test_governed_repair_workflow_dry_run_with_real_local_project_fixture(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        client, conn = _api_client(tmp_path)
+        output_root = tmp_path / "out"
+        _seed_migration_intelligence_artifacts(output_root)
+        job_id = "job-real"
+        run_id = "run-real-1"
+        command_id = "cmd-real"
+
+        run_dir, legacy_root, sandbox_root, source_fixture = _seed_real_local_project_repair_apply_context(
+            conn,
+            tmp_path,
+            job_id=job_id,
+            command_id=command_id,
+            run_id=run_id,
+        )
+        _create_gate_with_refs(
+            conn,
+            job_id,
+            refs=(
+                "runtime_contract.json",
+                "reference_delta.json",
+                "post_transform_failure_classification.json",
+            ),
+            phase="approval_review",
+            stage_index=3,
+        )
+        source_fixture_snapshot_before = _snapshot_directory(source_fixture)
+        legacy_snapshot_before = _snapshot_directory(legacy_root)
+        sandbox_snapshot_before = _snapshot_directory(sandbox_root)
+        target_rel_path = "src/test/java/com/total/corp/advice/App.java"
+        legacy_file_before = (legacy_root / target_rel_path).read_text(encoding="utf-8")
+        source_file_before = (source_fixture / target_rel_path).read_text(encoding="utf-8")
+
+        from migration_factory.control_tower.application.v2_assistant_model_client import (
+            V2AssistantModelResult,
+        )
+
+        class _RealLocalProjectGovernedRepairClient:
+            def __init__(self) -> None:
+                self.roles: list[str] = []
+                self.prompts: list[str] = []
+
+            def answer_with_role(
+                self,
+                *,
+                role,
+                prompt: str,
+                fallback: str,
+                conversation_history=None,
+                output_schema_name=None,
+                require_schema: bool = False,
+            ):
+                self.roles.append(role.value)
+                self.prompts.append(prompt)
+                if role == V2ModelRole.PROPOSER:
+                    content = json.dumps({
+                        "failure_hypothesis": "Legacy javax imports should move to jakarta.",
+                        "patch_summary": "Prepare a sandbox-only import update from deterministic evidence.",
+                        "affected_paths": [target_rel_path],
+                        "validation_plan": "Review the evidence, then validate in sandbox after human approval.",
+                    })
+                    summary = "Proposer reply"
+                else:
+                    content = json.dumps({
+                        "decision": "accept",
+                        "reasoning": "Proposal is bounded, evidence-backed, and sandbox-only.",
+                        "missing_evidence": [],
+                        "unsafe_assumptions": [],
+                    })
+                    summary = "Reviewer reply"
+                return V2AssistantModelResult(
+                    content=content,
+                    source="azure_openai",
+                    model_status="live_ok",
+                    provider="azure_openai",
+                    role=role.value,
+                    success=True,
+                    redacted_summary=summary,
+                    failure_reason="",
+                )
+
+            def answer(
+                self,
+                *,
+                prompt: str,
+                fallback: str,
+                conversation_history: list[dict[str, str]] | None = None,
+            ):
+                return self.answer_with_role(
+                    role=V2ModelRole.PROPOSER,
+                    prompt=prompt,
+                    fallback=fallback,
+                    conversation_history=conversation_history,
+                )
+
+        repair_client = _RealLocalProjectGovernedRepairClient()
+        client.app.state.v2_assistant_model_client = repair_client
+
+        ask_response = client.post(
+            f"/v1/v2/jobs/{job_id}/assistant/ask",
+            json={"question": "solve this"},
+            headers=_mutation_headers(),
+        )
+        assert ask_response.status_code == 200, ask_response.text
+        ask_body = ask_response.json()
+        assert ask_body["intent"] == "solve_failure"
+        assert ask_body["repair_proposal"] is not None
+        proposal = ask_body["repair_proposal"]
+        proposal_id = proposal["proposal_id"]
+        proposal_checksum = proposal["proposal_checksum"]
+        review_context_pack_checksum = ask_body["repair_context"]["review_context_pack_checksum"]
+        assert ask_body["proposal_model"]["role"] == "proposer"
+        assert ask_body["reviewer_model"]["role"] == "reviewer"
+        assert ask_body["governance"]["human_approval_required"] is True
+        assert ask_body["governance"]["no_auto_apply"] is True
+        assert ask_body["governance"]["sandbox_only"] is True
+        assert ask_body["governance"]["source_mutated"] is False
+        assert ask_body["governance"]["stage_resumed"] is False
+        assert ask_body["governance"]["reviewer_required"] is True
+        assert ask_body["migration_intelligence"]["runtime_contract"]["status"] == "generated"
+        assert ask_body["migration_intelligence"]["reference_delta"]["status"] == "generated"
+        assert ask_body["migration_intelligence"]["post_transform_failure_classification"]["status"] == "generated"
+        assert repair_client.roles == ["proposer", "reviewer"]
+        assert "Human approval required" in ask_body["assistant_message"]["content"]
+        assert "No auto apply" in ask_body["assistant_message"]["content"]
+        assert "Sandbox only" in ask_body["assistant_message"]["content"]
+
+        draft_path = run_dir / "repairs" / "patch_draft_1.json"
+        draft_path.parent.mkdir(parents=True, exist_ok=True)
+        draft_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "proposal_id": proposal_id,
+                    "repair_proposal_checksum": proposal_checksum,
+                    "target_path": target_rel_path,
+                    "deterministic_rule_id": "JAKARTA_IMPORT_MECHANICAL_SOURCE",
+                    "risk": "LOW",
+                    "requires_human_review": False,
+                    "binding_checksum": "binding-1",
+                    "h2_required": False,
+                    "unified_diff": _real_java_import_patch(legacy_file_before, rel_path=target_rel_path),
+                    "expected_validation": ["mvn test"],
+                    "limitations": [],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        from migration_factory.control_tower.application.v2_reviewer_service import (
+            V2ReviewerService,
+        )
+        from migration_factory.control_tower.infrastructure.sqlite.v2_reviewer_repository import (
+            SqliteV2ReviewerRepository,
+        )
+
+        reviewer_repo = SqliteV2ReviewerRepository(conn)
+        reviewer_service = V2ReviewerService(reviewer_repo=reviewer_repo)
+        reviewer_service.record_critique(
+            proposal_id=proposal_id,
+            proposal_type="repair",
+            proposal_checksum=proposal_checksum,
+            context_pack_checksum=review_context_pack_checksum,
+            decision="accept",
+            reasoning="Dry run approved for copied local fixture.",
+            missing_evidence=(),
+            unsafe_assumptions=(),
+        )
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(
+            v2_repair_flow,
+            "apply_patch_to_sandbox",
+            lambda **kwargs: _apply_real_fixture_patch(kwargs, expected_file_before=legacy_file_before),
+        )
+        monkeypatch.setattr(
+            v2_repair_flow,
+            "run_validation_after_patch",
+            lambda **kwargs: _fake_validation_with_artifacts(
+                True,
+                run_dir=Path(kwargs["run_dir"]),
+                artifact_refs={
+                    "verification_report": str(run_dir / "repairs" / "verification.json"),
+                    "test_log": str(run_dir / "repairs" / "test.log"),
+                    "h2_log": str(run_dir / "repairs" / "h2.log"),
+                },
+            ),
+        )
+
+        approve_response = client.post(
+            f"/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/approve",
+            json={
+                "approval_checksum": "chk-real",
+                "proposal_checksum": proposal_checksum,
+                "context_pack_checksum": review_context_pack_checksum,
+            },
+            headers=_mutation_headers(),
+        )
+        assert approve_response.status_code == 200, approve_response.text
+        approve_body = approve_response.json()
+        assert approve_body["repair_action"]["status"] == "applied"
+        assert approve_body["repair_action"]["human_approved"] is True
+        assert approve_body["repair_action"]["sandbox_only"] is True
+        assert approve_body["repair_action"]["source_mutated"] is False
+        assert approve_body["repair_action"]["sandbox_mutated"] is True
+        assert approve_body["repair_action"]["stage_resumed"] is False
+        assert approve_body["repair_action"]["backend_runner_invoked"] is False
+        assert approve_body["repair_action"]["llm_invoked"] is False
+        assert approve_body["repair_action"]["verification_status"] == "passed"
+        assert approve_body["repair_action"]["verification_build_status"] == "BUILD_PASSED_IN_SANDBOX"
+        assert approve_body["repair_action"]["verification_test_status"] == "TEST_PASSED"
+        assert approve_body["repair_action"]["verification_h2_status"] == "H2_STARTUP_PASSED"
+        assert approve_body["repair_action"]["verification_failure_classification_ref"] == ""
+        verification_artifact_refs = approve_body["repair_action"]["verification_artifact_refs"]
+        assert verification_artifact_refs == {
+            "verification_report": str(run_dir / "repairs" / "verification.json"),
+            "test_log": str(run_dir / "repairs" / "test.log"),
+            "h2_log": str(run_dir / "repairs" / "h2.log"),
+        }
+        for artifact_ref in verification_artifact_refs.values():
+            assert Path(artifact_ref).is_file()
+        assert legacy_snapshot_before == _snapshot_directory(legacy_root)
+        assert source_fixture_snapshot_before == _snapshot_directory(source_fixture)
+        assert legacy_file_before == (legacy_root / target_rel_path).read_text(encoding="utf-8")
+        assert source_file_before == (source_fixture / target_rel_path).read_text(encoding="utf-8")
+        assert sandbox_snapshot_before != _snapshot_directory(sandbox_root)
+        assert sandbox_snapshot_before[target_rel_path] != _snapshot_directory(sandbox_root)[target_rel_path]
+
+        repeat_response = client.post(
+            f"/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/approve",
+            json={
+                "approval_checksum": "chk-real",
+                "proposal_checksum": proposal_checksum,
+                "context_pack_checksum": review_context_pack_checksum,
+            },
+            headers=_mutation_headers(),
+        )
+        assert repeat_response.status_code == 200, repeat_response.text
+        repeat_body = repeat_response.json()
+        assert repeat_body["repair_action"]["status"] == "idempotent"
+        assert repeat_body["repair_action"]["verification_status"] == "passed"
+        assert repeat_body["repair_action"]["verification_artifact_refs"] == verification_artifact_refs
+        assert repeat_body["repair_action"]["verification_failure_classification_ref"] == ""
+        assert sandbox_snapshot_before != _snapshot_directory(sandbox_root)
+        assert legacy_snapshot_before == _snapshot_directory(legacy_root)
         monkeypatch.undo()
 
     def test_approve_missing_proposal(self, tmp_path: Path) -> None:
