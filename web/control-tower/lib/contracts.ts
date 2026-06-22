@@ -493,6 +493,68 @@ export type V2AssistantMessagesListResponse = {
   messages: V2AssistantMessageResponse[];
 };
 
+export type GovernedRepairProposalPartySummary = {
+  role?: string;
+  model?: string;
+  provider?: string;
+  status?: string;
+  summary?: string;
+  proposal_text?: string;
+  verdict?: string;
+  critique?: string;
+  warnings?: string[];
+  required_changes?: string[];
+  reviewer_required?: boolean;
+  manual_review_required?: boolean;
+};
+
+export type GovernedRepairProposalEvidenceSummary = {
+  failure_classification?: FailureClassificationSummary | null;
+  runtime_contract?: RuntimeContractSummary | null;
+  reference_delta?: ReferenceDeltaSummary | null;
+  migration_intelligence?: MigrationIntelligenceSummary | null;
+  migration_intelligence_warnings?: string[];
+  evidence_references?: string[];
+  evidence_checksums?: string[];
+};
+
+export type GovernedRepairProposalGovernanceSummary = {
+  human_approval_required?: boolean;
+  no_auto_apply?: boolean;
+  sandbox_only?: boolean;
+  source_mutated?: boolean;
+  sandbox_mutated?: boolean;
+  stage_resumed?: boolean;
+  backend_runner_invoked?: boolean;
+  approval_bypass?: boolean;
+  reviewer_required?: boolean;
+  manual_review_required?: boolean;
+  status?: string;
+};
+
+export type GovernedRepairProposalResponse = {
+  proposal_id?: string;
+  intent?: string;
+  status?: string;
+  title?: string;
+  summary?: string;
+  proposed_action?: string;
+  proposal_text?: string;
+  affected_files?: string[];
+  affected_components?: string[];
+  confidence?: string | number;
+  risk?: string | number;
+  proposer?: GovernedRepairProposalPartySummary | null;
+  reviewer?: GovernedRepairProposalPartySummary | null;
+  evidence?: GovernedRepairProposalEvidenceSummary | null;
+  migration_intelligence?: MigrationIntelligenceSummary | null;
+  migration_intelligence_warnings?: string[];
+  evidence_references?: string[];
+  evidence_checksums?: string[];
+  governance?: GovernedRepairProposalGovernanceSummary | null;
+  warnings?: string[];
+};
+
 export type V2AssistantAskResponse = {
   job_id: string;
   user_message: V2AssistantMessageResponse;
@@ -505,6 +567,10 @@ export type V2AssistantAskResponse = {
     failure_reason?: string;
   };
   guardrails: Record<string, boolean>;
+  repair_proposal?: GovernedRepairProposalResponse | null;
+  repairProposal?: GovernedRepairProposalResponse | null;
+  migration_intelligence?: MigrationIntelligenceSummary | null;
+  migration_intelligence_warnings?: string[];
 };
 
 export type V2ReviewerCritiqueResponse = {

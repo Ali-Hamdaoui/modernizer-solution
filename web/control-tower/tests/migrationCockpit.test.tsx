@@ -4,6 +4,7 @@ import MigrationCockpitPage from "../app/migrations/[jobId]/page";
 import {
   MigrationCockpit,
   AssistantPanelContent,
+  GovernedRepairProposalCard,
   GatePanelContent,
   formatGateArtifactRefLabel,
   mergeCockpitLiveRefreshResults,
@@ -11,7 +12,108 @@ import {
   type CockpitData,
 } from "../app/migrations/[jobId]/MigrationCockpit";
 import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, requireJobId, v2EventStreamUrl } from "../lib/controlTowerApi";
-import type { GateRepresentation, MigrationIntelligenceSummary, V2JobEvent } from "../lib/contracts";
+import type { GateRepresentation, GovernedRepairProposalResponse, MigrationIntelligenceSummary, V2JobEvent } from "../lib/contracts";
+
+const GOVERNED_REPAIR_PROPOSAL: GovernedRepairProposalResponse = {
+  proposal_id: "proposal-9a-1",
+  intent: "solve_this",
+  status: "awaiting_human_approval",
+  title: "Stabilize dependency alignment after failed build",
+  summary: "Review failure evidence, preserve sandbox-only flow, and require human approval before apply.",
+  proposed_action: "Prepare governed repair proposal for dependency update",
+  proposal_text: "Adjust dependency graph in sandbox only after human approval.",
+  affected_files: ["pom.xml", "src/main/java/com/example/App.java"],
+  affected_components: ["build-agent", "stage3-dependency-review"],
+  confidence: "high",
+  risk: "medium",
+  proposer: {
+    role: "proposer",
+    model: "gpt-4o-mini",
+    provider: "azure_openai",
+    status: "completed",
+    proposal_text: "Use deterministic evidence plus migration intelligence.",
+  },
+  reviewer: {
+    role: "reviewer",
+    model: "gpt-4o",
+    provider: "azure_openai",
+    status: "completed",
+    verdict: "review_required",
+    critique: "Keep sandbox-only and await human approval.",
+    warnings: ["No automatic changes"],
+    required_changes: ["Require explicit approval before apply"],
+    reviewer_required: true,
+    manual_review_required: true,
+  },
+  evidence: {
+    failure_classification: {
+      status: "generated",
+      categories: { dependency_mismatch: 2, test_failure: 1 },
+      category_counts: { dependency_mismatch: 2, test_failure: 1 },
+      failed_unit: "stage2",
+      failure_count: 3,
+      suggested_actions: ["review dependency graph"],
+      test_failure_summary: {
+        suite_count: 1,
+        first_failure: {
+          test_class: "ExampleTest",
+          test_method: "failsWhenLegacyApiMissing",
+          outcome: "failed",
+          category: "test_failure",
+          exception_type: "AssertionError",
+          symptom: "expected true",
+        },
+      },
+    },
+    runtime_contract: {
+      status: "generated",
+      detected_risks_count: 2,
+      detected_risks: ["hardcoded JDK path", "private registry requirement"],
+      recommended_actions_count: 1,
+      recommended_actions: ["use backend-owned Java selection"],
+      jdk_requirements: {
+        java_version: "21",
+        compiler_release: "21",
+        workflow_setup_java_versions: ["21"],
+      },
+      maven_requirements: {
+        wrapper_present: true,
+      },
+      private_registry_requirements: {
+        repository_urls: ["https://repo.example.invalid"],
+      },
+      internal_dependencies_count: 1,
+      internal_dependencies: ["com.example:shared-lib"],
+    },
+    reference_delta: {
+      status: "generated",
+      dependency_delta: { added_count: 1, removed_count: 0, version_changed_count: 2 },
+      source_delta: { added_imports_count: 3, removed_imports_count: 1, javax_to_jakarta_count: 2 },
+      api_migration_indicators: { security: true, persistence: false },
+      recommended_capability_packs: ["security-hardening", "jakarta-migration"],
+      suspicious_artifacts_count: 1,
+      suspicious_artifacts: ["legacy-api.jar"],
+    },
+    migration_intelligence_warnings: ["runtime_contract: warn"],
+    evidence_references: ["diagnosis:1", "evidence:2"],
+    evidence_checksums: ["sha256:proposal", "sha256:evidence"],
+  },
+  migration_intelligence_warnings: ["runtime_contract: warn", "reference_delta: warn"],
+  governance: {
+    human_approval_required: true,
+    no_auto_apply: true,
+    sandbox_only: true,
+    source_mutated: false,
+    sandbox_mutated: false,
+    stage_resumed: false,
+    backend_runner_invoked: false,
+    approval_bypass: false,
+    reviewer_required: true,
+    manual_review_required: true,
+    status: "Awaiting human approval",
+  },
+  warnings: ["Governed repair proposal is evidence-bound."],
+};
 
 describe("V2 Migration Cockpit contract", () => {
   it("passes the awaited route job id into MigrationCockpit", async () => {
@@ -263,6 +365,54 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("message-content");
     expect(markup).toContain("Line 1");
     expect(markup).toContain("Line 2");
+  });
+
+  it("renders governed repair proposal card in assistant panel", () => {
+    const markup = renderToStaticMarkup(
+      <AssistantPanelContent
+        assistantModel={{
+          status: "fallback",
+          source: "deterministic",
+          provider: "backend",
+          role: "assistant",
+          failure_reason: "assistant_ask_failed",
+        }}
+        messages={[]}
+        assistantError={null}
+        assistantQuestion="solve this"
+        assistantBusy={false}
+        approvalReviewOpen={true}
+        repairProposal={GOVERNED_REPAIR_PROPOSAL}
+        onQuestionChange={() => undefined}
+        onAsk={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("Governed Repair Proposal");
+    expect(markup).toContain("Awaiting human approval");
+    expect(markup).toContain("Human approval required: true");
+    expect(markup).toContain("No automatic changes have been applied.");
+    expect(markup).toContain("Proposal: proposal-9a-1");
+    expect(markup).toContain("Proposer");
+    expect(markup).toContain("reviewer");
+    expect(markup).toContain("Failure classification: generated");
+    expect(markup).toContain("Runtime contract: generated");
+    expect(markup).toContain("Reference delta: generated");
+    expect(markup).toContain("runtime_contract: warn");
+    expect(markup).toContain("Ask");
+  });
+
+  it("governed repair proposal card has no approve apply run or resume controls", () => {
+    const markup = renderToStaticMarkup(
+      <GovernedRepairProposalCard proposal={GOVERNED_REPAIR_PROPOSAL} />
+    );
+
+    expect(markup).toContain("Governed Repair Proposal");
+    expect(markup).not.toContain("<button");
+    expect(markup).not.toContain("Approve");
+    expect(markup).not.toContain("Apply");
+    expect(markup).not.toContain(">Run<");
+    expect(markup).not.toContain("Resume");
   });
 
   it("redacts absolute Windows artifact refs down to short labels", () => {
@@ -859,5 +1009,6 @@ function makeCockpitData(): CockpitData {
     } as CockpitData["pipeline"],
     failureSummary: null,
     assistantModel: null,
+    repairProposal: null,
   };
 }

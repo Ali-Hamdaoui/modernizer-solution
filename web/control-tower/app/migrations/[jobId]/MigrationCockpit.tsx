@@ -25,6 +25,7 @@ import type {
   V2ApprovalResponse,
   V2ArtifactPreviewResponse,
   V2AssistantMessageResponse,
+  GovernedRepairProposalResponse,
   V2FailureSummaryResponse,
   V2JobEvent,
   V2MigrationJobResponse,
@@ -63,6 +64,12 @@ function formatCountSummary(count: number | undefined, noun: string): string {
   return `${value} ${noun}${value === 1 ? "" : "s"}`;
 }
 
+function formatFlag(value: boolean | undefined | null): string {
+  if (value === true) return "true";
+  if (value === false) return "false";
+  return "unknown";
+}
+
 function hasMigrationIntelligence(migrationIntelligence: MigrationIntelligenceSummary | null | undefined): boolean {
   if (!migrationIntelligence) {
     return false;
@@ -90,6 +97,7 @@ export interface CockpitData {
   pipeline: V2PipelineResponse;
   failureSummary: V2FailureSummaryResponse | null;
   assistantModel: { status: string; source: string; provider: string; role: string; failure_reason?: string } | null;
+  repairProposal: GovernedRepairProposalResponse | null;
 }
 
 type GatePanelState =
@@ -316,6 +324,116 @@ export function GatePanelContent({ state }: { state: GatePanelState }) {
   );
 }
 
+export function GovernedRepairProposalCard({ proposal }: { proposal: GovernedRepairProposalResponse | null }) {
+  if (!proposal) {
+    return null;
+  }
+
+  const proposer = proposal.proposer ?? null;
+  const reviewer = proposal.reviewer ?? null;
+  const evidence = proposal.evidence ?? null;
+  const runtimeContract = evidence?.runtime_contract ?? proposal.migration_intelligence?.runtime_contract ?? null;
+  const referenceDelta = evidence?.reference_delta ?? proposal.migration_intelligence?.reference_delta ?? null;
+  const failureClassification = evidence?.failure_classification ?? proposal.migration_intelligence?.post_transform_failure_classification ?? null;
+  const warnings = [
+    ...(proposal.warnings ?? []),
+    ...(proposal.migration_intelligence_warnings ?? []),
+    ...(evidence?.migration_intelligence_warnings ?? []),
+  ].filter(Boolean);
+
+  return (
+    <div className="repair-proposal-card">
+      <h3>Governed Repair Proposal</h3>
+      <p className="meta">Status: Awaiting human approval</p>
+      {proposal.proposal_id && <p className="meta">Proposal: {proposal.proposal_id}</p>}
+      {proposal.intent && <p className="meta">Intent: {proposal.intent}</p>}
+      {proposal.status && <p className="meta">Proposal status: {proposal.status}</p>}
+      {proposal.title && <p className="meta">Title: {proposal.title}</p>}
+      {proposal.summary && <p className="meta">Summary: {proposal.summary}</p>}
+      {proposal.proposed_action && <p className="meta">Proposed action: {proposal.proposed_action}</p>}
+      {(proposal.affected_files?.length ?? 0) > 0 && (
+        <p className="meta">Affected files: {summarizeList(proposal.affected_files)}</p>
+      )}
+      {(proposal.affected_components?.length ?? 0) > 0 && (
+        <p className="meta">Affected components: {summarizeList(proposal.affected_components)}</p>
+      )}
+      {proposal.confidence != null && <p className="meta">Confidence: {String(proposal.confidence)}</p>}
+      {proposal.risk != null && <p className="meta">Risk: {String(proposal.risk)}</p>}
+
+      <div className="trace-section">
+        <strong>Proposer</strong>
+        <p className="meta">
+          Role: {proposer?.role ?? "n/a"} | Model: {proposer?.model ?? "n/a"} | Provider: {proposer?.provider ?? "n/a"} | Status: {proposer?.status ?? "n/a"}
+        </p>
+        <p className="meta">
+          {proposer?.proposal_text ?? proposer?.summary ?? proposal.proposal_text ?? proposal.summary ?? "No proposer summary available."}
+        </p>
+      </div>
+
+      <div className="trace-section">
+        <strong>Reviewer</strong>
+        <p className="meta">
+          Role: {reviewer?.role ?? "n/a"} | Model: {reviewer?.model ?? "n/a"} | Provider: {reviewer?.provider ?? "n/a"} | Status: {reviewer?.status ?? "n/a"}
+        </p>
+        <p className="meta">
+          Verdict: {reviewer?.verdict ?? "n/a"}
+        </p>
+        <p className="meta">
+          {reviewer?.critique ?? reviewer?.summary ?? "No reviewer critique available."}
+        </p>
+        {(reviewer?.warnings?.length ?? 0) > 0 && (
+          <p className="meta">Warnings: {summarizeList(reviewer?.warnings)}</p>
+        )}
+        {(reviewer?.required_changes?.length ?? 0) > 0 && (
+          <p className="meta">Required changes: {summarizeList(reviewer?.required_changes)}</p>
+        )}
+        <p className="meta">
+          Reviewer required: {formatFlag(reviewer?.reviewer_required ?? proposal.governance?.reviewer_required)} | Manual review required: {formatFlag(reviewer?.manual_review_required ?? proposal.governance?.manual_review_required)}
+        </p>
+      </div>
+
+      <div className="trace-section">
+        <strong>Evidence</strong>
+        <p className="meta">
+          Failure classification: {failureClassification?.status ?? "not_available"}
+          {failureClassification?.failed_unit ? ` · failed unit ${failureClassification.failed_unit}` : ""}
+        </p>
+        <p className="meta">
+          Runtime contract: {runtimeContract?.status ?? "not_available"}
+          {runtimeContract?.detected_risks?.length ? ` · ${summarizeList(runtimeContract.detected_risks)}` : ""}
+        </p>
+        <p className="meta">
+          Reference delta: {referenceDelta?.status ?? "not_available"}
+          {referenceDelta?.recommended_capability_packs?.length ? ` · ${summarizeList(referenceDelta.recommended_capability_packs)}` : ""}
+        </p>
+        {(proposal.evidence_references?.length ?? 0) > 0 && (
+          <p className="meta">Evidence refs: {summarizeList(proposal.evidence_references)}</p>
+        )}
+        {(proposal.evidence_checksums?.length ?? 0) > 0 && (
+          <p className="meta">Evidence checksums: {summarizeList(proposal.evidence_checksums)}</p>
+        )}
+        {(warnings.length > 0) && (
+          <p className="meta">Warnings: {summarizeList(warnings)}</p>
+        )}
+      </div>
+
+      <div className="trace-section">
+        <strong>Governance</strong>
+        <p className="meta">Human approval required: {formatFlag(proposal.governance?.human_approval_required)}</p>
+        <p className="meta">No auto apply: {formatFlag(proposal.governance?.no_auto_apply)}</p>
+        <p className="meta">Sandbox only: {formatFlag(proposal.governance?.sandbox_only)}</p>
+        <p className="meta">Source mutated: {formatFlag(proposal.governance?.source_mutated)}</p>
+        <p className="meta">Sandbox mutated: {formatFlag(proposal.governance?.sandbox_mutated)}</p>
+        <p className="meta">Stage resumed: {formatFlag(proposal.governance?.stage_resumed)}</p>
+        <p className="meta">Backend runner invoked: {formatFlag(proposal.governance?.backend_runner_invoked)}</p>
+        <p className="meta">Approval bypass: {formatFlag(proposal.governance?.approval_bypass)}</p>
+        <p className="meta">Status: {proposal.governance?.status ?? "Awaiting human approval"}</p>
+        <p className="meta">No automatic changes have been applied.</p>
+      </div>
+    </div>
+  );
+}
+
 interface AssistantPanelContentProps {
   assistantModel: CockpitData["assistantModel"];
   messages: V2AssistantMessageResponse[];
@@ -323,6 +441,7 @@ interface AssistantPanelContentProps {
   assistantQuestion: string;
   assistantBusy: boolean;
   approvalReviewOpen: boolean;
+  repairProposal?: GovernedRepairProposalResponse | null;
   onQuestionChange: (value: string) => void;
   onAsk: () => void;
 }
@@ -334,6 +453,7 @@ export function AssistantPanelContent({
   assistantQuestion,
   assistantBusy,
   approvalReviewOpen,
+  repairProposal = null,
   onQuestionChange,
   onAsk,
 }: AssistantPanelContentProps) {
@@ -360,6 +480,7 @@ export function AssistantPanelContent({
           </div>
         ))
       )}
+      <GovernedRepairProposalCard proposal={repairProposal} />
       <div className="assistant-composer">
         <input
           aria-label="Ask assistant"
@@ -433,6 +554,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           pipeline: pipelineResponse,
           failureSummary: failureSummary as V2FailureSummaryResponse | null,
           assistantModel: null,
+          repairProposal: null,
         });
         setError(null);
       } catch (e) {
@@ -605,6 +727,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
             response.assistant_message,
           ],
           assistantModel: response.model,
+          repairProposal: response.repair_proposal ?? response.repairProposal ?? null,
         };
       });
       setAssistantQuestion("");
@@ -1082,6 +1205,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         assistantQuestion={assistantQuestion}
         assistantBusy={assistantBusy}
         approvalReviewOpen={approvalReviewOpen}
+        repairProposal={data.repairProposal}
         onQuestionChange={setAssistantQuestion}
         onAsk={() => void askAssistant()}
       />
@@ -1150,6 +1274,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .assistant-composer button:disabled { color: #777; border-color: #bbb; }
         .assistant-error { border: 1px solid #c98300; background: #fff8ea; color: #7a4a00; padding: 0.65rem 0.75rem; border-radius: 4px; margin: 0.5rem 0 0.75rem; }
         .message-content { margin: 0.25rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+        .repair-proposal-card { border: 1px solid #c9ab4b; background: #fffdf5; padding: 0.75rem; margin-top: 0.75rem; border-radius: 4px; }
         .failure-panel { border-color: #a40000; background: #fffafa; }
         .failure-card { border: 1px solid #ffcccc; padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; }
         .failure-card .meta { margin: 0.2rem 0; }
