@@ -2907,31 +2907,37 @@ def create_app(
                             )
                     except (json.JSONDecodeError, TypeError, AttributeError):
                         pass
-            # If no sandbox_path provided, resolve from latest command output
-            if resolved_sandbox_path is None:
-                commands = uow.v2_commands.list_by_job(job_id)
-                stage_commands = [c for c in commands if c.stage_index == payload.current_stage]
-                if stage_commands:
-                    latest = max(stage_commands, key=lambda c: c.created_at)
-                    resolved_sandbox_path = latest.output_root_dir or latest.sandbox_root_dir
-
             service = V2StageProgressionService(
                 setup_repo=uow.v2_setups,
                 command_repo=uow.v2_commands,
                 artifact_revision_repo=uow.artifact_revisions,
             )
             try:
-                result = service.queue_next_stage(
-                    job_id=job_id,
-                    setup_id=payload.setup_id,
-                    current_stage=payload.current_stage,
-                    sandbox_path=resolved_sandbox_path or "",
-                )
+                if resolved_sandbox_path is not None:
+                    result = service.queue_next_stage(
+                        job_id=job_id,
+                        setup_id=payload.setup_id,
+                        current_stage=payload.current_stage,
+                        sandbox_path=resolved_sandbox_path,
+                    )
+                else:
+                    result = service.queue_next_stage_from_persisted(
+                        job_id=job_id,
+                        setup_id=payload.setup_id,
+                        current_stage=payload.current_stage,
+                    )
             except ValueError as exc:
+                msg = str(exc)
+                if "accepted Stage" in msg:
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "STAGE_OUTPUT_NOT_ACCEPTED",
+                        msg,
+                    ) from exc
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,
                     "STAGE_PROGRESSION_FAILED",
-                    str(exc),
+                    msg,
                 ) from exc
         return service.continuation_to_dict(result)
 

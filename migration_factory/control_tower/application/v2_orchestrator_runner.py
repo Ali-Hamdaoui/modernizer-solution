@@ -1140,6 +1140,12 @@ class V2OrchestratorRunner:
                     else:
                         effective_policy = StageContinuationPolicy.MANUAL
 
+                # Persist accepted stage_output artifact revision for the
+                # completed stage before queuing the next stage. This ensures
+                # _validate_stage4_input can find an accepted revision.
+                if result is not None and sandbox_path:
+                    _save_stage_output_revision(uow, job_id, stage_index, sandbox_path, result)
+
                 service = V2StageProgressionService(
                     setup_repo=uow.v2_setups,
                     command_repo=uow.v2_commands,
@@ -2058,3 +2064,59 @@ def _list_or_none(value: Any) -> list[str] | None:
         items = [str(item) for item in value]
         return items if items else None
     return None
+
+
+def _save_stage_output_revision(
+    uow: Any,
+    job_id: str,
+    stage_index: int,
+    sandbox_path: str,
+    result: dict[str, Any],
+) -> None:
+    """Persist an accepted stage_output artifact revision for the completed stage.
+
+    Idempotent: only inserts if no accepted revision exists for this
+    (job, stage, kind). The schema enforces at most one accepted revision
+    per (job_id, stage_index, revision_kind) via a filtered unique index.
+
+    Called before queuing the next stage so that _validate_stage4_input
+    can find the accepted revision.
+    """
+    from uuid import uuid4
+    from migration_factory.control_tower.domain.checksums import sha256_canonical_json, utc_now_text
+    from migration_factory.control_tower.domain.entities import ArtifactRevisionRecord
+
+    existing = uow.artifact_revisions.find_accepted(job_id, stage_index, "stage_output")
+    if existing is not None:
+        return
+
+    now = utc_now_text()
+    revision_id = uuid4().hex
+    evidence_checksum = sha256_canonical_json(result)
+
+    artifact_refs: dict[str, str] = {"sandbox": sandbox_path}
+    result_refs = result.get("artifact_refs")
+    if isinstance(result_refs, dict):
+        for k, v in result_refs.items():
+            if isinstance(v, str) and v:
+                artifact_refs[k] = v
+
+    revision = ArtifactRevisionRecord(
+        revision_id=revision_id,
+        job_id=job_id,
+        stage_index=stage_index,
+        revision_kind="stage_output",
+        revision_status="accepted",
+        revision_order=1,
+        evidence_checksum=evidence_checksum,
+        prior_revision_checksum=None,
+        artifact_refs_json=json.dumps(artifact_refs, separators=(",", ":")),
+        prior_revision_id=None,
+        superseded_by_revision_id=None,
+        accepted_at_gate_id=None,
+        created_at=now,
+        created_by="system",
+        accepted_at=now,
+        accepted_by="system",
+    )
+    uow.artifact_revisions.save(revision)

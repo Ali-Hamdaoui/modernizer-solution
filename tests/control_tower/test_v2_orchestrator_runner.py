@@ -776,6 +776,126 @@ def test_stage3_pass_contract_queues_stage4(tmp_path: Path) -> None:
     # Stage 4 must not queue Stage 5
     assert not any(json.loads(event.payload_json or "{}").get("to_stage") == 5 for event in events if event.type == "next_stage_queued")
 
+    # Stage 4 command uses backend-owned Java 21 / Boot 4 profile
+    stage4_cmds = SqliteUnitOfWork(conn).v2_commands.list_by_job_and_stage("job-1", 4)
+    assert len(stage4_cmds) == 1
+    argv = json.loads(stage4_cmds[0].argv_json) if isinstance(stage4_cmds[0].argv_json, str) else stage4_cmds[0].argv_json
+    assert "--profile" in argv
+    profile_idx = argv.index("--profile") + 1
+    assert profile_idx < len(argv)
+    assert argv[profile_idx] == "springboot-3.5-java21-to-4.0-java21"
+    env = json.loads(stage4_cmds[0].env_json) if isinstance(stage4_cmds[0].env_json, str) else stage4_cmds[0].env_json
+    assert "JAVA21_HOME" in env
+
+
+def test_stage3_completion_creates_accepted_artifact_revision(tmp_path: Path) -> None:
+    """Stage 3 completion creates an accepted stage_output artifact revision."""
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn)
+    popen = _SequentialFakePopen([
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-1")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"], [], 0),
+    ])
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_stage4_command(conn)
+
+    uow = SqliteUnitOfWork(conn)
+    # Stage 3 should have exactly one accepted revision (the pre-seeded one)
+    revisions = uow.artifact_revisions.list_by_job_and_stage("job-1", 3)
+    accepted = [r for r in revisions if r.revision_kind == "stage_output" and r.revision_status == "accepted"]
+    assert len(accepted) == 1
+    # Idempotency: no duplicate revision was created
+    stage_output = [r for r in revisions if r.revision_kind == "stage_output"]
+    assert len(stage_output) == 1
+
+
+def test_artifact_revision_created_for_new_stage_not_pre_seeded(tmp_path: Path) -> None:
+    """Stages 1 and 2 get artifact revisions created by the runner."""
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn)
+    popen = _SequentialFakePopen([
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-1")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"], [], 0),
+    ])
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_stage4_command(conn)
+
+    uow = SqliteUnitOfWork(conn)
+    # Stages 1 and 2 get their revisions from _save_stage_output_revision
+    for stage in (1, 2):
+        accepted = uow.artifact_revisions.find_accepted("job-1", stage, "stage_output")
+        assert accepted is not None, f"No accepted revision for stage {stage}"
+        refs = json.loads(accepted.artifact_refs_json)
+        assert "sandbox" in refs, f"Stage {stage} revision missing sandbox ref"
+
+
+def test_stage_completion_creates_artifact_revision_for_each_stage(tmp_path: Path) -> None:
+    """Each completed stage creates its own accepted stage_output revision."""
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn)
+    popen = _SequentialFakePopen([
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-1")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"], [], 0),
+    ])
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_stage4_command(conn)
+
+    uow = SqliteUnitOfWork(conn)
+    # Each stage must have exactly one accepted stage_output revision
+    for stage in (1, 2, 3):
+        accepted = uow.artifact_revisions.find_accepted("job-1", stage, "stage_output")
+        assert accepted is not None, f"No accepted stage_output revision for stage {stage}"
+        # Ensure no duplicates
+        all_for_stage = [r for r in uow.artifact_revisions.list_by_job_and_stage("job-1", stage)
+                         if r.revision_kind == "stage_output" and r.revision_status == "accepted"]
+        assert len(all_for_stage) == 1, f"Duplicate accepted revisions for stage {stage}"
+
+
+def test_artifact_revision_not_created_on_stage_failure(tmp_path: Path) -> None:
+    """No artifact revision is created when a stage fails."""
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn)
+    popen = _SequentialFakePopen([
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-1")) + "\n"], [], 0),
+        ([], [], 1),  # Stage 2 fails
+    ])
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "stage_failed")
+
+    uow = SqliteUnitOfWork(conn)
+    revisions = uow.artifact_revisions.list_by_job_and_stage("job-1", 2)
+    assert len(revisions) == 0
+
 
 def test_v2_runner_does_not_progress_past_unapproved_card(tmp_path: Path) -> None:
     """Stage with a pending approval card must not auto-progress."""

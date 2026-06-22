@@ -303,8 +303,8 @@ class V2StageProgressionService:
     ) -> str | None:
         """Resolve the sandbox output path from the prior stage's command result.
 
-        Looks up the latest V2StageCommandRecord for the given stage
-        and extracts the sandbox_path from its persisted result_json.
+        First checks for an accepted stage_output artifact revision (F15 path).
+        Falls back to extracting sandbox_path from the command record's result_json.
 
         This eliminates reliance on frontend/chatbot-supplied sandbox_path
         for F15 progression — the backend resolves prior-stage output
@@ -320,6 +320,12 @@ class V2StageProgressionService:
             resolved (no commands found, no result_json, or missing
             sandbox_path in result).
         """
+        # F15 path: check accepted artifact revision first
+        resolved = self._resolve_from_artifact_revision(job_id, current_stage)
+        if resolved is not None:
+            return resolved
+
+        # Legacy path: check command result_json
         if self._command_repo is None:
             return None
 
@@ -353,6 +359,27 @@ class V2StageProgressionService:
                 if val and isinstance(val, str):
                     return val
 
+        return None
+
+    def _resolve_from_artifact_revision(
+        self,
+        job_id: str,
+        stage_index: int,
+    ) -> str | None:
+        if self._artifact_revision_repo is None:
+            return None
+        accepted = self._artifact_revision_repo.find_accepted(job_id, stage_index, "stage_output")
+        if accepted is None:
+            return None
+        try:
+            refs = json.loads(accepted.artifact_refs_json)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(refs, dict):
+            return None
+        sandbox = refs.get("sandbox") or refs.get("sandbox_path")
+        if sandbox and isinstance(sandbox, str):
+            return sandbox
         return None
 
     def queue_next_stage_from_persisted(

@@ -1,7 +1,9 @@
 """Tests for V2 stage auto-progression."""
 
+import json
 import sqlite3
 from pathlib import Path
+from uuid import uuid4
 import pytest
 
 from migration_factory.control_tower.application.v2_stage_progression import (
@@ -13,9 +15,18 @@ from migration_factory.control_tower.application.v2_setup_service import (
     CreateSetupRequest,
     V2SetupService,
 )
+from migration_factory.control_tower.domain.checksums import utc_now_text, sha256_canonical_json
+from migration_factory.control_tower.domain.entities import ArtifactRevisionRecord
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
+    SqliteV2CommandRepository,
+    V2StageCommandRecord,
+)
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
     SqliteV2SetupRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_artifact_revision_repository import (
+    SqliteArtifactRevisionRepository,
 )
 
 
@@ -143,6 +154,197 @@ def test_stage_profiles_are_correct() -> None:
     assert STAGE_CONFIG[2]["jdk_id"] == "java17"
     assert STAGE_CONFIG[3]["jdk_id"] == "java21"
     assert STAGE_CONFIG[4]["jdk_id"] == "java21"
+
+
+def test_resolve_prior_stage_output_from_artifact_revision(tmp_path: Path) -> None:
+    """resolve_prior_stage_output finds sandbox_path from artifact revision."""
+    conn = sqlite3.connect(str(tmp_path / "test_art.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    setup_repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_setup(setup_repo)
+    art_repo = SqliteArtifactRevisionRepository(conn)
+    command_repo = SqliteV2CommandRepository(conn)
+
+    now = utc_now_text()
+    art_repo.save(ArtifactRevisionRecord(
+        revision_id=uuid4().hex,
+        job_id="job-1",
+        stage_index=3,
+        revision_kind="stage_output",
+        revision_status="accepted",
+        revision_order=1,
+        evidence_checksum="chk",
+        prior_revision_checksum=None,
+        artifact_refs_json=json.dumps({"sandbox": "/tmp/sandbox/s3"}, separators=(",", ":")),
+        prior_revision_id=None,
+        superseded_by_revision_id=None,
+        accepted_at_gate_id=None,
+        created_at=now,
+        created_by="test",
+        accepted_at=now,
+        accepted_by="test",
+    ))
+
+    service = V2StageProgressionService(
+        setup_repo, command_repo=command_repo, artifact_revision_repo=art_repo,
+    )
+    result = service.resolve_prior_stage_output("job-1", 3)
+    assert result == "/tmp/sandbox/s3"
+
+
+def test_stage4_queue_with_accepted_artifact_revision(tmp_path: Path) -> None:
+    """Stage 4 progression succeeds when accepted stage_output revision exists."""
+    conn = sqlite3.connect(str(tmp_path / "test_s4.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    setup_repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_setup(setup_repo)
+    art_repo = SqliteArtifactRevisionRepository(conn)
+    command_repo = SqliteV2CommandRepository(conn)
+
+    now = utc_now_text()
+    art_repo.save(ArtifactRevisionRecord(
+        revision_id=uuid4().hex,
+        job_id="job-1",
+        stage_index=3,
+        revision_kind="stage_output",
+        revision_status="accepted",
+        revision_order=1,
+        evidence_checksum="chk",
+        prior_revision_checksum=None,
+        artifact_refs_json=json.dumps({"sandbox": "/tmp/sandbox/s3"}, separators=(",", ":")),
+        prior_revision_id=None,
+        superseded_by_revision_id=None,
+        accepted_at_gate_id="gate-approval",
+        created_at=now,
+        created_by="test",
+        accepted_at=now,
+        accepted_by="test",
+    ))
+
+    service = V2StageProgressionService(
+        setup_repo, command_repo=command_repo, artifact_revision_repo=art_repo,
+    )
+    result = service.queue_next_stage(
+        job_id="job-1",
+        setup_id=setup_id,
+        current_stage=3,
+        sandbox_path="/tmp/sandbox/s3",
+    )
+
+    assert result.to_stage == 4
+    assert result.from_stage == 3
+    assert result.status == "queued"
+    assert "springboot-3.5-java21-to-4.0-java21" in " ".join(result.argv)
+    assert result.command_id is not None
+
+
+def test_stage4_rejected_when_no_accepted_revision_with_draft_only(tmp_path: Path) -> None:
+    """Stage 4 raises ValueError when only a draft revision exists (not accepted)."""
+    conn = sqlite3.connect(str(tmp_path / "test_s4d.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    setup_repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_setup(setup_repo)
+    art_repo = SqliteArtifactRevisionRepository(conn)
+    command_repo = SqliteV2CommandRepository(conn)
+
+    now = utc_now_text()
+    art_repo.save(ArtifactRevisionRecord(
+        revision_id=uuid4().hex,
+        job_id="job-1",
+        stage_index=3,
+        revision_kind="stage_output",
+        revision_status="draft",
+        revision_order=1,
+        evidence_checksum="chk",
+        prior_revision_checksum=None,
+        artifact_refs_json="{}",
+        prior_revision_id=None,
+        superseded_by_revision_id=None,
+        accepted_at_gate_id=None,
+        created_at=now,
+        created_by="test",
+        accepted_at=None,
+        accepted_by=None,
+    ))
+
+    service = V2StageProgressionService(
+        setup_repo, command_repo=command_repo, artifact_revision_repo=art_repo,
+    )
+    with pytest.raises(ValueError, match="Stage 4 requires an accepted Stage 3 artifact revision"):
+        service.queue_next_stage(
+            job_id="job-1",
+            setup_id=setup_id,
+            current_stage=3,
+            sandbox_path="/tmp/sandbox/s3",
+        )
+
+
+def test_stage4_rejected_when_no_accepted_revision(tmp_path: Path) -> None:
+    """Stage 4 raises ValueError when no accepted revision exists."""
+    conn = sqlite3.connect(str(tmp_path / "test_s4r.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    setup_repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_setup(setup_repo)
+    art_repo = SqliteArtifactRevisionRepository(conn)
+    command_repo = SqliteV2CommandRepository(conn)
+
+    service = V2StageProgressionService(
+        setup_repo, command_repo=command_repo, artifact_revision_repo=art_repo,
+    )
+    with pytest.raises(ValueError, match="Stage 4 requires an accepted Stage 3 artifact revision"):
+        service.queue_next_stage(
+            job_id="job-1",
+            setup_id=setup_id,
+            current_stage=3,
+            sandbox_path="/tmp/sandbox/s3",
+        )
+
+
+def test_stage4_queue_from_persisted_with_accepted_revision(tmp_path: Path) -> None:
+    """queue_next_stage_from_persisted resolves sandbox from artifact revision for Stage 4."""
+    conn = sqlite3.connect(str(tmp_path / "test_s4p.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    setup_repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_setup(setup_repo)
+    art_repo = SqliteArtifactRevisionRepository(conn)
+    command_repo = SqliteV2CommandRepository(conn)
+
+    now = utc_now_text()
+    art_repo.save(ArtifactRevisionRecord(
+        revision_id=uuid4().hex,
+        job_id="job-1",
+        stage_index=3,
+        revision_kind="stage_output",
+        revision_status="accepted",
+        revision_order=1,
+        evidence_checksum="chk",
+        prior_revision_checksum=None,
+        artifact_refs_json=json.dumps({"sandbox": "/tmp/sandbox/s3"}, separators=(",", ":")),
+        prior_revision_id=None,
+        superseded_by_revision_id=None,
+        accepted_at_gate_id=None,
+        created_at=now,
+        created_by="test",
+        accepted_at=now,
+        accepted_by="test",
+    ))
+
+    service = V2StageProgressionService(
+        setup_repo, command_repo=command_repo, artifact_revision_repo=art_repo,
+    )
+    result = service.queue_next_stage_from_persisted(
+        job_id="job-1",
+        setup_id=setup_id,
+        current_stage=3,
+    )
+
+    assert result.to_stage == 4
+    assert result.status == "queued"
 
 
 def test_missing_setup_rejected(tmp_path: Path) -> None:
