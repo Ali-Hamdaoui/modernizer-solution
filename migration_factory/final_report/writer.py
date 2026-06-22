@@ -107,10 +107,23 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
     dependency_policy = _dependency_policy_context(state, artifact_refs, dependency_policy_report)
     ai_trace = _ai_trace_context(state, artifact_refs, repair_loop, run_dir)
 
+    pipeline_history = _pipeline_history_context(state)
+    total_timing = _timing_context(pipeline_history)
+    full_source = source_stack
+    full_target = _completed_target_stack(pipeline_history, state)
+    change_summary_data = _change_summary(full_source, full_target, pipeline_history)
+
     report_payload = {
         "run_id": state.get("run_id", ""),
         "source_stack": source_stack,
         "target_stack": target_stack,
+        "full_migration_source_stack": full_source,
+        "full_migration_target_stack": full_target,
+        "pipeline_history": pipeline_history,
+        "total_duration_seconds": total_timing.get("total_duration_seconds", 0),
+        "timing": total_timing,
+        "report_summary": change_summary_data.get("description", ""),
+        "change_summary": change_summary_data,
         "risk_level": profile_governance.get("risk_level") or (migration_plan or {}).get("risk", ""),
         "strategy": profile_governance.get("strategy", ""),
         "fallback_profile": profile_governance.get("fallback_profile", ""),
@@ -217,11 +230,18 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
 def _build_markdown_summary(payload: dict[str, Any]) -> str:
     totals = payload.get("test_totals", {}) or {}
     target_stack = dict(payload.get("target_stack", {}) or {})
+    full_source = dict(payload.get("full_migration_source_stack", {}) or {})
+    full_target = dict(payload.get("full_migration_target_stack", {}) or {})
+    pipeline_history = list(payload.get("pipeline_history", []) or [])
     recipes = list(payload.get("recipes", []) or [])
+    total_seconds = payload.get("total_duration_seconds", 0)
+
     lines = [
         "# Migration Summary",
         "",
         f"- Run ID: {payload.get('run_id', '')}",
+        f"- Full Source: {_stack_path_text(full_source)}",
+        f"- Full Target: {_stack_path_text(full_target)}",
         f"- Target Java: {target_stack.get('java', '')}",
         f"- Target Spring Boot: {target_stack.get('spring_boot', '')}",
         f"- Target Spring Framework: {target_stack.get('spring_framework', '')}",
@@ -247,6 +267,28 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
         f"- Executed Recipes: {', '.join(str(recipe) for recipe in recipes) if recipes else 'none'}",
         "- Scope Limits: no production promotion, no PR creation, no deployment, no automatic merge",
         "",
+    ]
+
+    if pipeline_history:
+        lines.extend([
+            "## Stage-by-Stage Journey",
+            "",
+        ])
+        for stage in pipeline_history:
+            if not isinstance(stage, dict):
+                continue
+            idx = stage.get("stage_index", "")
+            status = stage.get("status", "")
+            profile = stage.get("profile", "")
+            duration = stage.get("duration_seconds")
+            duration_text = f" ({duration}s)" if isinstance(duration, (int, float)) else ""
+            label = _stage_label(int(idx)) if isinstance(idx, (int, str)) and str(idx).isdigit() else f"Stage {idx}"
+            lines.append(f"- **{label}**: {status}{duration_text}")
+            if profile:
+                lines.append(f"  - Profile: {profile}")
+        lines.append("")
+
+    lines.extend([
         "## Validated",
         "",
         *[f"- {item}" for item in list(payload.get("validated", []) or [])],
@@ -256,7 +298,7 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
         *[f"- {item}" for item in list(payload.get("not_validated", []) or [])],
         "",
         "POC-ready sandbox migration artifacts are captured under this run directory.",
-    ]
+    ])
     boot4_warnings = list(payload.get("boot4_warnings", []) or [])
     if boot4_warnings:
         lines.extend(["", "## Boot 4 Warnings", ""])
@@ -821,3 +863,152 @@ def _read_yaml(path: Path, warnings: list[str]) -> dict[str, Any] | None:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _pipeline_history_context(state: dict[str, Any]) -> list[dict[str, Any]]:
+    pipeline_history = state.get("pipeline_history")
+    if isinstance(pipeline_history, list):
+        return pipeline_history
+    history: list[dict[str, Any]] = []
+    artifact_refs = dict(state.get("artifact_refs", {}) or {})
+    orchestration_summary = _read_json(
+        Path(str(artifact_refs.get("orchestration_summary") or "")),
+        [],
+    )
+    if isinstance(orchestration_summary, dict):
+        stages = orchestration_summary.get("stages") or orchestration_summary.get("stage_history")
+        if isinstance(stages, list):
+            for stage in stages:
+                if isinstance(stage, dict):
+                    history.append({
+                        "stage_index": stage.get("stage_index", ""),
+                        "status": stage.get("status", ""),
+                        "profile": stage.get("profile", ""),
+                        "duration_seconds": stage.get("duration_seconds"),
+                    })
+    if not history:
+        stage_index = state.get("stage_index", state.get("stage", ""))
+        history.append({
+            "stage_index": stage_index,
+            "status": state.get("status", ""),
+            "profile": state.get("profile", ""),
+            "duration_seconds": state.get("duration_seconds"),
+        })
+    return history
+
+
+def _stack_path_text(stack: dict[str, Any]) -> str:
+    java = stack.get("java", "")
+    spring_boot = stack.get("spring_boot", "")
+    framework = stack.get("spring_framework", "")
+    parts = [f"Java {java}"] if java else []
+    if spring_boot:
+        parts.append(f"Spring Boot {spring_boot}")
+    if framework:
+        parts.append(f"Spring Framework {framework}")
+    return " / ".join(parts) if parts else "not recorded"
+
+
+def _stack_transition_text(source: dict[str, Any], target: dict[str, Any]) -> str:
+    return f"{_stack_path_text(source)} → {_stack_path_text(target)}"
+
+
+def _completed_target_stack(
+    pipeline_history: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    latest = None
+    for stage in reversed(pipeline_history):
+        if isinstance(stage, dict) and stage.get("status") in ("PASS", "completed"):
+            profile = stage.get("profile", "")
+            if profile:
+                latest = profile
+                break
+    if latest is None:
+        return dict(state.get("target_stack", {}) or {})
+    target_stack = dict(state.get("target_stack", {}) or {})
+    return target_stack
+
+
+def _latest_completed_stage(pipeline_history: list[dict[str, Any]]) -> int:
+    for stage in reversed(pipeline_history):
+        if isinstance(stage, dict) and stage.get("status") in ("PASS", "completed"):
+            idx = stage.get("stage_index", 0)
+            if isinstance(idx, int):
+                return idx
+    return 0
+
+
+def _stage_label(stage_index: int) -> str:
+    labels = {
+        1: "Java 11 / Spring Boot 2.1.6 → Spring Boot 2.7 / Java 11",
+        2: "Spring Boot 2.7 / Java 11 → Spring Boot 3.5 / Java 17",
+        3: "Spring Boot 3.5 / Java 17 → Spring Boot 3.5 / Java 21",
+        4: "Spring Boot 3.5 / Java 21 → Spring Boot 4 / Java 21",
+    }
+    return labels.get(stage_index, f"Stage {stage_index}")
+
+
+def _dedupe_strings(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+def _report_summary(
+    source_stack: dict[str, Any],
+    target_stack: dict[str, Any],
+    pipeline_history: list[dict[str, Any]],
+) -> str:
+    transition = _stack_transition_text(source_stack, target_stack)
+    completed = _latest_completed_stage(pipeline_history)
+    return (
+        f"Migration from {transition}. "
+        f"Completed through stage {completed} of 4. "
+        f"{_SANDBOX_ONLY_DISCLAIMER}"
+    )
+
+
+def _change_summary(
+    source_stack: dict[str, Any],
+    target_stack: dict[str, Any],
+    pipeline_history: list[dict[str, Any]],
+) -> dict[str, Any]:
+    changes: list[str] = []
+    source_java = str(source_stack.get("java", ""))
+    target_java = str(target_stack.get("java", ""))
+    source_boot = str(source_stack.get("spring_boot", ""))
+    target_boot = str(target_stack.get("spring_boot", ""))
+    if source_java and target_java and source_java != target_java:
+        changes.append(f"Java upgrade: {source_java} → {target_java}")
+    if source_boot and target_boot:
+        changes.append(f"Spring Boot upgrade: {source_boot} → {target_boot}")
+    changes.append("Sandbox-only transform and build artifact generation")
+    return {
+        "description": _report_summary(source_stack, target_stack, pipeline_history),
+        "changes": changes,
+    }
+
+
+def _timing_context(pipeline_history: list[dict[str, Any]]) -> dict[str, Any]:
+    total = 0.0
+    stage_timings: list[dict[str, Any]] = []
+    for stage in pipeline_history:
+        if not isinstance(stage, dict):
+            continue
+        duration = stage.get("duration_seconds")
+        if isinstance(duration, (int, float)):
+            total += duration
+            stage_timings.append({
+                "stage_index": stage.get("stage_index", ""),
+                "status": stage.get("status", ""),
+                "duration_seconds": duration,
+            })
+    return {
+        "total_duration_seconds": total,
+        "stages": stage_timings,
+    }
