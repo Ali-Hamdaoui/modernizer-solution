@@ -223,6 +223,38 @@ class EvidencePackBuilder:
                 f"- {art.kind}: {snippet}"
             )
 
+        intelligence, _warnings = _migration_intelligence_context(result.artifacts)
+        if intelligence["runtime_contract"]["status"] == "generated":
+            rc = intelligence["runtime_contract"]
+            artifact_lines.append(
+                "- runtime_contract: "
+                f"risks={rc['detected_risks_count']} "
+                f"actions={rc['recommended_actions_count']} "
+                f"jdk={rc['jdk_requirements'].get('java_version', '') or 'unknown'} "
+                f"maven={str(bool(rc['maven_requirements'].get('wrapper_present'))).lower()} "
+                f"registry={str(bool(rc['private_registry_requirements'].get('repository_urls'))).lower()} "
+                f"internal_deps={rc['internal_dependencies_count']}"
+            )
+        if intelligence["reference_delta"]["status"] == "generated":
+            rd = intelligence["reference_delta"]
+            artifact_lines.append(
+                "- reference_delta: "
+                f"added={rd['dependency_delta'].get('added_count', 0)} "
+                f"removed={rd['dependency_delta'].get('removed_count', 0)} "
+                f"changed={rd['dependency_delta'].get('version_changed_count', 0)} "
+                f"source={rd['source_delta'].get('added_imports_count', 0)}/{rd['source_delta'].get('removed_imports_count', 0)} "
+                f"capability_packs={len(rd['recommended_capability_packs'])} "
+                f"suspicious={rd['suspicious_artifacts_count']}"
+            )
+        if intelligence["post_transform_failure_classification"]["status"] == "generated":
+            fc = intelligence["post_transform_failure_classification"]
+            artifact_lines.append(
+                "- post_transform_failure_classification: "
+                f"failures={fc['failure_count']} "
+                f"categories={', '.join(f'{k}={v}' for k, v in fc['category_counts'].items()) or 'none'} "
+                f"unit={fc['failed_unit'] or 'not_captured'}"
+            )
+
         summary_parts = [
             f"Gate phase: {pack_type}",
             f"Resolved artifacts: {len(result.artifacts)}",
@@ -351,5 +383,166 @@ def evidence_pack_to_dict(pack: EvidencePack) -> dict[str, Any]:
         "redaction_status": pack.redaction_status,
         "created_at": pack.created_at,
     }
+    migration_intelligence, warnings = _migration_intelligence_context(pack.artifacts)
+    result["migration_intelligence"] = migration_intelligence
+    if warnings:
+        result["migration_intelligence_warnings"] = warnings
 
     return result
+
+
+def _migration_intelligence_context(artifacts: tuple[ResolvedArtifact, ...]) -> tuple[dict[str, Any], list[str]] | dict[str, Any]:
+    warnings: list[str] = []
+    lookup = {art.kind: art for art in artifacts}
+    runtime = _summarize_runtime_contract(lookup.get(ArtifactKind.RUNTIME_CONTRACT.value))
+    reference = _summarize_reference_delta(lookup.get(ArtifactKind.REFERENCE_DELTA.value))
+    failure = _summarize_failure_classification(lookup.get(ArtifactKind.POST_TRANSFORM_FAILURE_CLASSIFICATION.value))
+    payload = {
+        "runtime_contract": runtime,
+        "reference_delta": reference,
+        "post_transform_failure_classification": failure,
+    }
+    for item in (runtime, reference, failure):
+        warning = item.get("warning")
+        if warning:
+            warnings.append(str(warning))
+    return payload, warnings
+
+
+def _summarize_runtime_contract(artifact: ResolvedArtifact | None) -> dict[str, Any]:
+    base = {"status": "not_available"}
+    if artifact is None:
+        return base
+    payload = _load_json_payload(artifact.content)
+    if payload is None:
+        return {
+            "status": "failed_best_effort",
+            "warning": "runtime_contract could not be parsed",
+        }
+    return {
+        "status": "generated",
+        "detected_risks_count": len(list(payload.get("detected_risks", []) or [])),
+        "detected_risks": _limit_list(payload.get("detected_risks", [])),
+        "recommended_actions_count": len(list(payload.get("recommended_actions", []) or [])),
+        "recommended_actions": _limit_list(payload.get("recommended_actions", [])),
+        "jdk_requirements": _compact_runtime_jdk(payload.get("jdk_requirements")),
+        "maven_requirements": _compact_runtime_maven(payload.get("maven_requirements")),
+        "private_registry_requirements": _compact_runtime_registry(payload.get("private_registry_requirements")),
+        "internal_dependencies_count": len(list(payload.get("internal_dependencies", []) or [])),
+        "internal_dependencies": _limit_list(payload.get("internal_dependencies", [])),
+        "warning": None,
+    }
+
+
+def _summarize_reference_delta(artifact: ResolvedArtifact | None) -> dict[str, Any]:
+    if artifact is None:
+        return {"status": "not_available"}
+    payload = _load_json_payload(artifact.content)
+    if payload is None:
+        return {
+            "status": "failed_best_effort",
+            "warning": "reference_delta could not be parsed",
+        }
+    dep = payload.get("dependency_delta", {}) or {}
+    src = payload.get("source_delta", {}) or {}
+    api = payload.get("api_migration_indicators", {}) or {}
+    return {
+        "status": "generated",
+        "dependency_delta": {
+            "added_count": len(list(dep.get("added", []) or [])),
+            "removed_count": len(list(dep.get("removed", []) or [])),
+            "version_changed_count": len(list(dep.get("version_changed", []) or [])),
+        },
+        "source_delta": {
+            "added_imports_count": len(list(src.get("added_imports", []) or [])),
+            "removed_imports_count": len(list(src.get("removed_imports", []) or [])),
+            "javax_to_jakarta_count": len(list(src.get("javax_to_jakarta_imports", []) or [])),
+        },
+        "api_migration_indicators": {
+            key: bool(value.get("detected")) if isinstance(value, dict) else bool(value)
+            for key, value in api.items()
+        },
+        "recommended_capability_packs": _limit_list(payload.get("recommended_capability_packs", [])),
+        "suspicious_artifacts_count": len(list(payload.get("suspicious_artifacts", []) or [])),
+        "suspicious_artifacts": _limit_list(payload.get("suspicious_artifacts", [])),
+        "warning": None,
+    }
+
+
+def _summarize_failure_classification(artifact: ResolvedArtifact | None) -> dict[str, Any]:
+    if artifact is None:
+        return {"status": "not_available"}
+    payload = _load_json_payload(artifact.content)
+    if payload is None:
+        return {
+            "status": "failed_best_effort",
+            "warning": "post_transform_failure_classification could not be parsed",
+        }
+    failures = [item for item in list(payload.get("failures", []) or []) if isinstance(item, dict)]
+    categories = payload.get("category_counts", {}) or {}
+    first = failures[0] if failures else {}
+    return {
+        "status": "generated",
+        "categories": dict(categories),
+        "category_counts": dict(categories),
+        "failed_unit": payload.get("unit_id"),
+        "failure_count": payload.get("failure_count", len(failures)),
+        "suggested_actions": [str(item.get("suggested_next_action", "")) for item in failures[:5] if item.get("suggested_next_action")],
+        "test_failure_summary": {
+            "suite_count": payload.get("suite_count", 0),
+            "first_failure": {
+                "test_class": first.get("test_class", ""),
+                "test_method": first.get("test_method", ""),
+                "outcome": first.get("outcome", ""),
+                "category": first.get("category", ""),
+                "exception_type": first.get("exception_type", ""),
+                "symptom": first.get("symptom", ""),
+            } if first else {},
+        },
+        "warning": None,
+    }
+
+
+def _load_json_payload(content: str) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _limit_list(values: Any, limit: int = 5) -> list[Any]:
+    if not isinstance(values, list):
+        return []
+    return values[:limit]
+
+
+def _compact_runtime_jdk(payload: Any) -> dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    return {
+        "java_version": data.get("java_version", ""),
+        "compiler_release": data.get("compiler_release", ""),
+        "workflow_setup_java_versions": list(data.get("workflow_setup_java_versions", []) or [])[:5],
+        "hardcoded_jdk_paths": list(data.get("hardcoded_jdk_paths", []) or [])[:5],
+        "environment_variables": list(data.get("environment_variables", []) or [])[:5],
+    }
+
+
+def _compact_runtime_maven(payload: Any) -> dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    return {
+        "wrapper_present": bool(data.get("wrapper_present", False)),
+        "settings_files": list(data.get("settings_files", []) or [])[:5],
+        "workflow_maven_versions": list(data.get("workflow_maven_versions", []) or [])[:5],
+        "hardcoded_maven_paths": list(data.get("hardcoded_maven_paths", []) or [])[:5],
+    }
+
+
+def _compact_runtime_registry(payload: Any) -> dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    return {
+        "repository_urls": list(data.get("repository_urls", []) or [])[:5],
+        "detected_indicators": list(data.get("detected_indicators", []) or [])[:5],
+        "environment_variables": list(data.get("environment_variables", []) or [])[:5],
+        "evidence": list(data.get("evidence", []) or [])[:5],
+    }

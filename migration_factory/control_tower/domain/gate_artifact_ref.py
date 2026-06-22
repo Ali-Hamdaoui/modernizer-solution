@@ -39,6 +39,9 @@ class ArtifactKind(str, Enum):
     BUILD_LOG = "build_log"
     TEST_REPORT = "test_report"
     FAILURE_CLASSIFICATION = "failure_classification"
+    RUNTIME_CONTRACT = "runtime_contract"
+    REFERENCE_DELTA = "reference_delta"
+    POST_TRANSFORM_FAILURE_CLASSIFICATION = "post_transform_failure_classification"
     REPAIR_PROPOSAL = "repair_proposal"
     OTHER = "other"
 

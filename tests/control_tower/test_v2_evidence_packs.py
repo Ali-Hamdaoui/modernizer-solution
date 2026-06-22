@@ -312,6 +312,134 @@ class TestFailureEvidencePack:
         assert len(pack.missing_refs) > 0 or pack.resolved_artifact_count == 0
 
 
+class TestMigrationIntelligenceEvidenceContext:
+    """F15-JOB-062: Assistant evidence pack migration intelligence context."""
+
+    def test_failure_pack_includes_migration_intelligence(self, db_conn, storage):
+        """Failure pack exposes runtime, delta, and failure summaries."""
+        repo = SqlitePhaseGateRepository(db_conn)
+        resolver = V2GateArtifactResolver(repo, storage_root=storage)
+
+        runtime_contract = create_artifact(
+            storage,
+            "intelligence/runtime_contract.json",
+            json.dumps({
+                "detected_risks": ["old-jdk", "missing-wrapper"],
+                "recommended_actions": ["use-java-21", "add-maven-wrapper"],
+                "jdk_requirements": {
+                    "java_version": "21",
+                    "compiler_release": "21",
+                    "workflow_setup_java_versions": ["17", "21"],
+                    "hardcoded_jdk_paths": ["/opt/jdk"],
+                    "environment_variables": ["JAVA_HOME"],
+                },
+                "maven_requirements": {
+                    "wrapper_present": True,
+                    "settings_files": ["settings.xml"],
+                    "workflow_maven_versions": ["3.9.9"],
+                    "hardcoded_maven_paths": ["/usr/share/maven"],
+                },
+                "private_registry_requirements": {
+                    "repository_urls": ["https://repo.local"],
+                    "detected_indicators": ["mirror"],
+                    "evidence": ["private registry"],
+                },
+                "internal_dependencies": ["com.acme:internal-lib"],
+            }),
+        )
+        reference_delta = create_artifact(
+            storage,
+            "intelligence/reference_delta.json",
+            json.dumps({
+                "dependency_delta": {
+                    "added": ["com.example:new-lib"],
+                    "removed": ["com.example:old-lib"],
+                    "version_changed": ["org.slf4j:slf4j-api"],
+                },
+                "source_delta": {
+                    "added_imports": ["jakarta.servlet.http.HttpServletRequest"],
+                    "removed_imports": ["javax.servlet.http.HttpServletRequest"],
+                    "javax_to_jakarta_imports": ["javax.servlet.http.HttpServletRequest"],
+                },
+                "api_migration_indicators": {
+                    "spring_security": {"detected": True},
+                    "jakarta": False,
+                },
+                "recommended_capability_packs": ["spring-boot-4-migration"],
+                "suspicious_artifacts": ["legacy-web.xml"],
+            }),
+        )
+        failure_classification = create_artifact(
+            storage,
+            "intelligence/post_transform_failure_classification.json",
+            json.dumps({
+                "unit_id": "unit-42",
+                "category_counts": {"compile": 2, "test": 1},
+                "failure_count": 3,
+                "suite_count": 1,
+                "failures": [{
+                    "suggested_next_action": "rerun tests",
+                    "test_class": "FooTest",
+                    "test_method": "bar",
+                    "outcome": "failed",
+                    "category": "compile",
+                    "exception_type": "AssertionError",
+                    "symptom": "boom",
+                }],
+            }),
+        )
+
+        refs = build_artifact_refs([
+            ("runtime_contract", "intelligence/runtime_contract.json", runtime_contract),
+            ("reference_delta", "intelligence/reference_delta.json", reference_delta),
+            (
+                "post_transform_failure_classification",
+                "intelligence/post_transform_failure_classification.json",
+                failure_classification,
+            ),
+        ])
+        gate_id = make_gate(repo, uuid4().hex, "job-intelligence", refs,
+                            gate_phase="repair_review")
+
+        pack = build_failure_evidence_pack(resolver, gate_id)
+        dto = evidence_pack_to_dict(pack)
+
+        assert "runtime_contract" in pack.summary
+        assert "reference_delta" in pack.summary
+        assert "post_transform_failure_classification" in pack.summary
+        assert dto["migration_intelligence"]["runtime_contract"]["status"] == "generated"
+        assert dto["migration_intelligence"]["reference_delta"]["status"] == "generated"
+        assert dto["migration_intelligence"]["post_transform_failure_classification"]["status"] == "generated"
+        assert dto["migration_intelligence"]["runtime_contract"]["detected_risks_count"] == 2
+        assert dto["migration_intelligence"]["reference_delta"]["dependency_delta"]["added_count"] == 1
+        assert dto["migration_intelligence"]["post_transform_failure_classification"]["failed_unit"] == "unit-42"
+        assert not dto.get("migration_intelligence_warnings")
+
+    def test_invalid_runtime_contract_is_best_effort(self, db_conn, storage):
+        """Invalid runtime contract stays best effort and adds warnings."""
+        repo = SqlitePhaseGateRepository(db_conn)
+        resolver = V2GateArtifactResolver(repo, storage_root=storage)
+
+        chk = create_artifact(
+            storage,
+            "intelligence/runtime_contract.json",
+            "{not-json",
+        )
+        refs = build_artifact_refs([
+            ("runtime_contract", "intelligence/runtime_contract.json", chk),
+        ])
+        gate_id = make_gate(repo, uuid4().hex, "job-intelligence-invalid", refs,
+                            gate_phase="repair_review")
+
+        dto = evidence_pack_to_dict(build_failure_evidence_pack(resolver, gate_id))
+
+        assert dto["migration_intelligence"]["runtime_contract"]["status"] == "failed_best_effort"
+        assert dto["migration_intelligence"]["reference_delta"]["status"] == "not_available"
+        assert dto["migration_intelligence"]["post_transform_failure_classification"]["status"] == "not_available"
+        assert dto["migration_intelligence_warnings"]
+        assert "runtime_contract" in " ".join(dto["migration_intelligence_warnings"])
+
+
 # ── Test: Resolver Failure Messages (job057) ─────────────────────────
 
 

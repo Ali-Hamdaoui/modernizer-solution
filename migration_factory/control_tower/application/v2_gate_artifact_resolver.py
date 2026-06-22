@@ -20,7 +20,7 @@ from uuid import uuid4
 from migration_factory.control_tower.application.redaction import (
     redact_absolute_paths,
     redact_model_summary,
-    SENSITIVE_ENV_VARS,
+    redact_public_value,
 )
 from migration_factory.control_tower.domain.checksums import (
     sha256_hex,
@@ -416,6 +416,15 @@ class V2GateArtifactResolver:
         2. Model summary redaction (secrets, env vars)
         3. Sensitive env var pattern removal
         """
+        try:
+            parsed = json.loads(content)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            parsed = None
+        if parsed is not None:
+            try:
+                return json.dumps(redact_public_value(parsed), ensure_ascii=False)
+            except (TypeError, ValueError):
+                pass
         redacted = redact_absolute_paths(content)
         redacted = redact_model_summary(redacted)
         return redacted

@@ -117,6 +117,9 @@ class TestArtifactKind:
         assert ArtifactKind.has_value("analysis_report")
         assert ArtifactKind.has_value("migration_plan")
         assert ArtifactKind.has_value("repair_proposal")
+        assert ArtifactKind.has_value("runtime_contract")
+        assert ArtifactKind.has_value("reference_delta")
+        assert ArtifactKind.has_value("post_transform_failure_classification")
 
     def test_unknown_kind(self):
         """Unknown artifact kinds are not recognized."""
