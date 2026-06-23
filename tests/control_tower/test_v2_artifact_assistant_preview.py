@@ -374,6 +374,24 @@ class TestRootPomFileAlias:
         assert "stage-two" not in body["content"]
         assert body["source_ref"] == {"command_id": "cmd-s1", "source": "command_result"}
 
+    def test_full_pom_request_stage_4_resolves_stage_4_sandbox(self, tmp_path: Path) -> None:
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox4 = tmp_path / "stage4-sandbox"
+        sandbox4.mkdir()
+        (sandbox4 / "pom.xml").write_text("<project><artifactId>stage-four</artifactId></project>", encoding="utf-8")
+        _seed_stage_command(conn, job_id="job-artifact", stage=4, command_id="cmd-s4", sandbox_path=sandbox4)
+        _seed_stage_event(conn, job_id="job-artifact", stage=4, event_type="sandbox_transform_completed")
+
+        response = client.get("/v1/v2/jobs/job-artifact/files/root-pom?stage=4")
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["exists"] is True
+        assert body["stage_index"] == 4
+        assert "stage-four" in body["content"]
+        assert body["download_url"] == "/v1/v2/jobs/job-artifact/files/root-pom?stage=4&mode=download"
+        assert body["source_ref"] == {"command_id": "cmd-s4", "source": "command_result"}
+
     def test_full_pom_request_returns_full_content_when_file_exists(self, tmp_path: Path) -> None:
         client, conn, _setup_id = _client_with_setup(tmp_path)
         sandbox = tmp_path / "stage1-sandbox"

@@ -32,6 +32,7 @@ import type {
   V2PipelineResponse,
 } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
+import Stage4TargetVersionComparison from "./Stage4TargetVersionComparison";
 
 interface Stage {
   stage_index: number;
@@ -767,6 +768,15 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           Assistant cannot execute, approve, write files, change route, or override proof.
         </p>
       </section>
+
+      <Stage4TargetVersionComparison
+        jobId={normalizedJobId || jobId || ""}
+        stage4Completed={
+          (data.stages || []).some(
+            (stage) => stage.stage_index === 4 && stage.chain_status === "completed"
+          )
+        }
+      />
 
       {/* Proof & Report */}
       <section className="panel cockpit-panel">
