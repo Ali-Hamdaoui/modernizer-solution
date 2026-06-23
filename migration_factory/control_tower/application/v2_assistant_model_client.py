@@ -159,7 +159,7 @@ class V2AssistantModelClient:
             )
 
         latency = (_time.monotonic() - t0) * 1000
-        if str(content).strip() != "OK":
+        if not _is_expected_smoke_reply(str(content)):
             snippet = _redact_smoke_text(
                 str(content),
                 endpoint=endpoint,
@@ -896,6 +896,10 @@ def _redact_smoke_text(text: str, *, endpoint: str, deployment: str, api_key: st
         if secret:
             result = result.replace(secret, "[redacted]")
     return result[:500]
+
+
+def _is_expected_smoke_reply(content: str) -> bool:
+    return str(content or "").strip().strip(".! \t\r\n").upper() == "OK"
 
 
 def _fallback_result(fallback: str, summary: str, failure_reason: str = "") -> V2AssistantModelResult:

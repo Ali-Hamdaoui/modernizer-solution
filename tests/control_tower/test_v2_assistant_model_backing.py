@@ -173,6 +173,22 @@ def test_v1_smoke_uses_openai_v1_path_for_resource_root(monkeypatch) -> None:
     assert "max_completion_tokens" not in body
 
 
+def test_v1_smoke_accepts_ok_with_trailing_period(monkeypatch) -> None:
+    from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelClient
+
+    recorder = _SmokeUrlopenRecorder({"output_text": "OK."})
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.invalid/openai/v1")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("AZURE_OPENAI_ASSISTANT_DEPLOYMENT", "gpt-5-mini")
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+
+    result = V2AssistantModelClient().smoke()
+
+    assert result.success is True
+    assert result.failure_reason == ""
+    assert result.response_snippet == ""
+
+
 def test_v1_smoke_http_400_sets_failure_reason_and_redacts_body(monkeypatch) -> None:
     from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelClient
 
