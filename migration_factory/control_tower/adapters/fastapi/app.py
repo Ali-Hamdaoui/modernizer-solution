@@ -67,6 +67,7 @@ from migration_factory.control_tower.application.services import (
     CommandFinalizationService,
     ControlTowerRegistrationService,
     DiagnosticJobService,
+    ModelInvocationAuditService,
     ReconciliationService,
     StageContinuationPolicyService,
     TimeoutService,
@@ -678,6 +679,28 @@ def create_app(
     app.state.v2_assistant_model_client = v2_assistant_model_client or V2AssistantModelClient()
     app.state.worker_launcher = worker_launcher
     app.state.worker_terminator = worker_terminator
+
+    def _record_model_invocation(
+        *,
+        provider_kind: str,
+        model_name: str,
+        job_id: str | None,
+        redacted_summary: str,
+        actor_id: str,
+    ) -> str:
+        service = ModelInvocationAuditService(unit_of_work_factory)
+        record = service.record_invocation(
+            invocation_id=uuid4().hex,
+            job_id=job_id,
+            profile_id="azure-foundry-v2",
+            provider_kind=provider_kind,
+            model_name=model_name,
+            redacted_summary=redacted_summary,
+            actor_type="api",
+            actor_id=actor_id,
+        )
+        return record.invocation_id
+
     # ── F02: Wire automatic failure diagnosis into the orchestrator ──
     def _diagnosis_event_sink(
         job_id: str,
@@ -2705,6 +2728,10 @@ def create_app(
         }
         model_output = repair_data
         proposer_client = app.state.v2_assistant_model_client
+        proposer_model_result: V2AssistantModelResult | None = None
+        proposer_job_id: str | None = None
+        proposer_model_invocation_id = ""
+        attempted_provider = str(getattr(proposer_client, "provider", "") or "azure_openai")
         if hasattr(proposer_client, "answer_with_role"):
             proposer_prompt = (
                 "You are an AI migration repair proposer. "
@@ -2718,7 +2745,7 @@ def create_app(
                 "Never include raw commands or legacy source mutation instructions."
             )
             fallback_repair = json.dumps(repair_data)
-            model_result = proposer_client.answer_with_role(
+            proposer_model_result = proposer_client.answer_with_role(
                 role=V2ModelRole.PROPOSER,
                 prompt=proposer_prompt,
                 fallback=fallback_repair,
@@ -2726,7 +2753,7 @@ def create_app(
                 require_schema=True,
             )
             model_output = _parse_and_validate_model_output(
-                model_content=model_result.content,
+                model_content=proposer_model_result.content,
                 schema_name="RepairProposal",
                 fallback=repair_data,
             )
@@ -2744,6 +2771,8 @@ def create_app(
             service = V2RepairFlowService(
                 repair_repo=uow.v2_repairs,
             )
+            command = uow.v2_commands.get(command_id)
+            proposer_job_id = command.job_id if command is not None else None
             proposal = service.create_proposal(
                 command_id=payload.command_id,
                 failure_summary=payload.failure_summary,
@@ -2751,13 +2780,28 @@ def create_app(
                 patch_summary=str(model_output["patch_summary"]),
                 affected_paths=tuple(str(path) for path in model_output["affected_paths"]),
             )
+        if proposer_model_result is not None:
+            proposer_model_invocation_id = _record_model_invocation(
+                provider_kind=attempted_provider,
+                model_name=V2ModelRole.PROPOSER.value,
+                job_id=proposer_job_id,
+                redacted_summary=getattr(proposer_model_result, "redacted_summary", "")
+                or getattr(proposer_model_result, "failure_reason", "")
+                or "",
+                actor_id="repair-flow-proposal",
+            )
         return service.proposal_to_dict(proposal) | {
             "proposal_model": {
-                "status": getattr(model_result, "model_status", ""),
-                "source": getattr(model_result, "source", ""),
-                "provider": getattr(model_result, "provider", ""),
-                "role": getattr(model_result, "role", V2ModelRole.PROPOSER.value),
-                "failure_reason": getattr(model_result, "failure_reason", ""),
+                "status": getattr(proposer_model_result, "model_status", ""),
+                "source": getattr(proposer_model_result, "source", ""),
+                "provider": getattr(proposer_model_result, "provider", ""),
+                "attempted_provider": attempted_provider,
+                "role": getattr(proposer_model_result, "role", V2ModelRole.PROPOSER.value),
+                "failure_reason": getattr(proposer_model_result, "failure_reason", ""),
+                "primary_failure_reason": getattr(proposer_model_result, "primary_failure_reason", ""),
+                "fallback_used": bool(getattr(proposer_model_result, "fallback_used", False)),
+                "schema_validated": bool(getattr(proposer_model_result, "schema_validated", False)),
+                "model_invocation_id": proposer_model_invocation_id,
             }
         }
 
@@ -2844,6 +2888,10 @@ def create_app(
         determines the verdict.
         """
         event_emitted = False
+        reviewer_model_result: V2AssistantModelResult | None = None
+        reviewer_job_id: str | None = None
+        reviewer_model_invocation_id = ""
+        attempted_provider = ""
         with unit_of_work_factory() as uow:
             # Load proposal context for the reviewer prompt
             proposal_record = uow.v2_repairs.get_proposal(proposal_id)
@@ -2896,8 +2944,9 @@ def create_app(
                 "unsafe_assumptions": ["Reviewer model did not respond"],
             })
             reviewer_client = app.state.v2_assistant_model_client
+            attempted_provider = str(getattr(reviewer_client, "provider", "") or "azure_openai")
             if hasattr(reviewer_client, "answer_with_role"):
-                model_result = reviewer_client.answer_with_role(
+                reviewer_model_result = reviewer_client.answer_with_role(
                     role=V2ModelRole.REVIEWER,
                     prompt=reviewer_prompt,
                     fallback=fallback_json,
@@ -2905,14 +2954,14 @@ def create_app(
                     require_schema=True,
                 )
             else:
-                model_result = reviewer_client.answer(
+                reviewer_model_result = reviewer_client.answer(
                     prompt=reviewer_prompt,
                     fallback=fallback_json,
                 )
 
             # Parse and validate model output
             reviewer_output = _parse_and_validate_model_output(
-                model_content=model_result.content,
+                model_content=reviewer_model_result.content,
                 schema_name="ReviewerCritique",
                 fallback={
                     "decision": "revise",
@@ -2945,6 +2994,7 @@ def create_app(
                     str(exc),
                 ) from exc
             command = uow.v2_commands.get(command_id)
+            reviewer_job_id = command.job_id if command is not None else None
             if command is not None:
                 _append_v2_event(
                     uow,
@@ -2956,15 +3006,30 @@ def create_app(
                     payload=service.critique_to_dict(critique),
                 )
                 event_emitted = True
+        if reviewer_model_result is not None:
+            reviewer_model_invocation_id = _record_model_invocation(
+                provider_kind=attempted_provider,
+                model_name=V2ModelRole.REVIEWER.value,
+                job_id=reviewer_job_id,
+                redacted_summary=getattr(reviewer_model_result, "redacted_summary", "")
+                or getattr(reviewer_model_result, "failure_reason", "")
+                or "",
+                actor_id="reviewer-critique",
+            )
         if event_emitted:
             asyncio.run(app.state.public_event_notifier.notify())
         return service.critique_to_dict(critique) | {
             "reviewer_model": {
-                "status": getattr(model_result, "model_status", ""),
-                "source": getattr(model_result, "source", ""),
-                "provider": getattr(model_result, "provider", ""),
-                "role": getattr(model_result, "role", V2ModelRole.REVIEWER.value),
-                "failure_reason": getattr(model_result, "failure_reason", ""),
+                "status": getattr(reviewer_model_result, "model_status", ""),
+                "source": getattr(reviewer_model_result, "source", ""),
+                "provider": getattr(reviewer_model_result, "provider", ""),
+                "attempted_provider": attempted_provider,
+                "role": getattr(reviewer_model_result, "role", V2ModelRole.REVIEWER.value),
+                "failure_reason": getattr(reviewer_model_result, "failure_reason", ""),
+                "primary_failure_reason": getattr(reviewer_model_result, "primary_failure_reason", ""),
+                "fallback_used": bool(getattr(reviewer_model_result, "fallback_used", False)),
+                "schema_validated": bool(getattr(reviewer_model_result, "schema_validated", False)),
+                "model_invocation_id": reviewer_model_invocation_id,
             }
         }
 

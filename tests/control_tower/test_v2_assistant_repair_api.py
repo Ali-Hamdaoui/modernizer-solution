@@ -624,6 +624,8 @@ def _h2_patch() -> str:
 
 
 class _RecordingProposerClient:
+    provider = "fake"
+
     def __init__(self) -> None:
         self.roles: list[str] = []
 
@@ -666,6 +668,8 @@ class _RecordingProposerClient:
 
 
 class _RecordingReviewerClient:
+    provider = "fake"
+
     def __init__(self) -> None:
         self.roles: list[str] = []
 
@@ -850,9 +854,86 @@ class TestRepairAPI:
         assert body["proposal_checksum"]
         assert body["proposal_model"]["status"] == "live_ok"
         assert body["proposal_model"]["provider"] == "fake"
+        assert body["proposal_model"]["attempted_provider"] == "fake"
         assert body["proposal_model"]["role"] == "proposer"
         assert body["proposal_model"]["failure_reason"] == ""
+        assert body["proposal_model"]["primary_failure_reason"] == ""
+        assert body["proposal_model"]["fallback_used"] is False
+        assert body["proposal_model"]["schema_validated"] is False
+        assert body["proposal_model"]["model_invocation_id"]
         assert fake_client.roles == ["proposer"]
+        invocations = SqliteUnitOfWork(conn).v1_model_invocations.list()
+        assert len(invocations) == 1
+        assert invocations[0].provider_kind == "fake"
+        assert invocations[0].model_name == "proposer"
+
+    def test_create_proposal_surfaces_schema_validation_failure_reason(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from migration_factory.control_tower.application.v2_assistant_model_client import (
+            V2AssistantModelResult,
+        )
+
+        class _SchemaMismatchProposerClient:
+            provider = "fake"
+
+            def answer_with_role(
+                self,
+                *,
+                role,
+                prompt: str,
+                fallback: str,
+                conversation_history=None,
+                output_schema_name=None,
+                require_schema: bool = False,
+            ):
+                return V2AssistantModelResult(
+                    content='{"failure_hypothesis":"Draft","patch_summary":"Draft","affected_paths":[],"validation_plan":"Draft"}',
+                    source="deterministic",
+                    model_status="fallback",
+                    provider="deterministic",
+                    role=role.value,
+                    success=False,
+                    redacted_summary="schema mismatch",
+                    failure_reason="schema_validation_failed:RepairProposal",
+                    primary_failure_reason="schema_validation_failed:RepairProposal",
+                    fallback_used=True,
+                    schema_validated=True,
+                )
+
+            def answer(self, *, prompt: str, fallback: str, conversation_history=None):
+                return self.answer_with_role(
+                    role=V2ModelRole.PROPOSER,
+                    prompt=prompt,
+                    fallback=fallback,
+                    conversation_history=conversation_history,
+                )
+
+        client, conn = _api_client(tmp_path, fake_model_client=_SchemaMismatchProposerClient())
+        response = client.post(
+            "/v1/v2/commands/cmd-schema/repair/flow-proposal",
+            json={
+                "command_id": "cmd-schema",
+                "failure_summary": "Build failed",
+                "hypothesis": "Missing import",
+                "patch_summary": "Add import statement",
+                "affected_paths": ["src/main.java"],
+            },
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["proposal_model"]["provider"] == "deterministic"
+        assert body["proposal_model"]["attempted_provider"] == "fake"
+        assert body["proposal_model"]["fallback_used"] is True
+        assert body["proposal_model"]["primary_failure_reason"].startswith("schema_validation_failed")
+        assert body["proposal_model"]["failure_reason"].startswith("schema_validation_failed")
+        assert body["proposal_model"]["model_invocation_id"]
+        invocations = SqliteUnitOfWork(conn).v1_model_invocations.list()
+        assert len(invocations) == 1
+        assert invocations[0].provider_kind == "fake"
+        assert invocations[0].model_name == "proposer"
 
     def test_create_reviewer_critique(self, tmp_path: Path) -> None:
         proposer_client = _RecordingProposerClient()
@@ -892,9 +973,18 @@ class TestRepairAPI:
         assert body["decision"] == "accept"
         assert body["reviewer_model"]["status"] == "live_ok"
         assert body["reviewer_model"]["provider"] == "fake"
+        assert body["reviewer_model"]["attempted_provider"] == "fake"
         assert body["reviewer_model"]["role"] == "reviewer"
         assert body["reviewer_model"]["failure_reason"] == ""
+        assert body["reviewer_model"]["primary_failure_reason"] == ""
+        assert body["reviewer_model"]["fallback_used"] is False
+        assert body["reviewer_model"]["schema_validated"] is False
+        assert body["reviewer_model"]["model_invocation_id"]
         assert reviewer_client.roles == ["reviewer"]
+        invocations = SqliteUnitOfWork(conn).v1_model_invocations.list()
+        assert len(invocations) == 2
+        assert {inv.model_name for inv in invocations} == {"proposer", "reviewer"}
+        assert {inv.provider_kind for inv in invocations} == {"fake"}
 
     def test_approve_proposal(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)

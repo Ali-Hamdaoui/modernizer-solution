@@ -106,7 +106,14 @@ class V2ModelRoleRouter:
                     fallback_used=False,
                     schema_validated=True,
                 )
-            primary_failure = result.failure_reason or primary_failure or "primary_model_failed"
+            schema_failure = self._schema_failure_reason(request) if request.require_schema else ""
+            primary_failure = (
+                result.primary_failure_reason
+                or result.failure_reason
+                or primary_failure
+                or schema_failure
+                or "primary_model_failed"
+            )
 
         if route.fallback_enabled and route.fallback_deployment:
             fallback_result, fallback_failure = self._try_invoke(
@@ -170,6 +177,9 @@ class V2ModelRoleRouter:
             model_status=str(getattr(result, "model_status", "") or "live_ok"),
             success=bool(getattr(result, "success", False)),
             failure_reason=str(getattr(result, "failure_reason", "") or ""),
+            primary_failure_reason=str(getattr(result, "primary_failure_reason", "") or ""),
+            fallback_used=bool(getattr(result, "fallback_used", False)),
+            schema_validated=bool(getattr(result, "schema_validated", False)),
         )
 
     def _coerce_fallback_result(
@@ -226,7 +236,7 @@ class V2ModelRoleRouter:
             success=False,
             failure_reason=fallback_failure_reason or primary_failure_reason or "deterministic_fallback",
             primary_failure_reason=primary_failure_reason,
-            fallback_used=bool(fallback_failure_reason),
+            fallback_used=True,
             schema_validated=schema_validated,
         )
 
@@ -279,3 +289,10 @@ class V2ModelRoleRouter:
         if role == V2ModelRole.FALLBACK:
             return settings.azure_foundry_fallback_deployment_env
         return settings.azure_foundry_assistant_deployment_env
+
+    def _schema_failure_reason(self, request: V2RoleModelRequest) -> str:
+        if not request.require_schema:
+            return ""
+        if request.output_schema_name:
+            return f"schema_validation_failed:{request.output_schema_name}"
+        return "schema_validation_failed"

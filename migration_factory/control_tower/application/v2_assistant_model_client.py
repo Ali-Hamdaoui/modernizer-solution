@@ -31,6 +31,9 @@ class V2AssistantModelResult:
     success: bool
     redacted_summary: str
     failure_reason: str
+    primary_failure_reason: str = ""
+    fallback_used: bool = False
+    schema_validated: bool = False
 
 
 @dataclass(frozen=True)
@@ -326,6 +329,9 @@ class V2AssistantModelClient:
             success=True,
             redacted_summary="Azure OpenAI assistant invocation succeeded.",
             failure_reason="",
+            primary_failure_reason="",
+            fallback_used=False,
+            schema_validated=False,
         )
 
     def _to_assistant_result(self, routed: V2RoleModelResult) -> V2AssistantModelResult:
@@ -339,6 +345,9 @@ class V2AssistantModelClient:
             success=routed.success,
             redacted_summary=redacted_summary,
             failure_reason=routed.failure_reason,
+            primary_failure_reason=routed.primary_failure_reason,
+            fallback_used=routed.fallback_used,
+            schema_validated=routed.schema_validated,
         )
 
     @staticmethod
@@ -900,6 +909,9 @@ def _fallback_result(fallback: str, summary: str, failure_reason: str = "") -> V
         success=False,
         redacted_summary=safe_summary,
         failure_reason=failure_reason,
+        primary_failure_reason=failure_reason,
+        fallback_used=False,
+        schema_validated=False,
     )
 
 

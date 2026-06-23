@@ -99,6 +99,8 @@ def test_router_fail_closes_on_schema_mismatch(monkeypatch) -> None:
     assert result.success is False
     assert result.model_status == "fallback"
     assert result.schema_validated is True
+    assert result.fallback_used is True
+    assert result.primary_failure_reason == "schema_validation_failed:AssistantAnswer"
     assert result.content.startswith("{")
     assert "fallback answer" in result.content
 
