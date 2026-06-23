@@ -2751,7 +2751,15 @@ def create_app(
                 patch_summary=str(model_output["patch_summary"]),
                 affected_paths=tuple(str(path) for path in model_output["affected_paths"]),
             )
-        return service.proposal_to_dict(proposal)
+        return service.proposal_to_dict(proposal) | {
+            "proposal_model": {
+                "status": getattr(model_result, "model_status", ""),
+                "source": getattr(model_result, "source", ""),
+                "provider": getattr(model_result, "provider", ""),
+                "role": getattr(model_result, "role", V2ModelRole.PROPOSER.value),
+                "failure_reason": getattr(model_result, "failure_reason", ""),
+            }
+        }
 
     @app.post("/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/approve")
     def approve_repair_proposal(
@@ -2950,7 +2958,15 @@ def create_app(
                 event_emitted = True
         if event_emitted:
             asyncio.run(app.state.public_event_notifier.notify())
-        return service.critique_to_dict(critique)
+        return service.critique_to_dict(critique) | {
+            "reviewer_model": {
+                "status": getattr(model_result, "model_status", ""),
+                "source": getattr(model_result, "source", ""),
+                "provider": getattr(model_result, "provider", ""),
+                "role": getattr(model_result, "role", V2ModelRole.REVIEWER.value),
+                "failure_reason": getattr(model_result, "failure_reason", ""),
+            }
+        }
 
     @app.get("/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/reviewer-critiques")
     def list_reviewer_critiques(

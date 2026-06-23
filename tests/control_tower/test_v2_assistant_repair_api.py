@@ -665,6 +665,48 @@ class _RecordingProposerClient:
         )
 
 
+class _RecordingReviewerClient:
+    def __init__(self) -> None:
+        self.roles: list[str] = []
+
+    def answer_with_role(
+        self,
+        *,
+        role,
+        prompt: str,
+        fallback: str,
+        conversation_history=None,
+        output_schema_name=None,
+        require_schema: bool = False,
+    ):
+        self.roles.append(role.value)
+        import json as _json
+
+        return type("Result", (), {
+            "content": _json.dumps({
+                "decision": "accept",
+                "reasoning": "Model-generated reviewer reasoning",
+                "missing_evidence": [],
+                "unsafe_assumptions": [],
+            }),
+            "source": "fake",
+            "model_status": "live_ok",
+            "provider": "fake",
+            "role": role.value,
+            "success": True,
+            "redacted_summary": "Fake reviewer response",
+            "failure_reason": "",
+        })()
+
+    def answer(self, *, prompt: str, fallback: str, conversation_history=None):
+        return self.answer_with_role(
+            role=V2ModelRole.REVIEWER,
+            prompt=prompt,
+            fallback=fallback,
+            conversation_history=conversation_history,
+        )
+
+
 # ── Assistant API tests ────────────────────────────────────────────
 
 
@@ -806,7 +848,53 @@ class TestRepairAPI:
         assert body["hypothesis"] == "Model-generated hypothesis"
         assert body["patch_summary"] == "Model-generated patch summary"
         assert body["proposal_checksum"]
+        assert body["proposal_model"]["status"] == "live_ok"
+        assert body["proposal_model"]["provider"] == "fake"
+        assert body["proposal_model"]["role"] == "proposer"
+        assert body["proposal_model"]["failure_reason"] == ""
         assert fake_client.roles == ["proposer"]
+
+    def test_create_reviewer_critique(self, tmp_path: Path) -> None:
+        proposer_client = _RecordingProposerClient()
+        client, conn = _api_client(tmp_path, fake_model_client=proposer_client)
+
+        create_resp = client.post(
+            "/v1/v2/commands/cmd-review/repair/flow-proposal",
+            json={
+                "command_id": "cmd-review",
+                "failure_summary": "Build failed",
+                "hypothesis": "Missing import",
+                "patch_summary": "Add import statement",
+                "affected_paths": ["src/main.java"],
+            },
+            headers=_mutation_headers(),
+        )
+        assert create_resp.status_code == 200, create_resp.text
+        proposal_id = create_resp.json()["proposal_id"]
+        proposal_checksum = create_resp.json()["proposal_checksum"]
+
+        reviewer_client = _RecordingReviewerClient()
+        client.app.state.v2_assistant_model_client = reviewer_client
+
+        response = client.post(
+            f"/v1/v2/commands/cmd-review/repair/proposal/{proposal_id}/reviewer-critique",
+            json={
+                "proposal_id": proposal_id,
+                "proposal_type": "repair",
+                "proposal_checksum": proposal_checksum,
+                "context_pack_checksum": "cp-review",
+                "model_invocation_id": "inv-review",
+            },
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["decision"] == "accept"
+        assert body["reviewer_model"]["status"] == "live_ok"
+        assert body["reviewer_model"]["provider"] == "fake"
+        assert body["reviewer_model"]["role"] == "reviewer"
+        assert body["reviewer_model"]["failure_reason"] == ""
+        assert reviewer_client.roles == ["reviewer"]
 
     def test_approve_proposal(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)
