@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -16,7 +17,7 @@ def _write_legacy_project(root: Path) -> Path:
     legacy = root / "legacy-project"
     (legacy / "src" / "main" / "java" / "com" / "example").mkdir(parents=True, exist_ok=True)
     (legacy / "pom.xml").write_text(
-        "<project><modelVersion>4.0.0</modelVersion></project>\n",
+        "<project><modelVersion>4.0.0</modelVersion><properties><java.version>11</java.version></properties></project>\n",
         encoding="utf-8",
     )
     (legacy / "src" / "main" / "java" / "com" / "example" / "App.java").write_text(
@@ -123,6 +124,136 @@ def test_real_validation_is_opt_in(tmp_path: Path) -> None:
     assert report["verification_artifact_refs"]["repair_test_summary"].endswith("summary.json")
 
     shutil.rmtree(Path(report["sandbox_path"]), ignore_errors=True)
+
+
+def test_java_home_is_validated_and_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    legacy = _write_legacy_project(tmp_path)
+    java_home = tmp_path / "fake-jdk"
+    (java_home / "bin").mkdir(parents=True)
+    (java_home / "bin" / "java.exe").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "scripts.governed_repair_local_dry_run._probe_java_toolchain",
+        lambda resolved: {
+            "java_home_used": str(resolved) if resolved else "",
+            "java_executable": str((resolved / "bin" / "java.exe") if resolved else Path("java")),
+            "java_version_output": 'openjdk version "11.0.31"',
+            "java_major_version": 11,
+            "exit_code": 0,
+        },
+    )
+
+    report = run_local_project_dry_run(
+        legacy_project_path=str(legacy),
+        sandbox_root=str(tmp_path / "sandbox-java-home"),
+        java_home=str(java_home),
+        keep_sandbox=True,
+    )
+
+    assert report["java_home_requested"] == str(java_home.resolve())
+    assert report["java_home_used"] == str(java_home.resolve())
+    assert report["java_executable"].endswith(r"bin\java.exe")
+    assert report["java_version_output"] == 'openjdk version "11.0.31"'
+    assert report["toolchain_mismatch"] is False
+    assert report["toolchain_warning"] == ""
+    shutil.rmtree(Path(report["sandbox_path"]), ignore_errors=True)
+
+
+def test_toolchain_mismatch_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    legacy = _write_legacy_project(tmp_path)
+
+    monkeypatch.setattr(
+        "scripts.governed_repair_local_dry_run._probe_java_toolchain",
+        lambda resolved: {
+            "java_home_used": "",
+            "java_executable": "java",
+            "java_version_output": 'openjdk version "21.0.11"',
+            "java_major_version": 21,
+            "exit_code": 0,
+        },
+    )
+
+    report = run_local_project_dry_run(
+        legacy_project_path=str(legacy),
+        sandbox_root=str(tmp_path / "sandbox-mismatch"),
+        keep_sandbox=True,
+    )
+
+    assert report["project_declared_java_version"] == "11"
+    assert report["toolchain_mismatch"] is True
+    assert "Project declares Java 11" in report["toolchain_warning"]
+    shutil.rmtree(Path(report["sandbox_path"]), ignore_errors=True)
+
+
+def test_java_home_rejects_missing_bin_java(tmp_path: Path) -> None:
+    legacy = _write_legacy_project(tmp_path)
+    java_home = tmp_path / "jdk"
+    java_home.mkdir()
+    with pytest.raises(GovernedRepairDryRunError, match="missing bin/java.exe"):
+        run_local_project_dry_run(
+            legacy_project_path=str(legacy),
+            sandbox_root=str(tmp_path / "sandbox-invalid-java"),
+            java_home=str(java_home),
+        )
+
+
+def test_java_home_rejects_missing_directory(tmp_path: Path) -> None:
+    legacy = _write_legacy_project(tmp_path)
+    java_home = tmp_path / "missing-jdk"
+    with pytest.raises(GovernedRepairDryRunError, match="does not exist"):
+        run_local_project_dry_run(
+            legacy_project_path=str(legacy),
+            sandbox_root=str(tmp_path / "sandbox-missing-java"),
+            java_home=str(java_home),
+        )
+
+
+def test_java_home_does_not_mutate_environment_permanently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy = _write_legacy_project(tmp_path)
+    java_home = tmp_path / "fake-jdk"
+    (java_home / "bin").mkdir(parents=True)
+    (java_home / "bin" / "java.exe").write_text("", encoding="utf-8")
+    monkeypatch.setenv("JAVA_HOME", "C:\\Existing\\Jdk")
+    monkeypatch.setattr(
+        "scripts.governed_repair_local_dry_run._probe_java_toolchain",
+        lambda resolved: {
+            "java_home_used": str(resolved) if resolved else "",
+            "java_executable": str((resolved / "bin" / "java.exe") if resolved else Path("java")),
+            "java_version_output": 'openjdk version "11.0.31"',
+            "java_major_version": 11,
+            "exit_code": 0,
+        },
+    )
+    seen_java_home: list[str | None] = []
+
+    def fake_validation_runner(**kwargs):
+        seen_java_home.append(os.environ.get("JAVA_HOME"))
+        from migration_factory.repair_loop.validation_runner import ValidationResult
+
+        return ValidationResult(
+            passed=True,
+            build_status="BUILD_PASSED_IN_SANDBOX",
+            test_status="TEST_PASSED",
+            h2_status="H2_STARTUP_SKIPPED",
+            validation_commands=[["mvn", "test"]],
+            artifact_refs={},
+            warnings=[],
+            errors=[],
+        )
+
+    run_local_project_dry_run(
+        legacy_project_path=str(legacy),
+        sandbox_root=str(tmp_path / "sandbox-env"),
+        real_validation=True,
+        java_home=str(java_home),
+        validation_runner=fake_validation_runner,
+    )
+
+    assert seen_java_home == [str(java_home.resolve())]
+    assert os.environ["JAVA_HOME"] == "C:\\Existing\\Jdk"
 
 
 def test_placeholder_only_in_docs_and_script() -> None:

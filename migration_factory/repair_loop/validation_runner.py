@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
+import os
 from pathlib import Path
 from typing import Any
 
@@ -38,20 +40,22 @@ def run_validation_after_patch(
     h2_required: bool = False,
     h2_enabled: bool = False,
     build_timeout_seconds: int | None = None,
+    java_home: str | None = None,
 ) -> ValidationResult:
     run_path = Path(run_dir)
     sandbox = Path(sandbox_path)
     output_dir = run_path / "build" / f"repair_attempt_{attempt}"
-    build_result = run_build_agent(
-        sandbox,
-        output_dir=output_dir,
-        stream_output=False,
-        stop_after_start=False,
-        timeout_seconds=build_timeout_seconds,
-        validation_unit_id=f"repair-attempt-{attempt}",
-        source_changing_unit=True,
-        validation_command=["mvn", "test"],
-    )
+    with _temporary_java_home(java_home):
+        build_result = run_build_agent(
+            sandbox,
+            output_dir=output_dir,
+            stream_output=False,
+            stop_after_start=False,
+            timeout_seconds=build_timeout_seconds,
+            validation_unit_id=f"repair-attempt-{attempt}",
+            source_changing_unit=True,
+            validation_command=["mvn", "test"],
+        )
     build_status = BUILD_PASSED if build_result.succeeded else BUILD_FAILED
     validation_commands = [list(build_result.command or ["mvn", "test"])]
     artifact_refs: dict[str, str] = {}
@@ -112,3 +116,20 @@ def run_validation_after_patch(
         warnings=warnings,
         errors=errors,
     )
+
+
+@contextmanager
+def _temporary_java_home(java_home: str | None):
+    if not java_home:
+        yield
+        return
+
+    original = os.environ.get("JAVA_HOME")
+    os.environ["JAVA_HOME"] = java_home
+    try:
+        yield
+    finally:
+        if original is None:
+            os.environ.pop("JAVA_HOME", None)
+        else:
+            os.environ["JAVA_HOME"] = original

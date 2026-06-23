@@ -28,6 +28,8 @@ It uses the existing governed repair flow, sandbox copy, reviewer gate, human ap
   - Governed repair proposal, approval, apply, verification, and artifact projection.
 - `tests/control_tower/test_v2_assistant_repair_api.py`
   - Proof that the governed repair workflow can run against a copied local Maven project fixture.
+- `scripts/governed_repair_local_dry_run.py`
+  - Guarded CLI harness for sandbox copy, toolchain reporting, and optional real validation.
 
 ## Manual dry-run recipe
 
@@ -109,10 +111,20 @@ python -m scripts.governed_repair_local_dry_run --legacy-project-path <USER_LEGA
 ### Real validation opt-in
 
 ```powershell
-python -m scripts.governed_repair_local_dry_run --legacy-project-path <USER_LEGACY_PROJECT_PATH> --real-validation --approve --output dry-run-report.json --keep-sandbox
+python scripts/governed_repair_local_dry_run.py `
+  --legacy-project-path <USER_LEGACY_PROJECT_PATH> `
+  --real-validation `
+  --java-home <JAVA_11_HOME> `
+  --output dry-run-report.json `
+  --keep-sandbox
 ```
 
 Real validation runs only against the sandbox copy. The original project remains read-only.
+Approval is still not required for this validation-only dry run unless you are explicitly testing an approval path.
+
+### Java toolchain warning
+
+If the project declares Java 11 but the selected runtime is Java 21, the harness will report a toolchain mismatch. Use `--java-home <JAVA_11_HOME>` to point validation at the intended Java 11 runtime.
 
 ## Real validation runner
 
@@ -136,6 +148,7 @@ Use the existing stubbed dry-run tests when:
 - It prepares the sandbox, records checksums, and can run validation on the sandbox copy.
 - If the user project needs a new integration seam, add that seam in a later ticket instead of hardcoding paths now.
 - Cleanup removes the temporary sandbox unless `--keep-sandbox` is set.
+- The harness reports the selected Java runtime and any mismatch against the project-declared Java version.
 
 ## Recommended proof points
 
