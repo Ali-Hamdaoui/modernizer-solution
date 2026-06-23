@@ -15,6 +15,7 @@ from typing import Any, Callable
 from migration_factory.control_tower.application.v2_model_schemas import (
     describe_model_output_validation_failure,
     extract_json_object,
+    normalize_schema_object,
     validate_model_output,
 )
 from migration_factory.control_tower.application.v2_settings import ControlTowerSettings
@@ -220,6 +221,7 @@ class V2ModelRoleRouter:
         parsed = extract_json_object(content)
         if parsed is None:
             return False
+        parsed = normalize_schema_object(request.output_schema_name, parsed)
         try:
             validate_model_output(request.output_schema_name, parsed)
         except Exception:

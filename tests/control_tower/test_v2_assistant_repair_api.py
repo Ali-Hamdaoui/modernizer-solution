@@ -1012,6 +1012,77 @@ class TestRepairAPI:
         assert invocations[0].provider_kind == "fake"
         assert invocations[0].model_name == "proposer"
 
+    def test_create_proposal_ignores_extra_field_in_markdown_fenced_json(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from migration_factory.control_tower.application.v2_assistant_model_client import (
+            V2AssistantModelResult,
+        )
+
+        class _ExtraFieldProposerClient:
+            provider = "fake"
+
+            def answer_with_role(
+                self,
+                *,
+                role,
+                prompt: str,
+                fallback: str,
+                conversation_history=None,
+                output_schema_name=None,
+                require_schema: bool = False,
+            ):
+                return V2AssistantModelResult(
+                    content=(
+                        "```json\n"
+                        "{"
+                        '"failure_hypothesis":"Root cause",'
+                        '"patch_summary":"Fix issue",'
+                        '"affected_paths":["pom.xml"],'
+                        '"validation_plan":"Run mvn test",'
+                        '"step":"extra field"'
+                        "}\n"
+                        "```"
+                    ),
+                    source="fake",
+                    model_status="live_ok",
+                    provider="fake",
+                    role=role.value,
+                    success=True,
+                    redacted_summary="proposal with extra field",
+                    failure_reason="",
+                )
+
+            def answer(self, *, prompt: str, fallback: str, conversation_history=None):
+                return self.answer_with_role(
+                    role=V2ModelRole.PROPOSER,
+                    prompt=prompt,
+                    fallback=fallback,
+                    conversation_history=conversation_history,
+                )
+
+        client, conn = _api_client(tmp_path, fake_model_client=_ExtraFieldProposerClient())
+        response = client.post(
+            "/v1/v2/commands/cmd-extra-field/repair/flow-proposal",
+            json={
+                "command_id": "cmd-extra-field",
+                "failure_summary": "Build failed",
+                "hypothesis": "Missing import",
+                "patch_summary": "Add import statement",
+                "affected_paths": ["src/main.java"],
+            },
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["hypothesis"] == "Root cause"
+        assert body["proposal_model"]["provider"] == "fake"
+        assert body["proposal_model"]["attempted_provider"] == "fake"
+        assert body["proposal_model"]["fallback_used"] is False
+        assert body["proposal_model"]["schema_validated"] is True
+        assert body["proposal_model"]["primary_failure_reason"] == ""
+
     def test_create_reviewer_critique(self, tmp_path: Path) -> None:
         proposer_client = _RecordingProposerClient()
         client, conn = _api_client(tmp_path, fake_model_client=proposer_client)

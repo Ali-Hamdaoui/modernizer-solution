@@ -360,6 +360,39 @@ def extract_json_object(model_content: Any) -> dict[str, Any] | None:
     return None
 
 
+def normalize_schema_object(schema_name: str, data: Any) -> Any:
+    """Drop unknown fields from a model payload while preserving schema fields.
+
+    This is intentionally narrow: it only keeps fields declared by the
+    registered schema, recursing into nested objects and arrays. Missing or
+    wrong-typed required fields are not fixed here; validation still fails
+    closed if the normalized payload does not satisfy the schema.
+    """
+    schema = SCHEMA_REGISTRY.get(schema_name)
+    if schema is None:
+        raise ValueError(f"Unknown schema: {schema_name!r}")
+    return _normalize_schema_value(data, schema)
+
+
+def _normalize_schema_value(value: Any, schema: dict[str, Any]) -> Any:
+    if not isinstance(schema, dict):
+        return value
+    schema_type = schema.get("type")
+    if schema_type == "object" and isinstance(value, dict):
+        properties = schema.get("properties", {})
+        normalized: dict[str, Any] = {}
+        for key, prop_schema in properties.items():
+            if key in value:
+                normalized[key] = _normalize_schema_value(value[key], prop_schema)
+        return normalized
+    if schema_type == "array" and isinstance(value, (list, tuple)):
+        items_schema = schema.get("items")
+        if items_schema:
+            return [_normalize_schema_value(item, items_schema) for item in value]
+        return list(value)
+    return value
+
+
 def describe_model_output_validation_failure(schema_name: str, model_content: Any) -> str:
     """Return redacted, actionable schema failure detail for model output."""
     parsed = extract_json_object(model_content)

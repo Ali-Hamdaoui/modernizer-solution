@@ -154,6 +154,7 @@ from migration_factory.control_tower.application.v2_model_role_router import V2M
 from migration_factory.control_tower.application.v2_model_schemas import (
     describe_model_output_validation_failure,
     extract_json_object,
+    normalize_schema_object,
     validate_against_schema,
     SchemaValidationError,
 )
@@ -2677,12 +2678,13 @@ def create_app(
                         )
 
                 # Persist using VALIDATED model output, not source copy
+                revised_value = revised_output.value
                 revised_proposal = repair_service.create_revision_proposal(
                     command_id=revision_binding.failed_command.command_id,
                     source_proposal_id=payload.source_proposal_id,
-                    failure_summary=revised_output.get("failure_hypothesis", source_failure),
-                    hypothesis=revised_output.get("failure_hypothesis", source_hypothesis),
-                    patch_summary=revised_output.get("patch_summary", source_patch),
+                    failure_summary=revised_value.get("failure_hypothesis", source_failure),
+                    hypothesis=revised_value.get("failure_hypothesis", source_hypothesis),
+                    patch_summary=revised_value.get("patch_summary", source_patch),
                     affected_paths=tuple(revised_paths),
                     revision_instruction=payload.revision_instruction or "",
                     context_pack_checksum=payload.context_pack_checksum or "",
@@ -12532,6 +12534,7 @@ def _parse_and_validate_model_output(
     parsed = extract_json_object(model_content)
 
     if parsed is not None:
+        parsed = normalize_schema_object(schema_name, parsed)
         try:
             validate_against_schema(schema_name, parsed)
             return _ParsedModelOutput(
@@ -12546,6 +12549,7 @@ def _parse_and_validate_model_output(
             )
 
     if fallback is not None:
+        fallback = normalize_schema_object(schema_name, fallback)
         fallback_validated = False
         try:
             validate_against_schema(schema_name, fallback)
