@@ -248,8 +248,44 @@ def test_answer_uses_api_key_header_for_v1_endpoint(monkeypatch) -> None:
     assert body["model"] == "gpt-5-mini"
     assert body["max_output_tokens"] == 700
     assert body["store"] is False
+    assert "text" not in body
     assert "messages" not in body
     assert "max_completion_tokens" not in body
+
+
+def test_answer_with_role_requests_json_object_for_schema_output(monkeypatch) -> None:
+    from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelClient
+    from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
+
+    recorder = _SmokeUrlopenRecorder(
+        {
+            "output_text": json.dumps(
+                {
+                    "failure_hypothesis": "Controlled compile failure",
+                    "patch_summary": "Repair sandbox-only syntax error",
+                    "affected_paths": ["src/test/java/ControlledCompileFailureTest.java"],
+                    "validation_plan": "Run sandbox validation",
+                }
+            )
+        }
+    )
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.invalid/openai/v1")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("AZURE_OPENAI_PROPOSER_DEPLOYMENT", "gpt-test")
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+
+    result = V2AssistantModelClient().answer_with_role(
+        role=V2ModelRole.PROPOSER,
+        prompt="Return a RepairProposal JSON object.",
+        fallback="{}",
+        output_schema_name="RepairProposal",
+        require_schema=True,
+    )
+
+    assert result.success is True
+    url, _, body = _extract_request(recorder.calls[0][0])
+    assert url == "https://example.invalid/openai/v1/responses"
+    assert body["text"] == {"format": {"type": "json_object"}}
 
 
 def test_answer_retries_legacy_endpoint_after_generic_v1_http_400(monkeypatch) -> None:

@@ -229,6 +229,8 @@ class V2AssistantModelClient:
                 prompt=prompt,
                 fallback=fallback,
                 conversation_history=conversation_history,
+                output_schema_name=output_schema_name,
+                require_schema=require_schema,
             ),
         )
         return self._to_assistant_result(routed)
@@ -241,6 +243,8 @@ class V2AssistantModelClient:
         prompt: str,
         fallback: str,
         conversation_history: list[dict[str, str]] | None = None,
+        output_schema_name: str | None = None,
+        require_schema: bool = False,
     ) -> V2AssistantModelResult:
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip().rstrip("/")
         api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
@@ -273,6 +277,7 @@ class V2AssistantModelClient:
                 max_completion_tokens=700,
                 timeout=30,
                 conversation_history=conversation_history,
+                require_json_object=bool(output_schema_name and require_schema),
             )
         except urllib.error.HTTPError as exc:
             code = int(getattr(exc, "code", 0) or 0)
@@ -372,6 +377,7 @@ class V2AssistantModelClient:
         max_completion_tokens: int = 700,
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
+        require_json_object: bool = False,
     ) -> str:
         if self._is_v1_endpoint(endpoint):
             endpoint = self._normalize_v1_endpoint(endpoint)
@@ -384,6 +390,7 @@ class V2AssistantModelClient:
                     max_completion_tokens=max_completion_tokens,
                     timeout=timeout,
                     conversation_history=conversation_history,
+                    require_json_object=require_json_object,
                 )
             except urllib.error.HTTPError as exc:
                 if _should_retry_with_chat_completions(exc):
@@ -396,6 +403,7 @@ class V2AssistantModelClient:
                             max_completion_tokens=max_completion_tokens,
                             timeout=timeout,
                             conversation_history=conversation_history,
+                            require_json_object=require_json_object,
                         )
                     except urllib.error.HTTPError as chat_exc:
                         if _should_retry_with_legacy_endpoint(chat_exc):
@@ -407,6 +415,7 @@ class V2AssistantModelClient:
                                 max_tokens=max_completion_tokens,
                                 timeout=timeout,
                                 conversation_history=conversation_history,
+                                require_json_object=require_json_object,
                             )
                         raise
                 if _should_retry_with_legacy_endpoint(exc):
@@ -418,6 +427,7 @@ class V2AssistantModelClient:
                         max_tokens=max_completion_tokens,
                         timeout=timeout,
                         conversation_history=conversation_history,
+                        require_json_object=require_json_object,
                     )
                 raise
         return self._chat_completion_legacy(
@@ -428,6 +438,7 @@ class V2AssistantModelClient:
             max_tokens=max_completion_tokens,
             timeout=timeout,
             conversation_history=conversation_history,
+            require_json_object=require_json_object,
         )
 
     def _chat_completion_v1(
@@ -440,6 +451,7 @@ class V2AssistantModelClient:
         max_completion_tokens: int = 700,
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
+        require_json_object: bool = False,
     ) -> str:
         return self._post_chat_completion_v1(
             endpoint=endpoint,
@@ -448,6 +460,7 @@ class V2AssistantModelClient:
             messages=self._build_messages(prompt=prompt, conversation_history=conversation_history),
             max_completion_tokens=max_completion_tokens,
             timeout=timeout,
+            require_json_object=require_json_object,
         )
 
     def _responses_completion_v1(
@@ -460,6 +473,7 @@ class V2AssistantModelClient:
         max_completion_tokens: int = 700,
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
+        require_json_object: bool = False,
     ) -> str:
         return self._post_responses_v1(
             endpoint=endpoint,
@@ -471,6 +485,7 @@ class V2AssistantModelClient:
             ),
             max_output_tokens=max_completion_tokens,
             timeout=timeout,
+            require_json_object=require_json_object,
         )
 
     @staticmethod
@@ -578,6 +593,7 @@ class V2AssistantModelClient:
         messages: list[dict[str, str]],
         max_completion_tokens: int,
         timeout: int,
+        require_json_object: bool = False,
     ) -> str:
         # Allow max_completion_tokens override via environment variable
         env_max_tokens = os.environ.get("AZURE_OPENAI_ASSISTANT_MAX_COMPLETION_TOKENS", "").strip()
@@ -590,6 +606,8 @@ class V2AssistantModelClient:
             "messages": messages,
             "max_completion_tokens": max_completion_tokens,
         }
+        if require_json_object:
+            payload["response_format"] = {"type": "json_object"}
         # Only add one of temperature / reasoning_effort when explicitly configured.
         # Sending an unsupported parameter to a model that does not recognise it
         # causes a 400 "badly formed" rejection at the Azure infrastructure layer.
@@ -626,6 +644,7 @@ class V2AssistantModelClient:
         input_items: list[dict[str, object]],
         max_output_tokens: int,
         timeout: int,
+        require_json_object: bool = False,
     ) -> str:
         url = f"{endpoint.rstrip('/')}/responses"
         payload: dict[str, object] = {
@@ -635,6 +654,8 @@ class V2AssistantModelClient:
         }
         if max_output_tokens > 0:
             payload["max_output_tokens"] = max_output_tokens
+        if require_json_object:
+            payload["text"] = {"format": {"type": "json_object"}}
         reasoning_effort = os.environ.get("AZURE_OPENAI_REASONING_EFFORT", "").strip()
         if reasoning_effort:
             payload["reasoning"] = {"effort": reasoning_effort}
@@ -661,6 +682,7 @@ class V2AssistantModelClient:
         max_tokens: int = 700,
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
+        require_json_object: bool = False,
     ) -> str:
         return self._post_chat_completion_legacy(
             endpoint=endpoint,
@@ -669,6 +691,7 @@ class V2AssistantModelClient:
             messages=self._build_messages(prompt=prompt, conversation_history=conversation_history),
             max_tokens=max_tokens,
             timeout=timeout,
+            require_json_object=require_json_object,
         )
 
     def _post_chat_completion_legacy(
@@ -680,6 +703,7 @@ class V2AssistantModelClient:
         messages: list[dict[str, str]],
         max_tokens: int,
         timeout: int,
+        require_json_object: bool = False,
     ) -> str:
         api_version = _azure_api_version()
         url = (
@@ -691,6 +715,8 @@ class V2AssistantModelClient:
             "temperature": 0.2,
             "max_tokens": max_tokens,
         }
+        if require_json_object:
+            payload["response_format"] = {"type": "json_object"}
         request = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
