@@ -390,6 +390,8 @@ def _normalize_schema_value(value: Any, schema: dict[str, Any]) -> Any:
         if items_schema:
             return [_normalize_schema_value(item, items_schema) for item in value]
         return list(value)
+    if schema_type == "string" and isinstance(value, (list, tuple)):
+        return "; ".join(str(item) for item in value if not isinstance(item, (dict, list, tuple)))
     return value
 
 

@@ -196,6 +196,47 @@ def test_router_ignores_extra_fields_in_markdown_fenced_json_for_repair_proposal
     assert result.failure_reason == ""
 
 
+def test_router_normalizes_string_field_lists_for_repair_proposal(monkeypatch) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_PROPOSER_DEPLOYMENT", "proposer-deployment")
+
+    router = V2ModelRoleRouter()
+
+    def invoke(_: str) -> V2AssistantModelResult:
+        return V2AssistantModelResult(
+            content=(
+                "{"
+                '"failure_hypothesis":"Root cause",'
+                '"patch_summary":"Fix issue",'
+                '"affected_paths":["pom.xml"],'
+                '"validation_plan":["Run mvn test","Inspect sandbox artifacts"]'
+                "}"
+            ),
+            source="azure_openai",
+            model_status="live_ok",
+            provider="azure_openai",
+            role="proposer",
+            success=True,
+            redacted_summary="proposal with list validation plan",
+            failure_reason="",
+        )
+
+    result = router.route(
+        V2RoleModelRequest(
+            role=V2ModelRole.PROPOSER,
+            prompt="draft a proposal",
+            fallback="fallback",
+            output_schema_name="RepairProposal",
+            require_schema=True,
+        ),
+        invoke=invoke,
+    )
+
+    assert result.success is True
+    assert result.fallback_used is False
+    assert result.schema_validated is True
+    assert result.primary_failure_reason == ""
+
+
 def test_client_answer_with_role_uses_requested_role_deployment(monkeypatch) -> None:
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/openai/v1")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
