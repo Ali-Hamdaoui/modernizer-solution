@@ -1,0 +1,5 @@
+Cleanup started: 2026-06-22T14:16:39.8517239+01:00
+DELETE generated db: test_events.sqlite3
+DELETE generated db: test_events2.sqlite3
+DELETE .pytest_cache
+DELETE .next
