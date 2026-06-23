@@ -4,6 +4,62 @@ All features start with `Status: not started` and `Owner: TBD`. Suggested paths 
 
 Global provider constraint: Azure AI Foundry is the only DEMO3 AI runtime. Model invocation, configuration, controlled context selection, credential handling, error mapping, and audit are backend responsibilities. No task may introduce direct OpenAI, Copilot runtime, frontend provider calls, multi-provider routing, or provider fallback.
 
+## Foundation 0 - Foundry-only Cleanup and Copilot Quarantine
+
+### FND-01 - Disable/quarantine Copilot runtime paths
+
+- Status: not started
+- Owner: TBD
+- Blocks: F01-F18
+- Purpose: make GitHub Copilot unreachable from DEMO3 runtime paths while preserving legacy artifact readability.
+- Likely future modified files: orchestrator defaults/graph/preflight/summary, final report Copilot adapter reachability, planning/analysis Copilot wrappers, transform advisory path, TUI Copilot status, Control Tower projections.
+- Acceptance summary: no Control Tower, DEMO3, orchestrator, repair, report, TUI, public API, or frontend runtime path invokes Copilot CLI/SDK or report generation.
+
+### FND-02 - Azure AI Foundry adapter/config contract
+
+- Status: not started
+- Owner: TBD
+- Blocks: F01-F18
+- Purpose: make the backend-owned Azure AI Foundry adapter the only model invocation boundary.
+- Likely future modified files: model client, settings, role router, readiness checks, model audit tests.
+- Acceptance summary: application/API layers do not directly read model provider env vars; Foundry failures fail closed for model-required operations.
+
+### FND-03 - Remove public provider/config leakage
+
+- Status: not started
+- Owner: TBD
+- Blocks: F01-F18
+- Purpose: remove provider names, provider-kind fields, env refs, deployment refs, credentials, and fallback-provider details from public DTOs and frontend contracts.
+- Likely future modified files: FastAPI projections, frontend contracts/API, cockpit, new migration form.
+- Acceptance summary: public responses and frontend bundles expose no `copilot`, `azure_openai`, `provider_kind`, provider env refs, deployment refs, credentials, or fallback-provider details.
+
+### FND-04 - UI/report/docs terminology cleanup
+
+- Status: not started
+- Owner: TBD
+- Blocks: F01-F18
+- Purpose: align user-visible product language with Azure AI Foundry-only runtime.
+- Likely future modified files: cockpit, setup UI, assessment/report writers, TUI, current runbooks/docs.
+- Acceptance summary: current product surfaces say Azure AI Foundry or provider-neutral AI and do not imply Copilot or Azure OpenAI public provider support.
+
+### FND-05 - Context-pack enforcement
+
+- Status: not started
+- Owner: TBD
+- Blocks: F10, F11, F18
+- Purpose: bind model calls to redacted, bounded, content-checksummed, policy-versioned context packs.
+- Likely future modified files: evidence pack builder, model schemas, diagnosis/repair flow, context-pack policy tests.
+- Acceptance summary: every model invocation records the exact canonical redacted context checksum and policy version.
+
+### FND-06 - Legacy compatibility mapping
+
+- Status: not started
+- Owner: TBD
+- Blocks: F01-F18
+- Purpose: keep historical Copilot/Azure OpenAI names readable without exposing or activating them in current product paths.
+- Likely future modified files: artifact readers, projection mappers, compatibility tests.
+- Acceptance summary: legacy names are compatibility-only; new runtime paths and public projections use Foundry/provider-neutral terminology.
+
 ## F01 — Stage 4 Reconciliation
 
 - Status: not started

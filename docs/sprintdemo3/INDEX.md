@@ -11,6 +11,11 @@ Azure AI Foundry is the only supported AI runtime and LLM provider for DEMO3. Th
 The delivery has two mandatory increments:
 
 ```text
+Foundation 0 = Foundry-only cleanup and Copilot quarantine:
+FND-01 Copilot quarantine + FND-02 Foundry adapter + FND-03 public DTO cleanup
++ FND-04 terminology cleanup + FND-05 context-pack enforcement
++ FND-06 legacy compatibility mapping.
+
 MVP-A = execution spine:
 Stage 4 + API hardening + StageCheckpoint + StageAttempt + retry from checkpoint.
 
@@ -20,7 +25,7 @@ evidence + classifier + retrieval + repair mode registry + LLM-authored candidat
 + validation + checkpoint promotion.
 ```
 
-MVP-A must work before any LLM-authored repair is executable. MVP-B extends the same stage progression, gates, repair flow, artifact storage, validation, rollback, and proof systems; it must not create a second orchestrator.
+Foundation 0 must be complete before MVP-A or MVP-B implementation. MVP-A must work before any LLM-authored repair is executable. MVP-B extends the same stage progression, gates, repair flow, artifact storage, validation, rollback, and proof systems; it must not create a second orchestrator.
 
 ## Why It Matters
 
@@ -61,5 +66,14 @@ This extensibility applies to failure and repair policies, not provider selectio
 16. [Checkpoint Promoter](16-checkpoint-promoter/INDEX.md) — MVP-B
 17. [Cockpit Recovery UX](17-cockpit-recovery-ux/INDEX.md) — MVP-B
 18. [E2E Fixtures](18-e2e-fixtures/INDEX.md) — MVP-B
+
+Foundation 0 tasks:
+
+- FND-01 Disable/quarantine Copilot runtime paths.
+- FND-02 Azure AI Foundry adapter/config contract.
+- FND-03 Remove public provider/config leakage.
+- FND-04 UI/report/docs terminology cleanup.
+- FND-05 Context-pack enforcement.
+- FND-06 Legacy compatibility mapping.
 
 See [ROADMAP.md](ROADMAP.md), [ARCHITECTURE.md](ARCHITECTURE.md), [RISKS.md](RISKS.md), and the [global task board](TASKS.md).

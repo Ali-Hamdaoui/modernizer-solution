@@ -2,9 +2,25 @@
 
 ## Delivery Rule
 
-MVP-A must be completed before MVP-B. Do not start LLM-authored repair execution until checkpoint retry works. Do not implement retrieval or LLM repair before Stage 4, API hardening, checkpoints, attempts, and retry exist.
+Foundation 0 must be completed before MVP-A or MVP-B. MVP-A must be completed before MVP-B. Do not start LLM-authored repair execution until checkpoint retry works. Do not implement retrieval or LLM repair before Stage 4, API hardening, checkpoints, attempts, and retry exist.
 
 Provider rule for every phase: Azure AI Foundry is the only production model provider. All model calls are backend-owned; no phase may add a browser/provider call, direct OpenAI route, Copilot runtime dependency, multi-provider selection, or provider fallback.
+
+## Foundation 0 - Foundry-only Cleanup and Copilot Quarantine
+
+FND-01 Disable/quarantine Copilot runtime paths across Control Tower, orchestrator, repair, report, TUI, public API, and frontend runtime surfaces.
+
+FND-02 Add the Azure AI Foundry adapter/config contract as the only model invocation boundary.
+
+FND-03 Remove public provider/config leakage, including `provider_kind`, `azure_openai`, provider env refs, deployment refs, provider credentials, and fallback-provider details.
+
+FND-04 Clean UI, report, TUI, and current docs terminology so product surfaces say Azure AI Foundry or provider-neutral AI.
+
+FND-05 Enforce redacted, bounded, content-checksummed, policy-versioned context packs bound to model invocation records.
+
+FND-06 Map legacy Copilot/Azure OpenAI names for internal compatibility only.
+
+Exit condition: no DEMO3 implementation starts until Copilot is unreachable from product runtime paths, Foundry is the sole model boundary, public contracts leak no provider internals, and deterministic assistance cannot satisfy model-required operations.
 
 ## Phase 1 — Reconcile the Execution Spine
 

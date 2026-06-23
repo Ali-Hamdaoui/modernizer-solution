@@ -16,6 +16,17 @@ Azure AI Foundry is the only supported DEMO3 LLM provider. The backend is the on
 
 GitHub Copilot is not a product runtime, assistant engine, fallback provider, client delivery dependency, or part of the data path. Existing `copilot_*` names in code are legacy internal naming and require later refactoring only where they leak into client-facing contracts or UI.
 
+Foundation 0 must establish this boundary before DEMO3 feature work:
+
+- FND-01 Disable/quarantine Copilot runtime paths.
+- FND-02 Azure AI Foundry adapter/config contract.
+- FND-03 Remove public provider/config leakage.
+- FND-04 Clean UI/report/docs terminology.
+- FND-05 Enforce content-checksummed, policy-versioned context packs.
+- FND-06 Legacy compatibility mapping.
+
+Azure OpenAI-specific implementation details are debt unless hidden behind the Azure AI Foundry adapter contract. Public DTOs, frontend contracts, model-profile APIs, events, reports, and TUI surfaces must not expose `azure_openai`, `provider_kind`, provider environment references, deployment references, credentials, or fallback-provider details.
+
 ## Core Components
 
 - `FailureRecoveryEngine`: coordinates the existing services and state transitions; proposed location needs verification. It must not replace `v2_orchestrator_runner.py` or `v2_repair_flow.py`.

@@ -8,7 +8,11 @@
 
 **Document status:** Proposed implementation baseline
 
-**Target branch:** `chatbot-optimization`
+**Target baseline:** `stable`
+
+**Baseline commit after documentation merge:** `ea6d5db4bf5ce9d22ceb3f372ff780e0254c0709`
+
+**Runtime-code base before docs:** `ff84d69ad5e17098d08d4efbfe76c500effc2d49`
 
 **Date:** 2026-06-23
 
@@ -35,6 +39,26 @@ Azure AI Foundry model endpoint
 ```
 
 The Control Tower backend is the only boundary allowed to call Azure AI Foundry. The frontend sends user intent and governed actions to the backend; it never invokes a model endpoint directly and never receives provider credentials.
+
+### 1.1 Foundry-only LLM runtime boundary
+
+Azure AI Foundry is the only allowed LLM runtime boundary for DEMO3 and future governed repair work.
+
+All proposer, reviewer, assistant, diagnosis, candidate-generation, retrieval-grounded explanation, and repair-review model calls must go through a backend-owned Azure AI Foundry adapter. The adapter owns credential resolution, endpoint binding, role-to-deployment mapping, request construction, response validation, safe error mapping, redaction, audit, and invocation records.
+
+Frontend code must never call Azure AI Foundry directly and must never receive model keys, endpoints, deployments, environment variable names, provider configuration, provider credentials, or provider selection controls. Application services should not read model provider environment variables directly; they should depend on the backend Foundry adapter contract. Model role routing is a backend capability concern, not a public provider contract.
+
+Model-required operations fail closed when Foundry is unavailable, malformed, or policy-invalid. Deterministic non-model assistance may still exist for status, explanations, and local guidance, but it must be explicitly labeled as non-model output and must not masquerade as a successful model response or satisfy proposer, reviewer, repair-candidate, or repair-review requirements.
+
+Azure OpenAI-specific code, configuration, public DTOs, and terminology are current implementation debt unless encapsulated behind the Azure AI Foundry adapter contract and hidden from public and product surfaces.
+
+### 1.2 Copilot prohibition
+
+GitHub Copilot must not be used by DEMO3.
+
+GitHub Copilot is not an allowed runtime, fallback, planning engine, repair provider, report generator, reviewer, proposer, or execution assistant. Prohibited uses include runtime assist, repair generation, planning generation, analysis enrichment, review, final report generation, TUI status or probing, fallback after Foundry failure, and any CLI, SDK, or hidden execution path.
+
+Historical Copilot schemas and artifacts may remain readable for legacy compatibility, and old Copilot code may remain temporarily as dead or quarantined code. It must not be reachable from Control Tower, DEMO3, orchestrator, repair, report, TUI, public API, or frontend runtime paths. New features must not add Copilot calls, provider selection to the frontend, or provider internals in public DTOs.
 
 The central authority split is:
 
@@ -145,21 +169,27 @@ The architecture must support additional compiler, dependency, test, runtime, co
 
 ## 3. Current Repository Reality
 
-### 3.1 Active branch
+### 3.1 Baseline branch
 
-The implementation target is the existing branch:
-
-```text
-chatbot-optimization
-```
-
-At the time of this revision, the branch is at:
+The implementation baseline is:
 
 ```text
-ec8ecce
+stable
 ```
 
-The worktree was clean before this document edit.
+Baseline commit after documentation merge:
+
+```text
+ea6d5db4bf5ce9d22ceb3f372ff780e0254c0709
+```
+
+Runtime-code base before docs:
+
+```text
+ff84d69ad5e17098d08d4efbfe76c500effc2d49
+```
+
+Implementation branches must be created from `stable` after the Foundry-only foundation documentation is merged. Earlier exploratory work happened on `chatbot-optimization`, but DEMO3 implementation must proceed from `stable` after the Foundry-only baseline is accepted.
 
 ### 3.2 Existing assets to reuse
 
@@ -318,7 +348,7 @@ The cockpit can show gates, failures, proposals, reviews, and validation traces,
 
 DEMO3 must:
 
-1. Bring governed Stage 4 support to `chatbot-optimization`.
+1. Bring governed Stage 4 support to implementation branches created from `stable`.
 2. Ensure Stage 4 consumes an accepted, validated Stage 3 checkpoint.
 3. Remove frontend and chatbot control over paths, commands, argv, env, and filesystem targets.
 4. Persist immutable `StageCheckpoint` and `StageAttempt` records.
@@ -342,6 +372,9 @@ DEMO3 must:
 22. Apply reviewed and approved LLM-authored bounded diffs without requiring backend-authored fix logic for each failure.
 23. Use Azure AI Foundry as the single DEMO3 model-provider path through a backend-owned adapter.
 24. Keep GitHub Copilot outside the product runtime, client data path, security requirements, and migration execution flow.
+25. Disable or quarantine every Copilot runtime path before implementing DEMO3 model-backed repair.
+26. Remove public provider/configuration leakage before exposing DEMO3 model status, recovery, or repair contracts.
+27. Bind every model invocation to redacted, bounded, content-checksummed, policy-versioned context packs.
 
 ---
 
@@ -372,13 +405,27 @@ DEMO3 does not include:
 - direct OpenAI API access;
 - multi-provider selection, routing, or runtime fallback;
 - frontend or browser calls to Azure AI Foundry;
-- GitHub Copilot as a runtime, assistant engine, execution dependency, or client prerequisite.
+- GitHub Copilot integration;
+- GitHub Copilot as a runtime, assistant engine, execution dependency, or client prerequisite;
+- GitHub Copilot fallback when Azure AI Foundry is unavailable;
+- provider switching from UI or public API;
+- Azure OpenAI public provider leakage;
+- provider env refs, deployment refs, or provider credentials in public DTOs.
 
 DEMO3 does not require backend-authored deterministic fix logic for every future failure class. It does require every proposed fix, including an LLM-authored fix, to pass the same review, approval, containment, rollback, and proof controls.
 
 ---
 
 ## 7. Authority and Trust Model
+
+The DEMO3 runtime trust model is:
+
+```text
+LLM = Azure AI Foundry-backed proposer/reviewer/assistant.
+Backend = owner of adapter, context, policy, sandbox, execution, validation, rollback, and proof.
+Human = approval authority.
+GitHub Copilot = not part of the runtime trust model.
+```
 
 ### 7.1 LLM and chatbot role
 
@@ -502,6 +549,7 @@ Existing repository names containing `copilot_*` are legacy internal naming and 
 The required order is:
 
 ```text
+0. Foundry-only foundation and Copilot quarantine
 1. Stage 4 branch reconciliation
 2. public API hardening
 3. StageCheckpoint and StageAttempt persistence
@@ -518,7 +566,20 @@ The required order is:
 14. cockpit recovery UX
 ```
 
-The stage/checkpoint spine must exist before model-assisted recovery. LLM analysis and planning expansion must not block the core checkpoint-repair MVP.
+Foundation 0 is a blocker for Stage 4 and DEMO3 implementation because the current stable codebase still contains reachable Copilot runtime paths, Azure OpenAI-specific application plumbing, provider/env-ref public DTO leakage, deterministic fallback semantics that can look like assistant output, and context-pack checksums that are not content-derived or policy-versioned.
+
+Foundation 0 includes:
+
+```text
+FND-01 Disable/quarantine Copilot runtime paths
+FND-02 Add Azure AI Foundry adapter/config contract
+FND-03 Remove public provider/config leakage
+FND-04 UI/report/docs terminology cleanup
+FND-05 Context-pack enforcement
+FND-06 Compatibility mapping for legacy Copilot/Azure OpenAI names
+```
+
+The stage/checkpoint spine must exist before model-assisted recovery. LLM analysis and planning expansion must not block the core checkpoint-repair MVP. No Stage 4, repair, report, TUI, public API, or frontend runtime path may depend on Copilot or expose Azure OpenAI provider internals while this foundation remains incomplete.
 
 ---
 
@@ -2089,7 +2150,7 @@ This fixture validates the generic engine. It must not introduce Jackson-specifi
 
 ### 25.1 Preconditions
 
-- Stage 4 is executable on `chatbot-optimization`.
+- Stage 4 has been implemented on a Foundation-0-compliant branch created from `stable`.
 - Stage 3 has produced an accepted checkpoint.
 - The Stage 4 profile is bound to Spring Boot 4 and Java 21.
 - The sample application contains an incomplete Jackson migration.
@@ -2209,6 +2270,17 @@ accepted Stage 3 checkpoint
 
 ## 27. Implementation Phases
 
+### Phase 0: Foundry-only foundation and Copilot quarantine
+
+- Disable or quarantine Copilot runtime paths across Control Tower, orchestrator, repair, report, TUI, public API, and frontend surfaces.
+- Add the Azure AI Foundry adapter/config contract as the only model invocation boundary.
+- Remove provider names, provider-kind fields, environment references, deployment references, provider credentials, and fallback-provider details from public DTOs and frontend contracts.
+- Clean UI, report, TUI, and current docs terminology so current product surfaces say Azure AI Foundry or provider-neutral AI, not Copilot or Azure OpenAI internals.
+- Enforce redacted, bounded, content-checksummed, policy-versioned context packs bound to invocation records.
+- Add compatibility mapping so legacy Copilot and Azure OpenAI names remain readable only through internal/historical compatibility boundaries.
+
+Exit criterion: DEMO3 can begin only after Copilot is unreachable from product runtime paths, Foundry is the only model boundary, public contracts leak no provider internals, deterministic assistance is explicitly non-model, and context packs are content-bound.
+
 ### Phase 1: Stage 4 reconciliation
 
 - Review Stage 4 commits from the other branch.
@@ -2325,9 +2397,22 @@ This phase is outside the core DEMO3 MVP unless earlier phases finish without we
 
 ## 28. Acceptance Criteria
 
+### 28.0 Foundry-only foundation
+
+- Azure AI Foundry adapter is the only model invocation boundary for DEMO3.
+- No DEMO3 runtime path invokes GitHub Copilot CLI, SDK, report generation, analysis enrichment, planning assist, repair generation, review, TUI probing, or fallback.
+- No Control Tower public API returns `copilot`, `azure_openai`, `provider_kind`, provider environment references, deployment references, provider credentials, or fallback-provider details.
+- No frontend bundle displays Copilot or Azure OpenAI provider internals.
+- Frontend never calls Azure AI Foundry directly and never receives provider configuration.
+- Application services do not directly read model provider environment variables outside the backend-owned Foundry adapter/config contract.
+- Foundry failures fail closed for model-required operations.
+- Deterministic non-model assistance is explicitly labeled non-model and cannot satisfy proposer, reviewer, repair-candidate, or repair-review requirements.
+- Context packs are redacted, bounded, content-checksummed, policy-versioned, source-traceable, and bound to model invocation records.
+- Historical Copilot and Azure OpenAI names remain readable only through internal compatibility mappings and cannot activate current product runtime behavior.
+
 ### 28.1 Stage 4
 
-- Stage 4 exists on `chatbot-optimization`.
+- Stage 4 exists on a Foundation-0-compliant implementation branch created from `stable`.
 - Stage schemas, job projections, persistence constraints, and UI support Stage 4.
 - Stage 4 consumes an accepted Stage 3 checkpoint.
 - No direct Stage 4 jump is possible.
@@ -2517,6 +2602,8 @@ This phase is outside the core DEMO3 MVP unless earlier phases finish without we
 
 ### 29.6 Model and reviewer tests
 
+- Azure AI Foundry adapter success, refusal, timeout, malformed response, redaction, and audit-binding tests;
+- no-live-model tests using a fake Foundry adapter;
 - valid structured output;
 - malformed JSON;
 - schema mismatch;
@@ -2533,6 +2620,16 @@ This phase is outside the core DEMO3 MVP unless earlier phases finish without we
 - human-feedback revision;
 - generic review checks;
 - mode-specific or deterministic-implementation review add-on.
+
+### 29.6.1 Foundry-only and prohibition tests
+
+- Copilot reachability and quarantine tests for Control Tower, orchestrator, repair, report, TUI, public API, and frontend entry points;
+- recursive public DTO leakage tests forbidding `copilot`, `azure_openai`, `provider_kind`, provider env refs, provider credentials, deployment refs, and fallback-provider details;
+- frontend text and contract tests proving no Copilot or Azure OpenAI provider internals are rendered or typed for current DEMO3 surfaces;
+- context-pack checksum and policy-version tests using canonical redacted content;
+- search-based regression tests for forbidden public/runtime terms with an allowlist for historical compatibility, tests, and audits;
+- deterministic non-model assistance tests proving it is labeled non-model and cannot satisfy model-required proposer/reviewer gates;
+- Foundry failure tests proving model-required operations fail closed and do not use Copilot, Azure OpenAI fallback, or deterministic success-shaped output.
 
 ### 29.7 Execution tests
 
