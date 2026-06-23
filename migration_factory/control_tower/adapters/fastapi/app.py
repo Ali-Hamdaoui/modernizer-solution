@@ -152,6 +152,8 @@ from migration_factory.control_tower.application.v2_assistant_model_client impor
 )
 from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
 from migration_factory.control_tower.application.v2_model_schemas import (
+    describe_model_output_validation_failure,
+    extract_json_object,
     validate_against_schema,
     SchemaValidationError,
 )
@@ -2656,7 +2658,7 @@ def create_app(
                     ) from exc
 
                 # Enforce pom_only on the REVISED model output's affected_paths
-                revised_paths = revised_output.get("affected_paths", [])
+                revised_paths = revised_output.value.get("affected_paths", [])
                 if isinstance(revised_paths, str):
                     try:
                         revised_paths = json.loads(revised_paths)
@@ -2741,7 +2743,8 @@ def create_app(
                 f"Current hypothesis: {payload.hypothesis}\n"
                 f"Current patch summary: {payload.patch_summary}\n"
                 f"Affected paths: {', '.join(payload.affected_paths) if payload.affected_paths else 'none'}\n\n"
-                "Return JSON with failure_hypothesis, patch_summary, affected_paths, and validation_plan. "
+                "Return only a single JSON object with keys failure_hypothesis, patch_summary, "
+                "affected_paths, and validation_plan. No markdown fences, no prose, no commentary. "
                 "Never include raw commands or legacy source mutation instructions."
             )
             fallback_repair = json.dumps(repair_data)
@@ -2759,7 +2762,7 @@ def create_app(
             )
 
         try:
-            validate_against_schema("RepairProposal", model_output)
+            validate_against_schema("RepairProposal", model_output.value)
         except SchemaValidationError as exc:
             raise _error(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -2776,9 +2779,9 @@ def create_app(
             proposal = service.create_proposal(
                 command_id=payload.command_id,
                 failure_summary=payload.failure_summary,
-                hypothesis=str(model_output["failure_hypothesis"]),
-                patch_summary=str(model_output["patch_summary"]),
-                affected_paths=tuple(str(path) for path in model_output["affected_paths"]),
+                hypothesis=str(model_output.value["failure_hypothesis"]),
+                patch_summary=str(model_output.value["patch_summary"]),
+                affected_paths=tuple(str(path) for path in model_output.value["affected_paths"]),
             )
         if proposer_model_result is not None:
             proposer_model_invocation_id = _record_model_invocation(
@@ -2790,6 +2793,16 @@ def create_app(
                 or "",
                 actor_id="repair-flow-proposal",
             )
+        proposer_model_fallback_used = bool(getattr(proposer_model_result, "fallback_used", False)) or model_output.fallback_used
+        proposer_model_schema_validated = bool(getattr(proposer_model_result, "schema_validated", False)) or model_output.schema_validated
+        proposer_model_failure_reason = (
+            getattr(proposer_model_result, "failure_reason", "")
+            or model_output.failure_reason
+        )
+        proposer_model_primary_failure_reason = (
+            getattr(proposer_model_result, "primary_failure_reason", "")
+            or model_output.failure_reason
+        )
         return service.proposal_to_dict(proposal) | {
             "proposal_model": {
                 "status": getattr(proposer_model_result, "model_status", ""),
@@ -2797,10 +2810,10 @@ def create_app(
                 "provider": getattr(proposer_model_result, "provider", ""),
                 "attempted_provider": attempted_provider,
                 "role": getattr(proposer_model_result, "role", V2ModelRole.PROPOSER.value),
-                "failure_reason": getattr(proposer_model_result, "failure_reason", ""),
-                "primary_failure_reason": getattr(proposer_model_result, "primary_failure_reason", ""),
-                "fallback_used": bool(getattr(proposer_model_result, "fallback_used", False)),
-                "schema_validated": bool(getattr(proposer_model_result, "schema_validated", False)),
+                "failure_reason": proposer_model_failure_reason,
+                "primary_failure_reason": proposer_model_primary_failure_reason,
+                "fallback_used": proposer_model_fallback_used,
+                "schema_validated": proposer_model_schema_validated,
                 "model_invocation_id": proposer_model_invocation_id,
             }
         }
@@ -2935,6 +2948,11 @@ def create_app(
                 pack=dummy_pack,
                 payload=reviewer_payload,
             )
+            reviewer_prompt = (
+                reviewer_prompt
+                + "\n\nReturn only a single JSON object with keys decision, reasoning, missing_evidence, "
+                "and unsafe_assumptions. No markdown fences, no prose, no commentary."
+            )
 
             # Call the reviewer model
             fallback_json = json.dumps({
@@ -2981,10 +2999,10 @@ def create_app(
                     proposal_type=payload.proposal_type,
                     proposal_checksum=payload.proposal_checksum,
                     context_pack_checksum=payload.context_pack_checksum,
-                    decision=reviewer_output["decision"],
-                    reasoning=reviewer_output["reasoning"],
-                    missing_evidence=tuple(reviewer_output.get("missing_evidence", [])),
-                    unsafe_assumptions=tuple(reviewer_output.get("unsafe_assumptions", [])),
+                    decision=reviewer_output.value["decision"],
+                    reasoning=reviewer_output.value["reasoning"],
+                    missing_evidence=tuple(reviewer_output.value.get("missing_evidence", [])),
+                    unsafe_assumptions=tuple(reviewer_output.value.get("unsafe_assumptions", [])),
                     model_invocation_id=payload.model_invocation_id,
                 )
             except ValueError as exc:
@@ -3016,6 +3034,16 @@ def create_app(
                 or "",
                 actor_id="reviewer-critique",
             )
+        reviewer_model_fallback_used = bool(getattr(reviewer_model_result, "fallback_used", False)) or reviewer_output.fallback_used
+        reviewer_model_schema_validated = bool(getattr(reviewer_model_result, "schema_validated", False)) or reviewer_output.schema_validated
+        reviewer_model_failure_reason = (
+            getattr(reviewer_model_result, "failure_reason", "")
+            or reviewer_output.failure_reason
+        )
+        reviewer_model_primary_failure_reason = (
+            getattr(reviewer_model_result, "primary_failure_reason", "")
+            or reviewer_output.failure_reason
+        )
         if event_emitted:
             asyncio.run(app.state.public_event_notifier.notify())
         return service.critique_to_dict(critique) | {
@@ -3025,10 +3053,10 @@ def create_app(
                 "provider": getattr(reviewer_model_result, "provider", ""),
                 "attempted_provider": attempted_provider,
                 "role": getattr(reviewer_model_result, "role", V2ModelRole.REVIEWER.value),
-                "failure_reason": getattr(reviewer_model_result, "failure_reason", ""),
-                "primary_failure_reason": getattr(reviewer_model_result, "primary_failure_reason", ""),
-                "fallback_used": bool(getattr(reviewer_model_result, "fallback_used", False)),
-                "schema_validated": bool(getattr(reviewer_model_result, "schema_validated", False)),
+                "failure_reason": reviewer_model_failure_reason,
+                "primary_failure_reason": reviewer_model_primary_failure_reason,
+                "fallback_used": reviewer_model_fallback_used,
+                "schema_validated": reviewer_model_schema_validated,
                 "model_invocation_id": reviewer_model_invocation_id,
             }
         }
@@ -7036,7 +7064,7 @@ def _handle_governed_repair_proposal_ask(
             schema_name="RepairProposal",
             fallback=proposer_fallback,
         )
-        validate_against_schema("RepairProposal", proposer_output)
+        validate_against_schema("RepairProposal", proposer_output.value)
 
         review_pack = ContextPackBuilder.build_context_pack(
             pack_type="reviewer_critique",
@@ -7106,7 +7134,7 @@ def _handle_governed_repair_proposal_ask(
             schema_name="ReviewerCritique",
             fallback=reviewer_fallback,
         )
-        validate_against_schema("ReviewerCritique", reviewer_output)
+        validate_against_schema("ReviewerCritique", reviewer_output.value)
 
         repair_flow = V2RepairFlowService(
             repair_repo=uow.v2_repairs,
@@ -7115,19 +7143,19 @@ def _handle_governed_repair_proposal_ask(
         proposal = repair_flow.create_proposal(
             command_id=getattr(failed_command, "command_id", ""),
             failure_summary=failure_summary,
-            hypothesis=str(proposer_output.get("failure_hypothesis", proposer_fallback["failure_hypothesis"])),
-            patch_summary=str(proposer_output.get("patch_summary", proposer_fallback["patch_summary"])),
-            affected_paths=tuple(str(path) for path in proposer_output.get("affected_paths", []) or ("pom.xml",)),
+            hypothesis=str(proposer_output.value.get("failure_hypothesis", proposer_fallback["failure_hypothesis"])),
+            patch_summary=str(proposer_output.value.get("patch_summary", proposer_fallback["patch_summary"])),
+            affected_paths=tuple(str(path) for path in proposer_output.value.get("affected_paths", []) or ("pom.xml",)),
         )
         critique = reviewer_service.record_critique(
             proposal_id=proposal.proposal_id,
             proposal_type="repair",
             proposal_checksum=repair_pack.checksum,
             context_pack_checksum=review_pack.checksum,
-            decision=str(reviewer_output.get("decision", "revise")),
-            reasoning=str(reviewer_output.get("reasoning", "")),
-            missing_evidence=tuple(str(item) for item in reviewer_output.get("missing_evidence", []) or ()),
-            unsafe_assumptions=tuple(str(item) for item in reviewer_output.get("unsafe_assumptions", []) or ()),
+            decision=str(reviewer_output.value.get("decision", "revise")),
+            reasoning=str(reviewer_output.value.get("reasoning", "")),
+            missing_evidence=tuple(str(item) for item in reviewer_output.value.get("missing_evidence", []) or ()),
+            unsafe_assumptions=tuple(str(item) for item in reviewer_output.value.get("unsafe_assumptions", []) or ()),
         )
         proposal_payload = repair_flow.proposal_to_dict(
             proposal,
@@ -7154,7 +7182,7 @@ def _handle_governed_repair_proposal_ask(
                     AssistantResponseSection(
                         title="Validation",
                         lines=(
-                            str(proposer_output.get("validation_plan", proposer_fallback["validation_plan"])),
+                            str(proposer_output.value.get("validation_plan", proposer_fallback["validation_plan"])),
                         ),
                     ),
                     AssistantResponseSection(
@@ -12472,12 +12500,20 @@ def _error(status_code: int, code: str, message: str) -> HTTPException:
     )
 
 
+@dataclass(frozen=True)
+class _ParsedModelOutput:
+    value: dict[str, Any]
+    schema_validated: bool
+    fallback_used: bool
+    failure_reason: str = ""
+
+
 def _parse_and_validate_model_output(
     *,
     model_content: str,
     schema_name: str,
     fallback: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> _ParsedModelOutput:
     """Parse JSON from model output and validate against the named schema.
 
     If the model returns plain text that is not valid JSON, or the JSON
@@ -12492,35 +12528,41 @@ def _parse_and_validate_model_output(
         SchemaValidationError,
     )
 
-    parsed: dict[str, Any] | None = None
-    try:
-        # Try direct JSON parse
-        parsed = json.loads(model_content) if isinstance(model_content, str) else model_content
-        if not isinstance(parsed, dict):
-            parsed = None
-    except (json.JSONDecodeError, TypeError):
-        # Try to extract JSON from markdown code blocks
-        import re as _re
-        m = _re.search(r'```(?:json)?\s*\n?([\s\S]*?)\n?```', str(model_content))
-        if m:
-            try:
-                parsed = json.loads(m.group(1))
-                if not isinstance(parsed, dict):
-                    parsed = None
-            except (json.JSONDecodeError, TypeError):
-                pass
+    validation_failure = describe_model_output_validation_failure(schema_name, model_content)
+    parsed = extract_json_object(model_content)
 
     if parsed is not None:
         try:
             validate_against_schema(schema_name, parsed)
-            return parsed
-        except SchemaValidationError:
-            pass
+            return _ParsedModelOutput(
+                value=parsed,
+                schema_validated=True,
+                fallback_used=False,
+                failure_reason="",
+            )
+        except SchemaValidationError as exc:
+            validation_failure = validation_failure or (
+                f"schema_validation_failed:{schema_name} {exc}"
+            )
 
     if fallback is not None:
-        return fallback
+        fallback_validated = False
+        try:
+            validate_against_schema(schema_name, fallback)
+            fallback_validated = True
+        except SchemaValidationError as exc:
+            validation_failure = validation_failure or (
+                f"schema_validation_failed:{schema_name} {exc}"
+            )
+        return _ParsedModelOutput(
+            value=fallback,
+            schema_validated=fallback_validated,
+            fallback_used=True,
+            failure_reason=validation_failure,
+        )
     raise ValueError(
-        f"Model output could not be parsed as valid {schema_name}"
+        validation_failure
+        or f"Model output could not be parsed as valid {schema_name}"
     )
 
 

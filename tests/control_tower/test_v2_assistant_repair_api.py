@@ -859,7 +859,7 @@ class TestRepairAPI:
         assert body["proposal_model"]["failure_reason"] == ""
         assert body["proposal_model"]["primary_failure_reason"] == ""
         assert body["proposal_model"]["fallback_used"] is False
-        assert body["proposal_model"]["schema_validated"] is False
+        assert body["proposal_model"]["schema_validated"] is True
         assert body["proposal_model"]["model_invocation_id"]
         assert fake_client.roles == ["proposer"]
         invocations = SqliteUnitOfWork(conn).v1_model_invocations.list()
@@ -935,6 +935,83 @@ class TestRepairAPI:
         assert invocations[0].provider_kind == "fake"
         assert invocations[0].model_name == "proposer"
 
+    def test_create_proposal_accepts_markdown_fenced_json(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from migration_factory.control_tower.application.v2_assistant_model_client import (
+            V2AssistantModelResult,
+        )
+
+        class _FencedProposerClient:
+            provider = "fake"
+
+            def answer_with_role(
+                self,
+                *,
+                role,
+                prompt: str,
+                fallback: str,
+                conversation_history=None,
+                output_schema_name=None,
+                require_schema: bool = False,
+            ):
+                return V2AssistantModelResult(
+                    content=(
+                        "Here is the proposal:\n"
+                        "```json\n"
+                        "{"
+                        '"failure_hypothesis":"Root cause",'
+                        '"patch_summary":"Fix issue",'
+                        '"affected_paths":["pom.xml"],'
+                        '"validation_plan":"Run mvn test"'
+                        "}\n"
+                        "```"
+                    ),
+                    source="fake",
+                    model_status="live_ok",
+                    provider="fake",
+                    role=role.value,
+                    success=True,
+                    redacted_summary="Here is the proposal",
+                    failure_reason="",
+                )
+
+            def answer(self, *, prompt: str, fallback: str, conversation_history=None):
+                return self.answer_with_role(
+                    role=V2ModelRole.PROPOSER,
+                    prompt=prompt,
+                    fallback=fallback,
+                    conversation_history=conversation_history,
+                )
+
+        client, conn = _api_client(tmp_path, fake_model_client=_FencedProposerClient())
+        response = client.post(
+            "/v1/v2/commands/cmd-fenced/repair/flow-proposal",
+            json={
+                "command_id": "cmd-fenced",
+                "failure_summary": "Build failed",
+                "hypothesis": "Missing import",
+                "patch_summary": "Add import statement",
+                "affected_paths": ["src/main.java"],
+            },
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["hypothesis"] == "Root cause"
+        assert body["patch_summary"] == "Fix issue"
+        assert body["proposal_model"]["provider"] == "fake"
+        assert body["proposal_model"]["attempted_provider"] == "fake"
+        assert body["proposal_model"]["fallback_used"] is False
+        assert body["proposal_model"]["schema_validated"] is True
+        assert body["proposal_model"]["primary_failure_reason"] == ""
+        assert body["proposal_model"]["model_invocation_id"]
+        invocations = SqliteUnitOfWork(conn).v1_model_invocations.list()
+        assert len(invocations) == 1
+        assert invocations[0].provider_kind == "fake"
+        assert invocations[0].model_name == "proposer"
+
     def test_create_reviewer_critique(self, tmp_path: Path) -> None:
         proposer_client = _RecordingProposerClient()
         client, conn = _api_client(tmp_path, fake_model_client=proposer_client)
@@ -978,13 +1055,215 @@ class TestRepairAPI:
         assert body["reviewer_model"]["failure_reason"] == ""
         assert body["reviewer_model"]["primary_failure_reason"] == ""
         assert body["reviewer_model"]["fallback_used"] is False
-        assert body["reviewer_model"]["schema_validated"] is False
+        assert body["reviewer_model"]["schema_validated"] is True
         assert body["reviewer_model"]["model_invocation_id"]
         assert reviewer_client.roles == ["reviewer"]
         invocations = SqliteUnitOfWork(conn).v1_model_invocations.list()
         assert len(invocations) == 2
         assert {inv.model_name for inv in invocations} == {"proposer", "reviewer"}
         assert {inv.provider_kind for inv in invocations} == {"fake"}
+
+    def test_create_reviewer_critique_accepts_markdown_fenced_json(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from migration_factory.control_tower.application.v2_assistant_model_client import (
+            V2AssistantModelResult,
+        )
+
+        class _FencedProposerClient:
+            provider = "fake"
+
+            def answer_with_role(
+                self,
+                *,
+                role,
+                prompt: str,
+                fallback: str,
+                conversation_history=None,
+                output_schema_name=None,
+                require_schema: bool = False,
+            ):
+                return V2AssistantModelResult(
+                    content=(
+                        "```json\n"
+                        "{"
+                        '"failure_hypothesis":"Root cause",'
+                        '"patch_summary":"Fix issue",'
+                        '"affected_paths":["pom.xml"],'
+                        '"validation_plan":"Run mvn test"'
+                        "}\n"
+                        "```"
+                    ),
+                    source="fake",
+                    model_status="live_ok",
+                    provider="fake",
+                    role=role.value,
+                    success=True,
+                    redacted_summary="fenced proposal",
+                    failure_reason="",
+                )
+
+            def answer(self, *, prompt: str, fallback: str, conversation_history=None):
+                return self.answer_with_role(
+                    role=V2ModelRole.PROPOSER,
+                    prompt=prompt,
+                    fallback=fallback,
+                    conversation_history=conversation_history,
+                )
+
+        class _FencedReviewerClient:
+            provider = "fake"
+
+            def answer_with_role(
+                self,
+                *,
+                role,
+                prompt: str,
+                fallback: str,
+                conversation_history=None,
+                output_schema_name=None,
+                require_schema: bool = False,
+            ):
+                return V2AssistantModelResult(
+                    content=(
+                        "Reviewer notes:\n"
+                        "```json\n"
+                        "{"
+                        '"decision":"accept",'
+                        '"reasoning":"Looks good",'
+                        '"missing_evidence":[],'
+                        '"unsafe_assumptions":[]'
+                        "}\n"
+                        "```"
+                    ),
+                    source="fake",
+                    model_status="live_ok",
+                    provider="fake",
+                    role=role.value,
+                    success=True,
+                    redacted_summary="fenced reviewer critique",
+                    failure_reason="",
+                )
+
+            def answer(self, *, prompt: str, fallback: str, conversation_history=None):
+                return self.answer_with_role(
+                    role=V2ModelRole.REVIEWER,
+                    prompt=prompt,
+                    fallback=fallback,
+                    conversation_history=conversation_history,
+                )
+
+        client, conn = _api_client(tmp_path, fake_model_client=_FencedProposerClient())
+
+        create_resp = client.post(
+            "/v1/v2/commands/cmd-review-fenced/repair/flow-proposal",
+            json={
+                "command_id": "cmd-review-fenced",
+                "failure_summary": "Build failed",
+                "hypothesis": "Missing import",
+                "patch_summary": "Add import statement",
+                "affected_paths": ["src/main.java"],
+            },
+            headers=_mutation_headers(),
+        )
+        assert create_resp.status_code == 200, create_resp.text
+        proposal_id = create_resp.json()["proposal_id"]
+        proposal_checksum = create_resp.json()["proposal_checksum"]
+
+        client.app.state.v2_assistant_model_client = _FencedReviewerClient()
+        response = client.post(
+            f"/v1/v2/commands/cmd-review-fenced/repair/proposal/{proposal_id}/reviewer-critique",
+            json={
+                "proposal_id": proposal_id,
+                "proposal_type": "repair",
+                "proposal_checksum": proposal_checksum,
+                "context_pack_checksum": "cp-review-fenced",
+                "model_invocation_id": "inv-review-fenced",
+            },
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["decision"] == "accept"
+        assert body["reviewer_model"]["provider"] == "fake"
+        assert body["reviewer_model"]["attempted_provider"] == "fake"
+        assert body["reviewer_model"]["fallback_used"] is False
+        assert body["reviewer_model"]["schema_validated"] is True
+        assert body["reviewer_model"]["primary_failure_reason"] == ""
+        assert body["reviewer_model"]["model_invocation_id"]
+        invocations = SqliteUnitOfWork(conn).v1_model_invocations.list()
+        assert len(invocations) == 2
+        assert {inv.model_name for inv in invocations} == {"proposer", "reviewer"}
+        assert {inv.provider_kind for inv in invocations} == {"fake"}
+
+    def test_create_proposal_reports_invalid_json_diagnostics_without_secrets(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from migration_factory.control_tower.application.v2_assistant_model_client import (
+            V2AssistantModelResult,
+        )
+
+        class _InvalidJsonProposerClient:
+            provider = "fake"
+
+            def answer_with_role(
+                self,
+                *,
+                role,
+                prompt: str,
+                fallback: str,
+                conversation_history=None,
+                output_schema_name=None,
+                require_schema: bool = False,
+            ):
+                return V2AssistantModelResult(
+                    content=(
+                        "Authorization: Bearer sk-abc123\n"
+                        "C:\\Users\\ilyas\\secret.txt\n"
+                        "not json at all"
+                    ),
+                    source="fake",
+                    model_status="live_ok",
+                    provider="fake",
+                    role=role.value,
+                    success=True,
+                    redacted_summary="invalid json",
+                    failure_reason="",
+                )
+
+            def answer(self, *, prompt: str, fallback: str, conversation_history=None):
+                return self.answer_with_role(
+                    role=V2ModelRole.PROPOSER,
+                    prompt=prompt,
+                    fallback=fallback,
+                    conversation_history=conversation_history,
+                )
+
+        client, conn = _api_client(tmp_path, fake_model_client=_InvalidJsonProposerClient())
+        response = client.post(
+            "/v1/v2/commands/cmd-invalid/repair/flow-proposal",
+            json={
+                "command_id": "cmd-invalid",
+                "failure_summary": "Build failed",
+                "hypothesis": "Missing import",
+                "patch_summary": "Add import statement",
+                "affected_paths": ["src/main.java"],
+            },
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["proposal_model"]["fallback_used"] is True
+        assert body["proposal_model"]["primary_failure_reason"].startswith(
+            "schema_validation_failed:RepairProposal"
+        )
+        assert "invalid JSON output" in body["proposal_model"]["primary_failure_reason"]
+        assert "sk-abc123" not in body["proposal_model"]["primary_failure_reason"]
+        assert "C:\\Users\\ilyas" not in body["proposal_model"]["primary_failure_reason"]
+        assert "sk-abc123" not in body["proposal_model"]["failure_reason"]
+        assert "C:\\Users\\ilyas" not in body["proposal_model"]["failure_reason"]
 
     def test_approve_proposal(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -9,6 +11,7 @@ from uuid import uuid4
 from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.application.redaction import (
     redact_absolute_paths,
+    redact_model_summary,
 )
 
 
@@ -267,6 +270,9 @@ class SchemaValidationError(Exception):
     """Raised when data does not match the expected schema."""
 
 
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n?([\s\S]*?)\n?```", re.IGNORECASE)
+
+
 def validate_against_schema(schema_name: str, data: Any) -> None:
     """Convenience wrapper to validate data against a registered schema.
 
@@ -301,6 +307,73 @@ def validate_model_output(schema_name: str, data: Any) -> dict[str, Any]:
     """
     validate_against_schema(schema_name, data)
     return data
+
+
+def extract_json_object(model_content: Any) -> dict[str, Any] | None:
+    """Extract first dict-shaped JSON object from model output text.
+
+    Accepts plain JSON, fenced markdown JSON, or prose-wrapped JSON object
+    fragments. Returns dict only because V2 schemas are object shaped.
+    """
+    if isinstance(model_content, dict):
+        return model_content
+    if not isinstance(model_content, str):
+        return None
+
+    text = model_content.strip()
+    if not text:
+        return None
+
+    candidates = [text]
+    candidates.extend(
+        match.group(1).strip()
+        for match in _JSON_FENCE_RE.finditer(text)
+        if match.group(1).strip()
+    )
+
+    decoder = json.JSONDecoder()
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        index = 0
+        last_dict: dict[str, Any] | None = None
+        while index < len(candidate):
+            start = candidate.find("{", index)
+            if start < 0:
+                break
+            try:
+                parsed, consumed = decoder.raw_decode(candidate[start:])
+            except json.JSONDecodeError:
+                index = start + 1
+                continue
+            if isinstance(parsed, dict):
+                last_dict = parsed
+            index = start + max(consumed, 1)
+        if last_dict is not None:
+            return last_dict
+
+    return None
+
+
+def describe_model_output_validation_failure(schema_name: str, model_content: Any) -> str:
+    """Return redacted, actionable schema failure detail for model output."""
+    parsed = extract_json_object(model_content)
+    if parsed is None:
+        return redact_model_summary(
+            f"schema_validation_failed:{schema_name} invalid JSON output"
+        )
+    try:
+        validate_model_output(schema_name, parsed)
+    except (SchemaValidationError, ValueError) as exc:
+        return redact_model_summary(
+            f"schema_validation_failed:{schema_name} {exc}"
+        )
+    return ""
 
 
 class SchemaValidator:

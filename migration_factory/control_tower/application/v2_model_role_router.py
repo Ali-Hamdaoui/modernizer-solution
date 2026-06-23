@@ -12,7 +12,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
 
-from migration_factory.control_tower.application.v2_model_schemas import validate_model_output
+from migration_factory.control_tower.application.v2_model_schemas import (
+    describe_model_output_validation_failure,
+    extract_json_object,
+    validate_model_output,
+)
 from migration_factory.control_tower.application.v2_settings import ControlTowerSettings
 from migration_factory.control_tower.application.redaction import redact_model_summary
 
@@ -106,7 +110,7 @@ class V2ModelRoleRouter:
                     fallback_used=False,
                     schema_validated=True,
                 )
-            schema_failure = self._schema_failure_reason(request) if request.require_schema else ""
+            schema_failure = self._schema_failure_reason(request, result.content) if request.require_schema else ""
             primary_failure = (
                 result.primary_failure_reason
                 or result.failure_reason
@@ -141,7 +145,12 @@ class V2ModelRoleRouter:
                         fallback_used=True,
                         schema_validated=True,
                     )
-                fallback_failure = result.failure_reason or fallback_failure or "fallback_model_failed"
+                fallback_failure = (
+                    result.failure_reason
+                    or fallback_failure
+                    or self._schema_failure_reason(request, result.content)
+                    or "fallback_model_failed"
+                )
             else:
                 fallback_failure = fallback_failure or "fallback_model_failed"
         else:
@@ -208,9 +217,8 @@ class V2ModelRoleRouter:
             return True
         if not request.output_schema_name:
             return False
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
+        parsed = extract_json_object(content)
+        if parsed is None:
             return False
         try:
             validate_model_output(request.output_schema_name, parsed)
@@ -290,9 +298,10 @@ class V2ModelRoleRouter:
             return settings.azure_foundry_fallback_deployment_env
         return settings.azure_foundry_assistant_deployment_env
 
-    def _schema_failure_reason(self, request: V2RoleModelRequest) -> str:
+    def _schema_failure_reason(self, request: V2RoleModelRequest, content: str) -> str:
         if not request.require_schema:
             return ""
         if request.output_schema_name:
-            return f"schema_validation_failed:{request.output_schema_name}"
+            reason = describe_model_output_validation_failure(request.output_schema_name, content)
+            return reason or f"schema_validation_failed:{request.output_schema_name}"
         return "schema_validation_failed"

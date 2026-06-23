@@ -100,9 +100,55 @@ def test_router_fail_closes_on_schema_mismatch(monkeypatch) -> None:
     assert result.model_status == "fallback"
     assert result.schema_validated is True
     assert result.fallback_used is True
-    assert result.primary_failure_reason == "schema_validation_failed:AssistantAnswer"
+    assert result.primary_failure_reason.startswith("schema_validation_failed:AssistantAnswer")
+    assert "invalid JSON output" in result.primary_failure_reason
     assert result.content.startswith("{")
     assert "fallback answer" in result.content
+
+
+def test_router_accepts_markdown_fenced_json_for_repair_proposal(monkeypatch) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_PROPOSER_DEPLOYMENT", "proposer-deployment")
+
+    router = V2ModelRoleRouter()
+
+    def invoke(_: str) -> V2AssistantModelResult:
+        return V2AssistantModelResult(
+            content=(
+                "Here is the proposal:\n"
+                "```json\n"
+                "{"
+                '"failure_hypothesis":"Root cause",'
+                '"patch_summary":"Fix issue",'
+                '"affected_paths":["pom.xml"],'
+                '"validation_plan":"Run mvn test"'
+                "}\n"
+                "```"
+            ),
+            source="azure_openai",
+            model_status="live_ok",
+            provider="azure_openai",
+            role="proposer",
+            success=True,
+            redacted_summary="Here is the proposal",
+            failure_reason="",
+        )
+
+    result = router.route(
+        V2RoleModelRequest(
+            role=V2ModelRole.PROPOSER,
+            prompt="draft a proposal",
+            fallback="fallback",
+            output_schema_name="RepairProposal",
+            require_schema=True,
+        ),
+        invoke=invoke,
+    )
+
+    assert result.success is True
+    assert result.fallback_used is False
+    assert result.schema_validated is True
+    assert result.primary_failure_reason == ""
+    assert result.content.startswith("Here is the proposal:")
 
 
 def test_client_answer_with_role_uses_requested_role_deployment(monkeypatch) -> None:
