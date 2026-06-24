@@ -1498,7 +1498,7 @@ def create_app(
     def get_v2_job_root_pom_file(
         request: Request,
         job_id: str,
-        stage: int = Query(default=1, ge=1, le=3),
+        stage: int = Query(default=1, ge=1, le=4),
         mode: str = Query(default="preview", pattern="^(preview|download)$"),
     ) -> Any:
         """Return the backend-resolved root pom.xml for a completed stage.
@@ -4896,7 +4896,7 @@ def _resolve_root_pom_file_alias_preview(
         "source_ref": None,
         "reason": "not_available",
     }
-    if stage_index not in (1, 2, 3):
+    if stage_index not in (1, 2, 3, 4):
         response["reason"] = "invalid_stage"
         return response
 
