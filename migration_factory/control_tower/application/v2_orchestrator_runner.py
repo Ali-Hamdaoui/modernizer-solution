@@ -1151,6 +1151,7 @@ class V2OrchestratorRunner:
                     current_stage=stage_index,
                     sandbox_path=sandbox_path,
                     stage_continuation_policy=effective_policy,
+                    current_stage_result=result,
                 )
 
                 # Handle blocked policy: create stage_completion_review gate
@@ -1265,7 +1266,23 @@ class V2OrchestratorRunner:
                     if stage_commands:
                         next_command_id = str(getattr(stage_commands[-1], "command_id", ""))
 
-        except ValueError:
+        except ValueError as exc:
+            try:
+                with self._unit_of_work_factory() as uow:
+                    uow.v2_events.save(
+                        job_id=job_id,
+                        stage=next_stage,
+                        event_type="stage_progression_blocked",
+                        status="blocked",
+                        message=f"Stage {next_stage} was not queued: {exc}",
+                        payload={
+                            "from_stage": stage_index,
+                            "to_stage": next_stage,
+                            "reason": str(exc),
+                        },
+                    )
+            except Exception:
+                pass
             return
 
         if next_command_id and not self._stage_has_started(job_id=job_id, stage_index=next_stage):

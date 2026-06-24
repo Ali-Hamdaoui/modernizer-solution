@@ -6,6 +6,7 @@ import {
   MigrationCockpit,
   AssistantPanelContent,
   GatePanelContent,
+  formatStageStatusLabel,
   formatGateArtifactRefLabel,
   mergeCockpitLiveRefreshResults,
   reduceStageStatus,
@@ -39,9 +40,16 @@ describe("V2 Migration Cockpit contract", () => {
     expect(stages[2].input_source_kind).toBe("stage_2_sandbox");
   });
 
-  it("has no Boot 4 stage", () => {
-    const stages = [1, 2, 3];
-    expect(stages).not.toContain(4);
+  it("shows Boot 4 as the automated Stage 4 pipeline entry", () => {
+    const stages = [
+      { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "completed", input_source_kind: "legacy_source" },
+      { stage_index: 2, pipeline_stage: "Stage 2", chain_status: "completed", input_source_kind: "stage_1_sandbox" },
+      { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "completed", input_source_kind: "stage_2_sandbox" },
+      { stage_index: 4, pipeline_stage: "Stage 4", chain_status: "pending", input_source_kind: "stage_3_sandbox" },
+    ];
+    const stage4 = stages[3];
+    expect(stage4.input_source_kind).toBe("stage_3_sandbox");
+    expect(formatStageStatusLabel(stage4.chain_status)).toBe("PENDING");
   });
 
   it("has no stage-start buttons", () => {
@@ -833,7 +841,7 @@ describe("F15 Final Report and Stage 4 cockpit", () => {
       { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "completed", input_source_kind: "legacy_source" },
       { stage_index: 2, pipeline_stage: "Stage 2", chain_status: "completed", input_source_kind: "stage_1_sandbox" },
       { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "completed", input_source_kind: "stage_2_sandbox" },
-      { stage_index: 4, pipeline_stage: "Stage 4", chain_status: "queued", input_source_kind: "stage_3_sandbox" },
+      { stage_index: 4, pipeline_stage: "Stage 4", chain_status: "pending", input_source_kind: "stage_3_sandbox" },
     ];
     expect(stages).toHaveLength(4);
     const stage4 = stages.find((s) => s.stage_index === 4);
@@ -846,17 +854,18 @@ describe("F15 Final Report and Stage 4 cockpit", () => {
         {stages.map((stage) => (
           <div key={stage.stage_index} className={`stage-card ${stage.chain_status}`}>
             <strong>{stage.pipeline_stage}</strong>
+            <span>{formatStageStatusLabel(stage.chain_status)}</span>
             <p className="meta">Input: {stage.input_source_kind}</p>
           </div>
         ))}
       </div>
     );
     expect(markup).toContain("Stage 4");
+    expect(markup).toContain("PENDING");
     expect(markup).toContain("stage_3_sandbox");
   });
 
   it("no manual Stage 4 start, input, or path control appears", () => {
-    const stage4Controls = ["start Stage 4", "Stage 4 path", "stage_4_input", "stage_4_sandbox_path"];
     const forbiddenPatterns = ["start_stage_4", "Start Stage 4", "stage_4_path", "stage_4_input", "sandbox_path"];
     const markup = renderToStaticMarkup(
       <div className="cockpit-layout">
@@ -869,6 +878,7 @@ describe("F15 Final Report and Stage 4 cockpit", () => {
                 <span className="status-badge queued">QUEUED</span>
               </div>
               <p className="meta">Input: stage_3_sandbox</p>
+              <p className="meta">Stage 4 is the Spring Boot 4 migration stage and follows the same approval and evidence flow as the earlier stages.</p>
             </div>
           </div>
         </section>
@@ -881,6 +891,23 @@ describe("F15 Final Report and Stage 4 cockpit", () => {
     expect(markup).toContain("Stage 4");
     expect(markup).toContain("QUEUED");
     expect(markup).toContain("stage_3_sandbox");
+    expect(markup).toContain("follows the same approval and evidence flow");
+  });
+
+  it("does not imply a separate Stage 4 approval when no gate is open", () => {
+    const markup = renderToStaticMarkup(
+      <GatePanelContent
+        state={{
+          status: "success",
+          gates: [],
+          openGate: null,
+          openGateDetail: null,
+        }}
+      />
+    );
+
+    expect(markup).toContain("No gate is currently open for this job.");
+    expect(markup).not.toContain("requires explicit approval to start");
   });
 });
 

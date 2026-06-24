@@ -1,4 +1,4 @@
-"""V2 stage auto-progression — Stage 2/3 from previous sandbox."""
+"""V2 stage auto-progression from previous stage sandboxes."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ class StageContinuationResult:
 
 
 class V2StageProgressionService:
-    """Auto-queue Stage 2 and Stage 3 from previous stage sandbox."""
+    """Auto-queue the next configured migration stage from prior output."""
 
     def __init__(
         self,
@@ -88,17 +88,20 @@ class V2StageProgressionService:
         stage_continuation_policy: StageContinuationPolicy | str = StageContinuationPolicy.AUTO_ON_GREEN,
         gate_id: str | None = None,
         decision_id: str | None = None,
+        current_stage_result: dict[str, Any] | None = None,
     ) -> StageContinuationResult:
         """Queue the next stage from the current stage sandbox.
 
         Args:
             job_id: The V2 job ID.
             setup_id: The setup ID to load paths from.
-            current_stage: The completed stage (1 or 2).
+            current_stage: The completed stage.
             sandbox_path: The sandbox output path from the completed stage.
             stage_continuation_policy: Backend-owned policy from run configuration.
             gate_id: Optional gate ID that triggered this continuation.
             decision_id: Optional decision ID that resolved the gate.
+            current_stage_result: Optional backend-owned result already validated
+                by the runner for the completed stage.
 
         Returns:
             StageContinuationResult with the next stage details.
@@ -116,7 +119,12 @@ class V2StageProgressionService:
 
         policy = _coerce_stage_continuation_policy(stage_continuation_policy)
         if next_stage == TERMINAL_STAGE_INDEX:
-            self._validate_stage4_input(job_id, current_stage)
+            self._validate_stage4_input(
+                job_id,
+                current_stage,
+                sandbox_path=sandbox_path,
+                current_stage_result=current_stage_result,
+            )
 
         if policy in (StageContinuationPolicy.MANUAL, StageContinuationPolicy.MANUAL_ON_WARNING_OR_FAILURE):
             reason = (
@@ -224,6 +232,7 @@ class V2StageProgressionService:
         gate_id: str,
         decision_id: str,
         stage_continuation_policy: StageContinuationPolicy | str = StageContinuationPolicy.AUTO_ON_GREEN,
+        current_stage_result: dict[str, Any] | None = None,
     ) -> StageContinuationResult:
         """Queue next stage tracking the gate decision that triggered it.
 
@@ -241,6 +250,7 @@ class V2StageProgressionService:
             stage_continuation_policy=stage_continuation_policy,
             gate_id=gate_id,
             decision_id=decision_id,
+            current_stage_result=current_stage_result,
         )
 
     def validate_stage_chain(
@@ -361,6 +371,7 @@ class V2StageProgressionService:
         setup_id: str,
         current_stage: int,
         stage_continuation_policy: StageContinuationPolicy | str = StageContinuationPolicy.AUTO_ON_GREEN,
+        current_stage_result: dict[str, Any] | None = None,
     ) -> StageContinuationResult:
         """Queue next stage using persisted output from the prior stage.
 
@@ -371,7 +382,7 @@ class V2StageProgressionService:
         Args:
             job_id: The V2 job ID.
             setup_id: The setup ID to load paths from.
-            current_stage: The completed stage (1 or 2).
+            current_stage: The completed stage.
             stage_continuation_policy: Backend-owned policy.
 
         Returns:
@@ -400,12 +411,16 @@ class V2StageProgressionService:
             current_stage=current_stage,
             sandbox_path=sandbox_path,
             stage_continuation_policy=stage_continuation_policy,
+            current_stage_result=current_stage_result,
         )
 
     def _validate_stage4_input(
         self,
         job_id: str,
         current_stage: int,
+        *,
+        sandbox_path: str,
+        current_stage_result: dict[str, Any] | None,
     ) -> None:
         if current_stage != 3:
             raise ValueError(
@@ -417,28 +432,65 @@ class V2StageProgressionService:
             accepted = self._artifact_revision_repo.find_accepted(
                 job_id, 3, "stage_output"
             )
-            if accepted is None:
-                raise ValueError(
-                    "Stage 4 requires an accepted Stage 3 artifact revision. "
-                    "No accepted Stage 3 output revision found."
-                )
-            if accepted.revision_status != "accepted":
-                raise ValueError(
-                    f"Stage 4 requires an accepted Stage 3 artifact revision, "
-                    f"but found status {accepted.revision_status!r}."
-                )
-            if accepted.superseded_by_revision_id is not None:
-                raise ValueError(
-                    "Stage 4 requires an accepted Stage 3 artifact revision "
-                    "that has not been superseded."
-                )
-        else:
-            stage3_output = self.resolve_prior_stage_output(job_id, 3)
-            if stage3_output is None:
-                raise ValueError(
-                    "Stage 4 requires accepted Stage 3 output. "
-                    "Stage 3 has no completed output."
-                )
+            if accepted is not None:
+                if accepted.revision_status != "accepted":
+                    raise ValueError(
+                        f"Stage 4 requires accepted Stage 3 output evidence, "
+                        f"but found artifact revision status {accepted.revision_status!r}."
+                    )
+                if accepted.superseded_by_revision_id is not None:
+                    raise ValueError(
+                        "Stage 4 requires accepted Stage 3 output evidence "
+                        "that has not been superseded."
+                    )
+                return
+
+        if current_stage_result is not None and self._result_has_successful_stage_output(
+            current_stage_result,
+            expected_sandbox_path=sandbox_path,
+        ):
+            return
+
+        if not self._has_successful_stage_output(job_id, 3):
+            raise ValueError(
+                "Stage 4 requires successful Stage 3 output evidence. "
+                "No completed Stage 3 command output with sandbox, build, and test proof was found."
+            )
+
+    def _has_successful_stage_output(self, job_id: str, stage_index: int) -> bool:
+        if self._command_repo is None:
+            return False
+
+        for command in self._command_repo.list_by_job_and_stage(job_id, stage_index):
+            if command.result_json is None:
+                continue
+            try:
+                result = json.loads(command.result_json)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(result, dict):
+                continue
+            if self._result_has_successful_stage_output(result):
+                return True
+        return False
+
+    def _result_has_successful_stage_output(
+        self,
+        result: dict[str, Any],
+        *,
+        expected_sandbox_path: str | None = None,
+    ) -> bool:
+        result_sandbox_path = _result_sandbox_path(result)
+        if not result_sandbox_path:
+            return False
+        if expected_sandbox_path and result_sandbox_path != expected_sandbox_path:
+            return False
+        if result.get("final_status") != "TRANSFORM_APPLIED_IN_SANDBOX":
+            return False
+        if result.get("build_status") != "BUILD_PASSED_IN_SANDBOX":
+            return False
+        test_status = result.get("test_status")
+        return test_status in {"PASS", "TEST_PASSED", "PASS_WITH_WARNINGS"}
 
     def continuation_to_dict(self, result: StageContinuationResult) -> dict[str, Any]:
         return {
@@ -469,3 +521,18 @@ def _coerce_stage_continuation_policy(
     if isinstance(value, StageContinuationPolicy):
         return value
     return StageContinuationPolicy(value)
+
+
+def _result_sandbox_path(result: dict[str, Any]) -> str | None:
+    sandbox_path = result.get("sandbox_path")
+    if sandbox_path and isinstance(sandbox_path, str):
+        return sandbox_path
+
+    artifact_refs = result.get("artifact_refs")
+    if isinstance(artifact_refs, dict):
+        for key in ("sandbox", "sandbox_path", "modernized_app", "modernized_app_path"):
+            value = artifact_refs.get(key)
+            if value and isinstance(value, str):
+                return value
+
+    return None

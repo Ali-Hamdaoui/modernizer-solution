@@ -155,21 +155,48 @@ def test_transform_requires_approved_plan(tmp_path: Path) -> None:
     assert STAGE_CONFIG[3]["profile"] in " ".join(result.argv)
 
 
-def test_cannot_start_transform_from_stage1(tmp_path: Path) -> None:
-    """You cannot skip to Stage 3 from Stage 1 — it goes 1->2->3."""
+def test_stage4_uses_stage3_sandbox_and_boot4_profile(tmp_path: Path) -> None:
+    """Stage 4 is queued from successful Stage 3 output."""
     conn = _connection(tmp_path, "split4.sqlite3")
     setup_repo = SqliteV2SetupRepository(conn)
     command_repo = SqliteV2CommandRepository(conn)
     setup_id = _create_setup(setup_repo)
+    now = utc_now_text()
+    command_repo.save(
+        V2StageCommandRecord(
+            command_id="cmd-stage3",
+            job_id="job-stage4",
+            stage_index=3,
+            manifest_checksum="checksum-stage3",
+            argv_json=json.dumps(["python", "-m", RUNNER_MODULE, "--run-id", "v2-job-stag-s3"]),
+            env_json="{}",
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result_json=json.dumps({
+                "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+                "orchestration_status": "PASS",
+                "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+                "build_status": "BUILD_PASSED_IN_SANDBOX",
+                "test_status": "PASS",
+                "sandbox_path": "/tmp/sandbox/s3",
+            }),
+        )
+    )
 
     service = V2StageProgressionService(setup_repo, command_repo)
-    with pytest.raises(ValueError, match="Cannot progress"):
-        service.queue_next_stage(
-            job_id="job-skip-stages",
-            setup_id=setup_id,
-            current_stage=3,
-            sandbox_path="/tmp/sandbox/s3",
-        )
+    result = service.queue_next_stage(
+        job_id="job-stage4",
+        setup_id=setup_id,
+        current_stage=3,
+        sandbox_path="/tmp/sandbox/s3",
+    )
+
+    assert result.status == "queued"
+    assert result.to_stage == 4
+    assert result.argv[result.argv.index("--run-id") + 1].endswith("-s4")
+    assert result.argv[result.argv.index("--legacy") + 1] == "/tmp/sandbox/s3"
+    assert STAGE_CONFIG[4]["profile"] in " ".join(result.argv)
 
 
 def test_transform_not_queued_without_approval_gate(tmp_path: Path) -> None:

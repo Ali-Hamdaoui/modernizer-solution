@@ -768,12 +768,19 @@ def test_stage3_pass_contract_queues_stage4(tmp_path: Path) -> None:
     runner.start(job_id="job-1", command_id="cmd-1")
     _wait_for_stage4_command(conn)
 
+    commands = SqliteUnitOfWork(conn).v2_commands.list_by_job("job-1")
+    stage4_commands = [command for command in commands if command.stage_index == 4]
+    assert len(stage4_commands) == 1
+    assert "v2-job-1-s4" in stage4_commands[0].argv_json
+    assert "springboot-3.5-java21-to-4.0-java21" in stage4_commands[0].argv_json
+    assert any("v2-job-1-s4" in " ".join(call["argv"]) for call in popen.calls)
+    assert any("springboot-3.5-java21-to-4.0-java21" in " ".join(call["argv"]) for call in popen.calls)
+    assert any("/tmp/stage-3" in " ".join(call["argv"]) for call in popen.calls)
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     event_types = [event.type for event in events]
     assert "stage_failed" not in event_types
     assert "next_stage_queued" in event_types
     assert any(json.loads(event.payload_json or "{}").get("to_stage") == 4 for event in events if event.type == "next_stage_queued")
-    # Stage 4 must not queue Stage 5
     assert not any(json.loads(event.payload_json or "{}").get("to_stage") == 5 for event in events if event.type == "next_stage_queued")
 
 

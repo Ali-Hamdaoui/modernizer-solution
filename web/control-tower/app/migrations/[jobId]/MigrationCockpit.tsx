@@ -51,7 +51,7 @@ function formatGateArtifactRefs(refs: string[]): string {
   return refs.map((ref) => formatGateArtifactRefLabel(ref)).join(", ");
 }
 
-interface Stage {
+export interface Stage {
   stage_index: number;
   pipeline_stage: string;
   chain_status: string;
@@ -109,7 +109,11 @@ export function mergeCockpitLiveRefreshResults(
   };
 }
 
-export function GatePanelContent({ state }: { state: GatePanelState }) {
+export function GatePanelContent({
+  state,
+}: {
+  state: GatePanelState;
+}) {
   if (state.status === "loading") {
     return (
       <section className="panel stack" aria-label="Open gate panel">
@@ -605,10 +609,15 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
               <div className="stage-header">
                 <strong>{stage.pipeline_stage}</strong>
                 <span className={`status-badge ${stage.chain_status}`}>
-                  {stage.chain_status.toUpperCase()}
+                  {formatStageStatusLabel(stage.chain_status)}
                 </span>
               </div>
               <p className="meta">Input: {stage.input_source_kind}</p>
+              {stage.stage_index === 4 && (
+                <p className="meta">
+                  Stage 4 is the Spring Boot 4 migration stage and follows the same approval and evidence flow as the earlier stages.
+                </p>
+              )}
             </div>
           ))}
         </div>
@@ -1139,6 +1148,10 @@ export function transitionStageStatus(current: string, mapped: string): string {
     return "queued";
   }
   return current;
+}
+
+export function formatStageStatusLabel(status: string): string {
+  return status.replace(/_/g, " ").toUpperCase();
 }
 
 /** Reduce chronologically-ordered events to a single stage status. */

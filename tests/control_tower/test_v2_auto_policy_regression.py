@@ -7,6 +7,7 @@ manual policy is opt-in. These tests assert that:
 - Manual mode blocks independently (no cross-contamination)
 """
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -19,11 +20,13 @@ from migration_factory.control_tower.application.v2_setup_service import (
 from migration_factory.control_tower.application.v2_stage_progression import (
     V2StageProgressionService,
 )
+from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.infrastructure.sqlite.migrations import (
     apply_pending_migrations,
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
     SqliteV2CommandRepository,
+    V2StageCommandRecord,
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
     SqliteV2SetupRepository,
@@ -58,6 +61,31 @@ def _create_setup(repo: SqliteV2SetupRepository) -> str:
         maven_cmd="/usr/bin/mvn",
     )
     return service.create_setup(req).setup_id
+
+
+def _save_successful_stage3_command(command_repo: SqliteV2CommandRepository, *, job_id: str) -> None:
+    now = utc_now_text()
+    command_repo.save(
+        V2StageCommandRecord(
+            command_id="cmd-stage3",
+            job_id=job_id,
+            stage_index=3,
+            manifest_checksum="checksum-stage3",
+            argv_json=json.dumps(["python", "-m", "migration_factory.orchestrator.runner", "--run-id", f"v2-{job_id[:8]}-s3"]),
+            env_json="{}",
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result_json=json.dumps({
+                "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+                "orchestration_status": "PASS",
+                "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+                "build_status": "BUILD_PASSED_IN_SANDBOX",
+                "test_status": "PASS",
+                "sandbox_path": "/tmp/sandbox/s3",
+            }),
+        )
+    )
 
 
 def test_stage1_auto_queues_stage2(tmp_path: Path) -> None:
@@ -186,8 +214,8 @@ def test_auto_stage2_uses_stage1_sandbox(tmp_path: Path) -> None:
     assert "/tmp/sandbox/regression-stage1-output" in " ".join(result.argv)
 
 
-def test_auto_pipeline_completes_through_stage3(tmp_path: Path) -> None:
-    """Full auto pipeline stages 1->2->3 without manual intervention."""
+def test_auto_pipeline_completes_through_stage4(tmp_path: Path) -> None:
+    """Full auto pipeline stages 1->2->3->4 without manual intervention."""
     conn = _connection(tmp_path, "reg6.sqlite3")
     setup_repo = SqliteV2SetupRepository(conn)
     command_repo = SqliteV2CommandRepository(conn)
@@ -215,12 +243,14 @@ def test_auto_pipeline_completes_through_stage3(tmp_path: Path) -> None:
     assert r2.status == "queued"
     assert r2.to_stage == 3
 
-    # Stage 3 cannot progress further
-    import pytest
-    with pytest.raises(ValueError, match="Cannot progress"):
-        service.queue_next_stage(
-            job_id="job-full-pipe",
-            setup_id=setup_id,
-            current_stage=3,
-            sandbox_path="/tmp/sandbox/s3",
-        )
+    _save_successful_stage3_command(command_repo, job_id="job-full-pipe")
+    r3 = service.queue_next_stage(
+        job_id="job-full-pipe",
+        setup_id=setup_id,
+        current_stage=3,
+        sandbox_path="/tmp/sandbox/s3",
+    )
+    assert r3.status == "queued"
+    assert r3.to_stage == 4
+    assert r3.argv[r3.argv.index("--run-id") + 1].endswith("-s4")
+    assert r3.argv[r3.argv.index("--legacy") + 1] == "/tmp/sandbox/s3"

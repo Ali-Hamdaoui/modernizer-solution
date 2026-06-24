@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,6 +14,7 @@ from migration_factory.control_tower.application.v2_job_service import (
     PIPELINE_ID,
     V2MigrationJobService,
 )
+from migration_factory.control_tower.adapters.fastapi.app import _v2_stages_from_job
 from migration_factory.control_tower.application.v2_setup_service import (
     CreateSetupRequest,
     V2SetupService,
@@ -747,6 +749,34 @@ def test_result_to_dict_has_correct_shape(tmp_path: Path) -> None:
     assert d["stages"][1]["chain_status"] == "pending"
     assert d["stages"][2]["input_source_kind"] == "stage_2_sandbox"
     assert d["stages"][3]["stage_index"] == 4
+
+
+def test_stage4_projection_uses_backend_command_status() -> None:
+    job = SimpleNamespace(
+        stage_chain_json=json.dumps([
+            {"stage_index": 1, "stage_run_id": "run1", "pipeline_stage": "Stage 1", "input_source_kind": "legacy_source", "chain_status": "pending"},
+            {"stage_index": 2, "stage_run_id": "run2", "pipeline_stage": "Stage 2", "input_source_kind": "stage_1_sandbox", "chain_status": "pending"},
+            {"stage_index": 3, "stage_run_id": "run3", "pipeline_stage": "Stage 3", "input_source_kind": "stage_2_sandbox", "chain_status": "pending"},
+            {"stage_index": 4, "stage_run_id": "run4", "pipeline_stage": "Stage 4", "input_source_kind": "stage_3_sandbox", "chain_status": "pending"},
+        ])
+    )
+    events = (
+        SimpleNamespace(stage=1, type="stage_completed", status="completed", payload_json="{}", sequence=1),
+        SimpleNamespace(stage=2, type="stage_completed", status="completed", payload_json="{}", sequence=2),
+        SimpleNamespace(stage=3, type="stage_completed", status="completed", payload_json="{}", sequence=3),
+    )
+
+    stages_without_command = _v2_stages_from_job(job, (), events)
+    assert stages_without_command[3]["stage_index"] == 4
+    assert stages_without_command[3]["chain_status"] == "pending"
+
+    stages_with_command = _v2_stages_from_job(
+        job,
+        (SimpleNamespace(stage_index=4),),
+        events,
+    )
+    assert stages_with_command[3]["stage_index"] == 4
+    assert stages_with_command[3]["chain_status"] == "queued"
 
 
 def test_create_job_persistence_across_connections(tmp_path: Path) -> None:
