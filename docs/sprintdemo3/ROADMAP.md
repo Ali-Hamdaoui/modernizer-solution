@@ -18,24 +18,26 @@ The roadmap starts from stable baseline `0d9fa7b3b4c386aaebaa7287bebb3f3d2e3cb38
 
 ## Milestones
 
-| Milestone | Verifiable outcome |
-|---|---|
-| F0 cleanup plan | Copilot/TUI/CLI/product-runtime inventory and cleanup report requirements are defined. |
-| Boundary hardening | Public product docs forbid provider/model/deployment/env refs as API fields and forbid path/command execution inputs. |
-| F1 checkpoint foundation | Analysis and Planning checkpoint states, decisions, stop conditions, and resume behavior are defined. |
-| F2 Analysis chain | Analysis final Markdown is produced from deterministic artifact, primary LLM, and reviewer LLM. |
-| F2 Planning chain | Planning final Markdown follows the same reviewed chain and becomes next-agent input. |
-| F3 target profile | Pipeline route is bounded by validated source and target profile. |
-| F4 current-state start | Already-modernized apps can skip older stages with a recorded explanation. |
-| F5 evidence/proposal | Build/test failure context and deterministic failure artifact feed Repair Agent proposal. |
-| F5 review/decision | Reviewer LLM validates the exact proposed diff and human decides with comments. |
-| F5 proof | Backend applies only exact approved reviewed diff and reruns build/test for proof. |
-| Stage 4/Jackson proof | OpenRewrite/Jackson strategy is used only as backend-allowlisted F5 proof. |
+| Milestone | Verifiable outcome | Parent story |
+|---|---|---|
+| F0 cleanup | Copilot, TUI, CLI, duplicate orchestration, unused module, and terminology cleanup requirements are implementation-ready. | DEMO3-F0-STORY |
+| Foundry/model boundary hardening | Public contracts keep provider/model/deployment/env refs, paths, argv, env, raw commands, and filesystem targets out of product APIs. | DEMO3-F0-STORY |
+| F1 checkpoint foundation | Analysis and Planning checkpoint states, decisions, stop conditions, artifact preview/download, and resume behavior are defined. | DEMO3-F1-STORY |
+| F2 Analysis reviewer chain | Analysis output follows deterministic artifact, primary LLM, reviewer LLM, final Markdown, stored checkpoint. | DEMO3-F2-STORY |
+| F2 Planning reviewer chain | Planning output follows the same mandatory reviewer chain and becomes next-agent input. | DEMO3-F2-STORY |
+| F3 target profile | The backend validates source/target profile pairs, routes only required stages, and prevents target overshoot. | DEMO3-F3-STORY |
+| F4 current-state start | Source profile detection, manual override, skipped-stage ledger, and resume compatibility are defined. | DEMO3-F4-STORY |
+| F5 evidence/proposal | Build/test failure evidence and deterministic failure artifacts feed the Primary Repair LLM. | DEMO3-F5-STORY |
+| F5 review/decision | Reviewer LLM validates the exact proposed diff and the user can approve, reject, or request another review with comments. | DEMO3-F5-STORY |
+| F5 proof | Backend applies only the exact approved reviewed diff, reruns build/test, records proof, and rolls back when required. | DEMO3-F5-STORY |
+| Stage 4/Jackson proof | OpenRewrite/Jackson is one backend-allowlisted proof scenario under generic F5 repair. | DEMO3-F5-STORY |
 
-## Roadmap Guardrails
+## Guardrails
 
 - Do not implement F0-F5 from this documentation update.
 - Do not start Stage 4 implementation from this documentation update.
 - Do not add frontend code from this documentation update.
 - Do not create provider-selection UI/API.
 - Do not expose provider/model/deployment/env refs, `sandbox_path`, argv, env, raw commands, or filesystem targets as product API fields.
+- Do not allow reviewer optionality for supported model-required outputs.
+- Do not pass unreviewed primary LLM output to the next agent.

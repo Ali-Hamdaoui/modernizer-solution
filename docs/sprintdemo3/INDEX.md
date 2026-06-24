@@ -1,23 +1,10 @@
 # DEMO3 Sprint Documentation Index
 
-DEMO3 is organized around F0-F5 as the product spine:
+DEMO3 builds a controlled migration pipeline and Build/Test Repair Agent review workflow for AI Migration Control Tower.
 
-```text
-F0 - Pre-feature codebase cleanup
-F1 - Agent checkpoints and user decisions
-F2 - Deterministic artifact + primary LLM + reviewer LLM
-F3 - Target profile control
-F4 - Start from current app state
-F5 - Build/Test Repair Agent review loop
-```
+The sprint is docs-only at this stage. It prepares the implementation backlog for F0-F5 and keeps Stage 4/Jackson as one concrete F5 proof scenario, not the sprint frame.
 
-Old 01-18 implementation slices remain engineering details. They are not the product center.
-
-## Product Direction
-
-The product is a checkpoint-based, LLM-reviewed migration workflow where the user controls where migration starts, where it stops, which target profile is final, whether Analysis or Planning needs modification, and whether risky build/test-failure fixes are applied.
-
-Core architecture:
+## What DEMO3 Is Building
 
 ```text
 FastAPI backend
@@ -26,37 +13,72 @@ FastAPI backend
 -> reviewer LLM
 -> final Markdown artifact
 -> stored artifact/checkpoint
--> user approval or correction
+-> user decision
 -> next pipeline step
 ```
 
-Core rule: a model reviews another model. For supported model-required outputs, the reviewer LLM is mandatory, not optional.
+Core rule:
 
-## Sprint Docs
+```text
+A model reviews another model.
+For supported model-required outputs, reviewer LLM is mandatory, not optional.
+```
 
-- [ROADMAP.md](ROADMAP.md)
-- [ARCHITECTURE.md](ARCHITECTURE.md)
-- [RISKS.md](RISKS.md)
-- [TASKS.md](TASKS.md)
+Authority invariant:
 
-## Feature Docs
+```text
+Chatbot interprets.
+Human decides.
+Backend validates, persists, executes in sandbox, and proves with artifacts.
+```
 
-- [F0 - Pre-feature codebase cleanup](00-pre-feature-cleanup/README.md)
-- [F1 - Agent checkpoints and user decisions](01-agent-checkpoints/README.md)
-- [F2 - Deterministic artifact + primary LLM + reviewer LLM](02-llm-review-chain/README.md)
-- [F3 - Target profile control](03-profile-targeting/README.md)
-- [F4 - Start from current app state](04-source-profile-start/README.md)
-- [F5 - Build/Test Repair Agent review loop](05-build-test-repair-agent-review-loop/README.md)
+## F0-F5 Product Spine
 
-## F0-F5 Mapping To Implementation Work
+| Feature | Story | Product outcome |
+|---|---|---|
+| F0 | [Pre-feature codebase cleanup](00-pre-feature-cleanup/STORY.md) | Old Copilot, TUI, CLI, duplicate orchestration, and stale terminology paths are inventoried and quarantined before feature work. |
+| F1 | [Agent checkpoints and user decisions](01-agent-checkpoints/STORY.md) | Analysis and Planning stop at governed checkpoints with safe user decisions. |
+| F2 | [Deterministic artifact + primary LLM + reviewer LLM](02-llm-review-chain/STORY.md) | Analysis and Planning produce reviewed, checksum-bound Markdown artifacts before downstream use. |
+| F3 | [Target profile control](03-profile-targeting/STORY.md) | The user selects the target profile and the backend stops at that target. |
+| F4 | [Start from current app state](04-source-profile-start/STORY.md) | Already-modernized apps start from their current source profile and skip older stages. |
+| F5 | [Build/Test Repair Agent review loop](05-build-test-repair-agent-review-loop/STORY.md) | Build/test failures produce reviewed repair proposals and exact approved diffs only. |
 
-| Feature | Implementation work |
-|---|---|
-| F0 | Foundation cleanup, Copilot quarantine, TUI removal, CLI/runtime path cleanup, stale terminology cleanup |
-| F1 | Stage checkpoint, stage attempt, retry/resume/fork, cockpit checkpoint UX |
-| F2 | LLM candidate generator + independent reviewer, extended to Analysis and Planning |
-| F3 | Profile targeting and stop-at-target behavior |
-| F4 | Source profile detection, manual override, skipped-stage ledger, resume from checkpoint |
-| F5 | Failure evidence, classifier, retrieval pack, repair mode, Repair Agent proposal, reviewer, backend validator, human approval, sandbox executor, validation runner, checkpoint promoter, cockpit recovery UX, e2e fixtures |
+## How To Read The Backlog
 
-Stage 4/Jackson is a concrete F5 proof scenario, not the DEMO3 product frame.
+- [../DEMO3/PRD.md](../DEMO3/PRD.md) is the product baseline.
+- [BACKLOG.md](BACKLOG.md) is the product backlog summary with story and task tables.
+- [TASKS.md](TASKS.md) is the master task index for F0-F5.
+- [ROADMAP.md](ROADMAP.md), [ARCHITECTURE.md](ARCHITECTURE.md), and [RISKS.md](RISKS.md) describe delivery order, system shape, and F0-F5 risks.
+- Each feature folder contains a `README.md`, `STORY.md`, and `TASKS.md`.
+- Historical implementation slices live under [implementation-slices/](implementation-slices/). They remain engineering detail mapped under F0-F5 and must not replace the product spine.
+- [F0-F5-MAPPING.md](F0-F5-MAPPING.md) maps retained implementation slices to F0-F5 or marks future remove candidates.
+
+## Implementation Order
+
+1. F0 cleanup.
+2. Foundry/model boundary hardening if needed.
+3. F1 checkpoint foundation.
+4. F2 Analysis reviewer chain.
+5. F2 Planning reviewer chain.
+6. F3 target profile.
+7. F4 source/current-state start.
+8. F5 Repair Agent evidence and proposal.
+9. F5 reviewer and user decision loop.
+10. F5 sandbox apply, rerun, proof.
+11. Stage 4/Jackson as concrete F5 proof scenario.
+
+## Historical Implementation Slices
+
+Old `01-18` implementation slices are archived under [implementation-slices/](implementation-slices/). They are not top-level product feature folders.
+
+Use [F0-F5-MAPPING.md](F0-F5-MAPPING.md) before reading any archived slice.
+
+## Next Recommended Implementation Branch
+
+Use a new implementation branch from the stable baseline after this docs branch is accepted, for example:
+
+```text
+feature/demo3-f0-cleanup
+```
+
+Do not start implementation from this docs-only cleanup.
