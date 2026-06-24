@@ -1,313 +1,639 @@
-# DEMO3 Global Sprint Task Board
+# DEMO3 F0-F5 Tasks
 
-All features start with `Status: not started` and `Owner: TBD`. Suggested paths are not implementation facts; `needs verification` marks uncertain placement.
+Each task below is written as an implementation-planning issue candidate. Use the existing 01-18 slices as engineering details under these parents.
 
-Global provider constraint: Azure AI Foundry is the only DEMO3 AI runtime. Model invocation, configuration, controlled context selection, credential handling, error mapping, and audit are backend responsibilities. No task may introduce direct OpenAI, Copilot runtime, frontend provider calls, multi-provider routing, or provider fallback.
+## F0 - Pre-Feature Codebase Cleanup
 
-## Foundation 0 - Foundry-only Cleanup and Copilot Quarantine
+### F0-T1: Inventory Copilot Runtime Paths
 
-### FND-01 - Disable/quarantine Copilot runtime paths
+Description: Find every Copilot import, adapter, CLI invocation, schema, report generator, and product-adjacent path.
 
-- Status: not started
-- Owner: TBD
-- Blocks: F01-F18
-- Purpose: make GitHub Copilot unreachable from DEMO3 runtime paths while preserving legacy artifact readability.
-- Likely future modified files: orchestrator defaults/graph/preflight/summary, final report Copilot adapter reachability, planning/analysis Copilot wrappers, transform advisory path, TUI Copilot status, Control Tower projections.
-- Acceptance summary: no Control Tower, DEMO3, orchestrator, repair, report, TUI, public API, or frontend runtime path invokes Copilot CLI/SDK or report generation.
+Code files to inspect: `migration_factory/copilot_assist/`, `migration_factory/copilot_repair/`, `migration_factory/final_report/`, `migration_factory/orchestrator/`, `migration_factory/control_tower/adapters/fastapi/app.py`.
 
-### FND-02 - Azure AI Foundry adapter/config contract
+Output artifact: Copilot runtime inventory.
 
-- Status: not started
-- Owner: TBD
-- Blocks: F01-F18
-- Purpose: make the backend-owned Azure AI Foundry adapter the only model invocation boundary.
-- Likely future modified files: model client, settings, role router, readiness checks, model audit tests.
-- Acceptance summary: application/API layers do not directly read model provider env vars; Foundry failures fail closed for model-required operations.
+Acceptance criteria: Product-reachable and legacy-only paths are separated.
 
-### FND-03 - Remove public provider/config leakage
+Tests to add/update: Search-based reachability test for product runtime paths.
 
-- Status: not started
-- Owner: TBD
-- Blocks: F01-F18
-- Purpose: remove provider names, provider-kind fields, env refs, deployment refs, credentials, and fallback-provider details from public DTOs and frontend contracts.
-- Likely future modified files: FastAPI projections, frontend contracts/API, cockpit, new migration form.
-- Acceptance summary: public responses and frontend bundles expose no `copilot`, `azure_openai`, `provider_kind`, provider env refs, deployment refs, credentials, or fallback-provider details.
+### F0-T2: Disable Or Quarantine Copilot From Product Runtime
 
-### FND-04 - UI/report/docs terminology cleanup
+Description: Define how product paths fail closed or route away from Copilot.
 
-- Status: not started
-- Owner: TBD
-- Blocks: F01-F18
-- Purpose: align user-visible product language with Azure AI Foundry-only runtime.
-- Likely future modified files: cockpit, setup UI, assessment/report writers, TUI, current runbooks/docs.
-- Acceptance summary: current product surfaces say Azure AI Foundry or provider-neutral AI and do not imply Copilot or Azure OpenAI public provider support.
+Code files to inspect: `v2_orchestrator_runner.py`, `v2_assistant_model_client.py`, `v2_model_role_router.py`, `migration_factory/orchestrator/summary.py`.
 
-### FND-05 - Context-pack enforcement
+Output artifact: Copilot quarantine decision.
 
-- Status: not started
-- Owner: TBD
-- Blocks: F10, F11, F18
-- Purpose: bind model calls to redacted, bounded, content-checksummed, policy-versioned context packs.
-- Likely future modified files: evidence pack builder, model schemas, diagnosis/repair flow, context-pack policy tests.
-- Acceptance summary: every model invocation records the exact canonical redacted context checksum and policy version.
+Acceptance criteria: No product path can invoke Copilot.
 
-### FND-06 - Legacy compatibility mapping
+Tests to add/update: Product API/orchestrator tests proving Copilot is unreachable.
 
-- Status: not started
-- Owner: TBD
-- Blocks: F01-F18
-- Purpose: keep historical Copilot/Azure OpenAI names readable without exposing or activating them in current product paths.
-- Likely future modified files: artifact readers, projection mappers, compatibility tests.
-- Acceptance summary: legacy names are compatibility-only; new runtime paths and public projections use Foundry/provider-neutral terminology.
+### F0-T3: Inventory TUI And CLI Runtime Paths
 
-## F01 — Stage 4 Reconciliation
+Description: Find TUI entrypoints, CLI commands, debug/product commands, and command execution paths.
 
-- Status: not started
-- Owner: TBD
-- MVP: A
-- Depends on: none
-- Blocks: F03, F04, F05
-- Purpose: bring governed Stage 4 into the active branch without losing F15 gates or artifact bindings.
-- Likely future modified files: `v2_stage_progression.py`, `v2_orchestrator_runner.py`, `v2_job_service.py`, FastAPI app, schemas, cockpit contracts/UI, focused progression tests.
-- Likely future new files: `tests/control_tower/test_v2_stage4_progression.py`, `tests/control_tower/test_v2_stage4_schema.py`.
-- Acceptance summary: Stage 4 consumes accepted Stage 3 output and cannot be entered directly.
-- Focused test scope: Stage 3→4 gating, schema, output revision persistence, backend-owned launch.
-- Main risks: branch divergence; blind reuse of migration `0046`.
+Code files to inspect: `migration_factory/tui/`, `migration_factory/cli.py`, `migration_factory/control_tower/adapters/fastapi/app.py`.
 
-## F02 — API Hardening
+Output artifact: TUI/CLI inventory.
 
-- Status: not started
-- Owner: TBD
-- MVP: A
-- Depends on: F01
-- Blocks: F05, F13, F14, F17
-- Purpose: remove public control over execution details.
-- Likely future modified files: FastAPI app, `control_tower/schemas/`, `contracts.ts`, `controlTowerApi.ts`, `MigrationCockpit.tsx`.
-- Likely future new files: `test_v2_recovery_api_security.py`, `recoveryApiSecurity.test.ts`.
-- Acceptance summary: strict ID-only requests and redacted responses reject extra path/command fields.
-- Focused test scope: forbidden fields, extra fields, response leakage, provider credential leakage, and absence of frontend model calls.
-- Main risks: compatibility endpoints retaining unsafe fields or legacy Copilot-facing product language.
+Acceptance criteria: Product and non-product commands are classified.
 
-## F03 — StageCheckpoint
+Tests to add/update: Search/regression tests for disallowed product entrypoints.
 
-- Status: not started
-- Owner: TBD
-- MVP: A
-- Depends on: F01
-- Blocks: F04, F05, F16
-- Purpose: represent validated stage output as immutable reusable lineage.
-- Likely future modified files: domain package, SQLite UoW/migrations, stage progression, gate action, artifact resolver.
-- Likely future new files: `v2_stage_checkpoint.py`, checkpoint service/repository/migration, checkpoint tests.
-- Acceptance summary: accepted checkpoints bind job, stage, profile, input, attempt, artifact manifest, validation, and timestamps.
-- Focused test scope: domain invariants, repository round trip, acceptance and checksum rules.
-- Main risks: treating path or mutable worktree as checkpoint.
+### F0-T4: Remove Or Quarantine TUI From Product Workflow
 
-## F04 — StageAttempt
+Description: Define how TUI is excluded from DEMO3 product operation.
 
-- Status: not started
-- Owner: TBD
-- MVP: A
-- Depends on: F03
-- Blocks: F05, F06
-- Purpose: persist every execution, retry, repair, resume, and fork.
-- Likely future modified files: domain package, stage progression, orchestrator runner, SQLite UoW.
-- Likely future new files: `v2_stage_attempt.py`, attempt service/repository/migration, attempt tests, and DEMO3 event/audit tests.
-- Acceptance summary: every execution has immutable input checkpoint, cause, status, and output/proof refs.
-- Focused test scope: state transitions, idempotency, failed-attempt preservation.
-- Main risks: conflating gate count with execution attempt.
+Code files to inspect: `migration_factory/tui/`, docs referring to TUI.
 
-## F05 — Retry / Resume / Fork
+Output artifact: TUI quarantine decision.
 
-- Status: not started
-- Owner: TBD
-- MVP: A
-- Depends on: F02, F03, F04
-- Blocks: all MVP-B features
-- Purpose: recover from accepted checkpoints without restarting Stage 1.
-- Likely future modified files: stage progression, FastAPI app, frontend API/contracts.
-- Likely future new files: recovery action service and focused action/retry tests.
-- Acceptance summary: retry reuses the same checkpoint; resume continues an interrupted attempt where valid; fork creates a new lineage branch.
-- Focused test scope: compatibility, idempotency, invalid checkpoint, concurrent request.
-- Main risks: ambiguous semantics and duplicate commands.
+Acceptance criteria: Backend API/UI path is the product control surface.
 
-## F06 — Failure Evidence
+Tests to add/update: Documentation and entrypoint checks.
 
-- Status: not started
-- Owner: TBD
-- MVP: B
-- Depends on: F04, F05
-- Blocks: F07, F08, F10
-- Purpose: persist immutable grounded evidence for a failed attempt and establish the thin generic recovery coordinator.
-- Likely future modified files: failure diagnosis, evidence pack builder, repair-loop collector, repair flow.
-- Likely future new files: failure evidence service/domain/tests plus `v2_failure_recovery_engine.py` and engine tests.
-- Acceptance summary: evidence binds attempt, checkpoint, normalized diagnostics, profile, hashes, results, and prior attempts; `FailureRecoveryEngine` coordinates typed transitions by reusing existing services.
-- Focused test scope: immutability, redaction, prompt-injection framing, missing inputs.
-- Main risks: path leakage and mutable log references.
+### F0-T5: Identify Duplicate Orchestration Logic
 
-## F07 — Failure Classifier Registry
+Description: Compare orchestrator, V2 stage progression, runner, gates, and repair flow boundaries.
 
-- Status: not started
-- Owner: TBD
-- MVP: B
-- Depends on: F06
-- Blocks: F08, F09
-- Purpose: provide deterministic, versioned, broad failure classification.
-- Likely future modified files: classifier agent, repair rule registry, failure diagnosis.
-- Likely future new files: signature registry, classification domain, registry/classifier tests.
-- Acceptance summary: registered signatures produce evidence-backed classes; unknown/ambiguous cases fail safe.
-- Focused test scope: Jackson, non-Jackson, annotation exception, ambiguity, versions.
-- Main risks: fixture-specific orchestration or authoritative model classification.
+Code files to inspect: `migration_factory/orchestrator/`, `v2_stage_progression.py`, `v2_orchestrator_runner.py`, `v2_gate_action_service.py`, `v2_repair_flow.py`.
 
-## F08 — Retrieval Pack Builder
+Output artifact: Duplicate orchestration report.
 
-- Status: not started
-- Owner: TBD
-- MVP: B
-- Depends on: F06, F07
-- Blocks: F10, F11
-- Purpose: build targeted approved knowledge packs by signature and profile.
-- Likely future modified files: failure diagnosis, model schemas.
-- Likely future new files: retrieval builder/domain/repository/tests.
-- Acceptance summary: packs have provenance, policy version, checksums, and evidence/classification bindings.
-- Focused test scope: policy selection, wrong profile, missing knowledge, deterministic fake retrieval.
-- Main risks: mixing application evidence with migration guidance.
+Acceptance criteria: Reuse points and duplication risks are explicit.
 
-## F09 — Repair Mode Registry
+Tests to add/update: None until implementation slice.
 
-- Status: not started
-- Owner: TBD
-- MVP: B
-- Depends on: F08
-- Blocks: F10, F12, F14, F15
-- Purpose: choose repair mode and safety envelope without defining every repair.
-- Likely future modified files: repair-loop registry, repair flow, repair gate service.
-- Likely future new files: repair mode registry/domain/tests.
-- Acceptance summary: deterministic and generative modes are versioned, compatible, allowlisted, and fail closed.
-- Focused test scope: all required modes, disabled/unknown mode, envelope binding.
-- Main risks: registry becoming a static repair catalog.
+### F0-T6: Identify Unused Modules/Dependencies
 
-## F10 — LLM Repair Candidate Generator
+Description: Identify modules/dependencies that are unused, legacy-only, or quarantined.
 
-- Status: not started
-- Owner: TBD
-- MVP: B
-- Depends on: F06, F08, F09
-- Blocks: F11, F12, F13
-- Purpose: invoke the Azure AI Foundry-backed proposer through one backend provider contract using controlled context packs, then persist strict-schema diagnosis and exact bounded candidates.
-- Likely future modified files: repair flow, model schemas, role router, repair gate, backend model gateway/configuration.
-- Likely future new files: diagnosis artifact domain/tests, candidate generator/domain/tests, Azure AI Foundry adapter contract tests, and controlled context-pack policy tests.
-- Acceptance summary: Azure AI Foundry is the only runtime path; separate immutable diagnosis and candidate artifacts bind exact controlled context; candidate bytes reject commands and revisions are immutable.
-- Focused test scope: fake Foundry adapter, malformed output, provider error mapping, secret/context redaction, command rejection, revision loop.
-- Main risks: provider ambiguity, context leakage, plan-only output treated as executable, or model authority escalation.
+Code files to inspect: package metadata, `migration_factory/`, tests.
 
-## F11 — Independent Reviewer
+Output artifact: Unused dependency/module report.
 
-- Status: not started
-- Owner: TBD
-- MVP: B
-- Depends on: F08, F10
-- Blocks: F12, F13
-- Purpose: critique the exact candidate with a distinct backend-resolved Azure AI Foundry deployment identity.
-- Likely future modified files: reviewer service, role router, reviewer repository.
-- Likely future new files: review policy and independence tests.
-- Acceptance summary: review binds exact controlled context and same Foundry deployment/model identity fails closed.
-- Focused test scope: identity equality, stale candidate/context, mode-specific checks.
-- Main risks: deployment aliases masking same identity.
+Acceptance criteria: Removal candidates are separated from compatibility-retained code.
 
-## F12 — Backend Policy Validator
+Tests to add/update: Import/reachability tests where cleanup later removes code.
 
-- Status: not started
-- Owner: TBD
-- MVP: B
-- Depends on: F09, F10, F11
-- Blocks: F13, F14
-- Purpose: apply generic safety and applicability checks without knowing the exact fix.
-- Likely future modified files: patch gate/apply, repair gate, repair flow.
-- Likely future new files: backend, patch, dependency, and config validators plus pre-approval and pre-execution tests.
-- Acceptance summary: pre-approval policy rejects stale, escaping, oversized, forbidden, or unreviewed candidates; pre-execution revalidation rejects stale or unapproved state.
-- Focused test scope: checksum, traversal, symlink, paths, limits, policies, review/approval.
-- Main risks: validation gaps between proposed and actual diff.
+### F0-T7: Clean Stale Product Terminology
 
-## F13 — Human Approval Gate
+Description: Identify docs/API/UI text that implies Copilot, TUI, raw command, or provider selection as product behavior.
 
-- Status: not started
-- Owner: TBD
-- MVP: B
-- Depends on: F02, F10, F11, F12-T01, F12-T02
-- Blocks: F14
-- Purpose: bind the human decision to the exact reviewed candidate.
-- Likely future modified files: gate action, repair gate, FastAPI app, frontend API/contracts.
-- Likely future new files: repair approval service/test.
-- Acceptance summary: approve/reject/revise are human actions and stale approvals cannot execute.
-- Focused test scope: exact checksums, idempotency, stale revision, actor authority.
-- Main risks: reviewer acceptance being mistaken for approval.
+Code files to inspect: docs, FastAPI contracts, frontend contracts if present.
 
-## F14 — Sandbox Repair Executor
+Output artifact: Terminology cleanup list.
 
-- Status: not started
-- Owner: TBD
-- MVP: B
-- Depends on: F02, F12-T03, F13
-- Blocks: F15
-- Purpose: apply only exact approved candidates in backend-derived sandboxes.
-- Likely future modified files: patch apply, validation runner, repair flow.
-- Likely future new files: sandbox executor/test.
-- Acceptance summary: original source is unchanged; proposed and actual diffs are separate proof artifacts.
-- Focused test scope: containment, exact bytes, actual diff, rollback setup, source immutability.
-- Main risks: path escape or apply-time drift.
+Acceptance criteria: Product docs describe backend/API governed workflow only.
 
-## F15 — Validation Runner
+Tests to add/update: Search-based docs/contract regression tests.
 
-- Status: not started
-- Owner: TBD
-- MVP: B
-- Depends on: F09, F14
-- Blocks: F16
-- Purpose: use configured deterministic checks as success proof.
-- Likely future modified files: validation runner, repair flow, orchestrator runner.
-- Likely future new files: validation policy/test.
-- Acceptance summary: pass/fail artifacts are immutable; failure rolls back and cannot promote.
-- Focused test scope: compile, focused tests, configured alternatives, timeout, rollback.
-- Main risks: model assertion or partial command success treated as proof.
+### F0-T8: Generate Cleanup Report
 
-## F16 — Checkpoint Promoter
+Description: Produce the F0 summary artifact.
 
-- Status: not started
-- Owner: TBD
-- MVP: B
-- Depends on: F03, F04, F15
-- Blocks: F17, F18
-- Purpose: promote validated output into an accepted checkpoint.
-- Likely future modified files: stage progression, gate action, artifact revision service (`needs verification`: no file with this exact name currently exists).
-- Likely future new files: checkpoint promoter/test.
-- Acceptance summary: promotion is atomic, idempotent, validation-bound, and lineage-complete.
-- Focused test scope: pass/fail, duplicate promotion, stale input, artifact checksum.
-- Main risks: promoting mutable or unvalidated state.
+Code files to inspect: all F0 inventories.
 
-## F17 — Cockpit Recovery UX
+Output artifact: Cleanup report.
 
-- Status: not started
-- Owner: TBD
-- MVP: B
-- Depends on: F02, F05, F13, F16
-- Blocks: F18 demo coverage
-- Purpose: expose safe lineage, recovery decisions, candidate, review, and proof without a frontend model-provider dependency.
-- Likely future modified files: `MigrationCockpit.tsx`, frontend contracts/API.
-- Likely future new files: checkpoint, attempt, repair review, and recovery action components plus tests.
-- Acceptance summary: operators can act on IDs/checksums while paths, argv, env, commands, secrets, provider credentials/configuration, and raw logs stay hidden; the frontend never calls Foundry.
-- Focused test scope: rendering, available actions, stale refresh, redaction, accessibility.
-- Main risks: frontend state becoming authority.
+Acceptance criteria: Report includes removed, quarantined, retained, and follow-up items.
 
-## F18 — E2E Fixtures
+Tests to add/update: Report existence/content test if generated by tooling.
 
-- Status: not started
-- Owner: TBD
-- MVP: B
-- Depends on: F01–F17
-- Blocks: release acceptance
-- Purpose: prove deterministic and generative recovery through the same engine and backend Azure AI Foundry contract.
-- Likely future modified files: focused backend and frontend test families.
-- Likely future new files: Jackson E2E, LLM-authored patch E2E, `tests/fixtures/demo3/`.
-- Acceptance summary: both fixtures use fake Azure AI Foundry adapter responses and fake retrieval, require no Copilot or live calls, and promote only after validation.
-- Focused test scope: complete lineage, exact candidate bytes, sandbox diff, safe projections, no network/provider credential dependency.
-- Main risks: Jackson-specific test harness or backend rule encoding the non-recipe fix.
+## F1 - Agent Checkpoints And User Decisions
+
+### F1-T1: Define Checkpoint State Model
+
+Description: Define statuses and transitions for Analysis and Planning checkpoints.
+
+Code files to inspect: `v2_phase_gate_service.py`, `phase_gate.py`, `artifact_revision.py`, SQLite repositories.
+
+Output artifact: Checkpoint state model.
+
+Acceptance criteria: States cover waiting, accepted, rejected, changes requested, stale, and failed closed.
+
+Tests to add/update: State transition tests.
+
+### F1-T2: Define User Decisions
+
+Description: Define continue, stop, request modification, download, and resume decisions.
+
+Code files to inspect: `v2_gate_action_service.py`, `v2_approval_mapping.py`, FastAPI app.
+
+Output artifact: User decision contract.
+
+Acceptance criteria: Decisions bind to artifact refs/checksums and comments.
+
+Tests to add/update: API/schema validation tests.
+
+### F1-T3: Define Analysis Checkpoint
+
+Description: Stop after Analysis and present reviewed artifact.
+
+Code files to inspect: `migration_factory/agents/analysis_agent/`, `v2_orchestrator_runner.py`, gates.
+
+Output artifact: Analysis checkpoint contract.
+
+Acceptance criteria: Analysis cannot auto-advance without required decision.
+
+Tests to add/update: Analysis checkpoint gate tests.
+
+### F1-T4: Define Planning Checkpoint
+
+Description: Stop after Planning and present reviewed artifact.
+
+Code files to inspect: `migration_factory/agents/planning_agent/`, `v2_stage_progression.py`, gates.
+
+Output artifact: Planning checkpoint contract.
+
+Acceptance criteria: Planning output is reviewed before transformation input.
+
+Tests to add/update: Planning checkpoint gate tests.
+
+### F1-T5: Define Safe Auto-Continue Rules
+
+Description: Define when transformation/build/test may proceed without user action.
+
+Code files to inspect: stage progression, build agent, test agent, risk classifiers.
+
+Output artifact: Auto-continue policy.
+
+Acceptance criteria: Auto-continue only occurs when no risk/failure/approval requirement exists.
+
+Tests to add/update: Auto-continue and stop-condition tests.
+
+### F1-T6: Define Stop Conditions
+
+Description: Stop on risk, build failure, test failure, target reached, stale artifact, reviewer failure, approval required.
+
+Code files to inspect: stage progression, gates, runner events.
+
+Output artifact: Stop-condition matrix.
+
+Acceptance criteria: Every stop condition maps to persisted state and user-visible action.
+
+Tests to add/update: Matrix-driven stop tests.
+
+### F1-T7: Define Artifact Download/Preview Behavior
+
+Description: Define safe artifact preview/download through refs and checksums.
+
+Code files to inspect: artifact resolver, FastAPI file routes.
+
+Output artifact: Artifact presentation contract.
+
+Acceptance criteria: No raw sandbox paths leak.
+
+Tests to add/update: Redaction and download authorization tests.
+
+### F1-T8: Define Resume Behavior
+
+Description: Resume from checkpoint using backend-owned stage resolution.
+
+Code files to inspect: `v2_stage_progression.py`, `v2_orchestrator_runner.py`, run configuration, SQLite.
+
+Output artifact: Resume contract.
+
+Acceptance criteria: Resume rejects stale/foreign/incompatible checkpoints.
+
+Tests to add/update: Resume validation and idempotency tests.
+
+## F2 - Deterministic Artifact + Primary LLM + Reviewer LLM
+
+### F2-T1: Define Deterministic Artifact Contract
+
+Description: Define required deterministic Analysis and Planning facts.
+
+Code files to inspect: analysis agent, planning agent, artifact schema.
+
+Output artifact: Deterministic artifact schema.
+
+Acceptance criteria: Primary LLM can only reason from persisted deterministic artifact refs/checksums.
+
+Tests to add/update: Artifact schema validation tests.
+
+### F2-T2: Define Primary LLM Role
+
+Description: Define primary reasoning inputs/outputs for Analysis and Planning.
+
+Code files to inspect: model schemas, assistant model client, model role router.
+
+Output artifact: Primary LLM output contract.
+
+Acceptance criteria: Output has reasoning, risks, confidence, and recommended next step.
+
+Tests to add/update: Fake-model success/failure tests.
+
+### F2-T3: Define Reviewer LLM Role
+
+Description: Define reviewer validation over deterministic artifact and primary output.
+
+Code files to inspect: reviewer service, reviewer repository, model schemas.
+
+Output artifact: Reviewer contract.
+
+Acceptance criteria: Reviewer can accept, reject, request revision, or fail closed.
+
+Tests to add/update: Reviewer-required tests.
+
+### F2-T4: Define Reviewer Decisions
+
+Description: Define decision semantics and revision loop.
+
+Code files to inspect: reviewer service, gate service, artifact revisions.
+
+Output artifact: Reviewer decision matrix.
+
+Acceptance criteria: Rejected/stale review cannot become accepted checkpoint.
+
+Tests to add/update: Stale/rejected reviewer tests.
+
+### F2-T5: Define Final Markdown Artifact Schema
+
+Description: Define final reviewed Markdown sections.
+
+Code files to inspect: artifact writer/resolver code.
+
+Output artifact: Final Markdown schema.
+
+Acceptance criteria: Includes summary, inputs, deterministic findings, file paths, primary reasoning, reviewer notes, risks, confidence, next step, metadata.
+
+Tests to add/update: Markdown schema/content tests.
+
+### F2-T6: Define Retry/Revision Behavior
+
+Description: Define how requested revisions create new primary/reviewer artifacts.
+
+Code files to inspect: artifact revision repository, gate action service.
+
+Output artifact: Revision behavior spec.
+
+Acceptance criteria: New revision binds to previous artifacts and comments.
+
+Tests to add/update: Revision lineage tests.
+
+### F2-T7: Define Metadata And Checksum Binding
+
+Description: Define metadata for artifact refs, source inputs, prompt/context checksum, output checksum.
+
+Code files to inspect: artifact revision schema/repositories, reviewer service.
+
+Output artifact: Metadata/checksum spec.
+
+Acceptance criteria: Every model-required artifact is checksum-bound.
+
+Tests to add/update: Checksum mismatch tests.
+
+### F2-T8: Define Tests For Reviewer-Required Behavior
+
+Description: Define required test matrix for reviewer mandatory behavior.
+
+Code files to inspect: tests around reviewer, model schemas, artifact revisions.
+
+Output artifact: Test plan.
+
+Acceptance criteria: Missing reviewer, same model, malformed output, stale input, and rejected review fail closed.
+
+Tests to add/update: Focused reviewer-required test suite.
+
+## F3 - Target Profile Control
+
+### F3-T1: Define Profile Model
+
+Description: Define `source_profile`, `target_profile`, identity, ordering, and compatibility metadata.
+
+Code files to inspect: run configuration, pipeline definition, profiles/profile reader, planning agent.
+
+Output artifact: Profile model spec.
+
+Acceptance criteria: Profiles are backend-validated concepts, not display labels.
+
+Tests to add/update: Profile parsing/validation tests.
+
+### F3-T2: Define Profile Validation
+
+Description: Validate source/target pair.
+
+Code files to inspect: stage progression, run configuration, planning profile code.
+
+Output artifact: Profile validation spec.
+
+Acceptance criteria: Invalid, reversed, unsupported, or equal unsupported pairs are rejected or no-op handled.
+
+Tests to add/update: Invalid pair tests.
+
+### F3-T3: Define Stage/Profile Mapping
+
+Description: Map profile gaps to required stages.
+
+Code files to inspect: pipeline definitions, planning agent, stage progression.
+
+Output artifact: Stage/profile map.
+
+Acceptance criteria: Included/excluded stages are explicit.
+
+Tests to add/update: Route mapping tests.
+
+### F3-T4: Define Stop-At-Target Behavior
+
+Description: Stop when target profile is reached and block overshoot.
+
+Code files to inspect: stage progression and runner.
+
+Output artifact: Stop-at-target policy.
+
+Acceptance criteria: Spring Boot 2 to 3 stops at Spring Boot 3.
+
+Tests to add/update: Target overshoot prevention tests.
+
+### F3-T5: Define API Fields
+
+Description: Define safe `source_profile` and `target_profile` fields.
+
+Code files to inspect: FastAPI schemas/routes, run configuration schema.
+
+Output artifact: API contract.
+
+Acceptance criteria: No provider/model/deployment/env refs are product API fields.
+
+Tests to add/update: API validation/redaction tests.
+
+### F3-T6: Define Artifact/Checkpoint Metadata
+
+Description: Persist profile choices in artifacts/checkpoints.
+
+Code files to inspect: artifact revision schema, repositories.
+
+Output artifact: Profile metadata spec.
+
+Acceptance criteria: Checkpoints identify source/target profile context.
+
+Tests to add/update: Persistence round-trip tests.
+
+### F3-T7: Define Tests For Target Overshoot Prevention
+
+Description: Define regression suite for stopping at target.
+
+Code files to inspect: stage progression tests.
+
+Output artifact: Test plan.
+
+Acceptance criteria: Higher profiles do not run after target reached.
+
+Tests to add/update: Overshoot and resume-after-target tests.
+
+## F4 - Start From Current App State
+
+### F4-T1: Define Source-Profile Detection Artifact
+
+Description: Analysis emits detected source profile with evidence and confidence.
+
+Code files to inspect: analysis agent, profile reader, profiles.
+
+Output artifact: Source-profile detection schema.
+
+Acceptance criteria: Evidence lists files/signals used.
+
+Tests to add/update: Detection fixture tests.
+
+### F4-T2: Define Manual Override Action
+
+Description: User can override detected source profile with reason.
+
+Code files to inspect: gate action service, FastAPI app, run configuration.
+
+Output artifact: Override action contract.
+
+Acceptance criteria: Override is persisted and validated.
+
+Tests to add/update: Override validation tests.
+
+### F4-T3: Define Skipped-Stage Ledger
+
+Description: Record skipped older stages and explanations.
+
+Code files to inspect: stage progression, event repository, SQLite.
+
+Output artifact: Skipped-stage ledger schema.
+
+Acceptance criteria: Skipped stages are visible and auditable.
+
+Tests to add/update: Skipped-stage persistence tests.
+
+### F4-T4: Define Profile Pair Validation
+
+Description: Reuse F3 validation for detected/overridden source and target.
+
+Code files to inspect: F3 files plus analysis/planning.
+
+Output artifact: Profile pair validation behavior.
+
+Acceptance criteria: Already-modernized app gets correct route.
+
+Tests to add/update: Spring Boot 3 to 4 route tests.
+
+### F4-T5: Define Resume-From-Checkpoint Behavior
+
+Description: Resume from accepted checkpoint with profile compatibility.
+
+Code files to inspect: stage progression, orchestrator runner, repositories.
+
+Output artifact: Resume-from-checkpoint spec.
+
+Acceptance criteria: Resume does not rerun old stages unnecessarily.
+
+Tests to add/update: Resume and compatibility tests.
+
+### F4-T6: Define Tests For Already-Modernized Apps
+
+Description: Test apps already on newer source profile.
+
+Code files to inspect: analysis fixtures, stage progression tests.
+
+Output artifact: Test plan.
+
+Acceptance criteria: Old stages are skipped and explained.
+
+Tests to add/update: Already-modernized fixture tests.
+
+## F5 - Build/Test Repair Agent Review Loop
+
+### F5-T1: Define Failure Evidence Capture
+
+Description: Capture build/test logs, compiler/test output, changed files, prior artifacts, profiles, plan, repo state, and checksums.
+
+Code files to inspect: build agent, test agent, evidence collector, orchestrator runner.
+
+Output artifact: Failure evidence schema.
+
+Acceptance criteria: Build and test failures both produce evidence.
+
+Tests to add/update: Build/test evidence capture tests.
+
+### F5-T2: Define Repair Agent Input Context
+
+Description: Build checksum-bound repair context pack.
+
+Code files to inspect: evidence collector, gate artifact resolver, model schemas.
+
+Output artifact: Repair context pack.
+
+Acceptance criteria: Context includes prior artifacts, profiles, current repo state, prior proposals, reviewer notes, user comments.
+
+Tests to add/update: Context pack checksum/redaction tests.
+
+### F5-T3: Define Deterministic Failure Artifact
+
+Description: Normalize compiler and test errors.
+
+Code files to inspect: build classifier, test agent, rule registry.
+
+Output artifact: Deterministic failure artifact.
+
+Acceptance criteria: Error summaries are stable and model-ready.
+
+Tests to add/update: Normalization tests.
+
+### F5-T4: Define Primary Repair LLM Role
+
+Description: Primary Repair LLM proposes root cause, strategy, and diff.
+
+Code files to inspect: model schemas, assistant client, repair flow.
+
+Output artifact: Primary repair reasoning artifact.
+
+Acceptance criteria: LLM cannot execute, approve, choose sandbox, or provide commands.
+
+Tests to add/update: Fake Repair LLM schema tests.
+
+### F5-T5: Define Reviewer LLM Role For Repair
+
+Description: Reviewer validates interpretation, root cause, changed files, diff, risks, target fit, and policy concerns.
+
+Code files to inspect: reviewer service, reviewer repository, repair gate service.
+
+Output artifact: Repair reviewer artifact.
+
+Acceptance criteria: Reviewer accepts, rejects, or requests improvements for exact diff checksum.
+
+Tests to add/update: Repair reviewer tests.
+
+### F5-T6: Define Proposed Diff Artifact
+
+Description: Persist exact proposed diff and metadata.
+
+Code files to inspect: artifact revision schema, repair proposals repository.
+
+Output artifact: Proposed diff artifact.
+
+Acceptance criteria: Diff is immutable and checksum-bound.
+
+Tests to add/update: Diff checksum and immutability tests.
+
+### F5-T7: Define Policy Validation Before Presentation
+
+Description: Validate proposed diff before showing it as approvable.
+
+Code files to inspect: patch gate, rule registry, repair flow.
+
+Output artifact: Policy validation artifact.
+
+Acceptance criteria: Out-of-scope, stale, or unsafe proposals fail closed.
+
+Tests to add/update: Policy rejection tests.
+
+### F5-T8: Define User Decision Actions
+
+Description: Approve, reject, request another review, and comments.
+
+Code files to inspect: FastAPI app, gate action service, approval mapping.
+
+Output artifact: Repair decision contract.
+
+Acceptance criteria: Decisions bind to exact proposal/reviewer checksums.
+
+Tests to add/update: Decision API tests.
+
+### F5-T9: Define Request-Another-Review Loop
+
+Description: Feed prior context, diff, reasoning, reviewer notes, comments, repo state, and checksums back into Repair Agent.
+
+Code files to inspect: repair flow, reviewer service, artifact repositories.
+
+Output artifact: Repair revision loop spec.
+
+Acceptance criteria: User comments affect next proposal context.
+
+Tests to add/update: Re-review loop tests.
+
+### F5-T10: Define Exact-Diff Approval And Apply Behavior
+
+Description: Backend applies only exact approved reviewed diff.
+
+Code files to inspect: patch apply, patch gate, repair flow.
+
+Output artifact: Exact-apply policy.
+
+Acceptance criteria: Stale or unreviewed diff is rejected.
+
+Tests to add/update: Exact diff apply tests.
+
+### F5-T11: Define Build/Test Rerun Behavior
+
+Description: Rerun Build Agent or Test Agent depending on failure source.
+
+Code files to inspect: build agent, test agent, orchestrator runner.
+
+Output artifact: Rerun policy.
+
+Acceptance criteria: Correct agent reruns and result is persisted.
+
+Tests to add/update: Rerun routing tests.
+
+### F5-T12: Define Repeated Failure Behavior
+
+Description: Start another Repair Agent cycle when failure repeats.
+
+Code files to inspect: repair flow, stage progression, repositories.
+
+Output artifact: Repeated failure policy.
+
+Acceptance criteria: Prior proposals and comments are included.
+
+Tests to add/update: Repeat failure cycle tests.
+
+### F5-T13: Define Rollback And Proof Behavior
+
+Description: Roll back when required and record proof after validation.
+
+Code files to inspect: validation runner, patch apply, repair ledger.
+
+Output artifact: Rollback/proof policy.
+
+Acceptance criteria: Proof, not LLM assertion, controls success.
+
+Tests to add/update: Rollback and proof tests.
+
+### F5-T14: Define UI/API Presentation Contract
+
+Description: Present error summary, root cause, changed files, diff, explanation, risks, confidence, reviewer notes, controls, comment box.
+
+Code files to inspect: FastAPI app and existing cockpit contracts if present.
+
+Output artifact: Presentation contract.
+
+Acceptance criteria: No raw command/path/runtime-provider fields.
+
+Tests to add/update: Contract/redaction tests.
+
+### F5-T15: Define Tests
+
+Description: Define full Repair Agent test matrix.
+
+Code files to inspect: build/test/repair/reviewer tests.
+
+Output artifact: F5 test plan.
+
+Acceptance criteria: Covers build failure, test failure, reviewer rejection, re-review, exact apply, stale diff, rollback, proof, OpenRewrite/Jackson allowlist.
+
+Tests to add/update: Focused F5 suite.

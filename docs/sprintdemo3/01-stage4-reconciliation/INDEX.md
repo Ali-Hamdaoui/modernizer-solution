@@ -2,11 +2,11 @@
 
 ## Purpose
 
-Bring governed Stage 4 behavior into `chatbot-optimization`.
+Document governed Stage 4 behavior as a future implementation detail under the stable-based DEMO3 plan.
 
 ## Problem solved
 
-The active progression currently ends after Stage 3, while Stage 4 work exists in divergent commits.
+The stable baseline progression currently ends after Stage 3, while Stage 4 work exists in divergent commits.
 
 ## PRD alignment
 
@@ -46,7 +46,7 @@ Checkpoint aggregate implementation, intelligent recovery, blind migration reuse
 
 ## Acceptance criteria
 
-- Governed Stage 4 exists on the active branch.
+- Governed Stage 4 exists on the correct implementation branch created from stable.
 - Only accepted Stage 3 output can feed Stage 4.
 - Existing F15 gates and artifact checksums remain authoritative.
 - No checkpoint model is added here unless a minimal adapter is required; that decision needs verification.

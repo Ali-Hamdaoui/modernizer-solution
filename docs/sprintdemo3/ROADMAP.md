@@ -1,66 +1,41 @@
-# DEMO3 Delivery Roadmap
+# DEMO3 Roadmap
 
-## Delivery Rule
+The roadmap starts from stable baseline `0d9fa7b3b4c386aaebaa7287bebb3f3d2e3cb383` and the docs branch `docs/demo3-f0-f5-prd-stable-0d9fa7b`.
 
-Foundation 0 must be completed before MVP-A or MVP-B. MVP-A must be completed before MVP-B. Do not start LLM-authored repair execution until checkpoint retry works. Do not implement retrieval or LLM repair before Stage 4, API hardening, checkpoints, attempts, and retry exist.
+## Delivery Order
 
-Provider rule for every phase: Azure AI Foundry is the only production model provider. All model calls are backend-owned; no phase may add a browser/provider call, direct OpenAI route, Copilot runtime dependency, multi-provider selection, or provider fallback.
+1. F0 cleanup.
+2. Foundry/model boundary hardening if needed.
+3. F1 checkpoint foundation.
+4. F2 Analysis reviewer chain.
+5. F2 Planning reviewer chain.
+6. F3 target profile.
+7. F4 source/current-state start.
+8. F5 Repair Agent evidence and proposal.
+9. F5 reviewer and user decision loop.
+10. F5 sandbox apply, rerun, proof.
+11. Stage 4/Jackson as concrete F5 proof scenario.
 
-## Foundation 0 - Foundry-only Cleanup and Copilot Quarantine
+## Milestones
 
-FND-01 Disable/quarantine Copilot runtime paths across Control Tower, orchestrator, repair, report, TUI, public API, and frontend runtime surfaces.
+| Milestone | Verifiable outcome |
+|---|---|
+| F0 cleanup plan | Copilot/TUI/CLI/product-runtime inventory and cleanup report requirements are defined. |
+| Boundary hardening | Public product docs forbid provider/model/deployment/env refs as API fields and forbid path/command execution inputs. |
+| F1 checkpoint foundation | Analysis and Planning checkpoint states, decisions, stop conditions, and resume behavior are defined. |
+| F2 Analysis chain | Analysis final Markdown is produced from deterministic artifact, primary LLM, and reviewer LLM. |
+| F2 Planning chain | Planning final Markdown follows the same reviewed chain and becomes next-agent input. |
+| F3 target profile | Pipeline route is bounded by validated source and target profile. |
+| F4 current-state start | Already-modernized apps can skip older stages with a recorded explanation. |
+| F5 evidence/proposal | Build/test failure context and deterministic failure artifact feed Repair Agent proposal. |
+| F5 review/decision | Reviewer LLM validates the exact proposed diff and human decides with comments. |
+| F5 proof | Backend applies only exact approved reviewed diff and reruns build/test for proof. |
+| Stage 4/Jackson proof | OpenRewrite/Jackson strategy is used only as backend-allowlisted F5 proof. |
 
-FND-02 Add the Azure AI Foundry adapter/config contract as the only model invocation boundary.
+## Roadmap Guardrails
 
-FND-03 Remove public provider/config leakage, including `provider_kind`, `azure_openai`, provider env refs, deployment refs, provider credentials, and fallback-provider details.
-
-FND-04 Clean UI, report, TUI, and current docs terminology so product surfaces say Azure AI Foundry or provider-neutral AI.
-
-FND-05 Enforce redacted, bounded, content-checksummed, policy-versioned context packs bound to model invocation records.
-
-FND-06 Map legacy Copilot/Azure OpenAI names for internal compatibility only.
-
-Exit condition: no DEMO3 implementation starts until Copilot is unreachable from product runtime paths, Foundry is the sole model boundary, public contracts leak no provider internals, and deterministic assistance cannot satisfy model-required operations.
-
-## Phase 1 — Reconcile the Execution Spine
-
-1. Reconcile Stage 4 behavior from historical commits against current F15 gates and artifact revisions.
-2. Remove path, command, argv, env, sandbox, and patch-target control from public DEMO3 contracts.
-3. Persist accepted `StageCheckpoint` records.
-4. Persist every `StageAttempt`.
-5. Prove retry from the same accepted checkpoint; then add resume and fork semantics.
-
-Exit condition: a failed Stage 4 attempt preserves accepted Stage 3 output and can create another Stage 4 attempt without rerunning Stages 1–3.
-
-## Phase 2 — Establish Grounded Recovery Inputs
-
-6. Persist immutable evidence bound to attempt and checkpoint.
-7. Classify through versioned deterministic signatures.
-8. Build a provenance- and checksum-bound retrieval pack.
-9. Select an allowlisted repair mode and safety envelope.
-
-Exit condition: the backend can produce a complete, immutable recovery context without asking a model to classify authoritatively.
-
-## Phase 3 — Govern Candidate Creation
-
-10. Establish the backend Azure AI Foundry provider contract and controlled context-pack policy, then let the Foundry-backed proposer role author an exact candidate artifact.
-11. Require a distinct Azure AI Foundry reviewer deployment identity to critique that exact revision.
-12. Run generic backend policy validation before approval.
-13. Bind human approval to the reviewed candidate checksum.
-
-Exit condition: an approved candidate is exact, immutable, grounded, independently reviewed, policy-valid, and not executable through model or frontend authority.
-
-## Phase 4 — Execute and Prove
-
-14. Revalidate policy and stale state, then apply the exact approved bytes only in a backend-derived sandbox.
-15. Run configured compile, focused tests, or other deterministic validation.
-16. Promote validated output to a new accepted checkpoint.
-
-Exit condition: failed validation rolls back and creates no checkpoint; successful validation produces immutable proof and a promoted checkpoint.
-
-## Phase 5 — Expose and Prove the Product
-
-17. Show safe lineage, candidate, review, approval, execution, and validation projections in the cockpit without exposing provider credentials or adding a frontend model client.
-18. Prove the generic flow with both Jackson/OpenRewrite and non-Jackson/non-recipe fixtures using fake Azure AI Foundry adapter responses and fake retrieval.
-
-No phase may introduce a duplicate orchestrator, repair loop, artifact store, event stream, validation subsystem, or proof ledger.
+- Do not implement F0-F5 from this documentation update.
+- Do not start Stage 4 implementation from this documentation update.
+- Do not add frontend code from this documentation update.
+- Do not create provider-selection UI/API.
+- Do not expose provider/model/deployment/env refs, `sandbox_path`, argv, env, raw commands, or filesystem targets as product API fields.
