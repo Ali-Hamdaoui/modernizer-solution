@@ -256,6 +256,7 @@ def test_answer_uses_api_key_header_for_v1_endpoint(monkeypatch) -> None:
 def test_answer_with_role_requests_json_schema_for_schema_output(monkeypatch) -> None:
     from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelClient
     from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
+    from migration_factory.control_tower.application.v2_model_schemas import SCHEMA_REGISTRY
 
     recorder = _SmokeUrlopenRecorder(
         {
@@ -295,6 +296,8 @@ def test_answer_with_role_requests_json_schema_for_schema_output(monkeypatch) ->
         "affected_paths",
         "validation_plan",
     ]
+    assert "rollback_note" not in text_format["schema"]["properties"]
+    assert "rollback_note" in SCHEMA_REGISTRY["RepairProposal"]["properties"]
 
 
 def test_answer_retries_legacy_endpoint_after_generic_v1_http_400(monkeypatch) -> None:

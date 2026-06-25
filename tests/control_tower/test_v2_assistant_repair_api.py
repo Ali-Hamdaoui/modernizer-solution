@@ -929,6 +929,7 @@ class TestRepairAPI:
         assert body["proposal_model"]["fallback_used"] is True
         assert body["proposal_model"]["primary_failure_reason"].startswith("schema_validation_failed")
         assert body["proposal_model"]["failure_reason"].startswith("schema_validation_failed")
+        assert body["proposal_model"]["redacted_error_summary"] == "schema mismatch"
         assert body["proposal_model"]["model_invocation_id"]
         invocations = SqliteUnitOfWork(conn).v1_model_invocations.list()
         assert len(invocations) == 1

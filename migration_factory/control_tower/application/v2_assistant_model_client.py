@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
 import re
 import urllib.error
 import urllib.request
@@ -948,7 +949,7 @@ def _is_expected_smoke_reply(content: str) -> bool:
 
 
 def _responses_text_format(schema_name: str | None, *, require_json_object: bool = False) -> dict[str, Any] | None:
-    schema = SCHEMA_REGISTRY.get(schema_name or "")
+    schema = _provider_response_schema(schema_name)
     if schema is not None:
         return {
             "type": "json_schema",
@@ -962,7 +963,7 @@ def _responses_text_format(schema_name: str | None, *, require_json_object: bool
 
 
 def _chat_response_format(schema_name: str | None, *, require_json_object: bool = False) -> dict[str, Any] | None:
-    schema = SCHEMA_REGISTRY.get(schema_name or "")
+    schema = _provider_response_schema(schema_name)
     if schema is not None:
         return {
             "type": "json_schema",
@@ -979,6 +980,37 @@ def _chat_response_format(schema_name: str | None, *, require_json_object: bool 
 
 def _schema_response_name(schema_name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "_", schema_name).strip("_") or "structured_output"
+
+
+def _provider_response_schema(schema_name: str | None) -> dict[str, Any] | None:
+    """Return Azure/OpenAI strict-output schema without optional properties.
+
+    The backend validator keeps richer schemas, including optional fields such as
+    RepairProposal.rollback_note. Azure/OpenAI strict structured outputs reject
+    optional object properties unless all properties are required, so request a
+    smaller provider schema and validate the returned object with the full
+    backend schema afterwards.
+    """
+    schema = SCHEMA_REGISTRY.get(schema_name or "")
+    if schema is None:
+        return None
+    return _strip_optional_schema_properties(deepcopy(schema))
+
+
+def _strip_optional_schema_properties(schema: Any) -> Any:
+    if not isinstance(schema, dict):
+        return schema
+    if schema.get("type") == "object" and isinstance(schema.get("properties"), dict):
+        required = [str(item) for item in schema.get("required", []) if isinstance(item, str)]
+        schema["properties"] = {
+            key: _strip_optional_schema_properties(value)
+            for key, value in schema["properties"].items()
+            if key in required
+        }
+        schema["required"] = [key for key in required if key in schema["properties"]]
+    if schema.get("type") == "array" and isinstance(schema.get("items"), dict):
+        schema["items"] = _strip_optional_schema_properties(schema["items"])
+    return schema
 
 
 def _fallback_result(fallback: str, summary: str, failure_reason: str = "") -> V2AssistantModelResult:
