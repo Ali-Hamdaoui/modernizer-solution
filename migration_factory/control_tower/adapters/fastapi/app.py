@@ -1712,7 +1712,7 @@ def create_app(
         """
         safe_kinds = {
             "phase2_log", "post_transform_test_log", "failure_classification",
-            "repair_plan", "deterministic_repair_plan", "copilot_repair_response",
+            "repair_plan", "deterministic_repair_plan",
             "dependency_policy_report", "dependency_policy_summary",
             "dependency_repair_plan", "orchestration_summary",
             "target_dependency_plan", "rewrite_dry_run.patch",
@@ -7396,7 +7396,7 @@ def _resolve_assistant_artifact_previews(
     # Only resolve kinds that are both in safe_kinds AND appear in events
     safe_kinds = {
         "phase2_log", "post_transform_test_log", "failure_classification",
-        "repair_plan", "deterministic_repair_plan", "copilot_repair_response",
+        "repair_plan", "deterministic_repair_plan",
         "dependency_policy_report", "dependency_policy_summary",
         "dependency_repair_plan", "orchestration_summary",
         "target_dependency_plan", "rewrite_dry_run.patch",
@@ -10345,7 +10345,7 @@ def _build_v2_assistant_prompt(
         "pending_approvals": pending_approvals,
         "approved_approvals": approved_cards,
         "failure_summary": {
-            "failures": [_f for f in grouped_failures for _f in [{"type": f["type"], "stage": f["stage"], "title": f["title"], "message": f["message"], "build_status": f["build_status"], "final_status": f["final_status"], "result_kind": f["result_kind"], "repair_loop_status": f["repair_loop_status"], "copilot_status": f["copilot_status"], "event_types": f["event_types"], "repair_events": f["repair_events"]}]],
+            "failures": [_f for f in grouped_failures for _f in [{"type": f["type"], "stage": f["stage"], "title": f["title"], "message": f["message"], "build_status": f["build_status"], "final_status": f["final_status"], "result_kind": f["result_kind"], "repair_loop_status": f["repair_loop_status"], "event_types": f["event_types"], "repair_events": f["repair_events"]}]],
             "count": len(grouped_failures),
         },
         "artifact_kinds": artifact_kinds[-20:],
@@ -10451,7 +10451,6 @@ _PIPELINE_PHASES = (
     ("test_validation", "Test Validation", {"test_started", "test_completed", "test_failed"}),
     ("failure_repair", "Repair/Failure", {
         "repair_started", "repair_fallback_generated", "repair_completed",
-        "copilot_repair_invalid_response", "copilot_availability_checked",
     }),
     ("result_contract", "Result Contract", {"result_contract_failed"}),
     ("final_report", "Final Report", {
@@ -10475,7 +10474,6 @@ _IMPORTANT_EVENT_TYPES = {
     "model_invocation_started",
     "model_invocation_completed",
     "model_invocation_failed",
-    "copilot_status_checked",
     "sandbox_transform_started",
     "sandbox_transform_completed",
     "sandbox_transform_failed",
@@ -10483,7 +10481,6 @@ _IMPORTANT_EVENT_TYPES = {
     "build_failed",
     "repair_started",
     "repair_fallback_generated",
-    "copilot_repair_invalid_response",
     "next_stage_queued",
     "final_report_started",
     "final_report_completed",
@@ -10763,15 +10760,13 @@ _PRIMARY_EVENT_PRIORITY = {
     "test_failed": 3,
     "stage_failed": 4,
     "result_contract_failed": 5,
-    "copilot_repair_invalid_response": 6,
-    "repair_started": 7,
+    "repair_started": 6,
 }
 
 
 _REPAIR_EVENT_TYPES = {
     "repair_started",
     "repair_fallback_generated",
-    "copilot_repair_invalid_response",
     "repair_proposal_revised",
     "reviewer_critique_created",
     "repair_patch_gate_completed",
@@ -10882,7 +10877,6 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
             "final_status": str(payload.get("final_status", "")),
             "final_proof_level": str(payload.get("final_proof_level", "")),
             "repair_loop_status": str(payload.get("repair_loop_status", "")),
-            "copilot_status": str(payload.get("copilot_invocation_status", "")),
             "repair_fallback": str(payload.get("repair_fallback_generated", "")),
             # SA4 diagnostic fields
             "matched_line": _safe_failure_str(payload.get("matched_line")),
@@ -11150,8 +11144,7 @@ def _next_operator_action(result_kind: str) -> str:
                                   "Upgrade Maven or switch profile.",
         "project_detection_error": "Could not detect a Java project at the sandbox path. "
                                     "Verify that the previous stage produced valid output.",
-        "build_timeout": "Build exceeded the timeout. Consider increasing AI_MIGRATION_COPILOT_TIMEOUT_SECONDS "
-                          "or investigating performance issues.",
+        "build_timeout": "Build exceeded the timeout. Consider adjusting the timeout configuration.",
         "startup_validation_failed": "Application started but validation checks failed. "
                                       "Review logs for startup errors or health check failures.",
         "command_error": "Build command failed. Review the matched_line and stderr for details.",
@@ -11195,7 +11188,7 @@ def _event_phase_key(event: Any) -> str:
             return "test_validation"
         if any(k in kind for k in ("final", "proof", "orchestration", "report")):
             return "final_report"
-        if any(k in kind for k in ("repair", "copilot", "fallback")):
+        if any(k in kind for k in ("repair", "fallback")):
             return "failure_repair"
     return ""
 

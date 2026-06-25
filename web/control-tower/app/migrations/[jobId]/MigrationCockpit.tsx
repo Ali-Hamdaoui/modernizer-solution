@@ -409,7 +409,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       "proof_updated",
       "approval_resume_queued",
       "resume_started",
-      "copilot_status_checked",
       "ai_diagnosis_created",
       "pom_summary_created",
       "repair_proposal_revised",
@@ -775,7 +774,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
               {f.final_status && f.type !== "result_contract_failed" && <p className="meta">Final: {f.final_status}</p>}
               {f.final_proof_level && f.type !== "result_contract_failed" && <p className="meta">Proof level: {f.final_proof_level}</p>}
               {f.repair_loop_status && f.type !== "result_contract_failed" && <p className="meta">Repair: {f.repair_loop_status}</p>}
-              {f.copilot_status && f.type !== "result_contract_failed" && <p className="meta">Copilot: {f.copilot_status}</p>}
               {f.test_status && f.type !== "result_contract_failed" && <p className="meta">Test: {f.test_status}</p>}
               {f.stage != null && (
                 <div className="file-alias-actions">
@@ -1181,7 +1179,6 @@ const IMPORTANT_SSE_TYPES = new Set([
   "build_failed",
   "repair_started",
   "repair_fallback_generated",
-  "copilot_repair_invalid_response",
   "ai_diagnosis_created",
   "pom_summary_created",
   "repair_proposal_revised",

@@ -13,7 +13,7 @@ import {
   type CockpitData,
 } from "../app/migrations/[jobId]/MigrationCockpit";
 import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, requireJobId, resolveReportDownloadUrl, v2EventStreamUrl } from "../lib/controlTowerApi";
-import type { GateRepresentation, V2JobEvent } from "../lib/contracts";
+import type { GateRepresentation, V2FailureSummaryItem, V2JobEvent } from "../lib/contracts";
 
 describe("V2 Migration Cockpit contract", () => {
   it("passes the awaited route job id into MigrationCockpit", async () => {
@@ -478,19 +478,17 @@ describe("V2 Migration Cockpit contract", () => {
           final_status: "FALLBACK_REPAIR_PLAN",
           final_proof_level: "not_verified",
           repair_loop_status: "FALLBACK_REPAIR_PLAN",
-          copilot_status: "INVALID_RESPONSE",
           repair_fallback: "True",
         },
       ],
       repair_loop_active: true,
       repair_events: [
-        { type: "copilot_repair_invalid_response", message: "Copilot response invalid" },
+        { type: "repair_invalid_response", message: "Repair response invalid" },
       ],
       artifact_kinds: ["analysis_report"],
     };
     expect(failureSummary.has_failures).toBe(true);
     expect(failureSummary.failures[0].build_status).toBe("BUILD_FAILED_IN_SANDBOX");
-    expect(failureSummary.failures[0].copilot_status).toBe("INVALID_RESPONSE");
   });
 
   it("assistant model status includes failure_reason for fallback", () => {
@@ -507,11 +505,91 @@ describe("V2 Migration Cockpit contract", () => {
 
   it("assistant and repair wording stay separate after repair fallback", () => {
     const assistantModel = { status: "live_ok", source: "azure_openai", provider: "azure_openai" };
-    const repair = { copilot_status: "INVALID_RESPONSE", repair_fallback: "True", repair_loop_status: "FALLBACK_REPAIR_PLAN" };
+    const repair = { repair_fallback: "True", repair_loop_status: "FALLBACK_REPAIR_PLAN" };
     expect(assistantModel.source).toBe("azure_openai");
     expect(assistantModel.status).toBe("live_ok");
-    expect(repair.copilot_status).toBe("INVALID_RESPONSE");
     expect(repair.repair_loop_status).toBe("FALLBACK_REPAIR_PLAN");
+  });
+
+  // ── F0 closure: no copilot_status in failure contracts or rendering ──
+
+  it("V2FailureSummaryItem does not include copilot_status field", () => {
+    const failure: V2FailureSummaryItem = {
+      type: "build_failed",
+      stage: 2,
+      title: "test",
+      message: "test message",
+      build_status: "BUILD_FAILED_IN_SANDBOX",
+      test_status: "NOT_RUN",
+      final_status: "FAILED",
+      final_proof_level: "not_verified",
+      repair_loop_status: "INACTIVE",
+      repair_fallback: "false",
+      matched_line: "",
+      command: [],
+      requested_command: [],
+      build_tool: "maven",
+      module: "",
+      main_class: "",
+      unit_id: "",
+      result_kind: "dependency_error",
+      java_home: "/java",
+      detected_version: "",
+      required_minimum: "",
+      event_types: [],
+      repair_events: [],
+      next_operator_action: "manual_review",
+      supervision_trace: {
+        ai_diagnosis: null,
+        evidence_used: [],
+        pom_analysis: null,
+        repair_proposal: null,
+        reviewer_verdict: null,
+        validation_result: null,
+      },
+    };
+    expect("copilot_status" in failure).toBe(false);
+    expect(failure).not.toHaveProperty("copilot_status");
+  });
+
+  it("failure summary rendering does not include copilot_status", () => {
+    const sampleFailure = {
+      type: "build_failed",
+      stage: 2,
+      title: "Stage 2 Build Failure",
+      message: "Build result kind: dependency_error",
+      build_status: "BUILD_FAILED_IN_SANDBOX",
+      final_status: "FAILED",
+      result_kind: "dependency_error",
+      event_types: ["build_failed"],
+      repair_events: [{ type: "repair_started", message: "repair started" }],
+    };
+
+    const markup = renderToStaticMarkup(
+      <div className="failure-card">
+        <div className="stage-header">
+          <strong>{sampleFailure.type}</strong>
+          <span className="meta">Stage {sampleFailure.stage}</span>
+          <span className="status-badge failed">FAILED</span>
+        </div>
+        <p>{sampleFailure.message}</p>
+        {sampleFailure.result_kind && (
+          <p className="meta">
+            <strong>Root cause:</strong> {sampleFailure.result_kind}
+          </p>
+        )}
+        {sampleFailure.event_types.length > 0 && (
+          <p className="meta">Event types: {sampleFailure.event_types.join(", ")}</p>
+        )}
+        {sampleFailure.repair_events.length > 0 && (
+          <p className="meta">Repair events: {sampleFailure.repair_events.map((r) => r.type).join(", ")}</p>
+        )}
+      </div>
+    );
+
+    expect(markup).not.toContain("copilot_status");
+    expect(markup).not.toContain("INVALID_RESPONSE");
+    expect(markup).not.toContain("copilot_invocation_status");
   });
 
   it("IMPORTANT_SSE_TYPES includes all required lifecycle events", () => {

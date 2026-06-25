@@ -10,13 +10,13 @@ from migration_factory.orchestrator.phase_services import PhaseServices
 from migration_factory.orchestrator.state import build_initial_state
 
 
-def _state(tmp_path: Path, *, assist_mode: str) -> dict:
+def _state(tmp_path: Path, *, mode: str) -> dict:
     state = build_initial_state(
         run_id="run-001",
         legacy_app_path=str(tmp_path / "legacy"),
         modernized_app_path=str(tmp_path / "modernized"),
     )
-    state["copilot_assist_mode"] = assist_mode
+    state["copilot_assist_mode"] = mode
     state["copilot_provider"] = "deterministic"
     return state
 
@@ -30,25 +30,19 @@ def _validation(*, valid: bool = True, warnings: list[str] | None = None) -> Art
     )
 
 
-def _patch_validators(monkeypatch, *, analysis_warnings: list[str] | None = None) -> None:
-    monkeypatch.setattr(graph_module, "validate_analysis_artifacts", lambda state: _validation(warnings=analysis_warnings))
+def _patch_validators(monkeypatch, *, analysis_fail: bool = False, analysis_warnings: list[str] | None = None) -> None:
+    monkeypatch.setattr(
+        graph_module, "validate_analysis_artifacts",
+        lambda state: _validation(valid=not analysis_fail, warnings=analysis_warnings),
+    )
     monkeypatch.setattr(graph_module, "validate_planning_artifacts", lambda state: _validation())
     monkeypatch.setattr(graph_module, "validate_assessment_artifacts", lambda state: _validation())
 
 
-def _services(calls: list[str], *, analysis: str = "PASS", planning: str = "FAIL") -> PhaseServices:
+def _services(calls: list[str], *, analysis: str = "PASS", planning: str = "PASS", assessment: str = "FAIL") -> PhaseServices:
     def run_analysis_phase(state):
         calls.append("analysis")
-        result = {"analysis_status": analysis}
-        if analysis == "FAIL":
-            result.update(
-                {
-                    "blockers": ["deterministic blocker"],
-                    "warnings": ["deterministic warning"],
-                    "errors": ["deterministic error"],
-                }
-            )
-        return result
+        return {"analysis_status": analysis}
 
     def run_planning_phase(state):
         calls.append("planning")
@@ -56,7 +50,7 @@ def _services(calls: list[str], *, analysis: str = "PASS", planning: str = "FAIL
 
     def run_assessment_phase(state):
         calls.append("assessment")
-        return {"assessment_status": "FAIL"}
+        return {"assessment_status": assessment}
 
     return PhaseServices(
         run_analysis_phase=run_analysis_phase,
@@ -65,92 +59,92 @@ def _services(calls: list[str], *, analysis: str = "PASS", planning: str = "FAIL
     )
 
 
-class _MutatingCopilotService:
-    def __init__(self, state):
-        self.state = state
-
-    def generate_phase_assist(self, state, phase):
-        state["copilot_phase_statuses"] = {**dict(state.get("copilot_phase_statuses", {}) or {}), phase: "generated"}
-        state["copilot_artifact_refs"] = {
-            **dict(state.get("copilot_artifact_refs", {}) or {}),
-            f"{phase}_copilot_assist": f"{phase}/copilot_assist.json",
-        }
-        state["analysis_status"] = "PASS"
-        state["blockers"] = []
-        state["warnings"] = []
-        state["errors"] = []
+# --- F0 invariant: _should_route_to_copilot_assist always returns False ---
 
 
-def test_fail_with_failures_mode_routes_to_copilot_assist_then_end(monkeypatch, tmp_path: Path) -> None:
-    calls: list[str] = []
-    _patch_validators(monkeypatch)
-    monkeypatch.setattr(copilot_node_module, "CopilotAssistService", _MutatingCopilotService)
-    app = graph_module.build_graph(phase_services=_services(calls, analysis="FAIL"))
+def test_should_route_to_copilot_assist_always_returns_false(tmp_path: Path) -> None:
+    state = _state(tmp_path, mode="failures")
+    assert graph_module._should_route_to_copilot_assist(state, validation_passed=False) is False
+    assert graph_module._should_route_to_copilot_assist(state, validation_passed=True) is False
 
-    result = app.invoke(_state(tmp_path, assist_mode="failures"))
+    state["copilot_assist_mode"] = "always"
+    assert graph_module._should_route_to_copilot_assist(state, validation_passed=False) is False
+    assert graph_module._should_route_to_copilot_assist(state, validation_passed=True) is False
 
-    assert calls == ["analysis"]
-    assert result["copilot_phase_statuses"]["analysis"] == "generated"
-    assert result["analysis_status"] == "FAIL"
-    assert result["blockers"] == ["deterministic blocker"]
-    assert result["warnings"] == ["deterministic warning"]
-    assert result["errors"] == ["deterministic error"]
-    assert "planning_status" in result
-    assert result["planning_status"] == "PENDING"
+    state["copilot_assist_mode"] = "warnings"
+    assert graph_module._should_route_to_copilot_assist(state, validation_passed=False) is False
+    assert graph_module._should_route_to_copilot_assist(state, validation_passed=True) is False
 
 
-def test_fail_with_off_mode_routes_directly_to_end(monkeypatch, tmp_path: Path) -> None:
-    calls: list[str] = []
-    _patch_validators(monkeypatch)
-    monkeypatch.setattr(copilot_node_module, "CopilotAssistService", _MutatingCopilotService)
-    app = graph_module.build_graph(phase_services=_services(calls, analysis="FAIL"))
-
-    result = app.invoke(_state(tmp_path, assist_mode="off"))
-
-    assert calls == ["analysis"]
-    assert result["analysis_status"] == "FAIL"
-    assert result["copilot_phase_statuses"] == {}
-
-
-def test_pass_with_warnings_mode_routes_to_copilot_assist_then_next_phase(monkeypatch, tmp_path: Path) -> None:
+def test_graph_never_routes_to_copilot_on_pass_with_warnings_mode(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
     _patch_validators(monkeypatch, analysis_warnings=["review generated plan"])
-    monkeypatch.setattr(copilot_node_module, "CopilotAssistService", _MutatingCopilotService)
-    app = graph_module.build_graph(phase_services=_services(calls, analysis="PASS", planning="FAIL"))
+    app = graph_module.build_graph(phase_services=_services(calls, analysis="PASS"))
 
-    result = app.invoke(_state(tmp_path, assist_mode="warnings"))
+    result = app.invoke(_state(tmp_path, mode="warnings"))
 
-    assert calls == ["analysis", "planning"]
-    assert result["copilot_phase_statuses"]["analysis"] == "generated"
-    assert result["planning_status"] == "FAIL"
-    assert result["warnings"] == ["review generated plan"]
+    assert calls == ["analysis", "planning", "assessment"]
+    assert result.get("copilot_phase_statuses") in (None, {})
+    assert result["planning_status"] == "PASS"
 
 
-def test_pass_without_warnings_skips_assist_unless_always(monkeypatch, tmp_path: Path) -> None:
+def test_graph_never_routes_to_copilot_on_fail_with_failures_mode(monkeypatch, tmp_path: Path) -> None:
+    calls: list[str] = []
+    _patch_validators(monkeypatch, analysis_fail=True)
+    app = graph_module.build_graph(phase_services=_services(calls, analysis="FAIL"))
+
+    result = app.invoke(_state(tmp_path, mode="failures"))
+
+    assert calls == ["analysis"]
+    assert result.get("copilot_phase_statuses") in (None, {})
+    assert result["analysis_status"] == "FAIL"
+
+
+def test_graph_never_routes_to_copilot_with_always_mode(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
     _patch_validators(monkeypatch)
-    monkeypatch.setattr(copilot_node_module, "CopilotAssistService", _MutatingCopilotService)
-    app = graph_module.build_graph(phase_services=_services(calls, analysis="PASS", planning="FAIL"))
+    app = graph_module.build_graph(phase_services=_services(calls, planning="PASS"))
 
-    result = app.invoke(_state(tmp_path, assist_mode="warnings"))
+    result = app.invoke(_state(tmp_path, mode="always"))
 
-    assert calls == ["analysis", "planning"]
-    assert result["copilot_phase_statuses"] == {}
+    assert calls == ["analysis", "planning", "assessment"]
+    assert result.get("copilot_phase_statuses") in (None, {})
 
 
-def test_always_mode_routes_validated_phase_through_assist(monkeypatch, tmp_path: Path) -> None:
+def test_graph_never_routes_to_copilot_with_off_mode(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
     _patch_validators(monkeypatch)
-    monkeypatch.setattr(copilot_node_module, "CopilotAssistService", _MutatingCopilotService)
-    app = graph_module.build_graph(phase_services=_services(calls, analysis="PASS", planning="FAIL"))
+    app = graph_module.build_graph(phase_services=_services(calls))
 
-    result = app.invoke(_state(tmp_path, assist_mode="always"))
+    result = app.invoke(_state(tmp_path, mode="off"))
 
-    assert calls == ["analysis", "planning"]
-    assert result["copilot_phase_statuses"]["analysis"] == "generated"
+    assert calls == ["analysis", "planning", "assessment"]
+    assert result.get("copilot_phase_statuses") in (None, {})
+
+
+# --- F0 invariant: copilot_final_report is never routed to ---
+
+
+def test_route_after_final_report_returns_end(tmp_path: Path) -> None:
+    state = _state(tmp_path, mode="off")
+    result = graph_module._route_after_final_report(state)
+    assert result == "__end__"
+
+
+# --- F0 invariant: copilot nodes exist in graph but are structurally unreachable ---
 
 
 def test_copilot_phase_assist_does_not_call_interrupt() -> None:
     source = inspect.getsource(copilot_node_module)
-
     assert "interrupt(" not in source
+
+
+def test_copilot_nodes_are_dead_code_no_service_calls(tmp_path: Path) -> None:
+    state = _state(tmp_path, mode="off")
+    before = dict(state)
+    result = copilot_node_module.copilot_phase_assist(state)
+    assert result == before
+
+    before2 = dict(state)
+    result2 = copilot_node_module.copilot_final_report(state)
+    assert result2 == before2

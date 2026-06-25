@@ -399,7 +399,6 @@ def test_v2_failure_summary_endpoint_with_failures(tmp_path: Path) -> None:
                 "final_status": "FALLBACK_REPAIR_PLAN",
                 "final_proof_level": "not_verified",
                 "repair_loop_status": "FALLBACK_REPAIR_PLAN",
-                "copilot_invocation_status": "INVALID_RESPONSE",
                 "repair_fallback_generated": True,
             },
         )
@@ -414,10 +413,10 @@ def test_v2_failure_summary_endpoint_with_failures(tmp_path: Path) -> None:
         uow.v2_events.save(
             job_id=job_id,
             stage=1,
-            event_type="copilot_repair_invalid_response",
-            status="failed",
-            message="Copilot response invalid",
-            payload={"copilot_invocation_status": "INVALID_RESPONSE"},
+            event_type="repair_completed",
+            status="completed",
+            message="Deterministic repair fallback applied",
+            payload={"repair_fallback_generated": True},
         )
 
     response = client.get(f"/v1/v2/migration-jobs/{job_id}/failure-summary")
@@ -427,7 +426,7 @@ def test_v2_failure_summary_endpoint_with_failures(tmp_path: Path) -> None:
     assert body["repair_loop_active"] is True
     assert len(body["failures"]) >= 1
     assert any(f["build_status"] == "BUILD_FAILED_IN_SANDBOX" for f in body["failures"])
-    assert any(f["copilot_status"] == "INVALID_RESPONSE" for f in body["failures"])
+    assert any(f["repair_loop_status"] == "FALLBACK_REPAIR_PLAN" for f in body["failures"])
     assert any(f["final_proof_level"] == "not_verified" for f in body["failures"])
 
 
@@ -570,7 +569,7 @@ def test_failure_summary_groups_real_stage2_dependency_build_failure_sequence(tm
         ("build_failed", "failed", "Build failed in sandbox", {"build_status": "BUILD_FAILED_IN_SANDBOX", "result_kind": "dependency_error"}),
         ("repair_started", "running", "Repair started", {"repair_loop_status": "FALLBACK_REPAIR_PLAN"}),
         ("repair_fallback_generated", "completed", "Deterministic fallback repair plan generated", {"repair_fallback_generated": True}),
-        ("copilot_repair_invalid_response", "failed", "Copilot repair invalid response", {"copilot_invocation_status": "INVALID_RESPONSE"}),
+        ("repair_proposal_revised", "completed", "Repair proposal revised via deterministic fallback", {"repair_fallback_generated": True}),
         ("transform_failed", "failed", "Transform failed", {"final_status": "FALLBACK_REPAIR_PLAN"}),
         ("stage_failed", "failed", "Stage failed", {"final_status": "FALLBACK_REPAIR_PLAN"}),
     ]
@@ -596,7 +595,7 @@ def test_failure_summary_groups_real_stage2_dependency_build_failure_sequence(tm
     assert failure["result_kind"] == "dependency_error"
     assert failure["build_status"] == "BUILD_FAILED_IN_SANDBOX"
     assert failure["final_status"] == "FALLBACK_REPAIR_PLAN"
-    assert failure["copilot_status"] == "INVALID_RESPONSE"
+    assert failure["repair_loop_status"] == "FALLBACK_REPAIR_PLAN"
     assert failure["event_types"] == [
         "build_failed",
         "sandbox_transform_failed",
@@ -606,7 +605,7 @@ def test_failure_summary_groups_real_stage2_dependency_build_failure_sequence(tm
     assert [event["type"] for event in failure["repair_events"]] == [
         "repair_started",
         "repair_fallback_generated",
-        "copilot_repair_invalid_response",
+        "repair_proposal_revised",
     ]
     assert body["repair_events"] == []
 

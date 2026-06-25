@@ -502,7 +502,6 @@ class V2FailureDiagnosisService:
             "likely_root_cause": likely_root_cause,
             "evidence": [],
             "recommended_next_step": "Review build/test logs and rerun.",
-            "send_to_copilot": True,
             "requires_human_review": False,
         }
 

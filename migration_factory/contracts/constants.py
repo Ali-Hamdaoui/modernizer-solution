@@ -61,6 +61,8 @@ APPROVAL_DECISION_VALUES: tuple[str, ...] = (
     "replan_required",
 )
 
+# LEGACY: retained for backward compatibility with existing schemas.
+# Copilot has been removed; these values no longer control runtime behavior.
 COPILOT_STATUS_VALUES: tuple[str, ...] = (
     "USED",
     "SKIPPED",

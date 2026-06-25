@@ -373,7 +373,7 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
 
 
 def _copilot_statement_enabled() -> bool:
-    return os.getenv(_COPILOT_STATEMENT_ENV, "").strip().lower() in _TRUE_VALUES
+    return False
 
 
 def _validation_scope(state: dict[str, Any]) -> dict[str, Any]:

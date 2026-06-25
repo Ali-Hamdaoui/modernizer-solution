@@ -634,7 +634,6 @@ export type V2FailureSummaryItem = {
   final_status: string;
   final_proof_level: string;
   repair_loop_status: string;
-  copilot_status: string;
   repair_fallback: string;
   // ── SA4 diagnostic fields ──
   matched_line: string;

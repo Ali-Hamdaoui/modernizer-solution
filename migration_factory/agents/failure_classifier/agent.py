@@ -50,7 +50,7 @@ def classify_failure(
             likely_root_cause="cachingConfig is missing a runtime property required for H2 startup.",
             evidence=_runtime_config_evidence(lowered, h2_report or {}),
             recommended_next_step="Identify the required cachingConfig property and add a smoke-safe runtime configuration value.",
-            send_to_copilot=True,
+            send_to_copilot=False,
             requires_human_review=False,
             related_warnings=related_warnings,
             root_cause="RUNTIME_CONFIG_MISSING_PROPERTY",

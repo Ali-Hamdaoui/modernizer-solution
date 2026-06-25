@@ -15,9 +15,7 @@ from migration_factory.orchestrator.preflight import (
 from migration_factory.orchestrator.state import (
     FULL_SANDBOX_MIGRATION_MODE,
     READ_ONLY_ASSESSMENT_MODE,
-    apply_copilot_config,
     build_initial_state,
-    parse_copilot_config_from_env,
 )
 from migration_factory.orchestrator.summary import (
     finalize_orchestration_state,
@@ -111,11 +109,11 @@ def _render_result(result: Any) -> Any:
 
 
 def load_copilot_config(state: dict[str, Any]) -> dict[str, Any]:
-    return apply_copilot_config(state)
+    return dict(state)
 
 
 def parse_copilot_config() -> dict[str, Any]:
-    return parse_copilot_config_from_env()
+    return {}
 
 
 def _extract_interrupt_payload(result: Any) -> dict[str, Any] | None:

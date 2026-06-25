@@ -130,9 +130,7 @@ def compute_setup_checksum(request: CreateSetupRequest) -> str:
 
 def is_ai_smoke_required(skip_endpoint_smoke: bool) -> bool:
     """Return True when AI smoke must pass before migration can start."""
-    flag = os.environ.get("AI_MIGRATION_COPILOT_REQUIRED", "").strip().lower()
-    env_required = flag in {"1", "true", "yes", "on"}
-    return env_required or not skip_endpoint_smoke
+    return not skip_endpoint_smoke
 
 
 # ── Setup service ────────────────────────────────────────────────────

@@ -277,7 +277,6 @@ def test_domain_package_uses_only_standard_library_and_domain_imports() -> None:
         "migration_factory.final_report",
         "migration_factory.orchestrator",
         "migration_factory.repair_loop",
-        "migration_factory.tui",
     )
 
     for path in domain_dir.glob("*.py"):

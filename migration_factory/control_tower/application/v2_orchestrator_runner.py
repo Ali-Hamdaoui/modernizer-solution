@@ -56,23 +56,6 @@ _MANIFEST_ENV_KEYS = (
     "MAVEN_CMD",
 )
 
-_COPILOT_ENV_KEYS = (
-    "AI_MIGRATION_COPILOT_PROVIDER",
-    "AI_MIGRATION_COPILOT_MODEL",
-    "AI_MIGRATION_COPILOT_ASSIST",
-    "AI_MIGRATION_ENABLE_COPILOT_REPORT",
-    "AI_MIGRATION_COPILOT_REQUIRED",
-    "AI_MIGRATION_COPILOT_FAILURE_AGENT_ENABLED",
-    "AI_MIGRATION_AUTO_APPLY_SAFE_REPAIRS",
-    "AI_MIGRATION_SKIP_ENDPOINT_SMOKE",
-    "AI_MIGRATION_PROOF_LEVEL",
-    "AI_MIGRATION_H2_STARTUP_REQUIRED",
-    "AI_MIGRATION_COPILOT_TIMEOUT_SECONDS",
-    "AI_MIGRATION_COPILOT_REPAIR_MAX_ATTEMPTS",
-    "AI_MIGRATION_COPILOT_REPAIR_STRICT_CONTAINMENT",
-    "AI_MIGRATION_COPILOT_LOG_LEVEL",
-)
-
 _SECRET_ENV_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL", "AUTHORIZATION")
 
 _TERMINAL_FAILURES = {
@@ -267,24 +250,6 @@ class V2OrchestratorRunner:
 
         try:
             process_env = _build_env(env_manifest)
-            copilot_enabled = bool(
-                process_env.get("AI_MIGRATION_COPILOT_PROVIDER")
-                or process_env.get("AI_MIGRATION_COPILOT_MODEL")
-            )
-
-            self._event(
-                job_id=job_id,
-                stage=stage_index,
-                event_type="copilot_status_checked",
-                status="completed",
-                message="Copilot/model runtime configuration checked for orchestrator subprocess.",
-                payload={
-                    "command_id": command_id,
-                    "copilot_config_present": copilot_enabled,
-                    "provider_configured": bool(process_env.get("AI_MIGRATION_COPILOT_PROVIDER")),
-                    "model_configured": bool(process_env.get("AI_MIGRATION_COPILOT_MODEL")),
-                },
-            )
 
             process = self._popen_factory(
                 _normalized_argv(argv),
@@ -923,7 +888,6 @@ class V2OrchestratorRunner:
         result: dict[str, Any],
     ) -> None:
         repair_status = str(result.get("repair_loop_status", ""))
-        copilot_status = str(result.get("copilot_invocation_status", ""))
         fallback = result.get("repair_fallback_generated")
 
         if repair_status.upper() not in _NON_ACTIVE_REPAIR_STATUSES:
@@ -946,16 +910,6 @@ class V2OrchestratorRunner:
                 payload={"command_id": command_id},
             )
 
-        if copilot_status == "INVALID_RESPONSE":
-            self._event(
-                job_id=job_id,
-                stage=stage_index,
-                event_type="copilot_repair_invalid_response",
-                status="failed",
-                message="Copilot repair response was invalid.",
-                payload={"command_id": command_id, "copilot_invocation_status": copilot_status},
-            )
-
     def _emit_diagnostic_failure_events(
         self,
         *,
@@ -969,7 +923,6 @@ class V2OrchestratorRunner:
         final_status = str(result.get("final_status", ""))
         final_proof = str(result.get("final_proof_level", ""))
         transform_status = str(result.get("transform_status", ""))
-        copilot_status = str(result.get("copilot_invocation_status", ""))
         fallback = result.get("repair_fallback_generated")
 
         build_validation = result.get("build_validation") or {}
@@ -1042,7 +995,6 @@ class V2OrchestratorRunner:
                 "transform_status": transform_status,
                 "final_proof_level": final_proof,
                 "build_status": build_status,
-                "copilot_invocation_status": copilot_status,
                 "repair_fallback_generated": bool(fallback),
                 **public_contract,
             }
@@ -1548,13 +1500,6 @@ def _build_env(manifest: dict[str, Any]) -> dict[str, str]:
         if isinstance(value, str) and value:
             env[key] = value
 
-    for key in _COPILOT_ENV_KEYS:
-        if _is_secret_env_key(key):
-            continue
-        value = os.environ.get(key)
-        if value:
-            env[key] = value
-
     path_prepend = manifest.get("PATH_PREPEND")
     if isinstance(path_prepend, str) and path_prepend:
         current_path = env.get("PATH", "")
@@ -1842,7 +1787,6 @@ def _canonical_event_type(phase: str, suffix: str, *, stage_index: int) -> str:
         "build": f"build_{suffix}",
         "test": f"test_{suffix}",
         "repair": f"repair_{suffix}",
-        "copilot_repair": f"copilot_repair_{suffix}",
     }
 
     if phase == "final_report":

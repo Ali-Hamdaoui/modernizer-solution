@@ -29,12 +29,6 @@ from migration_factory.contracts.assessment_artifacts import (
     OPTIONAL_ASSESSMENT_INPUT_ARTIFACTS,
     REQUIRED_ASSESSMENT_INPUT_ARTIFACTS,
 )
-from migration_factory.contracts.copilot_artifacts import (
-    COPILOT_ADVISORY_CAN_MODIFY_FLAGS,
-    COPILOT_ASSIST_STATUSES,
-    advisory_can_modify_flags,
-)
-
 __all__ = [
     "SCHEMA_VERSION",
     "DIRECTORY_NAMES",
@@ -57,7 +51,4 @@ __all__ = [
     "REQUIRED_ASSESSMENT_INPUT_ARTIFACTS",
     "OPTIONAL_ASSESSMENT_INPUT_ARTIFACTS",
     "ASSESSMENT_OUTPUT_ARTIFACTS",
-    "COPILOT_ASSIST_STATUSES",
-    "COPILOT_ADVISORY_CAN_MODIFY_FLAGS",
-    "advisory_can_modify_flags",
 ]
