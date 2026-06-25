@@ -57,6 +57,9 @@ class V1EventType(str, Enum):
     STAGE_FAILED = "stage_failed"
     OUTPUT_REGISTERED = "output_registered"
 
+    # ── Model invocation audit events ────────────────────────────
+    MODEL_INVOCATION_RECORDED = "model_invocation_recorded"
+
 
 # ── Convenience sets ────────────────────────────────────────────────
 """Event types that start a V1 job lifecycle."""

@@ -51,6 +51,7 @@ class CopilotConfigError(ValueError):
 class MigrationState(TypedDict, total=False):
     run_id: str
     mode: str
+    phase: str
     legacy_app_path: str
     modernized_app_path: str
     ai_hub_path: str

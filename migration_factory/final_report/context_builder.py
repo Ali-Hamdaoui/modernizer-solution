@@ -69,6 +69,7 @@ _ARTIFACTS: dict[str, str] = {
     "timing_summary": "performance/timing_summary.md",
     "final_migration_report": "final/migration_report.json",
     "final_migration_summary": "final/migration_summary.md",
+    "ai_trace": "final/ai_trace.json",
     "report_context": "final/report_context.json",
 }
 
@@ -127,6 +128,7 @@ def build_report_context(run_dir: str | Path) -> dict[str, Any]:
         "transformation": _transformation(final_report, orchestration, transform_plan, ledger, run_path, provenance),
         "build": _build(final_report, orchestration, ledger, test_report, provenance),
         "tests": _tests(final_report, orchestration, test_report, provenance),
+        "ai_trace": _ai_trace(final_report, data.get("ai_trace"), artifact_refs, run_path, provenance),
         "dependency_policy": _dependency_policy(final_report, dependency_policy_report, artifact_refs, provenance),
         "security": _security(analysis, assessment, final_report, provenance),
         "scope_limits": _scope_limits(final_report, provenance),
@@ -429,6 +431,57 @@ def _tests(
         "execution_mode": _value_or(test_report.get("execution_mode"), fallback=NOT_CAPTURED),
         "report_paths": _value_or(test_report.get("report_paths"), fallback=[]),
     }
+
+
+def _ai_trace(
+    final_report: dict[str, Any],
+    ai_trace_artifact: Any,
+    artifact_refs: dict[str, str],
+    run_dir: Path,
+    provenance: dict[str, Any],
+) -> list[dict[str, Any]]:
+    raw_records = final_report.get("ai_trace")
+    if not isinstance(raw_records, list):
+        raw_records = ai_trace_artifact
+    if not isinstance(raw_records, list):
+        return []
+    provenance["ai_trace"] = [
+        _ref("final/migration_report.json", "/ai_trace"),
+        _ref(artifact_refs.get("ai_trace", "final/ai_trace.json"), ""),
+    ]
+    return [
+        normalized
+        for record in raw_records
+        if isinstance(record, dict)
+        for normalized in [_normalize_ai_trace_record(record, run_dir)]
+        if _ai_trace_has_record(normalized)
+    ]
+
+
+def _normalize_ai_trace_record(record: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+    normalized = {
+        "event": _value_or(record.get("event"), record.get("event_type"), fallback=NOT_CAPTURED),
+        "agent": _value_or(record.get("agent"), record.get("agent_name"), record.get("model_invocation_id"), fallback=NOT_CAPTURED),
+        "evidence_refs": _list(record.get("evidence_refs")),
+        "context_pack_checksum": _value_or(record.get("context_pack_checksum"), fallback=NOT_CAPTURED),
+        "diagnosis": _value_or(record.get("diagnosis"), record.get("diagnosis_id"), record.get("failure_type"), fallback=NOT_CAPTURED),
+        "proposal_ref": _value_or(record.get("proposal_ref"), record.get("repair_proposal_id"), record.get("proposal_id"), fallback=NOT_CAPTURED),
+        "proposal_checksum": _value_or(record.get("proposal_checksum"), fallback=NOT_CAPTURED),
+        "reviewer_verdict": _value_or(record.get("reviewer_verdict"), record.get("reviewer_decision"), record.get("decision"), fallback=NOT_CAPTURED),
+        "human_decision": _value_or(record.get("human_decision"), record.get("approval_decision"), fallback=NOT_CAPTURED),
+        "validation_result": _value_or(record.get("validation_result"), record.get("validation_status"), fallback=NOT_CAPTURED),
+        "ledger_ref": _value_or(record.get("ledger_ref"), fallback=NOT_CAPTURED),
+    }
+    return _redact(_relativize_paths(normalized, run_dir))
+
+
+def _ai_trace_has_record(record: dict[str, Any]) -> bool:
+    for value in record.values():
+        if isinstance(value, list) and value:
+            return True
+        if isinstance(value, str) and value not in {"", NOT_CAPTURED, NOT_APPLICABLE, NOT_RUN}:
+            return True
+    return False
 
 
 def _dependency_policy(

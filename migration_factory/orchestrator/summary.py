@@ -28,6 +28,7 @@ EXECUTION_CLAIMS = {
     "migrated_tests_executed": False,
     "final_migration_executed": False,
 }
+
 _COPILOT_REPORT_ENV = "AI_MIGRATION_ENABLE_COPILOT_REPORT"
 _COPILOT_PROVIDER_ENV = "AI_MIGRATION_COPILOT_PROVIDER"
 _COPILOT_TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -35,62 +36,65 @@ _COPILOT_CLI_PROVIDER = "copilot_cli"
 
 
 def build_orchestration_summary(state: MigrationState) -> dict:
-    execution_claims = _execution_claims(state)
+    normalized = _normalize_output_paths(dict(state))
+    execution_claims = _execution_claims(normalized)  # type: ignore[arg-type]
     return {
-        "run_id": state.get("run_id", ""),
-        "final_status": _final_status(state),
-        "current_phase": state.get("current_phase", state.get("current_unit", "")),
-        "analysis_status": state.get("analysis_status", ""),
-        "planning_status": state.get("planning_status", ""),
-        "assessment_status": state.get("assessment_status", ""),
-        "orchestration_status": state.get("orchestration_status", ""),
-        "approval_status": state.get("approval_status", ""),
-        "approval_decision": state.get("approval_decision"),
-        "approved_by": state.get("approved_by", ""),
-        "transform_status": state.get("transform_status", ""),
-        "build_status": state.get("build_status", ""),
-        "test_status": state.get("test_status", ""),
-        "test_totals": dict(state.get("test_totals", {}) or {}),
-        "test_report_path": state.get("test_report_path", ""),
-        "test_summary_path": state.get("test_summary_path", ""),
-        "test_log_path": state.get("test_log_path", ""),
-        "test_phase": state.get("test_phase", ""),
-        "copilot_availability_status": state.get("copilot_availability_status", "SKIPPED"),
-        "copilot_invocation_status": state.get("copilot_invocation_status", "SKIPPED"),
-        "repair_mode": state.get("repair_mode", "proposal_only"),
-        "repair_loop_status": state.get("repair_loop_status", "NOT_IMPLEMENTED"),
-        "repair_attempts_count": int(state.get("repair_attempts_count") or 0),
-        "repair_fallback_generated": bool(state.get("repair_fallback_generated", False)),
-        "repair_safe_patch_applied": bool(state.get("repair_safe_patch_applied", False)),
-        "failure_classification_status": state.get("failure_classification_status", "PENDING"),
-        "openrewrite_diff_risk_status": state.get("openrewrite_diff_risk_status", "UNKNOWN"),
-        "h2_startup_required": bool(state.get("h2_startup_required", False)),
-        "h2_startup_status": state.get("h2_startup_status", "H2_STARTUP_SKIPPED"),
-        "runtime_security_warnings": list(state.get("runtime_security_warnings", []) or []),
-        "final_proof_level": state.get("final_proof_level", "not_verified"),
-        "sandbox_path": state.get("sandbox_path", ""),
-        "log_path": state.get("transform_log_path", ""),
-        "stop_reason": state.get("stop_reason"),
-        "blockers": list(state.get("blockers", []) or []),
-        "warnings": list(state.get("warnings", []) or []),
-        "errors": list(state.get("errors", []) or []),
-        "artifact_refs": dict(state.get("artifact_refs", {}) or {}),
-        "copilot_phase_statuses": dict(state.get("copilot_phase_statuses", {}) or {}),
-        "copilot_artifact_refs": dict(state.get("copilot_artifact_refs", {}) or {}),
-        "copilot_warnings": list(state.get("copilot_warnings", []) or []),
-        "copilot_errors": list(state.get("copilot_errors", []) or []),
-        "copilot_fallback_used": bool(state.get("copilot_fallback_used", False)),
-        "timing": dict(state.get("timing", {}) or {}),
+        "run_id": normalized.get("run_id", ""),
+        "final_status": _final_status(normalized),  # type: ignore[arg-type]
+        "current_phase": normalized.get("current_phase", normalized.get("current_unit", "")),
+        "analysis_status": normalized.get("analysis_status", ""),
+        "planning_status": normalized.get("planning_status", ""),
+        "assessment_status": normalized.get("assessment_status", ""),
+        "orchestration_status": normalized.get("orchestration_status", ""),
+        "approval_status": normalized.get("approval_status", ""),
+        "approval_decision": normalized.get("approval_decision"),
+        "approved_by": normalized.get("approved_by", ""),
+        "transform_status": normalized.get("transform_status", ""),
+        "build_status": normalized.get("build_status", ""),
+        "test_status": normalized.get("test_status", ""),
+        "test_totals": dict(normalized.get("test_totals", {}) or {}),
+        "test_report_path": normalized.get("test_report_path", ""),
+        "test_summary_path": normalized.get("test_summary_path", ""),
+        "test_log_path": normalized.get("test_log_path", ""),
+        "test_phase": normalized.get("test_phase", ""),
+        "copilot_availability_status": normalized.get("copilot_availability_status", "SKIPPED"),
+        "copilot_invocation_status": normalized.get("copilot_invocation_status", "SKIPPED"),
+        "repair_mode": normalized.get("repair_mode", "proposal_only"),
+        "repair_loop_status": normalized.get("repair_loop_status", "NOT_IMPLEMENTED"),
+        "repair_attempts_count": int(normalized.get("repair_attempts_count") or 0),
+        "repair_fallback_generated": bool(normalized.get("repair_fallback_generated", False)),
+        "repair_safe_patch_applied": bool(normalized.get("repair_safe_patch_applied", False)),
+        "failure_classification_status": normalized.get("failure_classification_status", "PENDING"),
+        "openrewrite_diff_risk_status": normalized.get("openrewrite_diff_risk_status", "UNKNOWN"),
+        "h2_startup_required": bool(normalized.get("h2_startup_required", False)),
+        "h2_startup_status": normalized.get("h2_startup_status", "H2_STARTUP_SKIPPED"),
+        "runtime_security_warnings": list(normalized.get("runtime_security_warnings", []) or []),
+        "final_proof_level": normalized.get("final_proof_level", "not_verified"),
+        "sandbox_path": normalized.get("sandbox_path", ""),
+        "modernized_app_path": normalized.get("modernized_app_path", ""),
+        "log_path": normalized.get("transform_log_path", ""),
+        "stop_reason": normalized.get("stop_reason"),
+        "blockers": list(normalized.get("blockers", []) or []),
+        "warnings": list(normalized.get("warnings", []) or []),
+        "errors": list(normalized.get("errors", []) or []),
+        "artifact_refs": dict(normalized.get("artifact_refs", {}) or {}),
+        "copilot_phase_statuses": dict(normalized.get("copilot_phase_statuses", {}) or {}),
+        "copilot_artifact_refs": dict(normalized.get("copilot_artifact_refs", {}) or {}),
+        "copilot_warnings": list(normalized.get("copilot_warnings", []) or []),
+        "copilot_errors": list(normalized.get("copilot_errors", []) or []),
+        "copilot_fallback_used": bool(normalized.get("copilot_fallback_used", False)),
+        "timing": dict(normalized.get("timing", {}) or {}),
         **execution_claims,
     }
 
 
 def write_orchestration_summary(state: MigrationState) -> Path:
-    summary_path = Path(state["orchestration_dir"]) / "orchestration_summary.json"
+    normalized = _normalize_output_paths(dict(state))
+    summary_path = Path(normalized["orchestration_dir"]) / "orchestration_summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(
         json.dumps(
-            _to_json_safe(build_orchestration_summary(state)),
+            _to_json_safe(build_orchestration_summary(normalized)),  # type: ignore[arg-type]
             indent=2,
             sort_keys=True,
         ),
@@ -104,14 +108,16 @@ def finalize_orchestration_state(
     *,
     summary_writer=write_orchestration_summary,
 ) -> MigrationState:
-    result = dict(state)
+    result = _normalize_output_paths(dict(state))
     summary_path = Path(str(result.get("orchestration_dir", ""))) / "orchestration_summary.json"
+
     artifact_refs = dict(result.get("artifact_refs", {}) or {})
     artifact_refs["orchestration_summary"] = str(summary_path)
     result["artifact_refs"] = artifact_refs
 
     timing_refs = write_timing_artifacts(result)
-    result["artifact_refs"] = {**result["artifact_refs"], **timing_refs}
+    result["artifact_refs"] = {**dict(result.get("artifact_refs", {}) or {}), **timing_refs}
+    result = _normalize_output_paths(result)
 
     if not _is_successful_full_sandbox_migration(result):  # type: ignore[arg-type]
         result["orchestration_artifacts_valid"] = False
@@ -119,11 +125,14 @@ def finalize_orchestration_state(
         return result  # type: ignore[return-value]
 
     summary_writer(result)  # type: ignore[arg-type]
+
     final_report_started = time.monotonic()
     final_report = generate_final_migration_report(result)
     record_phase_duration(result, phase="final_report", duration_seconds=time.monotonic() - final_report_started)
+
     timing_refs = write_timing_artifacts(result)
     result["artifact_refs"] = {**dict(result.get("artifact_refs", {}) or {}), **timing_refs}
+
     if final_report.blockers:
         result["blockers"] = [
             *list(result.get("blockers", []) or []),
@@ -134,35 +143,50 @@ def finalize_orchestration_state(
         result["orchestration_artifacts_valid"] = False
         summary_writer(result)  # type: ignore[arg-type]
         return result  # type: ignore[return-value]
+
     if final_report.warnings:
         result["warnings"] = [
             *list(result.get("warnings", []) or []),
             *final_report.warnings,
         ]
+
     artifact_refs = {
         **dict(result.get("artifact_refs", {}) or {}),
         **final_report.artifact_refs,
     }
+
+    if "final_report" in artifact_refs:
+        artifact_refs.setdefault("stage_report", artifact_refs["final_report"])
+    if "final_report_md" in artifact_refs:
+        artifact_refs.setdefault("stage_report_md", artifact_refs["final_report_md"])
+
     result["artifact_refs"] = artifact_refs
+    result = _normalize_output_paths(result)
 
     report_context_path = write_report_context(result["run_dir"])
     result["artifact_refs"] = {
         **dict(result.get("artifact_refs", {}) or {}),
         "copilot_report_context": str(report_context_path),
     }
+
     _maybe_generate_copilot_final_report(result)
     _generate_copilot_docs(result)
 
     timing_refs = write_timing_artifacts(result)
     result["artifact_refs"] = {**dict(result.get("artifact_refs", {}) or {}), **timing_refs}
+    result = _normalize_output_paths(result)
+
     summary_writer(result)  # type: ignore[arg-type]
+
     validation = validate_successful_full_sandbox_orchestration(result)  # type: ignore[arg-type]
     result["orchestration_artifacts_valid"] = validation.valid
+
     artifact_refs = dict(result.get("artifact_refs", {}) or {})
     result["artifact_refs"] = {
         **artifact_refs,
         **validation.artifact_refs,
     }
+
     if validation.blockers:
         result["blockers"] = [
             *list(result.get("blockers", []) or []),
@@ -173,6 +197,8 @@ def finalize_orchestration_state(
             *list(result.get("warnings", []) or []),
             *validation.warnings,
         ]
+
+    result = _normalize_output_paths(result)
     summary_writer(result)  # type: ignore[arg-type]
     return result  # type: ignore[return-value]
 
@@ -195,6 +221,7 @@ def _maybe_generate_copilot_final_report(state: dict[str, Any]) -> None:
                 connectivity="not_configured",
                 report_status="generated",
             )
+
         result = getattr(copilot_report_module, "generate_copilot_report")(
             state.get("run_dir", ""),
             _copilot_report_ai_hub(state),
@@ -237,10 +264,12 @@ def _generate_copilot_docs(state: dict[str, Any]) -> None:
             *result.warnings,
         ]
         return
+
     state["artifact_refs"] = {
         **dict(state.get("artifact_refs", {}) or {}),
         **result.artifact_refs,
     }
+
     if result.warnings:
         state["warnings"] = [
             *list(state.get("warnings", []) or []),
@@ -268,6 +297,7 @@ def _copilot_report_ai_hub(state: dict[str, Any]) -> str:
     manifest = configured / "templates" / "reports" / "copilot_final_migration_report_v1.yaml"
     if configured.is_dir() and manifest.is_file():
         return str(configured)
+
     repo_hub = Path(__file__).resolve().parents[2] / "modernizer-solution-ai-hub"
     return str(repo_hub)
 
@@ -313,7 +343,38 @@ def _execution_claims(state: MigrationState) -> dict[str, bool]:
         claims["migrated_build_executed"] = True
     if state.get("test_status") == "TEST_PASSED":
         claims["migrated_tests_executed"] = True
+    if _is_successful_full_sandbox_migration(state):
+        claims["final_migration_executed"] = True
     return claims
+
+
+def _normalize_output_paths(state: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(state)
+    artifact_refs = dict(updated.get("artifact_refs", {}) or {})
+
+    sandbox_path = _first_text(
+        updated.get("sandbox_path"),
+        updated.get("modernized_app_path"),
+        updated.get("output_app_path"),
+        artifact_refs.get("sandbox"),
+        artifact_refs.get("sandbox_path"),
+        artifact_refs.get("modernized_app"),
+        artifact_refs.get("modernized_app_path"),
+    )
+
+    if sandbox_path:
+        updated["sandbox_path"] = sandbox_path
+        updated.setdefault("modernized_app_path", sandbox_path)
+
+    return updated
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _to_json_safe(value: Any) -> Any:

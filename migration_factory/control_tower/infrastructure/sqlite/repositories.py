@@ -30,6 +30,22 @@ from migration_factory.control_tower.domain.entities import (
     StageChainLedgerRecord,
     StageOutputRegistryRecord,
     StageRunRecord,
+    V1ContextPackManifestRecord,
+    V1FakeRepairProposalRecord,
+    V1ModelInvocationRecord,
+    V1PatchApplicationRecord,
+    V1PatchPolicyValidationRecord,
+    V1PatchRollbackRecord,
+    V1PlanAmendmentRecord,
+    V1PlanReviewDecisionRecord,
+    V1RepairClassificationRecord,
+    V1PlanRevisionRecord,
+    V1PrivilegedActionDecisionRecord,
+    V1PrivilegedActionExecutionRecord,
+    V1PrivilegedActionRecord,
+    V1ProofReportGateRecord,
+    V1ProofReportRecord,
+    V1SandboxSnapshotRecord,
 )
 from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.domain.commands import CommandState
@@ -1498,4 +1514,1559 @@ def _migration_job_record_from_row(row: sqlite3.Row) -> MigrationJobRecord:
         started_at=None if row["started_at"] is None else str(row["started_at"]),
         finished_at=None if row["finished_at"] is None else str(row["finished_at"]),
         created_by=str(row["created_by"]),
+    )
+
+
+class SqliteV1ModelInvocationRepository:
+    """SQLite repository for v1_model_invocations table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, invocation: V1ModelInvocationRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_model_invocations (
+                    invocation_id, job_id, profile_id, provider_kind, model_name,
+                    prompt_tokens, completion_tokens, total_tokens, redacted_summary,
+                    actor_type, actor_id, created_at, correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    invocation.invocation_id,
+                    invocation.job_id,
+                    invocation.profile_id,
+                    invocation.provider_kind,
+                    invocation.model_name,
+                    invocation.prompt_tokens,
+                    invocation.completion_tokens,
+                    invocation.total_tokens,
+                    invocation.redacted_summary,
+                    invocation.actor_type,
+                    invocation.actor_id,
+                    invocation.created_at,
+                    invocation.correlation_id,
+                    invocation.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, invocation_id: str) -> V1ModelInvocationRecord | None:
+        row = self._connection.execute(
+            """SELECT invocation_id, job_id, profile_id, provider_kind, model_name,
+                      prompt_tokens, completion_tokens, total_tokens, redacted_summary,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_model_invocations WHERE invocation_id = ?""",
+            (invocation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _model_invocation_record_from_row(row)
+
+    def list(self) -> tuple[V1ModelInvocationRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT invocation_id, job_id, profile_id, provider_kind, model_name,
+                      prompt_tokens, completion_tokens, total_tokens, redacted_summary,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_model_invocations ORDER BY created_at DESC"""
+        ).fetchall()
+        return tuple(_model_invocation_record_from_row(r) for r in rows)
+
+    def list_for_job(self, job_id: str) -> tuple[V1ModelInvocationRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT invocation_id, job_id, profile_id, provider_kind, model_name,
+                      prompt_tokens, completion_tokens, total_tokens, redacted_summary,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_model_invocations
+               WHERE job_id = ? ORDER BY created_at DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_model_invocation_record_from_row(r) for r in rows)
+
+
+def _model_invocation_record_from_row(row: sqlite3.Row) -> V1ModelInvocationRecord:
+    return V1ModelInvocationRecord(
+        invocation_id=str(row["invocation_id"]),
+        job_id=str(row["job_id"]) if row["job_id"] is not None else None,
+        profile_id=str(row["profile_id"]) if row["profile_id"] is not None else None,
+        provider_kind=str(row["provider_kind"]) if row["provider_kind"] is not None else None,
+        model_name=str(row["model_name"]) if row["model_name"] is not None else None,
+        prompt_tokens=int(row["prompt_tokens"]) if row["prompt_tokens"] is not None else None,
+        completion_tokens=int(row["completion_tokens"]) if row["completion_tokens"] is not None else None,
+        total_tokens=int(row["total_tokens"]) if row["total_tokens"] is not None else None,
+        redacted_summary=str(row["redacted_summary"]) if row["redacted_summary"] is not None else None,
+        actor_type=str(row["actor_type"]) if row["actor_type"] is not None else None,
+        actor_id=str(row["actor_id"]) if row["actor_id"] is not None else None,
+        created_at=str(row["created_at"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1ContextPackManifestRepository:
+    """SQLite repository for v1_context_pack_manifests table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, manifest: V1ContextPackManifestRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_context_pack_manifests (
+                    manifest_id, job_id, stage_run_id, pack_type, pack_version,
+                    title, description, evidence_refs_json, bounds_json,
+                    redaction_policy, redacted_summary, checksum_algorithm,
+                    checksum, model_profile_id, model_name, token_count,
+                    created_at, created_by, correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    manifest.manifest_id,
+                    manifest.job_id,
+                    manifest.stage_run_id,
+                    manifest.pack_type,
+                    manifest.pack_version,
+                    manifest.title,
+                    manifest.description,
+                    manifest.evidence_refs_json,
+                    manifest.bounds_json,
+                    manifest.redaction_policy,
+                    manifest.redacted_summary,
+                    manifest.checksum_algorithm,
+                    manifest.checksum,
+                    manifest.model_profile_id,
+                    manifest.model_name,
+                    manifest.token_count,
+                    manifest.created_at,
+                    manifest.created_by,
+                    manifest.correlation_id,
+                    manifest.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, manifest_id: str) -> V1ContextPackManifestRecord | None:
+        row = self._connection.execute(
+            """SELECT manifest_id, job_id, stage_run_id, pack_type, pack_version,
+                      title, description, evidence_refs_json, bounds_json,
+                      redaction_policy, redacted_summary, checksum_algorithm,
+                      checksum, model_profile_id, model_name, token_count,
+                      created_at, created_by, correlation_id, causation_id
+               FROM v1_context_pack_manifests WHERE manifest_id = ?""",
+            (manifest_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _context_pack_manifest_from_row(row)
+
+    def list(self) -> tuple[V1ContextPackManifestRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT manifest_id, job_id, stage_run_id, pack_type, pack_version,
+                      title, description, evidence_refs_json, bounds_json,
+                      redaction_policy, redacted_summary, checksum_algorithm,
+                      checksum, model_profile_id, model_name, token_count,
+                      created_at, created_by, correlation_id, causation_id
+               FROM v1_context_pack_manifests ORDER BY created_at DESC"""
+        ).fetchall()
+        return tuple(_context_pack_manifest_from_row(r) for r in rows)
+
+    def list_for_job(self, job_id: str) -> tuple[V1ContextPackManifestRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT manifest_id, job_id, stage_run_id, pack_type, pack_version,
+                      title, description, evidence_refs_json, bounds_json,
+                      redaction_policy, redacted_summary, checksum_algorithm,
+                      checksum, model_profile_id, model_name, token_count,
+                      created_at, created_by, correlation_id, causation_id
+               FROM v1_context_pack_manifests
+               WHERE job_id = ? ORDER BY created_at DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_context_pack_manifest_from_row(r) for r in rows)
+
+
+def _context_pack_manifest_from_row(row: sqlite3.Row) -> V1ContextPackManifestRecord:
+    return V1ContextPackManifestRecord(
+        manifest_id=str(row["manifest_id"]),
+        job_id=str(row["job_id"]) if row["job_id"] is not None else None,
+        stage_run_id=str(row["stage_run_id"]) if row["stage_run_id"] is not None else None,
+        pack_type=str(row["pack_type"]),
+        pack_version=str(row["pack_version"]),
+        title=str(row["title"]),
+        description=str(row["description"]) if row["description"] is not None else None,
+        evidence_refs_json=str(row["evidence_refs_json"]) if row["evidence_refs_json"] is not None else None,
+        bounds_json=str(row["bounds_json"]) if row["bounds_json"] is not None else None,
+        redaction_policy=str(row["redaction_policy"]) if row["redaction_policy"] is not None else None,
+        redacted_summary=str(row["redacted_summary"]) if row["redacted_summary"] is not None else None,
+        checksum_algorithm=str(row["checksum_algorithm"]),
+        checksum=str(row["checksum"]),
+        model_profile_id=str(row["model_profile_id"]) if row["model_profile_id"] is not None else None,
+        model_name=str(row["model_name"]) if row["model_name"] is not None else None,
+        token_count=int(row["token_count"]) if row["token_count"] is not None else None,
+        created_at=str(row["created_at"]),
+        created_by=str(row["created_by"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1PrivilegedActionRepository:
+    """SQLite repository for v1_privileged_actions table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, action: V1PrivilegedActionRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_privileged_actions (
+                    action_id, job_id, action_type, action_version,
+                    parameters_json, parameters_checksum, policy_json,
+                    policy_version, status, requested_by, requested_at,
+                    approved_by, approved_at, rejected_by, rejected_reason,
+                    executed_at, failure_reason, correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    action.action_id,
+                    action.job_id,
+                    action.action_type,
+                    action.action_version,
+                    action.parameters_json,
+                    action.parameters_checksum,
+                    action.policy_json,
+                    action.policy_version,
+                    action.status,
+                    action.requested_by,
+                    action.requested_at,
+                    action.approved_by,
+                    action.approved_at,
+                    action.rejected_by,
+                    action.rejected_reason,
+                    action.executed_at,
+                    action.failure_reason,
+                    action.correlation_id,
+                    action.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, action_id: str) -> V1PrivilegedActionRecord | None:
+        row = self._connection.execute(
+            """SELECT action_id, job_id, action_type, action_version,
+                      parameters_json, parameters_checksum, policy_json,
+                      policy_version, status, requested_by, requested_at,
+                      approved_by, approved_at, rejected_by, rejected_reason,
+                      executed_at, failure_reason, correlation_id, causation_id
+               FROM v1_privileged_actions WHERE action_id = ?""",
+            (action_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _privileged_action_from_row(row)
+
+    def list(self) -> tuple[V1PrivilegedActionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT action_id, job_id, action_type, action_version,
+                      parameters_json, parameters_checksum, policy_json,
+                      policy_version, status, requested_by, requested_at,
+                      approved_by, approved_at, rejected_by, rejected_reason,
+                      executed_at, failure_reason, correlation_id, causation_id
+               FROM v1_privileged_actions ORDER BY requested_at DESC"""
+        ).fetchall()
+        return tuple(_privileged_action_from_row(r) for r in rows)
+
+    def list_for_job(self, job_id: str) -> tuple[V1PrivilegedActionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT action_id, job_id, action_type, action_version,
+                      parameters_json, parameters_checksum, policy_json,
+                      policy_version, status, requested_by, requested_at,
+                      approved_by, approved_at, rejected_by, rejected_reason,
+                      executed_at, failure_reason, correlation_id, causation_id
+               FROM v1_privileged_actions
+               WHERE job_id = ? ORDER BY requested_at DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_privileged_action_from_row(r) for r in rows)
+
+    def list_by_status(self, status: str) -> tuple[V1PrivilegedActionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT action_id, job_id, action_type, action_version,
+                      parameters_json, parameters_checksum, policy_json,
+                      policy_version, status, requested_by, requested_at,
+                      approved_by, approved_at, rejected_by, rejected_reason,
+                      executed_at, failure_reason, correlation_id, causation_id
+               FROM v1_privileged_actions
+               WHERE status = ? ORDER BY requested_at DESC""",
+            (status,),
+        ).fetchall()
+        return tuple(_privileged_action_from_row(r) for r in rows)
+
+
+def _privileged_action_from_row(row: sqlite3.Row) -> V1PrivilegedActionRecord:
+    return V1PrivilegedActionRecord(
+        action_id=str(row["action_id"]),
+        job_id=str(row["job_id"]),
+        action_type=str(row["action_type"]),
+        action_version=str(row["action_version"]),
+        parameters_json=str(row["parameters_json"]),
+        parameters_checksum=str(row["parameters_checksum"]),
+        policy_json=str(row["policy_json"]) if row["policy_json"] is not None else None,
+        policy_version=str(row["policy_version"]) if row["policy_version"] is not None else None,
+        status=str(row["status"]),
+        requested_by=str(row["requested_by"]),
+        requested_at=str(row["requested_at"]),
+        approved_by=str(row["approved_by"]) if row["approved_by"] is not None else None,
+        approved_at=str(row["approved_at"]) if row["approved_at"] is not None else None,
+        rejected_by=str(row["rejected_by"]) if row["rejected_by"] is not None else None,
+        rejected_reason=str(row["rejected_reason"]) if row["rejected_reason"] is not None else None,
+        executed_at=str(row["executed_at"]) if row["executed_at"] is not None else None,
+        failure_reason=str(row["failure_reason"]) if row["failure_reason"] is not None else None,
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+class SqliteV1PlanAmendmentRepository:
+    """SQLite repository for v1_plan_amendments table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, amendment: V1PlanAmendmentRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_plan_amendments (
+                    amendment_id, job_id, source_kind, title, summary,
+                    payload_json, payload_checksum, redacted_summary_json,
+                    created_at, created_by, correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    amendment.amendment_id,
+                    amendment.job_id,
+                    amendment.source_kind,
+                    amendment.title,
+                    amendment.summary,
+                    amendment.payload_json,
+                    amendment.payload_checksum,
+                    amendment.redacted_summary_json,
+                    amendment.created_at,
+                    amendment.created_by,
+                    amendment.correlation_id,
+                    amendment.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, amendment_id: str) -> V1PlanAmendmentRecord | None:
+        row = self._connection.execute(
+            """SELECT amendment_id, job_id, source_kind, title, summary,
+                      payload_json, payload_checksum, redacted_summary_json,
+                      created_at, created_by, correlation_id, causation_id
+               FROM v1_plan_amendments WHERE amendment_id = ?""",
+            (amendment_id,),
+        ).fetchone()
+        return _plan_amendment_from_row(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> tuple[V1PlanAmendmentRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT amendment_id, job_id, source_kind, title, summary,
+                      payload_json, payload_checksum, redacted_summary_json,
+                      created_at, created_by, correlation_id, causation_id
+               FROM v1_plan_amendments
+               WHERE job_id = ? ORDER BY created_at DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_plan_amendment_from_row(row) for row in rows)
+
+
+def _plan_amendment_from_row(row: sqlite3.Row) -> V1PlanAmendmentRecord:
+    return V1PlanAmendmentRecord(
+        amendment_id=str(row["amendment_id"]),
+        job_id=str(row["job_id"]),
+        source_kind=str(row["source_kind"]),
+        title=str(row["title"]),
+        summary=str(row["summary"]),
+        payload_json=str(row["payload_json"]),
+        payload_checksum=str(row["payload_checksum"]),
+        redacted_summary_json=str(row["redacted_summary_json"]),
+        created_at=str(row["created_at"]),
+        created_by=str(row["created_by"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1PlanRevisionRepository:
+    """SQLite repository for v1_plan_revisions table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, revision: V1PlanRevisionRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_plan_revisions (
+                    revision_id, amendment_id, job_id, revision_order, revision_state,
+                    source_kind, payload_json, payload_checksum, redacted_summary_json,
+                    created_at, created_by, decided_at, decided_by,
+                    correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    revision.revision_id,
+                    revision.amendment_id,
+                    revision.job_id,
+                    revision.revision_order,
+                    revision.revision_state,
+                    revision.source_kind,
+                    revision.payload_json,
+                    revision.payload_checksum,
+                    revision.redacted_summary_json,
+                    revision.created_at,
+                    revision.created_by,
+                    revision.decided_at,
+                    revision.decided_by,
+                    revision.correlation_id,
+                    revision.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, revision_id: str) -> V1PlanRevisionRecord | None:
+        row = self._connection.execute(
+            """SELECT revision_id, amendment_id, job_id, revision_order, revision_state,
+                      source_kind, payload_json, payload_checksum, redacted_summary_json,
+                      created_at, created_by, decided_at, decided_by,
+                      correlation_id, causation_id
+               FROM v1_plan_revisions WHERE revision_id = ?""",
+            (revision_id,),
+        ).fetchone()
+        return _plan_revision_from_row(row) if row is not None else None
+
+    def list_for_amendment(self, amendment_id: str) -> tuple[V1PlanRevisionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT revision_id, amendment_id, job_id, revision_order, revision_state,
+                      source_kind, payload_json, payload_checksum, redacted_summary_json,
+                      created_at, created_by, decided_at, decided_by,
+                      correlation_id, causation_id
+               FROM v1_plan_revisions
+               WHERE amendment_id = ? ORDER BY revision_order ASC""",
+            (amendment_id,),
+        ).fetchall()
+        return tuple(_plan_revision_from_row(row) for row in rows)
+
+    def list_for_job(self, job_id: str) -> tuple[V1PlanRevisionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT revision_id, amendment_id, job_id, revision_order, revision_state,
+                      source_kind, payload_json, payload_checksum, redacted_summary_json,
+                      created_at, created_by, decided_at, decided_by,
+                      correlation_id, causation_id
+               FROM v1_plan_revisions
+               WHERE job_id = ? ORDER BY created_at DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_plan_revision_from_row(row) for row in rows)
+
+    def next_revision_order(self, amendment_id: str) -> int:
+        row = self._connection.execute(
+            "SELECT COALESCE(MAX(revision_order), 0) AS max_revision_order FROM v1_plan_revisions WHERE amendment_id = ?",
+            (amendment_id,),
+        ).fetchone()
+        return int(row["max_revision_order"]) + 1 if row is not None else 1
+
+    def has_terminal_revision(self, amendment_id: str) -> bool:
+        row = self._connection.execute(
+            """SELECT 1
+               FROM v1_plan_revisions
+               WHERE amendment_id = ?
+                 AND revision_state IN ('accepted', 'finalized')
+               LIMIT 1""",
+            (amendment_id,),
+        ).fetchone()
+        return row is not None
+
+
+def _plan_revision_from_row(row: sqlite3.Row) -> V1PlanRevisionRecord:
+    return V1PlanRevisionRecord(
+        revision_id=str(row["revision_id"]),
+        amendment_id=str(row["amendment_id"]),
+        job_id=str(row["job_id"]),
+        revision_order=int(row["revision_order"]),
+        revision_state=str(row["revision_state"]),
+        source_kind=str(row["source_kind"]),
+        payload_json=str(row["payload_json"]),
+        payload_checksum=str(row["payload_checksum"]),
+        redacted_summary_json=str(row["redacted_summary_json"]),
+        created_at=str(row["created_at"]),
+        created_by=str(row["created_by"]),
+        decided_at=str(row["decided_at"]) if row["decided_at"] is not None else None,
+        decided_by=str(row["decided_by"]) if row["decided_by"] is not None else None,
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1PlanReviewDecisionRepository:
+    """SQLite repository for v1_plan_review_decisions table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, review_decision: V1PlanReviewDecisionRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_plan_review_decisions (
+                    review_decision_id, revision_id, amendment_id, job_id,
+                    decision, reviewed_checksum, review_summary,
+                    actor_type, actor_id, created_at, correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    review_decision.review_decision_id,
+                    review_decision.revision_id,
+                    review_decision.amendment_id,
+                    review_decision.job_id,
+                    review_decision.decision,
+                    review_decision.reviewed_checksum,
+                    review_decision.review_summary,
+                    review_decision.actor_type,
+                    review_decision.actor_id,
+                    review_decision.created_at,
+                    review_decision.correlation_id,
+                    review_decision.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get_for_revision(self, revision_id: str) -> V1PlanReviewDecisionRecord | None:
+        row = self._connection.execute(
+            """SELECT review_decision_id, revision_id, amendment_id, job_id,
+                      decision, reviewed_checksum, review_summary,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_plan_review_decisions WHERE revision_id = ?""",
+            (revision_id,),
+        ).fetchone()
+        return _plan_review_decision_from_row(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> tuple[V1PlanReviewDecisionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT review_decision_id, revision_id, amendment_id, job_id,
+                      decision, reviewed_checksum, review_summary,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_plan_review_decisions
+               WHERE job_id = ? ORDER BY created_at DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_plan_review_decision_from_row(row) for row in rows)
+
+
+def _plan_review_decision_from_row(row: sqlite3.Row) -> V1PlanReviewDecisionRecord:
+    return V1PlanReviewDecisionRecord(
+        review_decision_id=str(row["review_decision_id"]),
+        revision_id=str(row["revision_id"]),
+        amendment_id=str(row["amendment_id"]),
+        job_id=str(row["job_id"]),
+        decision=str(row["decision"]),
+        reviewed_checksum=str(row["reviewed_checksum"]),
+        review_summary=str(row["review_summary"]),
+        actor_type=str(row["actor_type"]),
+        actor_id=str(row["actor_id"]),
+        created_at=str(row["created_at"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1RepairClassificationRepository:
+    """SQLite repository for v1_repair_classifications table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, classification: V1RepairClassificationRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_repair_classifications (
+                    classification_id, command_id, job_id, command_status,
+                    evidence_kind, evidence_summary, evidence_checksum,
+                    classification_code, reason_code, repairable, attempt_limit,
+                    actor_type, actor_id, created_at, correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    classification.classification_id,
+                    classification.command_id,
+                    classification.job_id,
+                    classification.command_status,
+                    classification.evidence_kind,
+                    classification.evidence_summary,
+                    classification.evidence_checksum,
+                    classification.classification_code,
+                    classification.reason_code,
+                    1 if classification.repairable else 0,
+                    classification.attempt_limit,
+                    classification.actor_type,
+                    classification.actor_id,
+                    classification.created_at,
+                    classification.correlation_id,
+                    classification.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get_by_command_and_checksum(
+        self,
+        command_id: str,
+        evidence_checksum: str,
+    ) -> V1RepairClassificationRecord | None:
+        row = self._connection.execute(
+            """SELECT classification_id, command_id, job_id, command_status,
+                      evidence_kind, evidence_summary, evidence_checksum,
+                      classification_code, reason_code, repairable, attempt_limit,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_repair_classifications
+               WHERE command_id = ? AND evidence_checksum = ?""",
+            (command_id, evidence_checksum),
+        ).fetchone()
+        return _repair_classification_from_row(row) if row is not None else None
+
+    def get_latest_for_command(self, command_id: str) -> V1RepairClassificationRecord | None:
+        row = self._connection.execute(
+            """SELECT classification_id, command_id, job_id, command_status,
+                      evidence_kind, evidence_summary, evidence_checksum,
+                      classification_code, reason_code, repairable, attempt_limit,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_repair_classifications
+               WHERE command_id = ?
+               ORDER BY created_at DESC, classification_id DESC
+               LIMIT 1""",
+            (command_id,),
+        ).fetchone()
+        return _repair_classification_from_row(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> tuple[V1RepairClassificationRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT classification_id, command_id, job_id, command_status,
+                      evidence_kind, evidence_summary, evidence_checksum,
+                      classification_code, reason_code, repairable, attempt_limit,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_repair_classifications
+               WHERE job_id = ?
+               ORDER BY created_at DESC, classification_id DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_repair_classification_from_row(row) for row in rows)
+
+
+def _repair_classification_from_row(row: sqlite3.Row) -> V1RepairClassificationRecord:
+    return V1RepairClassificationRecord(
+        classification_id=str(row["classification_id"]),
+        command_id=str(row["command_id"]),
+        job_id=str(row["job_id"]),
+        command_status=str(row["command_status"]),
+        evidence_kind=str(row["evidence_kind"]),
+        evidence_summary=str(row["evidence_summary"]),
+        evidence_checksum=str(row["evidence_checksum"]),
+        classification_code=str(row["classification_code"]),
+        reason_code=str(row["reason_code"]),
+        repairable=bool(row["repairable"]),
+        attempt_limit=int(row["attempt_limit"]),
+        actor_type=str(row["actor_type"]),
+        actor_id=str(row["actor_id"]),
+        created_at=str(row["created_at"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1FakeRepairProposalRepository:
+    """SQLite repository for v1_fake_repair_proposals table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, proposal: V1FakeRepairProposalRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_fake_repair_proposals (
+                    proposal_id, classification_id, command_id, job_id,
+                    proposal_order, proposal_kind, proposal_summary, proposal_checksum,
+                    recommendation_type, confidence_label, confidence_score,
+                    warning_codes_json, applicable, context_checksum,
+                    actor_type, actor_id, created_at, correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    proposal.proposal_id,
+                    proposal.classification_id,
+                    proposal.command_id,
+                    proposal.job_id,
+                    proposal.proposal_order,
+                    proposal.proposal_kind,
+                    proposal.proposal_summary,
+                    proposal.proposal_checksum,
+                    proposal.recommendation_type,
+                    proposal.confidence_label,
+                    proposal.confidence_score,
+                    proposal.warning_codes_json,
+                    1 if proposal.applicable else 0,
+                    proposal.context_checksum,
+                    proposal.actor_type,
+                    proposal.actor_id,
+                    proposal.created_at,
+                    proposal.correlation_id,
+                    proposal.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get_for_classification_and_checksum(
+        self,
+        classification_id: str,
+        proposal_checksum: str,
+    ) -> V1FakeRepairProposalRecord | None:
+        row = self._connection.execute(
+            """SELECT proposal_id, classification_id, command_id, job_id,
+                      proposal_order, proposal_kind, proposal_summary, proposal_checksum,
+                      recommendation_type, confidence_label, confidence_score,
+                      warning_codes_json, applicable, context_checksum,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_fake_repair_proposals
+               WHERE classification_id = ? AND proposal_checksum = ?""",
+            (classification_id, proposal_checksum),
+        ).fetchone()
+        return _fake_repair_proposal_from_row(row) if row is not None else None
+
+    def list_for_classification(
+        self,
+        classification_id: str,
+    ) -> tuple[V1FakeRepairProposalRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT proposal_id, classification_id, command_id, job_id,
+                      proposal_order, proposal_kind, proposal_summary, proposal_checksum,
+                      recommendation_type, confidence_label, confidence_score,
+                      warning_codes_json, applicable, context_checksum,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_fake_repair_proposals
+               WHERE classification_id = ?
+               ORDER BY proposal_order, proposal_id""",
+            (classification_id,),
+        ).fetchall()
+        return tuple(_fake_repair_proposal_from_row(row) for row in rows)
+
+    def get_for_classification_kind_and_context(
+        self,
+        classification_id: str,
+        proposal_kind: str,
+        context_checksum: str,
+    ) -> V1FakeRepairProposalRecord | None:
+        row = self._connection.execute(
+            """SELECT proposal_id, classification_id, command_id, job_id,
+                      proposal_order, proposal_kind, proposal_summary, proposal_checksum,
+                      recommendation_type, confidence_label, confidence_score,
+                      warning_codes_json, applicable, context_checksum,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_fake_repair_proposals
+               WHERE classification_id = ? AND proposal_kind = ? AND context_checksum = ?""",
+            (classification_id, proposal_kind, context_checksum),
+        ).fetchone()
+        return _fake_repair_proposal_from_row(row) if row is not None else None
+
+
+def _fake_repair_proposal_from_row(row: sqlite3.Row) -> V1FakeRepairProposalRecord:
+    return V1FakeRepairProposalRecord(
+        proposal_id=str(row["proposal_id"]),
+        classification_id=str(row["classification_id"]),
+        command_id=str(row["command_id"]),
+        job_id=str(row["job_id"]),
+        proposal_order=int(row["proposal_order"]),
+        proposal_kind=str(row["proposal_kind"]),
+        proposal_summary=str(row["proposal_summary"]),
+        proposal_checksum=str(row["proposal_checksum"]),
+        recommendation_type=str(row["recommendation_type"]) if row["recommendation_type"] is not None else None,
+        confidence_label=str(row["confidence_label"]) if row["confidence_label"] is not None else None,
+        confidence_score=float(row["confidence_score"]) if row["confidence_score"] is not None else None,
+        warning_codes_json=str(row["warning_codes_json"]),
+        applicable=bool(row["applicable"]),
+        context_checksum=str(row["context_checksum"]) if row["context_checksum"] is not None else None,
+        actor_type=str(row["actor_type"]),
+        actor_id=str(row["actor_id"]),
+        created_at=str(row["created_at"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1PrivilegedActionDecisionRepository:
+    """SQLite repository for v1_privileged_action_decisions table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, decision: V1PrivilegedActionDecisionRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_privileged_action_decisions (
+                    action_id, decision, decided_by, decided_at,
+                    parameters_checksum, rejection_reason,
+                    correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    decision.action_id,
+                    decision.decision,
+                    decision.decided_by,
+                    decision.decided_at,
+                    decision.parameters_checksum,
+                    decision.rejection_reason,
+                    decision.correlation_id,
+                    decision.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, action_id: str) -> V1PrivilegedActionDecisionRecord | None:
+        row = self._connection.execute(
+            """SELECT action_id, decision, decided_by, decided_at,
+                      parameters_checksum, rejection_reason,
+                      correlation_id, causation_id
+               FROM v1_privileged_action_decisions WHERE action_id = ?""",
+            (action_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _decision_from_row(row)
+
+    def list(self) -> tuple[V1PrivilegedActionDecisionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT action_id, decision, decided_by, decided_at,
+                      parameters_checksum, rejection_reason,
+                      correlation_id, causation_id
+               FROM v1_privileged_action_decisions
+               ORDER BY decided_at DESC"""
+        ).fetchall()
+        return tuple(_decision_from_row(r) for r in rows)
+
+    def list_by_decision(self, decision: str) -> tuple[V1PrivilegedActionDecisionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT action_id, decision, decided_by, decided_at,
+                      parameters_checksum, rejection_reason,
+                      correlation_id, causation_id
+               FROM v1_privileged_action_decisions
+               WHERE decision = ? ORDER BY decided_at DESC""",
+            (decision,),
+        ).fetchall()
+        return tuple(_decision_from_row(r) for r in rows)
+
+
+def _decision_from_row(row: sqlite3.Row) -> V1PrivilegedActionDecisionRecord:
+    return V1PrivilegedActionDecisionRecord(
+        action_id=str(row["action_id"]),
+        decision=str(row["decision"]),
+        decided_by=str(row["decided_by"]),
+        decided_at=str(row["decided_at"]),
+        parameters_checksum=str(row["parameters_checksum"]),
+        rejection_reason=str(row["rejection_reason"]) if row["rejection_reason"] is not None else None,
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1PrivilegedActionExecutionRepository:
+    """SQLite repository for v1_privileged_action_executions table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, execution: V1PrivilegedActionExecutionRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_privileged_action_executions (
+                    action_id, job_id, action_type, parameters_checksum,
+                    status, started_at, completed_at, result_summary,
+                    failure_reason, executed_by, execution_version,
+                    correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    execution.action_id,
+                    execution.job_id,
+                    execution.action_type,
+                    execution.parameters_checksum,
+                    execution.status,
+                    execution.started_at,
+                    execution.completed_at,
+                    execution.result_summary,
+                    execution.failure_reason,
+                    execution.executed_by,
+                    execution.execution_version,
+                    execution.correlation_id,
+                    execution.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, action_id: str) -> V1PrivilegedActionExecutionRecord | None:
+        row = self._connection.execute(
+            """SELECT action_id, job_id, action_type, parameters_checksum,
+                      status, started_at, completed_at, result_summary,
+                      failure_reason, executed_by, execution_version,
+                      correlation_id, causation_id
+               FROM v1_privileged_action_executions WHERE action_id = ?""",
+            (action_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _execution_from_row(row)
+
+    def list(self) -> tuple[V1PrivilegedActionExecutionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT action_id, job_id, action_type, parameters_checksum,
+                      status, started_at, completed_at, result_summary,
+                      failure_reason, executed_by, execution_version,
+                      correlation_id, causation_id
+               FROM v1_privileged_action_executions
+               ORDER BY started_at DESC"""
+        ).fetchall()
+        return tuple(_execution_from_row(r) for r in rows)
+
+    def list_by_status(self, status: str) -> tuple[V1PrivilegedActionExecutionRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT action_id, job_id, action_type, parameters_checksum,
+                      status, started_at, completed_at, result_summary,
+                      failure_reason, executed_by, execution_version,
+                      correlation_id, causation_id
+               FROM v1_privileged_action_executions
+               WHERE status = ? ORDER BY started_at DESC""",
+            (status,),
+        ).fetchall()
+        return tuple(_execution_from_row(r) for r in rows)
+
+
+def _execution_from_row(row: sqlite3.Row) -> V1PrivilegedActionExecutionRecord:
+    return V1PrivilegedActionExecutionRecord(
+        action_id=str(row["action_id"]),
+        job_id=str(row["job_id"]),
+        action_type=str(row["action_type"]),
+        parameters_checksum=str(row["parameters_checksum"]),
+        status=str(row["status"]),
+        started_at=str(row["started_at"]),
+        completed_at=str(row["completed_at"]) if row["completed_at"] is not None else None,
+        result_summary=str(row["result_summary"]) if row["result_summary"] is not None else None,
+        failure_reason=str(row["failure_reason"]) if row["failure_reason"] is not None else None,
+        executed_by=str(row["executed_by"]),
+        execution_version=str(row["execution_version"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1PatchPolicyValidationRepository:
+    """SQLite repository for v1_patch_policy_validations table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, validation: V1PatchPolicyValidationRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_patch_policy_validations (
+                    validation_id, command_id, job_id, approved,
+                    validation_code, reason_code, target_path_hash,
+                    patch_size_bytes, metacharacter_hits, policy_version,
+                    actor_type, actor_id, created_at, correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    validation.validation_id,
+                    validation.command_id,
+                    validation.job_id,
+                    1 if validation.approved else 0,
+                    validation.validation_code,
+                    validation.reason_code,
+                    validation.target_path_hash,
+                    validation.patch_size_bytes,
+                    validation.metacharacter_hits,
+                    validation.policy_version,
+                    validation.actor_type,
+                    validation.actor_id,
+                    validation.created_at,
+                    validation.correlation_id,
+                    validation.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, validation_id: str) -> V1PatchPolicyValidationRecord | None:
+        row = self._connection.execute(
+            """SELECT validation_id, command_id, job_id, approved,
+                      validation_code, reason_code, target_path_hash,
+                      patch_size_bytes, metacharacter_hits, policy_version,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_patch_policy_validations WHERE validation_id = ?""",
+            (validation_id,),
+        ).fetchone()
+        return _patch_validation_from_row(row) if row is not None else None
+
+    def list_for_command(self, command_id: str) -> tuple[V1PatchPolicyValidationRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT validation_id, command_id, job_id, approved,
+                      validation_code, reason_code, target_path_hash,
+                      patch_size_bytes, metacharacter_hits, policy_version,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_patch_policy_validations
+               WHERE command_id = ?
+               ORDER BY created_at DESC, validation_id DESC""",
+            (command_id,),
+        ).fetchall()
+        return tuple(_patch_validation_from_row(row) for row in rows)
+
+    def get_latest_for_command(self, command_id: str) -> V1PatchPolicyValidationRecord | None:
+        row = self._connection.execute(
+            """SELECT validation_id, command_id, job_id, approved,
+                      validation_code, reason_code, target_path_hash,
+                      patch_size_bytes, metacharacter_hits, policy_version,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_patch_policy_validations
+               WHERE command_id = ?
+               ORDER BY created_at DESC, validation_id DESC
+               LIMIT 1""",
+            (command_id,),
+        ).fetchone()
+        return _patch_validation_from_row(row) if row is not None else None
+
+
+def _patch_validation_from_row(row: sqlite3.Row) -> V1PatchPolicyValidationRecord:
+    return V1PatchPolicyValidationRecord(
+        validation_id=str(row["validation_id"]),
+        command_id=str(row["command_id"]),
+        job_id=str(row["job_id"]),
+        approved=bool(row["approved"]),
+        validation_code=str(row["validation_code"]),
+        reason_code=str(row["reason_code"]),
+        target_path_hash=str(row["target_path_hash"]),
+        patch_size_bytes=int(row["patch_size_bytes"]),
+        metacharacter_hits=int(row["metacharacter_hits"]),
+        policy_version=str(row["policy_version"]),
+        actor_type=str(row["actor_type"]),
+        actor_id=str(row["actor_id"]),
+        created_at=str(row["created_at"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1SandboxSnapshotRepository:
+    """SQLite repository for v1_sandbox_snapshots table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, snapshot: V1SandboxSnapshotRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_sandbox_snapshots (
+                    snapshot_id, command_id, job_id, stage_index,
+                    sandbox_artifact_id, sandbox_checksum,
+                    actor_type, actor_id, created_at, correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    snapshot.snapshot_id,
+                    snapshot.command_id,
+                    snapshot.job_id,
+                    snapshot.stage_index,
+                    snapshot.sandbox_artifact_id,
+                    snapshot.sandbox_checksum,
+                    snapshot.actor_type,
+                    snapshot.actor_id,
+                    snapshot.created_at,
+                    snapshot.correlation_id,
+                    snapshot.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, snapshot_id: str) -> V1SandboxSnapshotRecord | None:
+        row = self._connection.execute(
+            """SELECT snapshot_id, command_id, job_id, stage_index,
+                      sandbox_artifact_id, sandbox_checksum,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_sandbox_snapshots WHERE snapshot_id = ?""",
+            (snapshot_id,),
+        ).fetchone()
+        return _sandbox_snapshot_from_row(row) if row is not None else None
+
+    def get_for_command(self, command_id: str) -> V1SandboxSnapshotRecord | None:
+        row = self._connection.execute(
+            """SELECT snapshot_id, command_id, job_id, stage_index,
+                      sandbox_artifact_id, sandbox_checksum,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_sandbox_snapshots
+               WHERE command_id = ?
+               ORDER BY created_at DESC, snapshot_id DESC
+               LIMIT 1""",
+            (command_id,),
+        ).fetchone()
+        return _sandbox_snapshot_from_row(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> tuple[V1SandboxSnapshotRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT snapshot_id, command_id, job_id, stage_index,
+                      sandbox_artifact_id, sandbox_checksum,
+                      actor_type, actor_id, created_at, correlation_id, causation_id
+               FROM v1_sandbox_snapshots
+               WHERE job_id = ?
+               ORDER BY created_at DESC, snapshot_id DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_sandbox_snapshot_from_row(row) for row in rows)
+
+
+def _sandbox_snapshot_from_row(row: sqlite3.Row) -> V1SandboxSnapshotRecord:
+    return V1SandboxSnapshotRecord(
+        snapshot_id=str(row["snapshot_id"]),
+        command_id=str(row["command_id"]),
+        job_id=str(row["job_id"]),
+        stage_index=int(row["stage_index"]),
+        sandbox_artifact_id=str(row["sandbox_artifact_id"]),
+        sandbox_checksum=str(row["sandbox_checksum"]),
+        actor_type=str(row["actor_type"]),
+        actor_id=str(row["actor_id"]),
+        created_at=str(row["created_at"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1PatchApplicationRepository:
+    """SQLite repository for v1_patch_applications table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, application: V1PatchApplicationRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_patch_applications (
+                    application_id, command_id, job_id, validation_id,
+                    snapshot_id, stage_index, target_path_hash,
+                    patch_size_bytes, applied_by, applied_at, status,
+                    correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    application.application_id,
+                    application.command_id,
+                    application.job_id,
+                    application.validation_id,
+                    application.snapshot_id,
+                    application.stage_index,
+                    application.target_path_hash,
+                    application.patch_size_bytes,
+                    application.applied_by,
+                    application.applied_at,
+                    application.status,
+                    application.correlation_id,
+                    application.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, application_id: str) -> V1PatchApplicationRecord | None:
+        row = self._connection.execute(
+            """SELECT application_id, command_id, job_id, validation_id,
+                      snapshot_id, stage_index, target_path_hash,
+                      patch_size_bytes, applied_by, applied_at, status,
+                      correlation_id, causation_id
+               FROM v1_patch_applications WHERE application_id = ?""",
+            (application_id,),
+        ).fetchone()
+        return _patch_application_from_row(row) if row is not None else None
+
+    def get_for_command(self, command_id: str) -> V1PatchApplicationRecord | None:
+        row = self._connection.execute(
+            """SELECT application_id, command_id, job_id, validation_id,
+                      snapshot_id, stage_index, target_path_hash,
+                      patch_size_bytes, applied_by, applied_at, status,
+                      correlation_id, causation_id
+               FROM v1_patch_applications
+               WHERE command_id = ?
+               ORDER BY applied_at DESC, application_id DESC
+               LIMIT 1""",
+            (command_id,),
+        ).fetchone()
+        return _patch_application_from_row(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> tuple[V1PatchApplicationRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT application_id, command_id, job_id, validation_id,
+                      snapshot_id, stage_index, target_path_hash,
+                      patch_size_bytes, applied_by, applied_at, status,
+                      correlation_id, causation_id
+               FROM v1_patch_applications
+               WHERE job_id = ?
+               ORDER BY applied_at DESC, application_id DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_patch_application_from_row(row) for row in rows)
+
+
+def _patch_application_from_row(row: sqlite3.Row) -> V1PatchApplicationRecord:
+    return V1PatchApplicationRecord(
+        application_id=str(row["application_id"]),
+        command_id=str(row["command_id"]),
+        job_id=str(row["job_id"]),
+        validation_id=str(row["validation_id"]),
+        snapshot_id=str(row["snapshot_id"]),
+        stage_index=int(row["stage_index"]),
+        target_path_hash=str(row["target_path_hash"]),
+        patch_size_bytes=int(row["patch_size_bytes"]),
+        applied_by=str(row["applied_by"]),
+        applied_at=str(row["applied_at"]),
+        status=str(row["status"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1PatchMavenValidationRepository:
+    """SQLite repository for v1_patch_maven_validations table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, validation: V1PatchMavenValidationRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_patch_maven_validations (
+                    maven_validation_id, application_id, command_id, job_id,
+                    maven_goal, passed, result_summary,
+                    actor_type, actor_id, created_at,
+                    correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    validation.maven_validation_id,
+                    validation.application_id,
+                    validation.command_id,
+                    validation.job_id,
+                    validation.maven_goal,
+                    1 if validation.passed else 0,
+                    validation.result_summary,
+                    validation.actor_type,
+                    validation.actor_id,
+                    validation.created_at,
+                    validation.correlation_id,
+                    validation.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, maven_validation_id: str) -> V1PatchMavenValidationRecord | None:
+        row = self._connection.execute(
+            """SELECT maven_validation_id, application_id, command_id, job_id,
+                      maven_goal, passed, result_summary,
+                      actor_type, actor_id, created_at,
+                      correlation_id, causation_id
+               FROM v1_patch_maven_validations WHERE maven_validation_id = ?""",
+            (maven_validation_id,),
+        ).fetchone()
+        return _maven_validation_from_row(row) if row is not None else None
+
+    def get_for_application(self, application_id: str) -> V1PatchMavenValidationRecord | None:
+        row = self._connection.execute(
+            """SELECT maven_validation_id, application_id, command_id, job_id,
+                      maven_goal, passed, result_summary,
+                      actor_type, actor_id, created_at,
+                      correlation_id, causation_id
+               FROM v1_patch_maven_validations
+               WHERE application_id = ?
+               ORDER BY created_at DESC, maven_validation_id DESC
+               LIMIT 1""",
+            (application_id,),
+        ).fetchone()
+        return _maven_validation_from_row(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> tuple[V1PatchMavenValidationRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT maven_validation_id, application_id, command_id, job_id,
+                      maven_goal, passed, result_summary,
+                      actor_type, actor_id, created_at,
+                      correlation_id, causation_id
+               FROM v1_patch_maven_validations
+               WHERE job_id = ?
+               ORDER BY created_at DESC, maven_validation_id DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_maven_validation_from_row(row) for row in rows)
+
+
+def _maven_validation_from_row(row: sqlite3.Row) -> V1PatchMavenValidationRecord:
+    return V1PatchMavenValidationRecord(
+        maven_validation_id=str(row["maven_validation_id"]),
+        application_id=str(row["application_id"]),
+        command_id=str(row["command_id"]),
+        job_id=str(row["job_id"]),
+        maven_goal=str(row["maven_goal"]),
+        passed=bool(row["passed"]),
+        result_summary=str(row["result_summary"]),
+        actor_type=str(row["actor_type"]),
+        actor_id=str(row["actor_id"]),
+        created_at=str(row["created_at"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1PatchRollbackRepository:
+    """SQLite repository for v1_patch_rollbacks table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, rollback: V1PatchRollbackRecord) -> None:
+        try:
+            self._connection.execute(
+                """INSERT INTO v1_patch_rollbacks (
+                    rollback_id, command_id, job_id, application_id,
+                    snapshot_id, maven_validation_id, stage_index, target_path_hash,
+                    rolled_back_by, rolled_back_at, reason_code, redacted_summary,
+                    correlation_id, causation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    rollback.rollback_id,
+                    rollback.command_id,
+                    rollback.job_id,
+                    rollback.application_id,
+                    rollback.snapshot_id,
+                    rollback.maven_validation_id,
+                    rollback.stage_index,
+                    rollback.target_path_hash,
+                    rollback.rolled_back_by,
+                    rollback.rolled_back_at,
+                    rollback.reason_code,
+                    rollback.redacted_summary,
+                    rollback.correlation_id,
+                    rollback.causation_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise StorageIntegrityError(str(exc)) from exc
+
+    def get(self, rollback_id: str) -> V1PatchRollbackRecord | None:
+        row = self._connection.execute(
+            """SELECT rollback_id, command_id, job_id, application_id,
+                      snapshot_id, maven_validation_id, stage_index, target_path_hash,
+                      rolled_back_by, rolled_back_at, reason_code, redacted_summary,
+                      correlation_id, causation_id
+               FROM v1_patch_rollbacks WHERE rollback_id = ?""",
+            (rollback_id,),
+        ).fetchone()
+        return _patch_rollback_from_row(row) if row is not None else None
+
+    def get_for_command(self, command_id: str) -> V1PatchRollbackRecord | None:
+        row = self._connection.execute(
+            """SELECT rollback_id, command_id, job_id, application_id,
+                      snapshot_id, maven_validation_id, stage_index, target_path_hash,
+                      rolled_back_by, rolled_back_at, reason_code, redacted_summary,
+                      correlation_id, causation_id
+               FROM v1_patch_rollbacks
+               WHERE command_id = ?
+               ORDER BY rolled_back_at DESC, rollback_id DESC
+               LIMIT 1""",
+            (command_id,),
+        ).fetchone()
+        return _patch_rollback_from_row(row) if row is not None else None
+
+    def get_for_application(self, application_id: str) -> V1PatchRollbackRecord | None:
+        row = self._connection.execute(
+            """SELECT rollback_id, command_id, job_id, application_id,
+                      snapshot_id, maven_validation_id, stage_index, target_path_hash,
+                      rolled_back_by, rolled_back_at, reason_code, redacted_summary,
+                      correlation_id, causation_id
+               FROM v1_patch_rollbacks
+               WHERE application_id = ?
+               ORDER BY rolled_back_at DESC, rollback_id DESC
+               LIMIT 1""",
+            (application_id,),
+        ).fetchone()
+        return _patch_rollback_from_row(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> tuple[V1PatchRollbackRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT rollback_id, command_id, job_id, application_id,
+                      snapshot_id, maven_validation_id, stage_index, target_path_hash,
+                      rolled_back_by, rolled_back_at, reason_code, redacted_summary,
+                      correlation_id, causation_id
+               FROM v1_patch_rollbacks
+               WHERE job_id = ?
+               ORDER BY rolled_back_at DESC, rollback_id DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_patch_rollback_from_row(row) for row in rows)
+
+
+def _patch_rollback_from_row(row: sqlite3.Row) -> V1PatchRollbackRecord:
+    return V1PatchRollbackRecord(
+        rollback_id=str(row["rollback_id"]),
+        command_id=str(row["command_id"]),
+        job_id=str(row["job_id"]),
+        application_id=str(row["application_id"]),
+        snapshot_id=str(row["snapshot_id"]),
+        maven_validation_id=str(row["maven_validation_id"]),
+        stage_index=int(row["stage_index"]),
+        target_path_hash=str(row["target_path_hash"]),
+        rolled_back_by=str(row["rolled_back_by"]),
+        rolled_back_at=str(row["rolled_back_at"]),
+        reason_code=str(row["reason_code"]),
+        redacted_summary=str(row["redacted_summary"]),
+        correlation_id=str(row["correlation_id"]) if row["correlation_id"] is not None else None,
+        causation_id=str(row["causation_id"]) if row["causation_id"] is not None else None,
+    )
+
+
+class SqliteV1ProofReportRepository:
+    """SQLite repository for v1_proof_reports table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, report: V1ProofReportRecord) -> None:
+        self._connection.execute(
+            """INSERT INTO v1_proof_reports (
+                report_id, job_id, report_version, report_checksum,
+                gate_count, all_gates_present, proof_complete,
+                target_proof_level, pipeline_id, stage_count,
+                summary_json, generated_at, generated_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                report.report_id,
+                report.job_id,
+                report.report_version,
+                report.report_checksum,
+                report.gate_count,
+                report.all_gates_present,
+                report.proof_complete,
+                report.target_proof_level,
+                report.pipeline_id,
+                report.stage_count,
+                report.summary_json,
+                report.generated_at,
+                report.generated_by,
+            ),
+        )
+
+    def get(self, report_id: str) -> V1ProofReportRecord | None:
+        row = self._connection.execute(
+            """SELECT report_id, job_id, report_version, report_checksum,
+                      gate_count, all_gates_present, proof_complete,
+                      target_proof_level, pipeline_id, stage_count,
+                      summary_json, generated_at, generated_by
+               FROM v1_proof_reports WHERE report_id = ?""",
+            (report_id,),
+        ).fetchone()
+        return _proof_report_from_row(row) if row is not None else None
+
+    def get_latest_for_job(self, job_id: str) -> V1ProofReportRecord | None:
+        row = self._connection.execute(
+            """SELECT report_id, job_id, report_version, report_checksum,
+                      gate_count, all_gates_present, proof_complete,
+                      target_proof_level, pipeline_id, stage_count,
+                      summary_json, generated_at, generated_by
+               FROM v1_proof_reports
+               WHERE job_id = ?
+               ORDER BY generated_at DESC, report_id DESC
+               LIMIT 1""",
+            (job_id,),
+        ).fetchone()
+        return _proof_report_from_row(row) if row is not None else None
+
+    def list_for_job(self, job_id: str) -> tuple[V1ProofReportRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT report_id, job_id, report_version, report_checksum,
+                      gate_count, all_gates_present, proof_complete,
+                      target_proof_level, pipeline_id, stage_count,
+                      summary_json, generated_at, generated_by
+               FROM v1_proof_reports
+               WHERE job_id = ?
+               ORDER BY generated_at DESC, report_id DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_proof_report_from_row(row) for row in rows)
+
+
+class SqliteV1ProofReportGateRepository:
+    """SQLite repository for v1_proof_report_gates table."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def insert(self, gate: V1ProofReportGateRecord) -> None:
+        self._connection.execute(
+            """INSERT INTO v1_proof_report_gates (
+                report_gate_id, report_id, job_id, stage_index,
+                output_checksum, proof_gate_checksum, chain_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                gate.report_gate_id,
+                gate.report_id,
+                gate.job_id,
+                gate.stage_index,
+                gate.output_checksum,
+                gate.proof_gate_checksum,
+                gate.chain_status,
+            ),
+        )
+
+    def list_for_report(self, report_id: str) -> tuple[V1ProofReportGateRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT report_gate_id, report_id, job_id, stage_index,
+                      output_checksum, proof_gate_checksum, chain_status
+               FROM v1_proof_report_gates
+               WHERE report_id = ?
+               ORDER BY stage_index ASC""",
+            (report_id,),
+        ).fetchall()
+        return tuple(_proof_report_gate_from_row(row) for row in rows)
+
+    def list_for_job(self, job_id: str) -> tuple[V1ProofReportGateRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT report_gate_id, report_id, job_id, stage_index,
+                      output_checksum, proof_gate_checksum, chain_status
+               FROM v1_proof_report_gates
+               WHERE job_id = ?
+               ORDER BY stage_index ASC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(_proof_report_gate_from_row(row) for row in rows)
+
+
+def _proof_report_from_row(row: sqlite3.Row) -> V1ProofReportRecord:
+    return V1ProofReportRecord(
+        report_id=str(row["report_id"]),
+        job_id=str(row["job_id"]),
+        report_version=int(row["report_version"]),
+        report_checksum=str(row["report_checksum"]),
+        gate_count=int(row["gate_count"]),
+        all_gates_present=int(row["all_gates_present"]),
+        proof_complete=int(row["proof_complete"]),
+        target_proof_level=str(row["target_proof_level"]),
+        pipeline_id=str(row["pipeline_id"]),
+        stage_count=int(row["stage_count"]),
+        summary_json=str(row["summary_json"]),
+        generated_at=str(row["generated_at"]),
+        generated_by=str(row["generated_by"]),
+    )
+
+
+def _proof_report_gate_from_row(row: sqlite3.Row) -> V1ProofReportGateRecord:
+    return V1ProofReportGateRecord(
+        report_gate_id=str(row["report_gate_id"]),
+        report_id=str(row["report_id"]),
+        job_id=str(row["job_id"]),
+        stage_index=int(row["stage_index"]),
+        output_checksum=str(row["output_checksum"]),
+        proof_gate_checksum=str(row["proof_gate_checksum"]),
+        chain_status=str(row["chain_status"]),
     )

@@ -23,6 +23,7 @@ from migration_factory.orchestrator.phase_services import (
 )
 from migration_factory.orchestrator.state import MigrationState
 from migration_factory.orchestrator.state import FULL_SANDBOX_MIGRATION_MODE
+from migration_factory.orchestrator.events import emit_control_tower_event
 from migration_factory.orchestrator.summary import finalize_orchestration_state
 
 
@@ -138,6 +139,10 @@ def _phase_node(
     next_on_pass: str,
 ):
     def node(state: MigrationState) -> MigrationState:
+        requested_phase = state.get("phase")
+        if requested_phase and requested_phase != phase:
+            return dict(state)  # type: ignore[return-value]
+
         result = dict(state)
         result.update(run_phase(state))
 
@@ -165,6 +170,12 @@ def _phase_node(
 
 
 def _route_analysis(state: MigrationState) -> str:
+    requested = state.get("phase")
+    if requested:
+        if requested == "planning":
+            return "planning"
+        if requested == "assessment":
+            return "assessment"
     return _route_after_validation(
         state,
         status_key="analysis_status",
@@ -174,6 +185,12 @@ def _route_analysis(state: MigrationState) -> str:
 
 
 def _route_planning(state: MigrationState) -> str:
+    requested = state.get("phase")
+    if requested:
+        if requested == "assessment":
+            return "assessment"
+        if requested == "analysis":
+            return END
     return _route_after_validation(
         state,
         status_key="planning_status",
@@ -183,6 +200,10 @@ def _route_planning(state: MigrationState) -> str:
 
 
 def _route_assessment(state: MigrationState) -> str:
+    requested = state.get("phase")
+    if requested:
+        if requested in ("analysis", "planning"):
+            return END
     return _route_after_validation(
         state,
         status_key="assessment_status",
@@ -240,7 +261,10 @@ def _route_after_approval_record(state: MigrationState) -> str:
 
 
 def _deterministic_final_report_node(state: MigrationState) -> MigrationState:
-    return finalize_orchestration_state(state)
+    emit_control_tower_event(phase="final_report", status="running", message="Final report generation started.")
+    result = finalize_orchestration_state(state)
+    emit_control_tower_event(phase="final_report", status="completed", message="Final report written.")
+    return result
 
 
 def _route_after_final_report(state: MigrationState) -> str:

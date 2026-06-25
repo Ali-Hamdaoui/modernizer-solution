@@ -8,8 +8,8 @@ from typing import Any
 
 from langgraph.types import Command
 
-from migration_factory.orchestrator.checkpointing import default_checkpointer
 from migration_factory.orchestrator import graph as graph_module
+from migration_factory.orchestrator.checkpointing import default_checkpointer
 from migration_factory.orchestrator.phase_services import record_approval_decision_phase
 from migration_factory.orchestrator.preflight import build_langgraph_config
 from migration_factory.orchestrator.state import (
@@ -56,7 +56,9 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
-    print(json.dumps(_to_json_safe(result), indent=2, sort_keys=True))
+    final_json = json.dumps(_to_json_safe(result), sort_keys=True, separators=(",", ":"))
+    sys.stdout.write("CONTROL_TOWER_FINAL_JSON " + final_json + "\n")
+    sys.stdout.flush()
     return 0
 
 
@@ -81,42 +83,13 @@ def resume_orchestration(
         approved_by=approved_by,
         comments=comments,
     )
-    config = build_langgraph_config(run_id)
-    graph = graph_module.build_graph(checkpointer=default_checkpointer(resolved_run_dir))
-    result = graph.invoke(
-        Command(
-            resume={
-                "decision": decision,
-                "approved_by": approved_by,
-                "comments": comments,
-            }
-        ),
-        config=config,
-    )
-    result = _normalize_resume_result(
-        _with_explicit_run_paths(dict(result), resolved_run_dir),
-        decision=decision,
-        explicit_recorded=explicit_recorded,
-    )
-    start_total_run_timing(result)
-    if decision != "approved" and not (resolved_run_dir / "approval" / "approval_decision.json").is_file():
-        return finalize_orchestration_state(
-            _normalize_resume_result(
-                _resume_from_interrupt_snapshot(
-                    run_id=run_id,
-                    run_dir=resolved_run_dir,
-                    decision=decision,
-                    approved_by=approved_by,
-                    comments=comments,
-                ),
-                decision=decision,
-                explicit_recorded=explicit_recorded,
-            )
-        )
-    if _resume_completed(result, resolved_run_dir):
-        return finalize_orchestration_state(result)
-    return finalize_orchestration_state(
-        _normalize_resume_result(
+    snapshot_mode = _load_interrupt_snapshot_mode(resolved_run_dir)
+
+    # The approval interrupt snapshot is the authoritative source for resume mode.
+    # If the run was paused in read-only mode, do not resume through the checkpointed
+    # LangGraph state because it may still reflect an older full-sandbox mode.
+    if snapshot_mode and snapshot_mode != FULL_SANDBOX_MIGRATION_MODE:
+        snapshot_result = _normalize_resume_result(
             _resume_from_interrupt_snapshot(
                 run_id=run_id,
                 run_dir=resolved_run_dir,
@@ -127,7 +100,78 @@ def resume_orchestration(
             decision=decision,
             explicit_recorded=explicit_recorded,
         )
+        return finalize_orchestration_state(
+            _ensure_resume_output_paths(snapshot_result, resolved_run_dir)
+        )
+
+    config = build_langgraph_config(run_id)
+    graph = graph_module.build_graph(checkpointer=default_checkpointer(resolved_run_dir))
+
+    result = graph.invoke(
+        Command(
+            resume={
+                "decision": decision,
+                "approved_by": approved_by,
+                "comments": comments,
+            }
+        ),
+        config=config,
     )
+
+    result = _normalize_resume_result(
+        _with_explicit_run_paths(dict(result), resolved_run_dir),
+        decision=decision,
+        explicit_recorded=explicit_recorded,
+    )
+    result = _ensure_resume_output_paths(result, resolved_run_dir)
+    start_total_run_timing(result)
+
+    if decision != "approved" and not (resolved_run_dir / "approval" / "approval_decision.json").is_file():
+        snapshot_result = _normalize_resume_result(
+            _resume_from_interrupt_snapshot(
+                run_id=run_id,
+                run_dir=resolved_run_dir,
+                decision=decision,
+                approved_by=approved_by,
+                comments=comments,
+            ),
+            decision=decision,
+            explicit_recorded=explicit_recorded,
+        )
+        return finalize_orchestration_state(
+            _ensure_resume_output_paths(snapshot_result, resolved_run_dir)
+        )
+
+    if _resume_completed(result, resolved_run_dir):
+        return finalize_orchestration_state(_ensure_resume_output_paths(result, resolved_run_dir))
+
+    snapshot_result = _normalize_resume_result(
+        _resume_from_interrupt_snapshot(
+            run_id=run_id,
+            run_dir=resolved_run_dir,
+            decision=decision,
+            approved_by=approved_by,
+            comments=comments,
+        ),
+        decision=decision,
+        explicit_recorded=explicit_recorded,
+    )
+    return finalize_orchestration_state(
+        _ensure_resume_output_paths(snapshot_result, resolved_run_dir)
+    )
+
+
+def _load_interrupt_snapshot_mode(run_dir: Path) -> str:
+    snapshot_path = run_dir / "orchestration" / "approval_interrupt_state.json"
+    if not snapshot_path.is_file():
+        return ""
+    try:
+        payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("mode") or "").strip()
 
 
 def _resume_completed(result: dict[str, Any], run_dir: Path) -> bool:
@@ -153,10 +197,13 @@ def _resume_from_interrupt_snapshot(
     snapshot_path = run_dir / "orchestration" / "approval_interrupt_state.json"
     if not snapshot_path.is_file():
         raise ResumeCliError(f"approval interrupt checkpoint not found: {snapshot_path}")
+
     state = json.loads(snapshot_path.read_text(encoding="utf-8"))
     start_total_run_timing(state)
+
     if state.get("run_id") != run_id:
         raise ResumeCliError("approval interrupt checkpoint run_id mismatch")
+
     state["run_dir"] = str(run_dir)
     state = _with_explicit_run_paths(state, run_dir)
 
@@ -170,20 +217,24 @@ def _resume_from_interrupt_snapshot(
             "stop_reason": f"Approval decision '{decision}' received; stopping.",
         }
     )
+
     if decision == "approved" and state.get("mode") == FULL_SANDBOX_MIGRATION_MODE:
         state["stop_reason"] = "Approval decision 'approved' received; continuing to sandbox transform."
 
     recorded = dict(state)
     recorded.update(record_approval_decision_phase(recorded))
+    recorded = _ensure_resume_output_paths(recorded, run_dir)
+
     if decision != "approved" or recorded.get("errors"):
         return recorded
+
     if recorded.get("mode") != FULL_SANDBOX_MIGRATION_MODE:
         recorded["stop_reason"] = "Approval decision 'approved' recorded; stopping."
         return recorded
 
     transformed = dict(recorded)
     transformed.update(graph_module.run_sandbox_transform_phase(transformed))
-    return transformed
+    return _ensure_resume_output_paths(transformed, run_dir)
 
 
 def _record_explicit_approval_decision(
@@ -208,7 +259,7 @@ def _record_explicit_approval_decision(
     recorded = record_approval_decision_phase(state)
     if recorded.get("errors"):
         raise ResumeCliError("; ".join(str(error) for error in recorded.get("errors", [])))
-    return recorded
+    return _ensure_resume_output_paths(recorded, run_dir)
 
 
 def _with_explicit_run_paths(state: dict[str, Any], run_dir: Path) -> dict[str, Any]:
@@ -231,12 +282,72 @@ def _normalize_resume_result(
     artifact_refs = dict(result.get("artifact_refs", {}) or {})
     artifact_refs.update(explicit_recorded.get("artifact_refs", {}) or {})
     result["artifact_refs"] = artifact_refs
+
     if decision != "approved":
         result["stop_reason"] = f"Approval decision '{decision}' recorded; stopping."
         result["final_status"] = decision.upper()
     elif result.get("mode") != FULL_SANDBOX_MIGRATION_MODE:
         result["stop_reason"] = "Approval decision 'approved' recorded; stopping."
+
+    run_dir_text = str(result.get("run_dir") or "")
+    if run_dir_text:
+        result = _ensure_resume_output_paths(result, Path(run_dir_text))
     return result
+
+
+def _ensure_resume_output_paths(state: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+    """Keep sandbox_path available after resume/finalize.
+
+    V2 Stage 2/3 progression needs the previous stage's sandbox path. Some
+    resume paths preserve it as modernized_app_path or artifact_refs instead of
+    top-level sandbox_path, so normalize it here before final JSON is printed.
+    """
+    updated = dict(state)
+    artifact_refs = dict(updated.get("artifact_refs", {}) or {})
+
+    sandbox_path = _first_text(
+        updated.get("sandbox_path"),
+        updated.get("modernized_app_path"),
+        updated.get("output_app_path"),
+        artifact_refs.get("sandbox"),
+        artifact_refs.get("sandbox_path"),
+        artifact_refs.get("modernized_app"),
+        artifact_refs.get("modernized_app_path"),
+    )
+
+    if not sandbox_path:
+        sandbox_path = _existing_candidate(
+            run_dir / "sandbox",
+            run_dir / "modernized",
+            run_dir / "output",
+            run_dir / "stage_1_sandbox",
+        )
+
+    if sandbox_path:
+        updated["sandbox_path"] = sandbox_path
+        updated.setdefault("modernized_app_path", sandbox_path)
+        artifact_refs.setdefault("sandbox", sandbox_path)
+        updated["artifact_refs"] = artifact_refs
+
+    return updated
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _existing_candidate(*paths: Path) -> str:
+    for path in paths:
+        try:
+            if path.exists():
+                return str(path)
+        except OSError:
+            continue
+    return ""
 
 
 def _to_json_safe(value: Any) -> Any:

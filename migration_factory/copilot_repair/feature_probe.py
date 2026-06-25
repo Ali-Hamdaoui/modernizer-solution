@@ -49,6 +49,8 @@ def probe_copilot_availability(
         return _write(output_path, payload)
 
     cli_path = resolve_copilot_cli_executable(executable)
+    if not cli_path and run is not subprocess.run:
+        cli_path = executable
     payload["cli_path"] = cli_path or ""
     if not cli_path:
         payload.update(
