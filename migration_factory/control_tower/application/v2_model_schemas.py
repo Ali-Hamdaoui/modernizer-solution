@@ -18,6 +18,8 @@ REQUIRED_SCHEMAS = (
     "ReviewerCritique",
     "ActionRequest",
     "AssistantAnswer",
+    "GateActionRequest",
+    "AssistantGateAnswer",
 )
 
 TOKEN_BUDGETS = {
@@ -30,7 +32,7 @@ TOKEN_BUDGETS = {
 }
 
 
-# ── Structured output schemas (strict) ──────────────────────────────
+# â”€â”€ Structured output schemas (strict) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 PLAN_PROPOSAL_SCHEMA = {
     "type": "object",
@@ -45,7 +47,7 @@ PLAN_PROPOSAL_SCHEMA = {
                 "additionalProperties": False,
                 "required": ["stage_index", "impact"],
                 "properties": {
-                    "stage_index": {"type": "integer", "minimum": 1, "maximum": 3},
+                    "stage_index": {"type": "integer", "minimum": 1, "maximum": 4},
                     "impact": {"type": "string"},
                 },
             },
@@ -88,7 +90,7 @@ REVIEWER_CRITIQUE_SCHEMA = {
     },
 }
 
-# F05: Allowed action types — strict enum for ActionRequest schema
+# F05: Allowed action types â€” strict enum for ActionRequest schema
 F05_ALLOWED_ACTION_TYPES = (
     "explain_failure",
     "diagnose_failure",
@@ -104,9 +106,16 @@ F05_ALLOWED_ACTION_TYPES = (
     "rollback_pom_change",
     "explain_validation_result",
     "apply_repair_plan_action",
+    "continue_from_gate",
+    "request_reanalysis",
+    "request_plan_revision",
+    "approve_from_gate",
+    "reject_from_gate",
+    "explain_gate_evidence",
+    "show_gate_available_actions",
 )
 
-# F05: Explicitly blocked action types — reject at service boundary
+# F05: Explicitly blocked action types â€” reject at service boundary
 F05_EXPLICITLY_BLOCKED_ACTION_TYPES = (
     "execute_command_directly",
     "write_file_directly",
@@ -126,7 +135,7 @@ ACTION_REQUEST_SCHEMA = {
             "enum": list(F05_ALLOWED_ACTION_TYPES),
         },
         "reason": {"type": "string"},
-        "stage_index": {"type": "integer", "minimum": 1, "maximum": 3},
+        "stage_index": {"type": "integer", "minimum": 1, "maximum": 4},
         "payload_checksum": {"type": "string"},
         # F05: Revision steering fields
         "source_proposal_id": {"type": "string"},
@@ -157,16 +166,99 @@ ASSISTANT_ANSWER_SCHEMA = {
     },
 }
 
+F15_GATE_ALLOWED_ACTION_TYPES = frozenset({
+    "continue_from_gate",
+    "request_reanalysis",
+    "request_plan_revision",
+    "approve_from_gate",
+    "reject_from_gate",
+    "explain_gate_evidence",
+    "show_gate_available_actions",
+})
+
+
+GATE_ACTION_REQUEST_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "action_type",
+        "gate_id",
+        "expected_gate_checksum",
+        "idempotency_key",
+        "request_checksum",
+        "reason",
+    ],
+    "properties": {
+        "action_type": {
+            "type": "string",
+            "enum": sorted(F15_GATE_ALLOWED_ACTION_TYPES),
+        },
+        "gate_id": {"type": "string"},
+        "expected_gate_checksum": {"type": "string"},
+        "idempotency_key": {"type": "string"},
+        "request_checksum": {"type": "string"},
+        "reason": {"type": "string"},
+        "stage_index": {"type": "integer", "minimum": 1, "maximum": 4},
+        "user_feedback": {"type": "string"},
+        "revision_instructions": {"type": "string"},
+        "correlation_id": {"type": "string"},
+        "causation_id": {"type": "string"},
+    },
+}
+
+
+ASSISTANT_GATE_ANSWER_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["gate_id", "gate_phase", "answer"],
+    "properties": {
+        "gate_id": {"type": "string"},
+        "gate_phase": {
+            "type": "string",
+            "enum": [
+                "analysis_review",
+                "planning_review",
+                "approval_review",
+                "repair_review",
+                "stage_completion_review",
+            ],
+        },
+        "answer": {"type": "string"},
+        "evidence_summary": {"type": "string"},
+        "available_actions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["action", "label"],
+                "properties": {
+                    "action": {"type": "string"},
+                    "label": {"type": "string"},
+                    "description": {"type": "string"},
+                    "blocked": {"type": "boolean"},
+                    "block_reason": {"type": "string"},
+                },
+            },
+        },
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "decision_required": {"type": "boolean"},
+        "gate_checksum": {"type": "string"},
+        "stage_index": {"type": "integer", "minimum": 1, "maximum": 4},
+    },
+}
+
 SCHEMA_REGISTRY = {
     "PlanProposal": PLAN_PROPOSAL_SCHEMA,
     "RepairProposal": REPAIR_PROPOSAL_SCHEMA,
     "ReviewerCritique": REVIEWER_CRITIQUE_SCHEMA,
     "ActionRequest": ACTION_REQUEST_SCHEMA,
     "AssistantAnswer": ASSISTANT_ANSWER_SCHEMA,
+    "GateActionRequest": GATE_ACTION_REQUEST_SCHEMA,
+    "AssistantGateAnswer": ASSISTANT_GATE_ANSWER_SCHEMA,
 }
 
 
-# ── Schema validation ────────────────────────────────────────────────
+# â”€â”€ Schema validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class SchemaValidationError(Exception):
@@ -319,14 +411,14 @@ class SchemaValidator:
                     )
 
 
-# ── Context pack ────────────────────────────────────────────────────
+# â”€â”€ Context pack â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @dataclass(frozen=True)
 class ContextPack:
     """Bounded context pack for model calls with optional enrichment metadata.
 
     Metadata fields enrich the pack for diagnosis/proposal/review flows.
-    All metadata is optional — old packs remain readable.
+    All metadata is optional â€” old packs remain readable.
     """
 
     pack_id: str
@@ -338,7 +430,7 @@ class ContextPack:
     token_budget_output: int
     checksum: str
     created_at: str
-    # ── Optional enrichment metadata (F01) ────────────────────────────
+    # â”€â”€ Optional enrichment metadata (F01) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     agent_name: str | None = None
     event_type: str | None = None
     stage_index: int | None = None

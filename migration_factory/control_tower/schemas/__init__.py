@@ -1,6 +1,12 @@
 """Strict Control Tower configuration schemas."""
 
-from .common import StrictModel
+from .artifact_revision import (
+    ArtifactRevision,
+    ArtifactRevisionKind,
+    ArtifactRevisionStatus,
+    get_upstream_kind,
+)
+from .common import StrictModel, NonEmptyString
 from .pipeline_definition import (
     PipelineDefinition,
     PipelineInputSource,
@@ -9,7 +15,21 @@ from .pipeline_definition import (
     PipelineTarget,
     StageInputSource,
 )
-from .run_configuration import RunConfiguration, RunPolicy, TargetProofLevel
+from .phase_gate import (
+    GateDecision,
+    GateDecisionRequest,
+    GateDecisionResult,
+    GatePhase,
+    GateStatus,
+    PhaseGate,
+    is_valid_decision_for_phase,
+)
+from .run_configuration import (
+    RunConfiguration,
+    RunPolicy,
+    StageContinuationPolicy,
+    TargetProofLevel,
+)
 from .runner_profile import (
     AIProfileReference,
     AiProfileReference,
@@ -27,12 +47,23 @@ from .runner_profile import (
 __all__ = [
     "AIProfileReference",
     "AiProfileReference",
+    "ArtifactRevision",
+    "ArtifactRevisionKind",
+    "ArtifactRevisionStatus",
     "FilesystemPolicy",
+    "GateDecision",
+    "GateDecisionRequest",
+    "GateDecisionResult",
+    "GatePhase",
+    "GateStatus",
+    "get_upstream_kind",
     "JdkConfig",
     "JdkInstallation",
     "MavenConfig",
     "MavenConfiguration",
     "NetworkPolicy",
+    "NonEmptyString",
+    "PhaseGate",
     "PipelineDefinition",
     "PipelineInputSource",
     "PipelineStage",
@@ -43,7 +74,9 @@ __all__ = [
     "RunConfiguration",
     "RunPolicy",
     "RunnerProfile",
+    "StageContinuationPolicy",
     "StageInputSource",
     "StrictModel",
     "TargetProofLevel",
+    "is_valid_decision_for_phase",
 ]

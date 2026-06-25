@@ -19,6 +19,12 @@ class V2RepairProposalRecord:
     status: str
     approval_checksum: str | None
     created_at: str
+    proposal_checksum: str | None = None
+    source_proposal_id: str | None = None
+    revision_of: str | None = None
+    revision_number: int | None = None
+    context_pack_checksum: str | None = None
+    allowed_scope: str | None = None
 
 
 @dataclass(frozen=True)
@@ -43,8 +49,10 @@ class SqliteV2RepairRepository:
             """INSERT INTO v2_repair_proposals (
                 proposal_id, command_id, failure_summary, hypothesis,
                 patch_summary, affected_paths_json, status,
-                approval_checksum, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                approval_checksum, created_at, proposal_checksum, source_proposal_id,
+                revision_of, revision_number, context_pack_checksum,
+                allowed_scope
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 record.proposal_id,
                 record.command_id,
@@ -55,6 +63,12 @@ class SqliteV2RepairRepository:
                 record.status,
                 record.approval_checksum,
                 record.created_at,
+                record.proposal_checksum,
+                record.source_proposal_id,
+                record.revision_of,
+                record.revision_number,
+                record.context_pack_checksum,
+                record.allowed_scope,
             ),
         )
 
@@ -131,6 +145,12 @@ class SqliteV2RepairRepository:
             status=str(row["status"]),
             approval_checksum=str(row["approval_checksum"]) if row["approval_checksum"] else None,
             created_at=str(row["created_at"]),
+            proposal_checksum=str(row["proposal_checksum"]) if "proposal_checksum" in row.keys() and row["proposal_checksum"] else None,
+            source_proposal_id=str(row["source_proposal_id"]) if "source_proposal_id" in row.keys() and row["source_proposal_id"] else None,
+            revision_of=str(row["revision_of"]) if "revision_of" in row.keys() and row["revision_of"] else None,
+            revision_number=int(row["revision_number"]) if "revision_number" in row.keys() and row["revision_number"] is not None else None,
+            context_pack_checksum=str(row["context_pack_checksum"]) if "context_pack_checksum" in row.keys() and row["context_pack_checksum"] else None,
+            allowed_scope=str(row["allowed_scope"]) if "allowed_scope" in row.keys() and row["allowed_scope"] else None,
         )
 
     def _row_to_action(self, row: sqlite3.Row) -> V2SandboxActionRecord:

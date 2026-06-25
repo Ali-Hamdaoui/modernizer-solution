@@ -179,7 +179,7 @@ export type PlanAmendmentPreviewResponse = {
   preview_applied: false;
 };
 
-// ── Assistant panel types (V1-18F) ─────────────────────────────────
+// â”€â”€ Assistant panel types (V1-18F) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export type AssistantStreamEvent = {
   event_type: "message" | "tool_call" | "tool_result" | "error" | "done";
@@ -217,7 +217,7 @@ export type AssistantDoneData = {
   status: string;
 };
 
-// ── Model activity panel types (V1-18D) ─────────────────────────────────
+// â”€â”€ Model activity panel types (V1-18D) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export type ModelInvocationEntry = {
   invocation_id: string;
@@ -249,7 +249,7 @@ export type ModelActivityRawResponse = {
   invocations?: ModelInvocationEntry[];
 };
 
-// ── Stage timeline panel types (V1-18B) ────────────────────────────────
+// â”€â”€ Stage timeline panel types (V1-18B) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export type StageChainEntry = {
   ledger_id: string;
@@ -270,7 +270,7 @@ export type StageChainResponse = {
   stages: StageChainEntry[];
 };
 
-// ── Approvals panel types (V1-18C) ────────────────────────────────
+// â”€â”€ Approvals panel types (V1-18C) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export type ApprovalEntry = {
   approval_id: string;
@@ -305,7 +305,7 @@ export type PrivilegedActionListResponse = {
   actions: PrivilegedActionEntry[];
 };
 
-// ── Repair panel types (V1-18E) ───────────────────────────────────
+// â”€â”€ Repair panel types (V1-18E) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export type RepairClassificationEntry = {
   classification_id: string;
@@ -359,7 +359,7 @@ export type RepairProposalListResponse = {
   proposals: FakeRepairProposalEntry[];
 };
 
-// ── Proof and final report panel types (V1-18G) ───────────────────
+// â”€â”€ Proof and final report panel types (V1-18G) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export type ProofGateEntry = {
   stage_index: number;
@@ -392,7 +392,7 @@ export type ProofReportEntry = {
   generated_by: string;
 };
 
-// ── V2 migration cockpit types ──────────────────────────────────────
+// â”€â”€ V2 migration cockpit types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export type V2MigrationJobResponse = {
   job_id: string;
@@ -636,7 +636,7 @@ export type V2FailureSummaryItem = {
   repair_loop_status: string;
   copilot_status: string;
   repair_fallback: string;
-  // ── SA4 diagnostic fields ──
+  // â”€â”€ SA4 diagnostic fields â”€â”€
   matched_line: string;
   command: string[];
   requested_command: string[];
@@ -648,7 +648,7 @@ export type V2FailureSummaryItem = {
   java_home: string;
   detected_version: string;
   required_minimum: string;
-  // ── Result contract diagnostic fields ──
+  // â”€â”€ Result contract diagnostic fields â”€â”€
   exit_code?: number | null;
   final_json_found?: boolean | null;
   parse_strategy?: string;
@@ -795,7 +795,7 @@ export type V2FinalReportResponse = {
   }>;
 };
 
-// ── F14 — Stage 3 POM Dependency Review types ──────────────────────────
+// â”€â”€ F14 â€” Stage 3 POM Dependency Review types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export type PomBaseline = {
   java_version: string;
@@ -942,4 +942,127 @@ export type PomApplyRequest = {
   proposal_id?: string;
   user_request?: string;
   idempotency_key?: string;
+};
+
+// ?? F15 Gate types (jobs 101-117) ??????????????????????????????????????
+
+export type GatePhase =
+  | "analysis_review"
+  | "planning_review"
+  | "approval_review"
+  | "repair_review"
+  | "stage_completion_review";
+
+export type GateDecision =
+  | "continue"
+  | "reanalyze"
+  | "revise"
+  | "approve"
+  | "reject";
+
+export type GateActorType =
+  | "human"
+  | "assistant"
+  | "api"
+  | "system";
+
+export type GateStatus =
+  | "open"
+  | "resolved"
+  | "superseded";
+
+export type GateRepresentation = {
+  gate_id: string;
+  job_id: string;
+  gate_phase: GatePhase;
+  stage_index: number;
+  gate_status: GateStatus;
+  gate_decision: GateDecision;
+  source_artifact_checksum: string;
+  source_artifact_refs: string[];
+  created_at: string;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  checksum: string;
+  available_actions: AvailableAction[];
+};
+
+export type AvailableAction = {
+  action: string;
+  label: string;
+  description: string;
+  blocked: boolean;
+  block_reason: string;
+};
+
+export type GateActionRequest = {
+  gate_id: string;
+  job_id: string;
+  action: GateDecision;
+  expected_gate_checksum: string;
+  idempotency_key: string;
+  decided_by: string;
+  actor_type: GateActorType;
+  reason?: string;
+  // Repair-specific fields (only for repair_review gates):
+  proposal_id?: string;
+  proposal_checksum?: string;
+  context_pack_checksum?: string;
+  user_feedback?: string;
+  // No sandbox_path, argv, or env fields
+};
+
+export type GateActionResult = {
+  decision_id: string;
+  gate_id: string;
+  job_id: string;
+  action: GateDecision;
+  status: string;
+  result_gate_id: string | null;
+  result_command_id: string | null;
+  result_revision_id: string | null;
+  reason: string;
+};
+
+export type RepairGateEvidence = {
+  failure_summary: string;
+  root_cause_hypothesis: string;
+  patch_summary: string;
+  affected_paths: string[];
+  reviewer_critique: {
+    critique_id: string;
+    decision: string;
+    reasoning: string;
+  } | null;
+  remaining_attempts: number;
+  max_attempts: number;
+};
+
+export type GateDetailResponse = {
+  gate: GateRepresentation;
+  evidence: RepairGateEvidence | null;
+  checksum: string;
+};
+
+export type GateListResponse = {
+  gates: GateRepresentation[];
+};
+
+export type GateActionResponse = {
+  result: GateActionResult;
+};
+
+export type OpenGateForJobResponse = {
+  gate: GateRepresentation | null;
+};
+
+// ?? F15 Final Report types (Stage 4 / V2 Final Report) ??????????????????
+
+export type V2ReportArtifactSummary = {
+  artifact_id: string;
+  kind: "final_report_json" | "final_report_markdown" | "final_report_pdf";
+  checksum_sha256: string;
+  size_bytes: number;
+  content_type: "application/json" | "text/markdown" | "application/pdf";
+  download_url: string;
 };

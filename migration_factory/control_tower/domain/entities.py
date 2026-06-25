@@ -672,3 +672,98 @@ class V1ProofReportGateRecord:
     output_checksum: str
     proof_gate_checksum: str
     chain_status: str
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseGateRecord:
+    """Immutable record of an F15 governed-stage gate.
+
+    Append-only: once inserted with gate_status='resolved' (or
+    superseded), the record must never be updated. Open gates may
+    be superseded by inserting a new record with the same
+    (job_id, gate_phase, stage_index) key and marking the prior
+    record as superseded.
+
+    Unique constraint: at most one row with gate_status='open'
+    per (job_id, gate_phase, stage_index).
+    """
+
+    gate_id: str
+    job_id: str
+    gate_phase: str
+    stage_index: int
+    gate_status: str
+    gate_decision: str
+    source_artifact_checksum: str
+    resolved_artifact_checksum: str | None
+    source_artifact_refs_json: str
+    created_at: str
+    resolved_at: str | None = None
+    resolved_by: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactRevisionRecord:
+    """Immutable record of versioned evidence for a governed phase.
+
+    Tracks analysis, planning, approval, and repair evidence revisions.
+    Downstream phases must only consume ACCEPTED revisions.
+
+    Append-only: status transitions are recorded by inserting a new
+    revision (or superseding the prior one). Superseded revisions
+    remain queryable indefinitely.
+    """
+
+    revision_id: str
+    job_id: str
+    stage_index: int
+    revision_kind: str
+    revision_status: str
+    revision_order: int
+    evidence_checksum: str
+    prior_revision_checksum: str | None
+    artifact_refs_json: str
+    prior_revision_id: str | None
+    superseded_by_revision_id: str | None
+    accepted_at_gate_id: str | None
+    created_at: str
+    created_by: str
+    accepted_at: str | None = None
+    accepted_by: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GateDecisionRecord:
+    """Immutable record of a gate decision action.
+
+    Append-only: once inserted, the record must never be updated
+    or deleted. Every decision is bound to a specific gate
+    checksum and carries an idempotency key.
+
+    Idempotency contract:
+      * Duplicate (idempotency_key, request_checksum) returns
+        the same result (the original decision_id).
+      * A different request_checksum under the same
+        idempotency_key is rejected as a conflicting payload.
+
+    Result references are backend-owned and never supplied by
+    the frontend/chatbot.
+    """
+
+    decision_id: str
+    gate_id: str
+    job_id: str
+    action: str                # GateDecision value from the enum
+    expected_gate_checksum: str  # checksum of the gate snapshot
+    idempotency_key: str
+    request_checksum: str       # checksum of the full request payload
+    result_gate_id: str | None = None     # new gate after reanalysis
+    result_command_id: str | None = None  # command queued (continue)
+    result_revision_id: str | None = None # plan revision
+    decided_by: str = ""
+    decided_at: str = ""
+    actor_type: str = "human"
+    actor_id: str = ""
+    reason: str = ""
+    correlation_id: str | None = None
+    causation_id: str | None = None

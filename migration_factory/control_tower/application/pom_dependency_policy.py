@@ -114,7 +114,7 @@ class PomDependencyPolicy:
         {
             "properties": {"java.version": "17", ...},
             "dependencies": [
-                {"groupId": "com.google.code.gson", "artifactId": "gson", "version": "2.8.9", ...},
+                {"groupId": "com.example", "artifactId": "library-name", "version": "1.2.3", ...},
                 ...
             ],
             "dependency_management": [
@@ -188,6 +188,8 @@ class PomDependencyPolicy:
             user_request=user_request,
             requested_version=requested_version,
         )
+        if risk == RiskLevel.BLOCKED.value and warnings:
+            reason = warnings[0]
 
         requires_explicit_high_risk = risk in (RiskLevel.HIGH.value,)
         if risk == RiskLevel.BLOCKED.value:
@@ -388,9 +390,9 @@ class PomDependencyPolicy:
         # Not present
         if control_mode == DependencyControlMode.NOT_PRESENT:
             return (
-                RiskLevel.MEDIUM.value if target_kind != "dependency" else RiskLevel.HIGH.value,
+                RiskLevel.MEDIUM.value if target_kind != "dependency" else RiskLevel.BLOCKED.value,
                 (
-                    "Target is not present in the current POM. Adding new dependencies requires careful review.",
+                    "Target is not present in the current POM. Update operations require an existing direct target.",
                 ),
             )
 
@@ -459,12 +461,9 @@ class PomDependencyPolicy:
         if risk == RiskLevel.MEDIUM.value:
             return (True, ExecutionMode.POM_SPAN_PATCH.value, "Change approved with medium risk. Validation is required.")
 
-        # High risk needs explicit confirmation
+        # High-risk control modes are proposal-only until a supported executor exists.
         if risk == RiskLevel.HIGH.value:
-            # Check if user wording indicates explicit high-risk intent
-            if _is_explicit_high_risk_request(user_request):
-                return (True, ExecutionMode.POM_SPAN_PATCH.value, "High-risk change approved with explicit confirmation. Validation required.")
-            return (False, ExecutionMode.PROPOSAL_ONLY.value, "High-risk change requires explicit confirmation. A proposal has been generated.")
+            return (False, ExecutionMode.PROPOSAL_ONLY.value, "Change is not executable by the targeted POM patcher for this control mode. A proposal has been generated for review.")
 
         # Default for direct dependency: apply
         if control_mode in (DependencyControlMode.DIRECT_DEPENDENCY_VERSION,):
@@ -478,7 +477,7 @@ class PomDependencyPolicy:
         if risk == RiskLevel.BLOCKED.value:
             return "provide_more_details"
         if risk == RiskLevel.HIGH.value:
-            return "confirm_high_risk"
+            return "review_proposal"
         return "review_proposal"
 
 

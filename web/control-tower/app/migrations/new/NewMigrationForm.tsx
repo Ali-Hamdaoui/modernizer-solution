@@ -3,6 +3,8 @@
 import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 
+import { createV2Job, startV2Stage1 } from "../../../lib/controlTowerApi";
+
 interface ParsedEnvResult {
   parsed: {
     run_name: string;
@@ -147,9 +149,10 @@ export function getAzureSmokeCopy(
   const snippet = preflight.azure_model_response_snippet
     ? sanitizeSmokeSnippet(preflight.azure_model_response_snippet)
     : "";
-  const suffix = snippet ? ` - ${snippet}` : "";
+  const separator = "—";
+  const suffix = snippet ? ` ${separator} ${snippet}` : "";
   return {
-    label: `Azure model smoke: FAIL - ${reason}${suffix}`,
+    label: `Azure model smoke: FAIL ${separator} ${reason}${suffix}`,
     checkedAt: preflight.checked_at,
     failureReason: reason,
     snippet,
@@ -465,24 +468,8 @@ export function NewMigrationForm() {
                   setLoading("Starting migration...");
                   setError(null);
                   try {
-                    const jobRes = await fetch(`${API_BASE}/v1/v2/migration-jobs`, {
-                      method: "POST",
-                      headers: mutationHeaders(),
-                      body: JSON.stringify({ setup_id: setupResult.setup_id }),
-                    });
-                    if (!jobRes.ok) throw new Error(`Job creation failed: ${jobRes.status}`);
-                    const jobData = await jobRes.json();
-
-                    const stageRes = await fetch(`${API_BASE}/v1/v2/migration-jobs/start-stage1`, {
-                      method: "POST",
-                      headers: mutationHeaders(),
-                      body: JSON.stringify({
-                        job_id: jobData.job_id,
-                        setup_id: setupResult.setup_id,
-                      }),
-                    });
-                    if (!stageRes.ok) throw new Error(`Stage 1 start failed: ${stageRes.status}`);
-
+                    const jobData = await createV2Job(setupResult.setup_id);
+                    await startV2Stage1(jobData.job_id, setupResult.setup_id);
                     router.push(`/migrations/${jobData.job_id}`);
                   } catch (e) {
                     setError(e instanceof Error ? e.message : "Start failed");

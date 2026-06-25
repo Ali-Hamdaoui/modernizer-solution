@@ -312,6 +312,15 @@ class PomDependencyReviewer:
 
         return result
 
+    def parse_pom_deps(self, pom_content: str) -> dict[str, Any]:
+        """Parse dependency metadata from live POM content.
+
+        Public wrapper used by the editor/proposer so policy decisions are
+        based on the current backend-resolved POM when callers do not provide
+        pre-parsed metadata.
+        """
+        return self._parse_pom_deps(pom_content)
+
     # ── Classification helpers ──────────────────────────────────────
 
     def _classify_dependency(

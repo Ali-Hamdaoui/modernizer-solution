@@ -13,6 +13,11 @@ import type {
   V2PipelineResponse,
   V2FailureSummaryResponse,
   V2FinalReportResponse,
+  GateActionRequest,
+  GateActionResponse,
+  GateDetailResponse,
+  GateListResponse,
+  OpenGateForJobResponse,
   V2StageEntry,
   V2StageCommandResponse,
   V2ApprovalResponse,
@@ -245,7 +250,7 @@ export function assistantStreamUrl(jobId: string): string {
   return `${CONTROL_TOWER_API_BASE_URL}/v1/jobs/${encodeURIComponent(jobId)}/assistant/stream`;
 }
 
-// ── V2 migration cockpit API methods ──────────────────────────────────
+// â”€â”€ V2 migration cockpit API methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function createV2Job(setupId: string): Promise<V2MigrationJobResponse> {
   return postJson<V2MigrationJobResponse>(
@@ -421,6 +426,52 @@ export async function addV2AssistantMessage(
   );
 }
 
+export async function getV2JobGates(jobId: string): Promise<GateListResponse> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<GateListResponse>(`/v1/v2/jobs/${encodeURIComponent(safeJobId)}/gates`);
+}
+
+export async function getV2OpenGate(jobId: string): Promise<OpenGateForJobResponse> {
+  const safeJobId = requireJobId(jobId);
+  const response = await fetch(
+    `${CONTROL_TOWER_API_BASE_URL}/v1/v2/jobs/${encodeURIComponent(safeJobId)}/gates/open`,
+    { cache: "no-store" }
+  );
+  if (response.status === 404) {
+    return { gate: null };
+  }
+  if (!response.ok) {
+    throw new Error(`Failed to load open gate for ${jobId}.`);
+  }
+  return (await response.json()) as OpenGateForJobResponse;
+}
+
+export async function getV2GateDetail(jobId: string, gateId: string): Promise<GateDetailResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeGateId = gateId.trim();
+  if (!safeGateId) {
+    throw new Error("Gate id is required.");
+  }
+  return getJson<GateDetailResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/gates/${encodeURIComponent(safeGateId)}`
+  );
+}
+
+export async function postV2GateAction(
+  jobId: string,
+  gateId: string,
+  payload: GateActionRequest
+): Promise<GateActionResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeGateId = gateId.trim();
+  if (!safeGateId) {
+    throw new Error("Gate id is required.");
+  }
+  return postJson<GateActionResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/gates/${encodeURIComponent(safeGateId)}/actions`,
+    payload
+  );
+}
 export async function askV2Assistant(
   jobId: string,
   question: string
@@ -494,7 +545,7 @@ export async function getV2ReviewerCritiques(
   );
 }
 
-// ── F14 — Stage 3 POM Dependency Editor API ──────────────────────────────
+// â”€â”€ F14 â€” Stage 3 POM Dependency Editor API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function getStage3Pom(jobId: string): Promise<PomView> {
   return getJson<PomView>(
@@ -592,9 +643,7 @@ export async function postJson<TResponse>(
     }
   });
   if (!response.ok) {
-    throw new Error(
-      `Control Tower mutation failed for ${path}: ${response.status} ${response.statusText || "HTTP error"}.`
-    );
+    throw new Error(await buildApiErrorMessage(response, `Control Tower mutation failed for ${path}`));
   }
   return (await response.json()) as TResponse;
 }
@@ -602,9 +651,22 @@ export async function postJson<TResponse>(
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`${CONTROL_TOWER_API_BASE_URL}${path}`, { cache: "no-store" });
   if (!response.ok) {
-    throw new Error(
-      `Control Tower request failed for ${path}: ${response.status} ${response.statusText || "HTTP error"}.`
-    );
+    throw new Error(await buildApiErrorMessage(response, `Control Tower request failed for ${path}`));
   }
   return (await response.json()) as T;
+}
+
+async function buildApiErrorMessage(response: Response, fallbackPrefix: string): Promise<string> {
+  const fallback = `${fallbackPrefix}: ${response.status} ${response.statusText || "HTTP error"}.`;
+  try {
+    const payload = (await response.json()) as { error?: { code?: string; message?: string } };
+    const message = payload.error?.message?.trim();
+    const code = payload.error?.code?.trim();
+    if (!message) {
+      return fallback;
+    }
+    return code ? `${message} (${code})` : message;
+  } catch {
+    return fallback;
+  }
 }

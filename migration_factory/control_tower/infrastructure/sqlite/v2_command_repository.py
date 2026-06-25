@@ -20,6 +20,8 @@ class V2StageCommandRecord:
     created_at: str
     updated_at: str
     result_json: str | None
+    gate_id: str | None = None
+    decision_id: str | None = None
 
 
 class SqliteV2CommandRepository:
@@ -37,8 +39,8 @@ class SqliteV2CommandRepository:
             """INSERT INTO v2_stage_commands (
                 command_id, job_id, stage_index, manifest_checksum,
                 argv_json, env_json, status, created_at, updated_at,
-                result_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                result_json, gate_id, decision_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 record.command_id,
                 record.job_id,
@@ -50,6 +52,8 @@ class SqliteV2CommandRepository:
                 record.created_at,
                 record.updated_at,
                 record.result_json,
+                record.gate_id,
+                record.decision_id,
             ),
         )
 
@@ -88,4 +92,6 @@ class SqliteV2CommandRepository:
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
             result_json=str(row["result_json"]) if row["result_json"] else None,
+            gate_id=str(row["gate_id"]) if row["gate_id"] else None,
+            decision_id=str(row["decision_id"]) if row["decision_id"] else None,
         )

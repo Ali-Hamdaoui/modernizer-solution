@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import sqlite3
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -160,14 +161,55 @@ from migration_factory.control_tower.application.v2_repair_flow import (
 from migration_factory.control_tower.application.v2_reviewer_service import (
     V2ReviewerService,
 )
+from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
+from migration_factory.control_tower.application.v2_repair_gate_service import (
+    V2RepairGateService,
+    create_repair_gate_diagnosis_callback,
+)
+from migration_factory.control_tower.application.v2_failure_diagnosis import (
+    V2FailureDiagnosisService,
+)
+from migration_factory.control_tower.application.v2_gate_action_service import (
+    V2GateActionService,
+)
+from migration_factory.control_tower.application.v2_gate_artifact_resolver import (
+    V2GateArtifactResolver,
+)
+from migration_factory.control_tower.application.v2_evidence_pack_builder import (
+    EvidencePackBuilder,
+    evidence_pack_to_dict,
+)
+from migration_factory.control_tower.application.v2_gate_assistant import (
+    ActionPreview,
+    ClassifiedIntent,
+    ConfirmationStore,
+    GateActionExecutor,
+    GateActionPreviewBuilder,
+    GateContext,
+    GateContextLoader,
+    GateIntentClassifier,
+)
+from migration_factory.control_tower.application.v2_assistant_response_composer import (
+    AssistantResponseCard,
+    AssistantResponseSection,
+    V2AssistantResponseComposer,
+)
+from migration_factory.control_tower.application.v2_phase_gate_service import (
+    AvailableAction,
+    V2PhaseGateService,
+)
 from migration_factory.control_tower.application.v2_orchestrator_runner import (
     V2OrchestratorRunner,
+    V2OrchestratorStart,
     _bounded,
 )
 from migration_factory.control_tower.application.v2_failure_diagnosis import (
     create_orchestrator_diagnosis_callback,
 )
-from migration_factory.control_tower.application.redaction import redact_public_value
+from migration_factory.control_tower.application.redaction import (
+    redact_absolute_paths,
+    redact_public_value,
+)
 from migration_factory.control_tower.adapters.fastapi.security import (
     MUTATION_METHODS,
     ActorProvider,
@@ -180,10 +222,22 @@ from migration_factory.control_tower.adapters.fastapi.security import (
     redact_public_data,
 )
 from migration_factory.control_tower.application.redaction import redact_model_summary
-from migration_factory.control_tower.domain.checksums import utc_now_text
+from migration_factory.control_tower.domain.checksums import (
+    sha256_canonical_json,
+    utc_now_text,
+)
+from migration_factory.control_tower.domain.gate_checksum import gate_checksum
+from migration_factory.control_tower.schemas.phase_gate import (
+    GateActorType,
+    GateDecision,
+    GatePhase,
+)
+from migration_factory.control_tower.application.v2_gate_errors import (
+    http_status_for_gate_status,
+)
 from uuid import uuid4
 
-# F14 — Stage 3 POM dependency editor imports
+# F14 â€” Stage 3 POM dependency editor imports
 from migration_factory.control_tower.application.pom_dependency_editor import (
     PomDependencyEditor,
 )
@@ -198,6 +252,7 @@ from migration_factory.control_tower.application.pom_change_models import (
 UnitOfWorkFactory = Any
 ETAG_RE = re.compile(r'^"job-(?P<job_id>.+)-v(?P<version>[1-9][0-9]*)"$')
 _POM_DEPENDENCY_EDITOR_FACTORY: Callable[[], PomDependencyEditor] | None = None
+_ASSISTANT_RESPONSE_COMPOSER = V2AssistantResponseComposer()
 
 
 def _configure_pom_dependency_editor_factory(
@@ -437,6 +492,7 @@ class PreflightRequest(BaseModel):
 class CreateV2JobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     setup_id: str
+    policy: RunPolicy | None = None
 
 
 class StartV2JobRequest(BaseModel):
@@ -449,8 +505,20 @@ class ApproveCardRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_checksum: str
 
+class GateActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: GateDecision
+    expected_gate_checksum: str
+    idempotency_key: str | None = None
+    decided_by: str
+    actor_type: GateActorType
+    reason: str = ""
+    proposal_id: str | None = None
+    proposal_checksum: str | None = None
+    context_pack_checksum: str | None = None
+    user_feedback: str = ""
 
-# F07 reviewer request — context only, no decision from client
+# F07 reviewer request â€” context only, no decision from client
 
 class CreateReviewerCritiqueRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -461,7 +529,7 @@ class CreateReviewerCritiqueRequest(BaseModel):
     # Internal: model_invocation_id for audit (set by orchestrator, not client)
     model_invocation_id: str | None = None
     # F07: decision, reasoning, missing_evidence, unsafe_assumptions are
-    # NEVER accepted from client body — the model generates them.
+    # NEVER accepted from client body â€” the model generates them.
 
 
 class StageProgressRequest(BaseModel):
@@ -513,12 +581,12 @@ class CreateRepairProposalRequest(BaseModel):
 class ApproveRepairProposalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     approval_checksum: str
-    # F07: both checksums required — reviewer gate is mandatory, no bypass
+    # F07: both checksums required â€” reviewer gate is mandatory, no bypass
     proposal_checksum: str
     context_pack_checksum: str
 
 
-# ── F14 POM dependency editor request schemas ──────────────────────────
+# â”€â”€ F14 POM dependency editor request schemas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class PomProposeRequestSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -602,7 +670,7 @@ def create_app(
     app.state.v2_assistant_model_client = v2_assistant_model_client or V2AssistantModelClient()
     app.state.worker_launcher = worker_launcher
     app.state.worker_terminator = worker_terminator
-    # ── F02: Wire automatic failure diagnosis into the orchestrator ──
+    # â”€â”€ F02: Wire automatic failure diagnosis into the orchestrator â”€â”€
     def _diagnosis_event_sink(
         job_id: str,
         stage: int | None,
@@ -625,11 +693,66 @@ def create_app(
             asyncio.run(app.state.public_event_notifier.notify())
 
     _repair_flow = V2RepairFlowService()
-    _diagnosis_callback = create_orchestrator_diagnosis_callback(
+    _diagnosis_service = V2FailureDiagnosisService(
         repair_flow=_repair_flow,
         event_sink=_diagnosis_event_sink,
     )
+    _orchestrator_diagnosis_callback = create_orchestrator_diagnosis_callback(
+        service=_diagnosis_service,
+    )
 
+    def _repair_gate_enabled_for_job(job_id: str) -> bool:
+        with unit_of_work_factory() as uow:
+            run_config = uow.run_configurations.get_for_job(job_id)
+        if run_config is None or not run_config.policy_json:
+            return False
+        try:
+            policy = RunPolicy(**json.loads(run_config.policy_json))
+        except Exception:
+            return False
+        return policy.enable_build_repair
+
+    def _maybe_create_repair_gate(
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if not V2FailureDiagnosisService.is_diagnosable_event(event_type):
+            return
+        if not _repair_gate_enabled_for_job(job_id):
+            return
+
+        with unit_of_work_factory() as uow:
+            gate_service = V2PhaseGateService(uow.phase_gates)
+            decision_service = V2GateActionService(
+                uow.phase_gates,
+                uow.gate_decisions,
+                gate_service,
+                revision_repo=uow.artifact_revisions,
+                repair_service=_repair_flow,
+            )
+            repair_gate_service = V2RepairGateService(
+                gate_service=gate_service,
+                gate_action_service=decision_service,
+                repair_flow=_repair_flow,
+                diagnosis_service=_diagnosis_service,
+            )
+            create_repair_gate_diagnosis_callback(
+                repair_gate_service,
+                _diagnosis_service,
+            )(job_id, stage_index, command_id, event_type, payload)
+
+    def _diagnosis_callback(
+        job_id: str,
+        stage: int,
+        command_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        _orchestrator_diagnosis_callback(job_id, stage, command_id, event_type, payload)
+        _maybe_create_repair_gate(job_id, stage, command_id, event_type, payload)
     app.state.v2_orchestrator_runner = v2_orchestrator_runner or V2OrchestratorRunner(
         unit_of_work_factory=unit_of_work_factory,
         notifier=app.state.public_event_notifier,
@@ -1039,9 +1162,12 @@ def create_app(
             service = V2MigrationJobService(
                 setup_repo=uow.v2_setups,
                 job_repo=uow.v2_jobs,
+                run_config_repo=uow.run_configurations,
+                runner_profile_repo=uow.runner_profiles,
+                pipeline_repo=uow.pipeline_definitions,
             )
             try:
-                result = service.create_job(payload.setup_id)
+                result = service.create_job(payload.setup_id, policy=payload.policy)
             except ValueError as exc:
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,
@@ -1066,6 +1192,9 @@ def create_app(
             service = V2MigrationJobService(
                 setup_repo=uow.v2_setups,
                 job_repo=uow.v2_jobs,
+                run_config_repo=uow.run_configurations,
+                runner_profile_repo=uow.runner_profiles,
+                pipeline_repo=uow.pipeline_definitions,
             )
             result = service.get_job(job_id)
         if result is None:
@@ -1368,6 +1497,330 @@ def create_app(
             events = uow.v2_events.list_by_job(job_id)
         return redact_public_data(_v2_failure_summary(job_id, events))
 
+    def _v2_gate_to_dict(
+        gate: Any,
+        *,
+        available_actions: list[AvailableAction] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            refs_raw = json.loads(gate.source_artifact_refs_json or "[]")
+        except (json.JSONDecodeError, TypeError):
+            refs_raw = []
+        if isinstance(refs_raw, dict):
+            refs = [str(value) for value in refs_raw.values() if value]
+        elif isinstance(refs_raw, list):
+            refs = [str(value) for value in refs_raw if value]
+        else:
+            refs = []
+        checksum = gate_checksum(
+            gate_id=gate.gate_id,
+            job_id=gate.job_id,
+            gate_phase=gate.gate_phase,
+            stage_index=gate.stage_index,
+            source_artifact_checksum=gate.source_artifact_checksum,
+            source_artifact_refs=tuple(refs),
+        )
+        return {
+            "gate_id": gate.gate_id,
+            "job_id": gate.job_id,
+            "gate_phase": gate.gate_phase,
+            "stage_index": gate.stage_index,
+            "gate_status": gate.gate_status,
+            "gate_decision": gate.gate_decision,
+            "source_artifact_checksum": gate.source_artifact_checksum,
+            "source_artifact_refs": refs,
+            "created_at": gate.created_at,
+            "resolved_at": gate.resolved_at,
+            "resolved_by": gate.resolved_by,
+            "checksum": checksum,
+            "available_actions": [
+                {
+                    "action": action.action,
+                    "label": action.label,
+                    "description": action.description,
+                    "blocked": action.blocked,
+                    "block_reason": action.block_reason,
+                }
+                for action in (available_actions or [])
+            ],
+        }
+
+    def _v2_gate_detail_payload(
+        uow: Any,
+        gate: Any,
+    ) -> dict[str, Any]:
+        gate_service = V2PhaseGateService(uow.phase_gates)
+        available_actions = gate_service.get_available_actions(gate.gate_id)
+        gate_dict = _v2_gate_to_dict(gate, available_actions=available_actions)
+
+        evidence: dict[str, Any] | None = None
+        setup = None
+        job = uow.v2_jobs.get(gate.job_id)
+        if job is not None and getattr(job, "setup_id", None):
+            setup = uow.v2_setups.get(job.setup_id)
+        storage_root = getattr(setup, "output_parent_path", None) if setup is not None else None
+        resolver = V2GateArtifactResolver(uow.phase_gates, storage_root=storage_root)
+        pack_builder = EvidencePackBuilder(resolver)
+        try:
+            gate_phase = GatePhase(gate.gate_phase)
+        except ValueError:
+            gate_phase = None
+        if gate_phase == GatePhase.ANALYSIS_REVIEW:
+            evidence = evidence_pack_to_dict(pack_builder.build_analysis_pack(gate.gate_id))
+        elif gate_phase == GatePhase.PLANNING_REVIEW:
+            evidence = evidence_pack_to_dict(pack_builder.build_planning_pack(gate.gate_id))
+        elif gate_phase == GatePhase.APPROVAL_REVIEW:
+            evidence = evidence_pack_to_dict(pack_builder.build_approval_pack(gate.gate_id))
+        elif gate_phase in {GatePhase.REPAIR_REVIEW, GatePhase.STAGE_COMPLETION_REVIEW}:
+            evidence = evidence_pack_to_dict(pack_builder.build_failure_pack(gate.gate_id))
+
+        return {
+            "gate": gate_dict,
+            "evidence": evidence,
+            "checksum": gate_dict["checksum"],
+        }
+
+    def _v2_gate_action_response(
+        uow: Any,
+        *,
+        job_id: str,
+        gate_id: str,
+        payload: GateActionRequest,
+    ) -> dict[str, Any]:
+        gate_service = V2PhaseGateService(uow.phase_gates)
+        repair_flow = V2RepairFlowService(repair_repo=uow.v2_repairs)
+        action_service = V2GateActionService(
+            uow.phase_gates,
+            uow.gate_decisions,
+            gate_service,
+            revision_repo=uow.artifact_revisions,
+            repair_service=repair_flow,
+        )
+        repair_gate_service = V2RepairGateService(
+            gate_service=gate_service,
+            gate_action_service=action_service,
+            repair_flow=repair_flow,
+        )
+
+        gate = uow.phase_gates.get(gate_id)
+        if gate is None:
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "GATE_NOT_FOUND",
+                f"Gate {gate_id!r} not found.",
+            )
+        if gate.job_id != job_id:
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                "GATE_JOB_MISMATCH",
+                "Gate job does not match the requested job.",
+            )
+
+        try:
+            gate_refs = json.loads(gate.source_artifact_refs_json or "[]")
+        except (json.JSONDecodeError, TypeError):
+            gate_refs = []
+        gate_checksum_value = gate_checksum(
+            gate_id=gate.gate_id,
+            job_id=gate.job_id,
+            gate_phase=gate.gate_phase,
+            stage_index=gate.stage_index,
+            source_artifact_checksum=gate.source_artifact_checksum,
+            source_artifact_refs=tuple(gate_refs),
+        )
+
+        actor_type = payload.actor_type.value if hasattr(payload.actor_type, "value") else str(payload.actor_type)
+        action_value = payload.action.value if hasattr(payload.action, "value") else str(payload.action)
+        if action_value == GateDecision.CONTINUE.value:
+            result = action_service.continue_from_gate(
+                gate_id=gate_id,
+                job_id=job_id,
+                decided_by=payload.decided_by,
+                idempotency_key=payload.idempotency_key,
+                expected_gate_checksum=payload.expected_gate_checksum,
+                actor_type=actor_type,
+            )
+        elif action_value == GateDecision.REANALYZE.value:
+            result = action_service.request_reanalysis(
+                gate_id=gate_id,
+                job_id=job_id,
+                decided_by=payload.decided_by,
+                user_feedback=payload.user_feedback,
+                idempotency_key=payload.idempotency_key,
+                expected_gate_checksum=payload.expected_gate_checksum,
+            )
+        elif action_value == GateDecision.REVISE.value:
+            if gate.gate_phase == GatePhase.REPAIR_REVIEW.value:
+                result = repair_gate_service.request_repair_revision(
+                    gate_id=gate_id,
+                    job_id=job_id,
+                    decided_by=payload.decided_by,
+                    proposal_id=payload.proposal_id or "",
+                    user_feedback=payload.user_feedback,
+                    idempotency_key=payload.idempotency_key,
+                    expected_gate_checksum=payload.expected_gate_checksum,
+                )
+            else:
+                result = action_service.request_plan_revision(
+                    gate_id=gate_id,
+                    job_id=job_id,
+                    decided_by=payload.decided_by,
+                    user_feedback=payload.user_feedback,
+                    idempotency_key=payload.idempotency_key,
+                    expected_gate_checksum=payload.expected_gate_checksum,
+                )
+        elif action_value == GateDecision.APPROVE.value:
+            if gate.gate_phase == GatePhase.REPAIR_REVIEW.value:
+                result = repair_gate_service.approve_repair(
+                    gate_id=gate_id,
+                    job_id=job_id,
+                    decided_by=payload.decided_by,
+                    proposal_id=payload.proposal_id or "",
+                    proposal_checksum=payload.proposal_checksum or "",
+                    context_pack_checksum=payload.context_pack_checksum or "",
+                    idempotency_key=payload.idempotency_key,
+                    expected_gate_checksum=payload.expected_gate_checksum,
+                    actor_type=actor_type,
+                )
+            else:
+                revision_requested_active = False
+                if gate.gate_phase == GatePhase.APPROVAL_REVIEW.value:
+                    revision_requested_active = (
+                        _approval_review_blocked_revision_card(
+                            uow,
+                            job_id=job_id,
+                            stage_index=gate.stage_index,
+                            gate_checksum=gate_checksum_value,
+                        )
+                        is not None
+                    )
+                result = action_service.approve_transformation(
+                    gate_id=gate_id,
+                    job_id=job_id,
+                    decided_by=payload.decided_by,
+                    idempotency_key=payload.idempotency_key,
+                    expected_gate_checksum=payload.expected_gate_checksum,
+                    actor_type=actor_type,
+                    revision_requested_active=revision_requested_active,
+                )
+        elif action_value == GateDecision.REJECT.value:
+            if gate.gate_phase == GatePhase.REPAIR_REVIEW.value:
+                result = repair_gate_service.reject_repair(
+                    gate_id=gate_id,
+                    job_id=job_id,
+                    decided_by=payload.decided_by,
+                    reason=payload.reason,
+                    idempotency_key=payload.idempotency_key,
+                    expected_gate_checksum=payload.expected_gate_checksum,
+                    actor_type=actor_type,
+                )
+            else:
+                result = action_service.reject_gate(
+                    gate_id=gate_id,
+                    job_id=job_id,
+                    decided_by=payload.decided_by,
+                    reason=payload.reason,
+                    idempotency_key=payload.idempotency_key,
+                    expected_gate_checksum=payload.expected_gate_checksum,
+                    actor_type=actor_type,
+                )
+        else:
+            raise _error(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "UNSUPPORTED_GATE_ACTION",
+                f"Unsupported gate action {action_value!r}.",
+            )
+
+        if result.status == "idempotency_conflict":
+            raise _error(
+                status.HTTP_409_CONFLICT,
+                "IDEMPOTENCY_CONFLICT",
+                result.reason or "Idempotency key was reused for a different request.",
+            )
+        if result.status == "stale_checksum":
+            raise _error(
+                status.HTTP_409_CONFLICT,
+                "STALE_GATE_CHECKSUM",
+                result.reason or "Gate checksum is stale.",
+            )
+        if result.status in {"actor_not_authoritative", "invalid_decision", "gate_not_open", "gate_not_found", "command_conflict", "approval_failed", "no_repair_service", "no_action_service"}:
+            raise _error(
+                http_status_for_gate_status(result.status),
+                result.status.upper(),
+                result.reason or result.status,
+            )
+
+        return {
+            "result": {
+                "decision_id": result.decision_id,
+                "gate_id": result.gate_id,
+                "job_id": job_id,
+                "action": result.action,
+                "status": result.status,
+                "result_gate_id": result.result_gate_id,
+                "result_command_id": result.result_command_id,
+                "result_revision_id": result.result_revision_id,
+                "reason": result.reason,
+            }
+        }
+
+    @app.get("/v1/v2/jobs/{job_id}/gates")
+    def list_v2_job_gates(job_id: str) -> dict[str, Any]:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            gates = sorted(
+                uow.phase_gates.list_by_job(job_id),
+                key=lambda gate: (gate.created_at, gate.stage_index, gate.gate_id),
+            )
+            gate_service = V2PhaseGateService(uow.phase_gates)
+            return {
+                "gates": [
+                    _v2_gate_to_dict(
+                        gate,
+                        available_actions=gate_service.get_available_actions(gate.gate_id),
+                    )
+                    for gate in gates
+                ]
+            }
+
+    @app.get("/v1/v2/jobs/{job_id}/gates/open")
+    def get_v2_job_open_gate(job_id: str) -> dict[str, Any]:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            open_gates = uow.phase_gates.list_open(job_id)
+            gate = open_gates[0] if open_gates else None
+            gate_service = V2PhaseGateService(uow.phase_gates)
+            return {
+                "gate": None if gate is None else _v2_gate_to_dict(
+                    gate,
+                    available_actions=gate_service.get_available_actions(gate.gate_id),
+                )
+            }
+
+    @app.get("/v1/v2/jobs/{job_id}/gates/{gate_id}")
+    def get_v2_job_gate(job_id: str, gate_id: str) -> dict[str, Any]:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            gate = uow.phase_gates.get(gate_id)
+            if gate is None or gate.job_id != job_id:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "GATE_NOT_FOUND",
+                    f"Gate {gate_id!r} not found.",
+                )
+            return _v2_gate_detail_payload(uow, gate)
+
+    @app.post("/v1/v2/jobs/{job_id}/gates/{gate_id}/actions")
+    def post_v2_job_gate_action(
+        job_id: str,
+        gate_id: str,
+        payload: GateActionRequest,
+    ) -> dict[str, Any]:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            return _v2_gate_action_response(uow, job_id=job_id, gate_id=gate_id, payload=payload)
+
+
     @app.get("/v1/v2/jobs/{job_id}/artifacts/{artifact_kind}")
     def get_v2_job_artifact_preview(
         job_id: str,
@@ -1601,6 +2054,7 @@ def create_app(
         Validates the expected checksum against the stored card.
         On success, queues a resume command. LLM cannot approve.
         """
+        launch_status: str | None = None
         with unit_of_work_factory() as uow:
             _require_v2_job(uow, job_id)
             card = uow.v2_approvals.get_card(card_id)
@@ -1630,6 +2084,12 @@ def create_app(
                     "APPROVAL_FAILED",
                     str(exc),
                 ) from exc
+            if resume.resume_id:
+                launch_status = _resume_launch_state_from_events(
+                    uow,
+                    job_id=job_id,
+                    resume_id=resume.resume_id,
+                )
             if is_new_approve and resume.resume_id:
                 _append_v2_event(
                     uow,
@@ -1638,12 +2098,37 @@ def create_app(
                     event_type="approval_resume_queued",
                     status="queued",
                     message="Approval accepted; backend-owned resume command queued.",
-                    payload={"card_id": card_id, "resume_id": resume.resume_id},
+                    payload={"card_id": card_id, "resume_id": resume.resume_id, "resume_status": "queued"},
                 )
+                launch_status = "queued"
         if is_new_approve and resume.resume_id:
-            app.state.v2_orchestrator_runner.start_resume(job_id=job_id, resume_id=resume.resume_id)
+            resume_launch = _start_resume_command(
+                app,
+                job_id=job_id,
+                resume_id=resume.resume_id,
+                stage_index=resume.stage_index,
+            )
+            launch_status = resume_launch.status
+            if resume_launch.status == "retrying":
+                with unit_of_work_factory() as event_uow:
+                    _append_v2_event(
+                        event_uow,
+                        job_id=job_id,
+                        stage=resume.stage_index,
+                        event_type="approval_resume_queued",
+                        status="retrying",
+                        message="Approval accepted; backend-owned resume command is retrying.",
+                        payload={
+                            "card_id": card_id,
+                            "resume_id": resume.resume_id,
+                            "resume_status": "retrying",
+                        },
+                    )
         asyncio.run(app.state.public_event_notifier.notify())
-        return service.resume_to_dict(resume)
+        response = service.resume_to_dict(resume)
+        response["launch_status"] = launch_status or ("queued" if resume.resume_id else "")
+        return response
+
 
     @app.post("/v1/v2/jobs/{job_id}/approvals/{card_id}/reject")
     def reject_decision_card(
@@ -1697,6 +2182,8 @@ def create_app(
     # V2 Assistant endpoints (A10/P0-006)
     # ------------------------------------------------------------------
 
+    _confirmation_store = ConfirmationStore()
+
     @app.post("/v1/v2/jobs/{job_id}/assistant/messages")
     def add_assistant_message(
         job_id: str,
@@ -1742,7 +2229,82 @@ def create_app(
         job_id: str,
         payload: AssistantAskRequest,
     ) -> dict[str, Any]:
-        """Ask the V2 assistant for read-only status guidance."""
+        """Ask the V2 assistant for read-only status guidance.
+
+        F15: If the job has an open PhaseGate, the assistant becomes
+        gate-aware — it loads gate context, classifies intent, and
+        either explains gate-bound evidence or returns an action
+        preview for state-changing intents. Confirmation toggles
+        execution through V2GateActionService.
+        """
+        # -- Phase 1: Check for open gate --------------------------
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            open_gates = uow.phase_gates.list_open(job_id)
+
+        question_lower = payload.question.strip().lower()
+        assistant_intent = _classify_v2_assistant_intent(question_lower)
+
+        if open_gates:
+            open_gate = open_gates[0]
+            if (
+                _assistant_question_requires_write(question_lower=question_lower, assistant_intent=assistant_intent)
+                or _question_looks_like_approval_review_revision_request(payload.question)
+            ):
+                try:
+                    return _handle_gate_aware_ask(
+                        app=app,
+                        job_id=job_id,
+                        open_gate=open_gate,
+                        question=payload.question,
+                        correlation_id=payload.correlation_id,
+                        confirmation_store=_confirmation_store,
+                        unit_of_work_factory=unit_of_work_factory,
+                    )
+                except sqlite3.OperationalError as exc:
+                    if _is_sqlite_locked_error(exc):
+                        return {
+                            "job_id": job_id,
+                            "gate_aware": True,
+                            "executed": False,
+                            "busy": True,
+                            "assistant_message": {
+                                "message_id": None,
+                                "job_id": job_id,
+                                "role": "assistant",
+                                "content": "The orchestrator is busy right now. Retry shortly.",
+                                "correlation_id": payload.correlation_id,
+                                "created_at": utc_now_text(),
+                            },
+                            "guardrails": {
+                                "read_only": True,
+                                "cannot_execute": True,
+                                "cannot_approve": True,
+                                "cannot_write_files": True,
+                                "cannot_change_route_or_stage": True,
+                                "cannot_override_proof": True,
+                            },
+                        }
+                    raise
+            return _handle_gate_aware_read_only_ask(
+                app=app,
+                job_id=job_id,
+                open_gate=open_gate,
+                question=payload.question,
+                correlation_id=payload.correlation_id,
+                unit_of_work_factory=unit_of_work_factory,
+            )
+
+        resolved_gate_response = _handle_resolved_gate_checksum_confirm(
+            job_id=job_id,
+            question=payload.question,
+            correlation_id=payload.correlation_id,
+            unit_of_work_factory=unit_of_work_factory,
+        )
+        if resolved_gate_response is not None:
+            return resolved_gate_response
+
+        # -- Phase 2: No open gate — fall back to existing assistant --
         with unit_of_work_factory() as uow:
             job = _require_v2_job(uow, job_id)
             events = uow.v2_events.list_by_job(job_id)
@@ -1750,8 +2312,17 @@ def create_app(
             commands = uow.v2_commands.list_by_job(job_id)
             pipeline = _v2_pipeline_projection(job_id, events)
             service = V2AssistantService(assistant_repo=uow.v2_assistant)
-            # Classify assistant intent before building prompt
-            assistant_intent = _classify_v2_assistant_intent(payload.question)
+            if not _assistant_question_requires_write(
+                question_lower=question_lower,
+                assistant_intent=assistant_intent,
+            ):
+                return _handle_v2_assistant_read_only_ask(
+                    app=app,
+                    job_id=job_id,
+                    question=payload.question,
+                    correlation_id=payload.correlation_id,
+                    unit_of_work_factory=unit_of_work_factory,
+                )
             # Read prior persisted messages for conversation history
             prior_messages = service.get_messages(job_id)
             user_msg = service.add_message(
@@ -1805,20 +2376,30 @@ def create_app(
                     failure_reason="",
                 )
             else:
-                model_result = app.state.v2_assistant_model_client.answer(
-                    prompt=_build_v2_assistant_prompt(
-                        question=payload.question,
-                        job=job,
-                        pipeline=pipeline,
-                        events=events,
-                        approvals=approvals,
-                        artifact_previews=artifact_previews if artifact_previews else None,
-                        assistant_intent=assistant_intent,
-                        conversation_history=conversation_history,
-                    ),
-                    fallback=fallback_answer,
+                assistant_prompt = _build_v2_assistant_prompt(
+                    question=payload.question,
+                    job=job,
+                    pipeline=pipeline,
+                    events=events,
+                    approvals=approvals,
+                    artifact_previews=artifact_previews if artifact_previews else None,
+                    assistant_intent=assistant_intent,
                     conversation_history=conversation_history,
                 )
+                assistant_client = app.state.v2_assistant_model_client
+                if hasattr(assistant_client, "answer_with_role"):
+                    model_result = assistant_client.answer_with_role(
+                        role=V2ModelRole.ASSISTANT,
+                        prompt=assistant_prompt,
+                        fallback=fallback_answer,
+                        conversation_history=conversation_history,
+                    )
+                else:
+                    model_result = assistant_client.answer(
+                        prompt=assistant_prompt,
+                        fallback=fallback_answer,
+                        conversation_history=conversation_history,
+                    )
             assistant_msg = service.add_message(
                 job_id=job_id,
                 role="assistant",
@@ -2037,7 +2618,7 @@ def create_app(
                     payload=revision_payload,
                 )
 
-                # Call the model — keep fallback for answer() but check success
+                # Call the model â€” keep fallback for answer() but check success
                 model_result = app.state.v2_assistant_model_client.answer(
                     prompt=revision_prompt,
                     fallback=json.dumps({
@@ -2048,7 +2629,7 @@ def create_app(
                     }),
                 )
 
-                # F05: Fail closed — no model output = no revised proposal
+                # F05: Fail closed â€” no model output = no revised proposal
                 if not model_result.success:
                     raise _error(
                         status.HTTP_502_BAD_GATEWAY,
@@ -2056,7 +2637,7 @@ def create_app(
                         f"Revision model unavailable: {model_result.redacted_summary}",
                     )
 
-                # F05: Parse and validate model output — NO fallback
+                # F05: Parse and validate model output â€” NO fallback
                 # Invalid/non-JSON/schema-failing model output raises ValueError
                 try:
                     revised_output = _parse_and_validate_model_output(
@@ -2221,13 +2802,13 @@ def create_app(
         proposal_id: str,
         payload: CreateReviewerCritiqueRequest,
     ) -> dict[str, Any]:
-        """Request a reviewer critique via model — NEVER accepts decision from client.
+        """Request a reviewer critique via model â€” NEVER accepts decision from client.
 
         The backend builds the reviewer prompt from the proposal context,
         calls the reviewer model, validates the output against
         REVIEWER_CRITIQUE_SCHEMA, and persists the critique.
 
-        Clients CANNOT fabricate a decision=accept — only the model output
+        Clients CANNOT fabricate a decision=accept â€” only the model output
         determines the verdict.
         """
         event_emitted = False
@@ -2278,7 +2859,7 @@ def create_app(
             # Call the reviewer model
             fallback_json = json.dumps({
                 "decision": "revise",
-                "reasoning": "Model unavailable — defaulting to revise for safety.",
+                "reasoning": "Model unavailable â€” defaulting to revise for safety.",
                 "missing_evidence": ["Model output unavailable"],
                 "unsafe_assumptions": ["Reviewer model did not respond"],
             })
@@ -2293,7 +2874,7 @@ def create_app(
                 schema_name="ReviewerCritique",
                 fallback={
                     "decision": "revise",
-                    "reasoning": "Model unavailable — defaulting to revise for safety.",
+                    "reasoning": "Model unavailable â€” defaulting to revise for safety.",
                     "missing_evidence": ["Model output unavailable"],
                     "unsafe_assumptions": ["Reviewer model did not respond"],
                 },
@@ -2404,7 +2985,7 @@ def create_app(
         return service.continuation_to_dict(result)
 
     # ------------------------------------------------------------------
-    # F14 — Stage 3 POM Dependency Review + Apply + Validate + Rollback
+    # F14 â€” Stage 3 POM Dependency Review + Apply + Validate + Rollback
     # ------------------------------------------------------------------
 
     @app.get("/v1/v2/jobs/{job_id}/stage/3/pom")
@@ -3810,7 +4391,7 @@ def create_app(
         )
         return redact_public_data(payload)
 
-    # ── F14 helper functions ───────────────────────────────────────────
+    # â”€â”€ F14 helper functions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _make_pom_dependency_editor() -> PomDependencyEditor:
         """Build a PomDependencyEditor backed by the current UoW repos."""
@@ -4338,7 +4919,7 @@ def _emit_v2_stage1_uat_events(uow: Any, *, job_id: str, command_id: str) -> Non
         )
 
 
-# ── Artifact-content assistant helpers ──────────────────────────────
+# â”€â”€ Artifact-content assistant helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _ARTIFACT_CONTENT_KEYWORDS = {
     "pom", "xml", "artifact", "openrewrite", "plugin", "plan lock",
@@ -4380,8 +4961,8 @@ def _classify_v2_assistant_intent(question: str) -> str:
     # 1. Model status first (model/Azure/provider questions)
     #    BUT skip if user is also asking about POM/dependency changes — model status is secondary
     pom_or_dep_terms = (
-        "pom", "pom.xml", "dependency", "property", "assertj", "modelmapper",
-        "gson", "jackson", "spring boot", "version", "apply change", "propose change",
+        "pom", "pom.xml", "dependency", "property", "modelmapper",
+        "jackson", "spring boot", "version", "apply change", "propose change",
     )
     has_pom_or_dep = any(t in lowered for t in pom_or_dep_terms)
     looks_like_status_question = any(t in lowered for t in (
@@ -4401,6 +4982,18 @@ def _classify_v2_assistant_intent(question: str) -> str:
         "do not change", "just tell me", "only tell me",
         "just propose", "only propose",
     ))
+
+    advisory_mode = user_says_dont_apply or any(phrase in lowered for phrase in (
+        "propose", "suggest", "review", "analyze",
+        "can i", "should i", "what do you think",
+    ))
+    if advisory_mode and any(term in lowered for term in (
+        "pom", "pom.xml", "dependency", "property", "version", ":",
+    )):
+        if any(term in lowered for term in (
+            "update", "updating", "change", "changing", "set", "setting", "upgrade", "upgrading",
+        )):
+            return "pom_change_proposal"
 
     # 3. Capability / action boundary — takes priority
     #    BUT skip if user explicitly said DO NOT apply
@@ -4429,7 +5022,7 @@ def _classify_v2_assistant_intent(question: str) -> str:
         if not any(t in lowered for t in ("review", "what dependency", "what should", "which dependency")):
             return "apply_dependency_change"
 
-    # 4. Explicit single dependency/property change request (e.g. "update gson to 2.11.0")
+    # 4. Explicit single dependency/property change request (e.g. "update library-name to 1.2.3")
     #    Expanded to catch "update property X to Y" and "update X to Y.Z" patterns
     explicit_dep_change_patterns = (
         r"(?:update|upgrade|change|set|bump|replace)\s+([\w.\-:]+)\s+(?:to|version)\s+([\d.]+)",
@@ -4441,6 +5034,8 @@ def _classify_v2_assistant_intent(question: str) -> str:
     )
     for pattern in explicit_dep_change_patterns:
         if re.search(pattern, lowered):
+            if advisory_mode:
+                return "pom_change_proposal"
             # If user explicitly says apply/execute/do it, route to apply
             if not user_says_dont_apply and any(t in lowered for t in ("apply this", "apply the", "apply it", "execute this",
                                                                        "do it", "make the change", "write the change",
@@ -4449,7 +5044,7 @@ def _classify_v2_assistant_intent(question: str) -> str:
                 if not any(t in lowered for t in ("review", "what dependency", "what should", "which dependency")):
                     return "apply_dependency_change"
             if not any(t in lowered for t in ("review", "what dependency", "what should", "which dependency")):
-                return "pom_dependency_change_request"
+                return "apply_dependency_change"
 
     # 5. POM change proposal intent — draft/upgrade/propose/modify with POM terms
     #    Check BEFORE stage3 review so proposals take priority over reviews
@@ -4667,6 +5262,2327 @@ def _is_final_dependency_review_allowed(
         getattr(e, "type", "") in {"build_completed", "test_completed"} for e in stage_events
     )
     if not has_build:
+        return True, "ok"  # Not blocking on missing build/test â€” just warn
+    return True, "ok"
+
+
+def _default_stage_when_stage3_complete(events: tuple[Any, ...]) -> int | None:
+    """If Stage 3 is complete (has completion events), default to stage=3.
+
+    Used when user asks for "full POM" or "root POM" without explicit stage number.
+    Returns 3 if Stage 3 is complete, None otherwise.
+    """
+    stage_events = sorted(
+        [event for event in events if getattr(event, "stage", None) == 3],
+        key=lambda event: getattr(event, "sequence", 0),
+    )
+    if not stage_events:
+        return None
+    latest_stage_event = stage_events[-1]
+    if getattr(latest_stage_event, "status", "") == "running" or str(
+        getattr(latest_stage_event, "type", "")
+    ).endswith("_started"):
+        return None
+    if any(
+        getattr(event, "type", "") in {"sandbox_transform_completed", "stage_completed"}
+        or (
+            getattr(event, "status", "") == "completed"
+            and str(getattr(event, "type", ""))
+            in {"transform_completed", "build_completed", "test_completed"}
+        )
+        for event in stage_events
+    ):
+        return 3
+    return None
+
+
+def _handle_gate_aware_ask(
+    app: Any,
+    job_id: str,
+    open_gate: Any,
+    question: str,
+    correlation_id: str | None,
+    confirmation_store: ConfirmationStore,
+    unit_of_work_factory: Any,
+) -> dict[str, Any]:
+    """Handle an /ask request when an open PhaseGate exists.
+
+    Loads gate context, classifies intent, and either explains
+    gate-bound evidence, returns an action preview (state-changing
+    intents), or executes a confirmed action.
+    """
+    from migration_factory.control_tower.application.v2_assistant_service import (
+        V2AssistantService,
+    )
+    from migration_factory.control_tower.application.v2_gate_action_service import (
+        V2GateActionService,
+    )
+    from migration_factory.control_tower.domain.checksums import (
+        sha256_canonical_json,
+        utc_now_text,
+    )
+
+    with unit_of_work_factory() as uow:
+        gate_repo = uow.phase_gates
+        gate_service = V2PhaseGateService(gate_repo)
+        job = uow.v2_jobs.get(job_id)
+        setup = None
+        if job is not None and getattr(job, "setup_id", None):
+            setup = uow.v2_setups.get(job.setup_id)
+        storage_root = getattr(setup, "output_parent_path", None) if setup is not None else None
+        resolver = V2GateArtifactResolver(gate_repo, storage_root=storage_root)
+        loader = GateContextLoader(
+            gate_service=gate_service,
+            resolver=resolver,
+        )
+        context, evidence_pack = loader.load_gate_with_evidence(open_gate.gate_id)
+        if context is None:
+            # Gate not found — fall through to existing assistant
+            return _fallback_to_existing_assistant(
+                app=app,
+                job_id=job_id,
+                question=question,
+                correlation_id=correlation_id,
+                unit_of_work_factory=unit_of_work_factory,
+            )
+
+        service = V2AssistantService(assistant_repo=uow.v2_assistant)
+
+        # Persist user message
+        user_msg = service.add_message(
+            job_id=job_id,
+            role="user",
+            content=question,
+            correlation_id=correlation_id,
+        )
+
+        # -- Detect confirmation intent before classification ----
+        question_lower = question.strip().lower()
+        _CONFIRM_PATTERNS = (
+            "confirm", "yes", "yes,", "yeah", "sure",
+            "go ahead", "do it", "apply", "proceed",
+            "okay", "ok,", "ok ", "approved",
+        )
+        is_confirm = any(
+            question_lower == p or question_lower.startswith(p + " ")
+            or question_lower.startswith(p + ",") or question_lower.startswith(p + ".")
+            for p in _CONFIRM_PATTERNS
+        )
+
+        # Classify intent
+        classifier = GateIntentClassifier()
+        intent: ClassifiedIntent = classifier.classify(
+            user_input=question,
+            available_actions=context.available_actions,
+            gate_phase=context.gate_phase,
+        )
+
+        if open_gate.gate_phase == "approval_review":
+            blocked_revision_card = _approval_review_blocked_revision_card(
+                uow,
+                job_id=job_id,
+                stage_index=open_gate.stage_index,
+                gate_checksum=context.checksum,
+            )
+            exact_checksum = _extract_confirm_checksum(question)
+            if exact_checksum:
+                if blocked_revision_card is not None:
+                    assistant_msg = service.add_message(
+                        job_id=job_id,
+                        role="assistant",
+                        content=_approval_review_revision_blocked_message(),
+                        correlation_id=user_msg.message_id,
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "approve_from_gate",
+                        "executed": False,
+                        "available_actions": _approval_review_available_actions(blocked_revision=True),
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+                if exact_checksum != context.checksum:
+                    assistant_msg = service.add_message(
+                        job_id=job_id,
+                        role="assistant",
+                        content="Checksum mismatch. Confirm the latest gate checksum from the review surface.",
+                        correlation_id=user_msg.message_id,
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "confirm_checksum",
+                        "executed": False,
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+
+                approval_service = V2ApprovalMappingService(uow.v2_approvals)
+                pending_cards = [
+                    card
+                    for card in uow.v2_approvals.list_cards_by_job(job_id)
+                    if card.stage_index == open_gate.stage_index and card.status == "pending"
+                ]
+                pending_card = next(
+                    (card for card in pending_cards if card.request_checksum == context.checksum),
+                    pending_cards[0] if pending_cards else None,
+                )
+                if pending_card is None:
+                    assistant_msg = service.add_message(
+                        job_id=job_id,
+                        role="assistant",
+                        content="No pending approval card exists for this gate.",
+                        correlation_id=user_msg.message_id,
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "confirm_checksum",
+                        "executed": False,
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+
+                commands = uow.v2_commands.list_by_job(job_id)
+                run_dir = _v2_resume_run_dir_from_commands(
+                    commands,
+                    open_gate.stage_index,
+                    pending_card.interrupt_id,
+                )
+                card_before = approval_service.get_card(pending_card.card_id)
+                is_new_approve = card_before is None or card_before.status != "approved"
+                resume = approval_service.approve(
+                    card_id=pending_card.card_id,
+                    expected_checksum=context.checksum,
+                    job_id=job_id,
+                    run_dir=run_dir,
+                )
+
+                action_service = V2GateActionService(
+                    uow.phase_gates,
+                    uow.gate_decisions,
+                    V2PhaseGateService(uow.phase_gates),
+                    revision_repo=uow.artifact_revisions,
+                    command_repo=uow.v2_commands,
+                )
+                gate_result = action_service.approve_from_gate(
+                    gate_id=open_gate.gate_id,
+                    job_id=job_id,
+                    decided_by="human",
+                    expected_gate_checksum=context.checksum,
+                )
+
+                existing_resume_status = (
+                    _resume_launch_state_from_events(
+                        uow,
+                        job_id=job_id,
+                        resume_id=resume.resume_id,
+                    )
+                    if resume.resume_id
+                    else None
+                )
+                if hasattr(uow, "connection"):
+                    uow.connection.commit()
+
+                resume_launch: V2OrchestratorStart | None = None
+                if is_new_approve and resume.resume_id:
+                    resume_launch = _start_resume_command(
+                        app,
+                        job_id=job_id,
+                        resume_id=resume.resume_id,
+                        stage_index=resume.stage_index,
+                    )
+                    with unit_of_work_factory() as event_uow:
+                        _append_v2_event(
+                            event_uow,
+                            job_id=job_id,
+                            stage=resume.stage_index,
+                            event_type="approval_resume_queued",
+                            status=resume_launch.status if resume_launch.status in {"retrying", "started"} else "queued",
+                            message=(
+                                "Approval accepted; backend-owned resume command is retrying."
+                                if resume_launch.status == "retrying"
+                                else "Approval accepted; backend-owned resume command queued."
+                            ),
+                            payload={
+                                "card_id": pending_card.card_id,
+                                "resume_id": resume.resume_id,
+                                "resume_status": resume_launch.status,
+                            },
+                        )
+
+                resume_status = resume_launch.status if resume_launch is not None else existing_resume_status
+                if resume_status is None and resume.resume_id:
+                    resume_status = "queued"
+
+                assistant_content = "Checksum confirmed. Approval review resolved and resume queued."
+                if resume_status == "retrying":
+                    assistant_content = (
+                        "Checksum confirmed. Approval review resolved, but the resume launch is retrying."
+                    )
+                elif existing_resume_status in {"queued", "started"} and not is_new_approve:
+                    assistant_content = (
+                        "Checksum confirmed. Approval review is already resolved and the resume is already queued or running."
+                    )
+
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=assistant_content,
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "gate_aware": True,
+                    "intent": "confirm_checksum",
+                    "executed": gate_result.status == "executed" or bool(resume.resume_id),
+                    "execution_result": {
+                        "success": gate_result.status == "executed" or bool(resume.resume_id),
+                        "status": gate_result.status,
+                        "decision_id": gate_result.decision_id,
+                        "reason": gate_result.reason,
+                        "resume_id": resume.resume_id,
+                        "resume_status": resume_status,
+                        "resume_launch_message": resume_launch.message if resume_launch is not None else "",
+                    },
+                    "guardrails": {
+                        "read_only": False,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
+
+            if blocked_revision_card is not None and (
+                intent.action_type == "approve_from_gate"
+                or question_lower == "approve"
+            ):
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=_approval_review_revision_blocked_message(),
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "gate_aware": True,
+                    "intent": "approve_from_gate",
+                    "executed": False,
+                    "available_actions": _approval_review_available_actions(blocked_revision=True),
+                    "guardrails": {
+                        "read_only": True,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
+
+            if intent.action_type == "approve_from_gate" or question_lower == "approve":
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=_format_approval_review_preview(context),
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "gate_aware": True,
+                    "intent": "approve_from_gate",
+                    "executed": False,
+                    "action_preview": {
+                        "action_type": "approve_from_gate",
+                        "reason": "Preview only; exact checksum confirmation required.",
+                        "confidence": 1.0,
+                        "warning": "Approval will not execute until the exact checksum is confirmed.",
+                        "requires_confirmation": True,
+                        "pending_confirmation": True,
+                        "exact_checksum": context.checksum,
+                    },
+                    "available_actions": _approval_review_available_actions(
+                        blocked_revision=blocked_revision_card is not None
+                    ),
+                    "guardrails": {
+                        "read_only": True,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
+
+            if intent.action_type == "reject_from_gate" or question_lower == "reject":
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=_format_approval_review_preview(context, action_type="reject_from_gate"),
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "gate_aware": True,
+                    "intent": "reject_from_gate",
+                    "executed": False,
+                    "action_preview": {
+                        "action_type": "reject_from_gate",
+                        "reason": "Preview only; exact checksum confirmation required.",
+                        "confidence": 1.0,
+                        "warning": "Legacy reject is routed through the same checksum flow in approval review.",
+                        "requires_confirmation": True,
+                        "pending_confirmation": True,
+                        "exact_checksum": context.checksum,
+                    },
+                    "available_actions": _approval_review_available_actions(
+                        blocked_revision=blocked_revision_card is not None
+                    ),
+                    "guardrails": {
+                        "read_only": True,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
+
+            if (intent.ambiguous or not intent.action_type) and not is_confirm and not _question_looks_like_approval_review_revision_request(question):
+                from migration_factory.control_tower.application.v2_gate_assistant import (
+                    AmbiguityHandler,
+                )
+                explanation = AmbiguityHandler.handle_ambiguous(intent, context)
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=explanation,
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "gate_aware": True,
+                    "intent": intent.action_type or "ambiguous",
+                    "executed": False,
+                    "ambiguous": True,
+                    "available_actions": tuple(a.action for a in context.available_actions),
+                    "guardrails": {
+                        "read_only": True,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
+            if _question_looks_like_approval_review_explanation(question):
+                explanation_text, explanation_model = _format_approval_review_explanation(
+                    app=app,
+                    context=context,
+                    evidence=evidence_pack,
+                    question=question,
+                )
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=explanation_text,
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "gate_aware": True,
+                    "intent": "status",
+                    "executed": False,
+                    "model": explanation_model,
+                    "available_actions": _approval_review_available_actions(),
+                    "guardrails": {
+                        "read_only": True,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
+
+            if _question_looks_like_approval_review_revision_request(question):
+                if blocked_revision_card is not None:
+                    assistant_msg = service.add_message(
+                        job_id=job_id,
+                        role="assistant",
+                        content=_approval_review_revision_blocked_message(),
+                        correlation_id=user_msg.message_id,
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "request_revision",
+                        "executed": False,
+                        "available_actions": _approval_review_available_actions(blocked_revision=True),
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+
+                confirmation_store.store(
+                    job_id=job_id,
+                    gate_id=open_gate.gate_id,
+                    action_type="request_revision",
+                    expected_gate_checksum=context.checksum,
+                    idempotency_key=sha256_canonical_json({
+                        "gate_id": open_gate.gate_id,
+                        "job_id": job_id,
+                        "action_type": "request_revision",
+                        "timestamp": utc_now_text(),
+                    }),
+                    user_feedback=question,
+                )
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=(
+                        "Revision request preview only. Confirm to record the revision request. "
+                        "Transform remains blocked until the revised evidence is reviewed again."
+                    ),
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "gate_aware": True,
+                    "intent": "request_revision",
+                    "executed": False,
+                    "available_actions": _approval_review_available_actions(
+                        blocked_revision=blocked_revision_card is not None
+                    ),
+                    "action_preview": {
+                        "action_type": "request_revision",
+                        "reason": "Preview only; confirm to record the revision request.",
+                        "confidence": 1.0,
+                        "warning": "Transform/build/test will not start until you confirm.",
+                        "requires_confirmation": True,
+                        "pending_confirmation": True,
+                    },
+                    "guardrails": {
+                        "read_only": True,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
+# -- Handle "confirm" intent (explicit or after preview) ----
+        if is_confirm or intent.action_type == "confirm":
+            pending = confirmation_store.resolve(
+                job_id=job_id,
+                gate_id=open_gate.gate_id,
+                current_gate_checksum=context.checksum,
+            )
+            if pending is not None:
+                if pending.action_type == "request_revision":
+                    _record_approval_review_revision_request(
+                        uow=uow,
+                        job_id=job_id,
+                        gate_id=open_gate.gate_id,
+                        stage_index=open_gate.stage_index,
+                        gate_checksum=context.checksum,
+                        user_request_text=pending.user_feedback or question,
+                    )
+                    assistant_msg = service.add_message(
+                        job_id=job_id,
+                        role="assistant",
+                        content="Revision request recorded. Transform remains blocked until the evidence is revised and reviewed again.",
+                        correlation_id=user_msg.message_id,
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "request_revision",
+                        "executed": False,
+                        "available_actions": _approval_review_available_actions(blocked_revision=True),
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+                action_service = V2GateActionService(
+                    uow.phase_gates,
+                    uow.gate_decisions,
+                    gate_service,
+                    revision_repo=uow.artifact_revisions,
+                    command_repo=uow.v2_commands,
+                )
+                executor = GateActionExecutor(action_service=action_service)
+                execution_result = _execute_pending_action(
+                    executor=executor,
+                    job_id=job_id,
+                    gate_id=open_gate.gate_id,
+                    checksum=context.checksum,
+                    action_type=pending.action_type,
+                    user_feedback=pending.user_feedback,
+                    idempotency_key=pending.idempotency_key,
+                )
+
+                execution_success = (
+                    getattr(execution_result, "status", None) == "executed"
+                    or getattr(execution_result, "success", False)
+                )
+                execution_decision_id = getattr(execution_result, "decision_id", None)
+
+                progression_result = None
+                if (
+                    execution_success
+                    and pending.action_type == "continue_from_gate"
+                ):
+                    if open_gate.gate_phase == "analysis_review":
+                        # After analysis_review CONTINUE:
+                        # - Gate was resolved by _execute_action
+                        # - Planning command was queued by V2GateActionService
+                        #   (real planning will produce artifacts, then
+                        #   planning_review gate opens)
+                        # - No Stage 2 command was created
+                        # - No transformation was started
+                        # - No synthetic planning_review gate was created
+                        from_phase = "analysis_review"
+                        to_phase = "planning_review"
+                        stage = open_gate.stage_index
+                        cmd_id = getattr(execution_result, "result_command_id", None) or ""
+                        progression_result = {
+                            "status": "planning_queued",
+                            "from_phase": from_phase,
+                            "to_phase": to_phase,
+                            "stage_index": stage,
+                            "planning_command_id": cmd_id,
+                            "message": (
+                                f"Stage {stage} analysis review completed. "
+                                f"Stage 1 planning has been queued. "
+                                f"When planning completes and produces real "
+                                f"planning artifacts, a planning_review gate "
+                                f"will open. "
+                                f"Migration Stage 2 was not started. "
+                                f"No transform/build/test started."
+                            ),
+                        }
+                        # Start the backend-owned planning command
+                        if cmd_id:
+                            _runner = app.state.v2_orchestrator_runner
+                            if _runner is not None:
+                                try:
+                                    _runner.start(job_id=job_id, command_id=cmd_id)
+                                except Exception:
+                                    pass
+                    elif open_gate.gate_phase == "planning_review":
+                        # After planning_review CONTINUE:
+                        # - Approval_review gate was created by V2GateActionService
+                        progression_result = {
+                            "status": "phase_advanced",
+                            "from_phase": "planning_review",
+                            "to_phase": "approval_review",
+                            "stage_index": open_gate.stage_index,
+                            "message": (
+                                f"Stage {open_gate.stage_index} planning review completed. "
+                                f"Approval review gate created."
+                            ),
+                        }
+
+                content = _format_execution_response(
+                    execution_result,
+                    progression=progression_result,
+                )
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=content,
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "gate_aware": True,
+                    "intent": pending.action_type,
+                    "executed": execution_success,
+                    "execution_result": {
+                        "success": execution_success,
+                        "status": getattr(execution_result, "status", "unknown"),
+                        "decision_id": execution_decision_id,
+                        "reason": getattr(execution_result, "reason", ""),
+                    },
+                    "progression_result": progression_result,
+                    "guardrails": {
+                        "read_only": False,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
+
+            # No pending confirmation — treat as ambiguous if user said confirm
+            if is_confirm:
+                explanation = (
+                    "There is no pending action to confirm. "
+                    "Please ask about the current gate first."
+                )
+                assistant_msg = service.add_message(
+                    job_id=job_id,
+                    role="assistant",
+                    content=explanation,
+                    correlation_id=user_msg.message_id,
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "gate_aware": True,
+                    "intent": "confirm",
+                    "executed": False,
+                    "ambiguous": True,
+                    "guardrails": {
+                        "read_only": True,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
+            # Fall through to classification below
+
+        # -- Handle ambiguous / unknown intent ---------------------
+        if intent.ambiguous or not intent.action_type:
+            from migration_factory.control_tower.application.v2_gate_assistant import (
+                AmbiguityHandler,
+            )
+            explanation = AmbiguityHandler.handle_ambiguous(intent, context)
+            assistant_msg = service.add_message(
+                job_id=job_id,
+                role="assistant",
+                content=explanation,
+                correlation_id=user_msg.message_id,
+            )
+            return {
+                "job_id": job_id,
+                "user_message": service.message_to_dict(user_msg),
+                "assistant_message": service.message_to_dict(assistant_msg),
+                "gate_aware": True,
+                "intent": intent.action_type or "ambiguous",
+                "executed": False,
+                "ambiguous": True,
+                "clarification_question": intent.clarification_question or "",
+                "available_actions": list(intent.available_actions),
+                "guardrails": {
+                    "read_only": True,
+                    "cannot_execute": True,
+                    "cannot_approve": True,
+                    "cannot_write_files": True,
+                    "cannot_change_route_or_stage": True,
+                    "cannot_override_proof": True,
+                },
+            }
+
+        # -- Build action preview (state-changing intent) ----------
+        preview_builder = GateActionPreviewBuilder()
+        preview: ActionPreview = preview_builder.build_preview(
+            intent=intent,
+            gate_context=context,
+        )
+
+        # Store pending confirmation
+        idempotency_key = sha256_canonical_json({
+            "gate_id": open_gate.gate_id,
+            "job_id": job_id,
+            "action_type": preview.action_type,
+            "timestamp": utc_now_text(),
+        })
+        confirmation_store.store(
+            job_id=job_id,
+            gate_id=open_gate.gate_id,
+            action_type=preview.action_type,
+            expected_gate_checksum=context.checksum,
+            idempotency_key=idempotency_key,
+        )
+
+        content = _format_preview_response(preview, context)
+        assistant_msg = service.add_message(
+            job_id=job_id,
+            role="assistant",
+            content=content,
+            correlation_id=user_msg.message_id,
+        )
+        return {
+            "job_id": job_id,
+            "user_message": service.message_to_dict(user_msg),
+            "assistant_message": service.message_to_dict(assistant_msg),
+            "gate_aware": True,
+            "intent": intent.action_type,
+            "executed": False,
+            "action_preview": {
+                "action_type": preview.action_type,
+                "reason": preview.reason,
+                "confidence": preview.confidence,
+                "warning": preview.warning,
+                "requires_confirmation": preview.requires_confirmation,
+                "pending_confirmation": True,
+            },
+            "guardrails": {
+                "read_only": False,
+                "cannot_execute": True,
+                "cannot_approve": True,
+                "cannot_write_files": True,
+                "cannot_change_route_or_stage": True,
+                "cannot_override_proof": True,
+            },
+        }
+
+
+def _execute_pending_action(
+    executor: GateActionExecutor,
+    job_id: str,
+    gate_id: str,
+    checksum: str,
+    action_type: str,
+    user_feedback: str = "",
+    idempotency_key: str | None = None,
+) -> Any:
+    """Execute a confirmed gate action through the executor."""
+    action_map = {
+        "continue_from_gate": lambda: executor.execute_continue(
+            gate_id, checksum, job_id=job_id, idempotency_key=idempotency_key,
+        ),
+        "request_reanalysis": lambda: executor.execute_reanalysis(
+            gate_id, checksum, job_id=job_id, user_feedback=user_feedback, idempotency_key=idempotency_key,
+        ),
+        "request_plan_revision": lambda: executor.execute_plan_revision(
+            gate_id, checksum, job_id=job_id, user_feedback=user_feedback, idempotency_key=idempotency_key,
+        ),
+        "approve_from_gate": lambda: executor.execute_approve(
+            gate_id, checksum, job_id=job_id, idempotency_key=idempotency_key,
+        ),
+        "reject_from_gate": lambda: executor.execute_reject(
+            gate_id, checksum, job_id=job_id, reason=user_feedback, idempotency_key=idempotency_key,
+        ),
+    }
+    handler = action_map.get(action_type)
+    if handler is None:
+        from migration_factory.control_tower.application.v2_gate_assistant import (
+            GateActionResult,
+        )
+        return GateActionResult(
+            success=False,
+            message=f"Unknown action type: {action_type}",
+        )
+    return handler()
+
+
+def _build_gate_explanation(
+    context: GateContext,
+    question: str,
+    open_gate: Any,
+) -> str:
+    """Build a human-readable explanation from gate context."""
+    lines: list[str] = []
+    lines.append(f"**Gate: {context.gate_id[:8]}**")
+    lines.append(f"- Phase: {context.gate_phase}")
+    lines.append(f"- Stage: {context.stage_index}")
+    lines.append(f"- Status: {context.gate_status}")
+    lines.append(f"- Checksum: `{context.checksum[:16]}...`")
+    lines.append("")
+    if context.available_actions:
+        lines.append("**Available actions:**")
+        for action in context.available_actions:
+            status = "[available]" if not getattr(action, "blocked", False) else "[blocked]"
+            label = getattr(action, "label", action.action)
+            desc = getattr(action, "description", "")
+            lines.append(f"- {status} **{label}**: {desc}")
+    lines.append("")
+    lines.append(
+        "I can help you decide the next step. "
+        "Would you like to continue, reanalyze, or approve?"
+    )
+    return "\n".join(lines)
+
+
+def _question_looks_like_approval_review_explanation(question: str) -> bool:
+    lowered = question.lower()
+    return any(
+        term in lowered
+        for term in (
+            "what happened",
+            "what is happening",
+            "explain analysis",
+            "explain planning",
+            "explain assessment",
+            "what will change",
+            "what will be transformed",
+            "what rewrite will happen",
+            "show migration plan",
+            "show plan",
+            "what is the plan",
+            "why blocked",
+            "what stage",
+            "current state",
+            "status",
+        )
+    )
+
+
+def _question_looks_like_approval_review_revision_request(question: str) -> bool:
+    lowered = question.lower().strip()
+    if lowered.startswith(
+        (
+            "use ",
+            "switch to ",
+            "replace ",
+            "change to ",
+            "prefer ",
+            "make ",
+            "add ",
+            "remove ",
+            "update ",
+            "modify ",
+            "refactor ",
+            "adopt ",
+        )
+    ):
+        return True
+    return any(
+        term in lowered
+        for term in (
+            "request revision",
+            "revise the plan",
+            "revise this",
+            "use securityfilterchain",
+            "stateless sessions",
+            "spring security",
+            "change the plan",
+        )
+    )
+
+
+def _extract_confirm_checksum(question: str) -> str:
+    match = re.search(r"confirm\s+checksum\s+([^\s,.;:]+)", question, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def _approval_review_pending_card(
+    uow: Any,
+    *,
+    job_id: str,
+    gate_phase: str,
+    stage_index: int,
+    gate_checksum: str,
+) -> Any | None:
+    pending_cards = [
+        card
+        for card in uow.v2_approvals.list_cards_by_job(job_id)
+        if card.stage_index == stage_index and card.status == "pending"
+    ]
+    return next(
+        (card for card in pending_cards if card.request_checksum == gate_checksum),
+        pending_cards[0] if pending_cards else None,
+    )
+
+
+def _approval_review_blocked_revision_card(
+    uow: Any,
+    *,
+    job_id: str,
+    stage_index: int,
+    gate_checksum: str,
+) -> Any | None:
+    blocked_cards = [
+        card
+        for card in uow.v2_approvals.list_cards_by_job(job_id)
+        if card.stage_index == stage_index
+        and card.request_checksum == gate_checksum
+        and card.status == "blocked"
+    ]
+    return blocked_cards[0] if blocked_cards else None
+
+
+def _approval_review_revision_blocked_message() -> str:
+    return (
+        "A revision request is pending. Transform remains blocked. "
+        "Approval is disabled until the revision is resolved or new evidence is generated."
+    )
+
+
+def _approval_review_available_actions(*, blocked_revision: bool = False) -> tuple[dict[str, Any], ...]:
+    revision_block_reason = (
+        "Revision request recorded; transform stays blocked until the revised evidence is reviewed again."
+        if blocked_revision
+        else "Available during approval review."
+    )
+    return (
+        {
+            "action": "status",
+            "label": "Explain / Status",
+            "description": "Summarize bound analysis, planning, and assessment evidence.",
+            "blocked": False,
+            "block_reason": "",
+        },
+        {
+            "action": "request_revision",
+            "label": "Request revision",
+            "description": revision_block_reason,
+            "blocked": False,
+            "block_reason": "",
+        },
+        {
+            "action": "approve_from_gate",
+            "label": "Approve",
+            "description": "Preview only; exact checksum confirmation is required.",
+            "blocked": True,
+            "block_reason": "Approval remains behind the exact checksum flow.",
+        },
+        {
+            "action": "reject_from_gate",
+            "label": "Reject",
+            "description": "Preview only; exact checksum confirmation is required.",
+            "blocked": True,
+            "block_reason": "Legacy direct rejection is not primary in approval_review.",
+        },
+    )
+
+
+def _approval_review_artifact_excerpt(artifact: Any) -> str:
+    kind = str(getattr(artifact, "kind", "") or "").strip()
+    content = str(getattr(artifact, "content", "") or "").strip()
+    if not content:
+        return kind or "artifact"
+    first_lines = [line.strip() for line in content.splitlines() if line.strip()]
+    excerpt = " | ".join(first_lines[:3])
+    if len(excerpt) > 240:
+        excerpt = excerpt[:240] + "..."
+    return f"{kind}: {excerpt}" if kind else excerpt
+
+
+def _approval_review_evidence_lines(evidence: Any | None, *, topics: tuple[str, ...]) -> list[str]:
+    if evidence is None:
+        return []
+    lines: list[str] = []
+    for artifact in getattr(evidence, "artifacts", ()):
+        kind = str(getattr(artifact, "kind", "") or "").lower()
+        if any(topic in kind for topic in topics):
+            lines.append(f"- {_approval_review_artifact_excerpt(artifact)}")
+    return lines
+
+
+def _format_approval_review_preview(context: GateContext, *, action_type: str = "approve_from_gate") -> str:
+    action_label = "Approve" if action_type == "approve_from_gate" else "Reject"
+    lines = [
+        "**Pre-transform review is open**",
+        "",
+        f"Stage {context.stage_index} is blocked before transform.",
+        "Analysis, planning, and assessment are complete.",
+        "Transform, build, and test have not started.",
+        "",
+        f"Exact checksum: `{context.checksum}`",
+        "Confirm it by saying `confirm checksum <exact checksum>`.",
+        "",
+        f"Selected action: {action_label}.",
+        "Available actions: explain/status, request revision, approve, reject.",
+        "Legacy Approve/Reject buttons are not primary in approval_review.",
+    ]
+    return "\n".join(lines)
+
+
+def _format_approval_review_explanation(
+    *,
+    app: FastAPI,
+    context: GateContext,
+    evidence: Any | None,
+    question: str,
+) -> tuple[str, dict[str, Any] | None]:
+    lines: list[str] = []
+    lines.append("**Pre-transform review**")
+    lines.append("")
+    lines.append(f"Stage {context.stage_index} is blocked before transform.")
+    lines.append("Analysis, planning, and assessment are complete.")
+    lines.append("Transform, build, and test have not started.")
+    lines.append("")
+    lines.append(f"Gate checksum: `{context.checksum}`")
+
+    model_payload: dict[str, Any] | None = None
+    if evidence is not None:
+        happened_lines = _approval_review_evidence_lines(
+            evidence,
+            topics=(
+                "analysis_report",
+                "analysis_summary",
+                "config_inventory",
+                "dependency_graph",
+                "assessment_report",
+                "assessment_summary",
+            ),
+        )
+        will_change_lines = _approval_review_evidence_lines(
+            evidence,
+            topics=(
+                "migration_plan",
+                "migration_units",
+                "approval_request",
+                "rewrite_preview",
+                "rewrite_dry_run",
+                "rewrite_impact_summary",
+                "target_dependency_plan",
+                "plan_validation_report",
+            ),
+        )
+        if happened_lines:
+            lines.append("")
+            lines.append("What happened?")
+            lines.extend(happened_lines[:12])
+        if will_change_lines:
+            lines.append("")
+            lines.append("What will change?")
+            lines.extend(will_change_lines[:12])
+        if getattr(evidence, "summary", ""):
+            lines.append("")
+            lines.append("Evidence summary:")
+            lines.append(str(evidence.summary)[:1200])
+
+        missing = tuple(getattr(evidence, "missing_refs", ()) or ())
+        mismatches = tuple(getattr(evidence, "checksum_mismatches", ()) or ())
+        if missing:
+            lines.append("")
+            lines.append("Missing bound refs:")
+            for ref in missing:
+                lines.append(f"- {ref}")
+        if mismatches:
+            lines.append("")
+            lines.append("Checksum mismatches:")
+            for ref in mismatches:
+                lines.append(f"- {ref}")
+
+        compact_pack = _approval_review_llm_evidence_pack(
+            context=context,
+            evidence=evidence,
+            question=question,
+        )
+        prompt = _approval_review_llm_prompt(
+            context=context,
+            question=question,
+            compact_pack=compact_pack,
+        )
+        fallback_text = "\n".join(lines)
+        try:
+            model_result = app.state.v2_assistant_model_client.answer(
+                prompt=prompt,
+                fallback=fallback_text,
+            )
+        except Exception as exc:
+            safe_reason = redact_model_summary(str(exc))
+            model_result = V2AssistantModelResult(
+                content=fallback_text,
+                source="deterministic",
+                model_status="fallback",
+                provider="deterministic",
+                role="assistant",
+                success=False,
+                redacted_summary=safe_reason,
+                failure_reason=safe_reason,
+            )
+        model_payload = _approval_review_model_payload(model_result)
+        return model_result.content, model_payload
+
+    lines.append("")
+    lines.append(
+        "Ask what happened, what will change, or request a revision before approving."
+    )
+    if _question_looks_like_approval_review_revision_request(question):
+        lines.append("A revision request will be recorded and transform will stay blocked.")
+    return "\n".join(lines), model_payload
+
+
+def _approval_review_llm_evidence_pack(
+    *,
+    context: GateContext,
+    evidence: Any,
+    question: str,
+) -> dict[str, Any]:
+    pack = evidence_pack_to_dict(evidence)
+    artifact_priority = (
+        "analysis_report",
+        "analysis_summary",
+        "config_inventory",
+        "dependency_graph",
+        "migration_plan",
+        "migration_units",
+        "rewrite_preview",
+        "rewrite_dry_run",
+        "rewrite_impact_summary",
+        "target_dependency_plan",
+        "assessment_report",
+        "assessment_summary",
+        "approval_request",
+        "plan_validation_report",
+    )
+    selected_artifacts: list[dict[str, Any]] = []
+    for artifact in pack.get("artifacts", []):
+        kind = str(artifact.get("kind", "")).lower()
+        if any(token in kind for token in artifact_priority):
+            selected_artifacts.append(artifact)
+    if not selected_artifacts:
+        selected_artifacts = list(pack.get("artifacts", []))[:6]
+    return {
+        "gate": {
+            "gate_id": context.gate_id,
+            "gate_phase": context.gate_phase,
+            "stage_index": context.stage_index,
+            "gate_status": context.gate_status,
+            "gate_checksum": context.checksum,
+        },
+        "question": redact_absolute_paths(redact_model_summary(question)),
+        "focus": {
+            "what_analysis_found": "analysis_report, analysis_summary, config_inventory, dependency_graph",
+            "what_planning_proposes": "migration_plan, migration_units, rewrite_preview, rewrite_dry_run, target_dependency_plan",
+            "what_assessment_says": "assessment_report, assessment_summary",
+            "what_is_blocked": "approval_review blocks transform/build/test until exact checksum confirmation",
+            "available_user_decisions": "explain, request_revision, confirm_checksum",
+        },
+        "evidence": {
+            "summary": redact_absolute_paths(redact_model_summary(str(pack.get("summary", "")))),
+            "artifacts": selected_artifacts,
+            "missing_refs": [redact_absolute_paths(redact_model_summary(str(ref))) for ref in pack.get("missing_refs", [])],
+            "checksum_mismatches": [redact_absolute_paths(redact_model_summary(str(ref))) for ref in pack.get("checksum_mismatches", [])],
+            "failure_message": redact_absolute_paths(redact_model_summary(str(pack.get("failure_message") or ""))),
+        },
+    }
+
+
+def _approval_review_llm_prompt(
+    *,
+    context: GateContext,
+    question: str,
+    compact_pack: dict[str, Any],
+) -> str:
+    safe_pack = redact_absolute_paths(
+        redact_model_summary(json.dumps(compact_pack, sort_keys=True, separators=(",", ":")))
+    )
+    return "\n".join(
+        (
+            "You are explaining an approval_review gate. Advisory only.",
+            "Do not approve, reject, execute, or invent artifact facts.",
+            "Use only the provided evidence pack and stay checksum-bound.",
+            "Answer with these sections: what analysis found, what planning proposes, what assessment/risk says, what will change, what is still blocked, available user decisions.",
+            "",
+            f"Gate checksum: {context.checksum}",
+            f"Question: {redact_absolute_paths(redact_model_summary(question))}",
+            "",
+            "Evidence pack:",
+            safe_pack,
+        )
+    )
+
+
+def _approval_review_model_payload(model_result: V2AssistantModelResult) -> dict[str, Any]:
+    source = "llm" if model_result.success else "deterministic"
+    status = "live_ok" if model_result.success else "fallback"
+    provider = model_result.provider if model_result.success else "deterministic"
+    return {
+        "status": status,
+        "source": source,
+        "provider": provider,
+        "role": model_result.role,
+        "failure_reason": model_result.failure_reason,
+    }
+
+
+def _resume_launch_state_from_events(uow: Any, *, job_id: str, resume_id: str) -> str | None:
+    events = uow.v2_events.list_by_job(job_id)
+    for event in reversed(events):
+        if event.type not in {"approval_resume_queued", "resume_started"}:
+            continue
+        try:
+            payload = json.loads(event.payload_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        event_resume_id = str(payload.get("resume_id") or payload.get("command_id") or "").strip()
+        if event_resume_id != resume_id:
+            continue
+        if event.type == "resume_started":
+            return "started"
+        launch_status = str(payload.get("resume_status") or event.status or "queued").strip()
+        return launch_status or "queued"
+    return None
+
+
+def _start_resume_command(
+    app: FastAPI,
+    *,
+    job_id: str,
+    resume_id: str,
+    stage_index: int,
+) -> V2OrchestratorStart:
+    runner = getattr(app.state, "v2_orchestrator_runner", None)
+    if runner is None:
+        return V2OrchestratorStart(
+            command_id=resume_id,
+            job_id=job_id,
+            stage_index=stage_index,
+            pid=None,
+            status="queued",
+            message="runner unavailable",
+        )
+    try:
+        return runner.start_resume(job_id=job_id, resume_id=resume_id)
+    except sqlite3.OperationalError as exc:
+        if _is_sqlite_locked_error(exc):
+            return V2OrchestratorStart(
+                command_id=resume_id,
+                job_id=job_id,
+                stage_index=stage_index,
+                pid=None,
+                status="retrying",
+                message=str(exc),
+            )
+        raise
+
+
+def _is_sqlite_locked_error(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    lowered = str(exc).lower()
+    return "database is locked" in lowered or "database table is locked" in lowered or "locked" in lowered
+
+
+def _approval_review_revision_payload(
+    *,
+    job_id: str,
+    gate_id: str,
+    stage_index: int,
+    gate_checksum: str,
+    user_request_text: str,
+) -> dict[str, Any]:
+    return {
+        "job_id": job_id,
+        "gate_id": gate_id,
+        "stage_index": stage_index,
+        "gate_checksum": gate_checksum,
+        "user_request_text": user_request_text,
+        "actor": "human",
+        "timestamp": _utc_now_text(),
+        "status": "revision_requested",
+    }
+
+
+def _record_approval_review_revision_request(
+    *,
+    uow: Any,
+    job_id: str,
+    gate_id: str,
+    stage_index: int,
+    gate_checksum: str,
+    user_request_text: str,
+) -> None:
+    pending_card = _approval_review_pending_card(
+        uow,
+        job_id=job_id,
+        gate_phase="approval_review",
+        stage_index=stage_index,
+        gate_checksum=gate_checksum,
+    )
+    if pending_card is not None:
+        uow.v2_approvals.update_card_status(pending_card.card_id, "blocked")
+    uow.v2_events.save(
+        job_id=job_id,
+        stage=stage_index,
+        event_type="approval_revision_requested",
+        status="blocked",
+        message="Revision requested during approval review.",
+        payload=_approval_review_revision_payload(
+            job_id=job_id,
+            gate_id=gate_id,
+            stage_index=stage_index,
+            gate_checksum=gate_checksum,
+            user_request_text=user_request_text,
+        ),
+    )
+
+
+def _utc_now_text() -> str:
+    from migration_factory.control_tower.domain.checksums import utc_now_text
+
+    return utc_now_text()
+
+
+def _format_preview_response(preview: ActionPreview, context: GateContext) -> str:
+    """Format an action preview as an assistant message."""
+    lines: list[str] = []
+    lines.append("**Action Preview**")
+    lines.append("")
+    lines.append(f"I understand you want to: **{preview.reason}**")
+    lines.append("")
+    lines.append("Here is what I would do:")
+    lines.append(f"- **Action:** `{preview.action_type}`")
+    lines.append(f"- **Confidence:** {preview.confidence:.0%}")
+    if preview.warning:
+        lines.append(f"- **Warning:** {preview.warning}")
+    lines.append("")
+    lines.append("To proceed, please confirm by saying **yes** or **confirm**.")
+    lines.append("To cancel, ask a different question or say **no**.")
+    return "\n".join(lines)
+
+
+def _format_execution_response(
+    execution_result: Any,
+    progression: dict[str, Any] | None = None,
+) -> str:
+    """Format an execution result as an assistant message."""
+    status = getattr(execution_result, "status", "")
+    success = status == "executed" or getattr(execution_result, "success", False)
+    message = getattr(execution_result, "message", getattr(execution_result, "reason", ""))
+    decision_id = getattr(execution_result, "decision_id", None)
+
+    lines: list[str] = []
+    if success:
+        lines.append("**Action Completed Successfully**")
+        lines.append("")
+        if decision_id:
+            lines.append(f"- **Decision ID:** `{decision_id}`")
+        if message:
+            lines.append(f"- **Result:** {message}")
+        lines.append("")
+        if progression:
+            prog_status = progression.get("status", "unknown")
+            if prog_status == "queued":
+                lines.append("**Planning has been queued.**")
+                to_stage = progression.get("to_stage")
+                if to_stage:
+                    lines.append(f"- **Next stage:** Stage {to_stage}")
+                lines.append("- The backend will process planning automatically.")
+            elif prog_status == "planning_queued":
+                lines.append("**Stage 1 planning has been queued.**")
+                lines.append("- Analysis review is complete and accepted.")
+                lines.append("- Stage 1 planning will run next and produce planning artifacts.")
+                lines.append("- A planning_review gate will open after planning completes.")
+                lines.append("- Migration Stage 2 was not started.")
+                lines.append("- No transform/build/test started.")
+                cmd_id = progression.get("planning_command_id", "")
+                if cmd_id:
+                    lines.append(f"- **Planning command:** `{cmd_id[:12]}...`")
+            elif prog_status == "blocked":
+                reason = progression.get("reason", "policy_blocked")
+                lines.append(f"**Planning blocked:** {reason}")
+                lines.append("The gate is resolved but automated progression is blocked.")
+            elif prog_status == "phase_advanced":
+                from_phase = progression.get("from_phase", "")
+                to_phase = progression.get("to_phase", "")
+                stage = progression.get("stage_index", "")
+                lines.append(f"**Stage {stage} phase advanced: {from_phase} ? {to_phase}**")
+                message = progression.get("message", "")
+                if message:
+                    lines.append(f"- {message}")
+                lines.append("- Next gate is open and ready for review.")
+                lines.append("- Migration Stage 2 was not started.")
+                lines.append("- No source code was mutated.")
+            else:
+                lines.append(f"**Progression status:** {prog_status}")
+                lines.append("The gate is resolved but check the job for details.")
+        else:
+            lines.append("The gate action has been applied. You can check the job status for updates.")
+    else:
+        lines.append("**Action Failed**")
+        lines.append("")
+        if status:
+            lines.append(f"- **Status:** {status}")
+        if message:
+            lines.append(f"- **Error:** {message}")
+        lines.append("")
+        lines.append("Please try again or contact support if the issue persists.")
+    return "\n".join(lines)
+
+
+def _assistant_question_requires_write(*, question_lower: str, assistant_intent: str) -> bool:
+    if assistant_intent in {"apply_dependency_change", "rollback_pom_change", "continue_from_gate", "request_revision"}:
+        return True
+    if assistant_intent == "confirm":
+        return True
+    confirm_patterns = (
+        "confirm",
+        "yes",
+        "yeah",
+        "sure",
+        "go ahead",
+        "do it",
+        "apply",
+        "proceed",
+        "okay",
+        "ok",
+    )
+    if any(
+        question_lower == pattern
+        or question_lower.startswith(pattern + " ")
+        or question_lower.startswith(pattern + ",")
+        or question_lower.startswith(pattern + ".")
+        for pattern in confirm_patterns
+    ):
+        return True
+    gate_action_terms = (
+        "reanalyze",
+        "re-analyze",
+        "rescan",
+        "scan again",
+        "accept analysis",
+        "continue analysis",
+        "continue to planning",
+        "request revision",
+        "revise the plan",
+        "revise this",
+    )
+    return any(term in question_lower for term in gate_action_terms)
+
+
+def _handle_v2_assistant_read_only_ask(
+    app: Any,
+    job_id: str,
+    question: str,
+    correlation_id: str | None,
+    unit_of_work_factory: Any,
+) -> dict[str, Any]:
+    from migration_factory.control_tower.application.v2_assistant_service import (
+        AssistantMessage,
+        V2AssistantService,
+    )
+
+    try:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            job = _require_v2_job(uow, job_id)
+            events = uow.v2_events.list_by_job(job_id)
+            approvals = uow.v2_approvals.list_cards_by_job(job_id)
+            commands = uow.v2_commands.list_by_job(job_id)
+            pipeline = _v2_pipeline_projection(job_id, events)
+            service = V2AssistantService(assistant_repo=uow.v2_assistant)
+            assistant_intent = _classify_v2_assistant_intent(question.strip().lower())
+            setup = uow.v2_setups.get(job.setup_id) if job.setup_id else None
+            artifact_previews_list = _resolve_assistant_artifact_previews(
+                question=question,
+                events=events,
+                commands=commands,
+                setup=setup,
+                assistant_intent=assistant_intent,
+            )
+            artifact_previews = tuple(artifact_previews_list)
+            fallback_answer = _build_v2_assistant_answer(
+                question=question,
+                events=events,
+                approvals=approvals,
+                commands=commands,
+                artifact_previews=artifact_previews if artifact_previews else None,
+                assistant_intent=assistant_intent,
+            )
+            if assistant_intent in {"apply_dependency_change", "rollback_pom_change"}:
+                model_result = V2AssistantModelResult(
+                    content=fallback_answer,
+                    source="backend_controlled",
+                    model_status="not_used",
+                    provider="backend",
+                    role="assistant",
+                    success=True,
+                    redacted_summary="Backend-controlled assistant action completed.",
+                    failure_reason="",
+                )
+            else:
+                assistant_client = app.state.v2_assistant_model_client
+                assistant_prompt = _build_v2_assistant_prompt(
+                    question=question,
+                    job=job,
+                    pipeline=pipeline,
+                    events=events,
+                    approvals=approvals,
+                    artifact_previews=artifact_previews if artifact_previews else None,
+                    assistant_intent=assistant_intent,
+                    conversation_history=(),
+                )
+                if hasattr(assistant_client, "answer_with_role"):
+                    model_result = assistant_client.answer_with_role(
+                        role=V2ModelRole.ASSISTANT,
+                        prompt=assistant_prompt,
+                        fallback=fallback_answer,
+                        conversation_history=(),
+                    )
+                else:
+                    model_result = assistant_client.answer(
+                        prompt=assistant_prompt,
+                        fallback=fallback_answer,
+                        conversation_history=(),
+                    )
+
+            now = utc_now_text()
+            user_msg = AssistantMessage(
+                message_id=uuid4().hex,
+                job_id=job_id,
+                role="user",
+                content=question,
+                correlation_id=correlation_id,
+                created_at=now,
+            )
+            assistant_msg = AssistantMessage(
+                message_id=uuid4().hex,
+                job_id=job_id,
+                role="assistant",
+                content=model_result.content,
+                correlation_id=user_msg.message_id,
+                created_at=now,
+            )
+            response = {
+                "job_id": job_id,
+                "user_message": service.message_to_dict(user_msg),
+                "assistant_message": service.message_to_dict(assistant_msg),
+                "model": {
+                    "status": model_result.model_status,
+                    "source": model_result.source,
+                    "provider": model_result.provider,
+                    "role": model_result.role,
+                    "failure_reason": model_result.failure_reason,
+                },
+                "guardrails": {
+                    "read_only": True,
+                    "cannot_execute": True,
+                    "cannot_approve": True,
+                    "cannot_write_files": True,
+                    "cannot_change_route_or_stage": True,
+                    "cannot_override_proof": True,
+                },
+            }
+            return response
+    except sqlite3.OperationalError as exc:
+        if _is_sqlite_locked_error(exc):
+            return {
+                "job_id": job_id,
+                "user_message": {
+                    "message_id": None,
+                    "job_id": job_id,
+                    "role": "user",
+                    "content": question,
+                    "correlation_id": correlation_id,
+                    "created_at": utc_now_text(),
+                },
+                "assistant_message": {
+                    "message_id": None,
+                    "job_id": job_id,
+                    "role": "assistant",
+                    "content": "The orchestrator is busy right now. Retry shortly.",
+                    "correlation_id": correlation_id,
+                    "created_at": utc_now_text(),
+                },
+                "model": {
+                    "status": "busy",
+                    "source": "backend_controlled",
+                    "provider": "backend",
+                    "role": "assistant",
+                    "failure_reason": "database is locked",
+                },
+                "guardrails": {
+                    "read_only": True,
+                    "cannot_execute": True,
+                    "cannot_approve": True,
+                    "cannot_write_files": True,
+                    "cannot_change_route_or_stage": True,
+                    "cannot_override_proof": True,
+                },
+                "busy": True,
+            }
+        raise
+
+
+def _handle_resolved_gate_checksum_confirm(
+    *,
+    job_id: str,
+    question: str,
+    correlation_id: str | None,
+    unit_of_work_factory: Any,
+) -> dict[str, Any] | None:
+    exact_checksum = _extract_confirm_checksum(question)
+    if not exact_checksum:
+        return None
+
+    from migration_factory.control_tower.application.v2_assistant_service import (
+        V2AssistantService,
+    )
+
+    with unit_of_work_factory() as uow:
+        _require_v2_job(uow, job_id)
+        matched_gate = None
+        for gate in uow.phase_gates.list_by_job(job_id):
+            try:
+                refs_raw = json.loads(gate.source_artifact_refs_json or "[]")
+            except (json.JSONDecodeError, TypeError):
+                refs_raw = []
+            refs = tuple(str(ref) for ref in refs_raw) if isinstance(refs_raw, list) else tuple(
+                str(ref) for ref in refs_raw.values()
+            ) if isinstance(refs_raw, dict) else ()
+            checksum = gate_checksum(
+                gate_id=gate.gate_id,
+                job_id=gate.job_id,
+                gate_phase=gate.gate_phase,
+                stage_index=gate.stage_index,
+                source_artifact_checksum=gate.source_artifact_checksum,
+                source_artifact_refs=refs,
+            )
+            if checksum == exact_checksum:
+                matched_gate = gate
+                break
+        if matched_gate is None:
+            return None
+
+        resume_status = None
+        resume_id = ""
+        for event in reversed(uow.v2_events.list_by_job(job_id)):
+            if event.type not in {"approval_resume_queued", "resume_started"}:
+                continue
+            try:
+                payload = json.loads(event.payload_json or "{}")
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+            resume_id = str(payload.get("resume_id") or payload.get("command_id") or resume_id or "")
+            resume_status = str(payload.get("resume_status") or event.status or "queued")
+            break
+
+        service = V2AssistantService(assistant_repo=uow.v2_assistant)
+        user_msg = service.add_message(
+            job_id=job_id,
+            role="user",
+            content=question,
+            correlation_id=correlation_id,
+        )
+        assistant_msg = service.add_message(
+            job_id=job_id,
+            role="assistant",
+            content="Checksum already resolved. The approval resume is already queued or running.",
+            correlation_id=user_msg.message_id,
+        )
+        return {
+            "job_id": job_id,
+            "user_message": service.message_to_dict(user_msg),
+            "assistant_message": service.message_to_dict(assistant_msg),
+            "gate_aware": True,
+            "intent": "confirm_checksum",
+            "executed": matched_gate.gate_status == "resolved",
+            "execution_result": {
+                "success": matched_gate.gate_status == "resolved",
+                "status": "already_resolved" if matched_gate.gate_status == "resolved" else matched_gate.gate_status,
+                "decision_id": "",
+                "reason": "Gate checksum matched an existing non-open gate.",
+                "resume_id": resume_id,
+                "resume_status": resume_status or "queued",
+            },
+            "guardrails": {
+                "read_only": True,
+                "cannot_execute": True,
+                "cannot_approve": True,
+                "cannot_write_files": True,
+                "cannot_change_route_or_stage": True,
+                "cannot_override_proof": True,
+            },
+        }
+
+def _handle_gate_aware_read_only_ask(
+    app: Any,
+    job_id: str,
+    open_gate: Any,
+    question: str,
+    correlation_id: str | None,
+    unit_of_work_factory: Any,
+) -> dict[str, Any]:
+    from migration_factory.control_tower.application.v2_assistant_service import (
+        AssistantMessage,
+        V2AssistantService,
+    )
+
+    try:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            gate_repo = uow.phase_gates
+            gate_service = V2PhaseGateService(gate_repo)
+            job = uow.v2_jobs.get(job_id)
+            setup = None
+            if job is not None and getattr(job, "setup_id", None):
+                setup = uow.v2_setups.get(job.setup_id)
+            storage_root = getattr(setup, "output_parent_path", None) if setup is not None else None
+            resolver = V2GateArtifactResolver(gate_repo, storage_root=storage_root)
+            loader = GateContextLoader(
+                gate_service=gate_service,
+                resolver=resolver,
+            )
+            context, evidence_pack = loader.load_gate_with_evidence(open_gate.gate_id)
+            if context is None:
+                return _handle_v2_assistant_read_only_ask(
+                    app=app,
+                    job_id=job_id,
+                    question=question,
+                    correlation_id=correlation_id,
+                    unit_of_work_factory=unit_of_work_factory,
+                )
+
+            service = V2AssistantService(assistant_repo=uow.v2_assistant)
+            user_msg = AssistantMessage(
+                message_id=uuid4().hex,
+                job_id=job_id,
+                role="user",
+                content=question,
+                correlation_id=correlation_id,
+                created_at=utc_now_text(),
+            )
+            question_lower = question.strip().lower()
+            classifier = GateIntentClassifier()
+            intent: ClassifiedIntent = classifier.classify(
+                user_input=question,
+                available_actions=context.available_actions,
+                gate_phase=context.gate_phase,
+            )
+
+            if open_gate.gate_phase == "approval_review":
+                blocked_revision_card = _approval_review_blocked_revision_card(
+                    uow,
+                    job_id=job_id,
+                    stage_index=open_gate.stage_index,
+                    gate_checksum=context.checksum,
+                )
+                if blocked_revision_card is not None and (
+                    intent.action_type == "approve_from_gate"
+                    or question_lower == "approve"
+                    or intent.action_type == "reject_from_gate"
+                    or question_lower == "reject"
+                ):
+                    assistant_msg = AssistantMessage(
+                        message_id=uuid4().hex,
+                        job_id=job_id,
+                        role="assistant",
+                        content=_approval_review_revision_blocked_message(),
+                        correlation_id=user_msg.message_id,
+                        created_at=utc_now_text(),
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "approve_from_gate",
+                        "executed": False,
+                        "available_actions": _approval_review_available_actions(blocked_revision=True),
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+                exact_checksum = _extract_confirm_checksum(question)
+                if intent.action_type == "approve_from_gate" or question_lower == "approve":
+                    assistant_msg = AssistantMessage(
+                        message_id=uuid4().hex,
+                        job_id=job_id,
+                        role="assistant",
+                        content=_format_approval_review_preview(context),
+                        correlation_id=user_msg.message_id,
+                        created_at=utc_now_text(),
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "approve_from_gate",
+                        "executed": False,
+                        "action_preview": {
+                            "action_type": "approve_from_gate",
+                            "reason": "Preview only; exact checksum confirmation required.",
+                            "confidence": 1.0,
+                            "warning": "Approval will not execute until the exact checksum is confirmed.",
+                            "requires_confirmation": True,
+                            "pending_confirmation": True,
+                            "exact_checksum": context.checksum,
+                        },
+                        "available_actions": _approval_review_available_actions(),
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+                if exact_checksum and exact_checksum != context.checksum:
+                    assistant_msg = AssistantMessage(
+                        message_id=uuid4().hex,
+                        job_id=job_id,
+                        role="assistant",
+                        content="Checksum mismatch. Confirm the latest gate checksum from the review surface.",
+                        correlation_id=user_msg.message_id,
+                        created_at=utc_now_text(),
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "confirm_checksum",
+                        "executed": False,
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+                if _question_looks_like_approval_review_explanation(question):
+                    explanation_text, explanation_model = _format_approval_review_explanation(
+                        app=app,
+                        context=context,
+                        evidence=evidence_pack,
+                        question=question,
+                    )
+                    assistant_msg = AssistantMessage(
+                        message_id=uuid4().hex,
+                        job_id=job_id,
+                        role="assistant",
+                        content=explanation_text,
+                        correlation_id=user_msg.message_id,
+                        created_at=utc_now_text(),
+                    )
+                    return {
+                        "job_id": job_id,
+                        "user_message": service.message_to_dict(user_msg),
+                        "assistant_message": service.message_to_dict(assistant_msg),
+                        "gate_aware": True,
+                        "intent": "status",
+                        "executed": False,
+                        "model": explanation_model,
+                        "available_actions": _approval_review_available_actions(),
+                        "guardrails": {
+                            "read_only": True,
+                            "cannot_execute": True,
+                            "cannot_approve": True,
+                            "cannot_write_files": True,
+                            "cannot_change_route_or_stage": True,
+                            "cannot_override_proof": True,
+                        },
+                    }
+
+            if (intent.ambiguous or not intent.action_type) and not _question_looks_like_approval_review_revision_request(question):
+                from migration_factory.control_tower.application.v2_gate_assistant import (
+                    AmbiguityHandler,
+                )
+                explanation = AmbiguityHandler.handle_ambiguous(intent, context)
+                assistant_msg = AssistantMessage(
+                    message_id=uuid4().hex,
+                    job_id=job_id,
+                    role="assistant",
+                    content=explanation,
+                    correlation_id=user_msg.message_id,
+                    created_at=utc_now_text(),
+                )
+                return {
+                    "job_id": job_id,
+                    "user_message": service.message_to_dict(user_msg),
+                    "assistant_message": service.message_to_dict(assistant_msg),
+                    "gate_aware": True,
+                    "intent": intent.action_type or "ambiguous",
+                    "executed": False,
+                    "ambiguous": True,
+                    "available_actions": tuple(a.action for a in context.available_actions),
+                    "guardrails": {
+                        "read_only": True,
+                        "cannot_execute": True,
+                        "cannot_approve": True,
+                        "cannot_write_files": True,
+                        "cannot_change_route_or_stage": True,
+                        "cannot_override_proof": True,
+                    },
+                }
+
+            assistant_msg = AssistantMessage(
+                message_id=uuid4().hex,
+                job_id=job_id,
+                role="assistant",
+                content=_format_approval_review_preview(context),
+                correlation_id=user_msg.message_id,
+                created_at=utc_now_text(),
+            )
+            return {
+                "job_id": job_id,
+                "user_message": service.message_to_dict(user_msg),
+                "assistant_message": service.message_to_dict(assistant_msg),
+                "gate_aware": True,
+                "intent": intent.action_type or "status",
+                "executed": False,
+                "available_actions": list(intent.available_actions),
+                "guardrails": {
+                    "read_only": True,
+                    "cannot_execute": True,
+                    "cannot_approve": True,
+                    "cannot_write_files": True,
+                    "cannot_change_route_or_stage": True,
+                    "cannot_override_proof": True,
+                },
+            }
+    except sqlite3.OperationalError as exc:
+        if _is_sqlite_locked_error(exc):
+            return {
+                "job_id": job_id,
+                "user_message": {
+                    "message_id": None,
+                    "job_id": job_id,
+                    "role": "user",
+                    "content": question,
+                    "correlation_id": correlation_id,
+                    "created_at": utc_now_text(),
+                },
+                "assistant_message": {
+                    "message_id": None,
+                    "job_id": job_id,
+                    "role": "assistant",
+                    "content": "The orchestrator is busy right now. Retry shortly.",
+                    "correlation_id": correlation_id,
+                    "created_at": utc_now_text(),
+                },
+                "gate_aware": True,
+                "intent": "status",
+                "executed": False,
+                "busy": True,
+                "guardrails": {
+                    "read_only": True,
+                    "cannot_execute": True,
+                    "cannot_approve": True,
+                    "cannot_write_files": True,
+                    "cannot_change_route_or_stage": True,
+                    "cannot_override_proof": True,
+                },
+            }
+        raise
+
+
+def _fallback_to_existing_assistant(
+    app: Any,
+    job_id: str,
+    question: str,
+    correlation_id: str | None,
+    unit_of_work_factory: Any,
+) -> dict[str, Any]:
+    """Fall back to the existing V2AssistantService when gate load fails."""
+    from migration_factory.control_tower.application.v2_assistant_service import (
+        V2AssistantService,
+    )
+    with unit_of_work_factory() as uow:
+        job = _require_v2_job(uow, job_id)
+        events = uow.v2_events.list_by_job(job_id)
+        approvals = uow.v2_approvals.list_cards_by_job(job_id)
+        commands = uow.v2_commands.list_by_job(job_id)
+        pipeline = _v2_pipeline_projection(job_id, events)
+        service = V2AssistantService(assistant_repo=uow.v2_assistant)
+        assistant_intent = _classify_v2_assistant_intent(question)
+        prior_messages = service.get_messages(job_id)
+        user_msg = service.add_message(
+            job_id=job_id,
+            role="user",
+            content=question,
+            correlation_id=correlation_id,
+        )
+        conversation_history = _build_bounded_conversation_history(
+            messages=prior_messages,
+        )
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=None,
+            event_type="model_invocation_started",
+            status="running",
+            message="Assistant model invocation started.",
+            payload={"provider": "azure_openai", "role": "assistant"},
+        )
+        setup = uow.v2_setups.get(job.setup_id) if job.setup_id else None
+        artifact_previews_list = _resolve_assistant_artifact_previews(
+            question=question,
+            events=events,
+            commands=commands,
+            setup=setup,
+            assistant_intent=assistant_intent,
+        )
+        artifact_previews = tuple(artifact_previews_list)
+        if assistant_intent in {"apply_dependency_change", "rollback_pom_change"} and uow.connection.in_transaction:
+            uow.connection.execute("COMMIT")
+        fallback_answer = _build_v2_assistant_answer(
+            question=question,
+            events=events,
+            approvals=approvals,
+            commands=commands,
+            artifact_previews=artifact_previews if artifact_previews else None,
+            assistant_intent=assistant_intent,
+        )
+        if assistant_intent in {"apply_dependency_change", "rollback_pom_change"}:
+            model_result = V2AssistantModelResult(
+                content=fallback_answer,
+                source="backend_controlled",
+                model_status="not_used",
+                provider="backend",
+                role="assistant",
+                success=True,
+                redacted_summary="Backend-controlled assistant action completed.",
+                failure_reason="",
+            )
+        else:
+            assistant_client = app.state.v2_assistant_model_client
+            assistant_prompt = _build_v2_assistant_prompt(
+                question=question,
+                job=job,
+                pipeline=pipeline,
+                events=events,
+                approvals=approvals,
+                artifact_previews=artifact_previews if artifact_previews else None,
+                assistant_intent=assistant_intent,
+                conversation_history=conversation_history,
+            )
+            if hasattr(assistant_client, "answer_with_role"):
+                model_result = assistant_client.answer_with_role(
+                    role=V2ModelRole.ASSISTANT,
+                    prompt=assistant_prompt,
+                    fallback=fallback_answer,
+                    conversation_history=conversation_history,
+                )
+            else:
+                model_result = assistant_client.answer(
+                    prompt=assistant_prompt,
+                    fallback=fallback_answer,
+                    conversation_history=conversation_history,
+                )
+        assistant_msg = service.add_message(
+            job_id=job_id,
+            role="assistant",
+            content=model_result.content,
+            correlation_id=user_msg.message_id,
+        )
+    with unit_of_work_factory() as uow:
+        is_fallback = (
+            not model_result.success
+            and model_result.source == "deterministic"
+        )
+        _append_v2_event(
+            uow,
+            job_id=job_id,
+            stage=None,
+            event_type="model_invocation_completed" if model_result.success else "model_invocation_failed",
+            status="completed" if model_result.success else ("fallback" if is_fallback else "failed"),
+            message=model_result.redacted_summary,
+            payload={
+                "provider": model_result.provider,
+                "role": model_result.role,
+                "source": model_result.source,
+                "success": model_result.success,
+                "is_fallback": is_fallback,
+            },
+        )
+    return {
+        "job_id": job_id,
+        "user_message": service.message_to_dict(user_msg),
+        "assistant_message": service.message_to_dict(assistant_msg),
+        "model": {
+            "status": model_result.model_status,
+            "source": model_result.source,
+            "provider": model_result.provider,
+            "role": model_result.role,
+            "failure_reason": model_result.failure_reason,
+        },
+        "guardrails": {
+            "read_only": True,
+            "cannot_execute": True,
+            "cannot_approve": True,
+            "cannot_write_files": True,
+            "cannot_change_route_or_stage": True,
+            "cannot_override_proof": True,
+        },
+    }
+
+
+def _build_bounded_conversation_history(
+    messages: tuple[Any, ...],
+    max_messages: int = 8,
+) -> list[dict[str, str]]:
+    """Build a bounded, redacted conversation history from prior messages.
+
+    Returns up to max_messages recent role/content pairs.
+    Redacts content, excludes raw paths, secrets, and approval tokens.
+    """
+    from migration_factory.control_tower.application.redaction import redact_model_summary
+
+    if not messages:
+        return []
+    recent = messages[-max_messages:] if len(messages) > max_messages else messages
+    history: list[dict[str, str]] = []
+    for msg in recent:
+        role = str(getattr(msg, "role", "user") or "user")
+        content = str(getattr(msg, "content", "") or "")
+        if not content.strip():
+            continue
+        safe = redact_model_summary(str(content))
+        safe = safe[:512]  # Bound each message
+        safe = re.sub(r'/[^\s"]+/[^\s"]*', "[path-redacted]", safe)
+        safe = re.sub(r'\b[0-9a-f]{32,}\b', "[token-redacted]", safe)
+        history.append({"role": role, "content": safe})
+    return history
+
+
+def _question_looks_like_artifact_content(question: str) -> bool:
+    """Detect if a user question is asking for artifact content."""
+    lowered = str(question or "").lower()
+    # Quick guard: must be asking for something
+    if not any(pattern in lowered for pattern in _ARTIFACT_CONTENT_QUESTION_PATTERNS):
+        return False
+    # Must mention artifact-related terms
+    return any(keyword in lowered for keyword in _ARTIFACT_CONTENT_KEYWORDS)
+
+
+def _question_requests_root_pom_alias(question: str) -> bool:
+    """Detect requests for the fixed root_pom alias, not arbitrary paths."""
+    lowered = str(question or "").lower()
+    if not any(pattern in lowered for pattern in _ARTIFACT_CONTENT_QUESTION_PATTERNS):
+        return False
+    return any(term in lowered for term in _ROOT_POM_ALIAS_TERMS)
+
+
+def _stage_index_from_question(question: str) -> int | None:
+    lowered = str(question or "").lower()
+    match = re.search(r"\b(?:stage|phase)\s*([1-3])\b", lowered)
+    if match:
+        return int(match.group(1))
+    if any(term in lowered for term in ("final stage", "target stage", "final pom", "target pom", "final target")):
+        return 3
+    return None
+
+
+def _get_requested_stage(question: str, intent: str = "") -> int | None:
+    """Extract requested stage from question, with intent-aware defaults.
+
+    - 'stage 3', 'phase 3', 'final stage', 'target stage', 'final pom' -> stage=3
+    - 'stage 1' -> stage=1
+    - 'stage 2' -> stage=2
+    - If no stage given and intent is stage3_dependency_review, default to stage=3
+    - If no stage given and intent is pom_dependency_change_request, prefer stage 3 if evidence available
+    - Otherwise returns None (keep existing behavior)
+    """
+    lowered = str(question or "").lower()
+    match = re.search(r"\b(?:stage|phase)\s*([1-3])\b", lowered)
+    if match:
+        return int(match.group(1))
+    # Named stage references
+    if any(term in lowered for term in ("stage 3", "phase 3", "final stage", "target stage", "final pom", "final target")):
+        return 3
+    if "stage 2" in lowered or "phase 2" in lowered:
+        return 2
+    if "stage 1" in lowered or "phase 1" in lowered:
+        return 1
+    # Intent-based defaults
+    if intent in ("stage3_dependency_review",):
+        return 3
+    # If user asks for full/root/current/final POM without explicit stage,
+    # prefer Stage 3 if it is complete (checked via events)
+    if any(term in lowered for term in ("full pom", "root pom", "current pom", "final pom", "the pom")):
+        return None  # Let caller resolve via _default_stage_from_events
+    return None
+
+
+def _is_final_dependency_review_allowed(
+    stage_index: int,
+    root_pom_preview: dict[str, Any] | None,
+    events: tuple[Any, ...],
+) -> tuple[bool, str]:
+    """Check if a final dependency review is allowed at the given stage.
+
+    Returns (allowed: bool, reason: str).
+    Reasons: ok, stage_not_3, root_pom_unavailable, stage_running,
+    stage_not_completed, proof_missing, build_or_tests_missing.
+    """
+    if stage_index != 3:
+        return False, "stage_not_3"
+    if not root_pom_preview or not root_pom_preview.get("exists"):
+        return False, "root_pom_unavailable"
+    # Check stage 3 events for stability
+    stage_events = sorted(
+        [event for event in events if getattr(event, "stage", None) == 3],
+        key=lambda event: getattr(event, "sequence", 0),
+    )
+    if not stage_events:
+        return False, "stage_not_completed"
+    latest_stage_event = stage_events[-1]
+    if getattr(latest_stage_event, "status", "") == "running" or str(
+        getattr(latest_stage_event, "type", "")
+    ).endswith("_started"):
+        return False, "stage_running"
+    if not any(
+        getattr(event, "type", "") in {"sandbox_transform_completed", "stage_completed"}
+        or (
+            getattr(event, "status", "") == "completed"
+            and str(getattr(event, "type", ""))
+            in {"transform_completed", "build_completed", "test_completed"}
+        )
+        for event in stage_events
+    ):
+        return False, "stage_not_completed"
+    has_build = any(
+        getattr(e, "type", "") in {"build_completed", "test_completed"} for e in stage_events
+    )
+    if not has_build:
         return True, "ok"  # Not blocking on missing build/test — just warn
     return True, "ok"
 
@@ -4699,6 +7615,7 @@ def _default_stage_when_stage3_complete(events: tuple[Any, ...]) -> int | None:
     ):
         return 3
     return None
+
 
 
 def _resolve_assistant_artifact_previews(
@@ -5039,7 +7956,7 @@ def _sandbox_path_from_mapping(value: dict[str, Any]) -> str:
 
 
 def _is_unsafe_sandbox_root(value: str) -> bool:
-    if value.startswith(("\\\\", "//")):
+    if value.startswith(("\\", "//")):
         return True
     path = Path(value)
     win_path = PureWindowsPath(value)
@@ -5057,7 +7974,7 @@ def _build_v2_assistant_answer(
     artifact_previews: tuple[dict[str, Any], ...] | None = None,
     assistant_intent: str = "general_question",
 ) -> str:
-    # ── Intent-adaptive fallback paths ──
+    # â”€â”€ Intent-adaptive fallback paths â”€â”€
     # Auto-detect status questions when intent not explicitly set
     effective_intent = assistant_intent
     if effective_intent == "general_question":
@@ -5151,7 +8068,7 @@ def _build_v2_assistant_answer(
     )
 
 
-# ── POM change proposal builder ─────────────────────────────────────
+# â”€â”€ POM change proposal builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def _extract_pom_summary(xml_text: str) -> dict[str, Any]:
@@ -5270,7 +8187,7 @@ def _extract_pom_summary(xml_text: str) -> dict[str, Any]:
                     result["dependency_management_boms"].append(bom)
         return result
 
-    # Namespace-aware tag helpers — handle both Maven namespace and plain XML
+    # Namespace-aware tag helpers â€” handle both Maven namespace and plain XML
     ns = "{http://maven.apache.org/POM/4.0.0}"
     # Detect if root uses Maven namespace
     _has_maven_ns = root.tag == f"{ns}project"
@@ -5423,7 +8340,7 @@ def _redact_xml_preserve_maven_urls(text: str) -> str:
         text,
     )
 
-    # Redact secret-like XML elements — replace their content with [redacted]
+    # Redact secret-like XML elements â€” replace their content with [redacted]
     for tag in ("password", "secret", "token", "apiKey", "api_key"):
         text = re.sub(
             rf"<{tag}>[^<]*</{tag}>",
@@ -5454,7 +8371,7 @@ def _build_pom_change_proposal_answer(
     """Build a governed POM change proposal from available evidence.
 
     If the question contains a specific property/dependency change request
-    (e.g., "propose changing assertj.version to 3.24.2"), calls the
+    (e.g., "propose changing example.version to 1.2.3"), calls the
     PomDependencyEditor.propose_change() service to produce a real proposal
     with proposal_id, risk, control_mode, and can_apply.
 
@@ -5479,7 +8396,7 @@ def _build_pom_change_proposal_answer(
     if not specific_change:
         # Pattern: "change X to Y" (artifact name or GAV)
         specific_change = _re.search(
-            r"(?:chang|updat|upgrad|set|bump)\s+([\w.\-:]+)\s+(?:to|version)\s+([\d.]+(?:[\-.]?[\w]+)*)",
+            r"(?:chang(?:e|ing)?|updat(?:e|ing)?|upgrad(?:e|ing)?|set(?:ting)?|bump(?:ing)?)\s+([\w.\-:]+)\s+(?:to|version)\s+([\d.]+(?:[\-.]?[\w]+)*)",
             lowered, _re.IGNORECASE,
         )
 
@@ -6018,11 +8935,11 @@ def _classify_stage3_dependencies(
     """Classify dependencies into buckets for Stage 3 review.
 
     Buckets:
-    A. boot_managed — dependencies normally managed by Spring Boot BOM/parent
-    B. jakarta_platform — javax.* dependencies (may need migration)
-    C. app_specific_third_party — not controlled by Boot/OpenRewrite
-    D. build_plugins — Maven plugins
-    E. transitive_or_bom_managed_risk — requests for transitive deps
+    A. boot_managed â€” dependencies normally managed by Spring Boot BOM/parent
+    B. jakarta_platform â€” javax.* dependencies (may need migration)
+    C. app_specific_third_party â€” not controlled by Boot/OpenRewrite
+    D. build_plugins â€” Maven plugins
+    E. transitive_or_bom_managed_risk â€” requests for transitive deps
     """
     deps = pom_summary.get("dependencies", [])
     plugins = pom_summary.get("plugins", [])
@@ -6069,7 +8986,7 @@ def _classify_stage3_dependencies(
         gid = d.get("groupId", "")
         aid = d.get("artifactId", "")
 
-        # B. javax → jakarta check
+        # B. javax â†’ jakarta check
         if "javax." in gid or any(
             aid.startswith(pfx)
             for pfx in ("javax.servlet", "javax.persistence", "javax.annotation", "javax.validation")
@@ -6227,7 +9144,7 @@ def _build_apply_dependency_change_answer(
     if not dep_name or not target_version:
         return (
             "I need a specific dependency name and target version to apply a change. "
-            'For example: "apply change gson to 2.11.0" or "update dependency com.google.code.gson:gson to 2.11.0".'
+            'For example: "apply change library-name to 1.2.3" or "update dependency com.example:library-name to 1.2.3".'
         )
 
     # Route through the same PomDependencyEditor service path as UI
@@ -6248,11 +9165,19 @@ def _build_apply_dependency_change_answer(
         )
 
     if result.status == "blocked":
-        return (
-            f"The backend blocked this change: {result.message}\n\n"
-            "You can use the Stage 3 Dependency Review panel to review "
-            "dependencies and create a proposal before applying."
+        card = AssistantResponseCard(
+            headline="Change blocked safely",
+            status="blocked",
+            summary="The backend refused to apply this change.",
+            sections=(
+                AssistantResponseSection(title="Reason", lines=(result.message,)),
+            ),
+            safety_note=(
+                "Ask for a proposal instead of a direct apply:\n"
+                '"Explain how Tomcat is managed and propose whether a Tomcat override is needed."'
+            ),
         )
+        return _ASSISTANT_RESPONSE_COMPOSER.render(card)
 
     if result.status == "noop":
         lines = [
@@ -6273,26 +9198,34 @@ def _build_apply_dependency_change_answer(
             "Please check the Stage 3 sandbox is available and try again."
         )
 
-    # Success — report from PomApplyResult
-    lines: list[str] = []
-    lines.append(f"## ✅ POM change applied\n")
-    lines.append(f"**{result.message}**\n")
-    lines.append(f"- **Change ID:** `{result.change_id}`")
-    lines.append(f"- **Operation:** {result.operation}")
-    lines.append(f"- **Target:** {result.target_desc}")
-    if result.before_version:
-        lines.append(f"- **Before:** {result.before_version}")
-    lines.append(f"- **After:** {result.after_version}")
-    if result.validation_id:
-        lines.append(f"- **Validation ID:** `{result.validation_id}`")
-    lines.append(f"- **Status:** {result.status}")
-    if result.rollback_available:
-        lines.append(f"- **Rollback:** Available")
-    lines.append(f"\nThe change has been written to the Stage 3 sandbox. "
-                  f"Validation is now running. "
-                  f"Check the Stage 3 Dependency Review panel for results.")
-
-    return "\n".join(lines)
+    card = AssistantResponseCard(
+        headline="POM change applied",
+        status="done",
+        summary="The change was written to the Stage 3 sandbox.",
+        sections=(
+            AssistantResponseSection(
+                title="Change",
+                lines=(
+                    f"Operation: {result.operation}",
+                    f"Target: {result.target_desc}",
+                    f"Before: {result.before_version}" if result.before_version else "",
+                    f"After: {result.after_version}",
+                    f"Change ID: `{result.change_id}`",
+                ),
+            ),
+            AssistantResponseSection(
+                title="Validation",
+                lines=(
+                    "Status: running",
+                    f"Result: {result.status}",
+                    f"Validation ID: `{result.validation_id}`" if result.validation_id else "",
+                    "Rollback: available" if result.rollback_available else "",
+                ),
+            ),
+        ),
+        next_step="Open Stage 3 Dependency Review to inspect validation results.",
+    )
+    return _ASSISTANT_RESPONSE_COMPOSER.render(card)
 
 
 def _assistant_action_idempotency_key(action: str, job_id: str, question: str) -> str:
@@ -6373,14 +9306,28 @@ def _build_rollback_pom_change_answer(
             f"Checksum restored: {result.checksum_restored}."
         )
 
-    lines = [
-        "## POM change rolled back",
-        f"- **Change ID:** `{result.change_id}`",
-        f"- **Rollback ID:** `{result.rollback_id}`",
-        f"- **Checksum restored:** {result.checksum_restored}",
-        f"- **Status:** {result.status}",
-    ]
-    return "\n".join(lines)
+    card = AssistantResponseCard(
+        headline="POM change rolled back",
+        status="done",
+        summary="The Stage 3 sandbox has been restored.",
+        sections=(
+            AssistantResponseSection(
+                title="Change",
+                lines=(
+                    f"Change ID: `{result.change_id}`",
+                    f"Rollback ID: `{result.rollback_id}`",
+                ),
+            ),
+            AssistantResponseSection(
+                title="Status",
+                lines=(
+                    f"**Checksum restored:** {result.checksum_restored}",
+                    f"Status: {result.status}",
+                ),
+            ),
+        ),
+    )
+    return _ASSISTANT_RESPONSE_COMPOSER.render(card)
 
 
 def _build_pom_validation_result_answer(
@@ -6419,23 +9366,33 @@ def _build_pom_validation_result_answer(
     if result is None:
         return f"No backend validation record found for `{validation_id}`."
 
-    lines = [
-        "## Stage 3 POM validation result",
-        f"- **Change ID:** `{result.change_id}`",
-        f"- **Validation ID:** `{result.validation_id}`",
-        f"- **Status:** {result.status}",
-        f"- **Build:** {result.build_status}",
-        f"- **Tests:** {result.test_status}",
-    ]
-    if result.exit_code is not None:
-        lines.append(f"- **Exit code:** {result.exit_code}")
-    if result.diagnosis:
-        lines.append(f"- **Diagnosis:** {result.diagnosis.failure_classification}")
-        if result.diagnosis.failure_classification == "evidence_insufficient":
-            lines.append("- **Evidence:** evidence_insufficient")
-    if result.log_ref:
-        lines.append(f"- **Log ref:** {result.log_ref}")
-    return "\n".join(lines)
+    card = AssistantResponseCard(
+        headline="Stage 3 POM validation result",
+        status="info",
+        summary=f"Build: {result.build_status} | Tests: {result.test_status}",
+        sections=(
+            AssistantResponseSection(
+                title="Validation",
+                lines=(
+                    f"Change ID: `{result.change_id}`",
+                    f"Validation ID: `{result.validation_id}`",
+                    f"**Status:** {result.status}",
+                    f"Exit code: {result.exit_code}" if result.exit_code is not None else "",
+                ),
+            ),
+            AssistantResponseSection(
+                title="Reason",
+                lines=(
+                    f"Diagnosis: {result.diagnosis.failure_classification}" if result.diagnosis else "",
+                    "Evidence: evidence_insufficient"
+                    if result.diagnosis and result.diagnosis.failure_classification == "evidence_insufficient"
+                    else "",
+                    f"Log ref: {result.log_ref}" if result.log_ref else "",
+                ),
+            ),
+        ),
+    )
+    return _ASSISTANT_RESPONSE_COMPOSER.render(card)
 
 
 def _build_pom_dependency_change_request_answer(
@@ -6448,7 +9405,7 @@ def _build_pom_dependency_change_request_answer(
 ) -> str:
     """Build a governed dependency change request for an explicit single dependency edit.
 
-    Examples: 'Update gson to 2.11.0', 'Change tomcat to 10.1.20 at stage 3'
+    Examples: 'Update library-name to 1.2.3', 'Change server-runtime to 4.5.6 at stage 3'
     Produces exact before/after XML, risk, evidence, and approval path.
     """
     lines: list[str] = []
@@ -6479,8 +9436,8 @@ def _build_pom_dependency_change_request_answer(
             pom_summary = _extract_pom_summary(raw_preview)
 
     # ── Parse target dependency/property from question ──
-    # Patterns: "update gson to 2.11.0", "change tomcat to 10.1.20"
-    # Also: "update property assertj.version to 3.24.2"
+    # Patterns: "update library-name to 1.2.3", "change server-runtime to 4.5.6"
+    # Also: "update property example.version to 1.2.3"
     dep_name = ""
     target_version = ""
     is_property_update = False
@@ -6951,7 +9908,7 @@ def _build_stage3_dependency_review_answer(
             ag_gid in gid
             for ag_gid in (
                 "org.zalando", "microsoft.azure", "org.apache.juneau",
-                "io.jsonwebtoken", "com.google.code.gson", "org.modelmapper",
+                "io.jsonwebtoken", "org.modelmapper",
             )
         ):
             policy_candidates.append(d)
@@ -7091,7 +10048,7 @@ def _build_stage1_or_2_deferred_dependency_answer(
         "- Compare artifact versions across stages\n"
         "- Identify obvious migration risks\n"
         "- Handle explicit single-dependency edits you specify directly "
-        "(e.g., 'update gson to 2.11.0')\n\n"
+        "(e.g., 'update library-name to 1.2.3')\n\n"
         "**What should wait for Stage 3:**\n"
         "- Final app-specific dependency modernization recommendations\n"
         "- Broad dependency upgrade plans\n"
@@ -7336,7 +10293,7 @@ def _extract_artifact_kinds_list(events: tuple[Any, ...]) -> list[str]:
 
 
 def _build_capability_boundary_answer() -> str:
-    """Build capability boundary fallback — no stage status template."""
+    """Build capability boundary fallback â€” no stage status template."""
     answer = (
         "I cannot apply changes, approve gates, execute commands, or modify stages. "
         "The backend owns all execution. A human must approve decisions.\n\n"
@@ -7488,7 +10445,7 @@ def _build_status_answer(
     )
     artifact_text = f"Artifacts generated: {', '.join(artifact_kinds[-10:])}." if artifact_kinds else "No artifacts generated yet."
 
-    # ── Artifact preview content ──
+    # â”€â”€ Artifact preview content â”€â”€
     artifact_preview_text = ""
     if artifact_previews:
         preview_parts: list[str] = []
@@ -7944,7 +10901,7 @@ def _resolve_v2_artifact_preview_path(
 
 
 def _is_unsafe_artifact_ref(ref: str) -> bool:
-    if ref.startswith(("\\\\", "//")):
+    if ref.startswith(("\\", "//")):
         return True
     path = Path(ref)
     win_path = PureWindowsPath(ref)
@@ -8533,7 +11490,7 @@ def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, 
         ]
 
     command_stages = {command.stage_index for command in commands}
-    # Chronological lifecycle reducer — processes events in sequence order.
+    # Chronological lifecycle reducer â€” processes events in sequence order.
     # Each event transitions the state; later running/terminal events override
     # earlier blocked/pending.  This is *not* a max-precedence scan.
     from collections import defaultdict
@@ -8636,12 +11593,12 @@ def _transition_stage_status(current: str, mapped: str) -> str:
     """State-transition helper: given current status and mapped label,
     return the new status respecting lifecycle rules.
 
-    * failed         → terminal (highest priority)
-    * completed      → terminal unless a later failure arrives
-    * running        → overrides blocked/pending/queued
-    * blocked        → applies only if not already running/completed/failed
-    * queued         → applies only if not already past it
-    * pending        → no change
+    * failed         â†’ terminal (highest priority)
+    * completed      â†’ terminal unless a later failure arrives
+    * running        â†’ overrides blocked/pending/queued
+    * blocked        â†’ applies only if not already running/completed/failed
+    * queued         â†’ applies only if not already past it
+    * pending        â†’ no change
     """
     if mapped == "failed":
         return "failed"

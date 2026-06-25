@@ -105,6 +105,7 @@ class V2OrchestratorStart:
     stage_index: int
     pid: int | None
     status: str
+    message: str = ""
 
 
 class V2OrchestratorRunner:
@@ -924,7 +925,7 @@ class V2OrchestratorRunner:
                     job_id, stage_index, command_id, event_type, payload
                 )
             except Exception:
-                # Diagnosis is advisory — never let a diagnosis failure
+                # Diagnosis is advisory â€” never let a diagnosis failure
                 # block the orchestrator event loop.
                 pass
 
