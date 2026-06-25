@@ -598,6 +598,29 @@ class ApproveRepairProposalRequest(BaseModel):
     context_pack_checksum: str
 
 
+class PrepareRepairApplyContextRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    proposal_checksum: str
+    context_pack_checksum: str
+    reviewer_critique_id: str
+    proposer_invocation_id: str
+    reviewer_invocation_id: str
+    patch_preview: str = Field(min_length=1)
+    target_path: str = Field(min_length=1)
+    sandbox_reference: str = Field(min_length=1)
+    sandbox_checksum: str = Field(min_length=1)
+    legacy_checksum: str = Field(min_length=1)
+    evidence_refs: dict[str, str]
+    approval_scope: str = "sandbox_only"
+
+
+class ApproveRepairReviewContextRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    approval_checksum: str
+    approval_note: str = Field(min_length=1, max_length=4000)
+    approval_scope: str = "sandbox_only"
+
+
 # ── F14 POM dependency editor request schemas ──────────────────────────
 
 class PomProposeRequestSchema(BaseModel):
@@ -2821,6 +2844,79 @@ def create_app(
             }
         }
 
+    @app.post("/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/prepare-apply-context")
+    def prepare_repair_apply_context(
+        command_id: str,
+        proposal_id: str,
+        payload: PrepareRepairApplyContextRequest,
+    ) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            reviewer_service = V2ReviewerService(
+                reviewer_repo=uow.v2_reviewer,
+            )
+            service = V2RepairFlowService(
+                repair_repo=uow.v2_repairs,
+                reviewer_service=reviewer_service,
+            )
+            try:
+                context = service.prepare_apply_context(
+                    proposal_id=proposal_id,
+                    command_id=command_id,
+                    proposal_checksum=payload.proposal_checksum,
+                    context_pack_checksum=payload.context_pack_checksum,
+                    reviewer_critique_id=payload.reviewer_critique_id,
+                    proposer_invocation_id=payload.proposer_invocation_id,
+                    reviewer_invocation_id=payload.reviewer_invocation_id,
+                    patch_preview=payload.patch_preview,
+                    target_path=payload.target_path,
+                    sandbox_reference=payload.sandbox_reference,
+                    sandbox_checksum=payload.sandbox_checksum,
+                    legacy_checksum=payload.legacy_checksum,
+                    evidence_refs=payload.evidence_refs,
+                    approval_scope=payload.approval_scope,
+                )
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "REPAIR_APPLY_CONTEXT_PREPARATION_FAILED",
+                    str(exc),
+                ) from exc
+        return {
+            "repair_review_context": service.apply_context_to_dict(context),
+        }
+
+    @app.post("/v1/v2/repair-review/{context_id}/approve")
+    def approve_repair_review_context(
+        context_id: str,
+        payload: ApproveRepairReviewContextRequest,
+    ) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            reviewer_service = V2ReviewerService(
+                reviewer_repo=uow.v2_reviewer,
+            )
+            service = V2RepairFlowService(
+                repair_repo=uow.v2_repairs,
+                reviewer_service=reviewer_service,
+            )
+            try:
+                approval = service.record_approval_only(
+                    context_id=context_id,
+                    approval_checksum=payload.approval_checksum,
+                    approval_note=payload.approval_note,
+                    approval_scope=payload.approval_scope,
+                )
+                prepared_context = service.get_apply_context(context_id)
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "REPAIR_APPROVAL_RECORD_FAILED",
+                    str(exc),
+                ) from exc
+        return {
+            "approval": service.approval_to_dict(approval),
+            "repair_review_context": service.apply_context_to_dict(prepared_context) if prepared_context is not None else None,
+        }
+
     @app.post("/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/approve")
     def approve_repair_proposal(
         command_id: str,
@@ -2833,56 +2929,11 @@ def create_app(
         Fails closed unless a latest accepted reviewer critique matches
         both current checksums.
         """
-        with unit_of_work_factory() as uow:
-            reviewer_service = V2ReviewerService(
-                reviewer_repo=uow.v2_reviewer,
-            )
-            service = V2RepairFlowService(
-                repair_repo=uow.v2_repairs,
-                reviewer_service=reviewer_service,
-                job_repo=uow.v2_jobs,
-                setup_repo=uow.v2_setups,
-                command_repo=uow.v2_commands,
-            )
-            try:
-                proposal_record = uow.v2_repairs.get_proposal(proposal_id)
-                if proposal_record is None:
-                    raise ValueError(f"Proposal {proposal_id!r} not found")
-                proposal = service._record_to_proposal(proposal_record)
-                if proposal_record.status == "rejected":
-                    raise ValueError(f"Proposal {proposal_id!r} is rejected")
-                if proposal_record.status == "draft":
-                    proposal = service.approve_proposal(
-                        proposal_id=proposal_id,
-                        approval_checksum=payload.approval_checksum,
-                        proposal_checksum=payload.proposal_checksum,
-                        context_pack_checksum=payload.context_pack_checksum,
-                    )
-                repair_action = service.apply_approved_proposal(
-                    proposal_id=proposal_id,
-                    command_id=command_id,
-                )
-                # Look up the reviewer critique_id for the response
-                accepted = reviewer_service.check_reviewer_gate(
-                    proposal_id=proposal_id,
-                    proposal_checksum=payload.proposal_checksum,
-                    context_pack_checksum=payload.context_pack_checksum,
-                )
-                reviewer_critique_id = accepted.critique_id if accepted else None
-                reviewer_decision = accepted.decision if accepted else None
-            except ValueError as exc:
-                raise _error(
-                    status.HTTP_400_BAD_REQUEST,
-                    "REPAIR_APPROVAL_FAILED",
-                    str(exc),
-                ) from exc
-        return service.proposal_to_dict(
-            proposal,
-            reviewer_critique_id=reviewer_critique_id,
-            reviewer_decision=reviewer_decision,
-        ) | {
-            "repair_action": service.action_to_dict(repair_action),
-        }
+        raise _error(
+            status.HTTP_409_CONFLICT,
+            "REPAIR_APPROVE_APPLY_DISABLED",
+            "Combined approve+apply route is disabled. Prepare apply context and record approval-only first.",
+        )
 
     # ------------------------------------------------------------------
     # F07: Reviewer critique endpoints

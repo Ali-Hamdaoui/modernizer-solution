@@ -1381,75 +1381,55 @@ class TestRepairAPI:
             reasoning="Test critique — approved.",
             missing_evidence=(),
             unsafe_assumptions=(),
+            model_invocation_id="reviewer-invoke-1",
         )
 
-        monkeypatch = pytest.MonkeyPatch()
-        monkeypatch.setattr(
-            v2_repair_flow,
-            "apply_patch_to_sandbox",
-            lambda **kwargs: _fake_apply_result(Path(kwargs["run_dir"])),
-        )
-        monkeypatch.setattr(
-            v2_repair_flow,
-            "run_validation_after_patch",
-            lambda **kwargs: _fake_validation(True),
-        )
+        critique_id = reviewer_service.check_reviewer_gate(
+            proposal_id=proposal_id,
+            proposal_checksum="pc-test",
+            context_pack_checksum="cp-test",
+        ).critique_id
 
         response = client.post(
-            f"/v1/v2/commands/cmd-2/repair/proposal/{proposal_id}/approve",
+            f"/v1/v2/commands/cmd-2/repair/proposal/{proposal_id}/prepare-apply-context",
             json={
-                "approval_checksum": "chk-abc",
                 "proposal_checksum": "pc-test",
                 "context_pack_checksum": "cp-test",
+                "reviewer_critique_id": critique_id,
+                "proposer_invocation_id": "proposer-invoke-1",
+                "reviewer_invocation_id": "reviewer-invoke-1",
+                "patch_preview": _h2_patch(),
+                "target_path": "pom.xml",
+                "sandbox_reference": str(run_dir / "sandbox"),
+                "sandbox_checksum": "sandbox-chk",
+                "legacy_checksum": "legacy-chk",
+                "evidence_refs": {"patch_draft": str(run_dir / "repairs" / "patch_draft_1.json")},
             },
             headers=_mutation_headers(),
         )
         assert response.status_code == 200, response.text
         body = response.json()
-        assert body["status"] == "approved"
-        assert body["approval_checksum"] == "chk-abc"
-        assert body["proposal_checksum"]
-        # Reviewer metadata should be in response
-        assert "reviewer_critique_id" in body
-        assert body["repair_action"]["status"] == "applied"
-        assert body["repair_action"]["human_approved"] is True
-        assert body["repair_action"]["sandbox_only"] is True
-        assert body["repair_action"]["source_mutated"] is False
-        assert body["repair_action"]["sandbox_mutated"] is True
-        assert body["repair_action"]["stage_resumed"] is False
-        assert body["repair_action"]["backend_runner_invoked"] is False
-        assert body["repair_action"]["llm_invoked"] is False
-        assert body["repair_action"]["verification_status"] == "passed"
-        assert body["repair_action"]["verification_build_status"] == "BUILD_PASSED_IN_SANDBOX"
-        assert body["repair_action"]["verification_test_status"] == "TEST_PASSED"
-        assert body["repair_action"]["verification_h2_status"] == "H2_STARTUP_PASSED"
-        assert body["repair_action"]["verification_artifact_refs"] == {}
-        assert body["repair_action"]["verification_failure_classification_ref"] == ""
+        assert body["repair_review_context"]["proposal_id"] == proposal_id
+        assert body["repair_review_context"]["reviewer_critique_id"] == critique_id
+        assert body["repair_review_context"]["approval_eligible"] is True
+        assert body["repair_review_context"]["sandbox_only"] is True
         assert (run_dir / "repairs" / "patch_draft_1.json").is_file()
 
+        context_id = body["repair_review_context"]["context_id"]
         repeat_response = client.post(
-            f"/v1/v2/commands/cmd-2/repair/proposal/{proposal_id}/approve",
+            f"/v1/v2/repair-review/{context_id}/approve",
             json={
                 "approval_checksum": "chk-abc",
-                "proposal_checksum": "pc-test",
-                "context_pack_checksum": "cp-test",
+                "approval_note": "Human approval recorded for sandbox-only apply later.",
+                "approval_scope": "sandbox_only",
             },
             headers=_mutation_headers(),
         )
         assert repeat_response.status_code == 200, repeat_response.text
         repeat_body = repeat_response.json()
-        assert repeat_body["repair_action"]["status"] == "idempotent"
-        assert repeat_body["repair_action"]["sandbox_only"] is True
-        assert repeat_body["repair_action"]["source_mutated"] is False
-        assert repeat_body["repair_action"]["stage_resumed"] is False
-        assert repeat_body["repair_action"]["backend_runner_invoked"] is False
-        assert repeat_body["repair_action"]["llm_invoked"] is False
-        assert repeat_body["repair_action"]["approval_bypass"] is False
-        assert repeat_body["repair_action"]["verification_status"] == "passed"
-        assert repeat_body["repair_action"]["verification_build_status"] == "BUILD_PASSED_IN_SANDBOX"
-        assert repeat_body["repair_action"]["verification_test_status"] == "TEST_PASSED"
-        assert repeat_body["repair_action"]["verification_h2_status"] == "H2_STARTUP_PASSED"
-        monkeypatch.undo()
+        assert repeat_body["approval"]["approval_status"] == "recorded"
+        assert repeat_body["approval"]["approval_scope"] == "sandbox_only"
+        assert repeat_body["approval"]["sandbox_only"] is True
 
     def test_governed_repair_workflow_dry_run_end_to_end(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)
@@ -1579,76 +1559,51 @@ class TestRepairAPI:
             unsafe_assumptions=(),
         )
 
-        monkeypatch = pytest.MonkeyPatch()
-        monkeypatch.setattr(
-            v2_repair_flow,
-            "apply_patch_to_sandbox",
-            lambda **kwargs: _fake_apply_result(Path(kwargs["run_dir"])),
-        )
-        monkeypatch.setattr(
-            v2_repair_flow,
-            "run_validation_after_patch",
-            lambda **kwargs: _fake_validation(
-                True,
-                artifact_refs={
+        approve_response = client.post(
+            f"/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/prepare-apply-context",
+            json={
+                "proposal_checksum": "pc-test",
+                "context_pack_checksum": "cp-test",
+                "reviewer_critique_id": reviewer_service.check_reviewer_gate(
+                    proposal_id=proposal_id,
+                    proposal_checksum="pc-test",
+                    context_pack_checksum="cp-test",
+                ).critique_id,
+                "proposer_invocation_id": "proposer-invoke-1",
+                "reviewer_invocation_id": "reviewer-invoke-1",
+                "patch_preview": _h2_patch(),
+                "target_path": "pom.xml",
+                "sandbox_reference": str(run_dir / "sandbox"),
+                "sandbox_checksum": "sandbox-chk",
+                "legacy_checksum": "legacy-chk",
+                "evidence_refs": {
                     "verification_report": str(run_dir / "repairs" / "verification.json"),
                     "test_log": str(run_dir / "repairs" / "test.log"),
                 },
-            ),
-        )
-
-        approve_response = client.post(
-            f"/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/approve",
-            json={
-                "approval_checksum": "chk-end-to-end",
-                "proposal_checksum": approval_proposal_checksum,
-                "context_pack_checksum": review_context_pack_checksum,
             },
             headers=_mutation_headers(),
         )
         assert approve_response.status_code == 200, approve_response.text
         approve_body = approve_response.json()
-        assert approve_body["status"] == "approved"
-        assert approve_body["approval_checksum"] == "chk-end-to-end"
-        assert approve_body["proposal_checksum"]
-        assert approve_body["repair_action"]["status"] == "applied"
-        assert approve_body["repair_action"]["human_approved"] is True
-        assert approve_body["repair_action"]["sandbox_only"] is True
-        assert approve_body["repair_action"]["source_mutated"] is False
-        assert approve_body["repair_action"]["sandbox_mutated"] is True
-        assert approve_body["repair_action"]["stage_resumed"] is False
-        assert approve_body["repair_action"]["backend_runner_invoked"] is False
-        assert approve_body["repair_action"]["llm_invoked"] is False
-        assert approve_body["repair_action"]["verification_status"] == "passed"
-        assert approve_body["repair_action"]["verification_build_status"] == "BUILD_PASSED_IN_SANDBOX"
-        assert approve_body["repair_action"]["verification_test_status"] == "TEST_PASSED"
-        assert approve_body["repair_action"]["verification_h2_status"] == "H2_STARTUP_PASSED"
-        assert approve_body["repair_action"]["verification_artifact_refs"] == {
-            "verification_report": str(run_dir / "repairs" / "verification.json"),
-            "test_log": str(run_dir / "repairs" / "test.log"),
-        }
-        assert approve_body["repair_action"]["verification_failure_classification_ref"] == ""
+        assert approve_body["repair_review_context"]["proposal_id"] == proposal_id
+        assert approve_body["repair_review_context"]["approval_eligible"] is True
+        assert approve_body["repair_review_context"]["sandbox_only"] is True
         assert (run_dir / "repairs" / "patch_draft_1.json").is_file()
 
+        context_id = approve_body["repair_review_context"]["context_id"]
         repeat_response = client.post(
-            f"/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/approve",
+            f"/v1/v2/repair-review/{context_id}/approve",
             json={
                 "approval_checksum": "chk-end-to-end",
-                "proposal_checksum": approval_proposal_checksum,
-                "context_pack_checksum": review_context_pack_checksum,
+                "approval_note": "Human approval recorded for sandbox-only apply later.",
+                "approval_scope": "sandbox_only",
             },
             headers=_mutation_headers(),
         )
         assert repeat_response.status_code == 200, repeat_response.text
         repeat_body = repeat_response.json()
-        assert repeat_body["repair_action"]["status"] == "idempotent"
-        assert repeat_body["repair_action"]["verification_status"] == "passed"
-        assert repeat_body["repair_action"]["verification_artifact_refs"] == {
-            "verification_report": str(run_dir / "repairs" / "verification.json"),
-            "test_log": str(run_dir / "repairs" / "test.log"),
-        }
-        assert repeat_body["repair_action"]["verification_failure_classification_ref"] == ""
-        monkeypatch.undo()
+        assert repeat_body["approval"]["approval_status"] == "recorded"
+        assert repeat_body["approval"]["approval_scope"] == "sandbox_only"
 
     def test_governed_repair_workflow_dry_run_with_real_local_project_fixture(
         self,
@@ -1823,87 +1778,64 @@ class TestRepairAPI:
             reasoning="Dry run approved for copied local fixture.",
             missing_evidence=(),
             unsafe_assumptions=(),
+            model_invocation_id="reviewer-invoke-1",
         )
 
-        monkeypatch = pytest.MonkeyPatch()
-        monkeypatch.setattr(
-            v2_repair_flow,
-            "apply_patch_to_sandbox",
-            lambda **kwargs: _apply_real_fixture_patch(kwargs, expected_file_before=legacy_file_before),
-        )
-        monkeypatch.setattr(
-            v2_repair_flow,
-            "run_validation_after_patch",
-            lambda **kwargs: _fake_validation_with_artifacts(
-                True,
-                run_dir=Path(kwargs["run_dir"]),
-                artifact_refs={
+        approve_response = client.post(
+            f"/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/prepare-apply-context",
+            json={
+                "proposal_checksum": proposal_checksum,
+                "context_pack_checksum": review_context_pack_checksum,
+                "reviewer_critique_id": reviewer_service.check_reviewer_gate(
+                    proposal_id=proposal_id,
+                    proposal_checksum=proposal_checksum,
+                    context_pack_checksum=review_context_pack_checksum,
+                ).critique_id,
+                "proposer_invocation_id": "proposer-invoke-1",
+                "reviewer_invocation_id": "reviewer-invoke-1",
+                "patch_preview": _real_java_import_patch(legacy_file_before, rel_path=target_rel_path),
+                "target_path": target_rel_path,
+                "sandbox_reference": str(sandbox_root),
+                "sandbox_checksum": "sandbox-chk",
+                "legacy_checksum": "legacy-chk",
+                "evidence_refs": {
                     "verification_report": str(run_dir / "repairs" / "verification.json"),
                     "test_log": str(run_dir / "repairs" / "test.log"),
                     "h2_log": str(run_dir / "repairs" / "h2.log"),
                 },
-            ),
-        )
-
-        approve_response = client.post(
-            f"/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/approve",
-            json={
-                "approval_checksum": "chk-real",
-                "proposal_checksum": proposal_checksum,
-                "context_pack_checksum": review_context_pack_checksum,
             },
             headers=_mutation_headers(),
         )
         assert approve_response.status_code == 200, approve_response.text
         approve_body = approve_response.json()
-        assert approve_body["repair_action"]["status"] == "applied"
-        assert approve_body["repair_action"]["human_approved"] is True
-        assert approve_body["repair_action"]["sandbox_only"] is True
-        assert approve_body["repair_action"]["source_mutated"] is False
-        assert approve_body["repair_action"]["sandbox_mutated"] is True
-        assert approve_body["repair_action"]["stage_resumed"] is False
-        assert approve_body["repair_action"]["backend_runner_invoked"] is False
-        assert approve_body["repair_action"]["llm_invoked"] is False
-        assert approve_body["repair_action"]["verification_status"] == "passed"
-        assert approve_body["repair_action"]["verification_build_status"] == "BUILD_PASSED_IN_SANDBOX"
-        assert approve_body["repair_action"]["verification_test_status"] == "TEST_PASSED"
-        assert approve_body["repair_action"]["verification_h2_status"] == "H2_STARTUP_PASSED"
-        assert approve_body["repair_action"]["verification_failure_classification_ref"] == ""
-        verification_artifact_refs = approve_body["repair_action"]["verification_artifact_refs"]
-        assert verification_artifact_refs == {
-            "verification_report": str(run_dir / "repairs" / "verification.json"),
-            "test_log": str(run_dir / "repairs" / "test.log"),
-            "h2_log": str(run_dir / "repairs" / "h2.log"),
-        }
-        for artifact_ref in verification_artifact_refs.values():
-            assert Path(artifact_ref).is_file()
+        assert approve_body["repair_review_context"]["proposal_id"] == proposal_id
+        assert approve_body["repair_review_context"]["approval_eligible"] is True
+        verification_artifact_refs = approve_body["repair_review_context"]["evidence_refs"]
         assert legacy_snapshot_before == _snapshot_directory(legacy_root)
         assert source_fixture_snapshot_before == _snapshot_directory(source_fixture)
         assert legacy_file_before == (legacy_root / target_rel_path).read_text(encoding="utf-8")
         assert source_file_before == (source_fixture / target_rel_path).read_text(encoding="utf-8")
-        assert sandbox_snapshot_before != _snapshot_directory(sandbox_root)
-        assert sandbox_snapshot_before[target_rel_path] != _snapshot_directory(sandbox_root)[target_rel_path]
+        assert sandbox_snapshot_before == _snapshot_directory(sandbox_root)
 
+        context_id = approve_body["repair_review_context"]["context_id"]
         repeat_response = client.post(
-            f"/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/approve",
+            f"/v1/v2/repair-review/{context_id}/approve",
             json={
                 "approval_checksum": "chk-real",
-                "proposal_checksum": proposal_checksum,
-                "context_pack_checksum": review_context_pack_checksum,
+                "approval_note": "Human approval recorded for sandbox-only apply later.",
+                "approval_scope": "sandbox_only",
             },
             headers=_mutation_headers(),
         )
         assert repeat_response.status_code == 200, repeat_response.text
         repeat_body = repeat_response.json()
-        assert repeat_body["repair_action"]["status"] == "idempotent"
-        assert repeat_body["repair_action"]["verification_status"] == "passed"
-        assert repeat_body["repair_action"]["verification_artifact_refs"] == verification_artifact_refs
-        assert repeat_body["repair_action"]["verification_failure_classification_ref"] == ""
-        assert sandbox_snapshot_before != _snapshot_directory(sandbox_root)
+        assert repeat_body["approval"]["approval_status"] == "recorded"
+        assert repeat_body["approval"]["approval_scope"] == "sandbox_only"
+        assert repeat_body["repair_review_context"]["evidence_refs"] == verification_artifact_refs
+        assert sandbox_snapshot_before == _snapshot_directory(sandbox_root)
         assert legacy_snapshot_before == _snapshot_directory(legacy_root)
-        monkeypatch.undo()
 
-    def test_approve_missing_proposal(self, tmp_path: Path) -> None:
+    def test_combined_approve_apply_route_is_blocked(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)
         response = client.post(
             "/v1/v2/commands/cmd-3/repair/proposal/nonexistent/approve",
@@ -1914,7 +1846,8 @@ class TestRepairAPI:
             },
             headers=_mutation_headers(),
         )
-        assert response.status_code == 400
+        assert response.status_code == 409
+        assert "REPAIR_APPROVE_APPLY_DISABLED" in response.text
 
     def test_proposal_persistence(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)

@@ -26,6 +26,12 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository i
     SqliteV2SetupRepository,
     V2MigrationSetupRecord,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
+    SqliteV2RepairRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_reviewer_repository import (
+    SqliteV2ReviewerRepository,
+)
 
 
 def test_create_proposal() -> None:
@@ -541,6 +547,203 @@ def test_apply_approved_proposal_is_idempotent(
     assert len(calls) == 1
 
 
+def test_prepare_apply_context_persists_repair_review_context(tmp_path: Path) -> None:
+    conn, service = _repair_repo_service(tmp_path)
+    proposal = _proposal(service)
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        decision="accept",
+        reasoning="Looks good",
+        model_invocation_id="reviewer-invoke-1",
+    )
+
+    context = service.prepare_apply_context(
+        proposal_id=proposal.proposal_id,
+        command_id=proposal.command_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        reviewer_critique_id=critique.critique_id,
+        proposer_invocation_id="proposer-invoke-1",
+        reviewer_invocation_id="reviewer-invoke-1",
+        patch_preview=_h2_patch(),
+        target_path="pom.xml",
+        sandbox_reference="sandbox://run-1",
+        sandbox_checksum="sandbox-chk",
+        legacy_checksum="legacy-chk",
+        evidence_refs={"build_error": "artifact://build-error.json"},
+    )
+
+    assert context.approval_eligible is True
+    assert context.approval_scope == "sandbox_only"
+    assert context.reviewer_decision == "accept"
+    loaded = service.get_apply_context(context.context_id)
+    assert loaded is not None
+    assert loaded.context_id == context.context_id
+    assert loaded.sandbox_reference == "sandbox://run-1"
+    assert loaded.legacy_checksum == "legacy-chk"
+    assert json.loads(loaded.evidence_refs_json) == {"build_error": "artifact://build-error.json"}
+
+
+def test_prepare_apply_context_fails_closed_without_accept(tmp_path: Path) -> None:
+    conn, service = _repair_repo_service(tmp_path)
+    proposal = _proposal(service)
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        decision="revise",
+        reasoning="Need more evidence",
+    )
+
+    with pytest.raises(ValueError, match="reviewer decision is accept"):
+        service.prepare_apply_context(
+            proposal_id=proposal.proposal_id,
+            command_id=proposal.command_id,
+            proposal_checksum="pc-test",
+            context_pack_checksum="cp-test",
+            reviewer_critique_id=critique.critique_id,
+            proposer_invocation_id="proposer-invoke-1",
+            reviewer_invocation_id="reviewer-invoke-1",
+            patch_preview=_h2_patch(),
+            target_path="pom.xml",
+            sandbox_reference="sandbox://run-1",
+            sandbox_checksum="sandbox-chk",
+            legacy_checksum="legacy-chk",
+            evidence_refs={"build_error": "artifact://build-error.json"},
+        )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "kwargs", "message"),
+    [
+        ("sandbox_reference", {"sandbox_reference": ""}, "sandbox reference"),
+        ("patch_preview", {"patch_preview": ""}, "patch preview"),
+        ("legacy_checksum", {"legacy_checksum": ""}, "legacy checksum"),
+    ],
+)
+def test_prepare_apply_context_requires_complete_binding(
+    tmp_path: Path,
+    field_name: str,
+    kwargs: dict[str, str],
+    message: str,
+) -> None:
+    conn, service = _repair_repo_service(tmp_path)
+    proposal = _proposal(service)
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        decision="accept",
+        reasoning="Looks good",
+    )
+    payload = {
+        "proposal_id": proposal.proposal_id,
+        "command_id": proposal.command_id,
+        "proposal_checksum": "pc-test",
+        "context_pack_checksum": "cp-test",
+        "reviewer_critique_id": critique.critique_id,
+        "proposer_invocation_id": "proposer-invoke-1",
+        "reviewer_invocation_id": "reviewer-invoke-1",
+        "patch_preview": _h2_patch(),
+        "target_path": "pom.xml",
+        "sandbox_reference": "sandbox://run-1",
+        "sandbox_checksum": "sandbox-chk",
+        "legacy_checksum": "legacy-chk",
+        "evidence_refs": {"build_error": "artifact://build-error.json"},
+    }
+    payload.update(kwargs)
+
+    with pytest.raises(ValueError, match=message):
+        service.prepare_apply_context(**payload)
+
+
+def test_record_approval_only_persists_without_apply(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn, service = _repair_repo_service(tmp_path)
+    proposal = _proposal(service)
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        decision="accept",
+        reasoning="Looks good",
+        model_invocation_id="reviewer-invoke-1",
+    )
+    context = service.prepare_apply_context(
+        proposal_id=proposal.proposal_id,
+        command_id=proposal.command_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        reviewer_critique_id=critique.critique_id,
+        proposer_invocation_id="proposer-invoke-1",
+        reviewer_invocation_id="reviewer-invoke-1",
+        patch_preview=_h2_patch(),
+        target_path="pom.xml",
+        sandbox_reference="sandbox://run-1",
+        sandbox_checksum="sandbox-chk",
+        legacy_checksum="legacy-chk",
+        evidence_refs={"build_error": "artifact://build-error.json"},
+    )
+    apply_called = False
+
+    def _no_apply(**kwargs):
+        nonlocal apply_called
+        apply_called = True
+        raise AssertionError("apply should not run")
+
+    monkeypatch.setattr(v2_repair_flow, "apply_patch_to_sandbox", _no_apply)
+
+    approval = service.record_approval_only(
+        context_id=context.context_id,
+        approval_checksum="approval-chk",
+        approval_note="Human approves sandbox-only apply later.",
+        approval_scope="sandbox_only",
+    )
+
+    assert approval.approval_status == "recorded"
+    assert approval.approval_scope == "sandbox_only"
+    assert apply_called is False
+    loaded = service.get_latest_approval(context.context_id)
+    assert loaded is not None
+    assert loaded.approval_id == approval.approval_id
+
+
+def test_record_approval_only_requires_sandbox_only_scope(tmp_path: Path) -> None:
+    conn, service = _repair_repo_service(tmp_path)
+    proposal = _proposal(service)
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        decision="accept",
+        reasoning="Looks good",
+    )
+    context = service.prepare_apply_context(
+        proposal_id=proposal.proposal_id,
+        command_id=proposal.command_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        reviewer_critique_id=critique.critique_id,
+        proposer_invocation_id="proposer-invoke-1",
+        reviewer_invocation_id="reviewer-invoke-1",
+        patch_preview=_h2_patch(),
+        target_path="pom.xml",
+        sandbox_reference="sandbox://run-1",
+        sandbox_checksum="sandbox-chk",
+        legacy_checksum="legacy-chk",
+        evidence_refs={"build_error": "artifact://build-error.json"},
+    )
+
+    with pytest.raises(ValueError, match="sandbox_only"):
+        service.record_approval_only(
+            context_id=context.context_id,
+            approval_checksum="approval-chk",
+            approval_note="Human approves everything.",
+            approval_scope="legacy_source",
+        )
+
+
 def test_cannot_approve_twice() -> None:
     service = V2RepairFlowService()
     proposal = _proposal(service)
@@ -579,6 +782,26 @@ def _proposal(
         patch_summary="Add dependency",
         affected_paths=affected_paths,
     )
+
+
+def _repair_repo_service(tmp_path: Path) -> tuple[sqlite3.Connection, V2RepairFlowService]:
+    conn = sqlite3.connect(
+        str(tmp_path / "repair-context.sqlite3"),
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+
+    apply_pending_migrations(conn)
+    repair_repo = SqliteV2RepairRepository(conn)
+    reviewer_repo = SqliteV2ReviewerRepository(conn)
+    service = V2RepairFlowService(
+        repair_repo=repair_repo,
+        reviewer_service=v2_repair_flow.V2ReviewerService(reviewer_repo=reviewer_repo),
+    )
+    return conn, service
 
 
 def _approve(service: V2RepairFlowService, proposal_id: str):

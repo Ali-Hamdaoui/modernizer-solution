@@ -86,6 +86,45 @@ class SandboxAction:
     verification_failure_classification_ref: str = ""
 
 
+@dataclass(frozen=True)
+class RepairApplyContext:
+    context_id: str
+    proposal_id: str
+    command_id: str
+    reviewer_critique_id: str
+    proposer_invocation_id: str
+    reviewer_invocation_id: str
+    reviewer_decision: str
+    proposal_summary: str
+    patch_preview: str
+    patch_preview_checksum: str
+    target_path: str
+    sandbox_reference: str
+    sandbox_checksum: str
+    legacy_checksum: str
+    context_pack_checksum: str
+    proposal_checksum: str
+    evidence_refs_json: str
+    approval_eligible: bool
+    blockers_json: str
+    approval_scope: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class RepairApprovalRecord:
+    approval_id: str
+    context_id: str
+    proposal_id: str
+    approval_status: str
+    approval_scope: str
+    approval_note: str
+    approval_checksum: str
+    sandbox_checksum: str
+    legacy_checksum: str
+    created_at: str
+
+
 class V2RepairFlowService:
     """Convert failed command evidence into repair proposals and actions.
 
@@ -320,6 +359,150 @@ class V2RepairFlowService:
         if self._repo is not None:
             self._repo.update_proposal_status(proposal_id, "approved", approval_checksum)
         return updated
+
+    def prepare_apply_context(
+        self,
+        *,
+        proposal_id: str,
+        command_id: str,
+        proposal_checksum: str,
+        context_pack_checksum: str,
+        reviewer_critique_id: str,
+        proposer_invocation_id: str,
+        reviewer_invocation_id: str,
+        patch_preview: str,
+        target_path: str,
+        sandbox_reference: str,
+        sandbox_checksum: str,
+        legacy_checksum: str,
+        evidence_refs: dict[str, str],
+        approval_scope: str = "sandbox_only",
+    ) -> RepairApplyContext:
+        proposal = self._get_proposal_or_raise(proposal_id)
+        if proposal.command_id != command_id:
+            raise ValueError(
+                f"Proposal {proposal_id!r} is bound to command {proposal.command_id!r}, not {command_id!r}"
+            )
+        if approval_scope != "sandbox_only":
+            raise ValueError("Repair apply context must be scoped to sandbox_only")
+        if not patch_preview.strip():
+            raise ValueError("Repair apply context requires a patch preview")
+        if not target_path.strip():
+            raise ValueError("Repair apply context requires a target path")
+        if not sandbox_reference.strip():
+            raise ValueError("Repair apply context requires a sandbox reference")
+        if not sandbox_checksum.strip():
+            raise ValueError("Repair apply context requires a sandbox checksum")
+        if not legacy_checksum.strip():
+            raise ValueError("Repair apply context requires a legacy checksum")
+        if not evidence_refs:
+            raise ValueError("Repair apply context requires evidence references")
+
+        critique = self._reviewer.get_critique(reviewer_critique_id)
+        if critique is None:
+            raise ValueError(f"Reviewer critique {reviewer_critique_id!r} not found")
+        if critique.proposal_id != proposal_id:
+            raise ValueError("Reviewer critique is not bound to the requested proposal")
+        if critique.decision != "accept":
+            raise ValueError("Repair apply context is blocked unless reviewer decision is accept")
+        if critique.proposal_checksum != proposal_checksum:
+            raise ValueError("Repair apply context requires a matching proposal checksum")
+        if critique.context_pack_checksum != context_pack_checksum:
+            raise ValueError("Repair apply context requires a matching context checksum")
+
+        patch_preview_checksum = sha256_canonical_json(
+            {
+                "proposal_id": proposal_id,
+                "patch_preview": patch_preview,
+                "target_path": target_path,
+            }
+        )
+        latest = self._latest_context_for_proposal(proposal_id)
+        if latest is not None:
+            if (
+                latest.patch_preview_checksum == patch_preview_checksum
+                and latest.sandbox_checksum == sandbox_checksum
+                and latest.legacy_checksum == legacy_checksum
+                and latest.context_pack_checksum == context_pack_checksum
+            ):
+                return latest
+
+        context = RepairApplyContext(
+            context_id=uuid4().hex,
+            proposal_id=proposal_id,
+            command_id=command_id,
+            reviewer_critique_id=reviewer_critique_id,
+            proposer_invocation_id=proposer_invocation_id.strip(),
+            reviewer_invocation_id=reviewer_invocation_id.strip(),
+            reviewer_decision=critique.decision,
+            proposal_summary=proposal.patch_summary,
+            patch_preview=patch_preview,
+            patch_preview_checksum=patch_preview_checksum,
+            target_path=target_path,
+            sandbox_reference=sandbox_reference,
+            sandbox_checksum=sandbox_checksum,
+            legacy_checksum=legacy_checksum,
+            context_pack_checksum=context_pack_checksum,
+            proposal_checksum=proposal_checksum,
+            evidence_refs_json=json.dumps(evidence_refs, separators=(",", ":"), sort_keys=True),
+            approval_eligible=True,
+            blockers_json="[]",
+            approval_scope=approval_scope,
+            created_at=utc_now_text(),
+        )
+        self._save_context(context)
+        return context
+
+    def record_approval_only(
+        self,
+        *,
+        context_id: str,
+        approval_checksum: str,
+        approval_note: str,
+        approval_scope: str,
+    ) -> RepairApprovalRecord:
+        context = self.get_apply_context(context_id)
+        if context is None:
+            raise ValueError(f"Repair apply context {context_id!r} not found")
+        if context.reviewer_decision != "accept":
+            raise ValueError("Human approval is blocked unless reviewer decision is accept")
+        if not context.approval_eligible:
+            raise ValueError("Human approval is blocked until repair apply context is eligible")
+        if approval_scope != "sandbox_only":
+            raise ValueError("Human approval scope must be sandbox_only")
+        if not approval_note.strip():
+            raise ValueError("Human approval note is required")
+        if not approval_checksum.strip():
+            raise ValueError("Human approval checksum is required")
+        if not context.patch_preview.strip():
+            raise ValueError("Human approval requires a prepared patch preview")
+        if not context.sandbox_checksum.strip() or not context.legacy_checksum.strip():
+            raise ValueError("Human approval requires checksum guards")
+
+        existing = self._latest_approval_for_context(context_id)
+        if existing is not None:
+            if (
+                existing.approval_checksum == approval_checksum
+                and existing.approval_note == approval_note.strip()
+                and existing.approval_scope == approval_scope
+            ):
+                return existing
+            raise ValueError(f"Repair apply context {context_id!r} is already approved")
+
+        approval = RepairApprovalRecord(
+            approval_id=uuid4().hex,
+            context_id=context_id,
+            proposal_id=context.proposal_id,
+            approval_status="recorded",
+            approval_scope=approval_scope,
+            approval_note=approval_note.strip(),
+            approval_checksum=approval_checksum.strip(),
+            sandbox_checksum=context.sandbox_checksum,
+            legacy_checksum=context.legacy_checksum,
+            created_at=utc_now_text(),
+        )
+        self._save_approval(context, approval)
+        return approval
 
     def apply_patch(
         self,
@@ -863,6 +1046,37 @@ class V2RepairFlowService:
                 )
         return None
 
+    def get_apply_context(self, context_id: str) -> RepairApplyContext | None:
+        if self._repo is None:
+            return None
+        record = self._repo.get_action(context_id)
+        if record is None or record.status != "prepared_apply_context":
+            return None
+        return self._record_to_apply_context(record)
+
+    def get_latest_approval(self, context_id: str) -> RepairApprovalRecord | None:
+        return self._latest_approval_for_context(context_id)
+
+    def _latest_context_for_proposal(self, proposal_id: str) -> RepairApplyContext | None:
+        if self._repo is None:
+            return None
+        for record in self._repo.list_actions_by_proposal(proposal_id):
+            if record.status == "prepared_apply_context":
+                return self._record_to_apply_context(record)
+        return None
+
+    def _latest_approval_for_context(self, context_id: str) -> RepairApprovalRecord | None:
+        context = self.get_apply_context(context_id)
+        if context is None or self._repo is None:
+            return None
+        for record in self._repo.list_actions_by_proposal(context.proposal_id):
+            if record.status != "approval_recorded":
+                continue
+            approval = self._record_to_approval(record)
+            if approval.context_id == context_id:
+                return approval
+        return None
+
     def _idempotent_applied_action(
         self,
         proposal_id: str,
@@ -914,6 +1128,84 @@ class V2RepairFlowService:
             self._repo.update_proposal_status(proposal.proposal_id, "applied")
         self._proposals[proposal.proposal_id] = updated
 
+    def _save_context(self, context: RepairApplyContext) -> None:
+        if self._repo is None:
+            raise ValueError("Repair apply context persistence requires a repair repository")
+        self._repo.save_action(
+            V2SandboxActionRecord(
+                action_id=context.context_id,
+                proposal_id=context.proposal_id,
+                target_path=context.target_path,
+                patch_content=context.patch_preview,
+                status="prepared_apply_context",
+                result_summary=json.dumps(
+                    {
+                        "kind": "repair_apply_context_v1",
+                        "context_id": context.context_id,
+                        "command_id": context.command_id,
+                        "reviewer_critique_id": context.reviewer_critique_id,
+                        "proposer_invocation_id": context.proposer_invocation_id,
+                        "reviewer_invocation_id": context.reviewer_invocation_id,
+                        "reviewer_decision": context.reviewer_decision,
+                        "proposal_summary": context.proposal_summary,
+                        "patch_preview_checksum": context.patch_preview_checksum,
+                        "sandbox_reference": context.sandbox_reference,
+                        "sandbox_checksum": context.sandbox_checksum,
+                        "legacy_checksum": context.legacy_checksum,
+                        "context_pack_checksum": context.context_pack_checksum,
+                        "proposal_checksum": context.proposal_checksum,
+                        "evidence_refs": json.loads(context.evidence_refs_json),
+                        "approval_eligible": context.approval_eligible,
+                        "blockers": json.loads(context.blockers_json),
+                        "approval_scope": context.approval_scope,
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                created_at=context.created_at,
+            )
+        )
+
+    def _save_approval(self, context: RepairApplyContext, approval: RepairApprovalRecord) -> None:
+        if self._repo is None:
+            raise ValueError("Repair approval persistence requires a repair repository")
+        self._repo.save_action(
+            V2SandboxActionRecord(
+                action_id=approval.approval_id,
+                proposal_id=approval.proposal_id,
+                target_path=context.target_path,
+                patch_content="",
+                status="approval_recorded",
+                result_summary=json.dumps(
+                    {
+                        "kind": "repair_approval_record_v1",
+                        "approval_id": approval.approval_id,
+                        "context_id": approval.context_id,
+                        "approval_status": approval.approval_status,
+                        "approval_scope": approval.approval_scope,
+                        "approval_note": approval.approval_note,
+                        "approval_checksum": approval.approval_checksum,
+                        "sandbox_checksum": approval.sandbox_checksum,
+                        "legacy_checksum": approval.legacy_checksum,
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                created_at=approval.created_at,
+            )
+        )
+
+    def _get_proposal_or_raise(self, proposal_id: str) -> RepairProposal:
+        proposal = self._proposals.get(proposal_id)
+        if proposal is None and self._repo is not None:
+            record = self._repo.get_proposal(proposal_id)
+            if record is not None:
+                proposal = self._record_to_proposal(record)
+                self._proposals[proposal_id] = proposal
+        if proposal is None:
+            raise ValueError(f"Proposal {proposal_id!r} not found")
+        return proposal
+
     def _record_to_proposal(self, record: V2RepairProposalRecord) -> RepairProposal:
         affected_paths = tuple(json.loads(record.affected_paths_json))
         return RepairProposal(
@@ -944,6 +1236,49 @@ class V2RepairFlowService:
             revision_number=record.revision_number,
             context_pack_checksum=record.context_pack_checksum,
             allowed_scope=record.allowed_scope,
+        )
+
+    def _record_to_apply_context(self, record: V2SandboxActionRecord) -> RepairApplyContext:
+        payload = json.loads(record.result_summary or "{}")
+        evidence_refs = payload.get("evidence_refs") or {}
+        blockers = payload.get("blockers") or []
+        return RepairApplyContext(
+            context_id=record.action_id,
+            proposal_id=record.proposal_id,
+            command_id=str(payload.get("command_id") or ""),
+            reviewer_critique_id=str(payload.get("reviewer_critique_id") or ""),
+            proposer_invocation_id=str(payload.get("proposer_invocation_id") or ""),
+            reviewer_invocation_id=str(payload.get("reviewer_invocation_id") or ""),
+            reviewer_decision=str(payload.get("reviewer_decision") or ""),
+            proposal_summary=str(payload.get("proposal_summary") or ""),
+            patch_preview=record.patch_content,
+            patch_preview_checksum=str(payload.get("patch_preview_checksum") or ""),
+            target_path=record.target_path,
+            sandbox_reference=str(payload.get("sandbox_reference") or ""),
+            sandbox_checksum=str(payload.get("sandbox_checksum") or ""),
+            legacy_checksum=str(payload.get("legacy_checksum") or ""),
+            context_pack_checksum=str(payload.get("context_pack_checksum") or ""),
+            proposal_checksum=str(payload.get("proposal_checksum") or ""),
+            evidence_refs_json=json.dumps(evidence_refs, separators=(",", ":"), sort_keys=True),
+            approval_eligible=bool(payload.get("approval_eligible", False)),
+            blockers_json=json.dumps(list(blockers), separators=(",", ":")),
+            approval_scope=str(payload.get("approval_scope") or "sandbox_only"),
+            created_at=record.created_at,
+        )
+
+    def _record_to_approval(self, record: V2SandboxActionRecord) -> RepairApprovalRecord:
+        payload = json.loads(record.result_summary or "{}")
+        return RepairApprovalRecord(
+            approval_id=record.action_id,
+            context_id=str(payload.get("context_id") or ""),
+            proposal_id=record.proposal_id,
+            approval_status=str(payload.get("approval_status") or record.status),
+            approval_scope=str(payload.get("approval_scope") or ""),
+            approval_note=str(payload.get("approval_note") or ""),
+            approval_checksum=str(payload.get("approval_checksum") or ""),
+            sandbox_checksum=str(payload.get("sandbox_checksum") or ""),
+            legacy_checksum=str(payload.get("legacy_checksum") or ""),
+            created_at=record.created_at,
         )
 
     def proposal_to_dict(self, proposal: RepairProposal, *, reviewer_critique_id: str | None = None, reviewer_decision: str | None = None) -> dict[str, Any]:
@@ -996,6 +1331,53 @@ class V2RepairFlowService:
             "backend_runner_invoked": False,
             "llm_invoked": False,
             "approval_bypass": False,
+        }
+
+    def apply_context_to_dict(self, context: RepairApplyContext) -> dict[str, Any]:
+        return {
+            "context_id": context.context_id,
+            "proposal_id": context.proposal_id,
+            "command_id": context.command_id,
+            "reviewer_critique_id": context.reviewer_critique_id,
+            "proposer_invocation_id": context.proposer_invocation_id,
+            "reviewer_invocation_id": context.reviewer_invocation_id,
+            "reviewer_decision": context.reviewer_decision,
+            "proposal_summary": context.proposal_summary,
+            "patch_preview": context.patch_preview,
+            "patch_preview_checksum": context.patch_preview_checksum,
+            "target_path": context.target_path,
+            "sandbox_reference": context.sandbox_reference,
+            "sandbox_checksum": context.sandbox_checksum,
+            "legacy_checksum": context.legacy_checksum,
+            "proposal_checksum": context.proposal_checksum,
+            "context_pack_checksum": context.context_pack_checksum,
+            "evidence_refs": json.loads(context.evidence_refs_json or "{}"),
+            "approval_eligible": context.approval_eligible,
+            "blockers": json.loads(context.blockers_json or "[]"),
+            "approval_scope": context.approval_scope,
+            "created_at": context.created_at,
+            "sandbox_only": True,
+            "source_mutated": False,
+            "apply_ready": False,
+            "llm_invoked": False,
+        }
+
+    def approval_to_dict(self, approval: RepairApprovalRecord) -> dict[str, Any]:
+        return {
+            "approval_id": approval.approval_id,
+            "context_id": approval.context_id,
+            "proposal_id": approval.proposal_id,
+            "approval_status": approval.approval_status,
+            "approval_scope": approval.approval_scope,
+            "approval_note": approval.approval_note,
+            "approval_checksum": approval.approval_checksum,
+            "sandbox_checksum": approval.sandbox_checksum,
+            "legacy_checksum": approval.legacy_checksum,
+            "created_at": approval.created_at,
+            "apply_ready": True,
+            "sandbox_only": True,
+            "source_mutated": False,
+            "llm_invoked": False,
         }
 
     @staticmethod
