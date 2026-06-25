@@ -253,7 +253,7 @@ def test_answer_uses_api_key_header_for_v1_endpoint(monkeypatch) -> None:
     assert "max_completion_tokens" not in body
 
 
-def test_answer_with_role_requests_json_object_for_schema_output(monkeypatch) -> None:
+def test_answer_with_role_requests_json_schema_for_schema_output(monkeypatch) -> None:
     from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelClient
     from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
 
@@ -285,7 +285,16 @@ def test_answer_with_role_requests_json_object_for_schema_output(monkeypatch) ->
     assert result.success is True
     url, _, body = _extract_request(recorder.calls[0][0])
     assert url == "https://example.invalid/openai/v1/responses"
-    assert body["text"] == {"format": {"type": "json_object"}}
+    text_format = body["text"]["format"]
+    assert text_format["type"] == "json_schema"
+    assert text_format["name"] == "RepairProposal"
+    assert text_format["strict"] is True
+    assert text_format["schema"]["required"] == [
+        "failure_hypothesis",
+        "patch_summary",
+        "affected_paths",
+        "validation_plan",
+    ]
 
 
 def test_answer_retries_legacy_endpoint_after_generic_v1_http_400(monkeypatch) -> None:

@@ -18,6 +18,7 @@ from migration_factory.control_tower.application.v2_model_role_router import (
     V2RoleModelRequest,
     V2RoleModelResult,
 )
+from migration_factory.control_tower.application.v2_model_schemas import SCHEMA_REGISTRY
 from migration_factory.control_tower.domain.checksums import utc_now_text
 
 
@@ -277,7 +278,7 @@ class V2AssistantModelClient:
                 max_completion_tokens=700,
                 timeout=30,
                 conversation_history=conversation_history,
-                require_json_object=bool(output_schema_name and require_schema),
+                response_schema_name=output_schema_name if require_schema else None,
             )
         except urllib.error.HTTPError as exc:
             code = int(getattr(exc, "code", 0) or 0)
@@ -378,6 +379,7 @@ class V2AssistantModelClient:
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
         require_json_object: bool = False,
+        response_schema_name: str | None = None,
     ) -> str:
         if self._is_v1_endpoint(endpoint):
             endpoint = self._normalize_v1_endpoint(endpoint)
@@ -391,6 +393,7 @@ class V2AssistantModelClient:
                     timeout=timeout,
                     conversation_history=conversation_history,
                     require_json_object=require_json_object,
+                    response_schema_name=response_schema_name,
                 )
             except urllib.error.HTTPError as exc:
                 if _should_retry_with_chat_completions(exc):
@@ -404,6 +407,7 @@ class V2AssistantModelClient:
                             timeout=timeout,
                             conversation_history=conversation_history,
                             require_json_object=require_json_object,
+                            response_schema_name=response_schema_name,
                         )
                     except urllib.error.HTTPError as chat_exc:
                         if _should_retry_with_legacy_endpoint(chat_exc):
@@ -416,6 +420,7 @@ class V2AssistantModelClient:
                                 timeout=timeout,
                                 conversation_history=conversation_history,
                                 require_json_object=require_json_object,
+                                response_schema_name=response_schema_name,
                             )
                         raise
                 if _should_retry_with_legacy_endpoint(exc):
@@ -428,6 +433,7 @@ class V2AssistantModelClient:
                         timeout=timeout,
                         conversation_history=conversation_history,
                         require_json_object=require_json_object,
+                        response_schema_name=response_schema_name,
                     )
                 raise
         return self._chat_completion_legacy(
@@ -439,6 +445,7 @@ class V2AssistantModelClient:
             timeout=timeout,
             conversation_history=conversation_history,
             require_json_object=require_json_object,
+            response_schema_name=response_schema_name,
         )
 
     def _chat_completion_v1(
@@ -452,6 +459,7 @@ class V2AssistantModelClient:
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
         require_json_object: bool = False,
+        response_schema_name: str | None = None,
     ) -> str:
         return self._post_chat_completion_v1(
             endpoint=endpoint,
@@ -461,6 +469,7 @@ class V2AssistantModelClient:
             max_completion_tokens=max_completion_tokens,
             timeout=timeout,
             require_json_object=require_json_object,
+            response_schema_name=response_schema_name,
         )
 
     def _responses_completion_v1(
@@ -474,6 +483,7 @@ class V2AssistantModelClient:
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
         require_json_object: bool = False,
+        response_schema_name: str | None = None,
     ) -> str:
         return self._post_responses_v1(
             endpoint=endpoint,
@@ -486,6 +496,7 @@ class V2AssistantModelClient:
             max_output_tokens=max_completion_tokens,
             timeout=timeout,
             require_json_object=require_json_object,
+            response_schema_name=response_schema_name,
         )
 
     @staticmethod
@@ -594,6 +605,7 @@ class V2AssistantModelClient:
         max_completion_tokens: int,
         timeout: int,
         require_json_object: bool = False,
+        response_schema_name: str | None = None,
     ) -> str:
         # Allow max_completion_tokens override via environment variable
         env_max_tokens = os.environ.get("AZURE_OPENAI_ASSISTANT_MAX_COMPLETION_TOKENS", "").strip()
@@ -606,8 +618,9 @@ class V2AssistantModelClient:
             "messages": messages,
             "max_completion_tokens": max_completion_tokens,
         }
-        if require_json_object:
-            payload["response_format"] = {"type": "json_object"}
+        response_format = _chat_response_format(response_schema_name, require_json_object=require_json_object)
+        if response_format:
+            payload["response_format"] = response_format
         # Only add one of temperature / reasoning_effort when explicitly configured.
         # Sending an unsupported parameter to a model that does not recognise it
         # causes a 400 "badly formed" rejection at the Azure infrastructure layer.
@@ -645,6 +658,7 @@ class V2AssistantModelClient:
         max_output_tokens: int,
         timeout: int,
         require_json_object: bool = False,
+        response_schema_name: str | None = None,
     ) -> str:
         url = f"{endpoint.rstrip('/')}/responses"
         payload: dict[str, object] = {
@@ -654,8 +668,9 @@ class V2AssistantModelClient:
         }
         if max_output_tokens > 0:
             payload["max_output_tokens"] = max_output_tokens
-        if require_json_object:
-            payload["text"] = {"format": {"type": "json_object"}}
+        text_format = _responses_text_format(response_schema_name, require_json_object=require_json_object)
+        if text_format:
+            payload["text"] = {"format": text_format}
         reasoning_effort = os.environ.get("AZURE_OPENAI_REASONING_EFFORT", "").strip()
         if reasoning_effort:
             payload["reasoning"] = {"effort": reasoning_effort}
@@ -683,6 +698,7 @@ class V2AssistantModelClient:
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
         require_json_object: bool = False,
+        response_schema_name: str | None = None,
     ) -> str:
         return self._post_chat_completion_legacy(
             endpoint=endpoint,
@@ -692,6 +708,7 @@ class V2AssistantModelClient:
             max_tokens=max_tokens,
             timeout=timeout,
             require_json_object=require_json_object,
+            response_schema_name=response_schema_name,
         )
 
     def _post_chat_completion_legacy(
@@ -704,6 +721,7 @@ class V2AssistantModelClient:
         max_tokens: int,
         timeout: int,
         require_json_object: bool = False,
+        response_schema_name: str | None = None,
     ) -> str:
         api_version = _azure_api_version()
         url = (
@@ -715,8 +733,9 @@ class V2AssistantModelClient:
             "temperature": 0.2,
             "max_tokens": max_tokens,
         }
-        if require_json_object:
-            payload["response_format"] = {"type": "json_object"}
+        response_format = _chat_response_format(response_schema_name, require_json_object=require_json_object)
+        if response_format:
+            payload["response_format"] = response_format
         request = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
@@ -926,6 +945,40 @@ def _redact_smoke_text(text: str, *, endpoint: str, deployment: str, api_key: st
 
 def _is_expected_smoke_reply(content: str) -> bool:
     return str(content or "").strip().strip(".! \t\r\n").upper() == "OK"
+
+
+def _responses_text_format(schema_name: str | None, *, require_json_object: bool = False) -> dict[str, Any] | None:
+    schema = SCHEMA_REGISTRY.get(schema_name or "")
+    if schema is not None:
+        return {
+            "type": "json_schema",
+            "name": _schema_response_name(str(schema_name)),
+            "schema": schema,
+            "strict": True,
+        }
+    if require_json_object:
+        return {"type": "json_object"}
+    return None
+
+
+def _chat_response_format(schema_name: str | None, *, require_json_object: bool = False) -> dict[str, Any] | None:
+    schema = SCHEMA_REGISTRY.get(schema_name or "")
+    if schema is not None:
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": _schema_response_name(str(schema_name)),
+                "schema": schema,
+                "strict": True,
+            },
+        }
+    if require_json_object:
+        return {"type": "json_object"}
+    return None
+
+
+def _schema_response_name(schema_name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", schema_name).strip("_") or "structured_output"
 
 
 def _fallback_result(fallback: str, summary: str, failure_reason: str = "") -> V2AssistantModelResult:
