@@ -230,16 +230,15 @@ describe("V2 New Migration form contract", () => {
     expect(route).not.toContain("undefined");
   });
 
-  it("settings response contains no secret values", () => {
-    // The /v1/settings/ai endpoint returns env ref names, never values
+  it("settings response contains no runtime provider or env-ref fields", () => {
     const mockSettingsResponse = {
       azure: {
         profile_id: "azure-foundry-v2",
-        provider: "azure_openai",
-        endpoint: { env_ref: "AZURE_OPENAI_ENDPOINT", configured: false },
+        status: "not_configured",
+        connection_configured: false,
         roles: {
-          proposer: { env_ref: "AZURE_OPENAI_PROPOSER_DEPLOYMENT", configured: false, deployment_label: "proposer", enabled: true },
-          fallback: { env_ref: "AZURE_OPENAI_FALLBACK_DEPLOYMENT", configured: false, deployment_label: "fallback", enabled: false },
+          proposer: { configured: false, enabled: true },
+          fallback: { configured: false, enabled: false },
         },
       },
     };
@@ -248,9 +247,10 @@ describe("V2 New Migration form contract", () => {
     expect(json).not.toContain("sk-");
     expect(json).not.toContain("https://");
     expect(json).not.toContain("api_key=");
-    expect(mockSettingsResponse.azure.endpoint.env_ref).toBe("AZURE_OPENAI_ENDPOINT");
-    // The value is NOT in the response, only the env ref name
-    expect(mockSettingsResponse.azure.roles.proposer.env_ref).toBe("AZURE_OPENAI_PROPOSER_DEPLOYMENT");
+    expect(json).not.toContain("provider");
+    expect(json).not.toContain("env_ref");
+    expect(json).not.toContain("endpoint");
+    expect(json).not.toContain("deployment");
   });
 
   it("NewMigrationForm does not add direct unsafe API helpers (no sandbox_path, report_root, raw command fields)", () => {

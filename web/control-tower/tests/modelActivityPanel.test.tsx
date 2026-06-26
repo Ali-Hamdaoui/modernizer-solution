@@ -9,7 +9,6 @@ const MOCK_INVOCATIONS: ModelInvocationEntry[] = [
     invocation_id: "inv-001",
     job_id: "test-job-123",
     profile_id: "profile-azure-eastus",
-    provider_kind: "azure-openai",
     model_name: "gpt-4o",
     prompt_tokens: 150,
     completion_tokens: 42,
@@ -25,7 +24,6 @@ const MOCK_INVOCATIONS: ModelInvocationEntry[] = [
     invocation_id: "inv-002",
     job_id: "test-job-123",
     profile_id: "profile-azure-eastus",
-    provider_kind: "azure-openai",
     model_name: "gpt-4o",
     prompt_tokens: 210,
     completion_tokens: 78,
@@ -84,7 +82,8 @@ describe("V1-18D Model activity panel", () => {
 
     expect(markup).toContain("Model activity");
     expect(markup).toContain("gpt-4o");
-    expect(markup).toContain("azure-openai");
+    expect(markup).toContain("profile-azure-eastus");
+    expect(markup).not.toContain("azure-openai");
   });
 
   it("renders token counts for each invocation", () => {
@@ -125,7 +124,7 @@ describe("V1-18D Model activity panel", () => {
     expect(markup).toContain("Raw prompts are never stored in DTOs");
     expect(markup).toContain("Secrets and deployment IDs are absent from audit records");
     expect(markup).toContain("Prompt tokens are counted and exposed without raw prompt content");
-    expect(markup).toContain("Provider kind is recorded but raw deployment IDs are not");
+    expect(markup).toContain("Runtime provider details are absent from browser DTOs");
     expect(markup).toContain("Context pack manifests carry redacted summaries without raw prompts");
     expect(markup).toContain("Advisory validation reports redact model reasoning and raw payloads");
   });

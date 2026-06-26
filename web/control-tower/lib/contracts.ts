@@ -223,7 +223,6 @@ export type ModelInvocationEntry = {
   invocation_id: string;
   job_id: string | null;
   profile_id: string | null;
-  provider_kind: string | null;
   model_name: string | null;
   prompt_tokens: number | null;
   completion_tokens: number | null;
@@ -452,7 +451,6 @@ export type V2StageCommandResponse = {
   job_id: string;
   stage_index: number;
   manifest_checksum: string;
-  argv: string[];
   created_at: string;
 };
 
@@ -500,7 +498,6 @@ export type V2AssistantAskResponse = {
   model: {
     status: string;
     source: string;
-    provider: string;
     role: string;
     failure_reason?: string;
   };
@@ -553,21 +550,18 @@ export type V2StageContinuationResponse = {
   job_id: string;
   from_stage: number;
   to_stage: number;
-  sandbox_path: string;
-  argv: string[];
   status: string;
   reason: string;
+  command_id?: string | null;
 };
 
 export type V2SettingsResponse = {
   azure: {
     profile_id: string;
-    provider: string;
-    endpoint: { env_ref: string; configured: boolean };
+    status: string;
+    connection_configured: boolean;
     roles: Record<string, {
-      env_ref: string;
       configured: boolean;
-      deployment_label: string;
       enabled: boolean;
     }>;
   };
@@ -609,7 +603,6 @@ export type V2PreflightResponse = {
 
 export type V2AzureSmokeResponse = {
   success: boolean;
-  provider: string;
   failure_reason: string;
   redacted_summary: string;
   response_snippet: string;
@@ -972,7 +965,6 @@ export type GateActionRequest = {
   proposal_checksum?: string;
   context_pack_checksum?: string;
   user_feedback?: string;
-  // No sandbox_path, argv, or env fields
 };
 
 export type GateActionResult = {

@@ -65,9 +65,9 @@ interface ReadinessResponse {
 interface SettingsResponse {
   azure: {
     profile_id: string;
-    provider: string;
-    endpoint: { env_ref: string; configured: boolean };
-    roles: Record<string, { env_ref: string; configured: boolean; deployment_label: string; enabled: boolean }>;
+    status: string;
+    connection_configured: boolean;
+    roles: Record<string, { configured: boolean; enabled: boolean }>;
   };
   local_mode: {
     enabled: boolean;
@@ -505,12 +505,12 @@ export function NewMigrationForm() {
         <fieldset>
           <legend>Azure Settings</legend>
           <p>
-            Provider: <code>{azureSettings.azure.provider}</code>
+            Status: <code>{azureSettings.azure.status}</code>
           </p>
           <p>
             Endpoint:{" "}
             <code>
-              {azureSettings.azure.endpoint.configured ? "✓ Configured" : "✗ Not Configured"}
+              {azureSettings.azure.connection_configured ? "✓ Configured" : "✗ Not Configured"}
             </code>
           </p>
           <p className="meta">

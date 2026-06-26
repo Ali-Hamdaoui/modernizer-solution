@@ -186,3 +186,64 @@ def test_create_v2_job_request_rejects_sandbox_path() -> None:
             setup_id="setup-123",
             sandbox_path="/tmp/sandbox",
         )
+
+
+def test_stage_progress_request_rejects_sandbox_path_and_argv() -> None:
+    from pydantic import ValidationError
+    from migration_factory.control_tower.adapters.fastapi.app import StageProgressRequest
+
+    with pytest.raises(ValidationError):
+        StageProgressRequest(
+            setup_id="setup-123",
+            current_stage=1,
+            sandbox_path="/tmp/sandbox",
+        )
+
+    with pytest.raises(ValidationError):
+        StageProgressRequest(
+            setup_id="setup-123",
+            current_stage=1,
+            argv=["python", "-m", "migration_factory.orchestrator.runner"],
+        )
+
+
+def test_stage_continuation_public_projection_redacts_execution_details(tmp_path) -> None:
+    import sqlite3
+    from migration_factory.control_tower.application.v2_stage_progression import (
+        V2StageProgressionService,
+    )
+    from migration_factory.control_tower.infrastructure.sqlite.migrations import (
+        apply_pending_migrations,
+    )
+    from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
+        SqliteV2SetupRepository,
+    )
+    from migration_factory.control_tower.schemas.run_configuration import (
+        StageContinuationPolicy,
+    )
+
+    conn = sqlite3.connect(str(tmp_path / "profile_api.sqlite3"), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    service = V2StageProgressionService(repo)
+    result = service.queue_next_stage(
+        job_id="job-1",
+        setup_id="missing",
+        current_stage=1,
+        sandbox_path="/tmp/sandbox",
+        stage_continuation_policy=StageContinuationPolicy.MANUAL,
+    )
+
+    public = service.continuation_to_public_dict(result)
+    assert "sandbox_path" not in public
+    assert "argv" not in public
+    assert set(public).issubset({
+        "continuation_id",
+        "job_id",
+        "from_stage",
+        "to_stage",
+        "status",
+        "reason",
+        "command_id",
+    })

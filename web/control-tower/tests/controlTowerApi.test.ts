@@ -361,7 +361,6 @@ describe("M2-01 frontend diagnostic contracts", () => {
           invocation_id: "inv-001",
           job_id: "job-1",
           profile_id: "profile-azure",
-          provider_kind: "azure-openai",
           model_name: "gpt-4o",
           prompt_tokens: 150,
           completion_tokens: 42,
@@ -404,6 +403,7 @@ describe("M2-01 frontend diagnostic contracts", () => {
     expect(result.invocations).toHaveLength(1);
     expect(result.invocations[0].invocation_id).toBe("inv-002");
     expect(result.invocations[0].job_id).toBe("job-2");
+    expect("provider_kind" in result.invocations[0]).toBe(false);
   });
 
   it("handles empty { model_invocations: [] } gracefully", async () => {
@@ -462,6 +462,8 @@ describe("M2-01 frontend diagnostic contracts", () => {
     expect(serialized).not.toContain("secret");
     expect(serialized).not.toContain("deployment-id");
     expect(serialized).not.toContain("my-secret");
+    expect(serialized).not.toContain("provider_kind");
+    expect(serialized).not.toContain("azure-openai");
   });
 
   it("applies public events idempotently and refetches state-changing projections", () => {

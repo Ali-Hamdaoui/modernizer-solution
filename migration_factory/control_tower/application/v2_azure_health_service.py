@@ -194,7 +194,6 @@ class V2AzureHealthService:
             "roles": {
                 name: {
                     "role": r.role_name,
-                    "env_ref": r.env_ref,
                     "configured": r.configured,
                     "status": r.status,
                     "error": r.error,

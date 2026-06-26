@@ -55,10 +55,10 @@ const MODEL_EVIDENCE = [
     passed: true,
   },
   {
-    category: "Provider isolation",
-    description: "Provider kind is recorded but raw deployment IDs are not",
-    expected: "kind-only",
-    observed: "kind-only",
+    category: "Runtime isolation",
+    description: "Runtime provider details are absent from browser DTOs",
+    expected: "absent",
+    observed: "absent",
     passed: true,
   },
   {
@@ -157,7 +157,7 @@ export function ModelActivityContent({ state }: ModelActivityContentProps) {
 
   const grouped = state.invocations.reduce<Record<string, ModelInvocationEntry[]>>(
     (acc, inv) => {
-      const key = inv.provider_kind ?? "unknown";
+      const key = inv.profile_id ?? "unprofiled";
       (acc[key] ??= []).push(inv);
       return acc;
     },
@@ -172,9 +172,9 @@ export function ModelActivityContent({ state }: ModelActivityContentProps) {
         Token counts are recorded without raw content.
       </p>
 
-      {Object.entries(grouped).map(([provider, invocations]) => (
-        <section className="panel compact stack" key={provider}>
-          <h3>{provider}</h3>
+      {Object.entries(grouped).map(([profile, invocations]) => (
+        <section className="panel compact stack" key={profile}>
+          <h3>{profile}</h3>
           <div className="table-list">
             {invocations.map((inv) => (
               <div className="table-row" key={inv.invocation_id}>
@@ -210,7 +210,7 @@ export function ModelActivityContent({ state }: ModelActivityContentProps) {
         <summary>Model activity evidence notes</summary>
         <ul className="meta">
           <li>All model invocation DTOs are redacted: raw prompts, secrets, and deployment IDs are never exposed to the browser.</li>
-          <li>Provider kind is recorded; raw deployment IDs and API endpoint URLs are not.</li>
+          <li>Runtime provider details, raw deployment IDs, and API URLs are not exposed to the browser.</li>
           <li>Token counts (prompt, completion, total) are recorded without raw content.</li>
           <li>Context pack manifests carry redacted summaries with bounded evidence refs.</li>
           <li>Advisory validation reports redact model reasoning and raw payloads.</li>

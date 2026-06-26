@@ -230,17 +230,25 @@ export async function getModelActivity(jobId: string): Promise<ModelActivityResp
   // a future backend change to { invocations } works unmodified.
   const invocations: ModelActivityResponse["invocations"] = (
     raw.invocations ?? raw.model_invocations ?? []
-  ).map((inv) => ({
-    ...inv,
-    // Backend per-job endpoint omits top-level job_id; fill from argument.
-    job_id: inv.job_id ?? jobId,
-    // Ensure nullable fields are null not undefined
-    profile_id: inv.profile_id ?? null,
-    actor_type: inv.actor_type ?? null,
-    actor_id: inv.actor_id ?? null,
-    correlation_id: inv.correlation_id ?? null,
-    causation_id: inv.causation_id ?? null,
-  }));
+  ).map((inv) => {
+    return {
+      invocation_id: inv.invocation_id,
+      model_name: inv.model_name ?? null,
+      prompt_tokens: inv.prompt_tokens ?? null,
+      completion_tokens: inv.completion_tokens ?? null,
+      total_tokens: inv.total_tokens ?? null,
+      redacted_summary: inv.redacted_summary ?? null,
+      created_at: inv.created_at,
+      // Backend per-job endpoint omits top-level job_id; fill from argument.
+      job_id: inv.job_id ?? jobId,
+      // Ensure nullable fields are null not undefined
+      profile_id: inv.profile_id ?? null,
+      actor_type: inv.actor_type ?? null,
+      actor_id: inv.actor_id ?? null,
+      correlation_id: inv.correlation_id ?? null,
+      causation_id: inv.causation_id ?? null,
+    };
+  });
 
   return { job_id: jobId, invocations };
 }
@@ -456,15 +464,13 @@ export async function rejectV2Card(
 export async function progressV2Stage(
   jobId: string,
   setupId: string,
-  currentStage: number,
-  sandboxPath: string
+  currentStage: number
 ): Promise<V2StageContinuationResponse> {
   return postJson<V2StageContinuationResponse>(
     `/v1/v2/jobs/${encodeURIComponent(jobId)}/stages/progress`,
     {
       setup_id: setupId,
       current_stage: currentStage,
-      sandbox_path: sandboxPath,
     }
   );
 }
