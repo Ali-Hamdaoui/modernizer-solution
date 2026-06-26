@@ -569,6 +569,7 @@ def test_v2_runner_passes_non_secret_copilot_env_and_excludes_secrets(monkeypatc
     _save_command(conn)
     monkeypatch.setenv("AI_MIGRATION_COPILOT_PROVIDER", "copilot_cli")
     monkeypatch.setenv("AI_MIGRATION_COPILOT_MODEL", "gpt-test")
+    monkeypatch.setenv("AI_MIGRATION_COPILOT_REQUIRED", "true")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "secret")
     monkeypatch.setenv("GITHUB_TOKEN", "secret")
     popen = _FakePopen(stdout=[json.dumps(_success_result(sandbox_path="/tmp/sandbox/s1")) + "\n"], stderr=[], exit_code=0)
@@ -584,6 +585,7 @@ def test_v2_runner_passes_non_secret_copilot_env_and_excludes_secrets(monkeypatc
     env = popen.calls[0]["env"]
     assert env["AI_MIGRATION_COPILOT_PROVIDER"] == "copilot_cli"
     assert env["AI_MIGRATION_COPILOT_MODEL"] == "gpt-test"
+    assert env["AI_MIGRATION_COPILOT_REQUIRED"] == "false"
     assert "AZURE_OPENAI_API_KEY" not in env
     assert "GITHUB_TOKEN" not in env
     event_types = [event.type for event in SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")]

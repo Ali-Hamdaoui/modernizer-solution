@@ -1907,6 +1907,10 @@ def _build_env(manifest: dict[str, Any]) -> dict[str, str]:
         if value:
             env[key] = value
 
+    # Stage1 sandbox creation must not depend on Copilot CLI readiness. Governed
+    # repair uses backend Azure proposer/reviewer; Copilot probe is optional only.
+    env["AI_MIGRATION_COPILOT_REQUIRED"] = "false"
+
     path_prepend = manifest.get("PATH_PREPEND")
     if isinstance(path_prepend, str) and path_prepend:
         current_path = env.get("PATH", "")
