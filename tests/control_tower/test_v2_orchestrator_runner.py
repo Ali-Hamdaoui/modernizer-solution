@@ -209,6 +209,15 @@ def _wait_for_stage4_command(conn: sqlite3.Connection, job_id: str = "job-1") ->
     raise AssertionError("Stage 4 command not persisted")
 
 
+def _wait_for_popen_call_containing(popen: _SequentialFakePopen, text: str) -> None:
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        if any(text in " ".join(call["argv"]) for call in popen.calls):
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"process launch containing {text!r} not observed")
+
+
 def test_v2_runner_launches_manifest_with_shell_false_and_safe_env(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _save_command(conn)
@@ -319,7 +328,7 @@ def test_v2_runner_maps_approval_interrupt_to_card_and_blocked_events(tmp_path: 
     assert len(uow2.v2_approvals.list_cards_by_status("pending")) == 1
 
 
-def test_v2_runner_passes_non_secret_copilot_env_and_excludes_secrets(monkeypatch, tmp_path: Path) -> None:
+def test_v2_runner_does_not_forward_copilot_env_to_product_subprocess(monkeypatch, tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _save_command(conn)
     monkeypatch.setenv("AI_MIGRATION_COPILOT_PROVIDER", "copilot_cli")
@@ -337,12 +346,12 @@ def test_v2_runner_passes_non_secret_copilot_env_and_excludes_secrets(monkeypatc
     _wait_for_event(conn, "job-1", "stage_completed")
 
     env = popen.calls[0]["env"]
-    assert env["AI_MIGRATION_COPILOT_PROVIDER"] == "copilot_cli"
-    assert env["AI_MIGRATION_COPILOT_MODEL"] == "gpt-test"
+    assert "AI_MIGRATION_COPILOT_PROVIDER" not in env
+    assert "AI_MIGRATION_COPILOT_MODEL" not in env
     assert "AZURE_OPENAI_API_KEY" not in env
     assert "GITHUB_TOKEN" not in env
     event_types = [event.type for event in SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")]
-    assert "copilot_status_checked" in event_types
+    assert "copilot_status_checked" not in event_types
 
 
 def test_v2_runner_emits_failure_repair_events_from_result(tmp_path: Path) -> None:
@@ -353,7 +362,6 @@ def test_v2_runner_emits_failure_repair_events_from_result(tmp_path: Path) -> No
         "build_status": "BUILD_FAILED_IN_SANDBOX",
         "final_proof_level": "not_verified",
         "repair_loop_status": "FALLBACK_REPAIR_PLAN",
-        "copilot_invocation_status": "INVALID_RESPONSE",
         "repair_fallback_generated": True,
         "sandbox_path": "/tmp/sandbox",
         "artifact_refs": {"analysis_report": "C:/out/.migration/runs/run-1/report.json"},
@@ -375,7 +383,8 @@ def test_v2_runner_emits_failure_repair_events_from_result(tmp_path: Path) -> No
     assert "transform_failed" in event_types
     assert "repair_started" in event_types
     assert "repair_fallback_generated" in event_types
-    assert "copilot_repair_invalid_response" in event_types
+    assert "stage_failed" in event_types
+    assert "copilot_repair_invalid_response" not in event_types
 
 
 def test_v2_runner_does_not_auto_queue_next_stage_on_failure(tmp_path: Path) -> None:
@@ -767,6 +776,7 @@ def test_stage3_pass_contract_queues_stage4(tmp_path: Path) -> None:
 
     runner.start(job_id="job-1", command_id="cmd-1")
     _wait_for_stage4_command(conn)
+    _wait_for_popen_call_containing(popen, "v2-job-1-s4")
 
     commands = SqliteUnitOfWork(conn).v2_commands.list_by_job("job-1")
     stage4_commands = [command for command in commands if command.stage_index == 4]
