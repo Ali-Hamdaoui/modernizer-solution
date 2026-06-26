@@ -1119,6 +1119,93 @@ def is_checkpoint_acceptance_blocked(
     )
 
 
+def validate_runtime_review_chain_result(
+    result: dict[str, Any],
+    *,
+    phase: str,
+    stage_index: int,
+) -> list[str]:
+    """Validate Analysis/Planning runtime output before checkpoint use.
+
+    The orchestrator result must prove the F2 chain:
+    deterministic artifact -> primary output -> reviewer accept ->
+    checksum-bound final reviewed Markdown.
+    """
+    failures: list[str] = []
+    if phase not in (ArtifactPhase.ANALYSIS.value, ArtifactPhase.PLANNING.value):
+        return [f"unknown phase {phase!r}"]
+
+    review_chain = result.get("review_chain")
+    if not isinstance(review_chain, dict):
+        return ["missing review_chain"]
+
+    deterministic_checksum = _text(review_chain.get("deterministic_artifact_checksum"))
+    primary_checksum = _text(review_chain.get("primary_output_checksum"))
+    reviewer_checksum = _text(review_chain.get("reviewer_output_checksum"))
+    final_checksum = _text(review_chain.get("final_markdown_checksum"))
+    final_ref = _text(review_chain.get("final_markdown_ref"))
+    decision = _text(review_chain.get("reviewer_decision"))
+
+    chain = CompleteChecksumChain(
+        deterministic_artifact_checksum=deterministic_checksum,
+        primary_input_checksum=_text(review_chain.get("primary_input_checksum")) or "runtime-input",
+        primary_output_checksum=primary_checksum,
+        reviewer_input_checksum=_text(review_chain.get("reviewer_input_checksum")) or "runtime-reviewer-input",
+        reviewer_output_checksum=reviewer_checksum,
+        final_markdown_checksum=final_checksum,
+        job_id=_text(review_chain.get("job_id")) or _text(result.get("job_id")) or "runtime-job",
+        phase=phase,
+        stage_index=stage_index,
+        source_profile=_text(review_chain.get("source_profile")) or None,
+        target_profile=_text(review_chain.get("target_profile")) or None,
+        review_decision=decision,
+        review_confidence=review_chain.get("review_confidence") if isinstance(review_chain.get("review_confidence"), (int, float)) else None,
+        artifact_ref=final_ref,
+    )
+    failures.extend(validate_complete_checksum_chain(chain))
+
+    if decision != ReviewerDecision.ACCEPT.value:
+        failures.append(f"reviewer decision must be accept, got {decision!r}")
+
+    reviewed_artifact_checksum = _text(review_chain.get("reviewed_artifact_checksum")) or deterministic_checksum
+    reviewed_primary_checksum = _text(review_chain.get("reviewed_primary_output_checksum")) or primary_checksum
+    reviewer_output = ReviewerLLMOutput(
+        decision=decision,
+        notes=tuple(str(n) for n in review_chain.get("reviewer_notes", ()) if str(n).strip())
+        if isinstance(review_chain.get("reviewer_notes", ()), (list, tuple))
+        else (_text(review_chain.get("reviewer_notes")),) if _text(review_chain.get("reviewer_notes")) else (),
+        confidence=float(review_chain.get("review_confidence", 1.0) or 0.0),
+        risks=(),
+        policy_concerns=(),
+        reviewed_artifact_checksum=reviewed_artifact_checksum,
+        reviewed_primary_output_checksum=reviewed_primary_checksum,
+        reviewer_output_checksum=reviewer_checksum,
+    )
+    outcome = resolve_reviewer_decision(
+        reviewer_output,
+        deterministic_checksum,
+        primary_checksum,
+    )
+    if not can_produce_final_artifact(outcome):
+        failures.append(outcome.reason)
+
+    artifact_refs = result.get("artifact_refs") if isinstance(result.get("artifact_refs"), dict) else {}
+    final_artifact_ref = _text(artifact_refs.get("final_reviewed_markdown"))
+    if not final_artifact_ref:
+        failures.append("missing final_reviewed_markdown artifact ref")
+    elif final_ref and final_artifact_ref != final_ref:
+        failures.append("final reviewed Markdown artifact ref does not match review_chain")
+
+    if artifact_refs.get("primary_llm_output") and not final_artifact_ref:
+        failures.append("raw primary output cannot satisfy downstream artifact resolution")
+
+    return failures
+
+
+def _text(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
 # ── Checksum binding ───────────────────────────────────────────────────
 
 
