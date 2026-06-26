@@ -9,6 +9,15 @@ from migration_factory.control_tower.application.v2_stage_progression import (
     V2StageProgressionService,
     STAGE_CONFIG,
     RUNNER_MODULE,
+    compute_profile_route,
+    is_stage_included_in_route,
+    is_stage_excluded_from_route,
+    is_target_reached,
+    route_to_dict,
+    get_stop_condition,
+    get_all_stop_conditions,
+    evaluate_auto_continue,
+    AutoContinueDecision,
 )
 from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.application.v2_setup_service import (
@@ -224,3 +233,434 @@ def test_missing_setup_rejected(tmp_path: Path) -> None:
             current_stage=1,
             sandbox_path="/tmp/sandbox",
         )
+
+
+# ── AMF-264: Profile route tests ─────────────────────────────────
+
+
+def test_valid_route_stops_at_target_springboot_35_java17() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-3.5-java17")
+    assert route.valid is True
+    assert route.included_stages == (2,)
+    assert route.excluded_stages == (3, 4)
+    assert route.skipped_stages == ()
+    assert is_target_reached(route, 2) is True
+    assert is_stage_excluded_from_route(route, 3) is True
+    assert is_stage_excluded_from_route(route, 4) is True
+
+
+def test_valid_route_stops_at_target_springboot_35_java21() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-3.5-java21")
+    assert route.valid is True
+    assert route.included_stages == (2, 3)
+    assert route.excluded_stages == (4,)
+    assert route.skipped_stages == ()
+    assert is_target_reached(route, 2) is False
+    assert is_target_reached(route, 3) is True
+    assert is_stage_excluded_from_route(route, 4) is True
+
+
+def test_valid_route_stops_at_target_boot_4() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-4.0-java21")
+    assert route.valid is True
+    assert route.included_stages == (2, 3, 4)
+    assert route.excluded_stages == ()
+    assert route.skipped_stages == ()
+    assert is_target_reached(route, 4) is True
+
+
+def test_higher_profile_exists_but_excluded() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-3.5-java17")
+    assert route.valid is True
+    assert 4 in route.excluded_stages
+    assert is_stage_included_in_route(route, 4) is False
+    assert is_stage_excluded_from_route(route, 4) is True
+
+
+def test_start_from_springboot_35_java17_to_java21() -> None:
+    route = compute_profile_route("springboot-3.5-java17", "springboot-3.5-java21")
+    assert route.valid is True
+    assert route.included_stages == (3,)
+    assert route.skipped_stages == (2,)
+    assert route.excluded_stages == (4,)
+
+
+def test_start_from_springboot_35_java17_to_boot_4() -> None:
+    route = compute_profile_route("springboot-3.5-java17", "springboot-4.0-java21")
+    assert route.valid is True
+    assert route.included_stages == (3, 4)
+    assert route.skipped_stages == (2,)
+
+
+def test_invalid_reversed_pair_rejected() -> None:
+    route = compute_profile_route("springboot-3.5-java21", "springboot-3.5-java17")
+    assert route.valid is False
+    assert route.reason == "target profile must be higher than source profile"
+
+
+def test_invalid_same_profile_rejected() -> None:
+    route = compute_profile_route("springboot-3.5-java17", "springboot-3.5-java17")
+    assert route.valid is False
+    assert route.reason == "source and target profiles must be different"
+
+
+def test_invalid_unknown_source_rejected() -> None:
+    route = compute_profile_route("unknown-profile", "springboot-3.5-java17")
+    assert route.valid is False
+    assert "source profile" in route.reason.lower()
+
+
+def test_invalid_unknown_target_rejected() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "unknown-target")
+    assert route.valid is False
+    assert "target profile" in route.reason.lower()
+
+
+def test_route_metadata_includes_all_stages() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-3.5-java21")
+    d = route_to_dict(route)
+    assert d["source_profile"] == "springboot-2.7-java11"
+    assert d["target_profile"] == "springboot-3.5-java21"
+    assert d["included_stages"] == [2, 3]
+    assert d["excluded_stages"] == [4]
+    assert d["skipped_stages"] == []
+    assert d["valid"] is True
+
+    route2 = compute_profile_route("springboot-3.5-java17", "springboot-4.0-java21")
+    d2 = route_to_dict(route2)
+    assert d2["included_stages"] == [3, 4]
+    assert d2["skipped_stages"] == [2]
+
+
+def test_included_stages_do_not_contain_stages_beyond_target() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-3.5-java17")
+    assert 3 not in route.included_stages
+    assert 4 not in route.included_stages
+    assert 2 in route.included_stages
+
+
+# ── AMF-250: Safe auto-continue rule tests ────────────────────────
+
+
+def test_analysis_checkpoint_stops_progression() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-4.0-java21")
+    from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
+    decision = evaluate_auto_continue(
+        current_stage=1,
+        route=route,
+        policy=StageContinuationPolicy.AUTO_ON_GREEN,
+    )
+    assert decision.should_continue is False
+    assert decision.stop_condition == "analysis_checkpoint"
+
+
+def test_planning_checkpoint_stops_progression() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-4.0-java21")
+    from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
+    decision = evaluate_auto_continue(
+        current_stage=2,
+        route=route,
+        policy=StageContinuationPolicy.AUTO_ON_GREEN,
+    )
+    assert decision.should_continue is False
+    assert decision.stop_condition == "planning_checkpoint"
+
+
+def test_build_failure_stops_progression() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-4.0-java21")
+    from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
+    decision = evaluate_auto_continue(
+        current_stage=3,
+        route=route,
+        policy=StageContinuationPolicy.AUTO_ON_GREEN,
+        result={"build_status": "BUILD_FAILED_IN_SANDBOX", "test_status": "PASS"},
+    )
+    assert decision.should_continue is False
+    assert decision.stop_condition == "build_failed"
+
+
+def test_test_failure_stops_progression() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-4.0-java21")
+    from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
+    decision = evaluate_auto_continue(
+        current_stage=3,
+        route=route,
+        policy=StageContinuationPolicy.AUTO_ON_GREEN,
+        result={"build_status": "BUILD_PASSED_IN_SANDBOX", "test_status": "TEST_FAILED"},
+    )
+    assert decision.should_continue is False
+    assert decision.stop_condition == "test_failed"
+
+
+def test_risk_detected_stops_progression() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-4.0-java21")
+    from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
+    decision = evaluate_auto_continue(
+        current_stage=3,
+        route=route,
+        policy=StageContinuationPolicy.AUTO_ON_GREEN,
+        has_risk=True,
+    )
+    assert decision.should_continue is False
+    assert decision.stop_condition == "risk_detected"
+
+
+def test_reviewer_failure_stops_progression() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-4.0-java21")
+    from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
+    decision = evaluate_auto_continue(
+        current_stage=3,
+        route=route,
+        policy=StageContinuationPolicy.AUTO_ON_GREEN,
+        has_reviewer_failure=True,
+    )
+    assert decision.should_continue is False
+    assert decision.stop_condition == "reviewer_failed"
+
+
+def test_stale_artifact_stops_progression() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-4.0-java21")
+    from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
+    decision = evaluate_auto_continue(
+        current_stage=3,
+        route=route,
+        policy=StageContinuationPolicy.AUTO_ON_GREEN,
+        has_stale_artifact=True,
+    )
+    assert decision.should_continue is False
+    assert decision.stop_condition == "stale_artifact"
+
+
+def test_approval_required_stops_progression() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-4.0-java21")
+    from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
+    decision = evaluate_auto_continue(
+        current_stage=3,
+        route=route,
+        policy=StageContinuationPolicy.AUTO_ON_GREEN,
+        has_approval_required=True,
+    )
+    assert decision.should_continue is False
+    assert decision.stop_condition == "approval_required"
+
+
+def test_target_reached_stops_progression() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-3.5-java17")
+    from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
+    decision = evaluate_auto_continue(
+        current_stage=2,
+        route=route,
+        policy=StageContinuationPolicy.AUTO_ON_GREEN,
+    )
+    assert decision.should_continue is False
+    assert decision.stop_condition == "target_reached"
+
+
+def test_clean_green_stage3_auto_continues_to_4() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-4.0-java21")
+    from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
+    decision = evaluate_auto_continue(
+        current_stage=3,
+        route=route,
+        policy=StageContinuationPolicy.AUTO_ON_GREEN,
+        result={
+            "build_status": "BUILD_PASSED_IN_SANDBOX",
+            "test_status": "PASS",
+        },
+    )
+    assert decision.should_continue is True
+    assert decision.stop_condition is None
+
+
+# ── AMF-251: Stop-condition matrix tests ──────────────────────────
+
+
+def test_all_stop_conditions_defined() -> None:
+    conditions = get_all_stop_conditions()
+    names = {c.name for c in conditions}
+    expected = {
+        "analysis_checkpoint",
+        "planning_checkpoint",
+        "risk_detected",
+        "build_failed",
+        "test_failed",
+        "target_reached",
+        "stale_artifact",
+        "reviewer_failed",
+        "approval_required",
+        "user_stopped",
+        "profile_incompatible",
+        "target_overshoot_blocked",
+    }
+    assert names == expected
+
+
+def test_stop_condition_allowed_actions() -> None:
+    cond = get_stop_condition("analysis_checkpoint")
+    assert cond is not None
+    assert "continue" in cond.allowed_actions
+    assert "request_modification" in cond.allowed_actions
+    assert "stop" in cond.allowed_actions
+
+    build_cond = get_stop_condition("build_failed")
+    assert build_cond is not None
+    assert "request_repair_review_future" in build_cond.allowed_actions
+    assert build_cond.repair_eligible is True
+
+    target_cond = get_stop_condition("target_reached")
+    assert target_cond is not None
+    assert "stop" in target_cond.allowed_actions
+    assert "download_artifact" in target_cond.allowed_actions
+
+
+def test_restorable_stop_conditions() -> None:
+    restorable = [c for c in get_all_stop_conditions() if c.restorable]
+    restorable_names = {c.name for c in restorable}
+    assert "analysis_checkpoint" in restorable_names
+    assert "planning_checkpoint" in restorable_names
+    assert "user_stopped" in restorable_names
+    assert "approval_required" in restorable_names
+    assert "build_failed" not in restorable_names
+
+
+def test_repair_eligible_only_build_test_failure() -> None:
+    repair = [c for c in get_all_stop_conditions() if c.repair_eligible]
+    repair_names = {c.name for c in repair}
+    assert repair_names == {"build_failed", "test_failed"}
+
+
+def test_unknown_condition_returns_none() -> None:
+    assert get_stop_condition("nonexistent_condition") is None
+
+
+# ── AMF-265: Stop-at-target behavior tests ────────────────────────
+
+
+def test_target_reached_after_stage3_for_boot35_target() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-3.5-java21")
+    assert is_target_reached(route, 2) is False
+    assert is_target_reached(route, 3) is True
+    assert is_target_reached(route, 4) is True
+
+
+def test_stage_queue_blocked_when_target_reached(tmp_path: Path) -> None:
+    conn = sqlite3.connect(str(tmp_path / "test_target.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_setup(repo)
+
+    route = compute_profile_route("springboot-2.7-java11", "springboot-3.5-java17")
+    service = V2StageProgressionService(repo)
+    result = service.queue_next_stage(
+        job_id="job-target",
+        setup_id=setup_id,
+        current_stage=2,
+        sandbox_path="/tmp/sandbox/stage2",
+        profile_route=route,
+    )
+    assert result.status == "blocked"
+    assert result.reason == "target_reached"
+
+
+def test_stage_queue_blocked_on_invalid_route(tmp_path: Path) -> None:
+    conn = sqlite3.connect(str(tmp_path / "test_invalid_route.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_setup(repo)
+
+    route = compute_profile_route("springboot-3.5-java21", "springboot-3.5-java17")
+    assert route.valid is False
+    service = V2StageProgressionService(repo)
+    result = service.queue_next_stage(
+        job_id="job-invalid",
+        setup_id=setup_id,
+        current_stage=1,
+        sandbox_path="/tmp/sandbox/stage1",
+        profile_route=route,
+    )
+    assert result.status == "blocked"
+    assert result.reason == "profile_incompatible"
+    assert result.command_id is None
+    assert result.argv == ()
+
+
+def test_stage3_continues_to_4_when_target_is_boot4(tmp_path: Path) -> None:
+    conn = sqlite3.connect(str(tmp_path / "test_boot4.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    command_repo = SqliteV2CommandRepository(conn)
+    setup_id = _create_setup(repo)
+    _save_successful_stage3_command(command_repo)
+
+    route = compute_profile_route("springboot-2.7-java11", "springboot-4.0-java21")
+    service = V2StageProgressionService(repo, command_repo)
+    result = service.queue_next_stage(
+        job_id="job-1",
+        setup_id=setup_id,
+        current_stage=3,
+        sandbox_path="/tmp/sandbox/stage3",
+        profile_route=route,
+    )
+    assert result.status == "queued"
+    assert result.to_stage == 4
+
+
+def test_target_reached_emits_blocked_status() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-3.5-java17")
+    d = route_to_dict(route)
+    assert d["excluded_stages"] == [3, 4]
+    assert is_target_reached(route, 2) is True
+
+
+# ── AMF-268: Target-overshoot prevention tests ────────────────────
+
+
+def test_resume_after_target_reached_is_blocked(tmp_path: Path) -> None:
+    conn = sqlite3.connect(str(tmp_path / "test_resume_target.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_setup(repo)
+
+    route = compute_profile_route("springboot-2.7-java11", "springboot-3.5-java17")
+    service = V2StageProgressionService(repo)
+    result = service.queue_next_stage(
+        job_id="job-resume-target",
+        setup_id=setup_id,
+        current_stage=2,
+        sandbox_path="/tmp/sandbox/stage2",
+        profile_route=route,
+    )
+    assert result.status == "blocked"
+    assert result.reason == "target_reached"
+    assert result.argv == ()
+    assert result.command_id is None
+
+
+def test_higher_profile_exists_but_must_not_execute() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-3.5-java17")
+    assert is_stage_excluded_from_route(route, 3)
+    assert is_stage_excluded_from_route(route, 4)
+    assert not is_stage_included_in_route(route, 3)
+    assert not is_stage_included_in_route(route, 4)
+
+
+def test_excluded_skipped_stages_visible_in_route_metadata() -> None:
+    route = compute_profile_route("springboot-3.5-java17", "springboot-4.0-java21")
+    d = route_to_dict(route)
+    assert d["included_stages"] == [3, 4]
+    assert d["skipped_stages"] == [2]
+    assert d["excluded_stages"] == []
+    assert 2 not in d["included_stages"]
+
+
+def test_profile_metadata_preserves_source_and_target() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-3.5-java21")
+    d = route_to_dict(route)
+    assert d["source_profile"] == "springboot-2.7-java11"
+    assert d["target_profile"] == "springboot-3.5-java21"
+    assert d["source_level"] == 0
+    assert d["target_level"] == 2

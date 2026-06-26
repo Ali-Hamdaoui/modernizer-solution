@@ -1161,3 +1161,159 @@ def test_runner_nonzero_exit_keeps_exit_code_message(tmp_path: Path) -> None:
     assert "code 42" in stage_failed.message
     payload = json.loads(stage_failed.payload_json or "{}")
     assert payload.get("exit_code") == 42
+
+
+# ── AMF-265/AMF-268: Target-stop and overshoot prevention ────────────
+
+
+def _insert_run_config(conn: sqlite3.Connection, *, job_id: str, rc_id: str, source_profile: str, target_profile: str, policy_json: str) -> None:
+    from migration_factory.control_tower.domain.entities import RunConfigurationRecord
+    from migration_factory.control_tower.domain.states import TargetProofLevel
+    now = utc_now_text()
+    payload = {"source_profile": source_profile, "target_profile": target_profile}
+    SqliteUnitOfWork(conn).run_configurations.insert(RunConfigurationRecord(
+        run_configuration_id=rc_id,
+        job_id=job_id,
+        schema_version="1.0",
+        runner_profile_id="rp-1",
+        runner_profile_version="1.0",
+        pipeline_id="test-pipeline",
+        pipeline_version="1.0",
+        target_proof_level=TargetProofLevel.BUILD_TEST_VERIFIED,
+        enabled_gates_json="[]",
+        policy_json=policy_json,
+        payload_json=json.dumps(payload),
+        payload_checksum="",
+        created_at=now,
+    ))
+
+
+def test_auto_queue_next_stage_blocked_at_target(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn)
+    _insert_run_config(conn, job_id="job-1", rc_id="rc-1",
+                       source_profile="springboot-2.7-java11",
+                       target_profile="springboot-3.5-java17",
+                       policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}))
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(
+            stdout=[json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"],
+            stderr=[],
+            exit_code=0,
+        ),
+        cwd=tmp_path,
+    )
+    setattr(runner, "_last_stdout_lines", [json.dumps(_success_result(sandbox_path="/tmp/stage-2"))])
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=2,
+        command_id="cmd-1",
+        exit_code=0,
+        result=_success_result(sandbox_path="/tmp/stage-2"),
+        stderr="",
+        command_phase=None,
+    )
+    _wait_for_event(conn, "job-1", "target_reached")
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [e.type for e in events]
+    assert "target_reached" in event_types
+
+
+def test_higher_profile_exists_but_excluded_from_auto_queue(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn)
+    _insert_run_config(conn, job_id="job-1", rc_id="rc-2",
+                       source_profile="springboot-2.7-java11",
+                       target_profile="springboot-3.5-java17",
+                       policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}))
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(
+            stdout=[json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"],
+            stderr=[],
+            exit_code=0,
+        ),
+        cwd=tmp_path,
+    )
+    setattr(runner, "_last_stdout_lines", [json.dumps(_success_result(sandbox_path="/tmp/stage-2"))])
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=2,
+        command_id="cmd-1",
+        exit_code=0,
+        result=_success_result(sandbox_path="/tmp/stage-2"),
+        stderr="",
+        command_phase=None,
+    )
+    _wait_for_event(conn, "job-1", "target_reached")
+    stage3_commands = SqliteUnitOfWork(conn).v2_commands.list_by_job_and_stage("job-1", 3)
+    assert len(stage3_commands) == 0
+
+
+def test_auto_queue_next_stage_continues_to_4_when_target_is_boot4(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn)
+    _insert_run_config(conn, job_id="job-1", rc_id="rc-3",
+                       source_profile="springboot-2.7-java11",
+                       target_profile="springboot-4.0-java21",
+                       policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}))
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(
+            stdout=[json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"],
+            stderr=[],
+            exit_code=0,
+        ),
+        cwd=tmp_path,
+    )
+    setattr(runner, "_last_stdout_lines", [json.dumps(_success_result(sandbox_path="/tmp/stage-3"))])
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=3,
+        command_id="cmd-1",
+        exit_code=0,
+        result=_success_result(sandbox_path="/tmp/stage-3"),
+        stderr="",
+        command_phase=None,
+    )
+    _wait_for_stage4_command(conn)
+    stage4_commands = SqliteUnitOfWork(conn).v2_commands.list_by_job_and_stage("job-1", 4)
+    assert len(stage4_commands) >= 1
+
+
+def test_target_reached_stop_condition_emitted(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn)
+    _insert_run_config(conn, job_id="job-1", rc_id="rc-4",
+                       source_profile="springboot-2.7-java11",
+                       target_profile="springboot-3.5-java17",
+                       policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}))
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(
+            stdout=[json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"],
+            stderr=[],
+            exit_code=0,
+        ),
+        cwd=tmp_path,
+    )
+    setattr(runner, "_last_stdout_lines", [json.dumps(_success_result(sandbox_path="/tmp/stage-2"))])
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=2,
+        command_id="cmd-1",
+        exit_code=0,
+        result=_success_result(sandbox_path="/tmp/stage-2"),
+        stderr="",
+        command_phase=None,
+    )
+    _wait_for_event(conn, "job-1", "target_reached")
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    target_events = [e for e in events if e.type == "target_reached"]
+    assert len(target_events) >= 1
+    payload = json.loads(target_events[0].payload_json or "{}")
+    assert payload.get("reason") == "target_reached"
+    route = payload.get("route", {})
+    assert route.get("source_profile") == "springboot-2.7-java11"
+    assert route.get("target_profile") == "springboot-3.5-java17"

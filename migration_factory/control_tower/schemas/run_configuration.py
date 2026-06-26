@@ -56,6 +56,8 @@ class RunConfiguration(StrictModel):
     target_proof_level: TargetProofLevel
     enabled_gates: tuple[str, ...] = Field(default_factory=tuple)
     policy: RunPolicy
+    source_profile: str = ""
+    target_profile: str = ""
 
     @field_validator(
         "target_proof_level",

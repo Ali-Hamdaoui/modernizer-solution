@@ -1049,6 +1049,10 @@ class V2OrchestratorRunner:
     ) -> None:
         from migration_factory.control_tower.application.v2_stage_progression import (
             V2StageProgressionService,
+            compute_profile_route,
+            evaluate_auto_continue,
+            is_target_reached,
+            route_to_dict,
         )
         from migration_factory.control_tower.application.v2_phase_gate_service import (
             CreateGateRequest,
@@ -1071,14 +1075,29 @@ class V2OrchestratorRunner:
                 # Load stage continuation policy from run configuration
                 raw_policy = StageContinuationPolicy.AUTO_ON_GREEN
                 run_config = uow.run_configurations.get_for_job(job_id)
-                if run_config is not None and run_config.policy_json:
-                    try:
-                        import json
-                        policy_dict = json.loads(run_config.policy_json)
-                        policy = RunPolicy(**policy_dict)
-                        raw_policy = policy.stage_continuation_policy
-                    except (json.JSONDecodeError, Exception):
-                        pass
+                source_profile = "springboot-2.7-java11"
+                target_profile = "springboot-4.0-java21"
+                if run_config is not None:
+                    if run_config.policy_json:
+                        try:
+                            import json
+                            policy_dict = json.loads(run_config.policy_json)
+                            policy = RunPolicy(**policy_dict)
+                            raw_policy = policy.stage_continuation_policy
+                        except (json.JSONDecodeError, Exception):
+                            pass
+                    if run_config.payload_json:
+                        try:
+                            import json
+                            payload = json.loads(run_config.payload_json)
+                            if payload.get("source_profile"):
+                                source_profile = str(payload["source_profile"])
+                            if payload.get("target_profile"):
+                                target_profile = str(payload["target_profile"])
+                        except (json.JSONDecodeError, Exception):
+                            pass
+
+                route = compute_profile_route(source_profile, target_profile)
 
                 # Resolve effective policy:
                 # For MANUAL_ON_WARNING_OR_FAILURE, check if the result has
@@ -1104,11 +1123,15 @@ class V2OrchestratorRunner:
                     sandbox_path=sandbox_path,
                     stage_continuation_policy=effective_policy,
                     current_stage_result=result,
+                    profile_route=route,
                 )
 
-                # Handle blocked policy: create stage_completion_review gate
+                # Handle blocked policy or target_reached
                 if queued.status == "blocked":
                     import json
+                    from migration_factory.control_tower.domain.gate_checksum import (
+                        gate_checksum,
+                    )
 
                     # Compute source artifact checksum from result if available
                     source_checksum = ""
@@ -1118,18 +1141,23 @@ class V2OrchestratorRunner:
                             sha256_canonical_json,
                         )
                         source_checksum = sha256_canonical_json(result)
-                        # Extract artifact refs
                         refs_dict = result.get("artifact_refs") if isinstance(result.get("artifact_refs"), dict) else {}
                         ref_values = [str(v) for v in refs_dict.values() if v and isinstance(v, str)]
                         if sandbox_path:
                             ref_values.append(sandbox_path)
                         artifact_refs = tuple(sorted(ref_values))
 
-                    # Determine gate phase based on stage index
-                    # Stage 1 (analysis) → analysis_review
-                    # Stage 2 (planning) → planning_review
-                    # Stage 3 (completion) → stage_completion_review
-                    if stage_index == 1:
+                    # Determine event type and gate phase based on reason + stage
+                    reason = queued.reason
+                    if reason == "target_reached":
+                        gate_phase = "stage_completion_review"
+                        event_type = "target_reached"
+                        phase_label = "target"
+                    elif reason == "profile_incompatible":
+                        gate_phase = "stage_completion_review"
+                        event_type = "profile_incompatible"
+                        phase_label = "profile"
+                    elif stage_index == 1:
                         gate_phase = "analysis_review"
                         event_type = "analysis_review_required"
                         phase_label = "analysis"
@@ -1142,7 +1170,6 @@ class V2OrchestratorRunner:
                         event_type = "stage_completion_review_required"
                         phase_label = "stage"
 
-                    # Create the gate (no event_repo — events emitted manually)
                     gate_service = V2PhaseGateService(
                         gate_repo=uow.phase_gates,
                     )
@@ -1155,7 +1182,6 @@ class V2OrchestratorRunner:
                         created_by="system",
                     ))
 
-                    # Emit gate lifecycle events for SSE/assistant context
                     uow.v2_events.save(
                         job_id=job_id,
                         stage=stage_index,
@@ -1172,23 +1198,38 @@ class V2OrchestratorRunner:
                         },
                     )
 
+                    route_payload = route_to_dict(route) if route.valid else {}
+                    if reason == "target_reached":
+                        target_msg = (
+                            f"Target profile '{target_profile}' reached at stage {stage_index}. "
+                            f"No further stages will execute."
+                        )
+                    elif reason == "profile_incompatible":
+                        target_msg = (
+                            f"Source profile '{source_profile}' and target profile "
+                            f"'{target_profile}' form an incompatible pair. "
+                            f"Stage progression is blocked: {route.reason}"
+                        )
+                    else:
+                        target_msg = (
+                            f"Stage {stage_index} ({phase_label}) completed under manual policy. "
+                            f"{gate_phase} gate review required before "
+                            f"stage {next_stage} can start."
+                        )
                     uow.v2_events.save(
                         job_id=job_id,
                         stage=stage_index,
                         event_type=event_type,
                         status="blocked",
-                        message=(
-                            f"Stage {stage_index} ({phase_label}) completed under manual policy. "
-                            f"{gate_phase} gate review required before "
-                            f"stage {next_stage} can start."
-                        ),
+                        message=target_msg,
                         payload={
                             "from_stage": stage_index,
                             "to_stage": next_stage,
                             "gate_id": gate_result.gate_id,
                             "gate_checksum": gate_result.gate_checksum,
                             "gate_status": gate_result.status,
-                            "reason": queued.reason,
+                            "reason": reason,
+                            "route": route_payload,
                         },
                     )
                     return
