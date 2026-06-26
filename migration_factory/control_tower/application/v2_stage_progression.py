@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
@@ -49,6 +49,359 @@ STAGE_CONFIG = {
 RUNNER_MODULE = "migration_factory.orchestrator.runner"
 
 
+# ── profile route model (AMF-264 / F3-T3) ─────────────────────────
+
+_PROFILE_ORDERING: tuple[str, ...] = (
+    "springboot-2.7-java11",
+    "springboot-3.5-java17",
+    "springboot-3.5-java21",
+    "springboot-4.0-java21",
+)
+
+_PROFILE_TO_STAGE_INDEX: dict[str, int] = {
+    "springboot-2.7-java11": 1,
+    "springboot-3.5-java17": 2,
+    "springboot-3.5-java21": 3,
+    "springboot-4.0-java21": 4,
+}
+
+_KNOWN_SOURCE_PROFILES: frozenset[str] = frozenset({
+    "springboot-2.7-java11",
+    "springboot-3.5-java17",
+    "springboot-3.5-java21",
+})
+
+_KNOWN_TARGET_PROFILES: frozenset[str] = frozenset({
+    "springboot-3.5-java17",
+    "springboot-3.5-java21",
+    "springboot-4.0-java21",
+})
+
+_INVALID_ROUTE_REASONS: dict[str, str] = {
+    "source_unknown": "source profile is not recognized",
+    "target_unknown": "target profile is not recognized",
+    "reversed": "target profile must be higher than source profile",
+    "same_profile": "source and target profiles must be different",
+    "source_already_terminal": "source profile is already at the maximum supported level",
+}
+
+
+@dataclass(frozen=True)
+class ProfileRoute:
+    source_profile: str
+    target_profile: str
+    source_level: int
+    target_level: int
+    included_stages: tuple[int, ...]
+    excluded_stages: tuple[int, ...]
+    skipped_stages: tuple[int, ...]
+    valid: bool
+    reason: str = ""
+
+
+def compute_profile_route(
+    source_profile: str,
+    target_profile: str,
+) -> ProfileRoute:
+    if source_profile not in _KNOWN_SOURCE_PROFILES:
+        return ProfileRoute(
+            source_profile=source_profile,
+            target_profile=target_profile,
+            source_level=-1,
+            target_level=-1,
+            included_stages=(),
+            excluded_stages=(),
+            skipped_stages=(),
+            valid=False,
+            reason=_INVALID_ROUTE_REASONS["source_unknown"],
+        )
+
+    if target_profile not in _KNOWN_TARGET_PROFILES:
+        return ProfileRoute(
+            source_profile=source_profile,
+            target_profile=target_profile,
+            source_level=-1,
+            target_level=-1,
+            included_stages=(),
+            excluded_stages=(),
+            skipped_stages=(),
+            valid=False,
+            reason=_INVALID_ROUTE_REASONS["target_unknown"],
+        )
+
+    source_idx = _PROFILE_ORDERING.index(source_profile)
+    target_idx = _PROFILE_ORDERING.index(target_profile)
+
+    if target_idx <= source_idx:
+        if target_idx == source_idx:
+            reason = _INVALID_ROUTE_REASONS["same_profile"]
+        else:
+            reason = _INVALID_ROUTE_REASONS["reversed"]
+        return ProfileRoute(
+            source_profile=source_profile,
+            target_profile=target_profile,
+            source_level=source_idx,
+            target_level=target_idx,
+            included_stages=(),
+            excluded_stages=(),
+            skipped_stages=(),
+            valid=False,
+            reason=reason,
+        )
+
+    source_stage = _PROFILE_TO_STAGE_INDEX[source_profile]
+    target_stage = _PROFILE_TO_STAGE_INDEX[target_profile]
+
+    included = tuple(
+        stage for stage in STAGE_CONFIG
+        if source_stage < stage <= target_stage
+    )
+    excluded = tuple(
+        stage for stage in STAGE_CONFIG
+        if stage > target_stage
+    )
+    skipped = tuple(
+        stage for stage in STAGE_CONFIG
+        if stage <= source_stage
+    )
+
+    return ProfileRoute(
+        source_profile=source_profile,
+        target_profile=target_profile,
+        source_level=source_idx,
+        target_level=target_idx,
+        included_stages=included,
+        excluded_stages=excluded,
+        skipped_stages=skipped,
+        valid=True,
+    )
+
+
+def is_stage_included_in_route(route: ProfileRoute, stage_index: int) -> bool:
+    return route.valid and stage_index in route.included_stages
+
+
+def is_stage_excluded_from_route(route: ProfileRoute, stage_index: int) -> bool:
+    return route.valid and stage_index in route.excluded_stages
+
+
+def is_target_reached(route: ProfileRoute, current_stage: int) -> bool:
+    if not route.valid:
+        return True
+    return current_stage >= max(route.included_stages) if route.included_stages else True
+
+
+def route_to_dict(route: ProfileRoute) -> dict[str, Any]:
+    return {
+        "source_profile": route.source_profile,
+        "target_profile": route.target_profile,
+        "source_level": route.source_level,
+        "target_level": route.target_level,
+        "included_stages": list(route.included_stages),
+        "excluded_stages": list(route.excluded_stages),
+        "skipped_stages": list(route.skipped_stages),
+        "valid": route.valid,
+        "reason": route.reason,
+    }
+
+
+# ── stop-condition model (AMF-251 / F1-T6) ───────────────────────
+
+_STOP_CONDITION_EVENT_TYPES: dict[str, str] = {
+    "analysis_checkpoint": "analysis_review_required",
+    "planning_checkpoint": "planning_review_required",
+    "risk_detected": "risk_detected",
+    "build_failed": "build_failed",
+    "test_failed": "test_failed",
+    "target_reached": "target_reached",
+    "stale_artifact": "stale_artifact",
+    "reviewer_failed": "reviewer_failed",
+    "approval_required": "approval_required",
+    "user_stopped": "user_stopped",
+    "profile_incompatible": "profile_incompatible",
+    "target_overshoot_blocked": "target_overshoot_blocked",
+}
+
+_ALLOWED_ACTIONS_PER_CONDITION: dict[str, tuple[str, ...]] = {
+    "analysis_checkpoint": ("continue", "request_modification", "stop", "download_artifact"),
+    "planning_checkpoint": ("continue", "request_modification", "stop", "download_artifact"),
+    "risk_detected": ("continue_with_risk_acknowledgment", "stop", "download_artifact"),
+    "build_failed": ("stop", "download_artifact", "request_repair_review_future"),
+    "test_failed": ("stop", "download_artifact", "request_repair_review_future"),
+    "target_reached": ("stop", "download_artifact"),
+    "stale_artifact": ("stop", "request_modification"),
+    "reviewer_failed": ("stop", "download_artifact"),
+    "approval_required": ("continue", "stop", "request_modification"),
+    "user_stopped": ("resume", "stop"),
+    "profile_incompatible": ("stop",),
+    "target_overshoot_blocked": ("stop",),
+}
+
+_KNOWN_STOP_CONDITIONS: frozenset[str] = frozenset(_STOP_CONDITION_EVENT_TYPES.keys())
+
+
+@dataclass(frozen=True)
+class StopCondition:
+    name: str
+    event_type: str
+    allowed_actions: tuple[str, ...]
+    restorable: bool = False
+    repair_eligible: bool = False
+
+
+def get_stop_condition(name: str) -> StopCondition | None:
+    if name not in _KNOWN_STOP_CONDITIONS:
+        return None
+    return StopCondition(
+        name=name,
+        event_type=_STOP_CONDITION_EVENT_TYPES[name],
+        allowed_actions=_ALLOWED_ACTIONS_PER_CONDITION.get(name, ()),
+        restorable=name in ("analysis_checkpoint", "planning_checkpoint", "user_stopped", "approval_required"),
+        repair_eligible=name in ("build_failed", "test_failed"),
+    )
+
+
+def get_all_stop_conditions() -> tuple[StopCondition, ...]:
+    return tuple(
+        StopCondition(
+            name=name,
+            event_type=_STOP_CONDITION_EVENT_TYPES[name],
+            allowed_actions=_ALLOWED_ACTIONS_PER_CONDITION.get(name, ()),
+            restorable=name in ("analysis_checkpoint", "planning_checkpoint", "user_stopped", "approval_required"),
+            repair_eligible=name in ("build_failed", "test_failed"),
+        )
+        for name in _KNOWN_STOP_CONDITIONS
+    )
+
+
+# ── auto-continue policy (AMF-250 / F1-T5) ───────────────────────
+
+@dataclass(frozen=True)
+class AutoContinueDecision:
+    should_continue: bool
+    stop_condition: str | None = None
+    reason: str = ""
+
+
+def evaluate_auto_continue(
+    *,
+    current_stage: int,
+    route: ProfileRoute,
+    policy: StageContinuationPolicy,
+    result: dict[str, Any] | None = None,
+    has_risk: bool = False,
+    has_reviewer_failure: bool = False,
+    has_stale_artifact: bool = False,
+    has_approval_required: bool = False,
+    has_user_stopped: bool = False,
+    is_profile_incompatible: bool = False,
+) -> AutoContinueDecision:
+    from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy as SCP
+
+    forced_stops: list[tuple[str, str]] = []
+    if is_profile_incompatible:
+        forced_stops.append(("profile_incompatible", "source/target profile pair is incompatible"))
+    if has_user_stopped:
+        forced_stops.append(("user_stopped", "user has explicitly stopped the pipeline"))
+    if has_approval_required:
+        forced_stops.append(("approval_required", "human approval is required before continuing"))
+    if has_stale_artifact:
+        forced_stops.append(("stale_artifact", "artifact evidence is stale"))
+    if has_reviewer_failure:
+        forced_stops.append(("reviewer_failed", "reviewer LLM failed to produce valid critique"))
+    if has_risk:
+        forced_stops.append(("risk_detected", "migration risk was detected"))
+
+    if result is not None:
+        build_status = str(result.get("build_status", "")).strip()
+        test_status = str(result.get("test_status", "")).strip()
+        if _is_failure_status(build_status):
+            forced_stops.append(("build_failed", f"build failed: {build_status}"))
+        if _is_failure_status(test_status):
+            forced_stops.append(("test_failed", f"test failed: {test_status}"))
+
+    if forced_stops:
+        return AutoContinueDecision(
+            should_continue=False,
+            stop_condition=forced_stops[0][0],
+            reason=forced_stops[0][1],
+        )
+
+    if is_target_reached(route, current_stage):
+        return AutoContinueDecision(
+            should_continue=False,
+            stop_condition="target_reached",
+            reason="selected target profile has been reached",
+        )
+
+    if current_stage == 1:
+        return AutoContinueDecision(
+            should_continue=False,
+            stop_condition="analysis_checkpoint",
+            reason="analysis checkpoint requires user review",
+        )
+    if current_stage == 2:
+        return AutoContinueDecision(
+            should_continue=False,
+            stop_condition="planning_checkpoint",
+            reason="planning checkpoint requires user review",
+        )
+
+    if policy in (SCP.MANUAL, SCP.MANUAL_ON_WARNING_OR_FAILURE):
+        has_warnings = bool(result) and _result_has_warnings_static(result)
+        if policy == SCP.MANUAL or has_warnings:
+            return AutoContinueDecision(
+                should_continue=False,
+                stop_condition="approval_required",
+                reason="stage_continuation_policy_manual" if policy == SCP.MANUAL else "stage_continuation_policy_warning_or_failure",
+            )
+
+    return AutoContinueDecision(should_continue=True)
+
+
+def _is_failure_status(value: str) -> bool:
+    text = value.upper()
+    if not text:
+        return False
+    _TERMINAL_FAILURES = {
+        "BUILD_FAILED_IN_SANDBOX",
+        "TEST_FAILED",
+        "TEST_FAILED_IN_SANDBOX",
+        "FALLBACK_REPAIR_PLAN",
+        "TRANSFORM_FAILED",
+        "FAILED",
+        "FAIL",
+    }
+    if text in _TERMINAL_FAILURES:
+        return True
+    if "FAILED" in text or text.endswith("_FAIL") or text == "FAIL":
+        return True
+    if "FALLBACK_REPAIR_PLAN" in text:
+        return True
+    return False
+
+
+def _result_has_warnings_static(result: dict[str, Any] | None) -> bool:
+    if result is None:
+        return False
+    test_status = str(result.get("test_status", "")).strip()
+    if test_status == "PASS_WITH_WARNINGS":
+        return True
+    build_status = str(result.get("build_status", "")).strip()
+    if build_status == "PASS_WITH_WARNINGS":
+        return True
+    orchestration_status = str(result.get("orchestration_status", "")).strip()
+    if orchestration_status == "PASS_WITH_WARNINGS":
+        return True
+    explicit_warnings = result.get("warnings")
+    if explicit_warnings:
+        if isinstance(explicit_warnings, (list, tuple)) and len(explicit_warnings) > 0:
+            return True
+        if isinstance(explicit_warnings, str) and explicit_warnings.strip():
+            return True
+    return False
+
+
 def is_terminal_stage(stage_index: int) -> bool:
     return stage_index == TERMINAL_STAGE_INDEX
 
@@ -79,6 +432,19 @@ class V2StageProgressionService:
         self._command_repo = command_repo
         self._artifact_revision_repo = artifact_revision_repo
 
+    def compute_route_for_job(
+        self,
+        job_id: str,
+        run_config: Any | None = None,
+    ) -> ProfileRoute:
+        source = run_config.source_profile if run_config is not None and hasattr(run_config, "source_profile") else ""
+        target = run_config.target_profile if run_config is not None and hasattr(run_config, "target_profile") else ""
+        if not source:
+            source = "springboot-2.7-java11"
+        if not target:
+            target = "springboot-4.0-java21"
+        return compute_profile_route(str(source), str(target))
+
     def queue_next_stage(
         self,
         job_id: str,
@@ -89,6 +455,7 @@ class V2StageProgressionService:
         gate_id: str | None = None,
         decision_id: str | None = None,
         current_stage_result: dict[str, Any] | None = None,
+        profile_route: ProfileRoute | None = None,
     ) -> StageContinuationResult:
         """Queue the next stage from the current stage sandbox.
 
@@ -102,6 +469,7 @@ class V2StageProgressionService:
             decision_id: Optional decision ID that resolved the gate.
             current_stage_result: Optional backend-owned result already validated
                 by the runner for the completed stage.
+            profile_route: Optional pre-computed ProfileRoute for target-stop enforcement.
 
         Returns:
             StageContinuationResult with the next stage details.
@@ -111,10 +479,39 @@ class V2StageProgressionService:
                         missing setup, sandbox path issues).
         """
         next_stage = current_stage + 1
+
+        route = profile_route or compute_profile_route("springboot-2.7-java11", "springboot-4.0-java21")
+
         if next_stage not in STAGE_CONFIG:
             raise ValueError(
                 f"Cannot progress from stage {current_stage}: "
                 f"stage {next_stage} is not a valid target"
+            )
+
+        if not route.valid:
+            return StageContinuationResult(
+                continuation_id=uuid4().hex,
+                job_id=job_id,
+                from_stage=current_stage,
+                to_stage=next_stage,
+                sandbox_path=sandbox_path,
+                argv=(),
+                status="blocked",
+                reason="profile_incompatible",
+                command_id=None,
+            )
+
+        if is_stage_excluded_from_route(route, next_stage):
+            return StageContinuationResult(
+                continuation_id=uuid4().hex,
+                job_id=job_id,
+                from_stage=current_stage,
+                to_stage=next_stage,
+                sandbox_path=sandbox_path,
+                argv=(),
+                status="blocked",
+                reason="target_reached",
+                command_id=None,
             )
 
         policy = _coerce_stage_continuation_policy(stage_continuation_policy)
@@ -233,6 +630,7 @@ class V2StageProgressionService:
         decision_id: str,
         stage_continuation_policy: StageContinuationPolicy | str = StageContinuationPolicy.AUTO_ON_GREEN,
         current_stage_result: dict[str, Any] | None = None,
+        profile_route: ProfileRoute | None = None,
     ) -> StageContinuationResult:
         """Queue next stage tracking the gate decision that triggered it.
 
@@ -251,6 +649,7 @@ class V2StageProgressionService:
             gate_id=gate_id,
             decision_id=decision_id,
             current_stage_result=current_stage_result,
+            profile_route=profile_route,
         )
 
     def validate_stage_chain(
@@ -372,6 +771,7 @@ class V2StageProgressionService:
         current_stage: int,
         stage_continuation_policy: StageContinuationPolicy | str = StageContinuationPolicy.AUTO_ON_GREEN,
         current_stage_result: dict[str, Any] | None = None,
+        profile_route: ProfileRoute | None = None,
     ) -> StageContinuationResult:
         """Queue next stage using persisted output from the prior stage.
 
@@ -384,6 +784,7 @@ class V2StageProgressionService:
             setup_id: The setup ID to load paths from.
             current_stage: The completed stage.
             stage_continuation_policy: Backend-owned policy.
+            profile_route: Optional pre-computed ProfileRoute for target-stop enforcement.
 
         Returns:
             StageContinuationResult with resolved sandbox_path, or
@@ -412,6 +813,7 @@ class V2StageProgressionService:
             sandbox_path=sandbox_path,
             stage_continuation_policy=stage_continuation_policy,
             current_stage_result=current_stage_result,
+            profile_route=profile_route,
         )
 
     def _validate_stage4_input(
