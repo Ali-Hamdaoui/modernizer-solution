@@ -913,6 +913,11 @@ class V2StageProgressionService:
         return test_status in {"PASS", "TEST_PASSED", "PASS_WITH_WARNINGS"}
 
     def continuation_to_dict(self, result: StageContinuationResult) -> dict[str, Any]:
+        """Internal diagnostic projection.
+
+        This includes backend execution details and must not be returned from
+        product API/frontend contracts.
+        """
         return {
             "continuation_id": result.continuation_id,
             "job_id": result.job_id,
@@ -920,6 +925,18 @@ class V2StageProgressionService:
             "to_stage": result.to_stage,
             "sandbox_path": result.sandbox_path,
             "argv": list(result.argv),
+            "status": result.status,
+            "reason": result.reason,
+            "command_id": result.command_id,
+        }
+
+    def continuation_to_public_dict(self, result: StageContinuationResult) -> dict[str, Any]:
+        """Safe product projection for stage continuation responses."""
+        return {
+            "continuation_id": result.continuation_id,
+            "job_id": result.job_id,
+            "from_stage": result.from_stage,
+            "to_stage": result.to_stage,
             "status": result.status,
             "reason": result.reason,
             "command_id": result.command_id,

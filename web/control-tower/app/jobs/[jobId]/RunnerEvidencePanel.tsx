@@ -48,7 +48,7 @@ const RUNNER_EVIDENCE: RunnerEvidence[] = [
   },
   {
     category: "Launch",
-    description: "Worker process starts with backend-owned argv/env",
+    description: "Worker process starts from a backend-owned manifest",
     expected: "launched",
     observed: "launched",
     passed: true,

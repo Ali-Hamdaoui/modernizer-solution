@@ -163,6 +163,7 @@ def test_health_check_no_secret_values(tmp_path: Path) -> None:
     # No secret values should appear
     assert "sk-" not in json_str
     assert "api_key" not in json_str.lower() if json_str else True
+    assert "env_ref" not in json_str
 
 
 def test_get_latest_health(tmp_path: Path) -> None:
@@ -235,6 +236,7 @@ def test_health_check_endpoint(tmp_path: Path) -> None:
     assert "roles" in body
     assert "proposer" in body["roles"]
     assert "fallback" in body["roles"]
+    assert "env_ref" not in str(body)
 
 
 def test_health_check_endpoint_no_secrets(tmp_path: Path) -> None:
@@ -246,6 +248,7 @@ def test_health_check_endpoint_no_secrets(tmp_path: Path) -> None:
     json_str = str(response.json())
     assert "sk-" not in json_str
     assert "api_key=" not in json_str.lower()
+    assert "env_ref" not in json_str
 
 
 def test_get_health_endpoint(tmp_path: Path) -> None:

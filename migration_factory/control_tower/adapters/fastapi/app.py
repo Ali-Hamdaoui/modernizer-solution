@@ -557,7 +557,6 @@ class StageProgressRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     setup_id: str
     current_stage: int
-    sandbox_path: str | None = None
 
 
 class AssistantMessageRequest(BaseModel):
@@ -2888,52 +2887,23 @@ def create_app(
         job_id: str,
         payload: StageProgressRequest,
     ) -> dict[str, Any]:
-        """Auto-queue the next stage from the current stage sandbox.
+        """Auto-queue the next stage from persisted backend evidence.
 
         Stage 2 input = Stage 1 sandbox.
         Stage 3 input = Stage 2 sandbox.
         No Boot 4 path. No user-selected stage inputs.
-
-        F15: For manual/F15 policy, client sandbox_path is rejected.
-        Backend resolves sandbox_path from persisted stage output.
         """
         with unit_of_work_factory() as uow:
-            # F15: Reject client-provided sandbox_path for manual policy
-            resolved_sandbox_path = payload.sandbox_path
-            if resolved_sandbox_path is not None:
-                rc = uow.run_configurations.get_for_job(job_id)
-                if rc is not None:
-                    try:
-                        policy_json = json.loads(rc.policy_json)
-                        continuation_policy = policy_json.get("stage_continuation_policy", "")
-                        if continuation_policy in ("manual", "f15"):
-                            raise _error(
-                                status.HTTP_400_BAD_REQUEST,
-                                "CLIENT_SANDBOX_PATH_REJECTED",
-                                f"Client sandbox_path not allowed for {continuation_policy} policy. "
-                                "Backend resolves from persisted stage output.",
-                            )
-                    except (json.JSONDecodeError, TypeError, AttributeError):
-                        pass
-            # If no sandbox_path provided, resolve from latest command output
-            if resolved_sandbox_path is None:
-                commands = uow.v2_commands.list_by_job(job_id)
-                stage_commands = [c for c in commands if c.stage_index == payload.current_stage]
-                if stage_commands:
-                    latest = max(stage_commands, key=lambda c: c.created_at)
-                    resolved_sandbox_path = latest.output_root_dir or latest.sandbox_root_dir
-
             service = V2StageProgressionService(
                 setup_repo=uow.v2_setups,
                 command_repo=uow.v2_commands,
                 artifact_revision_repo=uow.artifact_revisions,
             )
             try:
-                result = service.queue_next_stage(
+                result = service.queue_next_stage_from_persisted(
                     job_id=job_id,
                     setup_id=payload.setup_id,
                     current_stage=payload.current_stage,
-                    sandbox_path=resolved_sandbox_path or "",
                 )
             except ValueError as exc:
                 raise _error(
@@ -2941,7 +2911,7 @@ def create_app(
                     "STAGE_PROGRESSION_FAILED",
                     str(exc),
                 ) from exc
-        return service.continuation_to_dict(result)
+        return service.continuation_to_public_dict(result)
 
     # ------------------------------------------------------------------
     # F14 — Stage 3 POM Dependency Review + Apply + Validate + Rollback
@@ -3111,7 +3081,7 @@ def create_app(
                 {
                     "profile_id": p.profile_id,
                     "display_name": p.display_name,
-                    "provider_kind": p.provider_kind,
+                    "status": "active" if p.is_active else "inactive",
                     "is_active": p.is_active,
                     "created_at": p.created_at,
                 }
@@ -3132,10 +3102,7 @@ def create_app(
         return {
             "profile_id": record.profile_id,
             "display_name": record.display_name,
-            "provider_kind": record.provider_kind,
-            "model_env_ref": record.model_env_ref,
-            "endpoint_env_ref": record.endpoint_env_ref,
-            "deployment_env_ref": record.deployment_env_ref,
+            "status": "active" if record.is_active else "inactive",
             "is_active": record.is_active,
             "created_at": record.created_at,
             "created_by": record.created_by,
@@ -3146,24 +3113,38 @@ def create_app(
         request: Request,
     ) -> dict[str, Any]:
         body: dict[str, Any] = await request.json()
+        forbidden_public_fields = {
+            "provider_kind",
+            "model_env_ref",
+            "endpoint_env_ref",
+            "deployment_env_ref",
+            "provider",
+            "endpoint",
+            "deployment",
+            "env_ref",
+        }
+        provided_forbidden = sorted(forbidden_public_fields.intersection(body))
+        if provided_forbidden:
+            raise _error(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "FORBIDDEN_PUBLIC_FIELDS",
+                "Model runtime fields are backend-internal and are not accepted by this product API.",
+            )
         profile_id: str = body.get("profile_id", "")
         display_name: str = body.get("display_name", "")
-        provider_kind: str = body.get("provider_kind", "fake")
-        model_env_ref: str = body.get("model_env_ref", "")
-        endpoint_env_ref: str = body.get("endpoint_env_ref", "")
-        deployment_env_ref: str = body.get("deployment_env_ref", "")
+        provider_kind = "fake"
+        model_env_ref = "V1_MODEL_NAME"
+        endpoint_env_ref = "V1_MODEL_ENDPOINT"
+        deployment_env_ref = "V1_MODEL_DEPLOYMENT"
         actor_id: str = body.get("actor_id", "api")
         correlation_id: str | None = body.get("correlation_id")
 
-        if not profile_id or not display_name or not model_env_ref:
+        if not profile_id or not display_name:
             raise _error(
                 status.HTTP_400_BAD_REQUEST,
                 "INVALID_REQUEST",
-                "profile_id, display_name, and model_env_ref are required",
+                "profile_id and display_name are required",
             )
-
-        if provider_kind not in ("fake", "azure_openai"):
-            provider_kind = "fake"
 
         service = ControlTowerRegistrationService(unit_of_work_factory)
         record = service.register_model_profile(
@@ -3180,7 +3161,7 @@ def create_app(
         return {
             "profile_id": record.profile_id,
             "display_name": record.display_name,
-            "provider_kind": record.provider_kind,
+            "status": "active" if record.is_active else "inactive",
             "is_active": record.is_active,
             "created_at": record.created_at,
         }
@@ -3197,7 +3178,6 @@ def create_app(
                     "invocation_id": inv.invocation_id,
                     "job_id": inv.job_id,
                     "profile_id": inv.profile_id,
-                    "provider_kind": inv.provider_kind,
                     "model_name": inv.model_name,
                     "prompt_tokens": inv.prompt_tokens,
                     "completion_tokens": inv.completion_tokens,
@@ -3218,7 +3198,6 @@ def create_app(
                 {
                     "invocation_id": inv.invocation_id,
                     "profile_id": inv.profile_id,
-                    "provider_kind": inv.provider_kind,
                     "model_name": inv.model_name,
                     "prompt_tokens": inv.prompt_tokens,
                     "completion_tokens": inv.completion_tokens,

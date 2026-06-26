@@ -180,6 +180,49 @@ def _success_result(**overrides: Any) -> dict[str, Any]:
     return result
 
 
+def _reviewed_phase_result(*, phase: str = "analysis", decision: str = "accept", **overrides: Any) -> dict[str, Any]:
+    """Synthetic reviewed result used to test runner-side validation only.
+
+    The production Analysis/Planning producers do not yet create this shape.
+    These tests prove the runner fails closed or opens gates when such a
+    reviewed result is supplied.
+    """
+    det = f"det-{phase}-checksum"
+    pri = f"primary-{phase}-checksum"
+    rev = f"reviewer-{phase}-checksum"
+    final = f"final-{phase}-checksum"
+    result: dict[str, Any] = {
+        "job_id": "job-1",
+        "orchestration_status": "PASS",
+        "sandbox_path": "/tmp/sandbox",
+        "artifact_refs": {
+            "deterministic_artifact": f".migration/{phase}/deterministic.json",
+            "primary_llm_output": f".migration/{phase}/primary.json",
+            "reviewer_llm_output": f".migration/{phase}/reviewer.json",
+            "final_reviewed_markdown": f".migration/{phase}/final-reviewed.md",
+        },
+        "review_chain": {
+            "job_id": "job-1",
+            "deterministic_artifact_ref": f".migration/{phase}/deterministic.json",
+            "deterministic_artifact_checksum": det,
+            "primary_input_checksum": f"primary-input-{phase}",
+            "primary_output_ref": f".migration/{phase}/primary.json",
+            "primary_output_checksum": pri,
+            "reviewer_input_checksum": f"reviewer-input-{phase}",
+            "reviewer_output_checksum": rev,
+            "reviewer_decision": decision,
+            "review_confidence": 0.92,
+            "reviewed_artifact_checksum": det,
+            "reviewed_primary_output_checksum": pri,
+            "final_markdown_ref": f".migration/{phase}/final-reviewed.md",
+            "final_markdown_checksum": final,
+            "reviewer_notes": ["grounded in deterministic artifact"],
+        },
+    }
+    result.update(overrides)
+    return result
+
+
 def _run_success_chain(tmp_path: Path, conn: sqlite3.Connection) -> tuple[_SequentialFakePopen, list[Any]]:
     _seed_stage_pipeline(conn)
     popen = _SequentialFakePopen([
@@ -207,6 +250,15 @@ def _wait_for_stage4_command(conn: sqlite3.Connection, job_id: str = "job-1") ->
             return
         time.sleep(0.05)
     raise AssertionError("Stage 4 command not persisted")
+
+
+def _wait_for_popen_call_containing(popen: _SequentialFakePopen, text: str) -> None:
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        if any(text in " ".join(call["argv"]) for call in popen.calls):
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"process launch containing {text!r} not observed")
 
 
 def test_v2_runner_launches_manifest_with_shell_false_and_safe_env(tmp_path: Path) -> None:
@@ -319,7 +371,7 @@ def test_v2_runner_maps_approval_interrupt_to_card_and_blocked_events(tmp_path: 
     assert len(uow2.v2_approvals.list_cards_by_status("pending")) == 1
 
 
-def test_v2_runner_passes_non_secret_copilot_env_and_excludes_secrets(monkeypatch, tmp_path: Path) -> None:
+def test_v2_runner_does_not_forward_copilot_env_to_product_subprocess(monkeypatch, tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _save_command(conn)
     monkeypatch.setenv("AI_MIGRATION_COPILOT_PROVIDER", "copilot_cli")
@@ -337,12 +389,12 @@ def test_v2_runner_passes_non_secret_copilot_env_and_excludes_secrets(monkeypatc
     _wait_for_event(conn, "job-1", "stage_completed")
 
     env = popen.calls[0]["env"]
-    assert env["AI_MIGRATION_COPILOT_PROVIDER"] == "copilot_cli"
-    assert env["AI_MIGRATION_COPILOT_MODEL"] == "gpt-test"
+    assert "AI_MIGRATION_COPILOT_PROVIDER" not in env
+    assert "AI_MIGRATION_COPILOT_MODEL" not in env
     assert "AZURE_OPENAI_API_KEY" not in env
     assert "GITHUB_TOKEN" not in env
     event_types = [event.type for event in SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")]
-    assert "copilot_status_checked" in event_types
+    assert "copilot_status_checked" not in event_types
 
 
 def test_v2_runner_emits_failure_repair_events_from_result(tmp_path: Path) -> None:
@@ -353,7 +405,6 @@ def test_v2_runner_emits_failure_repair_events_from_result(tmp_path: Path) -> No
         "build_status": "BUILD_FAILED_IN_SANDBOX",
         "final_proof_level": "not_verified",
         "repair_loop_status": "FALLBACK_REPAIR_PLAN",
-        "copilot_invocation_status": "INVALID_RESPONSE",
         "repair_fallback_generated": True,
         "sandbox_path": "/tmp/sandbox",
         "artifact_refs": {"analysis_report": "C:/out/.migration/runs/run-1/report.json"},
@@ -375,7 +426,165 @@ def test_v2_runner_emits_failure_repair_events_from_result(tmp_path: Path) -> No
     assert "transform_failed" in event_types
     assert "repair_started" in event_types
     assert "repair_fallback_generated" in event_types
-    assert "copilot_repair_invalid_response" in event_types
+    assert "stage_failed" in event_types
+    assert "copilot_repair_invalid_response" not in event_types
+
+
+def test_analysis_reviewed_result_validation_requires_final_reviewed_markdown(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=1,
+        command_id="cmd-1",
+        exit_code=0,
+        result=_reviewed_phase_result(phase="analysis"),
+        stderr="",
+        command_phase="analysis",
+    )
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [event.type for event in events]
+    assert "analysis_review_required" in event_types
+    assert "reviewer_failed" not in event_types
+    gate = SqliteUnitOfWork(conn).phase_gates.list_open("job-1")[0]
+    assert gate.gate_phase == "analysis_review"
+    assert "final-reviewed.md" in gate.source_artifact_refs_json
+
+
+def test_planning_reviewed_result_validation_requires_final_reviewed_markdown(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=2,
+        command_id="cmd-1",
+        exit_code=0,
+        result=_reviewed_phase_result(phase="planning"),
+        stderr="",
+        command_phase="planning",
+    )
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [event.type for event in events]
+    assert "planning_review_required" in event_types
+    assert "reviewer_failed" not in event_types
+    gate = SqliteUnitOfWork(conn).phase_gates.list_open("job-1")[0]
+    assert gate.gate_phase == "planning_review"
+    assert "final-reviewed.md" in gate.source_artifact_refs_json
+
+
+def test_missing_reviewer_fails_closed_for_phase_checkpoint(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+    result = _reviewed_phase_result(phase="analysis")
+    result.pop("review_chain")
+
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=1,
+        command_id="cmd-1",
+        exit_code=0,
+        result=result,
+        stderr="",
+        command_phase="analysis",
+    )
+
+    event_types = [event.type for event in SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")]
+    assert "reviewer_failed" in event_types
+    assert "analysis_review_required" not in event_types
+
+
+def test_rejected_or_revision_reviewed_result_blocks_checkpoint(tmp_path: Path) -> None:
+    for decision in ("reject", "request_revision"):
+        case_dir = tmp_path / decision
+        case_dir.mkdir()
+        conn = _conn(case_dir)
+        runner = V2OrchestratorRunner(
+            unit_of_work_factory=lambda conn=conn: SqliteUnitOfWork(conn),
+            popen_factory=_FakePopen(stdout=[], stderr=[], exit_code=0),
+            cwd=tmp_path,
+        )
+
+        runner._handle_exit(
+            job_id="job-1",
+            stage_index=1,
+            command_id="cmd-1",
+            exit_code=0,
+            result=_reviewed_phase_result(phase="analysis", decision=decision),
+            stderr="",
+            command_phase="analysis",
+        )
+
+        event_types = [event.type for event in SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")]
+        assert "reviewer_failed" in event_types
+        assert "analysis_review_required" not in event_types
+
+
+def test_stale_or_checksum_mismatched_reviewer_fails_closed(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+    result = _reviewed_phase_result(phase="planning")
+    result["review_chain"]["reviewed_primary_output_checksum"] = "stale-primary"
+
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=2,
+        command_id="cmd-1",
+        exit_code=0,
+        result=result,
+        stderr="",
+        command_phase="planning",
+    )
+
+    event_types = [event.type for event in SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")]
+    assert "reviewer_failed" in event_types
+    assert "planning_review_required" not in event_types
+
+
+def test_raw_primary_output_is_not_downstream_checkpoint_input(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+    result = _reviewed_phase_result(phase="analysis")
+    result["artifact_refs"].pop("final_reviewed_markdown")
+
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=1,
+        command_id="cmd-1",
+        exit_code=0,
+        result=result,
+        stderr="",
+        command_phase="analysis",
+    )
+
+    event_types = [event.type for event in SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")]
+    assert "reviewer_failed" in event_types
+    assert "analysis_review_required" not in event_types
 
 
 def test_v2_runner_does_not_auto_queue_next_stage_on_failure(tmp_path: Path) -> None:
@@ -767,6 +976,7 @@ def test_stage3_pass_contract_queues_stage4(tmp_path: Path) -> None:
 
     runner.start(job_id="job-1", command_id="cmd-1")
     _wait_for_stage4_command(conn)
+    _wait_for_popen_call_containing(popen, "v2-job-1-s4")
 
     commands = SqliteUnitOfWork(conn).v2_commands.list_by_job("job-1")
     stage4_commands = [command for command in commands if command.stage_index == 4]

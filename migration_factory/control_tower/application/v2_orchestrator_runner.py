@@ -499,6 +499,35 @@ class V2OrchestratorRunner:
             result["sandbox_path"] = sandbox_path
 
         # ── Phase-specific handling: planning bypasses full-stage proof ──
+        if command_phase == "analysis":
+            self._emit_artifacts(
+                job_id=job_id,
+                stage_index=stage_index,
+                command_id=command_id,
+                result=result,
+            )
+            orchestration_status = str(result.get("orchestration_status", ""))
+            if orchestration_status == "PASS":
+                self._handle_reviewed_phase_completed(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    command_id=command_id,
+                    result=result,
+                    phase="analysis",
+                    gate_phase="analysis_review",
+                    required_event_type="analysis_review_required",
+                )
+            else:
+                self._event(
+                    job_id=job_id,
+                    stage=stage_index,
+                    event_type="stage_failed",
+                    status="failed",
+                    message=f"Analysis phase did not produce valid proof: orchestration_status={orchestration_status}",
+                    payload={"command_id": command_id, "orchestration_status": orchestration_status},
+                )
+            return
+
         if command_phase == "planning":
             self._emit_artifacts(
                 job_id=job_id,
@@ -508,11 +537,14 @@ class V2OrchestratorRunner:
             )
             orchestration_status = str(result.get("orchestration_status", ""))
             if orchestration_status == "PASS" and sandbox_path:
-                self._handle_planning_phase_completed(
+                self._handle_reviewed_phase_completed(
                     job_id=job_id,
                     stage_index=stage_index,
                     command_id=command_id,
                     result=result,
+                    phase="planning",
+                    gate_phase="planning_review",
+                    required_event_type="planning_review_required",
                 )
             else:
                 self._emit_diagnostic_failure_events(
@@ -1375,52 +1407,104 @@ class V2OrchestratorRunner:
         if result is None:
             return
 
+        self._handle_reviewed_phase_completed(
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            result=result,
+            phase="planning",
+            gate_phase="planning_review",
+            required_event_type="planning_review_required",
+        )
+        return
+
+    def _handle_reviewed_phase_completed(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        result: dict[str, Any],
+        phase: str,
+        gate_phase: str,
+        required_event_type: str,
+    ) -> None:
+        from migration_factory.control_tower.application.v2_review_chain_contracts import (
+            validate_runtime_review_chain_result,
+        )
+
+        failures = validate_runtime_review_chain_result(
+            result,
+            phase=phase,
+            stage_index=stage_index,
+        )
+        if failures:
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="reviewer_failed",
+                status="failed",
+                message=f"{phase.title()} review chain failed closed.",
+                payload={"command_id": command_id, "failures": failures},
+            )
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="stage_failed",
+                status="failed",
+                message=f"{phase.title()} phase missing accepted checksum-bound reviewer output.",
+                payload={"command_id": command_id, "review_chain_failed": True},
+            )
+            return
+
         self._event(
             job_id=job_id,
             stage=stage_index,
-            event_type="planning_started",
+            event_type=f"{phase}_started",
             status="running",
-            message="Planning phase started.",
+            message=f"{phase.title()} phase started.",
             payload={"command_id": command_id},
         )
         self._event(
             job_id=job_id,
             stage=stage_index,
-            event_type="planning_completed",
+            event_type=f"{phase}_completed",
             status="completed",
-            message="Planning phase completed.",
+            message=f"{phase.title()} phase completed.",
             payload={"command_id": command_id},
         )
 
-        # Collect planning artifact refs from orchestrator result
-        planning_artifacts: dict[str, str] = {}
+        # Collect reviewed phase artifact refs from orchestrator result.
+        phase_artifacts: dict[str, str] = {}
         artifact_refs = result.get("artifact_refs") if isinstance(result.get("artifact_refs"), dict) else {}
         if artifact_refs:
-            planning_artifacts = {str(k): str(v) for k, v in artifact_refs.items() if v}
+            phase_artifacts = {str(k): str(v) for k, v in artifact_refs.items() if v}
 
-        # Compute source checksum from result (planning output evidence)
+        # Compute source checksum from result (reviewed output evidence)
         from migration_factory.control_tower.domain.checksums import sha256_canonical_json
         source_checksum = sha256_canonical_json(result)
 
         # Build artifact refs tuple
-        ref_values = list(planning_artifacts.values())
+        ref_values = list(phase_artifacts.values())
         sandbox_path = _result_sandbox_path(result)
         if sandbox_path and sandbox_path not in ref_values:
             ref_values.append(sandbox_path)
         artifact_refs_tuple = tuple(sorted(ref_values))
 
         # Emit artifact written events
-        for kind, path in planning_artifacts.items():
+        for kind, path in phase_artifacts.items():
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="artifact_written",
                 status="completed",
-                message=f"Planning artifact: {kind}",
+                message=f"{phase.title()} artifact: {kind}",
                 payload={"command_id": command_id, "artifact_kind": kind, "relative_path": _safe_artifact_ref(path)},
             )
 
-        # Create planning_review gate AFTER real planning artifacts exist
+        # Create the review gate only after the supplied phase result has
+        # passed the reviewed-output contract. Production Analysis/Planning
+        # producer integration for creating this chain remains separate.
         with self._unit_of_work_factory() as uow:
             from migration_factory.control_tower.application.v2_phase_gate_service import (
                 CreateGateRequest,
@@ -1430,7 +1514,7 @@ class V2OrchestratorRunner:
 
             gate_result = gate_service.create_gate(CreateGateRequest(
                 job_id=job_id,
-                gate_phase="planning_review",
+                gate_phase=gate_phase,
                 stage_index=stage_index,
                 source_artifact_checksum=source_checksum,
                 source_artifact_refs=artifact_refs_tuple,
@@ -1443,22 +1527,22 @@ class V2OrchestratorRunner:
                     stage=stage_index,
                     event_type="f15_gate_opened",
                     status="open",
-                    message=f"planning_review gate opened for stage {stage_index}",
+                    message=f"{gate_phase} gate opened for stage {stage_index}",
                     payload={
                         "gate_id": gate_result.gate_id,
                         "gate_checksum": gate_result.gate_checksum,
-                        "gate_phase": "planning_review",
+                        "gate_phase": gate_phase,
                         "stage_index": stage_index,
                     },
                 )
                 uow.v2_events.save(
                     job_id=job_id,
                     stage=stage_index,
-                    event_type="planning_review_required",
+                    event_type=required_event_type,
                     status="blocked",
                     message=(
-                        f"Stage {stage_index} planning completed. "
-                        f"planning_review gate review required before proceeding."
+                        f"Stage {stage_index} {phase} completed with reviewed Markdown. "
+                        f"{gate_phase} gate review required before proceeding."
                     ),
                     payload={
                         "from_stage": stage_index,
