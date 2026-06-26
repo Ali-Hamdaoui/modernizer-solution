@@ -20,6 +20,14 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository
 from migration_factory.control_tower.infrastructure.sqlite.v2_artifact_revision_repository import (
     SqliteArtifactRevisionRepository,
 )
+from migration_factory.control_tower.schemas.profile_model import (
+    default_source_profile_id,
+    default_target_profile_id,
+    get_migration_profile,
+    is_selectable_source_profile,
+    is_selectable_target_profile,
+    list_migration_profiles,
+)
 from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
 
 
@@ -51,31 +59,14 @@ RUNNER_MODULE = "migration_factory.orchestrator.runner"
 
 # ── profile route model (AMF-264 / F3-T3) ─────────────────────────
 
-_PROFILE_ORDERING: tuple[str, ...] = (
-    "springboot-2.7-java11",
-    "springboot-3.5-java17",
-    "springboot-3.5-java21",
-    "springboot-4.0-java21",
+_PROFILE_ORDERING: tuple[str, ...] = tuple(
+    profile.profile_id for profile in list_migration_profiles()
 )
 
 _PROFILE_TO_STAGE_INDEX: dict[str, int] = {
-    "springboot-2.7-java11": 1,
-    "springboot-3.5-java17": 2,
-    "springboot-3.5-java21": 3,
-    "springboot-4.0-java21": 4,
+    profile.profile_id: profile.stage_index
+    for profile in list_migration_profiles()
 }
-
-_KNOWN_SOURCE_PROFILES: frozenset[str] = frozenset({
-    "springboot-2.7-java11",
-    "springboot-3.5-java17",
-    "springboot-3.5-java21",
-})
-
-_KNOWN_TARGET_PROFILES: frozenset[str] = frozenset({
-    "springboot-3.5-java17",
-    "springboot-3.5-java21",
-    "springboot-4.0-java21",
-})
 
 _INVALID_ROUTE_REASONS: dict[str, str] = {
     "source_unknown": "source profile is not recognized",
@@ -103,7 +94,7 @@ def compute_profile_route(
     source_profile: str,
     target_profile: str,
 ) -> ProfileRoute:
-    if source_profile not in _KNOWN_SOURCE_PROFILES:
+    if not is_selectable_source_profile(source_profile):
         return ProfileRoute(
             source_profile=source_profile,
             target_profile=target_profile,
@@ -116,7 +107,7 @@ def compute_profile_route(
             reason=_INVALID_ROUTE_REASONS["source_unknown"],
         )
 
-    if target_profile not in _KNOWN_TARGET_PROFILES:
+    if not is_selectable_target_profile(target_profile):
         return ProfileRoute(
             source_profile=source_profile,
             target_profile=target_profile,
@@ -129,8 +120,35 @@ def compute_profile_route(
             reason=_INVALID_ROUTE_REASONS["target_unknown"],
         )
 
-    source_idx = _PROFILE_ORDERING.index(source_profile)
-    target_idx = _PROFILE_ORDERING.index(target_profile)
+    source_definition = get_migration_profile(source_profile)
+    target_definition = get_migration_profile(target_profile)
+    if source_definition is None:
+        return ProfileRoute(
+            source_profile=source_profile,
+            target_profile=target_profile,
+            source_level=-1,
+            target_level=-1,
+            included_stages=(),
+            excluded_stages=(),
+            skipped_stages=(),
+            valid=False,
+            reason=_INVALID_ROUTE_REASONS["source_unknown"],
+        )
+    if target_definition is None:
+        return ProfileRoute(
+            source_profile=source_profile,
+            target_profile=target_profile,
+            source_level=-1,
+            target_level=-1,
+            included_stages=(),
+            excluded_stages=(),
+            skipped_stages=(),
+            valid=False,
+            reason=_INVALID_ROUTE_REASONS["target_unknown"],
+        )
+
+    source_idx = source_definition.order_index
+    target_idx = target_definition.order_index
 
     if target_idx <= source_idx:
         if target_idx == source_idx:
@@ -440,9 +458,9 @@ class V2StageProgressionService:
         source = run_config.source_profile if run_config is not None and hasattr(run_config, "source_profile") else ""
         target = run_config.target_profile if run_config is not None and hasattr(run_config, "target_profile") else ""
         if not source:
-            source = "springboot-2.7-java11"
+            source = default_source_profile_id()
         if not target:
-            target = "springboot-4.0-java21"
+            target = default_target_profile_id()
         return compute_profile_route(str(source), str(target))
 
     def queue_next_stage(
@@ -480,7 +498,7 @@ class V2StageProgressionService:
         """
         next_stage = current_stage + 1
 
-        route = profile_route or compute_profile_route("springboot-2.7-java11", "springboot-4.0-java21")
+        route = profile_route or compute_profile_route(default_source_profile_id(), default_target_profile_id())
 
         if next_stage not in STAGE_CONFIG:
             raise ValueError(

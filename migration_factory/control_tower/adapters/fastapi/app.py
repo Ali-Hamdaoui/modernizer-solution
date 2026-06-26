@@ -110,6 +110,7 @@ from migration_factory.control_tower.infrastructure.singleton import (
     controller_resource_path_from_unit_of_work_factory,
     create_controller_ownership,
 )
+from migration_factory.control_tower.schemas.profile_model import MigrationProfileId
 from migration_factory.control_tower.schemas.run_configuration import RunPolicy
 from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
 from migration_factory.control_tower.application.env_parser import (
@@ -508,6 +509,8 @@ class PreflightRequest(BaseModel):
 class CreateV2JobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     setup_id: str
+    source_profile: MigrationProfileId | None = None
+    target_profile: MigrationProfileId | None = None
     policy: RunPolicy | None = None
 
 
@@ -1186,7 +1189,12 @@ def create_app(
                 pipeline_repo=uow.pipeline_definitions,
             )
             try:
-                result = service.create_job(payload.setup_id, policy=payload.policy)
+                result = service.create_job(
+                    payload.setup_id,
+                    policy=payload.policy,
+                    source_profile=payload.source_profile,
+                    target_profile=payload.target_profile,
+                )
             except ValueError as exc:
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,
