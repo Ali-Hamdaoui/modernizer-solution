@@ -69,6 +69,12 @@ class ArtifactRevision(StrictModel):
     # The gate where this revision was accepted (if applicable).
     accepted_at_gate_id: str | None = None
 
+    # ── profile metadata (F3-T6) ────────────────────────────────────
+    # Source and target profiles in effect when this artifact revision
+    # was produced. None when profile routing is not yet configured.
+    source_profile: str | None = None
+    target_profile: str | None = None
+
     # ── timestamps & actor ─────────────────────────────────────────
     created_at: str
     created_by: NonEmptyString

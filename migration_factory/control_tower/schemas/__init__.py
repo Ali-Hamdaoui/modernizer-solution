@@ -43,6 +43,10 @@ from .profile_api_contract import (
     validate_profile_api_payload,
     redact_forbidden_profile_fields,
 )
+from .profile_checkpoint_metadata import (
+    PROFILE_CHECKPOINT_FIELDS,
+    CheckpointProfileMetadata,
+)
 from .run_configuration import (
     RunConfiguration,
     RunPolicy,
@@ -70,6 +74,7 @@ __all__ = [
     "ArtifactRevision",
     "ArtifactRevisionKind",
     "ArtifactRevisionStatus",
+    "CheckpointProfileMetadata",
     "FilesystemPolicy",
     "FORBIDDEN_PROFILE_API_FIELDS",
     "GateDecision",
@@ -94,6 +99,7 @@ __all__ = [
     "PipelineStage",
     "PipelineStageDefinition",
     "PipelineTarget",
+    "PROFILE_CHECKPOINT_FIELDS",
     "RegisteredFilesystemRoot",
     "RegisteredRoot",
     "RunConfiguration",
