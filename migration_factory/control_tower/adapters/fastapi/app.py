@@ -159,6 +159,7 @@ from migration_factory.control_tower.application.v2_model_schemas import (
     SchemaValidationError,
 )
 from migration_factory.control_tower.application.v2_repair_flow import (
+    RepairContextBindingError,
     V2RepairFlowService,
 )
 from migration_factory.control_tower.application.v2_repair_gate_service import (
@@ -2866,6 +2867,9 @@ def create_app(
             service = V2RepairFlowService(
                 repair_repo=uow.v2_repairs,
                 reviewer_service=reviewer_service,
+                job_repo=uow.v2_jobs,
+                setup_repo=uow.v2_setups,
+                command_repo=uow.v2_commands,
             )
             try:
                 context = service.prepare_apply_context(
@@ -2884,6 +2888,12 @@ def create_app(
                     evidence_refs=payload.evidence_refs,
                     approval_scope=payload.approval_scope,
                 )
+            except RepairContextBindingError as exc:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "REPAIR_CONTEXT_BINDING_FAILED",
+                    str(exc),
+                ) from exc
             except ValueError as exc:
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,

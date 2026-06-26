@@ -587,6 +587,115 @@ def test_prepare_apply_context_persists_repair_review_context(tmp_path: Path) ->
     assert json.loads(loaded.evidence_refs_json) == {"build_error": "artifact://build-error.json"}
 
 
+def test_prepare_apply_context_fails_closed_when_command_missing(tmp_path: Path) -> None:
+    conn = sqlite3.connect(
+        str(tmp_path / "missing-command.sqlite3"),
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+
+    apply_pending_migrations(conn)
+    service = V2RepairFlowService(
+        repair_repo=SqliteV2RepairRepository(conn),
+        reviewer_service=v2_repair_flow.V2ReviewerService(
+            reviewer_repo=SqliteV2ReviewerRepository(conn)
+        ),
+        job_repo=SqliteV2JobRepository(conn),
+        setup_repo=SqliteV2SetupRepository(conn),
+        command_repo=SqliteV2CommandRepository(conn),
+    )
+    proposal = _proposal(service)
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        decision="accept",
+        reasoning="Looks good",
+    )
+
+    with pytest.raises(v2_repair_flow.RepairContextBindingError, match="Command 'cmd-1' not found"):
+        service.prepare_apply_context(
+            proposal_id=proposal.proposal_id,
+            command_id=proposal.command_id,
+            proposal_checksum="pc-test",
+            context_pack_checksum="cp-test",
+            reviewer_critique_id=critique.critique_id,
+            proposer_invocation_id="proposer-invoke-1",
+            reviewer_invocation_id="reviewer-invoke-1",
+            patch_preview=_h2_patch(),
+            target_path="pom.xml",
+            sandbox_reference=str(tmp_path / "sandbox"),
+            sandbox_checksum="sandbox-chk",
+            legacy_checksum="legacy-chk",
+            evidence_refs={"build_error": "artifact://build-error.json"},
+        )
+
+
+def test_prepare_apply_context_requires_durable_command_sandbox_binding(tmp_path: Path) -> None:
+    conn, service, sandbox = _bound_repair_repo_service(tmp_path)
+    proposal = _proposal(service)
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        decision="accept",
+        reasoning="Looks good",
+    )
+
+    context = service.prepare_apply_context(
+        proposal_id=proposal.proposal_id,
+        command_id=proposal.command_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        reviewer_critique_id=critique.critique_id,
+        proposer_invocation_id="proposer-invoke-1",
+        reviewer_invocation_id="reviewer-invoke-1",
+        patch_preview=_h2_patch(),
+        target_path="pom.xml",
+        sandbox_reference=str(sandbox),
+        sandbox_checksum="sandbox-chk",
+        legacy_checksum="legacy-chk",
+        evidence_refs={"build_error": "artifact://build-error.json"},
+    )
+
+    assert context.sandbox_reference == str(sandbox)
+    assert context.approval_eligible is True
+
+
+def test_prepare_apply_context_rejects_sandbox_reference_mismatch(tmp_path: Path) -> None:
+    conn, service, sandbox = _bound_repair_repo_service(tmp_path)
+    proposal = _proposal(service)
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        decision="accept",
+        reasoning="Looks good",
+    )
+    other_sandbox = tmp_path / "other-sandbox"
+    other_sandbox.mkdir()
+
+    with pytest.raises(v2_repair_flow.RepairContextBindingError, match="does not match command sandbox"):
+        service.prepare_apply_context(
+            proposal_id=proposal.proposal_id,
+            command_id=proposal.command_id,
+            proposal_checksum="pc-test",
+            context_pack_checksum="cp-test",
+            reviewer_critique_id=critique.critique_id,
+            proposer_invocation_id="proposer-invoke-1",
+            reviewer_invocation_id="reviewer-invoke-1",
+            patch_preview=_h2_patch(),
+            target_path="pom.xml",
+            sandbox_reference=str(other_sandbox),
+            sandbox_checksum="sandbox-chk",
+            legacy_checksum="legacy-chk",
+            evidence_refs={"build_error": "artifact://build-error.json"},
+        )
+
+
 def test_prepare_apply_context_fails_closed_without_accept(tmp_path: Path) -> None:
     conn, service = _repair_repo_service(tmp_path)
     proposal = _proposal(service)
@@ -1278,6 +1387,96 @@ def _repair_repo_service(tmp_path: Path) -> tuple[sqlite3.Connection, V2RepairFl
         reviewer_service=v2_repair_flow.V2ReviewerService(reviewer_repo=reviewer_repo),
     )
     return conn, service
+
+
+def _bound_repair_repo_service(
+    tmp_path: Path,
+) -> tuple[sqlite3.Connection, V2RepairFlowService, Path]:
+    conn = sqlite3.connect(
+        str(tmp_path / "bound-repair-context.sqlite3"),
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+
+    apply_pending_migrations(conn)
+    repair_repo = SqliteV2RepairRepository(conn)
+    reviewer_repo = SqliteV2ReviewerRepository(conn)
+    setup_repo = SqliteV2SetupRepository(conn)
+    job_repo = SqliteV2JobRepository(conn)
+    command_repo = SqliteV2CommandRepository(conn)
+    service = V2RepairFlowService(
+        repair_repo=repair_repo,
+        reviewer_service=v2_repair_flow.V2ReviewerService(reviewer_repo=reviewer_repo),
+        job_repo=job_repo,
+        setup_repo=setup_repo,
+        command_repo=command_repo,
+    )
+    legacy = tmp_path / "legacy"
+    output_root = tmp_path / "out"
+    run_id = "run-bound"
+    sandbox = output_root / ".migration" / "runs" / run_id / "sandbox"
+    legacy.mkdir(parents=True)
+    sandbox.mkdir(parents=True)
+    setup_repo.save(
+        V2MigrationSetupRecord(
+            setup_id="setup-bound",
+            run_name="bound",
+            legacy_app_path=str(legacy),
+            output_parent_path=str(output_root),
+            ai_hub_path=str(tmp_path / "ai"),
+            java11_home="C:/java11",
+            java17_home="C:/java17",
+            java21_home="C:/java21",
+            maven_cmd="mvn",
+            proof_level="build_test_verified",
+            skip_endpoint_smoke=False,
+            migration_flags_json="{}",
+            setup_checksum="setup-chk",
+            checksum_algorithm="sha256",
+            created_at="2026-06-18T00:00:00Z",
+            created_by="test",
+            correlation_id=None,
+        )
+    )
+    job_repo.save(
+        V2MigrationJobRecord(
+            job_id="job-bound",
+            setup_id="setup-bound",
+            setup_checksum="setup-chk",
+            pipeline_id="pipe-bound",
+            stage_chain_json="[]",
+            status="created",
+            created_at="2026-06-18T00:00:00Z",
+            updated_at="2026-06-18T00:00:00Z",
+            correlation_id=None,
+        )
+    )
+    command_repo.save(
+        V2StageCommandRecord(
+            command_id="cmd-1",
+            job_id="job-bound",
+            stage_index=3,
+            manifest_checksum="manifest-chk",
+            argv_json="[]",
+            env_json="{}",
+            status="failed",
+            created_at="2026-06-18T00:00:00Z",
+            updated_at="2026-06-18T00:00:00Z",
+            result_json=json.dumps(
+                {
+                    "run_id": run_id,
+                    "sandbox_path": str(sandbox),
+                    "modernized_app_path": str(output_root),
+                }
+            ),
+            gate_id=None,
+            decision_id=None,
+        )
+    )
+    return conn, service, sandbox
 
 
 def _approve(service: V2RepairFlowService, proposal_id: str):

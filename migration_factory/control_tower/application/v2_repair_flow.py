@@ -49,6 +49,10 @@ ValidationRunner = Callable[..., ValidationResult]
 RepairEventRecorder = Callable[[str, dict[str, Any]], None]
 
 
+class RepairContextBindingError(ValueError):
+    """Raised when a repair-review context is not bound to durable run state."""
+
+
 @dataclass(frozen=True)
 class RepairProposal:
     proposal_id: str
@@ -412,6 +416,10 @@ class V2RepairFlowService:
             raise ValueError("Repair apply context requires a legacy checksum")
         if not evidence_refs:
             raise ValueError("Repair apply context requires evidence references")
+        self._validate_prepare_binding(
+            command_id=command_id,
+            sandbox_reference=sandbox_reference,
+        )
 
         critique = self._reviewer.get_critique(reviewer_critique_id)
         if critique is None:
@@ -467,6 +475,91 @@ class V2RepairFlowService:
         )
         self._save_context(context)
         return context
+
+    def _validate_prepare_binding(
+        self,
+        *,
+        command_id: str,
+        sandbox_reference: str,
+    ) -> None:
+        if self._job_repo is None and self._setup_repo is None and self._command_repo is None:
+            return
+        if self._job_repo is None or self._setup_repo is None or self._command_repo is None:
+            raise RepairContextBindingError(
+                "Repair apply context requires job, setup, and command repositories"
+            )
+        command = self._command_repo.get(command_id)
+        if command is None:
+            raise RepairContextBindingError(f"Command {command_id!r} not found")
+        if not str(command.job_id or "").strip():
+            raise RepairContextBindingError(f"Command {command_id!r} is missing job_id")
+        job = self._job_repo.get(command.job_id)
+        if job is None:
+            raise RepairContextBindingError(
+                f"Job {command.job_id!r} not found for command {command_id!r}"
+            )
+        setup = self._setup_repo.get(job.setup_id)
+        if setup is None:
+            raise RepairContextBindingError(
+                f"Setup {job.setup_id!r} not found for job {job.job_id!r}"
+            )
+        legacy_path = Path(str(setup.legacy_app_path or ""))
+        if not legacy_path.is_absolute():
+            raise RepairContextBindingError("Repair apply context requires absolute legacy path")
+
+        result_data: dict[str, Any] = {}
+        if command.result_json:
+            try:
+                parsed = json.loads(command.result_json)
+                if isinstance(parsed, dict):
+                    result_data = parsed
+            except (json.JSONDecodeError, TypeError):
+                result_data = {}
+        run_id = str(result_data.get("run_id") or "").strip()
+        output_root = str(
+            result_data.get("modernized_app_path")
+            or result_data.get("output_root_dir")
+            or setup.output_parent_path
+            or ""
+        ).strip()
+        if not run_id:
+            raise RepairContextBindingError(
+                f"Command {command_id!r} result is missing run_id"
+            )
+        if not output_root or not Path(output_root).is_absolute():
+            raise RepairContextBindingError(
+                f"Command {command_id!r} cannot resolve absolute output root"
+            )
+
+        command_sandbox = str(
+            result_data.get("sandbox_path")
+            or result_data.get("modernized_app_path")
+            or result_data.get("output_app_path")
+            or ""
+        ).strip()
+        if not command_sandbox:
+            raise RepairContextBindingError(
+                f"Command {command_id!r} result is missing sandbox path"
+            )
+        command_sandbox_path = Path(command_sandbox)
+        if not command_sandbox_path.is_absolute():
+            raise RepairContextBindingError(
+                f"Command {command_id!r} sandbox path must be absolute"
+            )
+        requested_sandbox_path = Path(sandbox_reference)
+        if not requested_sandbox_path.is_absolute():
+            raise RepairContextBindingError(
+                "Repair apply context requires absolute sandbox reference"
+            )
+        try:
+            if command_sandbox_path.resolve() != requested_sandbox_path.resolve():
+                raise RepairContextBindingError(
+                    "Repair apply context sandbox reference does not match command sandbox"
+                )
+        except OSError as exc:
+            raise RepairContextBindingError(
+                "Repair apply context sandbox reference could not be resolved"
+            ) from exc
 
     def record_approval_only(
         self,

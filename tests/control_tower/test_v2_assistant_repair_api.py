@@ -1942,6 +1942,73 @@ class TestRepairAPI:
         assert response.status_code == 409
         assert "REPAIR_APPROVE_APPLY_DISABLED" in response.text
 
+    def test_prepare_apply_context_fails_without_durable_command_binding(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        client, conn = _api_client(tmp_path)
+        create_response = client.post(
+            "/v1/v2/commands/cmd-orphan/repair/flow-proposal",
+            json={
+                "command_id": "cmd-orphan",
+                "failure_summary": "Orphan command",
+                "hypothesis": "No durable command row",
+                "patch_summary": "Do not prepare apply context",
+                "affected_paths": ["pom.xml"],
+            },
+            headers=_mutation_headers(),
+        )
+        assert create_response.status_code == 200, create_response.text
+        proposal = create_response.json()
+
+        from migration_factory.control_tower.application.v2_reviewer_service import (
+            V2ReviewerService,
+        )
+        from migration_factory.control_tower.infrastructure.sqlite.v2_reviewer_repository import (
+            SqliteV2ReviewerRepository,
+        )
+
+        reviewer_service = V2ReviewerService(
+            reviewer_repo=SqliteV2ReviewerRepository(conn)
+        )
+        reviewer_service.record_critique(
+            proposal_id=proposal["proposal_id"],
+            proposal_type="repair",
+            proposal_checksum=proposal["proposal_checksum"],
+            context_pack_checksum="cp-orphan",
+            decision="accept",
+            reasoning="Technically accepted but not command-bound.",
+            missing_evidence=(),
+            unsafe_assumptions=(),
+        )
+        critique_id = reviewer_service.check_reviewer_gate(
+            proposal_id=proposal["proposal_id"],
+            proposal_checksum=proposal["proposal_checksum"],
+            context_pack_checksum="cp-orphan",
+        ).critique_id
+
+        response = client.post(
+            f"/v1/v2/commands/cmd-orphan/repair/proposal/{proposal['proposal_id']}/prepare-apply-context",
+            json={
+                "proposal_checksum": proposal["proposal_checksum"],
+                "context_pack_checksum": "cp-orphan",
+                "reviewer_critique_id": critique_id,
+                "proposer_invocation_id": "proposer-invoke-1",
+                "reviewer_invocation_id": "reviewer-invoke-1",
+                "patch_preview": _h2_patch(),
+                "target_path": "pom.xml",
+                "sandbox_reference": str(tmp_path / "sandbox"),
+                "sandbox_checksum": "sandbox-chk",
+                "legacy_checksum": "legacy-chk",
+                "evidence_refs": {"patch_draft": "artifact://patch_draft_1.json"},
+            },
+            headers=_mutation_headers(),
+        )
+
+        assert response.status_code == 400
+        assert "REPAIR_CONTEXT_BINDING_FAILED" in response.text
+        assert "Command 'cmd-orphan' not found" in response.text
+
     def test_proposal_persistence(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)
         # Create proposal
