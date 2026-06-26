@@ -31,6 +31,11 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository imp
     SqliteV2JobRepository,
     V2MigrationJobRecord,
 )
+from migration_factory.control_tower.schemas.profile_model import (
+    MigrationProfileId,
+    default_source_profile_id,
+    default_target_profile_id,
+)
 from migration_factory.control_tower.schemas.run_configuration import (
     RunConfiguration,
     RunPolicy,
@@ -56,6 +61,8 @@ class V2MigrationJobResult:
     pipeline_id: str
     stages: tuple[dict[str, Any], ...]
     created_at: str
+    source_profile: str
+    target_profile: str
     stage_continuation_policy: str = StageContinuationPolicy.AUTO_ON_GREEN.value
     run_configuration_id: str = ""
 
@@ -83,7 +90,14 @@ class V2MigrationJobService:
         self._runner_profile_repo = runner_profile_repo
         self._pipeline_repo = pipeline_repo
 
-    def create_job(self, setup_id: str, policy: RunPolicy | None = None) -> V2MigrationJobResult:
+    def create_job(
+        self,
+        setup_id: str,
+        policy: RunPolicy | None = None,
+        *,
+        source_profile: MigrationProfileId | None = None,
+        target_profile: MigrationProfileId | None = None,
+    ) -> V2MigrationJobResult:
         """Create a V2 parent migration job from a ready setup.
 
         Validates that the setup exists, has a current preflight with
@@ -114,7 +128,9 @@ class V2MigrationJobService:
                 f"Setup {setup_id!r} is not ready. Blocked gates: {blocked}"
             )
 
-        # Create job
+        resolved_source_profile = source_profile or default_source_profile_id()
+        resolved_target_profile = target_profile or default_target_profile_id()
+
         job_id = uuid4().hex
         now = utc_now_text()
         effective_policy = policy if policy is not None else RunPolicy()
@@ -131,7 +147,6 @@ class V2MigrationJobService:
                 "chain_status": "queued" if idx == 1 else "pending",
             })
 
-        # Persist to database
         run_configuration_id = f"run-config-{job_id}"
         if self._job_repo is not None:
             record = V2MigrationJobRecord(
@@ -159,6 +174,8 @@ class V2MigrationJobService:
                 target_proof_level=TargetProofLevel.BUILD_TEST_VERIFIED,
                 enabled_gates=(),
                 policy=effective_policy,
+                source_profile=resolved_source_profile,
+                target_profile=resolved_target_profile,
             )
             run_config_payload_json = canonical_json_text(run_config_payload)
             run_config_checksum = sha256_canonical_json(run_config_payload)
@@ -194,6 +211,8 @@ class V2MigrationJobService:
             pipeline_id=PIPELINE_ID,
             stages=tuple(stages),
             created_at=now,
+            source_profile=resolved_source_profile,
+            target_profile=resolved_target_profile,
             stage_continuation_policy=effective_policy.stage_continuation_policy.value,
             run_configuration_id=run_configuration_id,
         )
@@ -236,16 +255,23 @@ class V2MigrationJobService:
             stages = []
         policy_value = StageContinuationPolicy.AUTO_ON_GREEN.value
         run_cfg_id = ""
+        source_profile = default_source_profile_id()
+        target_profile = default_target_profile_id()
         if self._run_config_repo is not None:
             run_config = self._run_config_repo.get_for_job(job_id)
-            if run_config is not None and run_config.policy_json:
+            if run_config is not None:
+                run_cfg_id = run_config.run_configuration_id
                 try:
                     policy_dict = json.loads(run_config.policy_json)
                     policy = RunPolicy(**policy_dict)
                     policy_value = policy.stage_continuation_policy.value
-                    run_cfg_id = run_config.run_configuration_id
                 except (json.JSONDecodeError, Exception):
                     pass
+                source_profile, target_profile = _extract_profiles_from_payload(
+                    run_config.payload_json,
+                    source_profile,
+                    target_profile,
+                )
         return V2MigrationJobResult(
             job_id=record.job_id,
             setup_id=record.setup_id,
@@ -253,6 +279,8 @@ class V2MigrationJobService:
             pipeline_id=record.pipeline_id,
             stages=tuple(stages),
             created_at=record.created_at,
+            source_profile=source_profile,
+            target_profile=target_profile,
             stage_continuation_policy=policy_value,
             run_configuration_id=run_cfg_id,
         )
@@ -268,19 +296,26 @@ class V2MigrationJobService:
                 stages = json.loads(r.stage_chain_json)
             except (json.JSONDecodeError, TypeError):
                 stages = []
-            # Look up run_configuration for actual stage_continuation_policy
             policy = StageContinuationPolicy.AUTO_ON_GREEN.value
             run_config_id = ""
+            source_profile = default_source_profile_id()
+            target_profile = default_target_profile_id()
             if self._run_config_repo is not None:
                 try:
                     rc = self._run_config_repo.get_for_job(r.job_id)
                     if rc is not None:
                         run_config_id = rc.run_configuration_id
                         rc_payload = json.loads(rc.payload_json)
-                        policy = rc_payload.get(
-                            "stage_continuation_policy",
-                            StageContinuationPolicy.AUTO_ON_GREEN.value,
-                        )
+                        policy_data = rc_payload.get("policy", {}) if isinstance(rc_payload, dict) else {}
+                        if isinstance(policy_data, dict):
+                            policy = str(
+                                policy_data.get(
+                                    "stage_continuation_policy",
+                                    StageContinuationPolicy.AUTO_ON_GREEN.value,
+                                )
+                            )
+                        source_profile = str(rc_payload.get("source_profile") or source_profile)
+                        target_profile = str(rc_payload.get("target_profile") or target_profile)
                 except (json.JSONDecodeError, TypeError, Exception):
                     pass
             results.append(V2MigrationJobResult(
@@ -290,6 +325,8 @@ class V2MigrationJobService:
                 pipeline_id=r.pipeline_id,
                 stages=tuple(stages),
                 created_at=r.created_at,
+                source_profile=source_profile,
+                target_profile=target_profile,
                 stage_continuation_policy=policy,
                 run_configuration_id=run_config_id,
             ))
@@ -301,6 +338,8 @@ class V2MigrationJobService:
             "setup_id": result.setup_id,
             "setup_checksum": result.setup_checksum,
             "pipeline_id": result.pipeline_id,
+            "source_profile": result.source_profile,
+            "target_profile": result.target_profile,
             "stages": [
                 {
                     "stage_index": s["stage_index"],
@@ -315,3 +354,19 @@ class V2MigrationJobService:
             "stage_continuation_policy": result.stage_continuation_policy,
             "run_configuration_id": result.run_configuration_id,
         }
+
+
+def _extract_profiles_from_payload(
+    payload_json: str,
+    default_source: str,
+    default_target: str,
+) -> tuple[str, str]:
+    try:
+        payload = json.loads(payload_json)
+    except (json.JSONDecodeError, TypeError):
+        return default_source, default_target
+    if not isinstance(payload, dict):
+        return default_source, default_target
+    source_profile = str(payload.get("source_profile") or default_source)
+    target_profile = str(payload.get("target_profile") or default_target)
+    return source_profile, target_profile

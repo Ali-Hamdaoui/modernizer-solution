@@ -100,6 +100,42 @@ def test_invalid_stage_continuation_policy_rejected() -> None:
         RunConfiguration.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    ("field_name", "profile_id"),
+    [
+        ("source_profile", "springboot-2.7-java11"),
+        ("target_profile", "springboot-3.5-java17"),
+    ],
+)
+def test_supported_profiles_are_accepted(field_name: str, profile_id: str) -> None:
+    payload = _run_configuration_payload()
+    payload[field_name] = profile_id
+
+    configuration = RunConfiguration.model_validate(payload)
+
+    assert getattr(configuration, field_name) == profile_id
+
+
+def test_blank_profiles_are_normalized_to_none() -> None:
+    payload = _run_configuration_payload()
+    payload["source_profile"] = "   "
+    payload["target_profile"] = ""
+
+    configuration = RunConfiguration.model_validate(payload)
+
+    assert configuration.source_profile is None
+    assert configuration.target_profile is None
+
+
+@pytest.mark.parametrize("field_name", ["source_profile", "target_profile"])
+def test_unknown_profiles_are_rejected(field_name: str) -> None:
+    payload = _run_configuration_payload()
+    payload[field_name] = "unsupported-profile"
+
+    with pytest.raises(ValidationError):
+        RunConfiguration.model_validate(payload)
+
+
 def test_strict_booleans_reject_string_values() -> None:
     payload = _run_configuration_payload()
     payload["policy"] = {"enable_runtime_gate": "true"}

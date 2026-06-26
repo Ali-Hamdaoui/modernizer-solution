@@ -24,6 +24,14 @@ from .phase_gate import (
     PhaseGate,
     is_valid_decision_for_phase,
 )
+from .profile_model import (
+    MigrationProfile,
+    MigrationProfileId,
+    default_source_profile_id,
+    default_target_profile_id,
+    get_migration_profile,
+    list_migration_profiles,
+)
 from .run_configuration import (
     RunConfiguration,
     RunPolicy,
@@ -61,6 +69,8 @@ __all__ = [
     "JdkInstallation",
     "MavenConfig",
     "MavenConfiguration",
+    "MigrationProfile",
+    "MigrationProfileId",
     "NetworkPolicy",
     "NonEmptyString",
     "PhaseGate",
@@ -78,5 +88,9 @@ __all__ = [
     "StageInputSource",
     "StrictModel",
     "TargetProofLevel",
+    "default_source_profile_id",
+    "default_target_profile_id",
+    "get_migration_profile",
     "is_valid_decision_for_phase",
+    "list_migration_profiles",
 ]

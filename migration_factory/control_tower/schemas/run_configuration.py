@@ -9,6 +9,7 @@ from pydantic import Field, field_validator
 from migration_factory.control_tower.domain.states import TargetProofLevel
 
 from .common import NonEmptyString, StrictModel, require_non_empty_string
+from .profile_model import MigrationProfileId, is_known_migration_profile
 
 
 class StageContinuationPolicy(str, Enum):
@@ -56,8 +57,8 @@ class RunConfiguration(StrictModel):
     target_proof_level: TargetProofLevel
     enabled_gates: tuple[str, ...] = Field(default_factory=tuple)
     policy: RunPolicy
-    source_profile: str = ""
-    target_profile: str = ""
+    source_profile: MigrationProfileId | None = None
+    target_profile: MigrationProfileId | None = None
 
     @field_validator(
         "target_proof_level",
@@ -87,3 +88,21 @@ class RunConfiguration(StrictModel):
     @classmethod
     def _validate_enabled_gates(cls, value: tuple[str, ...], info):
         return tuple(require_non_empty_string(item, info.field_name) for item in value)
+
+    @field_validator("source_profile", "target_profile", mode="before")
+    @classmethod
+    def _coerce_blank_profile_to_none(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("source_profile", "target_profile", mode="after")
+    @classmethod
+    def _validate_known_profile(cls, value: str | None, info):
+        if value is None:
+            return None
+        if not is_known_migration_profile(value):
+            raise ValueError(f"{info.field_name} must reference a supported migration profile")
+        return value

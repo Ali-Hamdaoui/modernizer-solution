@@ -346,6 +346,9 @@ def test_create_job_persists_run_configuration_and_defaults_auto_on_green_policy
     assert run_config_row["job_id"] == result.job_id
     assert run_config_row["runner_profile_id"] == "runner-default"
     assert run_config_row["pipeline_id"] == PIPELINE_ID
+    payload = json.loads(run_config_row["payload_json"])
+    assert payload["source_profile"] == "springboot-2.7-java11"
+    assert payload["target_profile"] == "springboot-4.0-java21"
     assert run_config_row["policy_json"] == canonical_json_text(
         {
             "continue_after_warning": False,
@@ -561,8 +564,42 @@ def test_create_job_endpoint_returns_201_with_seeded_dependencies(tmp_path: Path
     assert response.status_code == 201, response.text
     data = response.json()
     assert data["pipeline_id"] == PIPELINE_ID
+    assert data["source_profile"] == "springboot-2.7-java11"
+    assert data["target_profile"] == "springboot-4.0-java21"
     assert data["stage_continuation_policy"] == "auto_on_green"
     assert data["run_configuration_id"]
+
+
+def test_create_job_endpoint_accepts_explicit_profile_selection(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    _seed_exact_v2_dependencies(conn)
+
+    setup_repo = SqliteV2SetupRepository(conn)
+    setup_id, setup_checksum = _make_setup(setup_repo)
+    _save_ready_preflight(setup_repo, setup_id=setup_id, setup_checksum=setup_checksum)
+
+    response = client.post(
+        "/v1/v2/migration-jobs",
+        json={
+            "setup_id": setup_id,
+            "source_profile": "springboot-3.5-java17",
+            "target_profile": "springboot-4.0-java21",
+        },
+        headers=_mutation_headers(),
+    )
+    assert response.status_code == 201, response.text
+    data = response.json()
+    assert data["source_profile"] == "springboot-3.5-java17"
+    assert data["target_profile"] == "springboot-4.0-java21"
+
+    row = conn.execute(
+        "SELECT payload_json FROM run_configurations WHERE job_id = ?",
+        (data["job_id"],),
+    ).fetchone()
+    assert row is not None
+    payload = json.loads(row["payload_json"])
+    assert payload["source_profile"] == "springboot-3.5-java17"
+    assert payload["target_profile"] == "springboot-4.0-java21"
 
 
 def test_create_job_endpoint_accepts_explicit_auto_on_green_policy_contract(
@@ -740,6 +777,8 @@ def test_result_to_dict_has_correct_shape(tmp_path: Path) -> None:
              "input_source_kind": "stage_3_sandbox", "chain_status": "pending"},
         ),
         created_at="2026-06-13T00:00:00Z",
+        source_profile="springboot-2.7-java11",
+        target_profile="springboot-4.0-java21",
     )
     d = service.result_to_dict(result)
     assert d["job_id"] == "test-job-id"
