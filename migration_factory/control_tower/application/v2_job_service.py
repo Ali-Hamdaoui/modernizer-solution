@@ -37,6 +37,10 @@ from migration_factory.control_tower.schemas.profile_model import (
     default_target_profile_id,
 )
 from migration_factory.control_tower.schemas.profile_validation import validate_profile_pair
+from migration_factory.control_tower.application.v2_stage_progression import (
+    compute_profile_route,
+    route_to_dict,
+)
 from migration_factory.control_tower.schemas.run_configuration import (
     RunConfiguration,
     RunPolicy,
@@ -66,6 +70,11 @@ class V2MigrationJobResult:
     target_profile: str
     stage_continuation_policy: str = StageContinuationPolicy.AUTO_ON_GREEN.value
     run_configuration_id: str = ""
+    validation_status: str = "valid"
+    validation_reason: str = ""
+    included_stages: tuple[int, ...] = ()
+    excluded_stages: tuple[int, ...] = ()
+    skipped_stages: tuple[int, ...] = ()
 
 
 class V2MigrationJobService:
@@ -211,6 +220,9 @@ class V2MigrationJobService:
                     "runner profile or pipeline definition seed is missing."
                 ) from exc
 
+        route = compute_profile_route(resolved_source_profile, resolved_target_profile)
+        route_dict = route_to_dict(route)
+
         return V2MigrationJobResult(
             job_id=job_id,
             setup_id=setup_id,
@@ -222,6 +234,11 @@ class V2MigrationJobService:
             target_profile=resolved_target_profile,
             stage_continuation_policy=effective_policy.stage_continuation_policy.value,
             run_configuration_id=run_configuration_id,
+            validation_status="valid" if route.valid else "invalid",
+            validation_reason=route.reason if not route.valid else "",
+            included_stages=route.included_stages,
+            excluded_stages=route.excluded_stages,
+            skipped_stages=route.skipped_stages,
         )
 
     def _validate_run_configuration_dependencies(self, run_config: RunConfiguration) -> None:
@@ -279,6 +296,7 @@ class V2MigrationJobService:
                     source_profile,
                     target_profile,
                 )
+        route = compute_profile_route(source_profile, target_profile)
         return V2MigrationJobResult(
             job_id=record.job_id,
             setup_id=record.setup_id,
@@ -290,6 +308,11 @@ class V2MigrationJobService:
             target_profile=target_profile,
             stage_continuation_policy=policy_value,
             run_configuration_id=run_cfg_id,
+            validation_status="valid" if route.valid else "invalid",
+            validation_reason=route.reason if not route.valid else "",
+            included_stages=route.included_stages,
+            excluded_stages=route.excluded_stages,
+            skipped_stages=route.skipped_stages,
         )
 
     def list_jobs(self) -> tuple[V2MigrationJobResult, ...]:
@@ -325,6 +348,7 @@ class V2MigrationJobService:
                         target_profile = str(rc_payload.get("target_profile") or target_profile)
                 except (json.JSONDecodeError, TypeError, Exception):
                     pass
+            route = compute_profile_route(source_profile, target_profile)
             results.append(V2MigrationJobResult(
                 job_id=r.job_id,
                 setup_id=r.setup_id,
@@ -336,6 +360,11 @@ class V2MigrationJobService:
                 target_profile=target_profile,
                 stage_continuation_policy=policy,
                 run_configuration_id=run_config_id,
+                validation_status="valid" if route.valid else "invalid",
+                validation_reason=route.reason if not route.valid else "",
+                included_stages=route.included_stages,
+                excluded_stages=route.excluded_stages,
+                skipped_stages=route.skipped_stages,
             ))
         return tuple(results)
 
@@ -347,6 +376,11 @@ class V2MigrationJobService:
             "pipeline_id": result.pipeline_id,
             "source_profile": result.source_profile,
             "target_profile": result.target_profile,
+            "validation_status": result.validation_status,
+            "validation_reason": result.validation_reason if not result.validation_status == "valid" else "",
+            "included_stages": list(result.included_stages),
+            "excluded_stages": list(result.excluded_stages),
+            "skipped_stages": list(result.skipped_stages),
             "stages": [
                 {
                     "stage_index": s["stage_index"],
