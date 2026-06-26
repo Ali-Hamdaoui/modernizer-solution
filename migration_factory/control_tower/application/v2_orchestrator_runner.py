@@ -9,6 +9,7 @@ import sys
 import threading
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -17,7 +18,7 @@ from migration_factory.control_tower.application.redaction import (
     redact_public_value,
 )
 from migration_factory.control_tower.application.v2_approval_mapping import V2ApprovalMappingService
-from migration_factory.control_tower.domain.checksums import sha256_canonical_json
+from migration_factory.control_tower.domain.checksums import sha256_canonical_json, utc_now_text
 from migration_factory.control_tower.domain.gate_checksum import gate_checksum
 from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
     V2StageCommandRecord,
@@ -108,6 +109,17 @@ class V2OrchestratorStart:
     pid: int | None
     status: str
     message: str = ""
+
+
+@dataclass(frozen=True)
+class V2RunnerReconciliationResult:
+    command_id: str
+    job_id: str
+    reconciled: bool
+    reason: str
+    emitted_event_types: tuple[str, ...]
+    command_status: str
+    result_json_status: str | None = None
 
 
 class V2OrchestratorRunner:
@@ -296,6 +308,22 @@ class V2OrchestratorRunner:
                 errors="replace",
                 shell=False,
             )
+            process_id = getattr(process, "pid", None)
+            self._persist_command_runtime_state(
+                command_id=command_id,
+                status="running",
+                result={
+                    "runner_status": "running",
+                    "command_id": command_id,
+                    "job_id": job_id,
+                    "stage_index": stage_index,
+                    "pid": process_id,
+                    "started_at": utc_now_text(),
+                    "cwd": str(self._cwd),
+                    "shell": False,
+                    "final_json_found": False,
+                },
+            )
 
             self._event(
                 job_id=job_id,
@@ -303,7 +331,7 @@ class V2OrchestratorRunner:
                 event_type="process_started",
                 status="running",
                 message="Orchestrator subprocess is running.",
-                payload={"command_id": command_id, "pid": getattr(process, "pid", None)},
+                payload={"command_id": command_id, "pid": process_id},
             )
 
             out_thread = threading.Thread(
@@ -351,6 +379,19 @@ class V2OrchestratorRunner:
                 command_phase=command_phase,
             )
         except Exception as exc:
+            self._persist_command_runtime_state(
+                command_id=command_id,
+                status="failed",
+                result={
+                    "runner_status": "launch_failed",
+                    "command_id": command_id,
+                    "job_id": job_id,
+                    "stage_index": stage_index,
+                    "error": redact_model_summary(str(exc)),
+                    "final_json_found": False,
+                    "sandbox_path": None,
+                },
+            )
             self._event(
                 job_id=job_id,
                 stage=stage_index,
@@ -481,6 +522,22 @@ class V2OrchestratorRunner:
             }
             if result is None:
                 payload["result_parse_status"] = "missing_final_json"
+            self._persist_command_runtime_state(
+                command_id=command_id,
+                status="failed",
+                result={
+                    "runner_status": "failed",
+                    "command_id": command_id,
+                    "job_id": job_id,
+                    "stage_index": stage_index,
+                    "exit_code": exit_code,
+                    "final_json_found": result is not None,
+                    "parse_strategy": parse_strategy,
+                    "stderr_tail": stderr_tail,
+                    "stdout_tail": stdout_tail,
+                    "sandbox_path": None,
+                },
+            )
             self._event(
                 job_id=job_id,
                 stage=stage_index,
@@ -500,6 +557,22 @@ class V2OrchestratorRunner:
                 "final_json_found": False,
                 "parse_strategy": parse_strategy,
             }
+            self._persist_command_runtime_state(
+                command_id=command_id,
+                status="failed",
+                result={
+                    "runner_status": "result_contract_failed",
+                    "command_id": command_id,
+                    "job_id": job_id,
+                    "stage_index": stage_index,
+                    "exit_code": exit_code,
+                    "stdout_tail": stdout_tail,
+                    "stderr_tail": stderr_tail,
+                    "final_json_found": False,
+                    "parse_strategy": parse_strategy,
+                    "sandbox_path": None,
+                },
+            )
             self._event(
                 job_id=job_id,
                 stage=stage_index,
@@ -542,6 +615,11 @@ class V2OrchestratorRunner:
             )
             orchestration_status = str(result.get("orchestration_status", ""))
             if orchestration_status == "PASS" and sandbox_path:
+                self._persist_command_runtime_state(
+                    command_id=command_id,
+                    status="completed",
+                    result=_with_runner_status(result, "completed"),
+                )
                 self._handle_planning_phase_completed(
                     job_id=job_id,
                     stage_index=stage_index,
@@ -549,6 +627,11 @@ class V2OrchestratorRunner:
                     result=result,
                 )
             else:
+                self._persist_command_runtime_state(
+                    command_id=command_id,
+                    status="failed",
+                    result=_with_runner_status(result, "proof_failed"),
+                )
                 self._emit_diagnostic_failure_events(
                     job_id=job_id,
                     stage_index=stage_index,
@@ -594,6 +677,11 @@ class V2OrchestratorRunner:
 
         if result.get("status") == "human_approval_required":
             checksum = sha256_canonical_json(result)
+            self._persist_command_runtime_state(
+                command_id=command_id,
+                status="blocked",
+                result=_with_runner_status(result, "blocked_for_approval"),
+            )
             with self._unit_of_work_factory() as uow:
                 approval_gate, created_new_gate = _open_or_refresh_approval_review_gate(
                     uow=uow,
@@ -672,6 +760,11 @@ class V2OrchestratorRunner:
         orchestration_status = str(result.get("orchestration_status", ""))
 
         if _is_terminal_failure_result(result):
+            self._persist_command_runtime_state(
+                command_id=command_id,
+                status="failed",
+                result=_with_runner_status(result, "failed"),
+            )
             self._emit_diagnostic_failure_events(
                 job_id=job_id,
                 stage_index=stage_index,
@@ -708,6 +801,11 @@ class V2OrchestratorRunner:
         success_proof = _has_success_proof(result)
         if not success_proof[0]:
             failure = success_proof[1]
+            self._persist_command_runtime_state(
+                command_id=command_id,
+                status="failed",
+                result=_with_runner_status(result, "proof_failed"),
+            )
             expected_text = (
                 failure["expected"]
                 if failure["detected"] != "missing" and failure["expected"] not in {"present", "empty"}
@@ -768,6 +866,11 @@ class V2OrchestratorRunner:
                 )
                 return
 
+        self._persist_command_runtime_state(
+            command_id=command_id,
+            status="completed",
+            result=_with_runner_status(result, "completed"),
+        )
         self._event(
             job_id=job_id,
             stage=stage_index,
@@ -843,6 +946,160 @@ class V2OrchestratorRunner:
                 sandbox_path=sandbox_path,
                 result=result,
             )
+
+    def _persist_command_runtime_state(
+        self,
+        *,
+        command_id: str,
+        status: str,
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        safe_result = redact_public_value(result) if result is not None else None
+        with self._unit_of_work_factory() as uow:
+            update = getattr(uow.v2_commands, "update_runtime_state", None)
+            if update is not None:
+                update(command_id, status=status, result=safe_result)
+
+    def reconcile_stale_orchestrator_command(
+        self,
+        *,
+        job_id: str,
+        command_id: str,
+        max_age_seconds: int,
+        process_exists: Callable[[int], bool] | None = None,
+        now: Callable[[], datetime] | None = None,
+    ) -> V2RunnerReconciliationResult:
+        process_exists = process_exists or _process_exists
+        now = now or (lambda: datetime.now(timezone.utc))
+
+        with self._unit_of_work_factory() as uow:
+            command = uow.v2_commands.get(command_id)
+            if command is None:
+                return V2RunnerReconciliationResult(
+                    command_id=command_id,
+                    job_id=job_id,
+                    reconciled=False,
+                    reason="command_missing",
+                    emitted_event_types=(),
+                    command_status="missing",
+                )
+            if command.job_id != job_id:
+                return V2RunnerReconciliationResult(
+                    command_id=command_id,
+                    job_id=job_id,
+                    reconciled=False,
+                    reason="job_mismatch",
+                    emitted_event_types=(),
+                    command_status=command.status,
+                )
+            if command.status in {"completed", "failed"}:
+                return V2RunnerReconciliationResult(
+                    command_id=command_id,
+                    job_id=job_id,
+                    reconciled=False,
+                    reason="command_terminal",
+                    emitted_event_types=(),
+                    command_status=command.status,
+                    result_json_status=_runner_status_from_json(command.result_json),
+                )
+            events = uow.v2_events.list_by_job(job_id)
+
+        matching_events = [
+            event
+            for event in events
+            if _event_command_id(event) == command_id
+        ]
+        process_events = [event for event in matching_events if event.type == "process_started"]
+        if not process_events:
+            return V2RunnerReconciliationResult(
+                command_id=command_id,
+                job_id=job_id,
+                reconciled=False,
+                reason="process_started_missing",
+                emitted_event_types=(),
+                command_status=command.status,
+            )
+
+        process_event = process_events[-1]
+        terminal_after = [
+            event
+            for event in matching_events
+            if event.sequence > process_event.sequence
+            and event.type in {"stage_completed", "stage_failed", "result_contract_failed"}
+        ]
+        if terminal_after:
+            return V2RunnerReconciliationResult(
+                command_id=command_id,
+                job_id=job_id,
+                reconciled=False,
+                reason="terminal_event_exists",
+                emitted_event_types=(),
+                command_status=command.status,
+            )
+
+        started_at = _parse_utc(process_event.created_at)
+        age_seconds = (now() - started_at).total_seconds()
+        if age_seconds < max_age_seconds:
+            return V2RunnerReconciliationResult(
+                command_id=command_id,
+                job_id=job_id,
+                reconciled=False,
+                reason="below_threshold",
+                emitted_event_types=(),
+                command_status=command.status,
+            )
+
+        pid = _event_pid(process_event)
+        if pid is not None and process_exists(pid):
+            return V2RunnerReconciliationResult(
+                command_id=command_id,
+                job_id=job_id,
+                reconciled=False,
+                reason="process_alive",
+                emitted_event_types=(),
+                command_status=command.status,
+            )
+
+        result = {
+            "runner_status": "process_lost",
+            "command_id": command_id,
+            "job_id": job_id,
+            "stage_index": command.stage_index,
+            "pid": pid,
+            "last_event_type": "process_started",
+            "final_json_found": False,
+            "sandbox_path": None,
+        }
+        self._persist_command_runtime_state(
+            command_id=command_id,
+            status="failed",
+            result=result,
+        )
+        self._event(
+            job_id=job_id,
+            stage=command.stage_index,
+            event_type="runner_process_lost",
+            status="failed",
+            message="Orchestrator process disappeared before terminal result was persisted.",
+            payload=result,
+        )
+        self._event(
+            job_id=job_id,
+            stage=command.stage_index,
+            event_type="stage_failed",
+            status="failed",
+            message="Orchestrator process was lost before producing final JSON/sandbox proof.",
+            payload=result,
+        )
+        return V2RunnerReconciliationResult(
+            command_id=command_id,
+            job_id=job_id,
+            reconciled=True,
+            reason="process_lost",
+            emitted_event_types=("runner_process_lost", "stage_failed"),
+            command_status="failed",
+            result_json_status="process_lost",
+        )
 
     def _emit_phase_outcome_events(
         self,
@@ -1577,6 +1834,71 @@ def _load_env_manifest_for_stage(uow: Any, job_id: str, stage_index: int) -> dic
             except json.JSONDecodeError:
                 return {}
     return {}
+
+
+def _with_runner_status(result: dict[str, Any], runner_status: str) -> dict[str, Any]:
+    value = dict(result)
+    value.setdefault("final_json_found", True)
+    value["runner_status"] = runner_status
+    return value
+
+
+def _event_payload(event: Any) -> dict[str, Any]:
+    try:
+        value = json.loads(getattr(event, "payload_json", "") or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _event_command_id(event: Any) -> str | None:
+    value = _event_payload(event).get("command_id")
+    return str(value) if value is not None else None
+
+
+def _event_pid(event: Any) -> int | None:
+    value = _event_payload(event).get("pid")
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _runner_status_from_json(result_json: str | None) -> str | None:
+    if not result_json:
+        return None
+    try:
+        value = json.loads(result_json)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(value, dict):
+        status = value.get("runner_status")
+        return str(status) if status is not None else None
+    return None
+
+
+def _parse_utc(value: str) -> datetime:
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _process_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def _extract_final_json(stdout: str) -> dict[str, Any] | None:

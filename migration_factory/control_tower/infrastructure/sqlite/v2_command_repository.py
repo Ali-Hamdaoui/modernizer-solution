@@ -7,6 +7,8 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
+from migration_factory.control_tower.domain.checksums import utc_now_text
+
 
 @dataclass(frozen=True)
 class V2StageCommandRecord:
@@ -79,6 +81,25 @@ class SqliteV2CommandRepository:
             (job_id, stage_index),
         ).fetchall()
         return tuple(self._row_to_record(row) for row in rows)
+
+    def update_runtime_state(
+        self,
+        command_id: str,
+        *,
+        status: str,
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        result_json = (
+            json.dumps(result, separators=(",", ":"), sort_keys=True)
+            if result is not None
+            else None
+        )
+        self._connection.execute(
+            """UPDATE v2_stage_commands
+               SET status = ?, result_json = COALESCE(?, result_json), updated_at = ?
+               WHERE command_id = ?""",
+            (status, result_json, utc_now_text(), command_id),
+        )
 
     def _row_to_record(self, row: sqlite3.Row) -> V2StageCommandRecord:
         return V2StageCommandRecord(

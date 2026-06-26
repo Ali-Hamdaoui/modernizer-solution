@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +44,33 @@ class _FakePopen:
     def __call__(self, argv: list[str], **kwargs: Any) -> _FakeProcess:
         self.calls.append({"argv": argv, **kwargs})
         return _FakeProcess(self.stdout, self.stderr, self.exit_code)
+
+
+class _BlockingProcess:
+    def __init__(self, release: threading.Event) -> None:
+        self.stdout = iter([])
+        self.stderr = iter([])
+        self.pid = 24680
+        self._release = release
+
+    def wait(self) -> int:
+        self._release.wait(timeout=3)
+        return 0
+
+
+class _BlockingPopen:
+    def __init__(self) -> None:
+        self.release = threading.Event()
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, argv: list[str], **kwargs: Any) -> _BlockingProcess:
+        self.calls.append({"argv": argv, **kwargs})
+        return _BlockingProcess(self.release)
+
+
+class _RaisingPopen:
+    def __call__(self, argv: list[str], **kwargs: Any) -> _FakeProcess:
+        raise RuntimeError("boom TOKEN=secret-value /root/private.txt")
 
 
 class _SequentialFakePopen:
@@ -144,6 +173,203 @@ def _wait_for_event(conn: sqlite3.Connection, job_id: str, event_type: str) -> N
             return
         time.sleep(0.02)
     raise AssertionError(f"event {event_type!r} not persisted")
+
+
+def test_runner_process_started_persists_command_running_state(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    popen = _BlockingPopen()
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    try:
+        runner.start(job_id="job-1", command_id="cmd-1")
+        _wait_for_event(conn, "job-1", "process_started")
+
+        command = SqliteUnitOfWork(conn).v2_commands.get("cmd-1")
+        assert command is not None
+        assert command.status == "running"
+        result = json.loads(command.result_json or "{}")
+        assert result["runner_status"] == "running"
+        assert result["pid"] == 24680
+        assert result["shell"] is False
+        assert "TOKEN=secret-value" not in command.result_json
+    finally:
+        popen.release.set()
+
+
+def test_runner_success_persists_result_json_with_sandbox_path(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    result = _success_result(sandbox_path="/tmp/sandbox")
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[json.dumps(result) + "\n"], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "stage_completed")
+
+    command = SqliteUnitOfWork(conn).v2_commands.get("cmd-1")
+    assert command is not None
+    assert command.status == "completed"
+    persisted = json.loads(command.result_json or "{}")
+    assert persisted["runner_status"] == "completed"
+    assert persisted["sandbox_path"] == "/tmp/sandbox"
+
+
+def test_runner_nonzero_exit_persists_failed_result_contract(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(
+            stdout=["TOKEN=secret-value\n"],
+            stderr=["bad TOKEN=secret-value\n"],
+            exit_code=42,
+        ),
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "stage_failed")
+
+    command = SqliteUnitOfWork(conn).v2_commands.get("cmd-1")
+    assert command is not None
+    assert command.status == "failed"
+    persisted = json.loads(command.result_json or "{}")
+    assert persisted["runner_status"] == "failed"
+    assert persisted["exit_code"] == 42
+    assert persisted["final_json_found"] is False
+    serialized = json.dumps(persisted)
+    assert "secret-value" not in serialized
+    assert "TOKEN=secret-value" not in serialized
+
+
+def test_runner_missing_final_json_persists_result_contract_failed(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=["CONTROL_TOWER_EVENT {\"phase\":\"x\"}\n"], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "result_contract_failed")
+
+    command = SqliteUnitOfWork(conn).v2_commands.get("cmd-1")
+    assert command is not None
+    assert command.status == "failed"
+    persisted = json.loads(command.result_json or "{}")
+    assert persisted["runner_status"] == "result_contract_failed"
+    assert persisted["final_json_found"] is False
+    assert persisted["sandbox_path"] is None
+
+
+def test_runner_launch_exception_persists_failed_redacted_evidence(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_RaisingPopen(),
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "stage_failed")
+
+    command = SqliteUnitOfWork(conn).v2_commands.get("cmd-1")
+    assert command is not None
+    assert command.status == "failed"
+    persisted = json.loads(command.result_json or "{}")
+    assert persisted["runner_status"] == "launch_failed"
+    serialized = json.dumps(persisted)
+    assert "secret-value" not in serialized
+    assert "/root/private.txt" not in serialized
+
+
+def test_stale_reconciliation_marks_lost_process_failed(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    runner = V2OrchestratorRunner(unit_of_work_factory=lambda: SqliteUnitOfWork(conn), cwd=tmp_path)
+    SqliteUnitOfWork(conn).v2_events.save(
+        job_id="job-1",
+        stage=1,
+        event_type="process_started",
+        status="running",
+        message="started",
+        payload={"command_id": "cmd-1", "pid": 123},
+    )
+
+    result = runner.reconcile_stale_orchestrator_command(
+        job_id="job-1",
+        command_id="cmd-1",
+        max_age_seconds=0,
+        process_exists=lambda pid: False,
+        now=lambda: datetime.now(timezone.utc) + timedelta(seconds=5),
+    )
+
+    assert result.reconciled is True
+    assert result.emitted_event_types == ("runner_process_lost", "stage_failed")
+    command = SqliteUnitOfWork(conn).v2_commands.get("cmd-1")
+    assert command is not None
+    assert command.status == "failed"
+    persisted = json.loads(command.result_json or "{}")
+    assert persisted["runner_status"] == "process_lost"
+    assert persisted["sandbox_path"] is None
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    assert "runner_process_lost" in [event.type for event in events]
+
+
+def test_stale_reconciliation_ignores_existing_terminal_event(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    uow = SqliteUnitOfWork(conn)
+    uow.v2_events.save(job_id="job-1", stage=1, event_type="process_started", status="running", message="started", payload={"command_id": "cmd-1", "pid": 123})
+    uow.v2_events.save(job_id="job-1", stage=1, event_type="stage_failed", status="failed", message="failed", payload={"command_id": "cmd-1"})
+    runner = V2OrchestratorRunner(unit_of_work_factory=lambda: SqliteUnitOfWork(conn), cwd=tmp_path)
+
+    result = runner.reconcile_stale_orchestrator_command(
+        job_id="job-1",
+        command_id="cmd-1",
+        max_age_seconds=0,
+        process_exists=lambda pid: False,
+    )
+
+    assert result.reconciled is False
+    assert result.reason == "terminal_event_exists"
+
+
+def test_stale_reconciliation_ignores_live_process(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    SqliteUnitOfWork(conn).v2_events.save(
+        job_id="job-1",
+        stage=1,
+        event_type="process_started",
+        status="running",
+        message="started",
+        payload={"command_id": "cmd-1", "pid": 123},
+    )
+    runner = V2OrchestratorRunner(unit_of_work_factory=lambda: SqliteUnitOfWork(conn), cwd=tmp_path)
+
+    result = runner.reconcile_stale_orchestrator_command(
+        job_id="job-1",
+        command_id="cmd-1",
+        max_age_seconds=0,
+        process_exists=lambda pid: True,
+    )
+
+    assert result.reconciled is False
+    assert result.reason == "process_alive"
+    command = SqliteUnitOfWork(conn).v2_commands.get("cmd-1")
+    assert command is not None
+    assert command.status == "manifest_ready"
 
 
 def _success_result(**overrides: Any) -> dict[str, Any]:
