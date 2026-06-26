@@ -37,6 +37,12 @@ from .profile_validation import (
     ProfilePairValidation,
     validate_profile_pair,
 )
+from .profile_api_contract import (
+    ALLOWED_PROFILE_API_FIELDS,
+    FORBIDDEN_PROFILE_API_FIELDS,
+    validate_profile_api_payload,
+    redact_forbidden_profile_fields,
+)
 from .run_configuration import (
     RunConfiguration,
     RunPolicy,
@@ -60,10 +66,12 @@ from .runner_profile import (
 __all__ = [
     "AIProfileReference",
     "AiProfileReference",
+    "ALLOWED_PROFILE_API_FIELDS",
     "ArtifactRevision",
     "ArtifactRevisionKind",
     "ArtifactRevisionStatus",
     "FilesystemPolicy",
+    "FORBIDDEN_PROFILE_API_FIELDS",
     "GateDecision",
     "GateDecisionRequest",
     "GateDecisionResult",
@@ -101,4 +109,6 @@ __all__ = [
     "is_valid_decision_for_phase",
     "list_migration_profiles",
     "validate_profile_pair",
+    "validate_profile_api_payload",
+    "redact_forbidden_profile_fields",
 ]

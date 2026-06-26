@@ -568,6 +568,10 @@ def test_create_job_endpoint_returns_201_with_seeded_dependencies(tmp_path: Path
     assert data["target_profile"] == "springboot-4.0-java21"
     assert data["stage_continuation_policy"] == "auto_on_green"
     assert data["run_configuration_id"]
+    assert data["validation_status"] == "valid"
+    assert data["included_stages"] == [2, 3, 4]
+    assert data["excluded_stages"] == []
+    assert data["skipped_stages"] == []
 
 
 def test_create_job_endpoint_accepts_explicit_profile_selection(tmp_path: Path) -> None:
@@ -591,6 +595,10 @@ def test_create_job_endpoint_accepts_explicit_profile_selection(tmp_path: Path) 
     data = response.json()
     assert data["source_profile"] == "springboot-3.5-java17"
     assert data["target_profile"] == "springboot-4.0-java21"
+    assert data["validation_status"] == "valid"
+    assert data["included_stages"] == [3, 4]
+    assert data["excluded_stages"] == []
+    assert data["skipped_stages"] == [2]
 
     row = conn.execute(
         "SELECT payload_json FROM run_configurations WHERE job_id = ?",
