@@ -190,3 +190,69 @@ def test_job_id_is_required() -> None:
 
     with pytest.raises(ValidationError):
         RunConfiguration.model_validate(payload)
+
+
+# ── profile pair validation (AMF-263 / F3-T2) ──────────────────────
+
+def test_invalid_profile_pair_reversed_rejected() -> None:
+    """Reversed pair (target lower than source) must be rejected at schema level."""
+    payload = _run_configuration_payload()
+    payload["source_profile"] = "springboot-3.5-java21"
+    payload["target_profile"] = "springboot-3.5-java17"
+
+    with pytest.raises(ValidationError, match="invalid profile pair"):
+        RunConfiguration.model_validate(payload)
+
+
+def test_invalid_profile_pair_same_rejected() -> None:
+    """Same source and target must be rejected."""
+    payload = _run_configuration_payload()
+    payload["source_profile"] = "springboot-3.5-java17"
+    payload["target_profile"] = "springboot-3.5-java17"
+
+    with pytest.raises(ValidationError, match="invalid profile pair"):
+        RunConfiguration.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("source", "target"),
+    [
+        ("springboot-2.7-java11", "springboot-3.5-java17"),
+        ("springboot-2.7-java11", "springboot-3.5-java21"),
+        ("springboot-2.7-java11", "springboot-4.0-java21"),
+        ("springboot-3.5-java17", "springboot-3.5-java21"),
+        ("springboot-3.5-java17", "springboot-4.0-java21"),
+        ("springboot-3.5-java21", "springboot-4.0-java21"),
+        (None, None),
+    ],
+)
+def test_valid_profile_pairs_accepted(source: str | None, target: str | None) -> None:
+    payload = _run_configuration_payload()
+    if source is not None:
+        payload["source_profile"] = source
+    if target is not None:
+        payload["target_profile"] = target
+
+    configuration = RunConfiguration.model_validate(payload)
+    assert configuration.source_profile == source
+    assert configuration.target_profile == target
+
+
+def test_source_not_selectable_rejected() -> None:
+    """springboot-4.0-java21 is not selectable as source."""
+    payload = _run_configuration_payload()
+    payload["source_profile"] = "springboot-4.0-java21"
+    payload["target_profile"] = "springboot-4.0-java21"
+
+    with pytest.raises(ValidationError):
+        RunConfiguration.model_validate(payload)
+
+
+def test_target_not_selectable_rejected() -> None:
+    """springboot-2.7-java11 is not selectable as target."""
+    payload = _run_configuration_payload()
+    payload["source_profile"] = "springboot-3.5-java17"
+    payload["target_profile"] = "springboot-2.7-java11"
+
+    with pytest.raises(ValidationError):
+        RunConfiguration.model_validate(payload)

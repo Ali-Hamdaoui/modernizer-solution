@@ -32,6 +32,11 @@ from .profile_model import (
     get_migration_profile,
     list_migration_profiles,
 )
+from .profile_validation import (
+    ProfilePairErrorType,
+    ProfilePairValidation,
+    validate_profile_pair,
+)
 from .run_configuration import (
     RunConfiguration,
     RunPolicy,
@@ -75,6 +80,8 @@ __all__ = [
     "NonEmptyString",
     "PhaseGate",
     "PipelineDefinition",
+    "ProfilePairErrorType",
+    "ProfilePairValidation",
     "PipelineInputSource",
     "PipelineStage",
     "PipelineStageDefinition",
@@ -93,4 +100,5 @@ __all__ = [
     "get_migration_profile",
     "is_valid_decision_for_phase",
     "list_migration_profiles",
+    "validate_profile_pair",
 ]
