@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from migration_factory.control_tower.domain.states import TargetProofLevel
 
 from .common import NonEmptyString, StrictModel, require_non_empty_string
 from .profile_model import MigrationProfileId, is_known_migration_profile
+from .profile_validation import validate_profile_pair
 
 
 class StageContinuationPolicy(str, Enum):
@@ -106,3 +107,13 @@ class RunConfiguration(StrictModel):
         if not is_known_migration_profile(value):
             raise ValueError(f"{info.field_name} must reference a supported migration profile")
         return value
+
+    @model_validator(mode="after")
+    def _validate_profile_pair(self) -> "RunConfiguration":
+        validation = validate_profile_pair(self.source_profile, self.target_profile)
+        if not validation.valid:
+            raise ValueError(
+                f"invalid profile pair (source={self.source_profile!r}, "
+                f"target={self.target_profile!r}): {validation.reason}"
+            )
+        return self

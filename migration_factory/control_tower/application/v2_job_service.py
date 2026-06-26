@@ -36,6 +36,7 @@ from migration_factory.control_tower.schemas.profile_model import (
     default_source_profile_id,
     default_target_profile_id,
 )
+from migration_factory.control_tower.schemas.profile_validation import validate_profile_pair
 from migration_factory.control_tower.schemas.run_configuration import (
     RunConfiguration,
     RunPolicy,
@@ -130,6 +131,12 @@ class V2MigrationJobService:
 
         resolved_source_profile = source_profile or default_source_profile_id()
         resolved_target_profile = target_profile or default_target_profile_id()
+
+        pair_validation = validate_profile_pair(resolved_source_profile, resolved_target_profile)
+        if not pair_validation.valid:
+            raise ValueError(
+                f"invalid profile pair for job creation: {pair_validation.reason}"
+            )
 
         job_id = uuid4().hex
         now = utc_now_text()
