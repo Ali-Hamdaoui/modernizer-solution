@@ -1430,6 +1430,79 @@ class TestRepairAPI:
         assert repeat_body["approval"]["approval_status"] == "recorded"
         assert repeat_body["approval"]["approval_scope"] == "sandbox_only"
         assert repeat_body["approval"]["sandbox_only"] is True
+        approval_id = repeat_body["approval"]["approval_id"]
+
+        context_read = client.get(f"/v1/v2/repair-review/{context_id}")
+        assert context_read.status_code == 200, context_read.text
+        context_body = context_read.json()["repair_review_context"]
+        assert context_body["context_id"] == context_id
+        assert context_body["proposal_id"] == proposal_id
+        assert context_body["sandbox_checksum"] == "sandbox-chk"
+        assert context_body["legacy_checksum"] == "legacy-chk"
+        assert context_body["patch_preview_checksum"]
+        assert context_body["sandbox_only"] is True
+        assert context_body["llm_invoked"] is False
+
+        missing_context = client.get("/v1/v2/repair-review/not-a-context")
+        assert missing_context.status_code == 404
+        assert "REPAIR_REVIEW_CONTEXT_NOT_FOUND" in missing_context.text
+
+        approval_read = client.get(
+            f"/v1/v2/repair-review/{context_id}/approvals/{approval_id}"
+        )
+        assert approval_read.status_code == 200, approval_read.text
+        approval_body = approval_read.json()["approval"]
+        assert approval_body["approval_id"] == approval_id
+        assert approval_body["context_id"] == context_id
+        assert approval_body["approval_status"] == "recorded"
+        assert approval_body["approval_scope"] == "sandbox_only"
+        assert approval_body["apply_ready"] is True
+        assert approval_body["llm_invoked"] is False
+
+        unbound_approval = client.get(
+            f"/v1/v2/repair-review/not-a-context/approvals/{approval_id}"
+        )
+        assert unbound_approval.status_code == 404
+        assert "REPAIR_APPROVAL_NOT_FOUND" in unbound_approval.text
+
+        apply_mismatch = client.post(
+            f"/v1/v2/repair-review/{context_id}/apply",
+            json={
+                "approval_id": approval_id,
+                "expected_approval_checksum": "chk-abc",
+                "expected_sandbox_checksum": "wrong",
+                "expected_legacy_checksum": "legacy-chk",
+            },
+            headers=_mutation_headers(),
+        )
+        assert apply_mismatch.status_code == 400
+        assert "sandbox checksum mismatch" in apply_mismatch.text
+
+        apply_missing_approval = client.post(
+            f"/v1/v2/repair-review/{context_id}/apply",
+            json={
+                "approval_id": "missing-approval",
+                "expected_approval_checksum": "chk-abc",
+                "expected_sandbox_checksum": "sandbox-chk",
+                "expected_legacy_checksum": "legacy-chk",
+            },
+            headers=_mutation_headers(),
+        )
+        assert apply_missing_approval.status_code == 400
+        assert "not found for context" in apply_missing_approval.text
+
+        apply_response = client.post(
+            f"/v1/v2/repair-review/{context_id}/apply",
+            json={
+                "approval_id": approval_id,
+                "expected_approval_checksum": "chk-abc",
+                "expected_sandbox_checksum": "sandbox-chk",
+                "expected_legacy_checksum": "legacy-chk",
+            },
+            headers=_mutation_headers(),
+        )
+        assert apply_response.status_code == 501
+        assert "APPLY_ROUTE_NOT_WIRED" in apply_response.text
 
     def test_governed_repair_workflow_dry_run_end_to_end(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)

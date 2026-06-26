@@ -125,6 +125,21 @@ class RepairApprovalRecord:
     created_at: str
 
 
+@dataclass(frozen=True)
+class RepairApplyGuardResult:
+    context_id: str
+    approval_id: str
+    proposal_id: str
+    sandbox_reference: str
+    target_path: str
+    patch_preview_checksum: str
+    approval_checksum: str
+    sandbox_checksum: str
+    legacy_checksum: str
+    apply_ready: bool
+    blockers: tuple[str, ...]
+
+
 class V2RepairFlowService:
     """Convert failed command evidence into repair proposals and actions.
 
@@ -1057,6 +1072,69 @@ class V2RepairFlowService:
     def get_latest_approval(self, context_id: str) -> RepairApprovalRecord | None:
         return self._latest_approval_for_context(context_id)
 
+    def get_approval(self, context_id: str, approval_id: str) -> RepairApprovalRecord | None:
+        context = self.get_apply_context(context_id)
+        if context is None or self._repo is None:
+            return None
+        for record in self._repo.list_actions_by_proposal(context.proposal_id):
+            if record.action_id != approval_id or record.status != "approval_recorded":
+                continue
+            approval = self._record_to_approval(record)
+            if approval.context_id == context_id:
+                return approval
+        return None
+
+    def validate_apply_guard(
+        self,
+        *,
+        context_id: str,
+        approval_id: str,
+        expected_approval_checksum: str,
+        expected_sandbox_checksum: str,
+        expected_legacy_checksum: str,
+    ) -> RepairApplyGuardResult:
+        context = self.get_apply_context(context_id)
+        if context is None:
+            raise ValueError(f"Repair apply context {context_id!r} not found")
+        approval = self.get_approval(context_id, approval_id)
+        if approval is None:
+            raise ValueError(f"Repair approval {approval_id!r} not found for context {context_id!r}")
+        if approval.approval_status != "recorded":
+            raise ValueError("Repair approval must have status recorded")
+        if approval.approval_scope != "sandbox_only":
+            raise ValueError("Repair approval scope must be sandbox_only")
+        if context.reviewer_decision != "accept":
+            raise ValueError("Repair apply requires reviewer decision accept")
+        if not context.approval_eligible:
+            raise ValueError("Repair apply context is not approval eligible")
+        if not context.patch_preview.strip() or not context.patch_preview_checksum.strip():
+            raise ValueError("Repair apply requires patch preview and checksum")
+        if not context.sandbox_reference.strip():
+            raise ValueError("Repair apply requires sandbox reference")
+        if not context.sandbox_checksum.strip() or not context.legacy_checksum.strip():
+            raise ValueError("Repair apply requires checksum guards")
+        if expected_approval_checksum != approval.approval_checksum:
+            raise ValueError("Repair approval checksum mismatch")
+        if expected_sandbox_checksum != context.sandbox_checksum or expected_sandbox_checksum != approval.sandbox_checksum:
+            raise ValueError("Repair sandbox checksum mismatch")
+        if expected_legacy_checksum != context.legacy_checksum or expected_legacy_checksum != approval.legacy_checksum:
+            raise ValueError("Repair legacy checksum mismatch")
+        if not self._is_sandbox_bound_target(context):
+            raise ValueError("Repair apply target is not sandbox-bound")
+        return RepairApplyGuardResult(
+            context_id=context.context_id,
+            approval_id=approval.approval_id,
+            proposal_id=context.proposal_id,
+            sandbox_reference=context.sandbox_reference,
+            target_path=context.target_path,
+            patch_preview_checksum=context.patch_preview_checksum,
+            approval_checksum=approval.approval_checksum,
+            sandbox_checksum=context.sandbox_checksum,
+            legacy_checksum=context.legacy_checksum,
+            apply_ready=True,
+            blockers=(),
+        )
+
     def _latest_context_for_proposal(self, proposal_id: str) -> RepairApplyContext | None:
         if self._repo is None:
             return None
@@ -1379,6 +1457,42 @@ class V2RepairFlowService:
             "source_mutated": False,
             "llm_invoked": False,
         }
+
+    def apply_guard_to_dict(self, guard: RepairApplyGuardResult) -> dict[str, Any]:
+        return {
+            "context_id": guard.context_id,
+            "approval_id": guard.approval_id,
+            "proposal_id": guard.proposal_id,
+            "sandbox_reference": guard.sandbox_reference,
+            "target_path": guard.target_path,
+            "patch_preview_checksum": guard.patch_preview_checksum,
+            "approval_checksum": guard.approval_checksum,
+            "sandbox_checksum": guard.sandbox_checksum,
+            "legacy_checksum": guard.legacy_checksum,
+            "apply_ready": guard.apply_ready,
+            "blockers": list(guard.blockers),
+            "sandbox_only": True,
+            "source_mutated": False,
+            "llm_invoked": False,
+        }
+
+    @staticmethod
+    def _is_sandbox_bound_target(context: RepairApplyContext) -> bool:
+        target = context.target_path.strip()
+        sandbox = context.sandbox_reference.strip()
+        if not target or not sandbox:
+            return False
+        target_path = Path(target)
+        if not target_path.is_absolute():
+            return ".." not in target_path.parts
+        try:
+            sandbox_path = Path(sandbox)
+            if not sandbox_path.is_absolute():
+                return False
+            target_path.resolve().relative_to(sandbox_path.resolve())
+            return True
+        except (OSError, ValueError):
+            return False
 
     @staticmethod
     def _proposal_checksum(

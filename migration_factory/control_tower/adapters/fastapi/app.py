@@ -621,6 +621,15 @@ class ApproveRepairReviewContextRequest(BaseModel):
     approval_scope: str = "sandbox_only"
 
 
+class ApplyRepairReviewContextRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    approval_id: str = Field(min_length=1)
+    expected_approval_checksum: str = Field(min_length=1)
+    expected_sandbox_checksum: str = Field(min_length=1)
+    expected_legacy_checksum: str = Field(min_length=1)
+    idempotency_key: str | None = None
+
+
 # ── F14 POM dependency editor request schemas ──────────────────────────
 
 class PomProposeRequestSchema(BaseModel):
@@ -2885,6 +2894,21 @@ def create_app(
             "repair_review_context": service.apply_context_to_dict(context),
         }
 
+    @app.get("/v1/v2/repair-review/{context_id}")
+    def get_repair_review_context(context_id: str) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            service = V2RepairFlowService(repair_repo=uow.v2_repairs)
+            context = service.get_apply_context(context_id)
+            if context is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "REPAIR_REVIEW_CONTEXT_NOT_FOUND",
+                    f"Repair apply context {context_id!r} not found.",
+                )
+        return {
+            "repair_review_context": service.apply_context_to_dict(context),
+        }
+
     @app.post("/v1/v2/repair-review/{context_id}/approve")
     def approve_repair_review_context(
         context_id: str,
@@ -2916,6 +2940,51 @@ def create_app(
             "approval": service.approval_to_dict(approval),
             "repair_review_context": service.apply_context_to_dict(prepared_context) if prepared_context is not None else None,
         }
+
+    @app.get("/v1/v2/repair-review/{context_id}/approvals/{approval_id}")
+    def get_repair_review_approval(
+        context_id: str,
+        approval_id: str,
+    ) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            service = V2RepairFlowService(repair_repo=uow.v2_repairs)
+            approval = service.get_approval(context_id, approval_id)
+            if approval is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "REPAIR_APPROVAL_NOT_FOUND",
+                    f"Repair approval {approval_id!r} not found for context {context_id!r}.",
+                )
+        return {
+            "approval": service.approval_to_dict(approval),
+        }
+
+    @app.post("/v1/v2/repair-review/{context_id}/apply")
+    def apply_repair_review_context(
+        context_id: str,
+        payload: ApplyRepairReviewContextRequest,
+    ) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            service = V2RepairFlowService(repair_repo=uow.v2_repairs)
+            try:
+                guard = service.validate_apply_guard(
+                    context_id=context_id,
+                    approval_id=payload.approval_id,
+                    expected_approval_checksum=payload.expected_approval_checksum,
+                    expected_sandbox_checksum=payload.expected_sandbox_checksum,
+                    expected_legacy_checksum=payload.expected_legacy_checksum,
+                )
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "REPAIR_APPLY_GUARD_FAILED",
+                    str(exc),
+                ) from exc
+        raise _error(
+            status.HTTP_501_NOT_IMPLEMENTED,
+            "APPLY_ROUTE_NOT_WIRED",
+            "Repair-review apply guards passed, but sandbox apply wiring is intentionally not enabled yet.",
+        )
 
     @app.post("/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/approve")
     def approve_repair_proposal(

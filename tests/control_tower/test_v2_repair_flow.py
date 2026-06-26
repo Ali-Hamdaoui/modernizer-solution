@@ -28,6 +28,7 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository i
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
     SqliteV2RepairRepository,
+    V2SandboxActionRecord,
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_reviewer_repository import (
     SqliteV2ReviewerRepository,
@@ -741,6 +742,273 @@ def test_record_approval_only_requires_sandbox_only_scope(tmp_path: Path) -> Non
             approval_checksum="approval-chk",
             approval_note="Human approves everything.",
             approval_scope="legacy_source",
+        )
+
+
+def test_get_approval_requires_context_binding(tmp_path: Path) -> None:
+    conn, service = _repair_repo_service(tmp_path)
+    proposal = _proposal(service)
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        decision="accept",
+        reasoning="Looks good",
+    )
+    context = service.prepare_apply_context(
+        proposal_id=proposal.proposal_id,
+        command_id=proposal.command_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        reviewer_critique_id=critique.critique_id,
+        proposer_invocation_id="proposer-invoke-1",
+        reviewer_invocation_id="reviewer-invoke-1",
+        patch_preview=_h2_patch(),
+        target_path="pom.xml",
+        sandbox_reference="sandbox://run-1",
+        sandbox_checksum="sandbox-chk",
+        legacy_checksum="legacy-chk",
+        evidence_refs={"build_error": "artifact://build-error.json"},
+    )
+    approval = service.record_approval_only(
+        context_id=context.context_id,
+        approval_checksum="approval-chk",
+        approval_note="Human approves sandbox-only apply later.",
+        approval_scope="sandbox_only",
+    )
+
+    assert service.get_approval(context.context_id, approval.approval_id) is not None
+    assert service.get_approval("other-context", approval.approval_id) is None
+
+
+def test_validate_apply_guard_passes_then_reports_not_wired_ready(tmp_path: Path) -> None:
+    conn, service = _repair_repo_service(tmp_path)
+    proposal = _proposal(service)
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        decision="accept",
+        reasoning="Looks good",
+    )
+    context = service.prepare_apply_context(
+        proposal_id=proposal.proposal_id,
+        command_id=proposal.command_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        reviewer_critique_id=critique.critique_id,
+        proposer_invocation_id="proposer-invoke-1",
+        reviewer_invocation_id="reviewer-invoke-1",
+        patch_preview=_h2_patch(),
+        target_path="pom.xml",
+        sandbox_reference="sandbox://run-1",
+        sandbox_checksum="sandbox-chk",
+        legacy_checksum="legacy-chk",
+        evidence_refs={"build_error": "artifact://build-error.json"},
+    )
+    approval = service.record_approval_only(
+        context_id=context.context_id,
+        approval_checksum="approval-chk",
+        approval_note="Human approves sandbox-only apply later.",
+        approval_scope="sandbox_only",
+    )
+
+    guard = service.validate_apply_guard(
+        context_id=context.context_id,
+        approval_id=approval.approval_id,
+        expected_approval_checksum="approval-chk",
+        expected_sandbox_checksum="sandbox-chk",
+        expected_legacy_checksum="legacy-chk",
+    )
+
+    assert guard.apply_ready is True
+    assert guard.blockers == ()
+    assert guard.patch_preview_checksum == context.patch_preview_checksum
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("expected_approval_checksum", "wrong", "approval checksum mismatch"),
+        ("expected_sandbox_checksum", "wrong", "sandbox checksum mismatch"),
+        ("expected_legacy_checksum", "wrong", "legacy checksum mismatch"),
+    ],
+)
+def test_validate_apply_guard_fails_closed_on_checksum_mismatch(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    message: str,
+) -> None:
+    conn, service = _repair_repo_service(tmp_path)
+    proposal = _proposal(service)
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        decision="accept",
+        reasoning="Looks good",
+    )
+    context = service.prepare_apply_context(
+        proposal_id=proposal.proposal_id,
+        command_id=proposal.command_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        reviewer_critique_id=critique.critique_id,
+        proposer_invocation_id="proposer-invoke-1",
+        reviewer_invocation_id="reviewer-invoke-1",
+        patch_preview=_h2_patch(),
+        target_path="pom.xml",
+        sandbox_reference="sandbox://run-1",
+        sandbox_checksum="sandbox-chk",
+        legacy_checksum="legacy-chk",
+        evidence_refs={"build_error": "artifact://build-error.json"},
+    )
+    approval = service.record_approval_only(
+        context_id=context.context_id,
+        approval_checksum="approval-chk",
+        approval_note="Human approves sandbox-only apply later.",
+        approval_scope="sandbox_only",
+    )
+    payload = {
+        "context_id": context.context_id,
+        "approval_id": approval.approval_id,
+        "expected_approval_checksum": "approval-chk",
+        "expected_sandbox_checksum": "sandbox-chk",
+        "expected_legacy_checksum": "legacy-chk",
+    }
+    payload[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        service.validate_apply_guard(**payload)
+
+
+def test_validate_apply_guard_fails_closed_without_reviewer_accept(tmp_path: Path) -> None:
+    conn, service = _repair_repo_service(tmp_path)
+    assert service._repo is not None
+    proposal = _proposal(service)
+    context_payload = {
+        "kind": "repair_apply_context_v1",
+        "context_id": "ctx-revise",
+        "command_id": proposal.command_id,
+        "reviewer_critique_id": "critique-1",
+        "proposer_invocation_id": "proposer-invoke-1",
+        "reviewer_invocation_id": "reviewer-invoke-1",
+        "reviewer_decision": "revise",
+        "proposal_summary": proposal.patch_summary,
+        "patch_preview_checksum": "patch-chk",
+        "sandbox_reference": "sandbox://run-1",
+        "sandbox_checksum": "sandbox-chk",
+        "legacy_checksum": "legacy-chk",
+        "context_pack_checksum": "cp-test",
+        "proposal_checksum": "pc-test",
+        "evidence_refs": {},
+        "approval_eligible": True,
+        "blockers": [],
+        "approval_scope": "sandbox_only",
+    }
+    service._repo.save_action(
+        V2SandboxActionRecord(
+            action_id="ctx-revise",
+            proposal_id=proposal.proposal_id,
+            target_path="pom.xml",
+            patch_content=_h2_patch(),
+            status="prepared_apply_context",
+            result_summary=json.dumps(context_payload),
+            created_at="2026-06-26T00:00:00Z",
+        )
+    )
+    service._repo.save_action(
+        V2SandboxActionRecord(
+            action_id="approval-1",
+            proposal_id=proposal.proposal_id,
+            target_path="pom.xml",
+            patch_content="",
+            status="approval_recorded",
+            result_summary=json.dumps(
+                {
+                    "kind": "repair_approval_record_v1",
+                    "approval_id": "approval-1",
+                    "context_id": "ctx-revise",
+                    "approval_status": "recorded",
+                    "approval_scope": "sandbox_only",
+                    "approval_note": "Human approval.",
+                    "approval_checksum": "approval-chk",
+                    "sandbox_checksum": "sandbox-chk",
+                    "legacy_checksum": "legacy-chk",
+                }
+            ),
+            created_at="2026-06-26T00:00:01Z",
+        )
+    )
+
+    with pytest.raises(ValueError, match="reviewer decision accept"):
+        service.validate_apply_guard(
+            context_id="ctx-revise",
+            approval_id="approval-1",
+            expected_approval_checksum="approval-chk",
+            expected_sandbox_checksum="sandbox-chk",
+            expected_legacy_checksum="legacy-chk",
+        )
+
+
+def test_validate_apply_guard_fails_closed_without_sandbox_only_approval(tmp_path: Path) -> None:
+    conn, service = _repair_repo_service(tmp_path)
+    assert service._repo is not None
+    proposal = _proposal(service)
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        decision="accept",
+        reasoning="Looks good",
+    )
+    context = service.prepare_apply_context(
+        proposal_id=proposal.proposal_id,
+        command_id=proposal.command_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        reviewer_critique_id=critique.critique_id,
+        proposer_invocation_id="proposer-invoke-1",
+        reviewer_invocation_id="reviewer-invoke-1",
+        patch_preview=_h2_patch(),
+        target_path="pom.xml",
+        sandbox_reference="sandbox://run-1",
+        sandbox_checksum="sandbox-chk",
+        legacy_checksum="legacy-chk",
+        evidence_refs={"build_error": "artifact://build-error.json"},
+    )
+    service._repo.save_action(
+        V2SandboxActionRecord(
+            action_id="approval-legacy",
+            proposal_id=proposal.proposal_id,
+            target_path="pom.xml",
+            patch_content="",
+            status="approval_recorded",
+            result_summary=json.dumps(
+                {
+                    "kind": "repair_approval_record_v1",
+                    "approval_id": "approval-legacy",
+                    "context_id": context.context_id,
+                    "approval_status": "recorded",
+                    "approval_scope": "legacy_source",
+                    "approval_note": "Bad scope.",
+                    "approval_checksum": "approval-chk",
+                    "sandbox_checksum": "sandbox-chk",
+                    "legacy_checksum": "legacy-chk",
+                }
+            ),
+            created_at="2026-06-26T00:00:01Z",
+        )
+    )
+
+    with pytest.raises(ValueError, match="scope must be sandbox_only"):
+        service.validate_apply_guard(
+            context_id=context.context_id,
+            approval_id="approval-legacy",
+            expected_approval_checksum="approval-chk",
+            expected_sandbox_checksum="sandbox-chk",
+            expected_legacy_checksum="legacy-chk",
         )
 
 
