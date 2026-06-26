@@ -256,6 +256,15 @@ class ArtifactPresentationRef(StrictModel):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _downloadable_must_be_in_allowlist(self) -> "ArtifactPresentationRef":
+        if self.presentation_kind == ArtifactPresentationKind.DOWNLOAD:
+            if self.artifact_type not in DOWNLOADABLE_ARTIFACT_TYPES:
+                raise ValueError(
+                    f"Artifact type {self.artifact_type!r} is not downloadable"
+                )
+        return self
+
     @property
     def is_available(self) -> bool:
         """True when the artifact can be returned to the consumer."""
@@ -295,13 +304,20 @@ class ArtifactPresentationRef(StrictModel):
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ArtifactPresentationRef":
-        """Deserialize from a dictionary (e.g., from a stored checkpoint)."""
+        """Deserialize from a dictionary (e.g., from a stored checkpoint).
+
+        Database NULL columns appear as present-but-None keys.
+        We guard every extraction with ``is not None`` before casting.
+        """
         kind_raw = data.get("presentation_kind", "download")
+        if kind_raw is None:
+            kind_raw = "download"
         kind = (
             ArtifactPresentationKind(kind_raw)
             if isinstance(kind_raw, str)
             else kind_raw
         )
+
         state_raw = data.get("state", "available")
         if state_raw is None:
             state_raw = "available"
@@ -310,12 +326,25 @@ class ArtifactPresentationRef(StrictModel):
             if isinstance(state_raw, str)
             else state_raw
         )
+
+        _artifact_id = data.get("artifact_id", "")
+        artifact_id = str(_artifact_id) if _artifact_id is not None else ""
+
+        _artifact_type = data.get("artifact_type", "")
+        artifact_type = str(_artifact_type) if _artifact_type is not None else ""
+
+        _content_type = data.get("content_type", _DEFAULT_CONTENT_TYPE)
+        content_type = str(_content_type) if _content_type is not None else _DEFAULT_CONTENT_TYPE
+
+        _checksum = data.get("checksum", "")
+        checksum = str(_checksum) if _checksum is not None else ""
+
         return cls(
-            artifact_id=str(data.get("artifact_id", "")),
-            artifact_type=str(data.get("artifact_type", "")),
+            artifact_id=artifact_id,
+            artifact_type=artifact_type,
             presentation_kind=kind,
-            content_type=str(data.get("content_type", _DEFAULT_CONTENT_TYPE)),
-            checksum=str(data.get("checksum", "")),
+            content_type=content_type,
+            checksum=checksum,
             state=state,
             size_bytes=data.get("size_bytes"),
         )
@@ -386,19 +415,36 @@ class ArtifactPresentationBatch(StrictModel):
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ArtifactPresentationBatch":
-        """Deserialize from a dictionary."""
+        """Deserialize from a dictionary.
+
+        Database NULL columns appear as present-but-None keys.
+        We guard every extraction with ``is not None`` before casting.
+        """
         artifacts_raw = data.get("artifacts", [])
         artifacts: list[ArtifactPresentationRef] = []
         if isinstance(artifacts_raw, list):
             for item in artifacts_raw:
                 if isinstance(item, dict):
                     artifacts.append(ArtifactPresentationRef.from_dict(item))
+
+        _checkpoint_id = data.get("checkpoint_id", "")
+        checkpoint_id = str(_checkpoint_id) if _checkpoint_id is not None else ""
+
+        _job_id = data.get("job_id", "")
+        job_id = str(_job_id) if _job_id is not None else ""
+
+        _gate_id = data.get("gate_id", "")
+        gate_id = str(_gate_id) if _gate_id is not None else ""
+
+        _gate_checksum = data.get("gate_checksum", "")
+        gate_checksum = str(_gate_checksum) if _gate_checksum is not None else ""
+
         return cls(
-            checkpoint_id=str(data.get("checkpoint_id", "")),
-            job_id=str(data.get("job_id", "")),
+            checkpoint_id=checkpoint_id,
+            job_id=job_id,
             artifacts=tuple(artifacts),
-            gate_id=str(data.get("gate_id", "")),
-            gate_checksum=str(data.get("gate_checksum", "")),
+            gate_id=gate_id,
+            gate_checksum=gate_checksum,
         )
 
 

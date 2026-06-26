@@ -234,12 +234,11 @@ class TestArtifactPresentationRefConstruction:
             )
 
     def test_download_with_non_downloadable_type_rejected(self):
-        # Non-downloadable type should still work (download allows all)
-        ref = _valid_ref(
-            artifact_type="some_unknown.bin",
-            presentation_kind=ArtifactPresentationKind.DOWNLOAD,
-        )
-        assert ref.presentation_kind == ArtifactPresentationKind.DOWNLOAD
+        with pytest.raises(ValidationError, match="not downloadable"):
+            _valid_ref(
+                artifact_type="some_unknown.bin",
+                presentation_kind=ArtifactPresentationKind.DOWNLOAD,
+            )
 
     def test_default_content_type_when_empty(self):
         ref = _valid_ref(content_type="")
@@ -346,6 +345,43 @@ class TestArtifactPresentationRefSerialization:
         })
         assert ref.state == ArtifactResolutionState.AVAILABLE
 
+    def test_from_dict_none_artifact_id_produces_empty_string(self):
+        """Database NULL columns appear as present-but-None keys.
+        str(None) would produce the string 'None', which silently passes
+        validators. We must guard with ``is not None`` like the rest of
+        the codebase (see AnalysisCheckpoint.from_dict)."""
+        with pytest.raises(ValidationError, match="must not be empty"):
+            ArtifactPresentationRef.from_dict({
+                "artifact_id": None,
+                "artifact_type": "analysis_report.md",
+                "checksum": "sha256:abc123def456",
+            })
+
+    def test_from_dict_none_artifact_type_produces_empty_string(self):
+        with pytest.raises(ValidationError, match="must not be empty"):
+            ArtifactPresentationRef.from_dict({
+                "artifact_id": "art-001",
+                "artifact_type": None,
+                "checksum": "sha256:abc123def456",
+            })
+
+    def test_from_dict_none_checksum_produces_empty_string(self):
+        with pytest.raises(ValidationError, match="at least 8"):
+            ArtifactPresentationRef.from_dict({
+                "artifact_id": "art-001",
+                "artifact_type": "analysis_report.md",
+                "checksum": None,
+            })
+
+    def test_from_dict_none_kind_defaults_to_download(self):
+        ref = ArtifactPresentationRef.from_dict({
+            "artifact_id": "art-001",
+            "artifact_type": "rewrite_dry_run.patch",
+            "checksum": "sha256:abc123def456",
+            "presentation_kind": None,
+        })
+        assert ref.presentation_kind == ArtifactPresentationKind.DOWNLOAD
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # 7. ArtifactPresentationBatch
@@ -429,6 +465,21 @@ class TestArtifactPresentationBatch:
         batch2 = ArtifactPresentationBatch.from_dict(d)
         assert batch2.available_count == batch.available_count
         assert len(batch2.artifacts) == 2
+
+    def test_from_dict_none_checkpoint_id_produces_empty_string(self):
+        """Database NULL columns must produce empty strings, not literal 'None'."""
+        with pytest.raises(ValidationError, match="must not be empty"):
+            ArtifactPresentationBatch.from_dict({
+                "checkpoint_id": None,
+                "job_id": "job-abc",
+            })
+
+    def test_from_dict_none_job_id_produces_empty_string(self):
+        with pytest.raises(ValidationError, match="must not be empty"):
+            ArtifactPresentationBatch.from_dict({
+                "checkpoint_id": "acp-001",
+                "job_id": None,
+            })
 
 
 # ══════════════════════════════════════════════════════════════════════════
