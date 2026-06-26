@@ -826,6 +826,172 @@ def test_validate_apply_guard_passes_then_reports_not_wired_ready(tmp_path: Path
     assert guard.patch_preview_checksum == context.patch_preview_checksum
 
 
+def test_apply_prepared_context_applies_only_sandbox_and_records_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = sqlite3.connect(
+        str(tmp_path / "prepared-apply.sqlite3"),
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+
+    apply_pending_migrations(conn)
+    repair_repo = SqliteV2RepairRepository(conn)
+    reviewer_repo = SqliteV2ReviewerRepository(conn)
+    setup_repo = SqliteV2SetupRepository(conn)
+    job_repo = SqliteV2JobRepository(conn)
+    command_repo = SqliteV2CommandRepository(conn)
+    service = V2RepairFlowService(
+        repair_repo=repair_repo,
+        reviewer_service=v2_repair_flow.V2ReviewerService(reviewer_repo=reviewer_repo),
+        job_repo=job_repo,
+        setup_repo=setup_repo,
+        command_repo=command_repo,
+    )
+    legacy = tmp_path / "legacy"
+    sandbox = tmp_path / "out" / ".migration" / "runs" / "run-prepared" / "sandbox"
+    legacy.mkdir(parents=True)
+    sandbox.mkdir(parents=True)
+    (legacy / "pom.xml").write_text("<project/>", encoding="utf-8")
+    (sandbox / "pom.xml").write_text("<project/>", encoding="utf-8")
+    legacy_before = (legacy / "pom.xml").read_text(encoding="utf-8")
+    sandbox_before = (sandbox / "pom.xml").read_text(encoding="utf-8")
+    setup_repo.save(
+        V2MigrationSetupRecord(
+            setup_id="setup-prepared",
+            run_name="prepared",
+            legacy_app_path=str(legacy),
+            output_parent_path=str(tmp_path / "out"),
+            ai_hub_path=str(tmp_path / "ai"),
+            java11_home="C:/java11",
+            java17_home="C:/java17",
+            java21_home="C:/java21",
+            maven_cmd="mvn",
+            proof_level="build_test_verified",
+            skip_endpoint_smoke=False,
+            migration_flags_json="{}",
+            setup_checksum="setup-chk",
+            checksum_algorithm="sha256",
+            created_at="2026-06-18T00:00:00Z",
+            created_by="test",
+            correlation_id=None,
+        )
+    )
+    job_repo.save(
+        V2MigrationJobRecord(
+            job_id="job-prepared",
+            setup_id="setup-prepared",
+            setup_checksum="setup-chk",
+            pipeline_id="pipe-prepared",
+            stage_chain_json="[]",
+            status="created",
+            created_at="2026-06-18T00:00:00Z",
+            updated_at="2026-06-18T00:00:00Z",
+            correlation_id=None,
+        )
+    )
+    command_repo.save(
+        V2StageCommandRecord(
+            command_id="cmd-prepared",
+            job_id="job-prepared",
+            stage_index=3,
+            manifest_checksum="manifest-chk",
+            argv_json="[]",
+            env_json="{}",
+            status="failed",
+            created_at="2026-06-18T00:00:00Z",
+            updated_at="2026-06-18T00:00:00Z",
+            result_json=json.dumps(
+                {
+                    "run_id": "run-prepared",
+                    "sandbox_path": str(sandbox),
+                    "modernized_app_path": str(tmp_path / "out"),
+                }
+            ),
+            gate_id=None,
+            decision_id=None,
+        )
+    )
+    proposal = service.create_proposal(
+        command_id="cmd-prepared",
+        failure_summary="Missing H2",
+        hypothesis="H2 dependency absent",
+        patch_summary="Add H2 dependency",
+        affected_paths=("pom.xml",),
+    )
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        decision="accept",
+        reasoning="Looks good",
+    )
+    context = service.prepare_apply_context(
+        proposal_id=proposal.proposal_id,
+        command_id=proposal.command_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        reviewer_critique_id=critique.critique_id,
+        proposer_invocation_id="proposer-invoke-1",
+        reviewer_invocation_id="reviewer-invoke-1",
+        patch_preview=_h2_patch(),
+        target_path="pom.xml",
+        sandbox_reference=str(sandbox),
+        sandbox_checksum="sandbox-chk",
+        legacy_checksum="legacy-chk",
+        evidence_refs={
+            "build_error": "artifact://build-error.json",
+            "deterministic_rule_id": "DEPENDENCY_ADD_H2_RUNTIME",
+            "h2_required": "true",
+            "expected_validation": "mvn test",
+        },
+    )
+    approval = service.record_approval_only(
+        context_id=context.context_id,
+        approval_checksum="approval-chk",
+        approval_note="Human approves sandbox-only apply later.",
+        approval_scope="sandbox_only",
+    )
+    calls: list[dict] = []
+
+    def fake_apply(**kwargs) -> PatchApplyResult:
+        calls.append(kwargs)
+        (Path(kwargs["sandbox_path"]) / "pom.xml").write_text(
+            "<project><dependency>h2</dependency></project>",
+            encoding="utf-8",
+        )
+        return _apply_result(Path(kwargs["run_dir"]))
+
+    monkeypatch.setattr(v2_repair_flow, "apply_patch_to_sandbox", fake_apply)
+    events: list[tuple[str, dict]] = []
+    action = service.apply_prepared_context(
+        context_id=context.context_id,
+        approval_id=approval.approval_id,
+        expected_approval_checksum="approval-chk",
+        expected_sandbox_checksum="sandbox-chk",
+        expected_legacy_checksum="legacy-chk",
+        validation_runner=lambda **kwargs: _validation(True),
+        event_recorder=lambda event_type, payload: events.append((event_type, payload)),
+    )
+
+    assert action.status == "applied"
+    assert action.verification_status == "passed"
+    assert action.verification_build_status == "BUILD_PASSED_IN_SANDBOX"
+    assert action.verification_test_status == "TEST_PASSED"
+    assert calls and calls[0]["sandbox_path"] == sandbox
+    assert (legacy / "pom.xml").read_text(encoding="utf-8") == legacy_before
+    assert (sandbox / "pom.xml").read_text(encoding="utf-8") != sandbox_before
+    assert [event[0] for event in events] == [
+        "repair_patch_gate_completed",
+        "repair_patch_applied",
+        "repair_validation_completed",
+    ]
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
@@ -881,6 +1047,48 @@ def test_validate_apply_guard_fails_closed_on_checksum_mismatch(
 
     with pytest.raises(ValueError, match=message):
         service.validate_apply_guard(**payload)
+
+
+def test_validate_apply_guard_fails_closed_when_target_escapes_sandbox(tmp_path: Path) -> None:
+    conn, service = _repair_repo_service(tmp_path)
+    proposal = _proposal(service)
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        decision="accept",
+        reasoning="Looks good",
+    )
+    context = service.prepare_apply_context(
+        proposal_id=proposal.proposal_id,
+        command_id=proposal.command_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        reviewer_critique_id=critique.critique_id,
+        proposer_invocation_id="proposer-invoke-1",
+        reviewer_invocation_id="reviewer-invoke-1",
+        patch_preview=_h2_patch(),
+        target_path="../pom.xml",
+        sandbox_reference="sandbox://run-1",
+        sandbox_checksum="sandbox-chk",
+        legacy_checksum="legacy-chk",
+        evidence_refs={"build_error": "artifact://build-error.json"},
+    )
+    approval = service.record_approval_only(
+        context_id=context.context_id,
+        approval_checksum="approval-chk",
+        approval_note="Human approves sandbox-only apply later.",
+        approval_scope="sandbox_only",
+    )
+
+    with pytest.raises(ValueError, match="not sandbox-bound"):
+        service.validate_apply_guard(
+            context_id=context.context_id,
+            approval_id=approval.approval_id,
+            expected_approval_checksum="approval-chk",
+            expected_sandbox_checksum="sandbox-chk",
+            expected_legacy_checksum="legacy-chk",
+        )
 
 
 def test_validate_apply_guard_fails_closed_without_reviewer_accept(tmp_path: Path) -> None:

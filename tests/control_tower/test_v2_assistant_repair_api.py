@@ -1337,7 +1337,7 @@ class TestRepairAPI:
         assert "sk-abc123" not in body["proposal_model"]["failure_reason"]
         assert "C:\\Users\\ilyas" not in body["proposal_model"]["failure_reason"]
 
-    def test_approve_proposal(self, tmp_path: Path) -> None:
+    def test_approve_proposal(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         client, conn = _api_client(tmp_path)
         # Create proposal
         create_resp = client.post(
@@ -1491,6 +1491,17 @@ class TestRepairAPI:
         assert apply_missing_approval.status_code == 400
         assert "not found for context" in apply_missing_approval.text
 
+        monkeypatch.setattr(
+            v2_repair_flow,
+            "apply_patch_to_sandbox",
+            lambda **kwargs: _fake_apply_result(Path(kwargs["run_dir"])),
+        )
+        monkeypatch.setattr(
+            v2_repair_flow,
+            "run_validation_after_patch",
+            lambda **kwargs: _fake_validation(True),
+        )
+
         apply_response = client.post(
             f"/v1/v2/repair-review/{context_id}/apply",
             json={
@@ -1501,8 +1512,17 @@ class TestRepairAPI:
             },
             headers=_mutation_headers(),
         )
-        assert apply_response.status_code == 501
-        assert "APPLY_ROUTE_NOT_WIRED" in apply_response.text
+        assert apply_response.status_code == 200, apply_response.text
+        apply_body = apply_response.json()
+        assert apply_body["context_id"] == context_id
+        assert apply_body["approval_id"] == approval_id
+        assert apply_body["repair_action"]["status"] == "applied"
+        assert apply_body["repair_action"]["verification_status"] == "passed"
+        assert apply_body["repair_action"]["verification_build_status"] == "BUILD_PASSED_IN_SANDBOX"
+        assert apply_body["repair_action"]["verification_test_status"] == "TEST_PASSED"
+        assert apply_body["repair_action"]["sandbox_only"] is True
+        assert apply_body["repair_action"]["source_mutated"] is False
+        assert apply_body["repair_action"]["llm_invoked"] is False
 
     def test_governed_repair_workflow_dry_run_end_to_end(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)

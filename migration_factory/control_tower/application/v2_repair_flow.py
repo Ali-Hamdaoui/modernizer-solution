@@ -1032,6 +1032,150 @@ class V2RepairFlowService:
             event_recorder=event_recorder,
         )
 
+    def apply_prepared_context(
+        self,
+        *,
+        context_id: str,
+        approval_id: str,
+        expected_approval_checksum: str,
+        expected_sandbox_checksum: str,
+        expected_legacy_checksum: str,
+        validation_runner: ValidationRunner | None = None,
+        event_recorder: RepairEventRecorder | None = None,
+    ) -> SandboxAction:
+        """Apply a prepared repair-review context after approval-only guards pass."""
+        guard = self.validate_apply_guard(
+            context_id=context_id,
+            approval_id=approval_id,
+            expected_approval_checksum=expected_approval_checksum,
+            expected_sandbox_checksum=expected_sandbox_checksum,
+            expected_legacy_checksum=expected_legacy_checksum,
+        )
+        context = self.get_apply_context(context_id)
+        approval = self.get_approval(context_id, approval_id)
+        if context is None or approval is None:
+            raise ValueError("Repair apply requires persisted context and approval")
+        proposal = self._get_proposal_or_raise(context.proposal_id)
+        if proposal.command_id != context.command_id:
+            raise ValueError("Repair apply context command does not match proposal")
+        if proposal.status == "applied":
+            return self._idempotent_applied_action(proposal.proposal_id, proposal)
+        if self._job_repo is None or self._setup_repo is None or self._command_repo is None:
+            raise ValueError("Repair-review apply requires job, setup, and command repositories")
+        if validation_runner is None:
+            validation_runner = run_validation_after_patch
+
+        command = self._command_repo.get(context.command_id)
+        if command is None:
+            raise ValueError(f"Command {context.command_id!r} not found")
+        job = self._job_repo.get(command.job_id)
+        if job is None:
+            raise ValueError(f"Job {command.job_id!r} not found for command {context.command_id!r}")
+        setup = self._setup_repo.get(job.setup_id)
+        if setup is None:
+            raise ValueError(f"Setup {job.setup_id!r} not found for job {job.job_id!r}")
+
+        result_data: dict[str, Any] = {}
+        if command.result_json:
+            try:
+                parsed = json.loads(command.result_json)
+                if isinstance(parsed, dict):
+                    result_data = parsed
+            except (json.JSONDecodeError, TypeError):
+                result_data = {}
+        run_id = str(result_data.get("run_id") or command.command_id)
+        output_root = str(
+            result_data.get("modernized_app_path")
+            or result_data.get("output_root_dir")
+            or setup.output_parent_path
+            or ""
+        )
+        if not output_root:
+            raise ValueError("Repair-review apply cannot resolve output root")
+        run_dir = Path(output_root) / ".migration" / "runs" / run_id
+        sandbox_path = Path(context.sandbox_reference)
+        if not sandbox_path.is_absolute():
+            raise ValueError("Repair-review apply requires an absolute sandbox reference")
+        if not sandbox_path.exists():
+            raise ValueError(f"Repair-review sandbox path does not exist: {sandbox_path}")
+        command_sandbox = str(
+            result_data.get("sandbox_path")
+            or result_data.get("modernized_app_path")
+            or result_data.get("output_app_path")
+            or ""
+        )
+        if command_sandbox and Path(command_sandbox).resolve() != sandbox_path.resolve():
+            raise ValueError("Repair-review sandbox reference does not match command sandbox")
+        legacy_path = Path(setup.legacy_app_path)
+        if not legacy_path.is_absolute():
+            raise ValueError("Repair-review apply requires an absolute legacy path")
+        if not legacy_path.exists():
+            raise ValueError(f"Repair-review legacy path does not exist: {legacy_path}")
+        try:
+            sandbox_path.resolve().relative_to(legacy_path.resolve())
+            raise ValueError("Repair-review sandbox must not be inside legacy path")
+        except ValueError as exc:
+            if str(exc) == "Repair-review sandbox must not be inside legacy path":
+                raise
+
+        evidence_refs = json.loads(context.evidence_refs_json or "{}")
+        deterministic_rule_id = str(evidence_refs.get("deterministic_rule_id") or "").strip()
+        if not deterministic_rule_id:
+            deterministic_rule_id = (
+                "DEPENDENCY_ADD_H2_RUNTIME"
+                if context.target_path.replace("\\", "/") == "pom.xml"
+                else "JAKARTA_IMPORT_MECHANICAL_SOURCE"
+            )
+        h2_required = str(evidence_refs.get("h2_required") or "").lower() == "true"
+        if deterministic_rule_id == "DEPENDENCY_ADD_H2_RUNTIME":
+            h2_required = True
+        expected_validation = tuple(
+            item.strip()
+            for item in str(evidence_refs.get("expected_validation") or "").split("|")
+            if item.strip()
+        )
+
+        approved = RepairProposal(
+            proposal_id=proposal.proposal_id,
+            command_id=proposal.command_id,
+            failure_summary=proposal.failure_summary,
+            hypothesis=proposal.hypothesis,
+            patch_summary=proposal.patch_summary,
+            affected_paths=proposal.affected_paths,
+            status="approved",
+            approval_checksum=approval.approval_checksum,
+            created_at=proposal.created_at,
+            proposal_checksum=proposal.proposal_checksum,
+            source_proposal_id=proposal.source_proposal_id,
+            revision_of=proposal.revision_of,
+            revision_number=proposal.revision_number,
+            context_pack_checksum=proposal.context_pack_checksum,
+            allowed_scope=proposal.allowed_scope,
+        )
+        self._proposals[proposal.proposal_id] = approved
+        if self._repo is not None:
+            self._repo.update_proposal_status(proposal.proposal_id, "approved", approval.approval_checksum)
+
+        return self.apply_patch(
+            proposal_id=guard.proposal_id,
+            target_path=context.target_path,
+            patch_content=context.patch_preview,
+            run_id=run_id,
+            run_dir=run_dir,
+            sandbox_path=sandbox_path,
+            legacy_path=legacy_path,
+            deterministic_rule_id=deterministic_rule_id,
+            risk=str(evidence_refs.get("risk") or "LOW"),
+            requires_human_review=False,
+            expected_validation=expected_validation,
+            limitations=(),
+            failure_classification={},
+            h2_required=h2_required,
+            binding_checksum=context.context_pack_checksum,
+            validation_runner=validation_runner,
+            event_recorder=event_recorder,
+        )
+
     def _latest_action_for_proposal(
         self,
         proposal_id: str,

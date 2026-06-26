@@ -2965,9 +2965,14 @@ def create_app(
         payload: ApplyRepairReviewContextRequest,
     ) -> dict[str, Any]:
         with unit_of_work_factory() as uow:
-            service = V2RepairFlowService(repair_repo=uow.v2_repairs)
+            service = V2RepairFlowService(
+                repair_repo=uow.v2_repairs,
+                job_repo=uow.v2_jobs,
+                setup_repo=uow.v2_setups,
+                command_repo=uow.v2_commands,
+            )
             try:
-                guard = service.validate_apply_guard(
+                action = service.apply_prepared_context(
                     context_id=context_id,
                     approval_id=payload.approval_id,
                     expected_approval_checksum=payload.expected_approval_checksum,
@@ -2980,11 +2985,11 @@ def create_app(
                     "REPAIR_APPLY_GUARD_FAILED",
                     str(exc),
                 ) from exc
-        raise _error(
-            status.HTTP_501_NOT_IMPLEMENTED,
-            "APPLY_ROUTE_NOT_WIRED",
-            "Repair-review apply guards passed, but sandbox apply wiring is intentionally not enabled yet.",
-        )
+        return {
+            "context_id": context_id,
+            "approval_id": payload.approval_id,
+            "repair_action": service.action_to_dict(action),
+        }
 
     @app.post("/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/approve")
     def approve_repair_proposal(
