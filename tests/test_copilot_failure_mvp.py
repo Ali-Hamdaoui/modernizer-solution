@@ -38,7 +38,10 @@ def _repo_root() -> Path:
 
 
 def test_copilot_feature_probe_requires_required_flags(tmp_path: Path) -> None:
+    seen_stdin: list[object] = []
+
     def fake_run(args, **kwargs):
+        seen_stdin.append(kwargs.get("stdin"))
         return subprocess.CompletedProcess(args, 0, stdout="--prompt --agent", stderr="")
 
     result = probe_copilot_availability(
@@ -51,6 +54,29 @@ def test_copilot_feature_probe_requires_required_flags(tmp_path: Path) -> None:
     assert result["status"] == "UNAVAILABLE"
     assert "--no-ask-user" in result["missing_required_flags"]
     assert "--deny-tool" in result["missing_required_flags"]
+    assert seen_stdin == [subprocess.DEVNULL, subprocess.DEVNULL]
+
+
+def test_copilot_feature_probe_treats_reinstall_prompt_as_unavailable(tmp_path: Path) -> None:
+    def fake_run(args, **kwargs):
+        assert kwargs.get("stdin") == subprocess.DEVNULL
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="",
+            stderr="Would you like to reinstall GitHub Copilot CLI? (y/N):",
+        )
+
+    result = probe_copilot_availability(
+        repo_root=_repo_root(),
+        run_dir=tmp_path,
+        provider="copilot_cli",
+        run=fake_run,
+    )
+
+    assert result["status"] == "UNAVAILABLE"
+    assert result["reason"] == "copilot_probe_interactive_prompt"
+    assert result["dry_probe_status"] == "FAILED"
 
 
 def test_copilot_feature_probe_windows_uses_full_cmd_path(tmp_path: Path, monkeypatch) -> None:

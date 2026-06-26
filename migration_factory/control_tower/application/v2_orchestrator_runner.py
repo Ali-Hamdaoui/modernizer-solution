@@ -71,7 +71,11 @@ _COPILOT_ENV_KEYS = (
     "AI_MIGRATION_COPILOT_REPAIR_MAX_ATTEMPTS",
     "AI_MIGRATION_COPILOT_REPAIR_STRICT_CONTAINMENT",
     "AI_MIGRATION_COPILOT_LOG_LEVEL",
+    "AI_MIGRATION_STAGE_TIMEOUT_SECONDS",
 )
+
+_DEFAULT_STAGE_TIMEOUT_SECONDS = 900
+_TIMEOUT_KILL_GRACE_SECONDS = 5
 
 _SECRET_ENV_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL", "AUTHORIZATION")
 
@@ -133,6 +137,7 @@ class V2OrchestratorRunner:
         popen_factory: Any = subprocess.Popen,
         cwd: Path | None = None,
         diagnosis_callback: Callable[[str, int, str, str, dict[str, Any]], None] | None = None,
+        stage_timeout_seconds: float | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._notifier = notifier
@@ -141,6 +146,7 @@ class V2OrchestratorRunner:
         self._event_lock = threading.Lock()
         self._last_stdout_lines: list[str] = []
         self._diagnosis_callback = diagnosis_callback
+        self._stage_timeout_seconds = stage_timeout_seconds
 
     def start(self, *, job_id: str, command_id: str) -> V2OrchestratorStart:
         with self._unit_of_work_factory() as uow:
@@ -303,12 +309,14 @@ class V2OrchestratorRunner:
                 env=process_env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 shell=False,
             )
             process_id = getattr(process, "pid", None)
+            timeout_seconds = self._resolve_stage_timeout_seconds(process_env)
             self._persist_command_runtime_state(
                 command_id=command_id,
                 status="running",
@@ -321,6 +329,8 @@ class V2OrchestratorRunner:
                     "started_at": utc_now_text(),
                     "cwd": str(self._cwd),
                     "shell": False,
+                    "stdin_closed": True,
+                    "timeout_seconds": timeout_seconds,
                     "final_json_found": False,
                 },
             )
@@ -360,7 +370,21 @@ class V2OrchestratorRunner:
             out_thread.start()
             err_thread.start()
 
-            exit_code = process.wait()
+            try:
+                exit_code = process.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                self._handle_timeout(
+                    process=process,
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    command_id=command_id,
+                    timeout_seconds=timeout_seconds,
+                    stdout_lines=stdout_lines,
+                    stderr_lines=stderr_lines,
+                    out_thread=out_thread,
+                    err_thread=err_thread,
+                )
+                return
 
             out_thread.join(timeout=5)
             err_thread.join(timeout=5)
@@ -400,6 +424,92 @@ class V2OrchestratorRunner:
                 message=f"Orchestrator launch failed: {exc}",
                 payload={"command_id": command_id},
             )
+
+    def _resolve_stage_timeout_seconds(self, process_env: dict[str, str]) -> float:
+        if self._stage_timeout_seconds is not None:
+            return self._stage_timeout_seconds
+        raw = str(process_env.get("AI_MIGRATION_STAGE_TIMEOUT_SECONDS") or "").strip()
+        if raw:
+            try:
+                parsed = float(raw)
+            except ValueError:
+                return float(_DEFAULT_STAGE_TIMEOUT_SECONDS)
+            if parsed > 0:
+                return parsed
+        return float(_DEFAULT_STAGE_TIMEOUT_SECONDS)
+
+    def _handle_timeout(
+        self,
+        *,
+        process: Any,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        timeout_seconds: float,
+        stdout_lines: list[str],
+        stderr_lines: list[str],
+        out_thread: threading.Thread,
+        err_thread: threading.Thread,
+    ) -> None:
+        pid = getattr(process, "pid", None)
+        terminated = False
+        killed = False
+        try:
+            process.terminate()
+            terminated = True
+        except Exception:
+            terminated = False
+        try:
+            process.wait(timeout=_TIMEOUT_KILL_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+                killed = True
+            except Exception:
+                killed = False
+        except Exception:
+            pass
+
+        out_thread.join(timeout=1)
+        err_thread.join(timeout=1)
+
+        stdout_tail = _bounded("\n".join(stdout_lines))
+        stderr_tail = _bounded("\n".join(stderr_lines))
+        result = {
+            "runner_status": "timeout",
+            "command_id": command_id,
+            "job_id": job_id,
+            "stage_index": stage_index,
+            "pid": pid,
+            "timeout_seconds": timeout_seconds,
+            "terminated": terminated,
+            "killed": killed,
+            "final_json_found": False,
+            "stdout_tail": stdout_tail,
+            "stderr_tail": stderr_tail,
+            "sandbox_path": None,
+        }
+        self._persist_command_runtime_state(
+            command_id=command_id,
+            status="failed",
+            result=result,
+        )
+        self._event(
+            job_id=job_id,
+            stage=stage_index,
+            event_type="runner_timeout",
+            status="failed",
+            message=f"Orchestrator subprocess exceeded timeout of {timeout_seconds:g} seconds.",
+            payload=result,
+        )
+        self._event(
+            job_id=job_id,
+            stage=stage_index,
+            event_type="stage_failed",
+            status="failed",
+            message="Orchestrator subprocess timed out before producing final JSON/sandbox proof.",
+            payload=result,
+        )
 
     def _read_stream(
         self,

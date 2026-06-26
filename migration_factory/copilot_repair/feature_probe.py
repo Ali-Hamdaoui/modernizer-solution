@@ -68,6 +68,7 @@ def probe_copilot_availability(
         help_result = run(
             [cli_path, "--help"],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             check=False,
             timeout=timeout_seconds,
@@ -87,9 +88,22 @@ def probe_copilot_availability(
         return _write(output_path, payload)
 
     help_text = "\n".join([help_result.stdout or "", help_result.stderr or ""])
+    if _looks_like_interactive_prompt(help_text):
+        payload.update(
+            {
+                "status": "UNAVAILABLE",
+                "reason": "copilot_probe_interactive_prompt",
+                "agent_status": "SKIPPED",
+                "skills_status": "SKIPPED",
+                "dry_probe_status": "FAILED",
+                "errors": ["Copilot CLI requested interactive input during preflight"],
+            }
+        )
+        return _write(output_path, payload)
+
     supported_flags = _extract_supported_flags(help_text)
     missing_required = sorted(REQUIRED_FLAGS - supported_flags)
-    # These safety flags materially reduce accidental context/tool exposure. If absent,
+    # Safety flags materially reduce accidental context/tool exposure. If absent,
     # proposal mode is unavailable, even when Copilot itself is installed.
     missing_safety = sorted(SAFETY_FLAGS - supported_flags)
     payload["supported_flags"] = sorted(supported_flags)
@@ -100,6 +114,7 @@ def probe_copilot_availability(
         version_result = run(
             [cli_path, "--version"],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             check=False,
             timeout=timeout_seconds,
@@ -126,7 +141,10 @@ def probe_copilot_availability(
         payload.update({"status": "AVAILABLE", "reason": "required Copilot repair proposal capabilities found"})
     payload["dry_probe_status"] = "PASSED" if payload["status"] == "AVAILABLE" else "FAILED"
     if not required and payload["status"] == "UNAVAILABLE":
-        payload["warnings"] = [*list(payload["warnings"]), "Copilot repair proposal mode unavailable; continuing because it is optional."]
+        payload["warnings"] = [
+            *list(payload["warnings"]),
+            "Copilot repair proposal mode unavailable; continuing because it is optional.",
+        ]
     return _write(output_path, payload)
 
 
@@ -136,6 +154,19 @@ def _extract_supported_flags(help_text: str) -> set[str]:
         if flag in help_text:
             supported.add(flag)
     return supported
+
+
+def _looks_like_interactive_prompt(text: str) -> bool:
+    lowered = text.lower()
+    prompt_markers = (
+        "would you like to reinstall github copilot cli",
+        "would you like to",
+        "(y/n)",
+        "(y/n):",
+        "(y/n)?",
+        "(y/n]",
+    )
+    return any(marker in lowered for marker in prompt_markers)
 
 
 def _base_payload(*, provider: str, model: str) -> dict[str, Any]:

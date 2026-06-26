@@ -6,6 +6,7 @@ import json
 import sqlite3
 import time
 import threading
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -30,7 +31,7 @@ class _FakeProcess:
         self.pid = 12345
         self._exit_code = exit_code
 
-    def wait(self) -> int:
+    def wait(self, timeout: float | None = None) -> int:
         return self._exit_code
 
 
@@ -52,20 +53,34 @@ class _BlockingProcess:
         self.stderr = iter([])
         self.pid = 24680
         self._release = release
+        self.terminated = False
+        self.killed = False
 
-    def wait(self) -> int:
-        self._release.wait(timeout=3)
+    def wait(self, timeout: float | None = None) -> int:
+        wait_timeout = 3 if timeout is None else timeout
+        if not self._release.wait(timeout=wait_timeout):
+            raise subprocess.TimeoutExpired(cmd=["fake"], timeout=wait_timeout)
         return 0
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self._release.set()
+
+    def kill(self) -> None:
+        self.killed = True
+        self._release.set()
 
 
 class _BlockingPopen:
     def __init__(self) -> None:
         self.release = threading.Event()
         self.calls: list[dict[str, Any]] = []
+        self.last_process: _BlockingProcess | None = None
 
     def __call__(self, argv: list[str], **kwargs: Any) -> _BlockingProcess:
         self.calls.append({"argv": argv, **kwargs})
-        return _BlockingProcess(self.release)
+        self.last_process = _BlockingProcess(self.release)
+        return self.last_process
 
 
 class _RaisingPopen:
@@ -196,9 +211,45 @@ def test_runner_process_started_persists_command_running_state(tmp_path: Path) -
         assert result["runner_status"] == "running"
         assert result["pid"] == 24680
         assert result["shell"] is False
+        assert result["stdin_closed"] is True
+        assert result["timeout_seconds"] == 900.0
         assert "TOKEN=secret-value" not in command.result_json
+        assert popen.calls[0]["stdin"] == subprocess.DEVNULL
     finally:
         popen.release.set()
+
+
+def test_runner_timeout_persists_failed_result_and_events(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    popen = _BlockingPopen()
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+        stage_timeout_seconds=0.01,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "runner_timeout")
+    _wait_for_event(conn, "job-1", "stage_failed")
+
+    command = SqliteUnitOfWork(conn).v2_commands.get("cmd-1")
+    assert command is not None
+    assert command.status == "failed"
+    persisted = json.loads(command.result_json or "{}")
+    assert persisted["runner_status"] == "timeout"
+    assert persisted["final_json_found"] is False
+    assert persisted["sandbox_path"] is None
+    assert persisted["timeout_seconds"] == 0.01
+    assert persisted["terminated"] is True
+    assert popen.last_process is not None
+    assert popen.last_process.terminated is True
+    assert popen.last_process.killed is False
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [event.type for event in events]
+    assert "runner_timeout" in event_types
+    assert "stage_completed" not in event_types
 
 
 def test_runner_success_persists_result_json_with_sandbox_path(tmp_path: Path) -> None:
