@@ -173,8 +173,7 @@ def test_reject_gate_idempotent(tmp_path: Path) -> None:
         reason="First rejection",
         idempotency_key="idem-reject-1",
     )
-    assert r2.status == "idempotent"
-    assert r2.decision_id == r1.decision_id
+    assert r2.status == "gate_not_open"
 
 
 # ── decision is auditable ────────────────────────────────────────────

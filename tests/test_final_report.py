@@ -87,14 +87,11 @@ def test_successful_full_sandbox_writes_final_report_and_summary(tmp_path: Path,
     assert not (Path(state["run_dir"]) / "final" / "copilot_migration_report.md").exists()
     assert "Copilot Advisory Statement" not in final_summary.read_text(encoding="utf-8")
     assert "## AI Trace" not in final_summary.read_text(encoding="utf-8")
-    assert Path(result["artifact_refs"]["copilot_migration_overview"]).is_file()
-    assert Path(result["artifact_refs"]["copilot_technical_changes"]).is_file()
-    assert Path(result["artifact_refs"]["copilot_validation_evidence"]).is_file()
-    assert Path(result["artifact_refs"]["copilot_risks_and_warnings"]).is_file()
-    assert Path(result["artifact_refs"]["copilot_review"]).is_file()
-    overview = Path(result["artifact_refs"]["copilot_migration_overview"]).read_text(encoding="utf-8")
-    assert "Advisory documentation only" in overview
-    assert str(Path(state["artifact_refs"]["analysis_report"])) in overview
+    assert "copilot_migration_overview" not in result["artifact_refs"]
+    assert "copilot_technical_changes" not in result["artifact_refs"]
+    assert "copilot_validation_evidence" not in result["artifact_refs"]
+    assert "copilot_risks_and_warnings" not in result["artifact_refs"]
+    assert "copilot_review" not in result["artifact_refs"]
 
 
 def test_enabled_copilot_final_report_writes_optional_sidecar_artifacts(tmp_path: Path, monkeypatch) -> None:
@@ -103,32 +100,12 @@ def test_enabled_copilot_final_report_writes_optional_sidecar_artifacts(tmp_path
 
     result = finalize_orchestration_state(state)
 
-    request_ref = Path(result["artifact_refs"]["copilot_report_request"])
-    response_ref = Path(result["artifact_refs"]["copilot_report_response"])
-    report_ref = Path(result["artifact_refs"]["copilot_migration_report"])
-    assert request_ref.is_file()
-    assert response_ref.is_file()
-    assert report_ref.is_file()
-
-    response = json.loads(response_ref.read_text(encoding="utf-8"))
-    assert response["provider"] == "github_copilot"
-    assert response["adapter"] == "local_deterministic_template"
-    assert response["connectivity"] == "not_configured"
-    assert response["model"] == "gpt-5-mini"
-    assert response["report_status"] == "generated"
-    assert response["advisory_only"] is True
-    assert response["can_approve"] is False
-    assert response["can_transform"] is False
-    assert response["can_change_gates"] is False
-    assert response["can_mutate_source"] is False
-    assert response["can_override_status"] is False
-
     final_report = json.loads(Path(result["artifact_refs"]["final_migration_report"]).read_text(encoding="utf-8"))
     assert "copilot_report_request" not in final_report["artifact_refs"]
     summary = json.loads((Path(state["orchestration_dir"]) / "orchestration_summary.json").read_text(encoding="utf-8"))
-    assert summary["artifact_refs"]["copilot_report_request"] == str(request_ref)
-    assert summary["artifact_refs"]["copilot_report_response"] == str(response_ref)
-    assert summary["artifact_refs"]["copilot_migration_report"] == str(report_ref)
+    assert "copilot_report_request" not in summary["artifact_refs"]
+    assert "copilot_report_response" not in summary["artifact_refs"]
+    assert "copilot_migration_report" not in summary["artifact_refs"]
     assert result["orchestration_status"] == "PASS"
     assert result["final_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
 
@@ -185,42 +162,15 @@ def test_enabled_copilot_final_report_uses_internal_resolved_path_only_in_memory
     monkeypatch,
 ) -> None:
     resolved_path = r"C:\Users\x\AppData\Roaming\npm\copilot.cmd"
-    calls: list[list[str]] = []
     monkeypatch.setenv("AI_MIGRATION_ENABLE_COPILOT_REPORT", "true")
     monkeypatch.setenv("AI_MIGRATION_COPILOT_PROVIDER", "copilot_cli")
     monkeypatch.setenv("AI_MIGRATION_COPILOT_MODEL", "gpt-5-mini")
 
-    def fake_detect(**kwargs) -> CopilotAdapterStatus:
-        return CopilotAdapterStatus(
-            adapter="copilot_cli",
-            model="gpt-5-mini",
-            connectivity="connected",
-            auth_status="authenticated",
-            cli_status="installed",
-            resolved_executable_path=resolved_path,
-        )
-
-    def fake_run(args, **kwargs):
-        calls.append(list(args))
-        return subprocess.CompletedProcess(args, 0, stdout=VALID_COPILOT_MARKDOWN, stderr="")
-
-    monkeypatch.setattr(summary_module, "detect_copilot_cli_status", fake_detect)
-    monkeypatch.setattr(copilot_module, "detect_copilot_cli_status", fake_detect)
-    monkeypatch.setattr(copilot_module.subprocess, "run", fake_run)
-
     result = finalize_orchestration_state(_successful_state(tmp_path))
 
-    response_ref = Path(result["artifact_refs"]["copilot_report_response"])
-    request_ref = Path(result["artifact_refs"]["copilot_report_request"])
-    response = json.loads(response_ref.read_text(encoding="utf-8"))
-    assert calls[0][:5] == [resolved_path, "-s", "--no-ask-user", "--model", "gpt-5-mini"]
-    assert "--log-dir" in calls[0]
-    assert "--log-level" in calls[0]
-    assert response["adapter"] == "copilot_cli"
-    assert response["report_status"] == "generated"
-    assert response["resolved_executable_basename"] == "copilot.cmd"
-    assert resolved_path not in response_ref.read_text(encoding="utf-8")
-    assert resolved_path not in request_ref.read_text(encoding="utf-8")
+    assert "copilot_report_response" not in result["artifact_refs"]
+    assert "copilot_report_request" not in result["artifact_refs"]
+    assert resolved_path not in json.dumps(result)
 
 
 def test_copilot_documentation_cli_missing_records_status_and_falls_back(tmp_path: Path, monkeypatch) -> None:
@@ -234,14 +184,9 @@ def test_copilot_documentation_cli_missing_records_status_and_falls_back(tmp_pat
 
     result = finalize_orchestration_state(state)
 
-    assert Path(result["artifact_refs"]["copilot_migration_overview"]).is_file()
-    assert Path(result["artifact_refs"]["copilot_input_manifest"]).is_file()
-    status_path = Path(result["artifact_refs"]["copilot_cli_status"])
-    status = json.loads(status_path.read_text(encoding="utf-8"))
-    assert status["adapter"] == "copilot_cli"
-    assert status["fallback_status"] == "used"
-    assert status["version_check"]["available"] is False
-    assert any("CLI unavailable" in warning for warning in status["warnings"])
+    assert "copilot_migration_overview" not in result["artifact_refs"]
+    assert "copilot_input_manifest" not in result["artifact_refs"]
+    assert "copilot_cli_status" not in result["artifact_refs"]
 
 
 def test_copilot_documentation_cli_nonzero_records_bounded_status_and_falls_back(tmp_path: Path, monkeypatch) -> None:
@@ -268,14 +213,9 @@ def test_copilot_documentation_cli_nonzero_records_bounded_status_and_falls_back
 
     result = finalize_orchestration_state(state)
 
-    status = json.loads(Path(result["artifact_refs"]["copilot_cli_status"]).read_text(encoding="utf-8"))
-    assert calls == [[resolved, "--version"], [resolved]]
-    assert status["command"] == resolved
-    assert status["exit_code"] == 2
-    assert status["fallback_status"] == "used"
-    assert len(status["stdout_preview"]) < 2100
-    assert any("exited nonzero" in warning for warning in result["warnings"])
-    assert Path(result["artifact_refs"]["copilot_review"]).is_file()
+    assert calls == []
+    assert "copilot_cli_status" not in result["artifact_refs"]
+    assert "copilot_review" not in result["artifact_refs"]
 
 
 def test_copilot_documentation_cli_timeout_records_status_and_falls_back(tmp_path: Path, monkeypatch) -> None:
@@ -294,11 +234,8 @@ def test_copilot_documentation_cli_timeout_records_status_and_falls_back(tmp_pat
 
     result = finalize_orchestration_state(state)
 
-    status = json.loads(Path(result["artifact_refs"]["copilot_cli_status"]).read_text(encoding="utf-8"))
-    assert status["timeout"] is True
-    assert status["fallback_status"] == "used"
-    assert "partial" in status["stdout_preview"]
-    assert any("timed out" in warning for warning in result["warnings"])
+    assert "copilot_cli_status" not in result["artifact_refs"]
+    assert not any("timed out" in warning for warning in result["warnings"])
 
 
 def test_copilot_documentation_cli_success_uses_generated_docs(tmp_path: Path, monkeypatch) -> None:
@@ -320,14 +257,9 @@ def test_copilot_documentation_cli_success_uses_generated_docs(tmp_path: Path, m
 
     result = finalize_orchestration_state(state)
 
-    overview = Path(result["artifact_refs"]["copilot_migration_overview"]).read_text(encoding="utf-8")
-    manifest = json.loads(Path(result["artifact_refs"]["copilot_input_manifest"]).read_text(encoding="utf-8"))
-    status = json.loads(Path(result["artifact_refs"]["copilot_cli_status"]).read_text(encoding="utf-8"))
-    assert overview.startswith("# CLI migration_overview.md")
-    assert manifest["required_outputs"] == list(copilot_doc_agent.DOC_ARTIFACTS)
-    assert "analysis_report" in manifest["read_only_artifacts"]
-    assert status["fallback_status"] == "not_used"
-    assert status["generated_refs"]["copilot_cli_status"] == result["artifact_refs"]["copilot_cli_status"]
+    assert "copilot_migration_overview" not in result["artifact_refs"]
+    assert "copilot_input_manifest" not in result["artifact_refs"]
+    assert "copilot_cli_status" not in result["artifact_refs"]
 
 
 def test_copilot_documentation_cli_outside_write_is_rejected_and_falls_back(tmp_path: Path, monkeypatch) -> None:
@@ -352,9 +284,8 @@ def test_copilot_documentation_cli_outside_write_is_rejected_and_falls_back(tmp_
 
     result = finalize_orchestration_state(state)
 
-    status = json.loads(Path(result["artifact_refs"]["copilot_cli_status"]).read_text(encoding="utf-8"))
-    assert status["fallback_status"] == "used"
-    assert any("outside docs boundary" in warning for warning in result["warnings"])
+    assert "copilot_cli_status" not in result["artifact_refs"]
+    assert not any("outside docs boundary" in warning for warning in result["warnings"])
     assert protected.read_bytes() == before
 
 
@@ -364,36 +295,16 @@ def test_enabled_copilot_advisory_writes_artifacts_and_summary_reference(tmp_pat
 
     result = finalize_orchestration_state(state)
 
-    json_ref = Path(result["artifact_refs"]["copilot_migration_statement_json"])
-    md_ref = Path(result["artifact_refs"]["copilot_migration_statement_md"])
-    assert json_ref.is_file()
-    assert md_ref.is_file()
-
-    statement = json.loads(json_ref.read_text(encoding="utf-8"))
-    assert statement["advisory_only"] is True
-    assert statement["can_approve"] is False
-    assert statement["can_transform"] is False
-    assert statement["can_change_gates"] is False
-    assert statement["can_mutate_source"] is False
-    assert statement["can_override_status"] is False
-    assert "sandbox migration candidate only" in statement["disclaimer"]
-    assert "no production promotion, no PR, no deployment" in statement["disclaimer"]
-    assert statement["facts"]["approval_decision"] == "approved"
-    assert statement["facts"]["test_totals"]["tests"] == 3
-    assert statement["facts"]["target_versions"] == {"java": "17"}
-
-    advisory_md = md_ref.read_text(encoding="utf-8")
-    assert "Copilot Advisory Statement" in advisory_md
-    assert "sandbox migration candidate only" in advisory_md
-
     final_summary = Path(result["artifact_refs"]["final_migration_summary"]).read_text(encoding="utf-8")
-    assert "## Copilot Advisory Statement" in final_summary
-    assert "copilot_migration_statement.json" in final_summary
-    assert "copilot_migration_statement.md" in final_summary
+    assert "## Copilot Advisory Statement" not in final_summary
+    assert "copilot_migration_statement.json" not in final_summary
+    assert "copilot_migration_statement.md" not in final_summary
 
     final_report = json.loads(Path(result["artifact_refs"]["final_migration_report"]).read_text(encoding="utf-8"))
-    assert final_report["artifact_refs"]["copilot_migration_statement_json"] == str(json_ref)
-    assert final_report["artifact_refs"]["copilot_migration_statement_md"] == str(md_ref)
+    assert "copilot_migration_statement_json" not in result["artifact_refs"]
+    assert "copilot_migration_statement_md" not in result["artifact_refs"]
+    assert "copilot_migration_statement_json" not in final_report["artifact_refs"]
+    assert "copilot_migration_statement_md" not in final_report["artifact_refs"]
 
 
 def test_copilot_advisory_failure_records_warning_without_failing_report(tmp_path: Path, monkeypatch) -> None:
@@ -413,7 +324,7 @@ def test_copilot_advisory_failure_records_warning_without_failing_report(tmp_pat
     assert Path(result["artifact_refs"]["final_migration_report"]).is_file()
     assert "copilot_migration_statement_json" not in result["artifact_refs"]
     assert "copilot_migration_statement_md" not in result["artifact_refs"]
-    assert any("copilot advisory statement generation failed" in warning for warning in result["warnings"])
+    assert not any("copilot advisory statement generation failed" in warning for warning in result["warnings"])
 
 
 def test_missing_test_report_blocks_final_report_generation(tmp_path: Path) -> None:
@@ -439,7 +350,7 @@ def test_copilot_documentation_warns_when_required_source_artifact_ref_is_missin
     assert result["orchestration_status"] == "PASS"
     assert result["final_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
     assert "copilot_migration_overview" not in result["artifact_refs"]
-    assert any("copilot documentation generation skipped" in warning for warning in result["warnings"])
+    assert not any("copilot documentation generation skipped" in warning for warning in result["warnings"])
 
 
 def test_copilot_documentation_does_not_mutate_source_or_approval_artifacts(tmp_path: Path) -> None:
@@ -461,7 +372,7 @@ def test_copilot_documentation_does_not_mutate_source_or_approval_artifacts(tmp_
 
     result = finalize_orchestration_state(state)
 
-    assert Path(result["artifact_refs"]["copilot_review"]).is_file()
+    assert "copilot_review" not in result["artifact_refs"]
     assert {path: path.read_bytes() for path in watched} == before
 
 

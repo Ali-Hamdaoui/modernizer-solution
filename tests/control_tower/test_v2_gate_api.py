@@ -112,7 +112,7 @@ def _seed_fk_refs(conn: sqlite3.Connection) -> None:
             "test",
         ),
     )
-    pipeline_payload = {
+    v1_pipeline = {
         "schema_version": "1.0.0",
         "pipeline_id": "springboot-216-to-356-java21-three-stage",
         "pipeline_version": "2026.06",
@@ -131,25 +131,72 @@ def _seed_fk_refs(conn: sqlite3.Connection) -> None:
             },
         ],
     }
-    conn.execute(
-        """INSERT OR IGNORE INTO pipeline_definitions (
-            pipeline_id, pipeline_version, display_name, schema_version,
-            graph_version, graph_state_schema_version, payload_json, payload_checksum,
-            created_at, created_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            pipeline_payload["pipeline_id"],
-            pipeline_payload["pipeline_version"],
-            pipeline_payload["display_name"],
-            pipeline_payload["schema_version"],
-            pipeline_payload["graph_version"],
-            pipeline_payload["graph_state_schema_version"],
-            canonical_json_text(pipeline_payload),
-            sha256_canonical_json(pipeline_payload),
-            now,
-            "test",
-        ),
-    )
+    v2_pipeline = {
+        "schema_version": "1.0.0",
+        "pipeline_id": "springboot-216-to-400-java21-four-stage",
+        "pipeline_version": "2026.06",
+        "display_name": "V2 migration pipeline (4-stage with Boot 4)",
+        "graph_version": "1.0",
+        "graph_state_schema_version": "1.0",
+        "stages": [
+            {
+                "stage_index": 1,
+                "stage_id": "analysis",
+                "profile_id": "analysis-profile",
+                "command_jdk": "jdk-17",
+                "input_source": {"kind": "legacy_source"},
+                "continuation_policy_id": "default",
+                "target": {"spring_boot": "3.5.14", "java": 17},
+            },
+            {
+                "stage_index": 2,
+                "stage_id": "planning",
+                "profile_id": "planning-profile",
+                "command_jdk": "jdk-21",
+                "input_source": {"kind": "previous_stage", "previous_stage_index": 1},
+                "continuation_policy_id": "default",
+                "target": {"spring_boot": "3.5.14", "java": 21},
+            },
+            {
+                "stage_index": 3,
+                "stage_id": "finalize",
+                "profile_id": "finalize-profile",
+                "command_jdk": "jdk-21",
+                "input_source": {"kind": "previous_stage", "previous_stage_index": 2},
+                "continuation_policy_id": "default",
+                "target": {"spring_boot": "3.5.14", "java": 21},
+            },
+            {
+                "stage_index": 4,
+                "stage_id": "boot4-migration",
+                "profile_id": "springboot-3.5-java21-to-4.0-java21",
+                "command_jdk": "jdk-21",
+                "input_source": {"kind": "previous_stage", "previous_stage_index": 3},
+                "continuation_policy_id": "default",
+                "target": {"spring_boot": "4.0.0", "java": 21},
+            },
+        ],
+    }
+    for pipeline_payload in (v1_pipeline, v2_pipeline):
+        conn.execute(
+            """INSERT OR IGNORE INTO pipeline_definitions (
+                pipeline_id, pipeline_version, display_name, schema_version,
+                graph_version, graph_state_schema_version, payload_json, payload_checksum,
+                created_at, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                pipeline_payload["pipeline_id"],
+                pipeline_payload["pipeline_version"],
+                pipeline_payload["display_name"],
+                pipeline_payload["schema_version"],
+                pipeline_payload["graph_version"],
+                pipeline_payload["graph_state_schema_version"],
+                canonical_json_text(pipeline_payload),
+                sha256_canonical_json(pipeline_payload),
+                now,
+                "test",
+            ),
+        )
 
 
 def _ready_setup(conn: sqlite3.Connection) -> str:
@@ -432,9 +479,8 @@ def test_v2_gate_action_success_idempotency_and_conflict(tmp_path: Path) -> None
         json=base_payload,
         headers=_mutation_headers(),
     )
-    assert second.status_code == 200, second.text
-    assert second.json()["result"]["status"] == "idempotent"
-    assert second.json()["result"]["decision_id"] == first_result["decision_id"]
+    assert second.status_code == 409, second.text
+    assert "gate is resolved" in second.text.lower()
 
     conflict_payload = dict(base_payload)
     conflict_payload["reason"] = "different reason"
@@ -533,7 +579,7 @@ def test_v2_approval_route_retries_when_resume_launch_is_locked(tmp_path: Path) 
 
 
 class TestV2JobPolicyPersistence:
-    def test_create_job_defaults_to_manual_policy(self, tmp_path: Path) -> None:
+    def test_create_job_defaults_to_auto_on_green_policy(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)
         setup_id = _ready_setup(conn)
 
@@ -544,7 +590,7 @@ class TestV2JobPolicyPersistence:
         )
         assert response.status_code == 201, response.text
         data = response.json()
-        assert data["stage_continuation_policy"] == "manual"
+        assert data["stage_continuation_policy"] == "auto_on_green"
         assert data["run_configuration_id"]
 
         row = conn.execute(
@@ -553,7 +599,7 @@ class TestV2JobPolicyPersistence:
         ).fetchone()
         assert row is not None
         policy = json.loads(row["policy_json"])
-        assert policy["stage_continuation_policy"] == "manual"
+        assert policy["stage_continuation_policy"] == "auto_on_green"
 
     def test_create_job_with_explicit_manual_policy(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)

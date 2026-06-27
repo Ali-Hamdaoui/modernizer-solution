@@ -25,11 +25,7 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository i
     V2PreflightResultRecord,
 )
 from ._helpers import canonical_json, seed_runner_profile, sha256_json
-from .v1_fixtures import make_v1_pipeline_definition
-from migration_factory.control_tower.schemas.run_configuration import (
-    RunPolicy,
-    StageContinuationPolicy,
-)
+from .v1_fixtures import make_v1_pipeline_definition, make_v2_pipeline_definition
 
 
 def _mutation_headers() -> dict[str, str]:
@@ -124,70 +120,48 @@ def _ready_setup(conn: sqlite3.Connection) -> str:
         )
     )
     seed_runner_profile(conn)
-    pipeline_payload = make_v1_pipeline_definition()
-    conn.execute(
-        """
-        INSERT INTO pipeline_definitions (
-            pipeline_id, pipeline_version, display_name, schema_version,
-            graph_version, graph_state_schema_version, payload_json, payload_checksum,
-            created_at, created_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            pipeline_payload["pipeline_id"],
-            pipeline_payload["pipeline_version"],
-            pipeline_payload["display_name"],
-            pipeline_payload["schema_version"],
-            pipeline_payload["graph_version"],
-            pipeline_payload["graph_state_schema_version"],
-            canonical_json(pipeline_payload),
-            sha256_json(pipeline_payload),
-            now,
-            "test",
-        ),
-    )
+    for pipeline_payload in (make_v1_pipeline_definition(), make_v2_pipeline_definition()):
+        conn.execute(
+            """
+            INSERT INTO pipeline_definitions (
+                pipeline_id, pipeline_version, display_name, schema_version,
+                graph_version, graph_state_schema_version, payload_json, payload_checksum,
+                created_at, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                pipeline_payload["pipeline_id"],
+                pipeline_payload["pipeline_version"],
+                pipeline_payload["display_name"],
+                pipeline_payload["schema_version"],
+                pipeline_payload["graph_version"],
+                pipeline_payload["graph_state_schema_version"],
+                canonical_json(pipeline_payload),
+                sha256_json(pipeline_payload),
+                now,
+                "test",
+            ),
+        )
     return setup.setup_id
 
 
-def _create_job(client: TestClient, setup_id: str) -> str:
+def _create_job(client: TestClient, setup_id: str, policy: dict | None = None) -> str:
+    payload: dict = {"setup_id": setup_id}
+    if policy is not None:
+        payload["policy"] = policy
     response = client.post(
         "/v1/v2/migration-jobs",
-        json={"setup_id": setup_id},
+        json=payload,
         headers=_mutation_headers(),
     )
     assert response.status_code == 201, response.text
     return response.json()["job_id"]
 
 
-def _seed_policy(
-    conn: sqlite3.Connection,
-    job_id: str,
-    *,
-    stage_continuation_policy: StageContinuationPolicy = StageContinuationPolicy.AUTO_ON_GREEN,
-    enable_build_repair: bool = True,
-) -> None:
-    policy = RunPolicy(
-        stage_continuation_policy=stage_continuation_policy,
-        enable_build_repair=enable_build_repair,
-    )
-    conn.execute(
-        """
-        UPDATE run_configurations
-        SET policy_json = ?
-        WHERE job_id = ?
-        """,
-        (
-            policy.model_dump_json(),
-            job_id,
-        ),
-    )
-
-
 def test_fastapi_create_app_repair_gate_callback_creates_repair_review_gate(tmp_path: Path) -> None:
     app, client, conn = _app_and_client(tmp_path)
     setup_id = _ready_setup(conn)
     job_id = _create_job(client, setup_id)
-    _seed_policy(conn, job_id)
 
     callback = app.state.v2_orchestrator_runner._diagnosis_callback
     callback(
@@ -212,8 +186,10 @@ def test_fastapi_create_app_repair_gate_callback_creates_repair_review_gate(tmp_
 def test_fastapi_create_app_skips_repair_gate_when_disabled(tmp_path: Path) -> None:
     app, client, conn = _app_and_client(tmp_path)
     setup_id = _ready_setup(conn)
-    job_id = _create_job(client, setup_id)
-    _seed_policy(conn, job_id, enable_build_repair=False)
+    job_id = _create_job(client, setup_id, policy={
+        "stage_continuation_policy": "auto_on_green",
+        "enable_build_repair": False,
+    })
 
     callback = app.state.v2_orchestrator_runner._diagnosis_callback
     callback(

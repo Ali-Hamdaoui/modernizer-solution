@@ -189,5 +189,4 @@ def test_request_plan_revision_idempotent(tmp_path: Path) -> None:
         gate_id=gate_id, job_id="job-abc", decided_by="user-1",
         idempotency_key="idem-plan-rev-1",
     )
-    assert r2.status == "idempotent"
-    assert r2.decision_id == r1.decision_id
+    assert r2.status == "gate_not_open"

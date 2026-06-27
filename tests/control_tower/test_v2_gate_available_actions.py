@@ -119,15 +119,15 @@ def test_approval_gate_exposes_approve_and_reject(tmp_path: Path) -> None:
 # ── repair_review gate ────────────────────────────────────────────────
 
 
-def test_repair_gate_exposes_accept_reanalyze_revise(tmp_path: Path) -> None:
-    """Repair_review gate exposes accept, reanalyze, and revise."""
+def test_repair_gate_exposes_accept_reanalyze_revise_reject(tmp_path: Path) -> None:
+    """Repair_review gate exposes accept, reanalyze, revise, and reject."""
     gate_repo, gate_svc, conn = _setup(tmp_path)
 
     gate_id = _create_gate(gate_svc, "repair_review")
 
     actions = gate_svc.get_available_actions(gate_id)
 
-    assert len(actions) == 3
+    assert len(actions) == 4
 
     actions_by_action = {a.action: a for a in actions}
 
@@ -139,6 +139,8 @@ def test_repair_gate_exposes_accept_reanalyze_revise(tmp_path: Path) -> None:
 
     assert "revise" in actions_by_action
     assert actions_by_action["revise"].label == "Request Revision"
+
+    assert "reject" in actions_by_action
 
 
 # ── stage_completion_review gate ──────────────────────────────────────

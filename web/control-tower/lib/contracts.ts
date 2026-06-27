@@ -498,6 +498,7 @@ export type V2AssistantAskResponse = {
   model: {
     status: string;
     source: string;
+    provider: string;
     role: string;
     failure_reason?: string;
   };

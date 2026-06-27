@@ -53,7 +53,6 @@ Ready for manual review.
 def test_graph_runs_report_context_before_copilot_final_report(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
     _patch_successful_graph(monkeypatch, tmp_path, calls)
-    monkeypatch.setattr(orchestrator_copilot_module, "CopilotAssistService", _RecordingFinalCopilotService)
     app = graph_module.build_graph(
         phase_services=_graph_services(calls),
         approval_record_service=_recording_approval_record(calls),
@@ -64,7 +63,8 @@ def test_graph_runs_report_context_before_copilot_final_report(monkeypatch, tmp_
     result = app.invoke(state)
 
     assert calls == ["analysis", "planning", "assessment", "approval", "approval_record", "sandbox_transform", "final_report"]
-    assert result["copilot_phase_statuses"]["final"] == "generated"
+    assert result["copilot_phase_statuses"] == {}
+    assert result["copilot_artifact_refs"] == {}
     assert result["final_status"] == "TRANSFORM_APPLIED_IN_SANDBOX"
     assert result["orchestration_status"] == "PASS"
 
@@ -77,7 +77,6 @@ def test_graph_skips_disabled_copilot_final_report(monkeypatch, tmp_path: Path) 
         def __init__(self, state):
             raise AssertionError("Copilot final report should be skipped")
 
-    monkeypatch.setattr(orchestrator_copilot_module, "CopilotAssistService", FailingService)
     app = graph_module.build_graph(
         phase_services=_graph_services(calls),
         approval_record_service=_recording_approval_record(calls),
@@ -93,7 +92,6 @@ def test_graph_skips_disabled_copilot_final_report(monkeypatch, tmp_path: Path) 
 def test_copilot_final_report_cannot_change_verdict_or_statuses(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
     _patch_successful_graph(monkeypatch, tmp_path, calls)
-    monkeypatch.setattr(orchestrator_copilot_module, "CopilotAssistService", _RecordingFinalCopilotService)
     app = graph_module.build_graph(
         phase_services=_graph_services(calls),
         approval_record_service=_recording_approval_record(calls),

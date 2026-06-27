@@ -1046,8 +1046,19 @@ class V2GateActionService:
                 status="gate_not_found",
             )
 
-        # 2. Idempotency check (before status check — idempotent
-        #    requests return the same result regardless of gate state)
+        # 2. Gate status must be OPEN for new actions.
+        #    Check before idempotency so resolved/closed gates
+        #    return gate_not_open rather than idempotency_conflict.
+        if gate.gate_status != "open":
+            return GateActionResult(
+                action=action.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="gate_not_open",
+                reason=f"Gate is {gate.gate_status}",
+            )
+
+        # 3. Idempotency check (for open gates only)
         effective_idempotency_key = idempotency_key or f"{gate_id}:{action.value}"
         request_checksum = request_checksum or sha256_canonical_json(
             {
@@ -1081,16 +1092,6 @@ class V2GateActionService:
                     f"Idempotency key '{effective_idempotency_key}' was reused "
                     "for a different request payload"
                 ),
-            )
-
-        # 3. Gate status must be OPEN for new actions
-        if gate.gate_status != "open":
-            return GateActionResult(
-                action=action.value,
-                gate_id=gate_id,
-                decision_id="",
-                status="gate_not_open",
-                reason=f"Gate is {gate.gate_status}",
             )
 
         # 3aa. Actor authority check — non-human actors cannot perform

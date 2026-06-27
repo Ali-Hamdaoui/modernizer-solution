@@ -66,6 +66,56 @@ def make_v1_pipeline_definition() -> dict:
     }
 
 
+def make_v2_pipeline_definition() -> dict:
+    """Return the canonical V2 four-stage pipeline definition payload."""
+    return {
+        "schema_version": "1.0.0",
+        "pipeline_id": "springboot-216-to-400-java21-four-stage",
+        "pipeline_version": "2026.06",
+        "display_name": "V2 migration pipeline (4-stage with Boot 4)",
+        "graph_version": "1.0",
+        "graph_state_schema_version": "1.0",
+        "stages": (
+            {
+                "stage_index": 1,
+                "stage_id": "analysis",
+                "profile_id": "analysis-profile",
+                "command_jdk": "jdk-17",
+                "input_source": {"kind": "legacy_source"},
+                "continuation_policy_id": "default",
+                "target": {"spring_boot": "3.5.14", "java": 17},
+            },
+            {
+                "stage_index": 2,
+                "stage_id": "planning",
+                "profile_id": "planning-profile",
+                "command_jdk": "jdk-21",
+                "input_source": {"kind": "previous_stage", "previous_stage_index": 1},
+                "continuation_policy_id": "default",
+                "target": {"spring_boot": "3.5.14", "java": 21},
+            },
+            {
+                "stage_index": 3,
+                "stage_id": "finalize",
+                "profile_id": "finalize-profile",
+                "command_jdk": "jdk-21",
+                "input_source": {"kind": "previous_stage", "previous_stage_index": 2},
+                "continuation_policy_id": "default",
+                "target": {"spring_boot": "3.5.14", "java": 21},
+            },
+            {
+                "stage_index": 4,
+                "stage_id": "boot4-migration",
+                "profile_id": "springboot-3.5-java21-to-4.0-java21",
+                "command_jdk": "jdk-21",
+                "input_source": {"kind": "previous_stage", "previous_stage_index": 3},
+                "continuation_policy_id": "default",
+                "target": {"spring_boot": "4.0.0", "java": 21},
+            },
+        ),
+    }
+
+
 def make_v1_runner_profile() -> dict:
     """Return a V1 runner profile payload.
 

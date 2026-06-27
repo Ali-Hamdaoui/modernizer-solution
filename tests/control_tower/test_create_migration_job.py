@@ -80,6 +80,8 @@ def test_create_migration_job_writes_everything_atomically(tmp_path: Path) -> No
             "runner_profile_version": command.runner_profile_version,
             "pipeline_id": command.pipeline_id,
             "pipeline_version": command.pipeline_version,
+            "source_profile": None,
+            "target_profile": None,
             "target_proof_level": command.target_proof_level.value,
             "enabled_gates": list(command.enabled_gates),
             "policy": {

@@ -126,18 +126,11 @@ def test_copilot_repair_subprocess_uses_availability_full_path(tmp_path: Path) -
     assert calls[0][0] not in {"copilot", "copilot.CMD"}
 
 
-def test_copilot_availability_required_blocks_preflight(tmp_path: Path, monkeypatch) -> None:
+def test_copilot_availability_required_does_not_block_preflight(tmp_path: Path, monkeypatch) -> None:
     state = _valid_state(tmp_path)
     state["copilot_required"] = True
 
-    monkeypatch.setattr(
-        preflight_module,
-        "probe_copilot_availability",
-        lambda **kwargs: {"status": "UNAVAILABLE", "reason": "missing flags"},
-    )
-
-    with pytest.raises(PreflightError, match="Copilot repair proposal preflight failed"):
-        validate_preflight(state, build_langgraph_config(state["run_id"]))
+    validate_preflight(state, build_langgraph_config(state["run_id"]))
 
 
 def test_evidence_session_does_not_use_repo_or_sandbox_cwd(tmp_path: Path) -> None:

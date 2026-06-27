@@ -389,7 +389,7 @@ def test_orchestrator_env_excludes_secret_env_vars() -> None:
     """The _build_env function must never include secret env vars."""
     import os as _os
     from migration_factory.control_tower.application.v2_orchestrator_runner import (
-        _build_env, _SECRET_ENV_MARKERS, _COPILOT_ENV_KEYS, _MANIFEST_ENV_KEYS,
+        _build_env, _SECRET_ENV_MARKERS, _MANIFEST_ENV_KEYS,
     )
 
     # Verify all manifest env keys are safe (no secret markers)
@@ -399,11 +399,19 @@ def test_orchestrator_env_excludes_secret_env_vars() -> None:
             f"Manifest env key {key!r} matches secret marker"
         )
 
-    # Verify copilot env keys with secret markers are excluded
-    secret_copilot_keys = [k for k in _COPILOT_ENV_KEYS if any(m in k.upper() for m in _SECRET_ENV_MARKERS)]
-    # After the _build_env filter, no secret copilot keys should be passed
-    # This is enforced by _is_secret_env_key check in _build_env
-    # Just verify the markers detect actual secret keys
+    # Verify _build_env only accepts keys from _MANIFEST_ENV_KEYS,
+    # never arbitrary env vars that could contain secrets.
+    manifest = {
+        "AZURE_OPENAI_API_KEY": "sk-secret",
+        "GITHUB_TOKEN": "ghp-secret",
+        "AZURE_OPENAI_ENDPOINT": "https://example.com",
+    }
+    built = _build_env(manifest)
+    assert "AZURE_OPENAI_API_KEY" not in built
+    assert "GITHUB_TOKEN" not in built
+    assert "AZURE_OPENAI_ENDPOINT" not in built
+
+    # Verify _SECRET_ENV_MARKERS detect real secret keys
     assert any(m in "AZURE_OPENAI_API_KEY" for m in _SECRET_ENV_MARKERS)
     assert any(m in "GITHUB_TOKEN" for m in _SECRET_ENV_MARKERS)
 

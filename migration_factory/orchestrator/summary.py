@@ -198,6 +198,10 @@ def _maybe_generate_copilot_final_report(state: dict[str, Any]) -> None:
     return
 
 
+def _generate_copilot_docs(state: dict[str, Any]) -> None:
+    return
+
+
 def _final_status(state: MigrationState) -> str:
     if state.get("final_status"):
         return str(state.get("final_status"))

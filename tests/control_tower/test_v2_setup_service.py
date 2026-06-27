@@ -248,7 +248,6 @@ def test_run_preflight_ai_required_blocks_when_smoke_fails(
 
     from migration_factory.control_tower.application import v2_setup_service as setup_module
 
-    monkeypatch.setenv("AI_MIGRATION_COPILOT_REQUIRED", "true")
     monkeypatch.setattr(setup_module, "_check_jdk_path_with_version", lambda *args, **kwargs: True)
     monkeypatch.setattr(
         setup_module,
@@ -292,7 +291,7 @@ def test_run_preflight_ai_required_blocks_when_smoke_fails(
             java17_home=str(tmp_path / "jdk-17"),
             java21_home=str(tmp_path / "jdk-21"),
             maven_cmd=str(maven_cmd),
-            skip_endpoint_smoke=True,
+            skip_endpoint_smoke=False,
         )
     )
 
@@ -313,7 +312,6 @@ def test_run_preflight_ai_required_succeeds_when_smoke_passes(
 
     from migration_factory.control_tower.application import v2_setup_service as setup_module
 
-    monkeypatch.setenv("AI_MIGRATION_COPILOT_REQUIRED", "true")
     monkeypatch.setattr(setup_module, "_check_jdk_path_with_version", lambda *args, **kwargs: True)
     monkeypatch.setattr(
         setup_module,
@@ -357,7 +355,7 @@ def test_run_preflight_ai_required_succeeds_when_smoke_passes(
             java17_home=str(tmp_path / "jdk-17"),
             java21_home=str(tmp_path / "jdk-21"),
             maven_cmd=str(maven_cmd),
-            skip_endpoint_smoke=True,
+            skip_endpoint_smoke=False,
         )
     )
 

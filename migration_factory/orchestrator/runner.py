@@ -63,8 +63,9 @@ def main(argv: list[str] | None = None) -> int:
         thread_id=args.run_id,
         mode=args.mode,
     )
-    if args.phase:
-        state["phase"] = args.phase
+    phase = getattr(args, "phase", None)
+    if phase:
+        state["phase"] = phase
 
     try:
         state = load_copilot_config(state)

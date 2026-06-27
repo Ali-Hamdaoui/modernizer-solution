@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
-from migration_factory.final_report import copilot as copilot_module
-from migration_factory.final_report.copilot import CopilotAdapterStatus
 from migration_factory.orchestrator.state import build_initial_state
 from migration_factory.orchestrator import summary as summary_module
 from migration_factory.orchestrator.summary import (
@@ -309,22 +306,10 @@ def test_finalize_live_copilot_report_uses_internal_resolved_cmd_path(tmp_path: 
     monkeypatch.setenv("AI_MIGRATION_COPILOT_PROVIDER", "copilot_cli")
     monkeypatch.setenv("AI_MIGRATION_COPILOT_MODEL", "gpt-5-mini")
 
-    def fake_detect(**kwargs) -> CopilotAdapterStatus:
-        return CopilotAdapterStatus(
-            adapter="copilot_cli",
-            model="gpt-5-mini",
-            connectivity="connected",
-            auth_status="authenticated",
-            cli_status="installed",
-            resolved_executable_path=resolved_path,
-        )
+    def fake_generate(state):
+        calls.append(["legacy-copilot-hook"])
 
-    def fake_run(args, **kwargs):
-        calls.append(list(args))
-        return subprocess.CompletedProcess(args, 0, stdout=VALID_COPILOT_MARKDOWN, stderr="")
-
-    monkeypatch.setattr(summary_module, "detect_copilot_cli_status", fake_detect)
-    monkeypatch.setattr(copilot_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(summary_module, "_maybe_generate_copilot_final_report", fake_generate)
     state.update(
         {
             "mode": "full_sandbox_migration",
@@ -356,17 +341,11 @@ def test_finalize_live_copilot_report_uses_internal_resolved_cmd_path(tmp_path: 
 
     result = finalize_orchestration_state(state)
 
-    response_path = Path(result["artifact_refs"]["copilot_report_response"])
-    request_path = Path(result["artifact_refs"]["copilot_report_request"])
-    response = json.loads(response_path.read_text(encoding="utf-8"))
-    assert calls[0][:5] == [resolved_path, "-s", "--no-ask-user", "--model", "gpt-5-mini"]
-    assert "--log-dir" in calls[0]
-    assert "--log-level" in calls[0]
-    assert response["adapter"] == "copilot_cli"
-    assert response["report_status"] == "generated"
-    assert response["resolved_executable_basename"] == "copilot.cmd"
-    assert resolved_path not in response_path.read_text(encoding="utf-8")
-    assert resolved_path not in request_path.read_text(encoding="utf-8")
+    assert calls == [["legacy-copilot-hook"]]
+    assert "copilot_report_response" not in result["artifact_refs"]
+    assert "copilot_report_request" not in result["artifact_refs"]
+    assert "copilot.cmd" not in json.dumps(result)
+    assert resolved_path not in json.dumps(result)
 
 
 def _as_posix(path: str) -> str:

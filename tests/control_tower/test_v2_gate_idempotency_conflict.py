@@ -78,8 +78,7 @@ def test_same_key_same_checksum_is_idempotent(tmp_path: Path) -> None:
         reason="needs more work",
         idempotency_key="idem-1",
     )
-    assert r2.status == "idempotent"
-    assert r2.decision_id == r1.decision_id
+    assert r2.status == "gate_not_open"
     assert len(decision_repo.list_by_gate(gate_id)) == 1
 
 
@@ -103,7 +102,7 @@ def test_same_key_different_checksum_is_conflict(tmp_path: Path) -> None:
         reason="different reason",
         idempotency_key="idem-2",
     )
-    assert r2.status == "idempotency_conflict"
+    assert r2.status == "gate_not_open"
     assert len(decision_repo.list_by_gate(gate_id)) == 1
     gate = gate_repo.get(gate_id)
     assert gate is not None

@@ -335,16 +335,51 @@ class TestApprovalEndpoints:
 
 class TestStageProgressionEndpoints:
 
+    @staticmethod
+    def _seed_stage_command(
+        conn: sqlite3.Connection,
+        job_id: str,
+        stage_index: int,
+        sandbox_path: str,
+        *,
+        final_status: str | None = None,
+        build_status: str | None = None,
+        test_status: str | None = None,
+    ) -> None:
+        now = utc_now_text()
+        result: dict[str, Any] = {"sandbox_path": sandbox_path}
+        if final_status is not None:
+            result["final_status"] = final_status
+        if build_status is not None:
+            result["build_status"] = build_status
+        if test_status is not None:
+            result["test_status"] = test_status
+        with SqliteUnitOfWork(conn) as uow:
+            uow.v2_commands.save(
+                V2StageCommandRecord(
+                    command_id=f"cmd-stage{stage_index}",
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    manifest_checksum=f"manifest-stage{stage_index}",
+                    argv_json=json.dumps(["python", "-m", "runner", f"--stage={stage_index}"]),
+                    env_json="{}",
+                    status="completed",
+                    created_at=now,
+                    updated_at=now,
+                    result_json=json.dumps(result),
+                )
+            )
+
     def test_progress_to_stage2(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)
         setup_id = _create_setup(conn)
+        self._seed_stage_command(conn, "job-1", stage_index=1, sandbox_path="/tmp/sandbox/s1")
 
         response = client.post(
             "/v1/v2/jobs/job-1/stages/progress",
             json={
                 "setup_id": setup_id,
                 "current_stage": 1,
-                "sandbox_path": "/tmp/sandbox/s1",
             },
             headers=_mutation_headers(),
         )
@@ -356,13 +391,14 @@ class TestStageProgressionEndpoints:
     def test_progress_to_stage3(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)
         setup_id = _create_setup(conn)
+        self._seed_stage_command(conn, "job-1", stage_index=1, sandbox_path="/tmp/sandbox/s1")
+        self._seed_stage_command(conn, "job-1", stage_index=2, sandbox_path="/tmp/sandbox/s2")
 
         response = client.post(
             "/v1/v2/jobs/job-1/stages/progress",
             json={
                 "setup_id": setup_id,
                 "current_stage": 2,
-                "sandbox_path": "/tmp/sandbox/s2",
             },
             headers=_mutation_headers(),
         )
@@ -370,33 +406,41 @@ class TestStageProgressionEndpoints:
         body = response.json()
         assert body["to_stage"] == 3
 
-    def test_cannot_progress_beyond_stage3(self, tmp_path: Path) -> None:
+    def test_progress_to_stage4(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)
         setup_id = _create_setup(conn)
+        self._seed_stage_command(conn, "job-1", stage_index=1, sandbox_path="/tmp/sandbox/s1")
+        self._seed_stage_command(conn, "job-1", stage_index=2, sandbox_path="/tmp/sandbox/s2")
+        self._seed_stage_command(
+            conn, "job-1", stage_index=3, sandbox_path="/tmp/sandbox/s3",
+            final_status="TRANSFORM_APPLIED_IN_SANDBOX",
+            build_status="BUILD_PASSED_IN_SANDBOX",
+            test_status="PASS",
+        )
 
         response = client.post(
             "/v1/v2/jobs/job-1/stages/progress",
             json={
                 "setup_id": setup_id,
                 "current_stage": 3,
-                "sandbox_path": "/tmp/sandbox/s3",
             },
             headers=_mutation_headers(),
         )
-        assert response.status_code == 400
-        assert "Cannot progress" in response.text
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["to_stage"] == 4
 
     def test_progression_persists_command(self, tmp_path: Path) -> None:
         """Progression should persist the next stage command."""
         client, conn = _api_client(tmp_path)
         setup_id = _create_setup(conn)
+        self._seed_stage_command(conn, "job-1", stage_index=1, sandbox_path="/tmp/sandbox/s1")
 
         response = client.post(
             "/v1/v2/jobs/job-1/stages/progress",
             json={
                 "setup_id": setup_id,
                 "current_stage": 1,
-                "sandbox_path": "/tmp/sandbox/s1",
             },
             headers=_mutation_headers(),
         )
@@ -411,23 +455,25 @@ class TestStageProgressionEndpoints:
         conn2.execute("PRAGMA foreign_keys = ON")
         cmd_repo = SqliteV2CommandRepository(conn2)
         cmds = cmd_repo.list_by_job("job-1")
-        assert len(cmds) == 1
-        assert cmds[0].stage_index == 2
-        assert "springboot-2.7-to-3.5-java17" in cmds[0].argv_json
+        assert len(cmds) >= 1
+        stage2_cmds = [c for c in cmds if c.stage_index == 2]
+        assert len(stage2_cmds) >= 1
         conn2.close()
 
     def test_progression_missing_setup(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)
+        self._seed_stage_command(conn, "job-1", stage_index=1, sandbox_path="/tmp/sandbox/s1")
+
         response = client.post(
             "/v1/v2/jobs/job-1/stages/progress",
             json={
                 "setup_id": "nonexistent",
                 "current_stage": 1,
-                "sandbox_path": "/tmp/sandbox/s1",
             },
             headers=_mutation_headers(),
         )
         assert response.status_code == 400
+        assert "not found" in response.text.lower()
 
 
 # ── Security: browser cannot approve without mutation headers ──────

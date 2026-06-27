@@ -102,9 +102,9 @@ def test_initial_state_has_default_copilot_config(tmp_path: Path) -> None:
         modernized_app_path=str(tmp_path / "modernized"),
     )
 
-    assert state["copilot_enabled"] is True
-    assert state["copilot_assist_mode"] == "failures"
-    assert state["copilot_report_enabled"] is True
+    assert state["copilot_enabled"] is False
+    assert state["copilot_assist_mode"] == "off"
+    assert state["copilot_report_enabled"] is False
     assert state["copilot_provider"] == "copilot_cli"
     assert state["copilot_model"] == "gpt-5-mini"
     assert state["copilot_timeout_seconds"] == 300

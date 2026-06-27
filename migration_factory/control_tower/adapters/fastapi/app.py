@@ -5003,6 +5003,16 @@ def _classify_v2_assistant_intent(question: str) -> str:
         if not has_pom_or_dep or looks_like_status_question:
             return "model_status"
 
+    # javax -> jakarta replacement questions are Stage 3 dependency/POM review,
+    # not generic migration status. The backend may explain or propose, but must
+    # not apply changes from chat alone.
+    if (
+        any(term in lowered for term in ("javax", "jakarta"))
+        and any(term in lowered for term in ("replace", "migrate", "change", "update", "review", "check"))
+        and any(term in lowered for term in ("stage 3", "stage3", "final stage", "pom", "dependency"))
+    ):
+        return "stage3_dependency_review"
+
     # 2. Check if the user explicitly says NOT to apply/execute —
     #    this negates capability_boundary and shifts toward proposal
     user_says_dont_apply = any(phrase in lowered for phrase in (
@@ -6421,7 +6431,17 @@ def _start_resume_command(
             message="runner unavailable",
         )
     try:
-        return runner.start_resume(job_id=job_id, resume_id=resume_id)
+        result = runner.start_resume(job_id=job_id, resume_id=resume_id)
+        if result is None:
+            return V2OrchestratorStart(
+                command_id=resume_id,
+                job_id=job_id,
+                stage_index=stage_index,
+                pid=None,
+                status="queued",
+                message="runner returned no launch result",
+            )
+        return result
     except sqlite3.OperationalError as exc:
         if _is_sqlite_locked_error(exc):
             return V2OrchestratorStart(
