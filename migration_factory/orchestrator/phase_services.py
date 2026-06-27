@@ -411,13 +411,42 @@ def _run_analysis_service(state: MigrationState) -> MigrationState:
     errors = list(getattr(result, "errors", []) or [])
     warnings = list(getattr(result, "warnings", []) or [])
     status = "PASS" if getattr(result, "status", "") == "COMPLETED" and not errors else "FAIL"
+    artifact_refs = dict(getattr(result, "artifact_paths", {}) or {})
+    review_updates: dict[str, Any] = {}
+    if status == "PASS" and state.get("job_id"):
+        from migration_factory.orchestrator.review_chain import (
+            ReviewChainProductionError,
+            produce_phase_review_chain,
+        )
+
+        try:
+            review_updates = produce_phase_review_chain(
+                state,
+                phase="analysis",
+                stage_index=1,
+                artifact_refs=artifact_refs,
+                deterministic_facts={
+                    "assist_status": getattr(result, "assist_status", ""),
+                    "rewrite_status": getattr(result, "rewrite_status", ""),
+                    "artifact_kinds": sorted(artifact_refs),
+                    "warning_count": len(warnings),
+                },
+                warnings=warnings,
+            )
+        except ReviewChainProductionError as exc:
+            errors.append(str(exc))
+            status = "FAIL"
     return {
         "analysis_status": status,
         "current_unit": "analysis",
         "errors": errors,
         "blockers": list(errors),
         "warnings": warnings,
-        "artifact_refs": dict(getattr(result, "artifact_paths", {}) or {}),
+        "artifact_refs": {
+            **artifact_refs,
+            **dict(review_updates.get("artifact_refs", {}) or {}),
+        },
+        **({"review_chain": review_updates["review_chain"]} if review_updates.get("review_chain") else {}),
     }
 
 

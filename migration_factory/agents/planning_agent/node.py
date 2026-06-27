@@ -320,6 +320,37 @@ def planning_node(state: MigrationState) -> MigrationState:
     planning_errors = list(validation_result.reasons) if validation_result.status != "PASS" else []
     planning_blockers = [*blocker_messages, *planning_errors]
     planning_status = "FAIL" if planning_blockers else "PASS"
+    planning_artifact_refs = {
+        **output_paths,
+        "target_dependency_plan": str(target_dependency_plan_path),
+    }
+    review_updates: dict[str, object] = {}
+    if planning_status == "PASS" and state.get("job_id"):
+        from migration_factory.orchestrator.review_chain import (
+            ReviewChainProductionError,
+            produce_phase_review_chain,
+        )
+
+        try:
+            review_updates = produce_phase_review_chain(
+                state,
+                phase="planning",
+                stage_index=2,
+                artifact_refs=planning_artifact_refs,
+                deterministic_facts={
+                    "profile": profile_id,
+                    "source_stack": compatibility.source_stack,
+                    "target_stack": compatibility.target_stack,
+                    "risk_count": len(risk_messages),
+                    "warning_count": len(deterministic_warnings),
+                    "unit_count": len(units),
+                    "units": unit_payload,
+                },
+                warnings=merged_output.warnings,
+            )
+        except ReviewChainProductionError as exc:
+            planning_blockers.append(str(exc))
+            planning_status = "FAIL"
     return {
         "planning_status": planning_status,
         "current_unit": "planning",
@@ -342,8 +373,10 @@ def planning_node(state: MigrationState) -> MigrationState:
         "planning_assist_warnings": assist_result_warnings,
         "artifact_refs": {
             **dict(state.get("artifact_refs", {}) or {}),
-            "target_dependency_plan": str(target_dependency_plan_path),
+            **planning_artifact_refs,
+            **dict(review_updates.get("artifact_refs", {}) or {}),
         },
+        **({"review_chain": review_updates["review_chain"]} if review_updates.get("review_chain") else {}),
     }
 
 

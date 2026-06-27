@@ -30,6 +30,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Run read-only migration assessment orchestration.",
     )
     parser.add_argument("--run-id", required=True)
+    parser.add_argument("--job-id", default="")
     parser.add_argument("--legacy", required=True)
     parser.add_argument("--modernized", required=True)
     parser.add_argument("--ai-hub", required=True)
@@ -63,6 +64,8 @@ def main(argv: list[str] | None = None) -> int:
         thread_id=args.run_id,
         mode=args.mode,
     )
+    if args.job_id:
+        state["job_id"] = args.job_id
     phase = getattr(args, "phase", None)
     if phase:
         state["phase"] = phase

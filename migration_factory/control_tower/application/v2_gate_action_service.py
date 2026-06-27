@@ -213,7 +213,7 @@ class V2GateActionService:
                         ),
                     )
 
-        return self._execute_action(
+        result = self._execute_action(
             gate_id=gate_id,
             job_id=job_id,
             action=GateDecision.CONTINUE,
@@ -222,6 +222,60 @@ class V2GateActionService:
             expected_gate_checksum=expected_gate_checksum,
             actor_type=GateActorType.HUMAN.value,
         )
+        if (
+            result.status == "executed"
+            and gate is not None
+            and self._revision_repo is not None
+            and gate_phase_val in (GatePhase.ANALYSIS_REVIEW, GatePhase.PLANNING_REVIEW)
+        ):
+            revision_kind = (
+                "analysis"
+                if gate_phase_val == GatePhase.ANALYSIS_REVIEW
+                else "planning"
+            )
+            if self._revision_repo.find_accepted(
+                gate.job_id,
+                gate.stage_index,
+                revision_kind,
+            ) is None:
+                latest = self._revision_repo.find_latest_by_kind(
+                    gate.job_id,
+                    gate.stage_index,
+                    revision_kind,
+                )
+                now = utc_now_text()
+                revision_id = uuid4().hex
+                self._revision_repo.save(
+                    ArtifactRevisionRecord(
+                        revision_id=revision_id,
+                        job_id=gate.job_id,
+                        stage_index=gate.stage_index,
+                        revision_kind=revision_kind,
+                        revision_status="accepted",
+                        revision_order=(latest.revision_order + 1) if latest else 1,
+                        evidence_checksum=gate.source_artifact_checksum,
+                        prior_revision_checksum=latest.evidence_checksum if latest else None,
+                        artifact_refs_json=gate.source_artifact_refs_json,
+                        prior_revision_id=latest.revision_id if latest else None,
+                        superseded_by_revision_id=None,
+                        accepted_at_gate_id=gate.gate_id,
+                        created_at=now,
+                        created_by=decided_by,
+                        accepted_at=now,
+                        accepted_by=decided_by,
+                    )
+                )
+                return GateActionResult(
+                    action=result.action,
+                    gate_id=result.gate_id,
+                    decision_id=result.decision_id,
+                    status=result.status,
+                    result_gate_id=result.result_gate_id,
+                    result_command_id=result.result_command_id,
+                    result_revision_id=revision_id,
+                    reason=result.reason,
+                )
+        return result
 
     # ── action: reanalyze ───────────────────────────────────────────
 

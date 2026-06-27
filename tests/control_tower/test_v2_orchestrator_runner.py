@@ -15,7 +15,12 @@ from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import S
 from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository import V2MigrationJobRecord
 from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import V2StageCommandRecord
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import V2MigrationSetupRecord
-from migration_factory.control_tower.domain.entities import ArtifactRevisionRecord
+from migration_factory.control_tower.application.v2_stage_progression import (
+    compute_profile_route,
+    route_to_dict,
+)
+from migration_factory.control_tower.domain.entities import ArtifactRevisionRecord, PhaseGateRecord
+from migration_factory.control_tower.domain.gate_checksum import gate_checksum
 from migration_factory.control_tower.infrastructure.sqlite.v2_approval_repository import (
     V2ApprovalDecisionRecord,
     V2ResumeCommandRecord,
@@ -95,6 +100,104 @@ def _save_command(conn: sqlite3.Connection, *, command_id: str = "cmd-1", job_id
             result_json=None,
         )
     )
+
+
+def _seed_resume_gate(
+    conn: sqlite3.Connection,
+    *,
+    job_id: str = "job-1",
+    stage_index: int = 1,
+    source_profile: str = "springboot-2.7-java11",
+    target_profile: str = "springboot-4.0-java21",
+    gate_source_checksum: str = "sha256:test-source",
+    gate_phase: str = "approval_review",
+) -> str:
+    from migration_factory.control_tower.application.v2_stage_progression import (
+        compute_profile_route,
+        route_to_dict,
+    )
+
+    now = utc_now_text()
+    route = route_to_dict(compute_profile_route(source_profile, target_profile))
+    refs = [
+        {
+            "kind": "profile_route",
+            "path_or_ref": "metadata:profile-route",
+            "checksum": "sha256:route",
+            "profile_metadata": route,
+        }
+    ]
+    gate = PhaseGateRecord(
+        gate_id="gate-resume-test",
+        job_id=job_id,
+        gate_phase=gate_phase,
+        stage_index=stage_index,
+        gate_status="open",
+        gate_decision="pending",
+        source_artifact_checksum=gate_source_checksum,
+        resolved_artifact_checksum=None,
+        source_artifact_refs_json=json.dumps(refs, separators=(",", ":")),
+        created_at=now,
+    )
+    SqliteUnitOfWork(conn).phase_gates.save(gate)
+    SqliteUnitOfWork(conn).artifact_revisions.save(
+        ArtifactRevisionRecord(
+            revision_id="rev-accepted-test",
+            job_id=job_id,
+            stage_index=stage_index,
+            revision_kind="stage_output",
+            revision_status="accepted",
+            revision_order=1,
+            evidence_checksum=gate_source_checksum,
+            prior_revision_checksum=None,
+            artifact_refs_json=json.dumps(refs, separators=(",", ":")),
+            prior_revision_id=None,
+            superseded_by_revision_id=None,
+            accepted_at_gate_id=gate.gate_id,
+            created_at=now,
+            created_by="test",
+            accepted_at=now,
+            accepted_by="test",
+        )
+    )
+    # Save run configuration for route computation
+    payload = {
+        "source_profile": source_profile,
+        "target_profile": target_profile,
+    }
+    conn.execute(
+        """INSERT INTO run_configurations (
+            run_configuration_id, job_id, schema_version,
+            runner_profile_id, runner_profile_version,
+            pipeline_id, pipeline_version, target_proof_level,
+            enabled_gates_json, policy_json, payload_json,
+            payload_checksum, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            f"rc-{job_id}",
+            job_id,
+            "1",
+            "runner",
+            "1",
+            "pipeline",
+            "1",
+            "BUILD_TEST_VERIFIED",
+            "[]",
+            "{}",
+            json.dumps(payload, separators=(",", ":")),
+            f"checksum-{job_id}",
+            utc_now_text(),
+        ),
+    )
+    checkpoint_checksum = gate_checksum(
+        gate_id=gate.gate_id,
+        job_id=gate.job_id,
+        gate_phase=gate.gate_phase,
+        stage_index=gate.stage_index,
+        source_artifact_checksum=gate.source_artifact_checksum,
+        source_artifact_refs=refs,
+    )
+    return checkpoint_checksum
 
 
 def _seed_stage_pipeline(conn: sqlite3.Connection, *, job_id: str = "job-1") -> None:
@@ -1029,14 +1132,14 @@ def test_v2_runner_does_not_progress_past_unapproved_card(tmp_path: Path) -> Non
 def test_v2_runner_emits_approval_started_on_resume(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _save_command(conn)
-    # Save a resume command
+    checkpoint_checksum = _seed_resume_gate(conn)
     now = utc_now_text()
     SqliteUnitOfWork(conn).v2_approvals.save_card(
         V2ApprovalDecisionRecord(
             card_id="card-1",
             job_id="job-1",
             interrupt_id="run-1",
-            request_checksum="chk",
+            request_checksum=checkpoint_checksum,
             stage_index=1,
             summary="test",
             status="approved",
@@ -1073,14 +1176,14 @@ def test_v2_runner_resume_passes_env_manifest_from_original_command(tmp_path: Pa
     """Resume must inherit env manifest (JAVA_HOME, etc.) from the original stage command."""
     conn = _conn(tmp_path)
     _save_command(conn)
-    # Save a resume command
+    checkpoint_checksum = _seed_resume_gate(conn)
     now = utc_now_text()
     SqliteUnitOfWork(conn).v2_approvals.save_card(
         V2ApprovalDecisionRecord(
             card_id="card-1",
             job_id="job-1",
             interrupt_id="run-1",
-            request_checksum="chk",
+            request_checksum=checkpoint_checksum,
             stage_index=1,
             summary="test",
             status="approved",
@@ -1107,7 +1210,6 @@ def test_v2_runner_resume_passes_env_manifest_from_original_command(tmp_path: Pa
 
     runner.start_resume(job_id="job-1", resume_id="resume-1")
     _wait_for_event(conn, "job-1", "process_started")
-
     assert popen.calls
     env = popen.calls[0]["env"]
     # Must inherit MAVEN_CMD and JAVA_HOME from the original command's env_json

@@ -1474,6 +1474,7 @@ class V2OrchestratorRunner:
             result,
             phase=phase,
             stage_index=stage_index,
+            expected_job_id=job_id,
         )
         if failures:
             self._event(
@@ -1633,6 +1634,7 @@ def _build_phase_argv(
             "-m",
             "migration_factory.orchestrator.runner",
             "--run-id", effective_run_id,
+            "--job-id", job_id,
             "--legacy", setup.legacy_app_path,
             "--modernized", setup.output_parent_path,
             "--ai-hub", setup.ai_hub_path,

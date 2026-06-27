@@ -1124,6 +1124,7 @@ def validate_runtime_review_chain_result(
     *,
     phase: str,
     stage_index: int,
+    expected_job_id: str | None = None,
 ) -> list[str]:
     """Validate Analysis/Planning runtime output before checkpoint use.
 
@@ -1144,7 +1145,9 @@ def validate_runtime_review_chain_result(
     reviewer_checksum = _text(review_chain.get("reviewer_output_checksum"))
     final_checksum = _text(review_chain.get("final_markdown_checksum"))
     final_ref = _text(review_chain.get("final_markdown_ref"))
+    primary_ref = _text(review_chain.get("primary_output_ref"))
     decision = _text(review_chain.get("reviewer_decision"))
+    job_id = _text(review_chain.get("job_id")) or _text(result.get("job_id")) or "runtime-job"
 
     chain = CompleteChecksumChain(
         deterministic_artifact_checksum=deterministic_checksum,
@@ -1153,7 +1156,7 @@ def validate_runtime_review_chain_result(
         reviewer_input_checksum=_text(review_chain.get("reviewer_input_checksum")) or "runtime-reviewer-input",
         reviewer_output_checksum=reviewer_checksum,
         final_markdown_checksum=final_checksum,
-        job_id=_text(review_chain.get("job_id")) or _text(result.get("job_id")) or "runtime-job",
+        job_id=job_id,
         phase=phase,
         stage_index=stage_index,
         source_profile=_text(review_chain.get("source_profile")) or None,
@@ -1163,6 +1166,8 @@ def validate_runtime_review_chain_result(
         artifact_ref=final_ref,
     )
     failures.extend(validate_complete_checksum_chain(chain))
+    if expected_job_id and job_id != expected_job_id:
+        failures.append(f"foreign job_id: {job_id!r} != {expected_job_id!r}")
 
     if decision != ReviewerDecision.ACCEPT.value:
         failures.append(f"reviewer decision must be accept, got {decision!r}")
@@ -1196,8 +1201,15 @@ def validate_runtime_review_chain_result(
     elif final_ref and final_artifact_ref != final_ref:
         failures.append("final reviewed Markdown artifact ref does not match review_chain")
 
-    if artifact_refs.get("primary_llm_output") and not final_artifact_ref:
+    primary_artifact_ref = _text(artifact_refs.get("primary_llm_output"))
+    if primary_artifact_ref and not final_artifact_ref:
         failures.append("raw primary output cannot satisfy downstream artifact resolution")
+    if primary_artifact_ref and final_artifact_ref and primary_artifact_ref == final_artifact_ref:
+        failures.append("raw primary output cannot be used as final reviewed Markdown")
+    if primary_ref and final_ref and primary_ref == final_ref:
+        failures.append("review_chain primary output ref cannot equal final reviewed Markdown ref")
+    if primary_checksum and final_checksum and primary_checksum == final_checksum:
+        failures.append("primary output checksum cannot equal final reviewed Markdown checksum")
 
     return failures
 
