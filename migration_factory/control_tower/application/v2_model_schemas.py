@@ -15,6 +15,8 @@ from migration_factory.control_tower.application.redaction import (
 REQUIRED_SCHEMAS = (
     "PlanProposal",
     "RepairProposal",
+    "RepairPrimaryOutput",
+    "RepairReviewerOutput",
     "ReviewerCritique",
     "ActionRequest",
     "AssistantAnswer",
@@ -67,6 +69,58 @@ REPAIR_PROPOSAL_SCHEMA = {
         "affected_paths": {"type": "array", "items": {"type": "string"}},
         "validation_plan": {"type": "string"},
         "rollback_note": {"type": "string"},
+    },
+}
+
+REPAIR_PRIMARY_OUTPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "root_cause",
+        "fix_strategy",
+        "changed_files",
+        "proposed_diff",
+        "risk",
+        "confidence",
+        "rationale",
+    ],
+    "properties": {
+        "root_cause": {"type": "string"},
+        "fix_strategy": {"type": "string"},
+        "changed_files": {"type": "array", "items": {"type": "string"}},
+        "proposed_diff": {"type": "string"},
+        "deterministic_rule_id": {"type": "string"},
+        "risk": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "rationale": {"type": "string"},
+        "no_fix_reason": {"type": "string"},
+        "machine_readable_metadata": {"type": "object"},
+    },
+}
+
+REPAIR_REVIEWER_OUTPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "decision",
+        "notes",
+        "risks",
+        "confidence",
+        "policy_concerns",
+        "reviewed_context_checksum",
+        "reviewed_primary_output_checksum",
+        "reviewed_diff_checksum",
+    ],
+    "properties": {
+        "decision": {"type": "string", "enum": ["accept", "revise", "reject"]},
+        "notes": {"type": "array", "items": {"type": "string"}},
+        "risks": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "policy_concerns": {"type": "array", "items": {"type": "string"}},
+        "reviewed_context_checksum": {"type": "string"},
+        "reviewed_primary_output_checksum": {"type": "string"},
+        "reviewed_diff_checksum": {"type": "string"},
+        "review_dimensions": {"type": "object"},
     },
 }
 
@@ -252,6 +306,8 @@ ASSISTANT_GATE_ANSWER_SCHEMA = {
 SCHEMA_REGISTRY = {
     "PlanProposal": PLAN_PROPOSAL_SCHEMA,
     "RepairProposal": REPAIR_PROPOSAL_SCHEMA,
+    "RepairPrimaryOutput": REPAIR_PRIMARY_OUTPUT_SCHEMA,
+    "RepairReviewerOutput": REPAIR_REVIEWER_OUTPUT_SCHEMA,
     "ReviewerCritique": REVIEWER_CRITIQUE_SCHEMA,
     "ActionRequest": ACTION_REQUEST_SCHEMA,
     "AssistantAnswer": ASSISTANT_ANSWER_SCHEMA,
@@ -363,6 +419,10 @@ class SchemaValidator:
         if schema_type == "integer" and not isinstance(value, int):
             raise SchemaValidationError(
                 f"Expected integer at {'.'.join(path)!r}, got {type(value).__name__}"
+            )
+        if schema_type == "number" and not isinstance(value, (int, float)):
+            raise SchemaValidationError(
+                f"Expected number at {'.'.join(path)!r}, got {type(value).__name__}"
             )
 
         # Check required fields

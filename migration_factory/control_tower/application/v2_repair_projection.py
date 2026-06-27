@@ -57,6 +57,7 @@ class RepairProposalProjection:
     cycle_number: int = 0
     remaining_attempts: int = 3
     deterministic_artifact_checksum: str = ""
+    model_status: dict[str, Any] = field(default_factory=dict)
 
 
 def build_repair_projection_from_review_chain(
@@ -103,6 +104,7 @@ def build_repair_projection_from_review_chain(
         cycle_number=int(chain.get("cycle_number", 0)),
         remaining_attempts=remaining_attempts,
         deterministic_artifact_checksum=str(chain.get("deterministic_artifact_checksum", "")),
+        model_status=_safe_model_status(chain.get("model_roles")),
     )
 
 
@@ -152,6 +154,7 @@ def projection_to_safe_dict(projection: RepairProposalProjection) -> dict[str, A
         "cycle_number": projection.cycle_number,
         "remaining_attempts": projection.remaining_attempts,
         "deterministic_artifact_checksum": projection.deterministic_artifact_checksum,
+        "model_status": _safe_model_status(projection.model_status),
     }
     # Redact any forbidden fields that may have crept in
     for forbidden in FORBIDDEN_PROJECTION_KEYS:
@@ -166,3 +169,19 @@ def _to_dict(obj: Any) -> dict[str, Any]:
         from dataclasses import asdict
         return asdict(obj)
     return {}
+
+
+def _safe_model_status(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    safe: dict[str, Any] = {}
+    for role in ("proposer", "reviewer", "assistant", "fallback"):
+        raw = value.get(role)
+        if not isinstance(raw, dict):
+            continue
+        safe[role] = {
+            "available": bool(raw.get("available")),
+            "status": str(raw.get("status") or ("available" if raw.get("available") else "blocked")),
+            "fallback_used": bool(raw.get("fallback_used")),
+        }
+    return safe

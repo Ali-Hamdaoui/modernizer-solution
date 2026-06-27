@@ -124,11 +124,13 @@ class FakeRepairClient:
         self._primary_success = primary_success
         self._reviewer_success = reviewer_success
         self.calls: list[V2ModelRole] = []
+        self.call_kwargs: list[dict[str, Any]] = []
 
     def answer_with_role(
         self, *, role: V2ModelRole, prompt: str, fallback: str, **_: Any
     ) -> V2AssistantModelResult:
         self.calls.append(role)
+        self.call_kwargs.append({"role": role, "prompt": prompt, "fallback": fallback, **_})
         if role == V2ModelRole.PROPOSER:
             return V2AssistantModelResult(
                 content=self._primary,
@@ -416,6 +418,14 @@ def test_produce_success_with_accept_decision(tmp_path: Path) -> None:
     assert (tmp_path / "output" / "final_reviewed_repair_artifact.json").exists()
     assert (tmp_path / "output" / "final_reviewed_repair.diff").exists()
     assert (tmp_path / "output" / "review_chain.json").exists()
+    assert client.call_kwargs[0]["output_schema_name"] == "RepairPrimaryOutput"
+    assert client.call_kwargs[0]["require_schema"] is True
+    assert client.call_kwargs[1]["output_schema_name"] == "RepairReviewerOutput"
+    assert client.call_kwargs[1]["require_schema"] is True
+    assert result["review_chain"]["model_roles"]["proposer"]["available"] is True
+    assert result["review_chain"]["model_roles"]["reviewer"]["available"] is True
+    assert "deployment" not in json.dumps(result["review_chain"]["model_roles"]).lower()
+    assert "endpoint" not in json.dumps(result["review_chain"]["model_roles"]).lower()
 
 
 def test_produce_raises_on_primary_model_failure(tmp_path: Path) -> None:

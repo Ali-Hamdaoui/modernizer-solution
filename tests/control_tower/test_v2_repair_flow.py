@@ -26,6 +26,7 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository i
     SqliteV2SetupRepository,
     V2MigrationSetupRecord,
 )
+from migration_factory.control_tower.domain.checksums import sha256_canonical_json
 
 
 def test_create_proposal() -> None:
@@ -359,6 +360,105 @@ def test_apply_approved_proposal_uses_persisted_context(
     assert calls
     assert calls[0]["run_dir"] == run_dir
     assert calls[0]["sandbox_path"] == str(run_dir / "sandbox")
+
+
+def test_apply_reviewed_repair_diff_loads_exact_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = V2RepairFlowService()
+    proposal = _proposal(service)
+    _approve(service, proposal.proposal_id)
+    run_dir = tmp_path / "run"
+    sandbox = _sandbox(tmp_path)
+    diff_path = tmp_path / "final_reviewed_repair.diff"
+    diff_path.write_text(_h2_patch(), encoding="utf-8")
+    calls: list[dict] = []
+
+    monkeypatch.setattr(
+        v2_repair_flow,
+        "apply_patch_to_sandbox",
+        lambda **kwargs: calls.append(kwargs) or _apply_result(Path(kwargs["run_dir"])),
+    )
+
+    action = service.apply_reviewed_repair_diff(
+        proposal_id=proposal.proposal_id,
+        final_diff_ref=diff_path,
+        final_diff_checksum=sha256_canonical_json({"unified_diff": _h2_patch()}),
+        reviewer_output_checksum="reviewer-ok",
+        expected_reviewer_output_checksum="reviewer-ok",
+        policy_validation_checksum="policy-ok",
+        expected_policy_validation_checksum="policy-ok",
+        policy_status="allowed",
+        expected_base_repo_state_checksum="repo-ok",
+        current_base_repo_state_checksum="repo-ok",
+        target_path="pom.xml",
+        run_id="run-1",
+        run_dir=run_dir,
+        sandbox_path=sandbox,
+        legacy_path=tmp_path / "legacy",
+        deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+        h2_required=True,
+        validation_runner=lambda **kwargs: _validation(True),
+    )
+
+    assert action.status == "applied"
+    assert calls
+    assert calls[0]["unified_diff"] == _h2_patch()
+
+
+def test_apply_reviewed_repair_diff_rejects_user_edited_artifact(tmp_path: Path) -> None:
+    service = V2RepairFlowService()
+    proposal = _proposal(service)
+    _approve(service, proposal.proposal_id)
+    diff_path = tmp_path / "final_reviewed_repair.diff"
+    diff_path.write_text(_h2_patch().replace("runtime", "test"), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        service.apply_reviewed_repair_diff(
+            proposal_id=proposal.proposal_id,
+            final_diff_ref=diff_path,
+            final_diff_checksum=sha256_canonical_json({"unified_diff": _h2_patch()}),
+            reviewer_output_checksum="reviewer-ok",
+            expected_reviewer_output_checksum="reviewer-ok",
+            policy_validation_checksum="policy-ok",
+            expected_policy_validation_checksum="policy-ok",
+            policy_status="allowed",
+            expected_base_repo_state_checksum="repo-ok",
+            current_base_repo_state_checksum="repo-ok",
+            target_path="pom.xml",
+            run_dir=tmp_path / "run",
+            sandbox_path=_sandbox(tmp_path),
+            legacy_path=tmp_path / "legacy",
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+        )
+
+
+def test_apply_reviewed_repair_diff_rejects_stale_repo(tmp_path: Path) -> None:
+    service = V2RepairFlowService()
+    proposal = _proposal(service)
+    _approve(service, proposal.proposal_id)
+    diff_path = tmp_path / "final_reviewed_repair.diff"
+    diff_path.write_text(_h2_patch(), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="base repository state is stale"):
+        service.apply_reviewed_repair_diff(
+            proposal_id=proposal.proposal_id,
+            final_diff_ref=diff_path,
+            final_diff_checksum=sha256_canonical_json({"unified_diff": _h2_patch()}),
+            reviewer_output_checksum="reviewer-ok",
+            expected_reviewer_output_checksum="reviewer-ok",
+            policy_validation_checksum="policy-ok",
+            expected_policy_validation_checksum="policy-ok",
+            policy_status="allowed",
+            expected_base_repo_state_checksum="repo-old",
+            current_base_repo_state_checksum="repo-new",
+            target_path="pom.xml",
+            run_dir=tmp_path / "run",
+            sandbox_path=_sandbox(tmp_path),
+            legacy_path=tmp_path / "legacy",
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+        )
 
 
 def test_cannot_approve_twice() -> None:

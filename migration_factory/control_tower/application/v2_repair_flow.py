@@ -790,6 +790,91 @@ class V2RepairFlowService:
             event_recorder=event_recorder,
         )
 
+    def apply_reviewed_repair_diff(
+        self,
+        *,
+        proposal_id: str,
+        final_diff_ref: str | Path,
+        final_diff_checksum: str,
+        reviewer_output_checksum: str,
+        expected_reviewer_output_checksum: str,
+        policy_validation_checksum: str,
+        expected_policy_validation_checksum: str,
+        policy_status: str,
+        expected_base_repo_state_checksum: str,
+        current_base_repo_state_checksum: str,
+        target_path: str,
+        run_dir: str | Path,
+        sandbox_path: str | Path,
+        legacy_path: str | Path,
+        deterministic_rule_id: str,
+        run_id: str = "",
+        risk: str = "LOW",
+        expected_validation: tuple[str, ...] = (),
+        h2_required: bool = False,
+        validation_runner: ValidationRunner = run_validation_after_patch,
+        event_recorder: RepairEventRecorder | None = None,
+    ) -> SandboxAction:
+        """Apply only an exact reviewed diff loaded from backend artifact storage.
+
+        F5 callers pass artifact refs and checksums, not diff content. The
+        service loads the diff, verifies reviewer/policy/base-state bindings,
+        and then reuses the existing sandbox patch gate/apply/rerun machinery.
+        """
+        proposal = self._proposals.get(proposal_id)
+        if proposal is None and self._repo is not None:
+            record = self._repo.get_proposal(proposal_id)
+            if record is not None:
+                proposal = self._record_to_proposal(record)
+                self._proposals[proposal_id] = proposal
+        if proposal is None:
+            raise ValueError(f"Proposal {proposal_id!r} not found")
+        if proposal.status != "approved":
+            raise ValueError(f"Proposal {proposal_id!r} must be approved first")
+        if not expected_reviewer_output_checksum or reviewer_output_checksum != expected_reviewer_output_checksum:
+            raise ValueError("Reviewed diff cannot be applied: reviewer checksum mismatch")
+        if not expected_policy_validation_checksum or policy_validation_checksum != expected_policy_validation_checksum:
+            raise ValueError("Reviewed diff cannot be applied: policy validation checksum mismatch")
+        if str(policy_status).lower() not in {"allowed", "allow"}:
+            raise ValueError("Reviewed diff cannot be applied: policy validation is not allowed")
+        if expected_base_repo_state_checksum != current_base_repo_state_checksum:
+            raise ValueError("Reviewed diff cannot be applied: base repository state is stale")
+
+        diff_path = Path(final_diff_ref)
+        if not diff_path.is_file():
+            raise ValueError(f"Reviewed repair diff artifact not found: {diff_path}")
+        diff_content = diff_path.read_text(encoding="utf-8")
+        actual_diff_checksum = sha256_canonical_json({"unified_diff": diff_content})
+        if actual_diff_checksum != final_diff_checksum:
+            raise ValueError("Reviewed repair diff artifact checksum mismatch")
+
+        binding_checksum = sha256_canonical_json(
+            {
+                "proposal_id": proposal_id,
+                "final_diff_checksum": final_diff_checksum,
+                "reviewer_output_checksum": reviewer_output_checksum,
+                "policy_validation_checksum": policy_validation_checksum,
+                "base_repo_state_checksum": expected_base_repo_state_checksum,
+            }
+        )
+        return self.apply_patch(
+            proposal_id=proposal_id,
+            target_path=target_path,
+            patch_content=diff_content,
+            run_id=run_id,
+            run_dir=run_dir,
+            sandbox_path=sandbox_path,
+            legacy_path=legacy_path,
+            deterministic_rule_id=deterministic_rule_id,
+            risk=risk,
+            requires_human_review=False,
+            expected_validation=expected_validation,
+            h2_required=h2_required,
+            binding_checksum=binding_checksum,
+            validation_runner=validation_runner,
+            event_recorder=event_recorder,
+        )
+
     def _mark_proposal_applied(self, proposal: RepairProposal) -> None:
         updated = RepairProposal(
             proposal_id=proposal.proposal_id,

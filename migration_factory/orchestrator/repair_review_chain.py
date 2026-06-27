@@ -387,6 +387,8 @@ def produce_repair_review_chain(
         role=V2ModelRole.PROPOSER,
         prompt=_primary_repair_prompt(context_pack, deterministic_checksum),
         fallback="Primary repair model unavailable; reviewed repair cannot be produced.",
+        output_schema_name="RepairPrimaryOutput",
+        require_schema=True,
     )
     if not primary_result.success:
         raise RepairReviewChainProductionError(
@@ -420,6 +422,8 @@ def produce_repair_review_chain(
             diff_checksum,
         ),
         fallback="Reviewer repair model unavailable; reviewed repair cannot be produced.",
+        output_schema_name="RepairReviewerOutput",
+        require_schema=True,
     )
     if not reviewer_result.success:
         raise RepairReviewChainProductionError(
@@ -491,6 +495,10 @@ def produce_repair_review_chain(
         "reviewer_output_ref": str(reviewer_path),
         "final_artifact_ref": str(final_artifact_path),
         "final_diff_ref": str(diff_path),
+        "model_roles": {
+            "proposer": _safe_model_role_status(primary_result),
+            "reviewer": _safe_model_role_status(reviewer_result),
+        },
     }
     review_chain_path = output_dir / "review_chain.json"
     _write_json(review_chain_path, review_chain)
@@ -512,3 +520,13 @@ def _write_json(path: Path, payload: Any) -> None:
         json.dumps(payload, sort_keys=True, indent=2, default=str),
         encoding="utf-8",
     )
+
+
+def _safe_model_role_status(result: Any) -> dict[str, Any]:
+    """Public-safe role metadata: no deployment, endpoint, provider, or env refs."""
+    return {
+        "role": str(getattr(result, "role", "") or ""),
+        "available": bool(getattr(result, "success", False)),
+        "status": "available" if bool(getattr(result, "success", False)) else "blocked",
+        "fallback_used": str(getattr(result, "source", "") or "") == "azure_openai_fallback",
+    }
