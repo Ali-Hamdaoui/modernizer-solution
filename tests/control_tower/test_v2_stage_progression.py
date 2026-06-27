@@ -743,6 +743,38 @@ def test_next_required_stage_starts_after_current_profile_for_boot35_java21() ->
     assert 3 not in route.included_stages
 
 
+def test_already_modernized_java21_source_queues_stage4_without_stage3_evidence(
+    tmp_path: Path,
+) -> None:
+    conn = sqlite3.connect(
+        str(tmp_path / "test_already_java21_stage4.sqlite3"),
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    command_repo = SqliteV2CommandRepository(conn)
+    setup_id = _create_setup(repo)
+    route = compute_profile_route("springboot-3.5-java21", "springboot-4.0-java21")
+
+    result = V2StageProgressionService(repo, command_repo).queue_next_stage(
+        job_id="job-java21-source",
+        setup_id=setup_id,
+        current_stage=1,
+        sandbox_path="/tmp/sandbox/stage1",
+        profile_route=route,
+    )
+
+    assert result.status == "queued"
+    assert result.to_stage == 4
+    assert "springboot-3.5-java21-to-4.0-java21" in " ".join(result.argv)
+    assert command_repo.list_by_job_and_stage("job-java21-source", 2) == ()
+    assert command_repo.list_by_job_and_stage("job-java21-source", 3) == ()
+    assert len(command_repo.list_by_job_and_stage("job-java21-source", 4)) == 1
+
+
 def test_next_required_stage_returns_none_after_later_target_reached() -> None:
     route = compute_profile_route("springboot-3.5-java17", "springboot-3.5-java21")
 

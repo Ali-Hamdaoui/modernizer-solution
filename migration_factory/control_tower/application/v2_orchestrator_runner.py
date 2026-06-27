@@ -19,7 +19,6 @@ from migration_factory.control_tower.application.redaction import (
 from migration_factory.control_tower.application.v2_approval_mapping import V2ApprovalMappingService
 from migration_factory.control_tower.application.v2_stage_progression import (
     TERMINAL_STAGE_INDEX,
-    compute_profile_route,
     route_to_dict,
 )
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json
@@ -1118,7 +1117,6 @@ class V2OrchestratorRunner:
     ) -> None:
         from migration_factory.control_tower.application.v2_stage_progression import (
             V2StageProgressionService,
-            compute_profile_route,
             evaluate_auto_continue,
             is_target_reached,
             route_to_dict,
@@ -1166,8 +1164,6 @@ class V2OrchestratorRunner:
                         except (json.JSONDecodeError, Exception):
                             pass
 
-                route = compute_profile_route(source_profile, target_profile)
-
                 # Resolve effective policy:
                 # For MANUAL_ON_WARNING_OR_FAILURE, check if the result has
                 # warnings. Only block on warnings/failures; clean green
@@ -1187,6 +1183,8 @@ class V2OrchestratorRunner:
                     run_config_repo=uow.run_configurations,
                 )
                 route = service.compute_route_for_job(job_id, run_config)
+                source_profile = route.source_profile
+                target_profile = route.target_profile
                 queued = service.queue_next_stage(
                     job_id=job_id,
                     setup_id=job.setup_id,
@@ -1809,17 +1807,17 @@ def _find_accepted_revision_for_gate(
 
 
 def _current_route_for_job(uow: Any, job_id: str) -> Any | None:
-    run_config = uow.run_configurations.get_for_job(job_id)
-    if run_config is None:
-        return None
-    payload = _json_loads(run_config.payload_json, default={})
-    if not isinstance(payload, dict):
-        return None
-    source_profile = str(payload.get("source_profile") or "").strip()
-    target_profile = str(payload.get("target_profile") or "").strip()
-    if not source_profile or not target_profile:
-        return None
-    return compute_profile_route(source_profile, target_profile)
+    from migration_factory.control_tower.application.v2_stage_progression import (
+        V2StageProgressionService,
+    )
+
+    service = V2StageProgressionService(
+        setup_repo=uow.v2_setups,
+        command_repo=uow.v2_commands,
+        artifact_revision_repo=uow.artifact_revisions,
+        run_config_repo=uow.run_configurations,
+    )
+    return service.compute_route_for_job(job_id)
 
 
 def _extract_checkpoint_route(*raw_values: str) -> dict[str, Any] | None:

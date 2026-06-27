@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+import sys
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -203,3 +206,78 @@ def test_source_profile_detection_fields_are_public_safe() -> None:
     assert "confidence" in SOURCE_PROFILE_DETECTION_FIELDS
     assert "evidence_refs" in SOURCE_PROFILE_DETECTION_FIELDS
     assert SOURCE_PROFILE_DETECTION_FIELDS.isdisjoint(dangerous)
+
+
+def test_runtime_analysis_agent_persists_source_profile_detection_artifact(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    analysis_root = (
+        Path(__file__).resolve().parents[2]
+        / "migration_factory"
+        / "agents"
+        / "analysis_agent"
+        / "analysis_agent"
+    )
+    monkeypatch.syspath_prepend(str(analysis_root))
+    sys.modules.pop("main", None)
+    main = importlib.import_module("main")
+    context_module = importlib.import_module("context_manager")
+
+    legacy = tmp_path / "legacy"
+    modernized = tmp_path / "modernized"
+    legacy.mkdir()
+    modernized.mkdir()
+    (legacy / "pom.xml").write_text(
+        """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.5.4</version>
+  </parent>
+  <properties><java.version>17</java.version></properties>
+</project>
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(main, "run_dependency_tree", lambda context: None)
+    monkeypatch.setattr(main, "scan_java_imports", lambda root: {"javax_imports": 0})
+    monkeypatch.setattr(main, "scan_config_files", lambda root: {})
+    monkeypatch.setattr(main, "save_config_inventory", lambda context, inventory: None)
+    monkeypatch.setattr(main, "scan_tests", lambda root: {})
+    monkeypatch.setattr(main, "save_test_inventory", lambda context, inventory: None)
+    monkeypatch.setattr(main, "parse_surefire_reports", lambda root: {})
+    monkeypatch.setattr(main, "run_openrewrite_dryrun", lambda context, analysis_facts=None: {"status": "SKIPPED", "warnings": []})
+    monkeypatch.setattr(main, "assemble_report", lambda context, maven, imports: {"source_stack": maven["source_stack"]})
+    monkeypatch.setattr(main, "enrich_with_ai", lambda context, report: report)
+    monkeypatch.setattr(main, "generate_summary", lambda context, maven, imports: context.get_output_path("analysis_summary.md"))
+    monkeypatch.setattr(main, "snapshot_tree", lambda root: {})
+    monkeypatch.setattr(
+        main,
+        "write_read_only_verification",
+        lambda context, before_legacy, before_modernized: {"source_modified": False},
+    )
+
+    context = context_module.MigrationContext(
+        "job-runtime-detection",
+        str(legacy),
+        str(modernized),
+        None,
+        "springboot-3.5-java21-to-4.0-java21",
+    )
+
+    result = main.run_analysis_agent(context)
+
+    assert result.status == "COMPLETED"
+    artifact_path = Path(result.artifact_paths["source_profile_detection"])
+    assert artifact_path.name == "source_profile_detection.json"
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert payload["detected_source_profile"] == "springboot-3.5-java17"
+    assert payload["target_profile"] == "springboot-4.0-java21"
+    assert payload["confidence"] == 0.9
+    assert payload["evidence_refs"]
+    assert payload["evidence_checksums"] == [
+        ref["checksum"] for ref in payload["evidence_refs"]
+    ]
+    assert payload["artifact_checksum"].startswith("sha256:")

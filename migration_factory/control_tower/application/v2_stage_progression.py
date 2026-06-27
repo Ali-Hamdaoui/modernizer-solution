@@ -534,11 +534,45 @@ class V2StageProgressionService:
                 if isinstance(payload, dict):
                     source = str(payload.get("source_profile") or source)
                     target = str(payload.get("target_profile") or target)
+        override = self._accepted_source_profile_override(job_id)
+        if override is not None:
+            source = str(override.get("requested_source_profile") or source)
+            target = str(override.get("target_profile") or target)
         if not source:
             source = default_source_profile_id()
         if not target:
             target = default_target_profile_id()
         return compute_profile_route(str(source), str(target))
+
+    def _accepted_source_profile_override(self, job_id: str) -> dict[str, Any] | None:
+        if self._artifact_revision_repo is None:
+            return None
+
+        revisions = self._artifact_revision_repo.list_by_job_and_stage(job_id, 1)
+        accepted = [
+            revision
+            for revision in revisions
+            if revision.revision_kind == "source_profile_override"
+            and revision.revision_status == "accepted"
+            and revision.superseded_by_revision_id is None
+        ]
+        if not accepted:
+            return None
+
+        latest = max(accepted, key=lambda revision: revision.revision_order)
+        try:
+            artifact = json.loads(latest.artifact_refs_json)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(artifact, dict):
+            return None
+
+        requested = str(artifact.get("requested_source_profile") or "").strip()
+        target = str(artifact.get("target_profile") or "").strip()
+        detected = str(artifact.get("detected_source_profile") or "").strip()
+        if not requested or not target or requested == detected:
+            return None
+        return artifact
 
     def queue_next_stage(
         self,
@@ -573,9 +607,8 @@ class V2StageProgressionService:
             ValueError: If the stage cannot progress (invalid stage,
                         missing setup, sandbox path issues).
         """
-        next_stage = current_stage + 1
-
         route = profile_route or self.compute_route_for_job(job_id)
+        next_stage = next_required_stage(route, current_stage) or current_stage + 1
 
         if next_stage not in STAGE_CONFIG:
             raise ValueError(
@@ -610,7 +643,9 @@ class V2StageProgressionService:
             )
 
         policy = _coerce_stage_continuation_policy(stage_continuation_policy)
-        if next_stage == TERMINAL_STAGE_INDEX:
+        if next_stage == TERMINAL_STAGE_INDEX and not (
+            current_stage != 3 and 3 in route.skipped_stages
+        ):
             self._validate_stage4_input(
                 job_id,
                 current_stage,

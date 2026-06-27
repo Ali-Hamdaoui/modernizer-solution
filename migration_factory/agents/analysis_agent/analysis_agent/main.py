@@ -1,4 +1,5 @@
 import argparse
+from datetime import datetime, timezone
 import inspect
 import json
 import sys
@@ -10,7 +11,11 @@ from context_manager import MigrationContext
 from copilot_enricher import enrich_with_ai
 from dependency_adapter import run_dependency_tree
 from import_scanner import scan_java_imports
-from maven_scanner import load_profile_target_stack, scan_root_pom
+from maven_scanner import (
+    build_source_profile_detection,
+    load_profile_target_stack,
+    scan_root_pom,
+)
 from openrewrite_adapter import run_openrewrite_dryrun
 from readonly_verifier import snapshot_tree, write_read_only_verification
 from report_assembler import assemble_report
@@ -41,6 +46,16 @@ def run_analysis_agent(context: MigrationContext) -> AnalysisResult:
 
     target_stack = load_profile_target_stack(context.ai_hub_path, context.profile)
     maven_results = _scan_root_pom_with_target(legacy_pom, target_stack)
+    source_profile_detection = build_source_profile_detection(
+        maven_results,
+        job_id=context.run_id,
+        created_at=_utc_now_text(),
+        target_profile=_target_profile_from_context(context.profile, target_stack),
+        evidence_checksum=_file_sha256_checksum(legacy_pom),
+    )
+    source_profile_detection_path = context.get_output_path("source_profile_detection.json")
+    with open(source_profile_detection_path, "w", encoding="utf-8") as handle:
+        json.dump(source_profile_detection.to_dict(), handle, indent=4)
     run_dependency_tree(context)
 
     import_results = scan_java_imports(legacy_root)
@@ -78,6 +93,7 @@ def run_analysis_agent(context: MigrationContext) -> AnalysisResult:
 
     artifact_paths = {
         "analysis_report": report_path,
+        "source_profile_detection": source_profile_detection_path,
         "dependency_graph": context.get_output_path("dependency_graph.json"),
         "test_inventory": context.get_output_path("test_inventory.json"),
         "analysis_summary": summary_path,
@@ -110,6 +126,41 @@ def _scan_root_pom_with_target(legacy_pom, target_stack):
     if "target_stack" in signature.parameters:
         return scan_root_pom(legacy_pom, target_stack=target_stack)
     return scan_root_pom(legacy_pom)
+
+
+def _target_profile_from_context(profile_id, target_stack):
+    profile_text = str(profile_id or "")
+    profile_targets = {
+        "springboot-2.7-to-3.5-java17": "springboot-3.5-java17",
+        "springboot-3.5-java17-to-java21": "springboot-3.5-java21",
+        "springboot-3.5-java21-to-4.0-java21": "springboot-4.0-java21",
+    }
+    if profile_text in profile_targets:
+        return profile_targets[profile_text]
+
+    target_boot = str((target_stack or {}).get("spring_boot", ""))
+    target_java = str((target_stack or {}).get("java", ""))
+    if target_boot.startswith("4.") and target_java.startswith("21"):
+        return "springboot-4.0-java21"
+    if target_boot.startswith("3.") and target_java.startswith("21"):
+        return "springboot-3.5-java21"
+    if target_boot.startswith("3.") and target_java.startswith("17"):
+        return "springboot-3.5-java17"
+    return None
+
+
+def _file_sha256_checksum(path):
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _utc_now_text():
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def main():
