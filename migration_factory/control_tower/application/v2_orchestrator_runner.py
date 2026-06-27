@@ -26,6 +26,15 @@ from migration_factory.control_tower.domain.gate_checksum import gate_checksum
 from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
     V2StageCommandRecord,
 )
+from migration_factory.repair_loop.failure_evidence import (
+    FailureSource,
+    build_failure_evidence,
+    failure_evidence_to_dict,
+)
+from migration_factory.repair_loop.repair_context import (
+    build_repair_context_pack,
+    context_pack_to_dict,
+)
 
 
 UnitOfWorkFactory = Callable[[], Any]
@@ -534,6 +543,15 @@ class V2OrchestratorRunner:
         if sandbox_path:
             result["sandbox_path"] = sandbox_path
 
+        self._maybe_write_repair_failure_context(
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            result=result,
+            stdout_tail=stdout_tail,
+            stderr_tail=stderr_tail,
+        )
+
         # ── Phase-specific handling: planning bypasses full-stage proof ──
         if command_phase == "analysis":
             self._emit_artifacts(
@@ -977,6 +995,115 @@ class V2OrchestratorRunner:
                 message="Fallback repair plan generated.",
                 payload={"command_id": command_id},
             )
+
+    def _maybe_write_repair_failure_context(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        result: dict[str, Any],
+        stdout_tail: str,
+        stderr_tail: str,
+    ) -> None:
+        build_status = str(result.get("build_status", ""))
+        test_status = str(result.get("test_status", ""))
+        if _is_failure_status(build_status):
+            failure_source = FailureSource.BUILD
+        elif _is_failure_status(test_status):
+            failure_source = FailureSource.TEST
+        else:
+            return
+
+        run_dir = _result_run_dir(result, cwd=self._cwd)
+        if run_dir is None:
+            return
+
+        artifact_refs = result.get("artifact_refs") if isinstance(result.get("artifact_refs"), dict) else {}
+        changed_files = tuple(str(path) for path in result.get("changed_files", ()) if str(path).strip()) if isinstance(result.get("changed_files"), (list, tuple)) else ()
+        accepted_checksums = tuple(
+            str(value)
+            for value in (
+                result.get("accepted_artifact_checksums")
+                if isinstance(result.get("accepted_artifact_checksums"), (list, tuple))
+                else ()
+            )
+            if str(value).strip()
+        )
+        failure_summary = _first_text(
+            result.get("failure_summary"),
+            result.get("message"),
+            build_status if failure_source == FailureSource.BUILD else test_status,
+            result.get("final_status"),
+            "Build/test failure",
+        )
+        evidence = build_failure_evidence(
+            failure_source=failure_source,
+            stage_index=stage_index,
+            job_id=job_id,
+            command_id=command_id,
+            failure_summary=failure_summary,
+            changed_files=changed_files,
+            source_profile=str(result.get("source_profile") or ""),
+            target_profile=str(result.get("target_profile") or ""),
+            accepted_artifact_checksums=accepted_checksums,
+            artifact_refs={str(k): str(v) for k, v in artifact_refs.items() if v},
+            stdout_tail=stdout_tail,
+            stderr_tail=stderr_tail,
+            safe_log_preview=_first_text(result.get("safe_log_preview"), stderr_tail, stdout_tail),
+        )
+        context_pack = build_repair_context_pack(
+            failure_evidence=evidence,
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            source_profile=str(result.get("source_profile") or ""),
+            target_profile=str(result.get("target_profile") or ""),
+            changed_files=changed_files,
+            accepted_artifact_checksums=accepted_checksums,
+        )
+
+        repair_dir = run_dir / "repairs"
+        repair_dir.mkdir(parents=True, exist_ok=True)
+        evidence_path = repair_dir / "repair_failure_evidence.json"
+        context_path = repair_dir / "repair_context_pack.json"
+        evidence_path.write_text(
+            json.dumps(failure_evidence_to_dict(evidence), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        context_path.write_text(
+            json.dumps(context_pack_to_dict(context_pack), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        self._event(
+            job_id=job_id,
+            stage=stage_index,
+            event_type="repair_failure_evidence_written",
+            status="completed",
+            message="Repair failure evidence artifact written.",
+            payload={
+                "command_id": command_id,
+                "failure_source": evidence.failure_source.value,
+                "failure_evidence_ref": _safe_artifact_ref(evidence_path),
+                "failure_evidence_checksum": evidence.content_checksum,
+                "failure_evidence_artifact_checksum": evidence.artifact_checksum,
+            },
+        )
+        self._event(
+            job_id=job_id,
+            stage=stage_index,
+            event_type="repair_context_pack_written",
+            status="completed",
+            message="Repair context pack artifact written.",
+            payload={
+                "command_id": command_id,
+                "context_pack_ref": _safe_artifact_ref(context_path),
+                "context_pack_checksum": context_pack.context_pack_checksum,
+                "failure_evidence_checksum": evidence.content_checksum,
+                "base_repo_state_checksum": context_pack.base_repo_state_checksum,
+            },
+        )
 
     def _emit_diagnostic_failure_events(
         self,
@@ -1990,6 +2117,30 @@ def _result_sandbox_path(result: dict[str, Any]) -> str:
             return ""
 
     return ""
+
+
+def _result_run_dir(result: dict[str, Any], *, cwd: Path) -> Path | None:
+    direct = _first_text(result.get("run_dir"))
+    if direct:
+        return Path(direct)
+
+    run_id = str(result.get("run_id") or "").strip()
+    if run_id:
+        artifact_refs = result.get("artifact_refs") if isinstance(result.get("artifact_refs"), dict) else {}
+        for candidate in (result.get("sandbox_path"), result.get("modernized_app_path"), *artifact_refs.values()):
+            text = str(candidate or "")
+            marker = f".migration{os.sep}runs{os.sep}{run_id}"
+            alt_marker = f".migration/runs/{run_id}"
+            normalized = text.replace("\\", "/")
+            if alt_marker in normalized:
+                prefix = normalized[: normalized.index(alt_marker) + len(alt_marker)]
+                return Path(prefix)
+            if marker in text:
+                prefix = text[: text.index(marker) + len(marker)]
+                return Path(prefix)
+        return cwd / ".migration" / "runs" / run_id
+
+    return None
 
 
 def _safe_artifact_ref(value: Any) -> str:

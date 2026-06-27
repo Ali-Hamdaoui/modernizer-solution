@@ -503,12 +503,19 @@ def test_v2_runner_does_not_forward_copilot_env_to_product_subprocess(monkeypatc
 def test_v2_runner_emits_failure_repair_events_from_result(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _save_command(conn)
+    run_dir = tmp_path / "out" / ".migration" / "runs" / "run-1"
     result = {
+        "run_id": "run-1",
+        "run_dir": str(run_dir),
         "final_status": "FALLBACK_REPAIR_PLAN",
         "build_status": "BUILD_FAILED_IN_SANDBOX",
         "final_proof_level": "not_verified",
         "repair_loop_status": "FALLBACK_REPAIR_PLAN",
         "repair_fallback_generated": True,
+        "failure_summary": "Compilation failed",
+        "changed_files": ["pom.xml"],
+        "source_profile": "springboot-2.7-java11",
+        "target_profile": "springboot-3.5-java17",
         "sandbox_path": "/tmp/sandbox",
         "artifact_refs": {"analysis_report": "C:/out/.migration/runs/run-1/report.json"},
     }
@@ -526,11 +533,27 @@ def test_v2_runner_emits_failure_repair_events_from_result(tmp_path: Path) -> No
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     event_types = [event.type for event in events]
     assert "build_failed" in event_types
+    assert "repair_failure_evidence_written" in event_types
+    assert "repair_context_pack_written" in event_types
     assert "transform_failed" in event_types
     assert "repair_started" in event_types
     assert "repair_fallback_generated" in event_types
     assert "stage_failed" in event_types
     assert "copilot_repair_invalid_response" not in event_types
+    evidence_path = run_dir / "repairs" / "repair_failure_evidence.json"
+    context_path = run_dir / "repairs" / "repair_context_pack.json"
+    assert evidence_path.is_file()
+    assert context_path.is_file()
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    context = json.loads(context_path.read_text(encoding="utf-8"))
+    assert evidence["failure_source"] == "build"
+    assert evidence["command_id"] == "cmd-1"
+    assert evidence["content_checksum"]
+    assert context["failure_evidence_checksum"] == evidence["content_checksum"]
+    assert context["context_pack_checksum"]
+    event_payloads = {event.type: json.loads(event.payload_json) for event in events}
+    assert event_payloads["repair_failure_evidence_written"]["failure_evidence_checksum"] == evidence["content_checksum"]
+    assert event_payloads["repair_context_pack_written"]["context_pack_checksum"] == context["context_pack_checksum"]
 
 
 def test_analysis_reviewed_result_validation_requires_final_reviewed_markdown(tmp_path: Path) -> None:
