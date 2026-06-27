@@ -17,7 +17,11 @@ from migration_factory.control_tower.application.redaction import (
     redact_public_value,
 )
 from migration_factory.control_tower.application.v2_approval_mapping import V2ApprovalMappingService
-from migration_factory.control_tower.application.v2_stage_progression import TERMINAL_STAGE_INDEX
+from migration_factory.control_tower.application.v2_stage_progression import (
+    TERMINAL_STAGE_INDEX,
+    compute_profile_route,
+    route_to_dict,
+)
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json
 from migration_factory.control_tower.domain.gate_checksum import gate_checksum
 from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
@@ -94,6 +98,13 @@ class V2OrchestratorStart:
     message: str = ""
 
 
+@dataclass(frozen=True)
+class _ResumeValidationResult:
+    ok: bool
+    reason: str = ""
+    stage_index: int = -1
+
+
 class V2OrchestratorRunner:
     """Launches the persisted runner manifest in a background subprocess."""
 
@@ -156,6 +167,7 @@ class V2OrchestratorRunner:
         )
 
     def start_resume(self, *, job_id: str, resume_id: str) -> V2OrchestratorStart:
+        rejected: _ResumeValidationResult | None = None
         try:
             with self._unit_of_work_factory() as uow:
                 resume = uow.v2_approvals.get_resume(resume_id)
@@ -164,9 +176,16 @@ class V2OrchestratorRunner:
                 if resume.job_id != job_id:
                     raise ValueError(f"V2 resume command {resume_id!r} does not belong to job {job_id!r}")
 
-                argv = _load_json_list(resume.command_json)
-                stage_index = resume.stage_index
-                env_manifest = _load_env_manifest_for_stage(uow, job_id, stage_index)
+                validation = _validate_resume_checkpoint(uow, job_id=job_id, resume=resume)
+                if not validation.ok:
+                    rejected = validation
+                    stage_index = validation.stage_index
+                    argv = []
+                    env_manifest = {}
+                else:
+                    argv = _load_json_list(resume.command_json)
+                    stage_index = resume.stage_index
+                    env_manifest = _load_env_manifest_for_stage(uow, job_id, stage_index)
         except sqlite3.OperationalError as exc:
             if _is_sqlite_locked_error(exc):
                 return V2OrchestratorStart(
@@ -178,6 +197,24 @@ class V2OrchestratorRunner:
                     message=str(exc),
                 )
             raise
+
+        if rejected is not None:
+            self._event(
+                job_id=job_id,
+                stage=rejected.stage_index if rejected.stage_index > 0 else None,
+                event_type="resume_rejected",
+                status="blocked",
+                message="Resume checkpoint validation rejected the request.",
+                payload={"resume_id": resume_id, "reason": rejected.reason},
+            )
+            return V2OrchestratorStart(
+                command_id=resume_id,
+                job_id=job_id,
+                stage_index=rejected.stage_index,
+                pid=None,
+                status="rejected",
+                message=rejected.reason,
+            )
 
         thread = threading.Thread(
             target=self._run_process,
@@ -1147,7 +1184,9 @@ class V2OrchestratorRunner:
                     setup_repo=uow.v2_setups,
                     command_repo=uow.v2_commands,
                     artifact_revision_repo=uow.artifact_revisions,
+                    run_config_repo=uow.run_configurations,
                 )
+                route = service.compute_route_for_job(job_id, run_config)
                 queued = service.queue_next_stage(
                     job_id=job_id,
                     setup_id=job.setup_id,
@@ -1662,6 +1701,193 @@ def _load_env_manifest_for_stage(uow: Any, job_id: str, stage_index: int) -> dic
             except json.JSONDecodeError:
                 return {}
     return {}
+
+
+def _validate_resume_checkpoint(
+    uow: Any,
+    *,
+    job_id: str,
+    resume: Any,
+) -> _ResumeValidationResult:
+    """Validate a queued resume against backend-owned checkpoint evidence."""
+    stage_index = int(getattr(resume, "stage_index", -1))
+    card = uow.v2_approvals.get_card(str(getattr(resume, "card_id", "")))
+    if card is None:
+        return _ResumeValidationResult(False, "checkpoint_not_found", stage_index)
+    if card.job_id != job_id or getattr(resume, "job_id", "") != job_id:
+        return _ResumeValidationResult(False, "foreign_job", stage_index)
+    if card.stage_index != stage_index:
+        return _ResumeValidationResult(False, "stage_mismatch", stage_index)
+    if card.status != "approved":
+        return _ResumeValidationResult(False, "checkpoint_not_accepted", stage_index)
+
+    gate = _find_gate_for_resume_checksum(
+        uow,
+        job_id=job_id,
+        stage_index=stage_index,
+        checkpoint_checksum=card.request_checksum,
+    )
+    if gate is None:
+        return _ResumeValidationResult(False, "checkpoint_checksum_mismatch", stage_index)
+    if gate.gate_status == "superseded":
+        return _ResumeValidationResult(False, "checkpoint_stale", stage_index)
+
+    accepted = _find_accepted_revision_for_gate(
+        uow,
+        job_id=job_id,
+        stage_index=stage_index,
+        evidence_checksum=gate.source_artifact_checksum,
+    )
+    if accepted is None:
+        return _ResumeValidationResult(False, "accepted_artifact_not_found", stage_index)
+    if accepted.superseded_by_revision_id is not None:
+        return _ResumeValidationResult(False, "accepted_artifact_superseded", stage_index)
+
+    checkpoint_route = _extract_checkpoint_route(
+        gate.source_artifact_refs_json,
+        accepted.artifact_refs_json,
+    )
+    if checkpoint_route is None:
+        return _ResumeValidationResult(False, "checkpoint_profile_metadata_missing", stage_index)
+
+    current_route = _current_route_for_job(uow, job_id)
+    if current_route is None or not current_route.valid:
+        return _ResumeValidationResult(False, "profile_incompatible", stage_index)
+
+    current_route_dict = route_to_dict(current_route)
+    for key in (
+        "source_profile",
+        "target_profile",
+        "included_stages",
+        "excluded_stages",
+        "skipped_stages",
+    ):
+        if checkpoint_route.get(key) != current_route_dict.get(key):
+            return _ResumeValidationResult(False, "checkpoint_route_changed", stage_index)
+
+    if stage_index not in current_route.included_stages and stage_index not in (1,):
+        return _ResumeValidationResult(False, "checkpoint_stage_not_in_route", stage_index)
+
+    return _ResumeValidationResult(True, stage_index=stage_index)
+
+
+def _find_gate_for_resume_checksum(
+    uow: Any,
+    *,
+    job_id: str,
+    stage_index: int,
+    checkpoint_checksum: str,
+) -> Any | None:
+    for gate in uow.phase_gates.list_by_job_and_stage(job_id, stage_index):
+        refs = _json_loads(gate.source_artifact_refs_json, default=[])
+        current_checksum = gate_checksum(
+            gate_id=gate.gate_id,
+            job_id=gate.job_id,
+            gate_phase=gate.gate_phase,
+            stage_index=gate.stage_index,
+            source_artifact_checksum=gate.source_artifact_checksum,
+            source_artifact_refs=refs if isinstance(refs, list) else [],
+        )
+        if current_checksum == checkpoint_checksum:
+            return gate
+    return None
+
+
+def _find_accepted_revision_for_gate(
+    uow: Any,
+    *,
+    job_id: str,
+    stage_index: int,
+    evidence_checksum: str,
+) -> Any | None:
+    for revision in uow.artifact_revisions.list_by_job_and_stage(job_id, stage_index):
+        if revision.revision_status != "accepted":
+            continue
+        if revision.evidence_checksum == evidence_checksum:
+            return revision
+    return None
+
+
+def _current_route_for_job(uow: Any, job_id: str) -> Any | None:
+    run_config = uow.run_configurations.get_for_job(job_id)
+    if run_config is None:
+        return None
+    payload = _json_loads(run_config.payload_json, default={})
+    if not isinstance(payload, dict):
+        return None
+    source_profile = str(payload.get("source_profile") or "").strip()
+    target_profile = str(payload.get("target_profile") or "").strip()
+    if not source_profile or not target_profile:
+        return None
+    return compute_profile_route(source_profile, target_profile)
+
+
+def _extract_checkpoint_route(*raw_values: str) -> dict[str, Any] | None:
+    for raw in raw_values:
+        value = _json_loads(raw, default=None)
+        found = _find_route_metadata(value)
+        if found is not None:
+            return found
+    return None
+
+
+def _find_route_metadata(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        candidate = value.get("profile_metadata") if isinstance(value.get("profile_metadata"), dict) else value
+        if _looks_like_route_metadata(candidate):
+            return _normalize_route_metadata(candidate)
+        for nested in value.values():
+            found = _find_route_metadata(nested)
+            if found is not None:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _find_route_metadata(item)
+            if found is not None:
+                return found
+    return None
+
+
+def _looks_like_route_metadata(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and "source_profile" in value
+        and "target_profile" in value
+        and "included_stages" in value
+    )
+
+
+def _normalize_route_metadata(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source_profile": str(value.get("source_profile") or ""),
+        "target_profile": str(value.get("target_profile") or ""),
+        "included_stages": _int_list(value.get("included_stages")),
+        "excluded_stages": _int_list(value.get("excluded_stages")),
+        "skipped_stages": _int_list(value.get("skipped_stages")),
+    }
+
+
+def _int_list(value: Any) -> list[int]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    result: list[int] = []
+    for item in value:
+        try:
+            result.append(int(item))
+        except (TypeError, ValueError):
+            return []
+    return result
+
+
+def _json_loads(raw: Any, *, default: Any) -> Any:
+    if isinstance(raw, (dict, list)):
+        return raw
+    if not isinstance(raw, str):
+        return default
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return default
 
 
 def _extract_final_json(stdout: str) -> dict[str, Any] | None:
