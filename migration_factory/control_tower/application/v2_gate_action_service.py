@@ -10,9 +10,12 @@ results that callers use to queue work via existing services.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
+
+from pydantic import ValidationError
 
 from migration_factory.control_tower.application.v2_phase_gate_service import (
     CreateGateRequest,
@@ -57,6 +60,9 @@ from migration_factory.control_tower.schemas.phase_gate import (
     GatePhase,
     HUMAN_AUTHORITATIVE_ACTIONS,
     is_valid_decision_for_phase,
+)
+from migration_factory.control_tower.schemas.source_profile_override import (
+    SourceProfileOverrideRequest,
 )
 
 
@@ -994,6 +1000,157 @@ class V2GateActionService:
         )
 
     # ── internal pipeline ───────────────────────────────────────────
+
+    def override_source_profile(
+        self,
+        *,
+        gate_id: str,
+        job_id: str,
+        detection_artifact_ref: str,
+        detected_source_profile: str,
+        requested_source_profile: str,
+        target_profile: str,
+        expected_gate_checksum: str,
+        expected_detection_artifact_checksum: str,
+        reason: str,
+        comments: str,
+        decided_by: str,
+        actor_type: str = GateActorType.HUMAN.value,
+        idempotency_key: str | None = None,
+    ) -> GateActionResult:
+        """Persist a governed manual source-profile override decision."""
+        try:
+            request = SourceProfileOverrideRequest(
+                job_id=job_id,
+                gate_id=gate_id,
+                detection_artifact_ref=detection_artifact_ref,
+                detected_source_profile=detected_source_profile,
+                requested_source_profile=requested_source_profile,
+                target_profile=target_profile,
+                expected_gate_checksum=expected_gate_checksum,
+                expected_detection_artifact_checksum=expected_detection_artifact_checksum,
+                reason=reason,
+                comments=comments,
+                decided_by=decided_by,
+                actor_type=actor_type,
+            )
+        except (ValidationError, ValueError) as exc:
+            return GateActionResult(
+                action=GateDecision.OVERRIDE_SOURCE_PROFILE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="invalid_source_profile_override",
+                reason=str(exc),
+            )
+
+        gate = self._gate_repo.get(gate_id)
+        if gate is None:
+            return GateActionResult(
+                action=GateDecision.OVERRIDE_SOURCE_PROFILE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="gate_not_found",
+            )
+        if gate.job_id != job_id:
+            return GateActionResult(
+                action=GateDecision.OVERRIDE_SOURCE_PROFILE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="gate_job_mismatch",
+                reason="Gate job does not match the override request job.",
+            )
+        if gate.gate_phase != GatePhase.ANALYSIS_REVIEW.value:
+            return GateActionResult(
+                action=GateDecision.OVERRIDE_SOURCE_PROFILE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="invalid_decision",
+                reason="Source-profile overrides are only allowed at analysis_review gates.",
+            )
+        if gate.source_artifact_checksum != request.expected_detection_artifact_checksum:
+            return GateActionResult(
+                action=GateDecision.OVERRIDE_SOURCE_PROFILE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="stale_checksum",
+                reason="Detection artifact checksum is stale. Refresh the gate view and retry.",
+            )
+
+        try:
+            source_artifact_refs = json.loads(gate.source_artifact_refs_json or "[]")
+        except (json.JSONDecodeError, TypeError):
+            source_artifact_refs = []
+        if request.detection_artifact_ref not in source_artifact_refs:
+            return GateActionResult(
+                action=GateDecision.OVERRIDE_SOURCE_PROFILE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="artifact_ref_mismatch",
+                reason="Detection artifact reference is not bound to this gate.",
+            )
+
+        safe_artifact = request.to_safe_artifact()
+        request_checksum = sha256_canonical_json(
+            {
+                "action": GateDecision.OVERRIDE_SOURCE_PROFILE.value,
+                "override": safe_artifact,
+                "idempotency_key": idempotency_key,
+            }
+        )
+
+        revision_id: str | None = None
+        revision_order = 1
+        if self._revision_repo is not None:
+            latest = self._revision_repo.find_latest_by_kind(
+                job_id,
+                gate.stage_index,
+                "source_profile_override",
+            )
+            if latest is not None:
+                revision_order = latest.revision_order + 1
+            revision_id = uuid4().hex
+
+        result = self._execute_action(
+            gate_id=gate_id,
+            job_id=job_id,
+            action=GateDecision.OVERRIDE_SOURCE_PROFILE,
+            decided_by=decided_by,
+            idempotency_key=idempotency_key,
+            expected_gate_checksum=expected_gate_checksum,
+            result_revision_id=revision_id,
+            reason=reason,
+            actor_type=actor_type,
+            request_checksum=request_checksum,
+        )
+        if result.status != "executed" or self._revision_repo is None or revision_id is None:
+            return result
+
+        now = utc_now_text()
+        self._revision_repo.save(
+            ArtifactRevisionRecord(
+                revision_id=revision_id,
+                job_id=job_id,
+                stage_index=gate.stage_index,
+                revision_kind="source_profile_override",
+                revision_status="accepted",
+                revision_order=revision_order,
+                evidence_checksum=request_checksum,
+                prior_revision_checksum=None,
+                artifact_refs_json=json.dumps(
+                    safe_artifact,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                prior_revision_id=None,
+                superseded_by_revision_id=None,
+                accepted_at_gate_id=gate_id,
+                created_at=now,
+                created_by=decided_by,
+                accepted_at=now,
+                accepted_by=decided_by,
+            )
+        )
+        return result
 
     def _execute_action(
         self,

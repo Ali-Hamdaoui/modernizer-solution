@@ -113,6 +113,10 @@ _ACTION_LABELS: dict[GateDecision, tuple[str, str]] = {
         "Reject",
         "Reject the current state — gate cannot continue",
     ),
+    GateDecision.OVERRIDE_SOURCE_PROFILE: (
+        "Override Source Profile",
+        "Override detected source profile with required operator comments",
+    ),
 }
 
 

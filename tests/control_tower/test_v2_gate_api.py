@@ -533,6 +533,115 @@ def test_v2_gate_action_rejects_unsafe_fields_and_unsupported_action(tmp_path: P
     assert unsupported_response.status_code == 422, unsupported_response.text
 
 
+def test_v2_gate_action_accepts_source_profile_override_contract(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    gate_id = _create_gate(conn, job_id, phase="analysis_review")
+    checksum = client.get(f"/v1/v2/jobs/{job_id}/gates/{gate_id}").json()["checksum"]
+
+    response = client.post(
+        f"/v1/v2/jobs/{job_id}/gates/{gate_id}/actions",
+        json={
+            "action": "override_source_profile",
+            "expected_gate_checksum": checksum,
+            "idempotency_key": "idem-source-profile-override",
+            "decided_by": "human-1",
+            "actor_type": "human",
+            "reason": "Detection confidence was low.",
+            "comments": "Project files show this is already Boot 3.5 on Java 17.",
+            "detection_artifact_ref": "analysis:1",
+            "detected_source_profile": "springboot-2.7-java11",
+            "requested_source_profile": "springboot-3.5-java17",
+            "target_profile": "springboot-4.0-java21",
+            "expected_detection_artifact_checksum": "sha256:gate",
+        },
+        headers=_mutation_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()["result"]
+    assert result["action"] == "override_source_profile"
+    assert result["status"] == "executed"
+    assert result["result_revision_id"]
+    forbidden = {
+        "sandbox_path",
+        "argv",
+        "env",
+        "raw_command",
+        "endpoint",
+        "deployment",
+        "env_ref",
+        "filesystem_target",
+        "user_supplied_file_path",
+    }
+    assert forbidden.isdisjoint(result)
+
+    row = conn.execute(
+        "SELECT artifact_refs_json FROM v2_artifact_revisions WHERE revision_id = ?",
+        (result["result_revision_id"],),
+    ).fetchone()
+    assert row is not None
+    artifact = json.loads(row["artifact_refs_json"])
+    assert artifact["requested_source_profile"] == "springboot-3.5-java17"
+    assert artifact["profile_validation"]["valid"] is True
+    assert forbidden.isdisjoint(artifact)
+
+
+def test_v2_gate_action_rejects_source_profile_override_bad_contract(
+    tmp_path: Path,
+) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    gate_id = _create_gate(conn, job_id, phase="analysis_review")
+    checksum = client.get(f"/v1/v2/jobs/{job_id}/gates/{gate_id}").json()["checksum"]
+
+    missing_comments = client.post(
+        f"/v1/v2/jobs/{job_id}/gates/{gate_id}/actions",
+        json={
+            "action": "override_source_profile",
+            "expected_gate_checksum": checksum,
+            "idempotency_key": "idem-source-profile-missing-comments",
+            "decided_by": "human-1",
+            "actor_type": "human",
+            "reason": "Detection confidence was low.",
+            "comments": "",
+            "detection_artifact_ref": "analysis:1",
+            "detected_source_profile": "springboot-2.7-java11",
+            "requested_source_profile": "springboot-3.5-java17",
+            "target_profile": "springboot-4.0-java21",
+            "expected_detection_artifact_checksum": "sha256:gate",
+        },
+        headers=_mutation_headers(),
+    )
+    assert missing_comments.status_code == 422, missing_comments.text
+
+    unsafe = client.post(
+        f"/v1/v2/jobs/{job_id}/gates/{gate_id}/actions",
+        json={
+            "action": "override_source_profile",
+            "expected_gate_checksum": checksum,
+            "idempotency_key": "idem-source-profile-unsafe",
+            "decided_by": "human-1",
+            "actor_type": "human",
+            "reason": "Detection confidence was low.",
+            "comments": "Valid operator explanation.",
+            "detection_artifact_ref": "analysis:1",
+            "detected_source_profile": "springboot-2.7-java11",
+            "requested_source_profile": "springboot-3.5-java17",
+            "target_profile": "springboot-4.0-java21",
+            "expected_detection_artifact_checksum": "sha256:gate",
+            "raw_command": "mvn test",
+            "filesystem_target": "C:/work/legacy",
+        },
+        headers=_mutation_headers(),
+    )
+    assert unsafe.status_code == 422, unsafe.text
+
+
 def test_v2_approval_route_retries_when_resume_launch_is_locked(tmp_path: Path) -> None:
     client, conn = _api_client(tmp_path)
     setup_id = _ready_setup(conn)

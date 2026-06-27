@@ -545,6 +545,12 @@ class GateActionRequest(BaseModel):
     proposal_checksum: str | None = None
     context_pack_checksum: str | None = None
     user_feedback: str = ""
+    detection_artifact_ref: str | None = None
+    detected_source_profile: MigrationProfileId | None = None
+    requested_source_profile: MigrationProfileId | None = None
+    target_profile: MigrationProfileId | None = None
+    expected_detection_artifact_checksum: str | None = None
+    comments: str = ""
 
 
 # F07 reviewer request — context only, no decision from client
@@ -1522,7 +1528,25 @@ def create_app(
 
         actor_type = payload.actor_type.value if hasattr(payload.actor_type, "value") else str(payload.actor_type)
         action_value = payload.action.value if hasattr(payload.action, "value") else str(payload.action)
-        if action_value == GateDecision.CONTINUE.value:
+        if action_value == GateDecision.OVERRIDE_SOURCE_PROFILE.value:
+            result = action_service.override_source_profile(
+                gate_id=gate_id,
+                job_id=job_id,
+                detection_artifact_ref=payload.detection_artifact_ref or "",
+                detected_source_profile=payload.detected_source_profile or "",
+                requested_source_profile=payload.requested_source_profile or "",
+                target_profile=payload.target_profile or "",
+                expected_gate_checksum=payload.expected_gate_checksum,
+                expected_detection_artifact_checksum=(
+                    payload.expected_detection_artifact_checksum or ""
+                ),
+                reason=payload.reason,
+                comments=payload.comments,
+                decided_by=payload.decided_by,
+                actor_type=actor_type,
+                idempotency_key=payload.idempotency_key,
+            )
+        elif action_value == GateDecision.CONTINUE.value:
             result = action_service.continue_from_gate(
                 gate_id=gate_id,
                 job_id=job_id,
@@ -1634,7 +1658,7 @@ def create_app(
                 "STALE_GATE_CHECKSUM",
                 result.reason or "Gate checksum is stale.",
             )
-        if result.status in {"actor_not_authoritative", "invalid_decision", "gate_not_open", "gate_not_found", "command_conflict", "approval_failed", "no_repair_service", "no_action_service"}:
+        if result.status not in {"executed", "idempotent"}:
             raise _error(
                 http_status_for_gate_status(result.status),
                 result.status.upper(),
