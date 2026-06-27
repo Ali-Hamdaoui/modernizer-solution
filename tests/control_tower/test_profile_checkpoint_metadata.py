@@ -65,6 +65,8 @@ def test_profile_checkpoint_fields_are_public_safe() -> None:
     assert "included_stages" in PROFILE_CHECKPOINT_FIELDS
     assert "excluded_stages" in PROFILE_CHECKPOINT_FIELDS
     assert "skipped_stages" in PROFILE_CHECKPOINT_FIELDS
+    assert "source_profile_detection_ref" in PROFILE_CHECKPOINT_FIELDS
+    assert "source_profile_detection_checksum" in PROFILE_CHECKPOINT_FIELDS
     assert "valid" in PROFILE_CHECKPOINT_FIELDS
     assert "reason" in PROFILE_CHECKPOINT_FIELDS
 
@@ -94,6 +96,10 @@ def test_default_metadata_is_safe_empty() -> None:
     assert m.included_stages == ()
     assert m.excluded_stages == ()
     assert m.skipped_stages == ()
+    assert m.source_profile_detection_ref == ""
+    assert m.source_profile_detection_checksum == ""
+    assert m.source_profile_detection_confidence is None
+    assert m.source_profile_detection_uncertainty_notes == ()
     assert m.valid is False
     assert m.reason == ""
     assert m.has_profiles is False
@@ -184,6 +190,26 @@ def test_to_dict_round_trip() -> None:
     assert restored.reason == original.reason
 
 
+def test_source_profile_detection_metadata_round_trip() -> None:
+    original = _valid_metadata().with_source_profile_detection(
+        type("Detection", (), {
+            "artifact_ref": "analysis:source-profile-detection",
+            "artifact_checksum": "sha256:detection",
+            "confidence": 0.9,
+            "uncertainty_notes": ("Spring Boot and Java signals agree.",),
+        })()
+    )
+
+    restored = CheckpointProfileMetadata.from_dict(original.to_dict())
+
+    assert restored.source_profile_detection_ref == "analysis:source-profile-detection"
+    assert restored.source_profile_detection_checksum == "sha256:detection"
+    assert restored.source_profile_detection_confidence == 0.9
+    assert restored.source_profile_detection_uncertainty_notes == (
+        "Spring Boot and Java signals agree.",
+    )
+
+
 def test_to_json_round_trip() -> None:
     original = _valid_metadata(reason="Profile pair is valid.")
     json_str = original.to_json()
@@ -242,6 +268,10 @@ def test_from_dict_handles_none_values() -> None:
     assert restored.included_stages == ()
     assert restored.excluded_stages == ()
     assert restored.skipped_stages == ()
+    assert restored.source_profile_detection_ref == ""
+    assert restored.source_profile_detection_checksum == ""
+    assert restored.source_profile_detection_confidence is None
+    assert restored.source_profile_detection_uncertainty_notes == ()
     assert restored.valid is False
     assert restored.reason == ""
 

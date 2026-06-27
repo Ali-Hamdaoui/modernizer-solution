@@ -1,8 +1,17 @@
+import hashlib
+import json
 from pathlib import Path
 import re
 import xml.etree.ElementTree as ET
 
 import yaml
+
+from migration_factory.control_tower.schemas.profile_model import (
+    SourceProfileDetectionArtifact,
+    SourceProfileEvidenceRef,
+    SourceProfileFacts,
+    SourceProfileSignal,
+)
 
 
 DEFAULT_TARGET_STACK = {
@@ -105,6 +114,163 @@ def scan_root_pom(file_path, target_stack=None):
         return result
 
 
+def build_source_profile_detection_for_root_pom(
+    file_path,
+    *,
+    job_id,
+    created_at,
+    target_profile=None,
+    checkpoint_id=None,
+    artifact_revision_id=None,
+    artifact_id=None,
+    artifact_ref="analysis:source-profile-detection",
+    evidence_ref="analysis:maven-root-pom",
+    target_stack=None,
+):
+    scan_result = scan_root_pom(file_path, target_stack=target_stack)
+    checksum = _file_sha256_checksum(Path(file_path))
+    return build_source_profile_detection(
+        scan_result,
+        job_id=job_id,
+        created_at=created_at,
+        target_profile=target_profile,
+        checkpoint_id=checkpoint_id,
+        artifact_revision_id=artifact_revision_id,
+        artifact_id=artifact_id,
+        artifact_ref=artifact_ref,
+        evidence_ref=evidence_ref,
+        evidence_checksum=checksum,
+    )
+
+
+def build_source_profile_detection(
+    scan_result,
+    *,
+    job_id,
+    created_at,
+    target_profile=None,
+    checkpoint_id=None,
+    artifact_revision_id=None,
+    artifact_id=None,
+    artifact_ref="analysis:source-profile-detection",
+    evidence_ref="analysis:maven-root-pom",
+    evidence_checksum=None,
+):
+    source_stack = scan_result.get("source_stack", {}) if isinstance(scan_result, dict) else {}
+    project_structure = (
+        scan_result.get("project_structure", {}) if isinstance(scan_result, dict) else {}
+    )
+    java_version = str(source_stack.get("java", "unknown"))
+    spring_boot_version = str(source_stack.get("spring_boot", "unknown"))
+    build_tool = str(source_stack.get("build_tool", "unknown"))
+    modules = tuple(str(module) for module in project_structure.get("modules", ()) or ())
+    module_count = int(project_structure.get("module_count", len(modules)) or 0)
+
+    detected_profile, confidence, uncertainty_notes = infer_source_profile_from_stack(
+        java_version=java_version,
+        spring_boot_version=spring_boot_version,
+    )
+    facts = SourceProfileFacts(
+        java_version=java_version,
+        spring_boot_version=spring_boot_version,
+        build_tool=build_tool,
+        module_count=module_count,
+        modules=modules,
+    )
+    checksum = evidence_checksum or _checksum_text({
+        "source_stack": source_stack,
+        "project_structure": project_structure,
+    })
+    evidence = SourceProfileEvidenceRef(
+        evidence_ref=evidence_ref,
+        evidence_type="maven_root_pom",
+        checksum=checksum,
+        description="Root Maven POM facts inspected by Analysis",
+    )
+    signals = _source_profile_signals(
+        evidence_ref=evidence_ref,
+        java_version=java_version,
+        spring_boot_version=spring_boot_version,
+        build_tool=build_tool,
+    )
+    artifact_payload = {
+        "artifact_id": artifact_id or f"{job_id}:source-profile-detection",
+        "artifact_kind": "source_profile_detection",
+        "artifact_ref": artifact_ref,
+        "job_id": job_id,
+        "stage_index": 1,
+        "checkpoint_id": checkpoint_id,
+        "artifact_revision_id": artifact_revision_id,
+        "detected_source_profile": detected_profile,
+        "target_profile": target_profile,
+        "confidence": confidence,
+        "uncertainty_notes": uncertainty_notes,
+        "evidence_refs": (evidence,),
+        "evidence_checksums": (checksum,),
+        "profile_signals": signals,
+        "profile_facts": facts,
+        "created_at": created_at,
+        "produced_by": "analysis",
+    }
+    checksum_payload = {
+        key: (
+            value.model_dump(mode="json")
+            if hasattr(value, "model_dump")
+            else [item.model_dump(mode="json") if hasattr(item, "model_dump") else item for item in value]
+            if isinstance(value, tuple)
+            else value
+        )
+        for key, value in artifact_payload.items()
+    }
+    artifact_checksum = _checksum_text(checksum_payload)
+    return SourceProfileDetectionArtifact(
+        artifact_checksum=artifact_checksum,
+        **artifact_payload,
+    )
+
+
+def infer_source_profile_from_stack(*, java_version, spring_boot_version):
+    java_major = _major_version(java_version)
+    boot_major = _major_version(spring_boot_version)
+
+    notes = []
+    if boot_major == 2:
+        confidence = 0.9 if java_major == 11 else 0.7
+        if java_major not in (None, 11):
+            notes.append("Spring Boot 2 detected with a Java version outside the canonical Java 11 profile.")
+        return "springboot-2.7-java11", confidence, tuple(notes)
+
+    if boot_major == 3:
+        if java_major is None:
+            return (
+                "springboot-3.5-java17",
+                0.65,
+                ("Spring Boot 3 detected but Java version was not resolved.",),
+            )
+        if java_major >= 21:
+            return "springboot-3.5-java21", 0.9, tuple(notes)
+        if java_major >= 17:
+            return "springboot-3.5-java17", 0.9, tuple(notes)
+        return (
+            "springboot-3.5-java17",
+            0.6,
+            ("Spring Boot 3 detected with Java below the expected Java 17 baseline.",),
+        )
+
+    if boot_major == 4:
+        return (
+            "springboot-3.5-java21",
+            0.4,
+            ("Spring Boot 4 was detected, but it is not selectable as a source profile yet.",),
+        )
+
+    return (
+        "springboot-2.7-java11",
+        0.2,
+        ("Spring Boot version was not resolved; default source profile is uncertain.",),
+    )
+
+
 def _target_warnings(target, source_java, source_boot):
     warnings = []
     target_boot = str(target.get("spring_boot", ""))
@@ -127,6 +293,52 @@ def _target_warnings(target, source_java, source_boot):
     if str(source_boot).startswith("2.") and target_boot.startswith("4."):
         warnings.append("Direct Spring Boot 2.x to 4.x migration is sandbox-only and high risk.")
     return warnings
+
+
+def _source_profile_signals(*, evidence_ref, java_version, spring_boot_version, build_tool):
+    return (
+        SourceProfileSignal(
+            signal_name="spring_boot_version",
+            value=spring_boot_version,
+            evidence_ref=evidence_ref,
+            confidence_weight=0.55 if spring_boot_version != "unknown" else 0.1,
+        ),
+        SourceProfileSignal(
+            signal_name="java_version",
+            value=java_version,
+            evidence_ref=evidence_ref,
+            confidence_weight=0.35 if java_version != "unknown" else 0.1,
+        ),
+        SourceProfileSignal(
+            signal_name="build_tool",
+            value=build_tool,
+            evidence_ref=evidence_ref,
+            confidence_weight=0.1 if build_tool != "unknown" else 0.0,
+        ),
+    )
+
+
+def _file_sha256_checksum(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _checksum_text(value):
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return f"sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
+
+
+def _major_version(value):
+    text = str(value or "").strip()
+    if text.startswith("1."):
+        text = text[2:]
+    match = re.search(r"\d+", text)
+    if not match:
+        return None
+    return int(match.group(0))
 
 
 def _maven_properties(root, ns):

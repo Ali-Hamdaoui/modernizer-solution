@@ -36,6 +36,10 @@ PROFILE_CHECKPOINT_FIELDS: frozenset[str] = frozenset({
     "skipped_stages",
     "valid",
     "reason",
+    "source_profile_detection_ref",
+    "source_profile_detection_checksum",
+    "source_profile_detection_confidence",
+    "source_profile_detection_uncertainty_notes",
 })
 
 
@@ -65,6 +69,10 @@ class CheckpointProfileMetadata(StrictModel):
     skipped_stages: tuple[int, ...] = Field(default_factory=tuple)
     valid: bool = False
     reason: str = ""
+    source_profile_detection_ref: str = ""
+    source_profile_detection_checksum: str = ""
+    source_profile_detection_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    source_profile_detection_uncertainty_notes: tuple[str, ...] = Field(default_factory=tuple)
 
     # ── Serialization ───────────────────────────────────────────────
 
@@ -80,6 +88,12 @@ class CheckpointProfileMetadata(StrictModel):
             "skipped_stages": list(self.skipped_stages),
             "valid": self.valid,
             "reason": self.reason,
+            "source_profile_detection_ref": self.source_profile_detection_ref,
+            "source_profile_detection_checksum": self.source_profile_detection_checksum,
+            "source_profile_detection_confidence": self.source_profile_detection_confidence,
+            "source_profile_detection_uncertainty_notes": list(
+                self.source_profile_detection_uncertainty_notes
+            ),
         }
 
     def to_json(self) -> str:
@@ -104,6 +118,10 @@ class CheckpointProfileMetadata(StrictModel):
         skp = data.get("skipped_stages")
         v = data.get("valid")
         r = data.get("reason")
+        detection_ref = data.get("source_profile_detection_ref")
+        detection_checksum = data.get("source_profile_detection_checksum")
+        detection_confidence = data.get("source_profile_detection_confidence")
+        detection_notes = data.get("source_profile_detection_uncertainty_notes")
 
         return cls(
             source_profile=str(sp) if sp is not None else "",
@@ -121,6 +139,22 @@ class CheckpointProfileMetadata(StrictModel):
             ),
             valid=bool(v) if v is not None else False,
             reason=str(r) if r is not None else "",
+            source_profile_detection_ref=(
+                str(detection_ref) if detection_ref is not None else ""
+            ),
+            source_profile_detection_checksum=(
+                str(detection_checksum) if detection_checksum is not None else ""
+            ),
+            source_profile_detection_confidence=(
+                float(detection_confidence)
+                if detection_confidence is not None
+                else None
+            ),
+            source_profile_detection_uncertainty_notes=(
+                tuple(str(note) for note in detection_notes)
+                if detection_notes is not None
+                else ()
+            ),
         )
 
     @classmethod
@@ -147,6 +181,21 @@ class CheckpointProfileMetadata(StrictModel):
             valid=getattr(route, "valid", False),
             reason=getattr(route, "reason", ""),
         )
+
+    def with_source_profile_detection(
+        self,
+        detection: Any,
+    ) -> "CheckpointProfileMetadata":
+        """Attach safe source-profile detection metadata."""
+
+        return self.model_copy(update={
+            "source_profile_detection_ref": getattr(detection, "artifact_ref", ""),
+            "source_profile_detection_checksum": getattr(detection, "artifact_checksum", ""),
+            "source_profile_detection_confidence": getattr(detection, "confidence", None),
+            "source_profile_detection_uncertainty_notes": tuple(
+                getattr(detection, "uncertainty_notes", ())
+            ),
+        })
 
     # ── Derived properties ──────────────────────────────────────────
 
