@@ -807,3 +807,299 @@ class TestV2JobPolicyPersistence:
         data = get_resp.json()
         assert data["stage_continuation_policy"] == "manual"
         assert data["run_configuration_id"]
+
+
+# ── F5: Reviewed repair approval endpoint tests ───────────────────────
+
+
+def _create_repair_review_gate(conn: sqlite3.Connection, job_id: str) -> str:
+    from migration_factory.control_tower.domain.checksums import sha256_canonical_json
+
+    binding = {
+        "failure_evidence_checksum": "sha256:ev",
+        "context_pack_checksum": "sha256:cp",
+        "primary_output_checksum": "sha256:po",
+        "reviewer_output_checksum": "sha256:ro",
+        "final_reviewed_diff_checksum": "sha256:rd",
+        "policy_validation_checksum": "sha256:pv",
+        "base_repo_state_checksum": "sha256:rs",
+        "final_artifact_checksum": "sha256:fa",
+    }
+    source_checksum = sha256_canonical_json(binding)
+    with SqliteUnitOfWork(conn) as uow:
+        gate_service = V2PhaseGateService(uow.phase_gates)
+        result = gate_service.create_gate(
+            CreateGateRequest(
+                job_id=job_id,
+                gate_phase="repair_review",
+                stage_index=3,
+                source_artifact_checksum=source_checksum,
+                source_artifact_refs=tuple(
+                    f"{key}:{value}" for key, value in binding.items()
+                ),
+            )
+        )
+    assert result.status == "created"
+    return result.gate_id
+
+
+class TestReviewedRepairApprovalEndpoint:
+    """F5 TASK 1: Reviewed repair approval endpoint API tests."""
+
+    def _seed_repair_proposal(self, conn: sqlite3.Connection, proposal_id: str) -> None:
+        from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
+            SqliteV2RepairRepository,
+            V2RepairProposalRecord,
+        )
+        from migration_factory.control_tower.domain.checksums import utc_now_text
+        repo = SqliteV2RepairRepository(conn)
+        repo.save_proposal(
+            V2RepairProposalRecord(
+                proposal_id=proposal_id,
+                command_id="cmd-f5",
+                failure_summary="Build failed",
+                hypothesis="Missing dependency",
+                patch_summary="Add H2 runtime",
+                affected_paths_json=json.dumps(["pom.xml"]),
+                status="draft",
+                approval_checksum=None,
+                created_at=utc_now_text(),
+                proposal_checksum="sha256:prop",
+                source_proposal_id=None,
+                revision_of=None,
+                revision_number=None,
+                context_pack_checksum="sha256:cp",
+                allowed_scope=None,
+            )
+        )
+
+    def _seed_reviewer_critique(
+        self, conn: sqlite3.Connection, proposal_id: str, decision: str = "accept"
+    ) -> None:
+        from migration_factory.control_tower.infrastructure.sqlite.v2_reviewer_repository import (
+            SqliteV2ReviewerRepository,
+            V2ReviewerCritiqueRecord,
+        )
+        from migration_factory.control_tower.domain.checksums import utc_now_text
+        repo = SqliteV2ReviewerRepository(conn)
+        repo.save_critique(
+            V2ReviewerCritiqueRecord(
+                critique_id=f"critique-{proposal_id}",
+                proposal_id=proposal_id,
+                proposal_type="repair",
+                proposal_checksum="sha256:prop",
+                context_pack_checksum="sha256:cp",
+                decision=decision,
+                reasoning="Looks correct",
+                missing_evidence_json="[]",
+                unsafe_assumptions_json="[]",
+                model_invocation_id=None,
+                created_at=utc_now_text(),
+            )
+        )
+
+    def test_approve_reviewed_repair_succeeds_with_checksums_only(self, tmp_path: Path) -> None:
+        client, conn = _api_client(tmp_path)
+        setup_id = _ready_setup(conn)
+        job_id = _create_job(client, setup_id)
+        seed_job(conn, job_id=job_id)
+        gate_id = _create_repair_review_gate(conn, job_id)
+        self._seed_repair_proposal(conn, gate_id)
+        self._seed_reviewer_critique(conn, gate_id, decision="accept")
+
+        gate_detail = client.get(f"/v1/v2/jobs/{job_id}/gates/{gate_id}").json()
+        checksum = gate_detail["checksum"]
+
+        payload = {
+            "expected_gate_checksum": checksum,
+            "proposal_checksum": "sha256:prop",
+            "context_pack_checksum": "sha256:cp",
+            "reviewer_output_checksum": "sha256:ro",
+            "final_reviewed_diff_checksum": "sha256:rd",
+            "policy_validation_checksum": "sha256:pv",
+            "base_repo_state_checksum": "sha256:rs",
+            "decided_by": "human-1",
+            "comments": "Looks good",
+        }
+        response = client.post(
+            f"/v1/v2/jobs/{job_id}/gates/{gate_id}/approve-reviewed-repair",
+            json=payload,
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["result"]["status"] in ("executed", "idempotent")
+        assert data["result"]["job_id"] == job_id
+
+    def test_approve_reviewed_repair_rejects_extra_forbidden_fields(self, tmp_path: Path) -> None:
+        client, conn = _api_client(tmp_path)
+        setup_id = _ready_setup(conn)
+        job_id = _create_job(client, setup_id)
+        seed_job(conn, job_id=job_id)
+        gate_id = _create_repair_review_gate(conn, job_id)
+        self._seed_repair_proposal(conn, gate_id)
+
+        gate_detail = client.get(f"/v1/v2/jobs/{job_id}/gates/{gate_id}").json()
+        checksum = gate_detail["checksum"]
+
+        payload = {
+            "expected_gate_checksum": checksum,
+            "proposal_checksum": "sha256:prop",
+            "context_pack_checksum": "sha256:cp",
+            "reviewer_output_checksum": "sha256:ro",
+            "final_reviewed_diff_checksum": "sha256:rd",
+            "policy_validation_checksum": "sha256:pv",
+            "base_repo_state_checksum": "sha256:rs",
+            "decided_by": "human-1",
+            "raw_diff": "evil diff here",
+        }
+        response = client.post(
+            f"/v1/v2/jobs/{job_id}/gates/{gate_id}/approve-reviewed-repair",
+            json=payload,
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 422, response.text
+
+    def test_approve_reviewed_repair_rejects_missing_reviewer_checksum(self, tmp_path: Path) -> None:
+        client, conn = _api_client(tmp_path)
+        setup_id = _ready_setup(conn)
+        job_id = _create_job(client, setup_id)
+        seed_job(conn, job_id=job_id)
+        gate_id = _create_repair_review_gate(conn, job_id)
+        self._seed_repair_proposal(conn, gate_id)
+
+        payload = {
+            "expected_gate_checksum": "any-checksum",
+            "proposal_checksum": "sha256:prop",
+            "context_pack_checksum": "sha256:cp",
+            "reviewer_output_checksum": "",
+            "final_reviewed_diff_checksum": "sha256:rd",
+            "policy_validation_checksum": "sha256:pv",
+            "base_repo_state_checksum": "sha256:rs",
+            "decided_by": "human-1",
+        }
+        response = client.post(
+            f"/v1/v2/jobs/{job_id}/gates/{gate_id}/approve-reviewed-repair",
+            json=payload,
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 422, response.text
+
+    def test_approve_reviewed_repair_rejects_missing_policy_checksum(self, tmp_path: Path) -> None:
+        client, conn = _api_client(tmp_path)
+        setup_id = _ready_setup(conn)
+        job_id = _create_job(client, setup_id)
+        seed_job(conn, job_id=job_id)
+        gate_id = _create_repair_review_gate(conn, job_id)
+        self._seed_repair_proposal(conn, gate_id)
+
+        payload = {
+            "expected_gate_checksum": "any-checksum",
+            "proposal_checksum": "sha256:prop",
+            "context_pack_checksum": "sha256:cp",
+            "reviewer_output_checksum": "sha256:ro",
+            "final_reviewed_diff_checksum": "sha256:rd",
+            "policy_validation_checksum": "",
+            "base_repo_state_checksum": "sha256:rs",
+            "decided_by": "human-1",
+        }
+        response = client.post(
+            f"/v1/v2/jobs/{job_id}/gates/{gate_id}/approve-reviewed-repair",
+            json=payload,
+            headers=_mutation_headers(),
+        )
+        assert response.status_code in (422, 409), response.text
+
+    def test_approve_reviewed_repair_rejects_wrong_gate_phase(self, tmp_path: Path) -> None:
+        client, conn = _api_client(tmp_path)
+        setup_id = _ready_setup(conn)
+        job_id = _create_job(client, setup_id)
+        seed_job(conn, job_id=job_id)
+        gate_id = _create_gate(conn, job_id, phase="approval_review")
+
+        payload = {
+            "expected_gate_checksum": "any-checksum",
+            "proposal_checksum": "sha256:prop",
+            "context_pack_checksum": "sha256:cp",
+            "reviewer_output_checksum": "sha256:ro",
+            "final_reviewed_diff_checksum": "sha256:rd",
+            "policy_validation_checksum": "sha256:pv",
+            "base_repo_state_checksum": "sha256:rs",
+            "decided_by": "human-1",
+        }
+        response = client.post(
+            f"/v1/v2/jobs/{job_id}/gates/{gate_id}/approve-reviewed-repair",
+            json=payload,
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 422, response.text
+
+    def test_approve_reviewed_repair_rejects_non_open_gate(self, tmp_path: Path) -> None:
+        client, conn = _api_client(tmp_path)
+        setup_id = _ready_setup(conn)
+        job_id = _create_job(client, setup_id)
+        seed_job(conn, job_id=job_id)
+        gate_id = _create_repair_review_gate(conn, job_id)
+        self._seed_repair_proposal(conn, gate_id)
+        self._seed_reviewer_critique(conn, gate_id, decision="accept")
+
+        gate_detail = client.get(f"/v1/v2/jobs/{job_id}/gates/{gate_id}").json()
+        checksum = gate_detail["checksum"]
+
+        payload = {
+            "expected_gate_checksum": checksum,
+            "proposal_checksum": "sha256:prop",
+            "context_pack_checksum": "sha256:cp",
+            "reviewer_output_checksum": "sha256:ro",
+            "final_reviewed_diff_checksum": "sha256:rd",
+            "policy_validation_checksum": "sha256:pv",
+            "base_repo_state_checksum": "sha256:rs",
+            "decided_by": "human-1",
+        }
+        # First approval — should succeed
+        response1 = client.post(
+            f"/v1/v2/jobs/{job_id}/gates/{gate_id}/approve-reviewed-repair",
+            json=payload,
+            headers=_mutation_headers(),
+        )
+        assert response1.status_code == 200, response1.text
+
+        # Second approval — gate already resolved
+        response2 = client.post(
+            f"/v1/v2/jobs/{job_id}/gates/{gate_id}/approve-reviewed-repair",
+            json=payload,
+            headers=_mutation_headers(),
+        )
+        assert response2.status_code == 409, response2.text
+
+    def test_approve_reviewed_repair_response_does_not_leak_secrets(self, tmp_path: Path) -> None:
+        client, conn = _api_client(tmp_path)
+        setup_id = _ready_setup(conn)
+        job_id = _create_job(client, setup_id)
+        seed_job(conn, job_id=job_id)
+        gate_id = _create_repair_review_gate(conn, job_id)
+        self._seed_repair_proposal(conn, gate_id)
+        self._seed_reviewer_critique(conn, gate_id, decision="accept")
+
+        gate_detail = client.get(f"/v1/v2/jobs/{job_id}/gates/{gate_id}").json()
+        checksum = gate_detail["checksum"]
+
+        payload = {
+            "expected_gate_checksum": checksum,
+            "proposal_checksum": "sha256:prop",
+            "context_pack_checksum": "sha256:cp",
+            "reviewer_output_checksum": "sha256:ro",
+            "final_reviewed_diff_checksum": "sha256:rd",
+            "policy_validation_checksum": "sha256:pv",
+            "base_repo_state_checksum": "sha256:rs",
+            "decided_by": "human-1",
+        }
+        response = client.post(
+            f"/v1/v2/jobs/{job_id}/gates/{gate_id}/approve-reviewed-repair",
+            json=payload,
+            headers=_mutation_headers(),
+        )
+        data = response.json()
+        result_json = json.dumps(data)
+        for forbidden in ("sandbox_path", "argv", "env", "raw_command", "endpoint", "deployment", "env_ref"):
+            assert forbidden not in result_json.lower(), f"forbidden key {forbidden!r} leaked"

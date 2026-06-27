@@ -398,6 +398,119 @@ class V2RepairGateService:
             expected_gate_checksum=expected_gate_checksum,
         )
 
+    # ── F5: Regenerate reviewed repair chain on revision ───────────────
+
+    def regenerate_reviewed_repair_chain_on_revision(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        user_comments: str = "",
+        prior_evidence_checksum: str,
+        prior_context_checksum: str,
+        prior_primary_output_checksum: str,
+        prior_reviewer_output_checksum: str,
+        prior_final_diff_checksum: str,
+        prior_policy_validation_checksum: str,
+        prior_base_repo_state_checksum: str,
+        prior_apply_rerun_info: dict[str, Any] | None = None,
+        sandbox_path: str,
+        run_dir: str | Path,
+        legacy_path: str,
+        deterministic_rule_id: str,
+        source_profile: str = "",
+        target_profile: str = "",
+        previous_repair_review_checksums: tuple[str, ...] = (),
+        cycle_number: int = 1,
+        model_client: Any | None = None,
+        h2_required: bool = False,
+    ) -> RepairGateCreationResult:
+        """Regenerate a full Azure repair review chain after user revision request.
+
+        Builds a new RepairContextPack including prior cycle context and user
+        comments, calls produce_repair_review_chain() with Azure
+        proposer/reviewer routing, policy-validates the new final diff, and
+        opens a new repair_review gate if accepted.
+
+        No old artifact mutation. No patch apply on revision.
+        """
+        from pathlib import Path as _Path
+        from migration_factory.repair_loop.failure_evidence import (
+            FailureSource,
+            build_failure_evidence,
+        )
+        from migration_factory.repair_loop.repair_context import (
+            build_repair_context_pack,
+        )
+        from migration_factory.orchestrator.repair_review_chain import (
+            produce_repair_review_chain,
+        )
+
+        evidence = build_failure_evidence(
+            failure_source=FailureSource.BUILD,
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            failure_summary=f"Repair revision requested by user: {user_comments[:200] if user_comments else 'no comments'}",
+            source_profile=source_profile,
+            target_profile=target_profile,
+            accepted_artifact_checksums=previous_repair_review_checksums,
+        )
+
+        prior_apply = prior_apply_rerun_info or {}
+        prior_reviewer_notes: tuple[str, ...] = ()
+        if prior_apply.get("reviewer_notes"):
+            prior_reviewer_notes = tuple(str(n) for n in prior_apply["reviewer_notes"] if n)
+
+        context_pack = build_repair_context_pack(
+            failure_evidence=evidence,
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            source_profile=source_profile or evidence.source_profile,
+            target_profile=target_profile or evidence.target_profile,
+            prior_proposal_checksums=previous_repair_review_checksums,
+            prior_reviewer_notes=prior_reviewer_notes,
+            user_comments=user_comments,
+            cycle_number=cycle_number,
+            max_cycles=self._max_repair_attempts,
+        )
+
+        output_dir = _Path(run_dir) / "repair_chain"
+        try:
+            chain_result = produce_repair_review_chain(
+                failure_evidence=evidence,
+                context_pack=context_pack,
+                output_dir=output_dir,
+                source_profile=source_profile or evidence.source_profile,
+                target_profile=target_profile or evidence.target_profile,
+                model_client=model_client,
+            )
+        except Exception:
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="skipped",
+                reason="reviewer did not accept repair chain on revision",
+            )
+
+        return self.create_repair_gate_from_reviewed_chain(
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            review_chain_result=chain_result,
+            failure_evidence_checksum=evidence.content_checksum,
+            context_pack_checksum=context_pack.context_pack_checksum,
+            base_repo_state_checksum=context_pack.base_repo_state_checksum,
+            sandbox_path=sandbox_path,
+            run_dir=str(run_dir),
+            legacy_path=legacy_path,
+            deterministic_rule_id=deterministic_rule_id,
+            h2_required=h2_required,
+        )
+
     # ── Job 105: approve_repair (delegate to gate action service) ──
 
     def approve_repair(
@@ -640,6 +753,145 @@ class V2RepairGateService:
             status="attempts_exhausted",
             remaining_attempts=remaining,
             reason=f"All {self._max_repair_attempts} repair attempt(s) exhausted for stage {stage_index}",
+        )
+
+    # ── F5: Create next bounded repair cycle after rerun failure ──────
+
+    def create_next_repair_cycle_from_rerun_failure(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        prior_evidence_checksum: str,
+        prior_context_checksum: str,
+        prior_primary_output_checksum: str,
+        prior_reviewer_output_checksum: str,
+        prior_final_diff_checksum: str,
+        prior_policy_validation_checksum: str,
+        prior_base_repo_state_checksum: str,
+        apply_result: dict[str, Any] | None = None,
+        rerun_result: dict[str, Any] | None = None,
+        rollback_result: dict[str, Any] | None = None,
+        user_comments: str = "",
+        sandbox_path: str,
+        run_dir: str | Path,
+        legacy_path: str,
+        deterministic_rule_id: str,
+        source_profile: str = "",
+        target_profile: str = "",
+        previous_repair_review_checksums: tuple[str, ...] = (),
+        max_cycles: int | None = None,
+        model_client: Any | None = None,
+        h2_required: bool = False,
+    ) -> RepairGateCreationResult:
+        """Create the next bounded repair cycle after rerun validation failure.
+
+        On rerun failure, if attempts remain:
+        1. Build new FailureEvidence from rerun failure data
+        2. Build new RepairContextPack including full prior cycle context
+        3. Call produce_repair_review_chain with Azure proposer/reviewer
+        4. Policy-validate the new final diff
+        5. Open next repair_review gate with chain info
+
+        If attempts exhausted, create terminal failure artifact.
+        """
+        from pathlib import Path as _Path
+        from migration_factory.repair_loop.failure_evidence import (
+            FailureSource,
+            build_failure_evidence,
+        )
+        from migration_factory.repair_loop.repair_context import (
+            build_repair_context_pack,
+        )
+        from migration_factory.orchestrator.repair_review_chain import (
+            produce_repair_review_chain,
+        )
+        from migration_factory.control_tower.domain.checksums import (
+            sha256_canonical_json,
+        )
+
+        effective_max = max_cycles or self._max_repair_attempts
+        current_cycle = len(previous_repair_review_checksums) + 1
+        remaining = effective_max - current_cycle
+        if remaining < 1:
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="attempts_exhausted",
+                reason=f"All {effective_max} repair attempt(s) exhausted",
+            )
+
+        rerun_payload = dict(rerun_result or {})
+        rollback_payload = dict(rollback_result or {})
+        apply_payload = dict(apply_result or {})
+
+        failure_summary = f"Rerun validation failed (cycle {current_cycle}/{effective_max})"
+        if rerun_payload.get("errors"):
+            failure_summary += ": " + "; ".join(str(e) for e in rerun_payload["errors"])
+
+        evidence = build_failure_evidence(
+            failure_source=FailureSource.VALIDATION,
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            failure_summary=failure_summary,
+            source_profile=source_profile,
+            target_profile=target_profile,
+            accepted_artifact_checksums=previous_repair_review_checksums,
+        )
+
+        prior_reviewer_notes: tuple[str, ...] = ()
+        if apply_payload.get("reviewer_notes"):
+            prior_reviewer_notes = tuple(str(n) for n in apply_payload["reviewer_notes"] if n)
+
+        context_pack = build_repair_context_pack(
+            failure_evidence=evidence,
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            source_profile=source_profile or evidence.source_profile,
+            target_profile=target_profile or evidence.target_profile,
+            prior_proposal_checksums=previous_repair_review_checksums,
+            prior_reviewer_notes=prior_reviewer_notes,
+            user_comments=user_comments,
+            cycle_number=current_cycle,
+            max_cycles=effective_max,
+        )
+
+        output_dir = _Path(run_dir) / "repair_chain"
+        try:
+            chain_result = produce_repair_review_chain(
+                failure_evidence=evidence,
+                context_pack=context_pack,
+                output_dir=output_dir,
+                source_profile=source_profile or evidence.source_profile,
+                target_profile=target_profile or evidence.target_profile,
+                model_client=model_client,
+            )
+        except Exception:
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="attempts_exhausted",
+                reason="Azure repair chain production failed on next cycle",
+            )
+
+        return self.create_repair_gate_from_reviewed_chain(
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            review_chain_result=chain_result,
+            failure_evidence_checksum=evidence.content_checksum,
+            context_pack_checksum=context_pack.context_pack_checksum,
+            base_repo_state_checksum=context_pack.base_repo_state_checksum,
+            sandbox_path=sandbox_path,
+            run_dir=str(run_dir),
+            legacy_path=legacy_path,
+            deterministic_rule_id=deterministic_rule_id,
+            h2_required=h2_required,
         )
 
     # ── Job 108: Attempt limits ──────────────────────────────────────

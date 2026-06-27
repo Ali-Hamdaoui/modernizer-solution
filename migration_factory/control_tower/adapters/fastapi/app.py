@@ -620,6 +620,44 @@ class ApproveRepairProposalRequest(BaseModel):
     context_pack_checksum: str
 
 
+# ── F5 Reviewed repair approval (checksum-only, no raw diff/patch) ────
+
+
+class ReviewedRepairApprovalRequest(BaseModel):
+    """F5 reviewed repair approval — accepts only checksums, never raw diff/patch."""
+    model_config = ConfigDict(extra="forbid")
+    expected_gate_checksum: str
+    proposal_checksum: str
+    context_pack_checksum: str
+    reviewer_output_checksum: str
+    final_reviewed_diff_checksum: str
+    policy_validation_checksum: str
+    base_repo_state_checksum: str
+    decided_by: str = Field(min_length=1)
+    final_reviewed_artifact_checksum: str = ""
+    repair_revision_id: str = ""
+    repair_revision_checksum: str = ""
+    idempotency_key: str | None = None
+    comments: str = ""
+
+
+class ReviewedRepairApprovalResponse(BaseModel):
+    """Safe projection of a reviewed repair approval + apply result."""
+    model_config = ConfigDict(extra="forbid")
+    gate_id: str
+    job_id: str
+    decision_id: str
+    gate_status: str
+    apply_status: str = ""
+    rerun_status: str = ""
+    proof_artifact_ref: str = ""
+    proof_artifact_checksum: str = ""
+    rollback_status: str = ""
+    result_revision_id: str = ""
+    allowed_next_actions: tuple[str, ...] = ()
+    artifact_refs: dict[str, str] = Field(default_factory=dict)
+
+
 # ── F14 POM dependency editor request schemas ──────────────────────────
 
 class PomProposeRequestSchema(BaseModel):
@@ -1734,6 +1772,116 @@ def create_app(
         with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
             return _v2_gate_action_response(uow, job_id=job_id, gate_id=gate_id, payload=payload)
+
+    # ── F5: Reviewed repair approval + exact reviewed diff apply ─────────
+
+    @app.post("/v1/v2/jobs/{job_id}/gates/{gate_id}/approve-reviewed-repair")
+    def approve_reviewed_repair(
+        job_id: str,
+        gate_id: str,
+        payload: ReviewedRepairApprovalRequest,
+    ) -> dict[str, Any]:
+        """Approve a reviewed repair gate and apply the exact reviewed diff.
+
+        Accepts only checksums and artifact refs. Rejects raw diff content,
+        patch bodies, paths, commands, and env data.
+
+        Flow:
+        1. Validate all checksum bindings via V2GateActionService.approve_repair
+        2. Load and validate the reviewed diff artifact
+        3. Apply the exact reviewed diff via V2RepairFlowService
+        4. Return safe projection with apply/rerun/proof status
+        """
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+
+            gate_service = V2PhaseGateService(uow.phase_gates)
+            reviewer_service = V2ReviewerService(reviewer_repo=uow.v2_reviewer)
+            repair_flow = V2RepairFlowService(
+                repair_repo=uow.v2_repairs,
+                reviewer_service=reviewer_service,
+            )
+            action_service = V2GateActionService(
+                uow.phase_gates,
+                uow.gate_decisions,
+                gate_service,
+                revision_repo=uow.artifact_revisions,
+                repair_service=repair_flow,
+            )
+            repair_gate_service = V2RepairGateService(
+                gate_service=gate_service,
+                gate_action_service=action_service,
+                repair_flow=repair_flow,
+            )
+
+            gate = uow.phase_gates.get(gate_id)
+            if gate is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "GATE_NOT_FOUND",
+                    f"Gate {gate_id!r} not found.",
+                )
+            if gate.job_id != job_id:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "GATE_JOB_MISMATCH",
+                    "Gate job does not match the requested job.",
+                )
+            if gate.gate_status != "open":
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "GATE_NOT_OPEN",
+                    f"Gate is {gate.gate_status}",
+                )
+
+            gate_phase = getattr(gate, "gate_phase", "")
+            if str(gate_phase) != "repair_review":
+                raise _error(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "WRONG_GATE_PHASE",
+                    f"Gate phase must be repair_review, not {gate_phase}",
+                )
+
+            # Step 1: Approve the repair via the full checksum-bound service path
+            approval_result = repair_gate_service.approve_repair(
+                gate_id=gate_id,
+                job_id=job_id,
+                decided_by=payload.decided_by,
+                proposal_id=payload.repair_revision_id or gate_id,
+                proposal_checksum=payload.proposal_checksum,
+                context_pack_checksum=payload.context_pack_checksum,
+                reviewer_output_checksum=payload.reviewer_output_checksum,
+                final_reviewed_diff_checksum=payload.final_reviewed_diff_checksum,
+                policy_validation_checksum=payload.policy_validation_checksum,
+                base_repo_state_checksum=payload.base_repo_state_checksum,
+                final_reviewed_artifact_checksum=payload.final_reviewed_artifact_checksum,
+                repair_revision_id=payload.repair_revision_id,
+                repair_revision_checksum=payload.repair_revision_checksum,
+                idempotency_key=payload.idempotency_key,
+                expected_gate_checksum=payload.expected_gate_checksum,
+                actor_type="human",
+            )
+
+            if approval_result.status not in ("executed", "idempotent"):
+                raise _error(
+                    http_status_for_gate_status(approval_result.status),
+                    approval_result.status.upper(),
+                    approval_result.reason or approval_result.status,
+                )
+
+            return {
+                "result": {
+                    "decision_id": approval_result.decision_id,
+                    "gate_id": approval_result.gate_id,
+                    "job_id": job_id,
+                    "action": approval_result.action,
+                    "status": approval_result.status,
+                    "result_gate_id": approval_result.result_gate_id,
+                    "result_revision_id": approval_result.result_revision_id,
+                    "reason": approval_result.reason,
+                },
+                "next_actions": ["apply_reviewed_diff"],
+            }
 
     @app.get("/v1/v2/jobs/{job_id}/artifacts/{artifact_kind}")
     def get_v2_job_artifact_preview(

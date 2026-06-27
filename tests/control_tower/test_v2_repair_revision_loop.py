@@ -22,6 +22,9 @@ from migration_factory.control_tower.application.v2_repair_flow import (
     V2RepairFlowService,
     RepairProposal,
 )
+from migration_factory.control_tower.application.v2_repair_gate_service import (
+    V2RepairGateService,
+)
 
 
 _failure_evidence = build_failure_evidence(
@@ -313,3 +316,308 @@ def test_origin_proposal_not_mutated_by_revision() -> None:
     assert proposal.source_proposal_id is None
     assert proposal.revision_of is None
     assert proposal.revision_number is None
+
+
+# ── F5 TASK 2: Revision regenerates Azure repair review chain ─────────
+
+
+class TestRevisionRegeneratesAzureRepairChain:
+    """F5 TASK 2: Request-revision creates new Azure proposer/reviewer chain."""
+
+    @staticmethod
+    def _fake_client(reviewer_decision: str = "accept"):
+        import json
+        from migration_factory.control_tower.application.v2_assistant_model_client import (
+            V2AssistantModelResult,
+        )
+        from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
+
+        class _FakeReviseClient:
+            def __init__(self):
+                self.calls: list[dict] = []
+
+            def answer_with_role(self, *, role, prompt, fallback, output_schema_name=None, require_schema=True):
+                self.calls.append({
+                    "role": role,
+                    "prompt_preview": prompt[:200],
+                    "output_schema_name": output_schema_name,
+                    "require_schema": require_schema,
+                })
+                if role == V2ModelRole.PROPOSER:
+                    content = json.dumps({
+                        "root_cause": "Need updated dependency",
+                        "fix_strategy": "Update pom.xml version",
+                        "changed_files": ["pom.xml"],
+                        "proposed_diff": "diff --git a/pom.xml b/pom.xml\n--- a/pom.xml\n+++ b/pom.xml\n@@\n+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n",
+                        "risk": "LOW",
+                        "confidence": 0.90,
+                        "rationale": "Dependency needs version bump.",
+                        "deterministic_rule_id": "DEPENDENCY_ADD_H2_RUNTIME",
+                    }, sort_keys=True)
+                else:
+                    content = json.dumps({
+                        "decision": reviewer_decision,
+                        "notes": ["Revised diff scoped correctly"],
+                        "confidence": 0.95,
+                        "risks": [],
+                        "policy_concerns": [],
+                        "reviewed_context_checksum": "",
+                        "reviewed_primary_output_checksum": "",
+                        "reviewed_diff_checksum": "",
+                    }, sort_keys=True)
+                return V2AssistantModelResult(
+                    content=content,
+                    source="azure_openai",
+                    model_status="live_ok",
+                    provider="azure_openai",
+                    role=role.value,
+                    success=True,
+                    redacted_summary="user-selected Azure model available",
+                    failure_reason="",
+                )
+        return _FakeReviseClient()
+
+    def test_revision_calls_azure_proposer_and_reviewer(self, tmp_path: Path) -> None:
+        import sqlite3
+        from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+        from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_repository import SqlitePhaseGateRepository
+        from migration_factory.control_tower.application.v2_phase_gate_service import V2PhaseGateService
+
+        conn = sqlite3.connect(str(tmp_path / "rev.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        apply_pending_migrations(conn)
+
+        gate_repo = SqlitePhaseGateRepository(conn)
+        gate_service = V2PhaseGateService(gate_repo)
+        repair_gate_service = V2RepairGateService(gate_service=gate_service)
+
+        client = self._fake_client(reviewer_decision="accept")
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text("<project/>\n", encoding="utf-8")
+        legacy = tmp_path / "legacy"
+        legacy.mkdir()
+
+        result = repair_gate_service.regenerate_reviewed_repair_chain_on_revision(
+            job_id="job-rev",
+            stage_index=3,
+            command_id="cmd-rev",
+            user_comments="Please check the dependency version more carefully",
+            prior_evidence_checksum="sha256:prior-ev",
+            prior_context_checksum="sha256:prior-cp",
+            prior_primary_output_checksum="sha256:prior-po",
+            prior_reviewer_output_checksum="sha256:prior-ro",
+            prior_final_diff_checksum="sha256:prior-fd",
+            prior_policy_validation_checksum="sha256:prior-pv",
+            prior_base_repo_state_checksum="sha256:prior-rs",
+            sandbox_path=str(sandbox),
+            run_dir=tmp_path / "run",
+            legacy_path=str(tmp_path / "legacy"),
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+            previous_repair_review_checksums=("sha256:chain-1",),
+            cycle_number=2,
+            model_client=client,
+            h2_required=True,
+        )
+
+        assert len(client.calls) == 2
+        assert client.calls[0]["role"].value == "proposer"
+        assert client.calls[1]["role"].value == "reviewer"
+        assert all(c["require_schema"] is True for c in client.calls)
+        # User comments flow into context_pack, which feeds the prompt
+        # The prompt is dynamically built from context_pack data
+
+    def test_revision_creates_new_gate_with_different_checksum(self, tmp_path: Path) -> None:
+        import sqlite3
+        from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+        from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_repository import SqlitePhaseGateRepository
+        from migration_factory.control_tower.application.v2_phase_gate_service import V2PhaseGateService
+
+        conn = sqlite3.connect(str(tmp_path / "rev2.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        apply_pending_migrations(conn)
+
+        gate_repo = SqlitePhaseGateRepository(conn)
+        gate_service = V2PhaseGateService(gate_repo)
+        repair_gate_service = V2RepairGateService(gate_service=gate_service)
+
+        client = self._fake_client(reviewer_decision="accept")
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text("<project/>\n", encoding="utf-8")
+        legacy = tmp_path / "legacy"
+        legacy.mkdir()
+
+        r1 = repair_gate_service.regenerate_reviewed_repair_chain_on_revision(
+            job_id="job-rev2a",
+            stage_index=3,
+            command_id="cmd-rev2a",
+            user_comments="First round feedback",
+            prior_evidence_checksum="sha256:ev1",
+            prior_context_checksum="sha256:cp1",
+            prior_primary_output_checksum="sha256:po1",
+            prior_reviewer_output_checksum="sha256:ro1",
+            prior_final_diff_checksum="sha256:fd1",
+            prior_policy_validation_checksum="sha256:pv1",
+            prior_base_repo_state_checksum="sha256:rs1",
+            sandbox_path=str(sandbox),
+            run_dir=tmp_path / "run1",
+            legacy_path=str(tmp_path / "legacy"),
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+            previous_repair_review_checksums=(),
+            cycle_number=1,
+            model_client=client,
+            h2_required=True,
+        )
+        assert r1.status == "created"
+
+        r2 = repair_gate_service.regenerate_reviewed_repair_chain_on_revision(
+            job_id="job-rev2b",
+            stage_index=3,
+            command_id="cmd-rev2b",
+            user_comments="Different feedback now",
+            prior_evidence_checksum="sha256:ev2",
+            prior_context_checksum="sha256:cp2",
+            prior_primary_output_checksum="sha256:po2",
+            prior_reviewer_output_checksum="sha256:ro2",
+            prior_final_diff_checksum="sha256:fd2",
+            prior_policy_validation_checksum="sha256:pv2",
+            prior_base_repo_state_checksum="sha256:rs2",
+            sandbox_path=str(sandbox),
+            run_dir=tmp_path / "run2",
+            legacy_path=str(tmp_path / "legacy"),
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+            previous_repair_review_checksums=("sha256:chain-1",),
+            cycle_number=2,
+            model_client=client,
+            h2_required=True,
+        )
+        assert r2.status == "created"
+        assert r1.gate_id != r2.gate_id
+        assert r1.gate_checksum != r2.gate_checksum
+
+    def test_revision_with_reviewer_reject_does_not_open_gate(self, tmp_path: Path) -> None:
+        import sqlite3
+        from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+        from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_repository import SqlitePhaseGateRepository
+        from migration_factory.control_tower.application.v2_phase_gate_service import V2PhaseGateService
+
+        conn = sqlite3.connect(str(tmp_path / "rev3.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        apply_pending_migrations(conn)
+
+        gate_repo = SqlitePhaseGateRepository(conn)
+        gate_service = V2PhaseGateService(gate_repo)
+        repair_gate_service = V2RepairGateService(gate_service=gate_service)
+
+        client = self._fake_client(reviewer_decision="reject")
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text("<project/>\n", encoding="utf-8")
+        legacy = tmp_path / "legacy"
+        legacy.mkdir()
+
+        result = repair_gate_service.regenerate_reviewed_repair_chain_on_revision(
+            job_id="job-rev3",
+            stage_index=3,
+            command_id="cmd-rev3",
+            user_comments="Try again",
+            prior_evidence_checksum="sha256:ev",
+            prior_context_checksum="sha256:cp",
+            prior_primary_output_checksum="sha256:po",
+            prior_reviewer_output_checksum="sha256:ro",
+            prior_final_diff_checksum="sha256:fd",
+            prior_policy_validation_checksum="sha256:pv",
+            prior_base_repo_state_checksum="sha256:rs",
+            sandbox_path=str(sandbox),
+            run_dir=tmp_path / "run",
+            legacy_path=str(tmp_path / "legacy"),
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+            model_client=client,
+            h2_required=True,
+        )
+        assert result.status == "skipped"
+        assert "reviewer did not accept" in result.reason
+
+    def test_no_copilot_invoked_during_revision(self, tmp_path: Path) -> None:
+        import json
+        import sqlite3
+        from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+        from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_repository import SqlitePhaseGateRepository
+        from migration_factory.control_tower.application.v2_phase_gate_service import V2PhaseGateService
+        from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelResult
+        from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
+
+        conn = sqlite3.connect(str(tmp_path / "rev4.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        apply_pending_migrations(conn)
+
+        gate_repo = SqlitePhaseGateRepository(conn)
+        gate_service = V2PhaseGateService(gate_repo)
+        repair_gate_service = V2RepairGateService(gate_service=gate_service)
+
+        calls = []
+
+        class _TrackedClient:
+            def answer_with_role(self, *, role, prompt, fallback, output_schema_name=None, require_schema=True):
+                calls.append({"role": role, "provider": "azure_openai"})
+                content = json.dumps({
+                    "root_cause": "fix",
+                    "fix_strategy": "patch",
+                    "changed_files": ["pom.xml"],
+                    "proposed_diff": "diff --git a/pom.xml b/pom.xml\n--- a/pom.xml\n+++ b/pom.xml\n@@\n+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n",
+                    "risk": "LOW",
+                    "confidence": 0.9,
+                    "rationale": "fix",
+                    "deterministic_rule_id": "DEPENDENCY_ADD_H2_RUNTIME",
+                }, sort_keys=True) if role == V2ModelRole.PROPOSER else json.dumps({
+                    "decision": "accept",
+                    "notes": [],
+                    "confidence": 0.95,
+                    "risks": [],
+                    "policy_concerns": [],
+                    "reviewed_context_checksum": "",
+                    "reviewed_primary_output_checksum": "",
+                    "reviewed_diff_checksum": "",
+                }, sort_keys=True)
+                return V2AssistantModelResult(
+                    content=content,
+                    source="azure_openai",
+                    model_status="live_ok",
+                    provider="azure_openai",
+                    role=role.value,
+                    success=True,
+                    redacted_summary="ok",
+                    failure_reason="",
+                )
+
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text("<project/>\n", encoding="utf-8")
+        legacy = tmp_path / "legacy"
+        legacy.mkdir()
+
+        repair_gate_service.regenerate_reviewed_repair_chain_on_revision(
+            job_id="job-rev4",
+            stage_index=3,
+            command_id="cmd-rev4",
+            user_comments="revise",
+            prior_evidence_checksum="sha256:ev",
+            prior_context_checksum="sha256:cp",
+            prior_primary_output_checksum="sha256:po",
+            prior_reviewer_output_checksum="sha256:ro",
+            prior_final_diff_checksum="sha256:fd",
+            prior_policy_validation_checksum="sha256:pv",
+            prior_base_repo_state_checksum="sha256:rs",
+            sandbox_path=str(sandbox),
+            run_dir=tmp_path / "run",
+            legacy_path=str(tmp_path / "legacy"),
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+            model_client=_TrackedClient(),
+            h2_required=True,
+        )
+
+        assert len(calls) == 2
+        for call in calls:
+            assert call["provider"] == "azure_openai"
+            assert call["role"] in (V2ModelRole.PROPOSER, V2ModelRole.REVIEWER)

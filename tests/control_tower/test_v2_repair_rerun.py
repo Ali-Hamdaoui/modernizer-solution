@@ -240,3 +240,233 @@ def test_repeated_context_prior_proposal_checksums_grows() -> None:
     assert len(pack2.prior_proposal_checksums) == 2
     assert pack1.context_pack_checksum != pack2.context_pack_checksum
     assert pack2.cycle_number == 2
+
+
+# ── F5 TASK 3: Bounded next repair cycle after rerun failure ──────────
+
+
+class TestBoundedNextRepairCycle:
+    """F5 TASK 3: Rerun failure creates bounded repair cycle or terminal."""
+
+    def test_rerun_failure_creates_second_repair_gate(self, tmp_path: Path) -> None:
+        import json, sqlite3
+        from migration_factory.control_tower.application.v2_repair_gate_service import V2RepairGateService
+        from migration_factory.control_tower.application.v2_phase_gate_service import V2PhaseGateService
+        from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_repository import SqlitePhaseGateRepository
+        from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+        from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelResult
+        from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
+
+        conn = sqlite3.connect(str(tmp_path / "rerun.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        apply_pending_migrations(conn)
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+            def answer_with_role(self, *, role, prompt, fallback, output_schema_name=None, require_schema=True):
+                self.calls.append(role)
+                if role == V2ModelRole.PROPOSER:
+                    c = json.dumps({"root_cause":"fix","fix_strategy":"patch","changed_files":["pom.xml"],"proposed_diff":"diff --git a/pom.xml b/pom.xml\n--- a/pom.xml\n+++ b/pom.xml\n@@\n+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n","risk":"LOW","confidence":0.9,"rationale":"fix","deterministic_rule_id":"DEPENDENCY_ADD_H2_RUNTIME"},sort_keys=True)
+                else:
+                    c = json.dumps({"decision":"accept","notes":[],"confidence":0.95,"risks":[],"policy_concerns":[],"reviewed_context_checksum":"","reviewed_primary_output_checksum":"","reviewed_diff_checksum":""},sort_keys=True)
+                return V2AssistantModelResult(content=c,source="azure",model_status="live_ok",provider="azure",role=role.value,success=True,redacted_summary="ok",failure_reason="")
+
+        gate_repo = SqlitePhaseGateRepository(conn)
+        gate_service = V2PhaseGateService(gate_repo)
+        repair_gate_service = V2RepairGateService(gate_service=gate_service, max_repair_attempts=3)
+
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text("<project/>\n", encoding="utf-8")
+        legacy = tmp_path / "legacy"
+        legacy.mkdir()
+
+        fc = FakeClient()
+        result = repair_gate_service.create_next_repair_cycle_from_rerun_failure(
+            job_id="job-rerun",
+            stage_index=3,
+            command_id="cmd-rerun",
+            prior_evidence_checksum="sha256:ev1",
+            prior_context_checksum="sha256:cp1",
+            prior_primary_output_checksum="sha256:po1",
+            prior_reviewer_output_checksum="sha256:ro1",
+            prior_final_diff_checksum="sha256:fd1",
+            prior_policy_validation_checksum="sha256:pv1",
+            prior_base_repo_state_checksum="sha256:rs1",
+            rerun_result={"errors": ["build failed after repair"], "passed": False},
+            rollback_result={"status": "ROLLED_BACK"},
+            apply_result={"status": "applied"},
+            sandbox_path=str(sandbox),
+            run_dir=tmp_path / "run",
+            legacy_path=str(legacy),
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+            previous_repair_review_checksums=("sha256:cycle-1",),
+            model_client=fc,
+            h2_required=True,
+        )
+        assert result.status == "created"
+        assert result.gate_id
+        assert len(fc.calls) == 2
+
+    def test_max_attempts_exhausted_creates_terminal_failure(self, tmp_path: Path) -> None:
+        import sqlite3
+        from migration_factory.control_tower.application.v2_repair_gate_service import V2RepairGateService
+        from migration_factory.control_tower.application.v2_phase_gate_service import V2PhaseGateService
+        from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_repository import SqlitePhaseGateRepository
+        from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+
+        conn = sqlite3.connect(str(tmp_path / "rerun2.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        apply_pending_migrations(conn)
+
+        gate_repo = SqlitePhaseGateRepository(conn)
+        gate_service = V2PhaseGateService(gate_repo)
+        repair_gate_service = V2RepairGateService(gate_service=gate_service, max_repair_attempts=1)
+
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text("<project/>\n", encoding="utf-8")
+        legacy = tmp_path / "legacy"
+        legacy.mkdir()
+
+        result = repair_gate_service.create_next_repair_cycle_from_rerun_failure(
+            job_id="job-rerun2",
+            stage_index=3,
+            command_id="cmd-rerun2",
+            prior_evidence_checksum="sha256:ev1",
+            prior_context_checksum="sha256:cp1",
+            prior_primary_output_checksum="sha256:po1",
+            prior_reviewer_output_checksum="sha256:ro1",
+            prior_final_diff_checksum="sha256:fd1",
+            prior_policy_validation_checksum="sha256:pv1",
+            prior_base_repo_state_checksum="sha256:rs1",
+            rerun_result={"errors": ["test failure"], "passed": False},
+            sandbox_path=str(sandbox),
+            run_dir=tmp_path / "run",
+            legacy_path=str(legacy),
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+            previous_repair_review_checksums=("sha256:cycle-1",),
+        )
+        assert result.status == "attempts_exhausted"
+        assert "exhausted" in result.reason
+
+    def test_no_auto_apply_second_patch(self, tmp_path: Path) -> None:
+        import json, sqlite3
+        from migration_factory.control_tower.application.v2_repair_gate_service import V2RepairGateService
+        from migration_factory.control_tower.application.v2_phase_gate_service import V2PhaseGateService
+        from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_repository import SqlitePhaseGateRepository
+        from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+        from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelResult
+        from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
+
+        conn = sqlite3.connect(str(tmp_path / "rerun3.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        apply_pending_migrations(conn)
+
+        class FakeClient:
+            calls = []
+            def answer_with_role(self, *, role, prompt, fallback, output_schema_name=None, require_schema=True):
+                self.calls.append(role)
+                if role == V2ModelRole.PROPOSER:
+                    c = json.dumps({"root_cause":"fix","fix_strategy":"patch","changed_files":["pom.xml"],"proposed_diff":"diff --git a/pom.xml b/pom.xml\n--- a/pom.xml\n+++ b/pom.xml\n@@\n+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n","risk":"LOW","confidence":0.9,"rationale":"fix","deterministic_rule_id":"DEPENDENCY_ADD_H2_RUNTIME"},sort_keys=True)
+                else:
+                    c = json.dumps({"decision":"accept","notes":[],"confidence":0.95,"risks":[],"policy_concerns":[],"reviewed_context_checksum":"","reviewed_primary_output_checksum":"","reviewed_diff_checksum":""},sort_keys=True)
+                return V2AssistantModelResult(content=c,source="azure",model_status="live_ok",provider="azure",role=role.value,success=True,redacted_summary="ok",failure_reason="")
+
+        gate_repo = SqlitePhaseGateRepository(conn)
+        gate_service = V2PhaseGateService(gate_repo)
+        repair_gate_service = V2RepairGateService(gate_service=gate_service)
+
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text("<project/>\n", encoding="utf-8")
+        legacy = tmp_path / "legacy"
+        legacy.mkdir()
+
+        fc = FakeClient()
+        result = repair_gate_service.create_next_repair_cycle_from_rerun_failure(
+            job_id="job-rerun3",
+            stage_index=3,
+            command_id="cmd-rerun3",
+            prior_evidence_checksum="sha256:ev1",
+            prior_context_checksum="sha256:cp1",
+            prior_primary_output_checksum="sha256:po1",
+            prior_reviewer_output_checksum="sha256:ro1",
+            prior_final_diff_checksum="sha256:fd1",
+            prior_policy_validation_checksum="sha256:pv1",
+            prior_base_repo_state_checksum="sha256:rs1",
+            rerun_result={"errors": ["build failed"], "passed": False},
+            sandbox_path=str(sandbox),
+            run_dir=tmp_path / "run",
+            legacy_path=str(legacy),
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+            previous_repair_review_checksums=("sha256:cycle-1",),
+            model_client=fc,
+            h2_required=True,
+        )
+        # A gate was created, but no diff was auto-applied – only reviewed chain produced
+        assert result.status == "created"
+        assert result.gate_id
+        assert len(fc.calls) == 2  # Proposer + Reviewer, no auto-apply
+
+    def test_second_context_includes_previous_cycle_checksums(self, tmp_path: Path) -> None:
+        import json, sqlite3
+        from migration_factory.control_tower.application.v2_repair_gate_service import V2RepairGateService
+        from migration_factory.control_tower.application.v2_phase_gate_service import V2PhaseGateService
+        from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_repository import SqlitePhaseGateRepository
+        from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+        from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelResult
+        from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
+
+        conn = sqlite3.connect(str(tmp_path / "rerun4.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        apply_pending_migrations(conn)
+
+        previous_checksums = ("sha256:prop-1", "sha256:prop-2")
+
+        class FakeClient:
+            calls = []
+            def answer_with_role(self, *, role, prompt, fallback, output_schema_name=None, require_schema=True):
+                self.calls.append({"role": role, "prompt": prompt})
+                if role == V2ModelRole.PROPOSER:
+                    c = json.dumps({"root_cause":"fix","fix_strategy":"patch","changed_files":["pom.xml"],"proposed_diff":"diff --git a/pom.xml b/pom.xml\n--- a/pom.xml\n+++ b/pom.xml\n@@\n+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n","risk":"LOW","confidence":0.9,"rationale":"fix","deterministic_rule_id":"DEPENDENCY_ADD_H2_RUNTIME"},sort_keys=True)
+                else:
+                    c = json.dumps({"decision":"accept","notes":[],"confidence":0.95,"risks":[],"policy_concerns":[],"reviewed_context_checksum":"","reviewed_primary_output_checksum":"","reviewed_diff_checksum":""},sort_keys=True)
+                return V2AssistantModelResult(content=c,source="azure",model_status="live_ok",provider="azure",role=role.value,success=True,redacted_summary="ok",failure_reason="")
+
+        gate_repo = SqlitePhaseGateRepository(conn)
+        gate_service = V2PhaseGateService(gate_repo)
+        repair_gate_service = V2RepairGateService(gate_service=gate_service, max_repair_attempts=5)
+
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text("<project/>\n", encoding="utf-8")
+        legacy = tmp_path / "legacy"
+        legacy.mkdir()
+
+        fc = FakeClient()
+        result = repair_gate_service.create_next_repair_cycle_from_rerun_failure(
+            job_id="job-rerun4",
+            stage_index=3,
+            command_id="cmd-rerun4",
+            prior_evidence_checksum="sha256:ev1",
+            prior_context_checksum="sha256:cp1",
+            prior_primary_output_checksum="sha256:po1",
+            prior_reviewer_output_checksum="sha256:ro1",
+            prior_final_diff_checksum="sha256:fd1",
+            prior_policy_validation_checksum="sha256:pv1",
+            prior_base_repo_state_checksum="sha256:rs1",
+            rerun_result={"errors": ["build failed"], "passed": False},
+            sandbox_path=str(sandbox),
+            run_dir=tmp_path / "run",
+            legacy_path=str(legacy),
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+            previous_repair_review_checksums=previous_checksums,
+            model_client=fc,
+            h2_required=True,
+        )
+        assert result.status == "created"
+        # Verify prior checksums appear in the proposer prompt via context_pack
+        proposer_prompt = fc.calls[0]["prompt"]
+        assert any(cs in proposer_prompt for cs in previous_checksums)
