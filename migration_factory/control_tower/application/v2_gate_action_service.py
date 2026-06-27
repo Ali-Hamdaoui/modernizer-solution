@@ -92,6 +92,21 @@ class GateActionResult:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class RepairApprovalChecksumBinding:
+    """Checksum set required to approve a reviewed F5 repair gate."""
+
+    proposal_checksum: str
+    context_pack_checksum: str
+    reviewer_output_checksum: str
+    final_reviewed_diff_checksum: str
+    policy_validation_checksum: str
+    base_repo_state_checksum: str
+    final_reviewed_artifact_checksum: str = ""
+    repair_revision_id: str = ""
+    repair_revision_checksum: str = ""
+
+
 # ── service ──────────────────────────────────────────────────────────
 
 
@@ -734,6 +749,13 @@ class V2GateActionService:
         proposal_id: str,
         proposal_checksum: str,
         context_pack_checksum: str,
+        reviewer_output_checksum: str = "",
+        final_reviewed_diff_checksum: str = "",
+        policy_validation_checksum: str = "",
+        base_repo_state_checksum: str = "",
+        final_reviewed_artifact_checksum: str = "",
+        repair_revision_id: str = "",
+        repair_revision_checksum: str = "",
         idempotency_key: str | None = None,
         expected_gate_checksum: str | None = None,
         actor_type: str = GateActorType.HUMAN.value,
@@ -782,6 +804,13 @@ class V2GateActionService:
                     "proposal_id": proposal_id,
                     "proposal_checksum": proposal_checksum,
                     "context_pack_checksum": context_pack_checksum,
+                    "reviewer_output_checksum": reviewer_output_checksum,
+                    "final_reviewed_diff_checksum": final_reviewed_diff_checksum,
+                    "policy_validation_checksum": policy_validation_checksum,
+                    "base_repo_state_checksum": base_repo_state_checksum,
+                    "final_reviewed_artifact_checksum": final_reviewed_artifact_checksum,
+                    "repair_revision_id": repair_revision_id,
+                    "repair_revision_checksum": repair_revision_checksum,
                     "actor_type": GateActorType.HUMAN.value,
                 }
             )
@@ -797,6 +826,13 @@ class V2GateActionService:
                 "proposal_id": proposal_id,
                 "proposal_checksum": proposal_checksum,
                 "context_pack_checksum": context_pack_checksum,
+                "reviewer_output_checksum": reviewer_output_checksum,
+                "final_reviewed_diff_checksum": final_reviewed_diff_checksum,
+                "policy_validation_checksum": policy_validation_checksum,
+                "base_repo_state_checksum": base_repo_state_checksum,
+                "final_reviewed_artifact_checksum": final_reviewed_artifact_checksum,
+                "repair_revision_id": repair_revision_id,
+                "repair_revision_checksum": repair_revision_checksum,
             }
         )
         existing = self._decision_repo.find_by_idempotency_key(
@@ -867,6 +903,23 @@ class V2GateActionService:
                 reason=f"approve_repair only works on repair_review gates, not {gate_phase.value}",
             )
 
+        binding_result = self._validate_reviewed_repair_binding(
+            gate=gate,
+            binding=RepairApprovalChecksumBinding(
+                proposal_checksum=proposal_checksum,
+                context_pack_checksum=context_pack_checksum,
+                reviewer_output_checksum=reviewer_output_checksum,
+                final_reviewed_diff_checksum=final_reviewed_diff_checksum,
+                policy_validation_checksum=policy_validation_checksum,
+                base_repo_state_checksum=base_repo_state_checksum,
+                final_reviewed_artifact_checksum=final_reviewed_artifact_checksum,
+                repair_revision_id=repair_revision_id,
+                repair_revision_checksum=repair_revision_checksum,
+            ),
+        )
+        if binding_result is not None:
+            return binding_result
+
         # 5. Require repair service
         if self._repair_service is None:
             return GateActionResult(
@@ -911,7 +964,147 @@ class V2GateActionService:
         if result.status not in ("executed", "idempotent"):
             return result
 
+        if (
+            result.status == "executed"
+            and self._revision_repo is not None
+            and repair_revision_id
+        ):
+            accepted_revision_id = uuid4().hex
+            latest = self._revision_repo.find_latest_by_kind(
+                gate.job_id,
+                gate.stage_index,
+                "repair",
+            )
+            now = utc_now_text()
+            self._revision_repo.save(
+                ArtifactRevisionRecord(
+                    revision_id=accepted_revision_id,
+                    job_id=gate.job_id,
+                    stage_index=gate.stage_index,
+                    revision_kind="repair",
+                    revision_status="accepted",
+                    revision_order=(latest.revision_order + 1) if latest else 1,
+                    evidence_checksum=gate.source_artifact_checksum,
+                    prior_revision_checksum=repair_revision_checksum or None,
+                    artifact_refs_json=gate.source_artifact_refs_json,
+                    prior_revision_id=repair_revision_id,
+                    superseded_by_revision_id=None,
+                    accepted_at_gate_id=gate_id,
+                    created_at=now,
+                    created_by=decided_by,
+                    accepted_at=now,
+                    accepted_by=decided_by,
+                )
+            )
+            return GateActionResult(
+                action=result.action,
+                gate_id=result.gate_id,
+                decision_id=result.decision_id,
+                status=result.status,
+                result_gate_id=result.result_gate_id,
+                result_command_id=result.result_command_id,
+                result_revision_id=accepted_revision_id,
+                reason=result.reason,
+            )
+
         return result
+
+    def _validate_reviewed_repair_binding(
+        self,
+        *,
+        gate: Any,
+        binding: RepairApprovalChecksumBinding,
+    ) -> GateActionResult | None:
+        refs = self._parse_gate_ref_checksums(gate.source_artifact_refs_json)
+        reviewed_gate = any(
+            key in refs
+            for key in (
+                "reviewer_output_checksum",
+                "final_reviewed_diff_checksum",
+                "policy_validation_checksum",
+                "base_repo_state_checksum",
+            )
+        )
+        if not reviewed_gate:
+            return None
+
+        required = {
+            "context_pack_checksum": binding.context_pack_checksum,
+            "reviewer_output_checksum": binding.reviewer_output_checksum,
+            "final_reviewed_diff_checksum": binding.final_reviewed_diff_checksum,
+            "policy_validation_checksum": binding.policy_validation_checksum,
+            "base_repo_state_checksum": binding.base_repo_state_checksum,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            return GateActionResult(
+                action=GateDecision.CONTINUE.value,
+                gate_id=gate.gate_id,
+                decision_id="",
+                status="missing_repair_checksum",
+                reason="Missing reviewed repair checksum(s): " + ", ".join(missing),
+            )
+
+        expected = {
+            "context_pack_checksum": binding.context_pack_checksum,
+            "reviewer_output_checksum": binding.reviewer_output_checksum,
+            "final_reviewed_diff_checksum": binding.final_reviewed_diff_checksum,
+            "policy_validation_checksum": binding.policy_validation_checksum,
+            "base_repo_state_checksum": binding.base_repo_state_checksum,
+        }
+        if binding.final_reviewed_artifact_checksum:
+            expected["final_artifact_checksum"] = binding.final_reviewed_artifact_checksum
+        for name, supplied in expected.items():
+            actual = refs.get(name)
+            if actual is not None and actual != supplied:
+                return GateActionResult(
+                    action=GateDecision.CONTINUE.value,
+                    gate_id=gate.gate_id,
+                    decision_id="",
+                    status="repair_checksum_mismatch",
+                    reason=f"{name} does not match the reviewed repair gate",
+                )
+
+        required_binding = {
+            "failure_evidence_checksum": refs.get("failure_evidence_checksum", ""),
+            "context_pack_checksum": binding.context_pack_checksum,
+            "primary_output_checksum": refs.get("primary_output_checksum", ""),
+            "reviewer_output_checksum": binding.reviewer_output_checksum,
+            "final_reviewed_diff_checksum": binding.final_reviewed_diff_checksum,
+            "policy_validation_checksum": binding.policy_validation_checksum,
+            "base_repo_state_checksum": binding.base_repo_state_checksum,
+            "final_artifact_checksum": (
+                binding.final_reviewed_artifact_checksum
+                or refs.get("final_artifact_checksum", "")
+            ),
+        }
+        expected_gate_source_checksum = sha256_canonical_json(required_binding)
+        if gate.source_artifact_checksum != expected_gate_source_checksum:
+            return GateActionResult(
+                action=GateDecision.CONTINUE.value,
+                gate_id=gate.gate_id,
+                decision_id="",
+                status="repair_checksum_mismatch",
+                reason="Reviewed repair binding no longer matches gate source checksum",
+            )
+        return None
+
+    @staticmethod
+    def _parse_gate_ref_checksums(source_artifact_refs_json: str) -> dict[str, str]:
+        try:
+            parsed = json.loads(source_artifact_refs_json)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        if not isinstance(parsed, list):
+            return {}
+        refs: dict[str, str] = {}
+        for item in parsed:
+            if not isinstance(item, str) or ":" not in item:
+                continue
+            key, value = item.split(":", 1)
+            if key.endswith("_checksum") or key == "checksum":
+                refs[key] = value
+        return refs
 
     # ── action: approve_transformation ─────────────────────────────
 
