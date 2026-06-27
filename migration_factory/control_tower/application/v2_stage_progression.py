@@ -169,6 +169,15 @@ def is_target_reached(route: ProfileRoute, current_stage: int) -> bool:
     return current_stage >= max(route.included_stages) if route.included_stages else True
 
 
+def next_required_stage(route: ProfileRoute, current_stage: int) -> int | None:
+    if not route.valid:
+        return None
+    for stage in route.included_stages:
+        if stage > current_stage:
+            return stage
+    return None
+
+
 def route_checksum(route: ProfileRoute) -> str:
     return sha256_canonical_json({
         "source_profile": route.source_profile,

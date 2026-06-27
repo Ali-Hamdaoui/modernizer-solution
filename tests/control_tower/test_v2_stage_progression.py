@@ -10,6 +10,7 @@ from migration_factory.control_tower.application.v2_stage_progression import (
     STAGE_CONFIG,
     RUNNER_MODULE,
     compute_profile_route,
+    next_required_stage,
     is_stage_included_in_route,
     is_stage_excluded_from_route,
     is_target_reached,
@@ -713,3 +714,46 @@ def test_profile_metadata_preserves_source_and_target() -> None:
     assert d["target_profile"] == "springboot-3.5-java21"
     assert d["source_level"] == 0
     assert d["target_level"] == 2
+
+
+# ── AMF-274 / F4-T6: already-modernized app start routes ───────────
+
+
+def test_next_required_stage_starts_after_current_profile_for_boot35_java17() -> None:
+    route = compute_profile_route("springboot-3.5-java17", "springboot-4.0-java21")
+
+    assert route.valid is True
+    assert route.skipped_stages == (2,)
+    assert route.included_stages == (3, 4)
+    assert next_required_stage(route, current_stage=1) == 3
+    assert next_required_stage(route, current_stage=2) == 3
+    assert 2 not in route.included_stages
+
+
+def test_next_required_stage_starts_after_current_profile_for_boot35_java21() -> None:
+    route = compute_profile_route("springboot-3.5-java21", "springboot-4.0-java21")
+
+    assert route.valid is True
+    assert route.skipped_stages == (2, 3)
+    assert route.included_stages == (4,)
+    assert next_required_stage(route, current_stage=1) == 4
+    assert next_required_stage(route, current_stage=2) == 4
+    assert next_required_stage(route, current_stage=3) == 4
+    assert 2 not in route.included_stages
+    assert 3 not in route.included_stages
+
+
+def test_next_required_stage_returns_none_after_later_target_reached() -> None:
+    route = compute_profile_route("springboot-3.5-java17", "springboot-3.5-java21")
+
+    assert route.valid is True
+    assert route.included_stages == (3,)
+    assert next_required_stage(route, current_stage=3) is None
+
+
+def test_next_required_stage_returns_none_for_incompatible_source_target_pair() -> None:
+    route = compute_profile_route("springboot-3.5-java21", "springboot-3.5-java17")
+
+    assert route.valid is False
+    assert route.reason == "target profile must be higher than source profile"
+    assert next_required_stage(route, current_stage=1) is None
