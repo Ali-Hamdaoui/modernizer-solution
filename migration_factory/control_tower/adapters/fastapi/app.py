@@ -2631,6 +2631,14 @@ def create_app(
         payload: CreateRepairProposalRequest,
     ) -> dict[str, Any]:
         """Create a repair proposal from failed command evidence."""
+        raise _error(
+            status.HTTP_410_GONE,
+            "LEGACY_REPAIR_PROPOSAL_DISABLED",
+            (
+                "Legacy repair flow proposals are disabled for F5. "
+                "Use the reviewed Azure repair chain to create authoritative repair gates."
+            ),
+        )
         repair_data = {
             "failure_hypothesis": payload.hypothesis,
             "patch_summary": payload.patch_summary,
