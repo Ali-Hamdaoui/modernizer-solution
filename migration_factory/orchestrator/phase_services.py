@@ -306,23 +306,18 @@ def _merge_repair_updates(
     *,
     h2_startup_report: dict[str, Any] | None = None,
 ) -> MigrationState:
-    from migration_factory.repair_loop.orchestrator import run_post_failure_repair_loop
-
-    updates = run_post_failure_repair_loop(failed_state, h2_startup_report=h2_startup_report)
     result: MigrationState = dict(failed_state)
     artifact_refs = dict(result.get("artifact_refs", {}) or {})
-    artifact_refs.update(dict(updates.get("artifact_refs", {}) or {}))
-    result.update(updates)
     result["artifact_refs"] = artifact_refs
-    repair_status = str(updates.get("repair_loop_status") or "")
-    if repair_status == "REPAIR_VALIDATED":
-        result["orchestration_status"] = "PASS"
-        result["final_status"] = "REPAIR_VALIDATED"
-        result["stop_reason"] = "safe deterministic repair patch validated in sandbox"
-    elif repair_status and repair_status != "DISABLED":
-        result["final_status"] = repair_status
-        if repair_status == "REPAIR_BLOCKED_HUMAN_REVIEW":
-            result["stop_reason"] = "Copilot repair proposal requires human review"
+    result["repair_loop_status"] = "REPAIR_REVIEW_REQUIRED"
+    result["repair_blocker"] = "f5_reviewed_repair_required"
+    result["final_status"] = "REPAIR_REVIEW_REQUIRED"
+    result["stop_reason"] = (
+        "Build/test failure requires F5 reviewed Azure repair chain and "
+        "checksum-bound human approval."
+    )
+    if h2_startup_report is not None:
+        result["h2_startup_report_available"] = True
     return result
 
 

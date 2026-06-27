@@ -5,6 +5,7 @@ import pytest
 
 from migration_factory.orchestrator.phase_services import (
     PhaseServices,
+    _merge_repair_updates,
     default_phase_services,
     run_analysis_phase,
 )
@@ -86,3 +87,29 @@ def test_phase_failure_sets_fail_and_blocker_error(
     assert state["current_unit"] == "analysis"
     assert state["errors"] == ["analysis phase failed: analysis exploded"]
     assert state["blockers"] == ["analysis phase failed: analysis exploded"]
+
+
+def test_repair_merge_does_not_call_legacy_copilot_loop(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import migration_factory.repair_loop.orchestrator as legacy_repair
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("legacy Copilot repair loop must not be called")
+
+    monkeypatch.setattr(legacy_repair, "run_post_failure_repair_loop", fail_if_called)
+
+    result = _merge_repair_updates(
+        {
+            **_state(tmp_path),
+            "artifact_refs": {"failure": "failure.json"},
+            "final_status": "BUILD_FAILED",
+            "stop_reason": "build failed",
+        },
+        h2_startup_report={"status": "FAILED"},
+    )
+
+    assert result["repair_loop_status"] == "REPAIR_REVIEW_REQUIRED"
+    assert result["repair_blocker"] == "f5_reviewed_repair_required"
+    assert result["artifact_refs"] == {"failure": "failure.json"}
