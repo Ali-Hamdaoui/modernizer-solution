@@ -24,9 +24,11 @@ from migration_factory.control_tower.schemas.profile_model import (
     default_source_profile_id,
     default_target_profile_id,
     get_migration_profile,
-    is_selectable_source_profile,
-    is_selectable_target_profile,
     list_migration_profiles,
+)
+from migration_factory.control_tower.schemas.profile_validation import (
+    ProfilePairValidation,
+    validate_profile_pair,
 )
 from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
 
@@ -68,15 +70,6 @@ _PROFILE_TO_STAGE_INDEX: dict[str, int] = {
     for profile in list_migration_profiles()
 }
 
-_INVALID_ROUTE_REASONS: dict[str, str] = {
-    "source_unknown": "source profile is not recognized",
-    "target_unknown": "target profile is not recognized",
-    "reversed": "target profile must be higher than source profile",
-    "same_profile": "source and target profiles must be different",
-    "source_already_terminal": "source profile is already at the maximum supported level",
-}
-
-
 @dataclass(frozen=True)
 class ProfileRoute:
     source_profile: str
@@ -94,31 +87,9 @@ def compute_profile_route(
     source_profile: str,
     target_profile: str,
 ) -> ProfileRoute:
-    if not is_selectable_source_profile(source_profile):
-        return ProfileRoute(
-            source_profile=source_profile,
-            target_profile=target_profile,
-            source_level=-1,
-            target_level=-1,
-            included_stages=(),
-            excluded_stages=(),
-            skipped_stages=(),
-            valid=False,
-            reason=_INVALID_ROUTE_REASONS["source_unknown"],
-        )
-
-    if not is_selectable_target_profile(target_profile):
-        return ProfileRoute(
-            source_profile=source_profile,
-            target_profile=target_profile,
-            source_level=-1,
-            target_level=-1,
-            included_stages=(),
-            excluded_stages=(),
-            skipped_stages=(),
-            valid=False,
-            reason=_INVALID_ROUTE_REASONS["target_unknown"],
-        )
+    pair_validation = validate_profile_pair(source_profile, target_profile)
+    if not pair_validation.valid:
+        return _invalid_route_from_validation(pair_validation)
 
     source_definition = get_migration_profile(source_profile)
     target_definition = get_migration_profile(target_profile)
@@ -132,7 +103,7 @@ def compute_profile_route(
             excluded_stages=(),
             skipped_stages=(),
             valid=False,
-            reason=_INVALID_ROUTE_REASONS["source_unknown"],
+            reason="source profile is not recognized",
         )
     if target_definition is None:
         return ProfileRoute(
@@ -144,28 +115,11 @@ def compute_profile_route(
             excluded_stages=(),
             skipped_stages=(),
             valid=False,
-            reason=_INVALID_ROUTE_REASONS["target_unknown"],
+            reason="target profile is not recognized",
         )
 
     source_idx = source_definition.order_index
     target_idx = target_definition.order_index
-
-    if target_idx <= source_idx:
-        if target_idx == source_idx:
-            reason = _INVALID_ROUTE_REASONS["same_profile"]
-        else:
-            reason = _INVALID_ROUTE_REASONS["reversed"]
-        return ProfileRoute(
-            source_profile=source_profile,
-            target_profile=target_profile,
-            source_level=source_idx,
-            target_level=target_idx,
-            included_stages=(),
-            excluded_stages=(),
-            skipped_stages=(),
-            valid=False,
-            reason=reason,
-        )
 
     source_stage = _PROFILE_TO_STAGE_INDEX[source_profile]
     target_stage = _PROFILE_TO_STAGE_INDEX[target_profile]
@@ -221,6 +175,24 @@ def route_to_dict(route: ProfileRoute) -> dict[str, Any]:
         "valid": route.valid,
         "reason": route.reason,
     }
+
+
+def _invalid_route_from_validation(validation: ProfilePairValidation) -> ProfileRoute:
+    source_definition = get_migration_profile(validation.source_profile)
+    target_definition = get_migration_profile(validation.target_profile)
+    source_level = source_definition.order_index if source_definition is not None else -1
+    target_level = target_definition.order_index if target_definition is not None else -1
+    return ProfileRoute(
+        source_profile=validation.source_profile,
+        target_profile=validation.target_profile,
+        source_level=source_level,
+        target_level=target_level,
+        included_stages=(),
+        excluded_stages=(),
+        skipped_stages=(),
+        valid=False,
+        reason=validation.reason,
+    )
 
 
 # ── stop-condition model (AMF-251 / F1-T6) ───────────────────────
@@ -445,18 +417,35 @@ class V2StageProgressionService:
         setup_repo: SqliteV2SetupRepository,
         command_repo: SqliteV2CommandRepository | None = None,
         artifact_revision_repo: SqliteArtifactRevisionRepository | None = None,
+        run_config_repo: Any | None = None,
     ) -> None:
         self._setup_repo = setup_repo
         self._command_repo = command_repo
         self._artifact_revision_repo = artifact_revision_repo
+        self._run_config_repo = run_config_repo
 
     def compute_route_for_job(
         self,
         job_id: str,
         run_config: Any | None = None,
     ) -> ProfileRoute:
-        source = run_config.source_profile if run_config is not None and hasattr(run_config, "source_profile") else ""
-        target = run_config.target_profile if run_config is not None and hasattr(run_config, "target_profile") else ""
+        if run_config is None and self._run_config_repo is not None:
+            run_config = self._run_config_repo.get_for_job(job_id)
+
+        source = ""
+        target = ""
+        if run_config is not None:
+            source = str(getattr(run_config, "source_profile", "") or "")
+            target = str(getattr(run_config, "target_profile", "") or "")
+            payload_json = getattr(run_config, "payload_json", "") or ""
+            if payload_json:
+                try:
+                    payload = json.loads(payload_json)
+                except (json.JSONDecodeError, TypeError):
+                    payload = {}
+                if isinstance(payload, dict):
+                    source = str(payload.get("source_profile") or source)
+                    target = str(payload.get("target_profile") or target)
         if not source:
             source = default_source_profile_id()
         if not target:
@@ -498,7 +487,7 @@ class V2StageProgressionService:
         """
         next_stage = current_stage + 1
 
-        route = profile_route or compute_profile_route(default_source_profile_id(), default_target_profile_id())
+        route = profile_route or self.compute_route_for_job(job_id)
 
         if next_stage not in STAGE_CONFIG:
             raise ValueError(

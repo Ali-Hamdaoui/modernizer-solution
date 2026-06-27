@@ -63,6 +63,8 @@ class ProfilePairValidation:
 def validate_profile_pair(
     source_profile: str | None,
     target_profile: str | None,
+    *,
+    allow_same_profile: bool = False,
 ) -> ProfilePairValidation:
     """Validate a source/target migration profile pair.
 
@@ -106,6 +108,14 @@ def validate_profile_pair(
             target_idx = target_def.order_index
 
             if target_idx == source_idx:
+                if allow_same_profile:
+                    return ProfilePairValidation(
+                        source_profile=resolved_source,
+                        target_profile=resolved_target,
+                        valid=True,
+                        error_type=ProfilePairErrorType.VALID,
+                        reason="profile pair is valid as an explicit no-op",
+                    )
                 return _invalid(ProfilePairErrorType.SAME_PROFILE, resolved_source, resolved_target)
             if target_idx < source_idx:
                 return _invalid(ProfilePairErrorType.REVERSED, resolved_source, resolved_target)

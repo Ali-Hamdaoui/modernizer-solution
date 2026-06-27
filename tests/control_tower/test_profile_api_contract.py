@@ -177,6 +177,18 @@ def test_create_v2_job_request_rejects_forbidden_extra_field() -> None:
         )
 
 
+def test_create_v2_job_request_rejects_invalid_profile_pair() -> None:
+    from pydantic import ValidationError
+    from migration_factory.control_tower.adapters.fastapi.app import CreateV2JobRequest
+
+    with pytest.raises(ValidationError, match="invalid profile pair"):
+        CreateV2JobRequest(
+            setup_id="setup-123",
+            source_profile="springboot-3.5-java21",
+            target_profile="springboot-3.5-java17",
+        )
+
+
 def test_create_v2_job_request_rejects_sandbox_path() -> None:
     from pydantic import ValidationError
     from migration_factory.control_tower.adapters.fastapi.app import CreateV2JobRequest

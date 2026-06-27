@@ -19,7 +19,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from pathlib import Path, PureWindowsPath
 
@@ -111,6 +111,7 @@ from migration_factory.control_tower.infrastructure.singleton import (
     create_controller_ownership,
 )
 from migration_factory.control_tower.schemas.profile_model import MigrationProfileId
+from migration_factory.control_tower.schemas.profile_validation import validate_profile_pair
 from migration_factory.control_tower.schemas.run_configuration import RunPolicy
 from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
 from migration_factory.control_tower.application.env_parser import (
@@ -512,6 +513,13 @@ class CreateV2JobRequest(BaseModel):
     source_profile: MigrationProfileId | None = None
     target_profile: MigrationProfileId | None = None
     policy: RunPolicy | None = None
+
+    @model_validator(mode="after")
+    def _validate_profile_pair(self) -> "CreateV2JobRequest":
+        validation = validate_profile_pair(self.source_profile, self.target_profile)
+        if not validation.valid:
+            raise ValueError(f"invalid profile pair: {validation.reason}")
+        return self
 
 
 class StartV2JobRequest(BaseModel):
@@ -2898,6 +2906,7 @@ def create_app(
                 setup_repo=uow.v2_setups,
                 command_repo=uow.v2_commands,
                 artifact_revision_repo=uow.artifact_revisions,
+                run_config_repo=uow.run_configurations,
             )
             try:
                 result = service.queue_next_stage_from_persisted(
