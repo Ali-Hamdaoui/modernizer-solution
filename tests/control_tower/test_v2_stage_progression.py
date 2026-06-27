@@ -14,6 +14,8 @@ from migration_factory.control_tower.application.v2_stage_progression import (
     is_stage_excluded_from_route,
     is_target_reached,
     route_to_dict,
+    build_skipped_stage_ledger,
+    route_checksum,
     get_stop_condition,
     get_all_stop_conditions,
     evaluate_auto_continue,
@@ -330,6 +332,53 @@ def test_route_metadata_includes_all_stages() -> None:
     d2 = route_to_dict(route2)
     assert d2["included_stages"] == [3, 4]
     assert d2["skipped_stages"] == [2]
+
+
+def test_route_metadata_projects_skipped_stage_ledger() -> None:
+    route = compute_profile_route("springboot-3.5-java17", "springboot-4.0-java21")
+    d = route_to_dict(
+        route,
+        job_id="job-123",
+        evidence_ref="artifact:source-profile-detection",
+        evidence_checksum="sha256:detection",
+        created_at="2026-06-27T10:00:00Z",
+    )
+
+    assert d["route_checksum"] == route_checksum(route)
+    assert d["skipped_stages"] == [2]
+    assert d["skipped_stage_ledger"] == [
+        {
+            "job_id": "job-123",
+            "source_profile": "springboot-3.5-java17",
+            "target_profile": "springboot-4.0-java21",
+            "skipped_stage_index": 2,
+            "skipped_stage_name": "Stage 2",
+            "skipped_stage_profile": "springboot-2.7-to-3.5-java17",
+            "reason": (
+                "Skipped because source profile "
+                "'springboot-3.5-java17' starts after stage 2."
+            ),
+            "evidence_ref": "artifact:source-profile-detection",
+            "evidence_checksum": "sha256:detection",
+            "route_checksum": route_checksum(route),
+            "artifact_checksum": "",
+            "created_at": "2026-06-27T10:00:00Z",
+        }
+    ]
+
+
+def test_skipped_stage_ledger_uses_existing_route_progression() -> None:
+    route = compute_profile_route("springboot-3.5-java21", "springboot-4.0-java21")
+    ledger = build_skipped_stage_ledger(
+        route,
+        job_id="job-456",
+        created_at="2026-06-27T10:00:00Z",
+    )
+
+    assert route.included_stages == (4,)
+    assert route.skipped_stages == (2, 3)
+    assert [entry.skipped_stage_index for entry in ledger] == [2, 3]
+    assert {entry.route_checksum for entry in ledger} == {route_checksum(route)}
 
 
 def test_included_stages_do_not_contain_stages_beyond_target() -> None:

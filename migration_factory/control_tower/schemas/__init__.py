@@ -117,6 +117,7 @@ from .profile_api_contract import (
 from .profile_checkpoint_metadata import (
     PROFILE_CHECKPOINT_FIELDS,
     CheckpointProfileMetadata,
+    SkippedStageLedgerEntry,
 )
 from .run_configuration import (
     RunConfiguration,
@@ -281,6 +282,7 @@ __all__ = [
     "SourceProfileFacts",
     "SourceProfileSignal",
     "StageContinuationPolicy",
+    "SkippedStageLedgerEntry",
     "StageInputSource",
     "StrictModel",
     "SUCCESSFUL_TERMINAL_STATUSES",

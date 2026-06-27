@@ -8,7 +8,10 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
-from migration_factory.control_tower.domain.checksums import utc_now_text
+from migration_factory.control_tower.domain.checksums import (
+    sha256_canonical_json,
+    utc_now_text,
+)
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
     SqliteV2SetupRepository,
     V2MigrationSetupRecord,
@@ -31,6 +34,9 @@ from migration_factory.control_tower.schemas.profile_validation import (
     validate_profile_pair,
 )
 from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
+from migration_factory.control_tower.schemas.profile_checkpoint_metadata import (
+    SkippedStageLedgerEntry,
+)
 
 
 TERMINAL_STAGE_INDEX = 4
@@ -163,7 +169,68 @@ def is_target_reached(route: ProfileRoute, current_stage: int) -> bool:
     return current_stage >= max(route.included_stages) if route.included_stages else True
 
 
-def route_to_dict(route: ProfileRoute) -> dict[str, Any]:
+def route_checksum(route: ProfileRoute) -> str:
+    return sha256_canonical_json({
+        "source_profile": route.source_profile,
+        "target_profile": route.target_profile,
+        "source_level": route.source_level,
+        "target_level": route.target_level,
+        "included_stages": list(route.included_stages),
+        "excluded_stages": list(route.excluded_stages),
+        "skipped_stages": list(route.skipped_stages),
+        "valid": route.valid,
+        "reason": route.reason,
+    })
+
+
+def build_skipped_stage_ledger(
+    route: ProfileRoute,
+    *,
+    job_id: str = "",
+    evidence_ref: str = "",
+    evidence_checksum: str = "",
+    artifact_checksum: str = "",
+    created_at: str | None = None,
+) -> tuple[SkippedStageLedgerEntry, ...]:
+    if not route.valid:
+        return ()
+
+    checksum = route_checksum(route)
+    timestamp = created_at or utc_now_text()
+    entries: list[SkippedStageLedgerEntry] = []
+    for stage in route.skipped_stages:
+        stage_profile = str(STAGE_CONFIG.get(stage, {}).get("profile", ""))
+        entries.append(
+            SkippedStageLedgerEntry(
+                job_id=job_id,
+                source_profile=route.source_profile,
+                target_profile=route.target_profile,
+                skipped_stage_index=stage,
+                skipped_stage_name=f"Stage {stage}",
+                skipped_stage_profile=stage_profile,
+                reason=(
+                    "Skipped because source profile "
+                    f"{route.source_profile!r} starts after stage {stage}."
+                ),
+                evidence_ref=evidence_ref,
+                evidence_checksum=evidence_checksum,
+                route_checksum=checksum,
+                artifact_checksum=artifact_checksum,
+                created_at=timestamp,
+            )
+        )
+    return tuple(entries)
+
+
+def route_to_dict(
+    route: ProfileRoute,
+    *,
+    job_id: str = "",
+    evidence_ref: str = "",
+    evidence_checksum: str = "",
+    artifact_checksum: str = "",
+    created_at: str | None = None,
+) -> dict[str, Any]:
     return {
         "source_profile": route.source_profile,
         "target_profile": route.target_profile,
@@ -174,6 +241,18 @@ def route_to_dict(route: ProfileRoute) -> dict[str, Any]:
         "skipped_stages": list(route.skipped_stages),
         "valid": route.valid,
         "reason": route.reason,
+        "route_checksum": route_checksum(route),
+        "skipped_stage_ledger": [
+            entry.to_dict()
+            for entry in build_skipped_stage_ledger(
+                route,
+                job_id=job_id,
+                evidence_ref=evidence_ref,
+                evidence_checksum=evidence_checksum,
+                artifact_checksum=artifact_checksum,
+                created_at=created_at,
+            )
+        ],
     }
 
 

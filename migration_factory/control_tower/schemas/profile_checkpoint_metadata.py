@@ -34,6 +34,7 @@ PROFILE_CHECKPOINT_FIELDS: frozenset[str] = frozenset({
     "included_stages",
     "excluded_stages",
     "skipped_stages",
+    "skipped_stage_ledger",
     "valid",
     "reason",
     "source_profile_detection_ref",
@@ -44,6 +45,56 @@ PROFILE_CHECKPOINT_FIELDS: frozenset[str] = frozenset({
 
 
 # ── CheckpointProfileMetadata ─────────────────────────────────────────
+
+class SkippedStageLedgerEntry(StrictModel):
+    """Safe audit entry for a stage skipped by source-profile routing."""
+
+    job_id: str = ""
+    source_profile: str = ""
+    target_profile: str = ""
+    skipped_stage_index: int = Field(ge=1)
+    skipped_stage_name: str = ""
+    skipped_stage_profile: str = ""
+    reason: str = ""
+    evidence_ref: str = ""
+    evidence_checksum: str = ""
+    route_checksum: str = ""
+    artifact_checksum: str = ""
+    created_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "job_id": self.job_id,
+            "source_profile": self.source_profile,
+            "target_profile": self.target_profile,
+            "skipped_stage_index": self.skipped_stage_index,
+            "skipped_stage_name": self.skipped_stage_name,
+            "skipped_stage_profile": self.skipped_stage_profile,
+            "reason": self.reason,
+            "evidence_ref": self.evidence_ref,
+            "evidence_checksum": self.evidence_checksum,
+            "route_checksum": self.route_checksum,
+            "artifact_checksum": self.artifact_checksum,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SkippedStageLedgerEntry":
+        return cls(
+            job_id=str(data.get("job_id") or ""),
+            source_profile=str(data.get("source_profile") or ""),
+            target_profile=str(data.get("target_profile") or ""),
+            skipped_stage_index=int(data.get("skipped_stage_index") or 1),
+            skipped_stage_name=str(data.get("skipped_stage_name") or ""),
+            skipped_stage_profile=str(data.get("skipped_stage_profile") or ""),
+            reason=str(data.get("reason") or ""),
+            evidence_ref=str(data.get("evidence_ref") or ""),
+            evidence_checksum=str(data.get("evidence_checksum") or ""),
+            route_checksum=str(data.get("route_checksum") or ""),
+            artifact_checksum=str(data.get("artifact_checksum") or ""),
+            created_at=str(data.get("created_at") or ""),
+        )
+
 
 class CheckpointProfileMetadata(StrictModel):
     """Profile routing metadata persisted on artifacts and checkpoints.
@@ -67,6 +118,7 @@ class CheckpointProfileMetadata(StrictModel):
     included_stages: tuple[int, ...] = Field(default_factory=tuple)
     excluded_stages: tuple[int, ...] = Field(default_factory=tuple)
     skipped_stages: tuple[int, ...] = Field(default_factory=tuple)
+    skipped_stage_ledger: tuple[SkippedStageLedgerEntry, ...] = Field(default_factory=tuple)
     valid: bool = False
     reason: str = ""
     source_profile_detection_ref: str = ""
@@ -86,6 +138,9 @@ class CheckpointProfileMetadata(StrictModel):
             "included_stages": list(self.included_stages),
             "excluded_stages": list(self.excluded_stages),
             "skipped_stages": list(self.skipped_stages),
+            "skipped_stage_ledger": [
+                entry.to_dict() for entry in self.skipped_stage_ledger
+            ],
             "valid": self.valid,
             "reason": self.reason,
             "source_profile_detection_ref": self.source_profile_detection_ref,
@@ -116,6 +171,7 @@ class CheckpointProfileMetadata(StrictModel):
         inc = data.get("included_stages")
         exc = data.get("excluded_stages")
         skp = data.get("skipped_stages")
+        ledger = data.get("skipped_stage_ledger")
         v = data.get("valid")
         r = data.get("reason")
         detection_ref = data.get("source_profile_detection_ref")
@@ -136,6 +192,17 @@ class CheckpointProfileMetadata(StrictModel):
             ),
             skipped_stages=(
                 tuple(int(s) for s in skp) if skp is not None else ()
+            ),
+            skipped_stage_ledger=(
+                tuple(
+                    item
+                    if isinstance(item, SkippedStageLedgerEntry)
+                    else SkippedStageLedgerEntry.from_dict(item)
+                    for item in ledger
+                    if isinstance(item, (dict, SkippedStageLedgerEntry))
+                )
+                if ledger is not None
+                else ()
             ),
             valid=bool(v) if v is not None else False,
             reason=str(r) if r is not None else "",
@@ -164,7 +231,12 @@ class CheckpointProfileMetadata(StrictModel):
         return cls.from_dict(data)
 
     @classmethod
-    def from_profile_route(cls, route: Any) -> "CheckpointProfileMetadata":
+    def from_profile_route(
+        cls,
+        route: Any,
+        *,
+        skipped_stage_ledger: tuple[SkippedStageLedgerEntry, ...] = (),
+    ) -> "CheckpointProfileMetadata":
         """Create from a ProfileRoute (from v2_stage_progression).
 
         Uses getattr to avoid a hard import dependency on the
@@ -178,6 +250,7 @@ class CheckpointProfileMetadata(StrictModel):
             included_stages=getattr(route, "included_stages", ()),
             excluded_stages=getattr(route, "excluded_stages", ()),
             skipped_stages=getattr(route, "skipped_stages", ()),
+            skipped_stage_ledger=skipped_stage_ledger,
             valid=getattr(route, "valid", False),
             reason=getattr(route, "reason", ""),
         )

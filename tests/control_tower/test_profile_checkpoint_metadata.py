@@ -15,6 +15,7 @@ from migration_factory.control_tower.schemas.artifact_revision import (
 from migration_factory.control_tower.schemas.profile_checkpoint_metadata import (
     PROFILE_CHECKPOINT_FIELDS,
     CheckpointProfileMetadata,
+    SkippedStageLedgerEntry,
 )
 
 
@@ -65,8 +66,7 @@ def test_profile_checkpoint_fields_are_public_safe() -> None:
     assert "included_stages" in PROFILE_CHECKPOINT_FIELDS
     assert "excluded_stages" in PROFILE_CHECKPOINT_FIELDS
     assert "skipped_stages" in PROFILE_CHECKPOINT_FIELDS
-    assert "source_profile_detection_ref" in PROFILE_CHECKPOINT_FIELDS
-    assert "source_profile_detection_checksum" in PROFILE_CHECKPOINT_FIELDS
+    assert "skipped_stage_ledger" in PROFILE_CHECKPOINT_FIELDS
     assert "valid" in PROFILE_CHECKPOINT_FIELDS
     assert "reason" in PROFILE_CHECKPOINT_FIELDS
 
@@ -96,12 +96,13 @@ def test_default_metadata_is_safe_empty() -> None:
     assert m.included_stages == ()
     assert m.excluded_stages == ()
     assert m.skipped_stages == ()
+    assert m.skipped_stage_ledger == ()
+    assert m.valid is False
+    assert m.reason == ""
     assert m.source_profile_detection_ref == ""
     assert m.source_profile_detection_checksum == ""
     assert m.source_profile_detection_confidence is None
     assert m.source_profile_detection_uncertainty_notes == ()
-    assert m.valid is False
-    assert m.reason == ""
     assert m.has_profiles is False
     assert m.stage_count == 0
     assert m.is_no_op is False
@@ -155,6 +156,31 @@ def test_skipped_stages_captured() -> None:
     )
     assert m.skipped_stages == (2,)
     assert m.included_stages == (3, 4)
+
+
+def test_skipped_stage_ledger_captured() -> None:
+    entry = SkippedStageLedgerEntry(
+        job_id="job-123",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-4.0-java21",
+        skipped_stage_index=2,
+        skipped_stage_name="Stage 2",
+        skipped_stage_profile="springboot-2.7-to-3.5-java17",
+        reason="Skipped because source profile starts after stage 2.",
+        evidence_ref="artifact:source-profile-detection",
+        evidence_checksum="sha256:detection",
+        route_checksum="sha256:route",
+        created_at="2026-06-27T10:00:00Z",
+    )
+    m = _valid_metadata(
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-4.0-java21",
+        skipped_stages=(2,),
+        skipped_stage_ledger=(entry,),
+    )
+
+    assert m.skipped_stage_ledger == (entry,)
+    assert m.to_dict()["skipped_stage_ledger"][0]["job_id"] == "job-123"
 
 
 def test_rejects_extra_fields() -> None:
@@ -217,6 +243,27 @@ def test_to_json_round_trip() -> None:
     assert restored == original
 
 
+def test_skipped_stage_ledger_json_round_trip() -> None:
+    entry = SkippedStageLedgerEntry(
+        job_id="job-123",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-4.0-java21",
+        skipped_stage_index=2,
+        skipped_stage_name="Stage 2",
+        skipped_stage_profile="springboot-2.7-to-3.5-java17",
+        reason="Skipped because source profile starts after stage 2.",
+        evidence_ref="artifact:source-profile-detection",
+        evidence_checksum="sha256:detection",
+        route_checksum="sha256:route",
+        created_at="2026-06-27T10:00:00Z",
+    )
+    original = _valid_metadata(skipped_stage_ledger=(entry,))
+
+    restored = CheckpointProfileMetadata.from_json(original.to_json())
+
+    assert restored.skipped_stage_ledger == (entry,)
+
+
 def test_json_is_deterministic() -> None:
     m1 = _valid_metadata()
     m2 = _valid_metadata()
@@ -268,12 +315,13 @@ def test_from_dict_handles_none_values() -> None:
     assert restored.included_stages == ()
     assert restored.excluded_stages == ()
     assert restored.skipped_stages == ()
+    assert restored.skipped_stage_ledger == ()
+    assert restored.valid is False
+    assert restored.reason == ""
     assert restored.source_profile_detection_ref == ""
     assert restored.source_profile_detection_checksum == ""
     assert restored.source_profile_detection_confidence is None
     assert restored.source_profile_detection_uncertainty_notes == ()
-    assert restored.valid is False
-    assert restored.reason == ""
 
 
 def test_from_dict_handles_partial_none_values() -> None:
@@ -322,6 +370,41 @@ def test_from_profile_route_valid() -> None:
     assert m.target_profile == "springboot-3.5-java17"
     assert m.included_stages == (2, 3)
     assert m.valid is True
+
+
+def test_from_profile_route_accepts_skipped_stage_ledger() -> None:
+    class FakeRoute:
+        source_profile = "springboot-3.5-java17"
+        target_profile = "springboot-4.0-java21"
+        source_level = 1
+        target_level = 3
+        included_stages = (3, 4)
+        excluded_stages = ()
+        skipped_stages = (2,)
+        valid = True
+        reason = ""
+
+    entry = SkippedStageLedgerEntry(
+        job_id="job-123",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-4.0-java21",
+        skipped_stage_index=2,
+        skipped_stage_name="Stage 2",
+        skipped_stage_profile="springboot-2.7-to-3.5-java17",
+        reason="Skipped because source profile starts after stage 2.",
+        evidence_ref="artifact:source-profile-detection",
+        evidence_checksum="sha256:detection",
+        route_checksum="sha256:route",
+        created_at="2026-06-27T10:00:00Z",
+    )
+
+    m = CheckpointProfileMetadata.from_profile_route(
+        FakeRoute(),
+        skipped_stage_ledger=(entry,),
+    )
+
+    assert m.skipped_stages == (2,)
+    assert m.skipped_stage_ledger == (entry,)
 
 
 def test_from_profile_route_invalid() -> None:
