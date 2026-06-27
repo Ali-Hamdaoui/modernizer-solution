@@ -48,6 +48,9 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_gate_decision_repo
 from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_repository import (
     SqlitePhaseGateRepository,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_artifact_revision_repository import (
+    SqliteArtifactRevisionRepository,
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -103,6 +106,51 @@ def _create_diagnosis_record(
         redaction_status="evidence_redacted",
         created_at="2026-06-17T12:00:00Z",
     )
+
+
+def _h2_patch() -> str:
+    return (
+        "diff --git a/pom.xml b/pom.xml\n"
+        "--- a/pom.xml\n"
+        "+++ b/pom.xml\n"
+        "@@\n"
+        "+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n"
+    )
+
+
+def _reviewed_chain_files(tmp_path: Path, *, reviewer_decision: str = "accept", diff: str | None = None) -> dict:
+    output = tmp_path / "chain"
+    output.mkdir(parents=True, exist_ok=True)
+    primary_path = output / "primary.json"
+    reviewer_path = output / "reviewer.json"
+    final_artifact_path = output / "final.json"
+    diff_path = output / "final.diff"
+    review_chain_path = output / "review_chain.json"
+    reviewed_diff = diff if diff is not None else _h2_patch()
+    primary_path.write_text(
+        '{"risk":"LOW","changed_files":["pom.xml"],"root_cause":"missing h2","fix_strategy":"add h2"}',
+        encoding="utf-8",
+    )
+    reviewer_path.write_text('{"decision":"' + reviewer_decision + '"}', encoding="utf-8")
+    final_artifact_path.write_text("{}", encoding="utf-8")
+    diff_path.write_text(reviewed_diff, encoding="utf-8")
+    chain = {
+        "reviewer_decision": reviewer_decision,
+        "deterministic_artifact_checksum": "det-cs",
+        "context_pack_checksum": "ctx-cs",
+        "primary_output_checksum": "primary-cs",
+        "reviewer_output_checksum": "reviewer-cs",
+        "proposed_diff_checksum": "diff-cs",
+        "final_artifact_checksum": "final-cs",
+        "deterministic_artifact_ref": str(output / "deterministic.json"),
+        "primary_output_ref": str(primary_path),
+        "reviewer_output_ref": str(reviewer_path),
+        "final_artifact_ref": str(final_artifact_path),
+        "final_diff_ref": str(diff_path),
+        "review_chain_metadata_ref": str(review_chain_path),
+    }
+    review_chain_path.write_text("{}", encoding="utf-8")
+    return {"review_chain": chain}
 
 
 def _seed_proposal_and_critique(
@@ -190,6 +238,85 @@ class TestCreateRepairGateOnBuildFailure:
         assert gate is not None
         assert gate.gate_phase == "repair_review"
         assert gate.stage_index == 2
+
+    def test_create_gate_from_reviewed_chain_persists_revision(self, tmp_path: Path) -> None:
+        conn = _connection(tmp_path)
+        gate_repo = SqlitePhaseGateRepository(conn)
+        revision_repo = SqliteArtifactRevisionRepository(conn)
+        gate_svc = V2PhaseGateService(gate_repo)
+        repair_gate_svc = V2RepairGateService(
+            gate_service=gate_svc,
+            revision_repo=revision_repo,
+        )
+        run_dir = tmp_path / "run"
+        sandbox = tmp_path / "sandbox"
+        legacy = tmp_path / "legacy"
+        sandbox.mkdir()
+        legacy.mkdir()
+        (sandbox / "pom.xml").write_text("<project/>", encoding="utf-8")
+
+        result = repair_gate_svc.create_repair_gate_from_reviewed_chain(
+            job_id="job-1",
+            stage_index=3,
+            command_id="cmd-1",
+            review_chain_result=_reviewed_chain_files(tmp_path),
+            failure_evidence_checksum="failure-cs",
+            context_pack_checksum="ctx-cs",
+            base_repo_state_checksum="repo-cs",
+            sandbox_path=str(sandbox),
+            run_dir=str(run_dir),
+            legacy_path=str(legacy),
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+            h2_required=True,
+        )
+
+        assert result.status == "created"
+        assert result.gate_id
+        assert result.revision_id
+        assert result.policy_validation_checksum
+        gate = gate_repo.get(result.gate_id)
+        assert gate is not None
+        assert gate.gate_phase == "repair_review"
+        refs = gate.source_artifact_refs_json
+        assert "failure_evidence_checksum:failure-cs" in refs
+        assert "context_pack_checksum:ctx-cs" in refs
+        assert "reviewer_output_checksum:reviewer-cs" in refs
+        assert "policy_validation_checksum:" in refs
+        assert (run_dir / "repairs" / "repair_policy_validation.json").is_file()
+        revision = revision_repo.get(result.revision_id)
+        assert revision is not None
+        assert revision.revision_kind == "repair"
+        assert revision.revision_status == "draft"
+        assert revision.evidence_checksum == gate.source_artifact_checksum
+
+    def test_reviewed_chain_reviewer_reject_does_not_open_gate(self, tmp_path: Path) -> None:
+        conn = _connection(tmp_path)
+        gate_repo = SqlitePhaseGateRepository(conn)
+        repair_gate_svc = V2RepairGateService(gate_service=V2PhaseGateService(gate_repo))
+        sandbox = tmp_path / "sandbox"
+        legacy = tmp_path / "legacy"
+        sandbox.mkdir()
+        legacy.mkdir()
+        (sandbox / "pom.xml").write_text("<project/>", encoding="utf-8")
+
+        result = repair_gate_svc.create_repair_gate_from_reviewed_chain(
+            job_id="job-1",
+            stage_index=3,
+            command_id="cmd-1",
+            review_chain_result=_reviewed_chain_files(tmp_path, reviewer_decision="reject"),
+            failure_evidence_checksum="failure-cs",
+            context_pack_checksum="ctx-cs",
+            base_repo_state_checksum="repo-cs",
+            sandbox_path=str(sandbox),
+            run_dir=str(tmp_path / "run"),
+            legacy_path=str(legacy),
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+            h2_required=True,
+        )
+
+        assert result.status == "skipped"
+        assert "reviewer did not accept" in result.reason
+        assert gate_repo.list_open("job-1") == ()
 
     def test_duplicate_gate_returns_conflict(self, tmp_path: Path) -> None:
         """Duplicate gate creation for same stage returns conflict."""

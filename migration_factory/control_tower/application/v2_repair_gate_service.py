@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -40,7 +41,12 @@ from migration_factory.control_tower.domain.checksums import (
     sha256_canonical_json,
     utc_now_text,
 )
+from migration_factory.control_tower.domain.entities import ArtifactRevisionRecord
+from migration_factory.control_tower.infrastructure.sqlite.v2_artifact_revision_repository import (
+    SqliteArtifactRevisionRepository,
+)
 from migration_factory.control_tower.schemas.phase_gate import GateDecision
+from migration_factory.repair_loop.patch_gate import evaluate_patch_proposal
 
 
 # ── Constants ─────────────────────────────────────────────────────────
@@ -61,6 +67,8 @@ class RepairGateCreationResult:
     status: str  # created, conflict, skipped
     existing_gate_id: str | None = None
     reason: str = ""
+    revision_id: str = ""
+    policy_validation_checksum: str = ""
 
 
 @dataclass(frozen=True)
@@ -90,16 +98,181 @@ class V2RepairGateService:
         gate_action_service: V2GateActionService | None = None,
         repair_flow: V2RepairFlowService | None = None,
         diagnosis_service: V2FailureDiagnosisService | None = None,
+        revision_repo: SqliteArtifactRevisionRepository | None = None,
         max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
     ) -> None:
         self._gate_service = gate_service
         self._gate_action_service = gate_action_service
         self._repair_flow = repair_flow
         self._diagnosis_service = diagnosis_service
+        self._revision_repo = revision_repo
         self._max_repair_attempts = max_repair_attempts
 
         # In-memory attempt tracking: {(job_id, stage_index): attempt_count}
         self._attempt_counts: dict[tuple[str, int], int] = {}
+
+    def create_repair_gate_from_reviewed_chain(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        review_chain_result: dict[str, Any],
+        failure_evidence_checksum: str,
+        context_pack_checksum: str,
+        base_repo_state_checksum: str,
+        sandbox_path: str,
+        run_dir: str,
+        legacy_path: str,
+        deterministic_rule_id: str,
+        h2_required: bool = False,
+    ) -> RepairGateCreationResult:
+        """Open a repair_review gate only from an accepted reviewed repair chain."""
+        chain = review_chain_result.get("review_chain")
+        if not isinstance(chain, dict):
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="skipped",
+                reason="missing review_chain metadata",
+            )
+        if str(chain.get("reviewer_decision") or "") != "accept":
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="skipped",
+                reason="reviewer did not accept repair chain",
+            )
+
+        primary_ref = str(chain.get("primary_output_ref") or "")
+        final_diff_ref = str(chain.get("final_diff_ref") or "")
+        final_artifact_ref = str(chain.get("final_artifact_ref") or "")
+        if not primary_ref or not final_diff_ref or not final_artifact_ref:
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="skipped",
+                reason="reviewed repair chain missing artifact refs",
+            )
+
+        primary = json.loads(open(primary_ref, encoding="utf-8").read())
+        reviewed_diff = open(final_diff_ref, encoding="utf-8").read()
+        policy_result = evaluate_patch_proposal(
+            proposal={
+                "deterministic_rule_id": deterministic_rule_id,
+                "risk": str(primary.get("risk") or "LOW"),
+                "requires_human_review": False,
+                "unified_diff": reviewed_diff,
+            },
+            sandbox_path=sandbox_path,
+            run_dir=run_dir,
+            legacy_path=legacy_path,
+            h2_required=h2_required,
+        )
+        policy_payload = {
+            "status": policy_result.status.lower(),
+            "reason": policy_result.reason,
+            "rule_id": policy_result.rule_id,
+            "risk": policy_result.risk,
+            "touched_paths": list(policy_result.touched_paths),
+            "human_review_required": policy_result.human_review_required,
+        }
+        policy_checksum = sha256_canonical_json(policy_payload)
+        policy_path = Path(run_dir) / "repairs" / "repair_policy_validation.json"
+        policy_path.parent.mkdir(parents=True, exist_ok=True)
+        policy_path.write_text(
+            json.dumps({**policy_payload, "policy_validation_checksum": policy_checksum}, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        if policy_result.status != "ALLOWED":
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="skipped",
+                reason=f"repair policy validation failed: {policy_result.status}",
+                policy_validation_checksum=policy_checksum,
+            )
+
+        required_binding = {
+            "failure_evidence_checksum": failure_evidence_checksum,
+            "context_pack_checksum": context_pack_checksum,
+            "primary_output_checksum": str(chain.get("primary_output_checksum") or ""),
+            "reviewer_output_checksum": str(chain.get("reviewer_output_checksum") or ""),
+            "final_reviewed_diff_checksum": str(chain.get("proposed_diff_checksum") or ""),
+            "policy_validation_checksum": policy_checksum,
+            "base_repo_state_checksum": base_repo_state_checksum,
+            "final_artifact_checksum": str(chain.get("final_artifact_checksum") or ""),
+        }
+        if any(not value for value in required_binding.values()):
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="skipped",
+                reason="reviewed repair gate missing required checksum binding",
+                policy_validation_checksum=policy_checksum,
+            )
+        source_checksum = sha256_canonical_json(required_binding)
+        refs = tuple(sorted({
+            str(chain.get("deterministic_artifact_ref") or ""),
+            primary_ref,
+            str(chain.get("reviewer_output_ref") or ""),
+            final_artifact_ref,
+            final_diff_ref,
+            str(chain.get("review_chain_metadata_ref") or ""),
+            str(policy_path),
+            *[f"{key}:{value}" for key, value in required_binding.items()],
+        } - {""}))
+        gate_result = self._gate_service.create_gate(CreateGateRequest(
+            job_id=job_id,
+            gate_phase="repair_review",
+            stage_index=stage_index,
+            source_artifact_checksum=source_checksum,
+            source_artifact_refs=refs,
+            created_by="system",
+        ))
+        if gate_result.status == "conflict":
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="conflict",
+                existing_gate_id=gate_result.existing_gate_id,
+                reason="A repair_review gate already exists for this stage",
+                policy_validation_checksum=policy_checksum,
+            )
+
+        revision_id = ""
+        if self._revision_repo is not None:
+            revision_id = uuid4().hex
+            self._revision_repo.save(ArtifactRevisionRecord(
+                revision_id=revision_id,
+                job_id=job_id,
+                stage_index=stage_index,
+                revision_kind="repair",
+                revision_status="draft",
+                revision_order=0,
+                evidence_checksum=source_checksum,
+                prior_revision_checksum=None,
+                artifact_refs_json=json.dumps(list(refs), separators=(",", ":")),
+                prior_revision_id=None,
+                superseded_by_revision_id=None,
+                accepted_at_gate_id=None,
+                created_at=utc_now_text(),
+                created_by="system",
+            ))
+        return RepairGateCreationResult(
+            gate_id=gate_result.gate_id,
+            gate_checksum=gate_result.gate_checksum,
+            diagnosis=None,
+            status="created",
+            revision_id=revision_id,
+            policy_validation_checksum=policy_checksum,
+        )
 
     # ── Job 101/102: Create repair_review gate on failure ───────────
 
