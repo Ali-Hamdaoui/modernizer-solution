@@ -2701,55 +2701,15 @@ def create_app(
         proposal_id: str,
         payload: ApproveRepairProposalRequest,
     ) -> dict[str, Any]:
-        """Approve a repair proposal with checksum.
-
-        F07: Requires proposal_checksum and context_pack_checksum.
-        Fails closed unless a latest accepted reviewer critique matches
-        both current checksums.
-        """
-        with unit_of_work_factory() as uow:
-            reviewer_service = V2ReviewerService(
-                reviewer_repo=uow.v2_reviewer,
-            )
-            service = V2RepairFlowService(
-                repair_repo=uow.v2_repairs,
-                reviewer_service=reviewer_service,
-                job_repo=uow.v2_jobs,
-                setup_repo=uow.v2_setups,
-                command_repo=uow.v2_commands,
-            )
-            try:
-                proposal = service.approve_proposal(
-                    proposal_id=proposal_id,
-                    approval_checksum=payload.approval_checksum,
-                    proposal_checksum=payload.proposal_checksum,
-                    context_pack_checksum=payload.context_pack_checksum,
-                )
-                repair_action = service.apply_approved_proposal(
-                    proposal_id=proposal_id,
-                    command_id=command_id,
-                )
-                # Look up the reviewer critique_id for the response
-                accepted = reviewer_service.check_reviewer_gate(
-                    proposal_id=proposal_id,
-                    proposal_checksum=payload.proposal_checksum,
-                    context_pack_checksum=payload.context_pack_checksum,
-                )
-                reviewer_critique_id = accepted.critique_id if accepted else None
-                reviewer_decision = accepted.decision if accepted else None
-            except ValueError as exc:
-                raise _error(
-                    status.HTTP_400_BAD_REQUEST,
-                    "REPAIR_APPROVAL_FAILED",
-                    str(exc),
-                ) from exc
-        return service.proposal_to_dict(
-            proposal,
-            reviewer_critique_id=reviewer_critique_id,
-            reviewer_decision=reviewer_decision,
-        ) | {
-            "repair_action": service.action_to_dict(repair_action),
-        }
+        """Fail closed: legacy proposal approval is not F5 authoritative."""
+        raise _error(
+            status.HTTP_410_GONE,
+            "LEGACY_REPAIR_APPROVAL_DISABLED",
+            (
+                "Legacy repair proposal approval cannot apply F5 repairs. "
+                "Use reviewed repair gates with checksum-bound reviewed diff artifacts."
+            ),
+        )
 
     # ------------------------------------------------------------------
     # F07: Reviewer critique endpoints

@@ -124,6 +124,15 @@ def test_v2_approved_repair_routes_through_patch_gate_and_writes_ledger(
     assert ledger["artifact_refs"]["repair_patch_draft"].endswith("patch_draft_1.json")
     assert ledger["attempts"][0]["binding_checksum"] == "binding-1"
     assert ledger["attempts"][0]["status"] == "VALIDATED"
+    assert (run_dir / "repairs" / "repair_apply_result.json").is_file()
+    assert (run_dir / "repairs" / "repair_rerun_result.json").is_file()
+    assert (run_dir / "repairs" / "repair_proof.json").is_file()
+    assert ledger["artifact_refs"]["repair_apply_result"].endswith("repair_apply_result.json")
+    assert ledger["artifact_refs"]["repair_rerun_result"].endswith("repair_rerun_result.json")
+    assert ledger["artifact_refs"]["repair_proof"].endswith("repair_proof.json")
+    proof = json.loads((run_dir / "repairs" / "repair_proof.json").read_text(encoding="utf-8"))
+    assert proof["status"] == "REPAIR_VALIDATED"
+    assert proof["binding_checksum"] == "binding-1"
     assert [event[0] for event in events] == [
         "repair_patch_gate_completed",
         "repair_patch_applied",
@@ -203,6 +212,14 @@ def test_v2_repair_bridge_rolls_back_on_validation_failure(
     assert ledger["final_status"] == "REPAIR_FAILED"
     assert ledger["attempts"][0]["rollback"]["status"] == "ROLLED_BACK"
     assert ledger["attempts"][0]["status"] == "ROLLED_BACK"
+    assert (run_dir / "repairs" / "repair_apply_result.json").is_file()
+    assert (run_dir / "repairs" / "repair_rerun_result.json").is_file()
+    assert (run_dir / "repairs" / "repair_rollback_result.json").is_file()
+    assert (run_dir / "repairs" / "repair_terminal_failure.json").is_file()
+    rollback = json.loads((run_dir / "repairs" / "repair_rollback_result.json").read_text(encoding="utf-8"))
+    assert rollback["status"] == "ROLLED_BACK"
+    terminal = json.loads((run_dir / "repairs" / "repair_terminal_failure.json").read_text(encoding="utf-8"))
+    assert terminal["max_attempts_exhausted"] is True
     assert [event[0] for event in events] == [
         "repair_patch_gate_completed",
         "repair_patch_applied",
@@ -211,7 +228,7 @@ def test_v2_repair_bridge_rolls_back_on_validation_failure(
     ]
 
 
-def test_apply_approved_proposal_uses_persisted_context(
+def test_apply_approved_proposal_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -344,22 +361,13 @@ def test_apply_approved_proposal_uses_persisted_context(
         encoding="utf-8",
     )
 
-    calls: list[dict] = []
-    monkeypatch.setattr(
-        v2_repair_flow,
-        "apply_patch_to_sandbox",
-        lambda **kwargs: calls.append(kwargs) or _apply_result(Path(kwargs["run_dir"])),
-    )
-    result = service.apply_approved_proposal(
-        proposal_id=proposal.proposal_id,
-        command_id="cmd-1",
-        validation_runner=lambda **kwargs: _validation(True),
-    )
-
-    assert result.status == "applied"
-    assert calls
-    assert calls[0]["run_dir"] == run_dir
-    assert calls[0]["sandbox_path"] == str(run_dir / "sandbox")
+    with pytest.raises(ValueError, match="Legacy repair proposal apply is disabled"):
+        service.apply_approved_proposal(
+            proposal_id=proposal.proposal_id,
+            command_id="cmd-1",
+            validation_runner=lambda **kwargs: _validation(True),
+        )
+    assert not (run_dir / "repairs" / "repair_apply_result.json").exists()
 
 
 def test_apply_reviewed_repair_diff_loads_exact_artifact(

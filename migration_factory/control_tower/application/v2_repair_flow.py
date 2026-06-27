@@ -480,6 +480,23 @@ class V2RepairFlowService:
             touched_paths=list(gate.touched_paths),
         )
         attempt["patch_ref"] = str(apply_result.patch_path)
+        apply_artifact_ref, apply_artifact_checksum = self._write_repair_json_artifact(
+            run_path,
+            "repair_apply_result.json",
+            {
+                "proposal_id": proposal.proposal_id,
+                "attempt": 1,
+                "status": apply_result.status,
+                "reason": apply_result.reason,
+                "touched_paths": list(apply_result.touched_paths),
+                "created_paths": list(apply_result.created_paths),
+                "patch_ref": str(apply_result.patch_path),
+                "binding_checksum": binding_checksum or "",
+            },
+        )
+        artifact_refs["repair_apply_result"] = str(apply_artifact_ref)
+        attempt["repair_apply_result_ref"] = str(apply_artifact_ref)
+        attempt["repair_apply_result_checksum"] = apply_artifact_checksum
         if apply_result.status != "APPLIED":
             result_path = write_patch_attempt_result(
                 run_dir=run_path,
@@ -495,6 +512,21 @@ class V2RepairFlowService:
             )
             attempt["patch_result_ref"] = str(result_path)
             attempt["status"] = "FAILED"
+            terminal_ref, terminal_checksum = self._write_repair_json_artifact(
+                run_path,
+                "repair_terminal_failure.json",
+                {
+                    "proposal_id": proposal.proposal_id,
+                    "attempt": 1,
+                    "status": "REPAIR_FAILED",
+                    "reason": apply_result.reason,
+                    "max_attempts_exhausted": True,
+                    "binding_checksum": binding_checksum or "",
+                },
+            )
+            artifact_refs["repair_terminal_failure"] = str(terminal_ref)
+            attempt["repair_terminal_failure_ref"] = str(terminal_ref)
+            attempt["repair_terminal_failure_checksum"] = terminal_checksum
             append_attempt(ledger, attempt)
             ledger["artifact_refs"] = artifact_refs
             ledger["final_status"] = "REPAIR_FAILED"
@@ -531,6 +563,26 @@ class V2RepairFlowService:
             "test_status": validation.test_status,
             "h2_status": validation.h2_status,
         }
+        rerun_ref, rerun_checksum = self._write_repair_json_artifact(
+            run_path,
+            "repair_rerun_result.json",
+            {
+                "proposal_id": proposal.proposal_id,
+                "attempt": 1,
+                "passed": validation.passed,
+                "build_status": validation.build_status,
+                "test_status": validation.test_status,
+                "h2_status": validation.h2_status,
+                "validation_commands": list(validation.validation_commands),
+                "warnings": list(validation.warnings),
+                "errors": list(validation.errors),
+                "artifact_refs": dict(validation.artifact_refs),
+                "binding_checksum": binding_checksum or "",
+            },
+        )
+        artifact_refs["repair_rerun_result"] = str(rerun_ref)
+        attempt["repair_rerun_result_ref"] = str(rerun_ref)
+        attempt["repair_rerun_result_checksum"] = rerun_checksum
         artifact_refs.update(validation.artifact_refs)
         self._emit_repair_event(
             event_recorder,
@@ -563,6 +615,24 @@ class V2RepairFlowService:
             )
             attempt["patch_result_ref"] = str(result_path)
             attempt["status"] = "VALIDATED"
+            proof_ref, proof_checksum = self._write_repair_json_artifact(
+                run_path,
+                "repair_proof.json",
+                {
+                    "proposal_id": proposal.proposal_id,
+                    "attempt": 1,
+                    "status": "REPAIR_VALIDATED",
+                    "patch_result_ref": str(result_path),
+                    "repair_apply_result_ref": str(apply_artifact_ref),
+                    "repair_rerun_result_ref": str(rerun_ref),
+                    "binding_checksum": binding_checksum or "",
+                    "repair_apply_result_checksum": apply_artifact_checksum,
+                    "repair_rerun_result_checksum": rerun_checksum,
+                },
+            )
+            artifact_refs["repair_proof"] = str(proof_ref)
+            attempt["repair_proof_ref"] = str(proof_ref)
+            attempt["repair_proof_checksum"] = proof_checksum
             append_attempt(ledger, attempt)
             ledger["artifact_refs"] = artifact_refs
             ledger["final_status"] = "REPAIR_VALIDATED"
@@ -597,6 +667,22 @@ class V2RepairFlowService:
             "reason": "; ".join(validation.errors) or "validation failed",
             "status": "ROLLED_BACK" if rolled_back else "ROLLBACK_FAILED",
         }
+        rollback_ref, rollback_checksum = self._write_repair_json_artifact(
+            run_path,
+            "repair_rollback_result.json",
+            {
+                "proposal_id": proposal.proposal_id,
+                "attempt": 1,
+                "performed": True,
+                "status": "ROLLED_BACK" if rolled_back else "ROLLBACK_FAILED",
+                "reason": rollback_reason,
+                "validation_errors": list(validation.errors),
+                "binding_checksum": binding_checksum or "",
+            },
+        )
+        artifact_refs["repair_rollback_result"] = str(rollback_ref)
+        attempt["repair_rollback_result_ref"] = str(rollback_ref)
+        attempt["repair_rollback_result_checksum"] = rollback_checksum
         result_path = write_patch_attempt_result(
             run_dir=run_path,
             run_id=resolved_run_id,
@@ -614,6 +700,23 @@ class V2RepairFlowService:
         )
         attempt["patch_result_ref"] = str(result_path)
         attempt["status"] = "ROLLED_BACK" if rolled_back else "FAILED"
+        terminal_ref, terminal_checksum = self._write_repair_json_artifact(
+            run_path,
+            "repair_terminal_failure.json",
+            {
+                "proposal_id": proposal.proposal_id,
+                "attempt": 1,
+                "status": "REPAIR_FAILED",
+                "reason": rollback_reason,
+                "validation_errors": list(validation.errors),
+                "rollback_status": attempt["rollback"]["status"],
+                "max_attempts_exhausted": True,
+                "binding_checksum": binding_checksum or "",
+            },
+        )
+        artifact_refs["repair_terminal_failure"] = str(terminal_ref)
+        attempt["repair_terminal_failure_ref"] = str(terminal_ref)
+        attempt["repair_terminal_failure_checksum"] = terminal_checksum
         append_attempt(ledger, attempt)
         ledger["artifact_refs"] = artifact_refs
         ledger["final_status"] = "REPAIR_FAILED"
@@ -636,6 +739,27 @@ class V2RepairFlowService:
     ) -> None:
         if recorder is not None:
             recorder(event_type, payload)
+
+    @staticmethod
+    def _write_repair_json_artifact(
+        run_path: Path,
+        filename: str,
+        payload: dict[str, Any],
+    ) -> tuple[Path, str]:
+        repairs_dir = run_path / "repairs"
+        repairs_dir.mkdir(parents=True, exist_ok=True)
+        checksum = sha256_canonical_json(payload)
+        artifact_payload = {
+            "schema_version": "1.0",
+            "artifact_checksum": checksum,
+            **payload,
+        }
+        artifact_ref = repairs_dir / filename
+        artifact_ref.write_text(
+            json.dumps(artifact_payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return artifact_ref, checksum
 
     def _record_action(
         self,
@@ -677,12 +801,11 @@ class V2RepairFlowService:
         validation_runner: ValidationRunner | None = None,
         event_recorder: RepairEventRecorder | None = None,
     ) -> SandboxAction:
-        """Apply an approved repair proposal using persisted backend evidence.
-
-        The caller supplies only IDs. The service resolves the job, setup,
-        command result, sandbox path, run directory, and patch draft
-        artifact from backend-owned persistence.
-        """
+        """Fail closed: legacy draft patches are not authoritative for F5."""
+        raise ValueError(
+            "Legacy repair proposal apply is disabled. "
+            "Use apply_reviewed_repair_diff with checksum-bound reviewed artifacts."
+        )
         proposal = self._proposals.get(proposal_id)
         if proposal is None and self._repo is not None:
             record = self._repo.get_proposal(proposal_id)

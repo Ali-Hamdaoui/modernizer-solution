@@ -414,7 +414,7 @@ class TestRepairAPI:
         assert response.json()["error"]["code"] == "LEGACY_REPAIR_PROPOSAL_DISABLED"
         assert fake_client.roles == []
 
-    def test_approve_proposal(self, tmp_path: Path) -> None:
+    def test_legacy_approve_proposal_is_disabled(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)
         proposal = _seed_repair_proposal(
             conn,
@@ -434,8 +434,7 @@ class TestRepairAPI:
             command_id="cmd-2",
         )
 
-        # Approve with checksums (F07: all required)
-        # Create a reviewer critique directly via the repo so the gate passes
+        # Even with a legacy reviewer critique, this route cannot authorize F5 apply.
         from migration_factory.control_tower.application.v2_reviewer_service import (
             V2ReviewerService,
         )
@@ -455,18 +454,6 @@ class TestRepairAPI:
             unsafe_assumptions=(),
         )
 
-        monkeypatch = pytest.MonkeyPatch()
-        monkeypatch.setattr(
-            v2_repair_flow,
-            "apply_patch_to_sandbox",
-            lambda **kwargs: _fake_apply_result(Path(kwargs["run_dir"])),
-        )
-        monkeypatch.setattr(
-            v2_repair_flow,
-            "run_validation_after_patch",
-            lambda **kwargs: _fake_validation(True),
-        )
-
         response = client.post(
             f"/v1/v2/commands/cmd-2/repair/proposal/{proposal_id}/approve",
             json={
@@ -476,16 +463,10 @@ class TestRepairAPI:
             },
             headers=_mutation_headers(),
         )
-        assert response.status_code == 200, response.text
+        assert response.status_code == 410, response.text
         body = response.json()
-        assert body["status"] == "approved"
-        assert body["approval_checksum"] == "chk-abc"
-        assert body["proposal_checksum"]
-        # Reviewer metadata should be in response
-        assert "reviewer_critique_id" in body
-        assert body["repair_action"]["status"] == "applied"
-        assert (run_dir / "repairs" / "patch_draft_1.json").is_file()
-        monkeypatch.undo()
+        assert body["error"]["code"] == "LEGACY_REPAIR_APPROVAL_DISABLED"
+        assert not (run_dir / "repairs" / "repair_apply_result.json").exists()
 
     def test_approve_missing_proposal(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)
@@ -498,7 +479,7 @@ class TestRepairAPI:
             },
             headers=_mutation_headers(),
         )
-        assert response.status_code == 400
+        assert response.status_code == 410
 
     def test_proposal_persistence(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)
