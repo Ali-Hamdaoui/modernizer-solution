@@ -196,6 +196,10 @@ from migration_factory.control_tower.application.v2_orchestrator_runner import (
     V2OrchestratorStart,
     _bounded,
 )
+from migration_factory.control_tower.application.v2_profile_runtime import (
+    RouteRuntimeProfileUnavailableError,
+    public_runtime_profile_error_message,
+)
 from migration_factory.control_tower.application.v2_failure_diagnosis import (
     create_orchestrator_diagnosis_callback,
 )
@@ -1358,6 +1362,8 @@ def create_app(
             service = V2WorkerStageService(
                 setup_repo=uow.v2_setups,
                 command_repo=uow.v2_commands,
+                job_repo=uow.v2_jobs,
+                run_config_repo=uow.run_configurations,
             )
             try:
                 result = service.build_stage1_manifest(
@@ -1365,10 +1371,23 @@ def create_app(
                     setup_id=payload.setup_id,
                 )
             except ValueError as exc:
+                if isinstance(exc, RouteRuntimeProfileUnavailableError):
+                    message = public_runtime_profile_error_message(exc)
+                    _append_v2_event(
+                        uow,
+                        job_id=payload.job_id,
+                        stage=1,
+                        event_type="stage_failed",
+                        status="blocked",
+                        message=message,
+                        payload={"setup_id": payload.setup_id},
+                    )
+                else:
+                    message = str(exc)
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,
                     "STAGE1_START_FAILED",
-                    str(exc),
+                    message,
                 ) from exc
             _append_v2_event(
                 uow,
