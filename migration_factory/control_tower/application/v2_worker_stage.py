@@ -17,6 +17,16 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository
     SqliteV2CommandRepository,
     V2StageCommandRecord,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository import (
+    SqliteV2JobRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.repositories import (
+    SqliteRunConfigurationRepository,
+)
+from migration_factory.control_tower.application.v2_profile_runtime import (
+    ensure_runtime_profile_available,
+    resolve_runtime_profile_for_run_configuration,
+)
 
 
 STAGE_JDK_MAP = {
@@ -52,9 +62,13 @@ class V2WorkerStageService:
         self,
         setup_repo: SqliteV2SetupRepository,
         command_repo: SqliteV2CommandRepository | None = None,
+        job_repo: SqliteV2JobRepository | None = None,
+        run_config_repo: SqliteRunConfigurationRepository | None = None,
     ) -> None:
         self._setup_repo = setup_repo
         self._command_repo = command_repo
+        self._job_repo = job_repo
+        self._run_config_repo = run_config_repo
 
     def build_stage1_manifest(
         self,
@@ -69,6 +83,27 @@ class V2WorkerStageService:
         setup = self._setup_repo.get(setup_id)
         if setup is None:
             raise ValueError(f"Setup {setup_id!r} not found")
+        if self._job_repo is not None:
+            job = self._job_repo.get(job_id)
+            if job is None:
+                raise ValueError(f"Job {job_id!r} not found")
+            if job.setup_id != setup_id:
+                raise ValueError(
+                    "Stage 1 start setup_id must match the persisted job's setup_id"
+                )
+
+        if self._run_config_repo is None:
+            raise ValueError(
+                "ROUTE_RUNTIME_PROFILE_UNAVAILABLE: run configuration repository is unavailable"
+            )
+        run_configuration = self._run_config_repo.get_for_job(job_id)
+        if run_configuration is None:
+            raise ValueError(
+                "ROUTE_RUNTIME_PROFILE_UNAVAILABLE: persisted run configuration not found for job "
+                f"{job_id!r}"
+            )
+        runtime_profile = resolve_runtime_profile_for_run_configuration(run_configuration)
+        ensure_runtime_profile_available(setup.ai_hub_path, runtime_profile)
 
         command_id = uuid4().hex
         now = utc_now_text()
@@ -86,7 +121,7 @@ class V2WorkerStageService:
             "--legacy", setup.legacy_app_path,
             "--modernized", setup.output_parent_path,
             "--ai-hub", setup.ai_hub_path,
-            "--profile", "springboot-2.1.6-to-2.7-java11",
+            "--profile", runtime_profile,
             "--mode", "full_sandbox_migration",
         )
 

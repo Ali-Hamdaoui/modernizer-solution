@@ -288,6 +288,16 @@ def test_start_from_springboot_35_java17_to_java21() -> None:
     assert route.excluded_stages == (4,)
 
 
+def test_stage_progression_still_routes_boot35_java17_to_java21_as_stage3_only() -> None:
+    route = compute_profile_route("springboot-3.5-java17", "springboot-3.5-java21")
+
+    assert route.valid is True
+    assert route.included_stages == (3,)
+    assert route.skipped_stages == (2,)
+    assert route.excluded_stages == (4,)
+    assert next_required_stage(route, current_stage=1) == 3
+
+
 def test_start_from_springboot_35_java17_to_boot_4() -> None:
     route = compute_profile_route("springboot-3.5-java17", "springboot-4.0-java21")
     assert route.valid is True

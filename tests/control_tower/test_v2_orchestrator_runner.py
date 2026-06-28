@@ -8,8 +8,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from migration_factory.control_tower.application.v2_orchestrator_runner import V2OrchestratorRunner
-from migration_factory.control_tower.domain.checksums import utc_now_text
+from migration_factory.control_tower.application.v2_profile_runtime import RouteRuntimeProfileUnavailableError
+from migration_factory.control_tower.domain.checksums import canonical_json_text, sha256_canonical_json, utc_now_text
+from migration_factory.control_tower.domain.entities import RunConfigurationRecord
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
 from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository import V2MigrationJobRecord
@@ -19,12 +23,16 @@ from migration_factory.control_tower.application.v2_stage_progression import (
     compute_profile_route,
     route_to_dict,
 )
+from migration_factory.control_tower.domain.states import TargetProofLevel
 from migration_factory.control_tower.domain.entities import ArtifactRevisionRecord, PhaseGateRecord
 from migration_factory.control_tower.domain.gate_checksum import gate_checksum
 from migration_factory.control_tower.infrastructure.sqlite.v2_approval_repository import (
     V2ApprovalDecisionRecord,
     V2ResumeCommandRecord,
 )
+
+
+AI_HUB = Path(__file__).resolve().parents[2] / "modernizer-solution-ai-hub"
 
 
 class _FakeProcess:
@@ -86,6 +94,38 @@ def _save_command(conn: sqlite3.Connection, *, command_id: str = "cmd-1", job_id
             stage_index=1,
             manifest_checksum="checksum",
             argv_json=json.dumps(["python", "-m", "migration_factory.orchestrator.runner", "--run-id", "run-1"]),
+            env_json=json.dumps({
+                "JAVA_HOME": "C:/jdk11",
+                "JAVA11_HOME": "C:/jdk11",
+                "JAVA17_HOME": "C:/jdk17",
+                "JAVA21_HOME": "C:/jdk21",
+                "MAVEN_CMD": "C:/maven/bin/mvn.cmd",
+                "PATH_PREPEND": "C:/jdk11/bin",
+            }),
+            status="manifest_ready",
+            created_at=now,
+            updated_at=now,
+            result_json=None,
+        )
+    )
+
+
+def _save_phase_command(
+    conn: sqlite3.Connection,
+    *,
+    command_id: str = "cmd-phase",
+    job_id: str = "job-1",
+    stage_index: int = 1,
+    phase: str = "analysis",
+) -> None:
+    now = utc_now_text()
+    SqliteUnitOfWork(conn).v2_commands.save(
+        V2StageCommandRecord(
+            command_id=command_id,
+            job_id=job_id,
+            stage_index=stage_index,
+            manifest_checksum=f"phase:{phase}",
+            argv_json="[]",
             env_json=json.dumps({
                 "JAVA_HOME": "C:/jdk11",
                 "JAVA11_HOME": "C:/jdk11",
@@ -200,7 +240,7 @@ def _seed_resume_gate(
     return checkpoint_checksum
 
 
-def _seed_stage_pipeline(conn: sqlite3.Connection, *, job_id: str = "job-1") -> None:
+def _seed_stage_pipeline(conn: sqlite3.Connection, *, job_id: str = "job-1", seed_run_configuration: bool = True) -> None:
     now = utc_now_text()
     with SqliteUnitOfWork(conn) as uow:
         uow.v2_setups.save(
@@ -209,7 +249,7 @@ def _seed_stage_pipeline(conn: sqlite3.Connection, *, job_id: str = "job-1") -> 
                 run_name="stage-pipeline",
                 legacy_app_path="C:/legacy",
                 output_parent_path="C:/modernized",
-                ai_hub_path="C:/ai-hub",
+                ai_hub_path=str(AI_HUB),
                 java11_home="C:/jdk11",
                 java17_home="C:/jdk17",
                 java21_home="C:/jdk21",
@@ -237,6 +277,28 @@ def _seed_stage_pipeline(conn: sqlite3.Connection, *, job_id: str = "job-1") -> 
                 correlation_id=None,
             )
         )
+        if seed_run_configuration:
+            run_config_payload = {
+                "source_profile": "springboot-2.7-java11",
+                "target_profile": "springboot-4.0-java21",
+            }
+            uow.run_configurations.insert(
+                RunConfigurationRecord(
+                    run_configuration_id=f"rc-{job_id}",
+                    job_id=job_id,
+                    schema_version="1.0.0",
+                    runner_profile_id="runner",
+                    runner_profile_version="1",
+                    pipeline_id="springboot-3.5-java17-to-java21-three-stage",
+                    pipeline_version="1",
+                    target_proof_level=TargetProofLevel.BUILD_TEST_VERIFIED,
+                    enabled_gates_json="[]",
+                    policy_json="{}",
+                    payload_json=canonical_json_text(run_config_payload),
+                    payload_checksum=sha256_canonical_json(run_config_payload),
+                    created_at=now,
+                )
+            )
         uow.artifact_revisions.save(
             ArtifactRevisionRecord(
                 revision_id="rev-stage3-accepted",
@@ -498,6 +560,161 @@ def test_v2_runner_does_not_forward_copilot_env_to_product_subprocess(monkeypatc
     assert "GITHUB_TOKEN" not in env
     event_types = [event.type for event in SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")]
     assert "copilot_status_checked" not in event_types
+
+
+def test_phase_argv_uses_route_aware_profile_for_analysis_and_planning(tmp_path: Path) -> None:
+    db_path = tmp_path / "phase_argv.sqlite3"
+    seed_conn = sqlite3.connect(
+        db_path,
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    seed_conn.row_factory = sqlite3.Row
+    apply_pending_migrations(seed_conn)
+    _seed_stage_pipeline(seed_conn, seed_run_configuration=False)
+    _insert_run_config(
+        seed_conn,
+        job_id="job-1",
+        rc_id="rc-1",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-3.5-java21",
+        policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}),
+    )
+    _save_phase_command(seed_conn, command_id="cmd-analysis", job_id="job-1", stage_index=1, phase="analysis")
+    _save_phase_command(seed_conn, command_id="cmd-planning", job_id="job-1", stage_index=2, phase="planning")
+    seed_conn.close()
+
+    analysis_conn = sqlite3.connect(
+        db_path,
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    analysis_conn.row_factory = sqlite3.Row
+    planning_conn = sqlite3.connect(
+        db_path,
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    planning_conn.row_factory = sqlite3.Row
+    popen = _SequentialFakePopen([
+        ([json.dumps(_success_result(sandbox_path="/tmp/analysis")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/planning")) + "\n"], [], 0),
+    ])
+    analysis_runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(analysis_conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+    planning_runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(planning_conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    analysis_runner.start(job_id="job-1", command_id="cmd-analysis")
+    planning_runner.start(job_id="job-1", command_id="cmd-planning")
+    _wait_for_popen_call_containing(popen, "--phase analysis")
+    _wait_for_popen_call_containing(popen, "--phase planning")
+
+    assert len(popen.calls) == 2
+    assert all("--profile" in call["argv"] for call in popen.calls)
+    assert all("springboot-3.5-java17-to-java21" in call["argv"] for call in popen.calls)
+    assert all("springboot-2.1.6-to-2.7-java11" not in " ".join(call["argv"]) for call in popen.calls)
+
+
+def test_phase_argv_no_longer_hardcodes_springboot_2_1_6_to_2_7_java11(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn, seed_run_configuration=False)
+    _insert_run_config(
+        conn,
+        job_id="job-1",
+        rc_id="rc-legacy-check",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-3.5-java21",
+        policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}),
+    )
+    _save_phase_command(conn, command_id="cmd-analysis", job_id="job-1", stage_index=1, phase="analysis")
+    popen = _FakePopen(stdout=[json.dumps(_success_result(sandbox_path="/tmp/analysis")) + "\n"], stderr=[], exit_code=0)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-analysis")
+    _wait_for_popen_call_containing(popen, "springboot-3.5-java17-to-java21")
+    assert "springboot-2.1.6-to-2.7-java11" not in " ".join(popen.calls[0]["argv"])
+
+
+def test_route_profile_resolution_failure_emits_blocked_stage_event(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    now = utc_now_text()
+    missing_ai_hub = tmp_path / "missing-ai-hub"
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_setups.save(
+            V2MigrationSetupRecord(
+                setup_id="setup-route-fail",
+                run_name="route-fail",
+                legacy_app_path="C:/legacy",
+                output_parent_path="C:/modernized",
+                ai_hub_path=str(missing_ai_hub),
+                java11_home="C:/jdk11",
+                java17_home="C:/jdk17",
+                java21_home="C:/jdk21",
+                maven_cmd="C:/maven/bin/mvn.cmd",
+                proof_level="build_test_verified",
+                skip_endpoint_smoke=True,
+                migration_flags_json="{}",
+                setup_checksum="checksum-setup-route-fail",
+                checksum_algorithm="sha256",
+                created_at=now,
+                created_by="test",
+                correlation_id=None,
+            )
+        )
+        uow.v2_jobs.save(
+            V2MigrationJobRecord(
+                job_id="job-route-fail",
+                setup_id="setup-route-fail",
+                setup_checksum="checksum-setup-route-fail",
+                pipeline_id="pipeline-route-fail",
+                stage_chain_json='[{"stage_index":1}]',
+                status="running",
+                created_at=now,
+                updated_at=now,
+                correlation_id=None,
+            )
+        )
+    _insert_run_config(
+        conn,
+        job_id="job-route-fail",
+        rc_id="rc-route-fail",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-3.5-java21",
+        policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}),
+    )
+    _save_phase_command(conn, command_id="cmd-route-fail", job_id="job-route-fail", stage_index=1, phase="analysis")
+    popen = _FakePopen(stdout=[], stderr=[], exit_code=0)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    with pytest.raises(RouteRuntimeProfileUnavailableError):
+        runner.start(job_id="job-route-fail", command_id="cmd-route-fail")
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-route-fail")
+    stage_failed = [event for event in events if event.type == "stage_failed"][-1]
+    assert stage_failed.status == "blocked"
+    assert stage_failed.message == "ROUTE_RUNTIME_PROFILE_UNAVAILABLE"
+    assert missing_ai_hub.as_posix() not in stage_failed.message
+    payload = json.loads(stage_failed.payload_json or "{}")
+    assert missing_ai_hub.as_posix() not in json.dumps(payload)
+    assert len(popen.calls) == 0
 
 
 def test_v2_runner_emits_failure_repair_events_from_result(tmp_path: Path) -> None:
@@ -1525,7 +1742,7 @@ def _insert_run_config(conn: sqlite3.Connection, *, job_id: str, rc_id: str, sou
 
 def test_auto_queue_next_stage_blocked_at_target(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
-    _seed_stage_pipeline(conn)
+    _seed_stage_pipeline(conn, seed_run_configuration=False)
     _insert_run_config(conn, job_id="job-1", rc_id="rc-1",
                        source_profile="springboot-2.7-java11",
                        target_profile="springboot-3.5-java17",
@@ -1557,7 +1774,7 @@ def test_auto_queue_next_stage_blocked_at_target(tmp_path: Path) -> None:
 
 def test_higher_profile_exists_but_excluded_from_auto_queue(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
-    _seed_stage_pipeline(conn)
+    _seed_stage_pipeline(conn, seed_run_configuration=False)
     _insert_run_config(conn, job_id="job-1", rc_id="rc-2",
                        source_profile="springboot-2.7-java11",
                        target_profile="springboot-3.5-java17",
@@ -1588,7 +1805,7 @@ def test_higher_profile_exists_but_excluded_from_auto_queue(tmp_path: Path) -> N
 
 def test_auto_queue_next_stage_continues_to_4_when_target_is_boot4(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
-    _seed_stage_pipeline(conn)
+    _seed_stage_pipeline(conn, seed_run_configuration=False)
     _insert_run_config(conn, job_id="job-1", rc_id="rc-3",
                        source_profile="springboot-2.7-java11",
                        target_profile="springboot-4.0-java21",
@@ -1619,7 +1836,7 @@ def test_auto_queue_next_stage_continues_to_4_when_target_is_boot4(tmp_path: Pat
 
 def test_target_reached_stop_condition_emitted(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
-    _seed_stage_pipeline(conn)
+    _seed_stage_pipeline(conn, seed_run_configuration=False)
     _insert_run_config(conn, job_id="job-1", rc_id="rc-4",
                        source_profile="springboot-2.7-java11",
                        target_profile="springboot-3.5-java17",

@@ -18,6 +18,8 @@ from migration_factory.control_tower.application.v2_setup_service import (
     CreateSetupRequest,
     V2SetupService,
 )
+from migration_factory.control_tower.domain.entities import RunConfigurationRecord
+from migration_factory.control_tower.domain.states import TargetProofLevel
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
     SqliteV2SetupRepository,
@@ -29,7 +31,14 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository imp
     SqliteV2JobRepository,
     V2MigrationJobRecord,
 )
-from migration_factory.control_tower.domain.checksums import utc_now_text
+from migration_factory.control_tower.infrastructure.sqlite.repositories import (
+    SqliteRunConfigurationRepository,
+)
+from migration_factory.control_tower.domain.checksums import canonical_json_text, sha256_canonical_json, utc_now_text
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+AI_HUB = REPO_ROOT / "modernizer-solution-ai-hub"
 
 
 def _mutation_headers():
@@ -67,17 +76,23 @@ class _RecordingV2Runner:
         return None
 
 
-def _create_test_setup(repo: SqliteV2SetupRepository) -> str:
+def _create_test_setup(
+    repo: SqliteV2SetupRepository,
+    *,
+    ai_hub_path: str | None = None,
+    skip_endpoint_smoke: bool = False,
+) -> str:
     service = V2SetupService(repo)
     req = CreateSetupRequest(
         run_name="test-worker",
         legacy_app_path="/tmp/legacy-app",
         output_parent_path="/tmp/output",
-        ai_hub_path="/tmp/ai-hub",
+        ai_hub_path=ai_hub_path or str(AI_HUB),
         java11_home="/usr/lib/jvm/java-11",
         java17_home="/usr/lib/jvm/java-17",
         java21_home="/usr/lib/jvm/java-21",
         maven_cmd="/usr/bin/mvn",
+        skip_endpoint_smoke=skip_endpoint_smoke,
     )
     dto = service.create_setup(req)
     return dto.setup_id
@@ -87,6 +102,164 @@ def _make_worker_service(conn: sqlite3.Connection) -> V2WorkerStageService:
     return V2WorkerStageService(
         setup_repo=SqliteV2SetupRepository(conn),
         command_repo=SqliteV2CommandRepository(conn),
+        job_repo=SqliteV2JobRepository(conn),
+        run_config_repo=SqliteRunConfigurationRepository(conn),
+    )
+
+
+def _seed_job_run_configuration(
+    conn: sqlite3.Connection,
+    *,
+    setup_id: str,
+    job_id: str = "test-job-id",
+    source_profile: str = "springboot-3.5-java17",
+    target_profile: str = "springboot-3.5-java21",
+) -> None:
+    setup_repo = SqliteV2SetupRepository(conn)
+    setup = setup_repo.get(setup_id)
+    assert setup is not None
+    now = utc_now_text()
+    runner_payload = {
+        "schema_version": "1.0.0",
+        "runner_profile_id": "runner-default",
+        "runner_profile_version": "2026.06",
+        "display_name": "Default local runner",
+        "python_executable": "python",
+        "ai_hub_path": str(AI_HUB),
+        "maven": {"executable_path": "/usr/bin/mvn", "expected_version": "3.9.9", "allow_wrapper": False},
+        "jdks": [
+            {"jdk_id": "jdk-11", "java_home": "/usr/lib/jvm/java-11", "expected_major": 11, "role": "source"},
+            {"jdk_id": "jdk-17", "java_home": "/usr/lib/jvm/java-17", "expected_major": 17, "role": "target"},
+            {"jdk_id": "jdk-21", "java_home": "/usr/lib/jvm/java-21", "expected_major": 21, "role": "target"},
+        ],
+        "filesystem": {
+            "roots": [
+                {"root_id": "source-root", "kind": "source", "path": "/tmp/source"},
+                {"root_id": "output-root", "kind": "output", "path": "/tmp/output"},
+            ]
+        },
+        "network": {"mode": "allowlisted", "allowed_hosts": ["repo.local"]},
+        "ai_profile": {"profile_id": "local-disabled"},
+    }
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO runner_profiles (
+            runner_profile_id, runner_profile_version, display_name, schema_version,
+            payload_json, payload_checksum, created_at, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            runner_payload["runner_profile_id"],
+            runner_payload["runner_profile_version"],
+            runner_payload["display_name"],
+            runner_payload["schema_version"],
+            canonical_json_text(runner_payload),
+            sha256_canonical_json(runner_payload),
+            now,
+            "test",
+        ),
+    )
+    pipeline_payload = {
+        "schema_version": "1.0.0",
+        "pipeline_id": "springboot-216-to-400-java21-four-stage",
+        "pipeline_version": "2026.06",
+        "display_name": "V2 migration pipeline",
+        "graph_version": "1.0",
+        "graph_state_schema_version": "1.0",
+        "stages": (
+            {"stage_index": 1, "stage_id": "analysis", "profile_id": "analysis-profile", "command_jdk": "jdk-17", "input_source": {"kind": "legacy_source"}, "continuation_policy_id": "default", "target": {"spring_boot": "3.5.14", "java": 17}},
+            {"stage_index": 2, "stage_id": "planning", "profile_id": "planning-profile", "command_jdk": "jdk-21", "input_source": {"kind": "previous_stage", "previous_stage_index": 1}, "continuation_policy_id": "default", "target": {"spring_boot": "3.5.14", "java": 21}},
+            {"stage_index": 3, "stage_id": "finalize", "profile_id": "finalize-profile", "command_jdk": "jdk-21", "input_source": {"kind": "previous_stage", "previous_stage_index": 2}, "continuation_policy_id": "default", "target": {"spring_boot": "3.5.14", "java": 21}},
+            {"stage_index": 4, "stage_id": "boot4", "profile_id": "boot4-profile", "command_jdk": "jdk-21", "input_source": {"kind": "previous_stage", "previous_stage_index": 3}, "continuation_policy_id": "default", "target": {"spring_boot": "4.0.0", "java": 21}},
+        ),
+    }
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO pipeline_definitions (
+            pipeline_id, pipeline_version, display_name, schema_version,
+            graph_version, graph_state_schema_version, payload_json, payload_checksum,
+            created_at, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            pipeline_payload["pipeline_id"],
+            pipeline_payload["pipeline_version"],
+            pipeline_payload["display_name"],
+            pipeline_payload["schema_version"],
+            pipeline_payload["graph_version"],
+            pipeline_payload["graph_state_schema_version"],
+            canonical_json_text(pipeline_payload),
+            sha256_canonical_json(pipeline_payload),
+            now,
+            "test",
+        ),
+    )
+    job_repo = SqliteV2JobRepository(conn)
+    job_repo.save(
+        V2MigrationJobRecord(
+            job_id=job_id,
+            setup_id=setup_id,
+            setup_checksum=setup.setup_checksum,
+            pipeline_id="springboot-216-to-400-java21-four-stage",
+            stage_chain_json=json.dumps(
+                [
+                    {
+                        "stage_index": 1,
+                        "stage_run_id": "stage-1",
+                        "pipeline_stage": "Stage 1",
+                        "input_source_kind": "legacy_source",
+                        "chain_status": "queued",
+                    },
+                    {
+                        "stage_index": 2,
+                        "stage_run_id": "stage-2",
+                        "pipeline_stage": "Stage 2",
+                        "input_source_kind": "stage_1_sandbox",
+                        "chain_status": "pending",
+                    },
+                    {
+                        "stage_index": 3,
+                        "stage_run_id": "stage-3",
+                        "pipeline_stage": "Stage 3",
+                        "input_source_kind": "stage_2_sandbox",
+                        "chain_status": "pending",
+                    },
+                    {
+                        "stage_index": 4,
+                        "stage_run_id": "stage-4",
+                        "pipeline_stage": "Stage 4",
+                        "input_source_kind": "stage_3_sandbox",
+                        "chain_status": "pending",
+                    },
+                ]
+            ),
+            status="created",
+            created_at=now,
+            updated_at=now,
+            correlation_id=None,
+        )
+    )
+    payload = {
+        "source_profile": source_profile,
+        "target_profile": target_profile,
+    }
+    run_config_repo = SqliteRunConfigurationRepository(conn)
+    run_config_repo.insert(
+        RunConfigurationRecord(
+            run_configuration_id=f"run-config-{job_id}",
+            job_id=job_id,
+            schema_version="1.0.0",
+            runner_profile_id="runner-default",
+            runner_profile_version="2026.06",
+            pipeline_id="springboot-216-to-400-java21-four-stage",
+            pipeline_version="2026.06",
+            target_proof_level=TargetProofLevel.BUILD_TEST_VERIFIED,
+            enabled_gates_json="[]",
+            policy_json='{"continue_after_warning":false,"enable_runtime_gate":false,"enable_endpoint_gate":false,"enable_build_repair":true,"enable_llm_repair_proposal":true,"max_repair_attempts":3,"repair_scope":"build_only","stage_continuation_policy":"auto_on_green"}',
+            payload_json=json.dumps(payload, separators=(",", ":")),
+            payload_checksum=sha256_canonical_json(payload),
+            created_at=now,
+        )
     )
 
 
@@ -101,6 +274,7 @@ def test_stage1_manifest_built_from_setup(tmp_path: Path) -> None:
     apply_pending_migrations(conn)
     repo = SqliteV2SetupRepository(conn)
     setup_id = _create_test_setup(repo)
+    _seed_job_run_configuration(conn, setup_id=setup_id)
 
     service = _make_worker_service(conn)
     result = service.build_stage1_manifest(
@@ -115,6 +289,8 @@ def test_stage1_manifest_built_from_setup(tmp_path: Path) -> None:
     assert "--run-id" in result.argv
     assert "--legacy" in result.argv
     assert "/tmp/legacy-app" in result.argv
+    profile_idx = result.argv.index("--profile") + 1
+    assert result.argv[profile_idx] == "springboot-3.5-java17-to-java21"
 
 
 def test_stage1_manifest_argv_backend_owned(tmp_path: Path) -> None:
@@ -129,6 +305,7 @@ def test_stage1_manifest_argv_backend_owned(tmp_path: Path) -> None:
     apply_pending_migrations(conn)
     repo = SqliteV2SetupRepository(conn)
     setup_id = _create_test_setup(repo)
+    _seed_job_run_configuration(conn, setup_id=setup_id)
 
     service = _make_worker_service(conn)
     result = service.build_stage1_manifest(
@@ -158,6 +335,7 @@ def test_stage1_manifest_uses_setup_paths(tmp_path: Path) -> None:
     apply_pending_migrations(conn)
     repo = SqliteV2SetupRepository(conn)
     setup_id = _create_test_setup(repo)
+    _seed_job_run_configuration(conn, setup_id=setup_id)
 
     service = _make_worker_service(conn)
     result = service.build_stage1_manifest(
@@ -168,7 +346,7 @@ def test_stage1_manifest_uses_setup_paths(tmp_path: Path) -> None:
     argv_str = " ".join(result.argv)
     assert "/tmp/legacy-app" in argv_str
     assert "/tmp/output" in argv_str
-    assert "/tmp/ai-hub" in argv_str
+    assert str(AI_HUB) in argv_str
 
 
 def test_stage1_manifest_no_browser_paths(tmp_path: Path) -> None:
@@ -183,6 +361,7 @@ def test_stage1_manifest_no_browser_paths(tmp_path: Path) -> None:
     apply_pending_migrations(conn)
     repo = SqliteV2SetupRepository(conn)
     setup_id = _create_test_setup(repo)
+    _seed_job_run_configuration(conn, setup_id=setup_id)
 
     service = _make_worker_service(conn)
     result = service.build_stage1_manifest(
@@ -261,42 +440,14 @@ def test_start_stage1_endpoint(tmp_path: Path) -> None:
     setup_id = _create_test_setup(repo)
     setup = repo.get(setup_id)
     assert setup is not None
-    now = utc_now_text()
-    SqliteV2JobRepository(conn).save(
-        V2MigrationJobRecord(
-            job_id="test-job-123",
-            setup_id=setup_id,
-            setup_checksum=setup.setup_checksum,
-            pipeline_id=PIPELINE_ID,
-            stage_chain_json=json.dumps([
-                {
-                    "stage_index": 1,
-                    "stage_run_id": "stage-1",
-                    "pipeline_stage": "Stage 1",
-                    "input_source_kind": "legacy_source",
-                    "chain_status": "queued",
-                },
-                {
-                    "stage_index": 2,
-                    "stage_run_id": "stage-2",
-                    "pipeline_stage": "Stage 2",
-                    "input_source_kind": "stage_1_sandbox",
-                    "chain_status": "pending",
-                },
-                {
-                    "stage_index": 3,
-                    "stage_run_id": "stage-3",
-                    "pipeline_stage": "Stage 3",
-                    "input_source_kind": "stage_2_sandbox",
-                    "chain_status": "pending",
-                },
-            ]),
-            status="created",
-            created_at=now,
-            updated_at=now,
-            correlation_id=None,
-        )
+    _seed_job_run_configuration(
+        conn,
+        setup_id=setup_id,
+        job_id="test-job-123",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-3.5-java21",
     )
+    now = utc_now_text()
     conn.execute(
         """INSERT INTO v2_preflight_results (
             preflight_id, setup_id, setup_checksum, all_ready,
@@ -363,42 +514,14 @@ def test_start_stage1_requires_preflight_when_ai_smoke_is_required(tmp_path: Pat
     setup_id = _create_test_setup(repo)
     setup = repo.get(setup_id)
     assert setup is not None
-    now = utc_now_text()
-    SqliteV2JobRepository(conn).save(
-        V2MigrationJobRecord(
-            job_id="job-no-preflight",
-            setup_id=setup_id,
-            setup_checksum=setup.setup_checksum,
-            pipeline_id=PIPELINE_ID,
-            stage_chain_json=json.dumps([
-                {
-                    "stage_index": 1,
-                    "stage_run_id": "stage-1",
-                    "pipeline_stage": "Stage 1",
-                    "input_source_kind": "legacy_source",
-                    "chain_status": "queued",
-                },
-                {
-                    "stage_index": 2,
-                    "stage_run_id": "stage-2",
-                    "pipeline_stage": "Stage 2",
-                    "input_source_kind": "stage_1_sandbox",
-                    "chain_status": "pending",
-                },
-                {
-                    "stage_index": 3,
-                    "stage_run_id": "stage-3",
-                    "pipeline_stage": "Stage 3",
-                    "input_source_kind": "stage_2_sandbox",
-                    "chain_status": "pending",
-                },
-            ]),
-            status="created",
-            created_at=now,
-            updated_at=now,
-            correlation_id=None,
-        )
+    _seed_job_run_configuration(
+        conn,
+        setup_id=setup_id,
+        job_id="job-no-preflight",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-3.5-java21",
     )
+    now = utc_now_text()
     response = client.post(
         "/v1/v2/migration-jobs/start-stage1",
         json={"job_id": "job-no-preflight", "setup_id": setup_id},
@@ -416,42 +539,14 @@ def test_start_stage1_blocks_when_ai_smoke_failed(tmp_path: Path) -> None:
     setup_id = _create_test_setup(repo)
     setup = repo.get(setup_id)
     assert setup is not None
-    now = utc_now_text()
-    SqliteV2JobRepository(conn).save(
-        V2MigrationJobRecord(
-            job_id="job-failed-smoke",
-            setup_id=setup_id,
-            setup_checksum=setup.setup_checksum,
-            pipeline_id=PIPELINE_ID,
-            stage_chain_json=json.dumps([
-                {
-                    "stage_index": 1,
-                    "stage_run_id": "stage-1",
-                    "pipeline_stage": "Stage 1",
-                    "input_source_kind": "legacy_source",
-                    "chain_status": "queued",
-                },
-                {
-                    "stage_index": 2,
-                    "stage_run_id": "stage-2",
-                    "pipeline_stage": "Stage 2",
-                    "input_source_kind": "stage_1_sandbox",
-                    "chain_status": "pending",
-                },
-                {
-                    "stage_index": 3,
-                    "stage_run_id": "stage-3",
-                    "pipeline_stage": "Stage 3",
-                    "input_source_kind": "stage_2_sandbox",
-                    "chain_status": "pending",
-                },
-            ]),
-            status="created",
-            created_at=now,
-            updated_at=now,
-            correlation_id=None,
-        )
+    _seed_job_run_configuration(
+        conn,
+        setup_id=setup_id,
+        job_id="job-failed-smoke",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-3.5-java21",
     )
+    now = utc_now_text()
     conn.execute(
         """INSERT INTO v2_preflight_results (
             preflight_id, setup_id, setup_checksum, all_ready,
@@ -521,6 +616,7 @@ def test_manifest_persistence_across_connections(tmp_path: Path) -> None:
     apply_pending_migrations(conn1)
     repo1 = SqliteV2SetupRepository(conn1)
     setup_id = _create_test_setup(repo1)
+    _seed_job_run_configuration(conn1, setup_id=setup_id, job_id="persist-test-job")
     service1 = _make_worker_service(conn1)
     result = service1.build_stage1_manifest(
         job_id="persist-test-job",
@@ -560,7 +656,7 @@ def test_get_command_returns_none_for_missing(tmp_path: Path) -> None:
 # ── SA4: Terminal migration parity tests ───────────────────────────
 
 def test_stage1_profile_matches_terminal_path(tmp_path: Path) -> None:
-    """Stage 1 must use springboot-2.1.6-to-2.7-java11 profile."""
+    """Stage 1 must use the route-aware Spring Boot 2.7 / Java 17 runtime profile."""
     conn = sqlite3.connect(
         tmp_path / "sa4_profile.sqlite3",
         check_same_thread=False,
@@ -571,13 +667,107 @@ def test_stage1_profile_matches_terminal_path(tmp_path: Path) -> None:
     apply_pending_migrations(conn)
     repo = SqliteV2SetupRepository(conn)
     setup_id = _create_test_setup(repo)
+    _seed_job_run_configuration(
+        conn,
+        setup_id=setup_id,
+        job_id="j1",
+        source_profile="springboot-2.7-java11",
+        target_profile="springboot-3.5-java17",
+    )
     service = _make_worker_service(conn)
     result = service.build_stage1_manifest(job_id="j1", setup_id=setup_id)
 
     argv_str = " ".join(result.argv)
     assert "--profile" in argv_str
     profile_idx = result.argv.index("--profile") + 1
-    assert result.argv[profile_idx] == "springboot-2.1.6-to-2.7-java11"
+    assert result.argv[profile_idx] == "springboot-2.7-to-3.5-java17"
+
+
+def test_stage1_manifest_uses_route_aware_profile_for_boot35_java21_target(tmp_path: Path) -> None:
+    conn = sqlite3.connect(
+        tmp_path / "route_java21.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_test_setup(repo)
+    _seed_job_run_configuration(
+        conn,
+        setup_id=setup_id,
+        job_id="route-job",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-3.5-java21",
+    )
+
+    result = _make_worker_service(conn).build_stage1_manifest(job_id="route-job", setup_id=setup_id)
+
+    profile_idx = result.argv.index("--profile") + 1
+    assert result.argv[profile_idx] == "springboot-3.5-java17-to-java21"
+    assert "springboot-2.1.6-to-2.7-java11" not in " ".join(result.argv)
+
+
+def test_missing_runtime_profile_fails_closed_without_legacy_default(tmp_path: Path) -> None:
+    conn = sqlite3.connect(
+        tmp_path / "missing_profile.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_test_setup(repo, ai_hub_path=str(tmp_path / "empty-ai-hub"))
+    _seed_job_run_configuration(
+        conn,
+        setup_id=setup_id,
+        job_id="missing-profile-job",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-3.5-java21",
+    )
+
+    with pytest.raises(ValueError, match="ROUTE_RUNTIME_PROFILE_UNAVAILABLE"):
+        _make_worker_service(conn).build_stage1_manifest(
+            job_id="missing-profile-job",
+            setup_id=setup_id,
+        )
+
+
+def test_stage1_runtime_profile_error_does_not_leak_profile_path(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+
+    repo = SqliteV2SetupRepository(conn)
+    missing_ai_hub = tmp_path / "missing-ai-hub"
+    setup_id = _create_test_setup(
+        repo,
+        ai_hub_path=str(missing_ai_hub),
+        skip_endpoint_smoke=True,
+    )
+    _seed_job_run_configuration(
+        conn,
+        setup_id=setup_id,
+        job_id="path-leak-job",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-3.5-java21",
+    )
+
+    response = client.post(
+        "/v1/v2/migration-jobs/start-stage1",
+        json={"job_id": "path-leak-job", "setup_id": setup_id},
+        headers=_mutation_headers(),
+    )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "STAGE1_START_FAILED"
+    assert body["error"]["message"] == "ROUTE_RUNTIME_PROFILE_UNAVAILABLE"
+    assert str(missing_ai_hub) not in response.text
+    assert ".yaml" not in response.text
+    assert "C:\\" not in response.text
+    assert "/Users/" not in response.text
+    assert "/home/" not in response.text
 
 
 def test_stage1_manifest_matches_terminal_runner_args(tmp_path: Path) -> None:
@@ -592,6 +782,7 @@ def test_stage1_manifest_matches_terminal_runner_args(tmp_path: Path) -> None:
     apply_pending_migrations(conn)
     repo = SqliteV2SetupRepository(conn)
     setup_id = _create_test_setup(repo)
+    _seed_job_run_configuration(conn, setup_id=setup_id, job_id="j1")
     service = _make_worker_service(conn)
     result = service.build_stage1_manifest(job_id="j1", setup_id=setup_id)
 
@@ -628,6 +819,7 @@ def test_stage_run_ids_are_unique(tmp_path: Path) -> None:
     apply_pending_migrations(conn)
     repo = SqliteV2SetupRepository(conn)
     setup_id = _create_test_setup(repo)
+    _seed_job_run_configuration(conn, setup_id=setup_id, job_id="j1")
     service = _make_worker_service(conn)
     r1 = service.build_stage1_manifest(job_id="j1", setup_id=setup_id)
 
@@ -636,6 +828,7 @@ def test_stage_run_ids_are_unique(tmp_path: Path) -> None:
     assert r1.argv[run_id_idx].startswith("v2-"), f"Stage 1 run-id must start with v2-, got {r1.argv[run_id_idx]}"
 
     # Different job IDs must produce different run-ids
+    _seed_job_run_configuration(conn, setup_id=setup_id, job_id="j2")
     r2 = service.build_stage1_manifest(job_id="j2", setup_id=setup_id)
     run_id_idx2 = r2.argv.index("--run-id") + 1
     assert r1.argv[run_id_idx] != r2.argv[run_id_idx2], "Different jobs must have unique run-ids"
@@ -653,6 +846,7 @@ def test_stage_env_includes_all_required_java_maven_vars(tmp_path: Path) -> None
     apply_pending_migrations(conn)
     repo = SqliteV2SetupRepository(conn)
     setup_id = _create_test_setup(repo)
+    _seed_job_run_configuration(conn, setup_id=setup_id, job_id="j1")
     service = _make_worker_service(conn)
     result = service.build_stage1_manifest(job_id="j1", setup_id=setup_id)
 
@@ -680,6 +874,7 @@ def test_stage_env_excludes_secret_keys(tmp_path: Path) -> None:
     apply_pending_migrations(conn)
     repo = SqliteV2SetupRepository(conn)
     setup_id = _create_test_setup(repo)
+    _seed_job_run_configuration(conn, setup_id=setup_id, job_id="j1")
     service = _make_worker_service(conn)
     result = service.build_stage1_manifest(job_id="j1", setup_id=setup_id)
 

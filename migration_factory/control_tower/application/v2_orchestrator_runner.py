@@ -21,6 +21,12 @@ from migration_factory.control_tower.application.v2_stage_progression import (
     TERMINAL_STAGE_INDEX,
     route_to_dict,
 )
+from migration_factory.control_tower.application.v2_profile_runtime import (
+    RouteRuntimeProfileUnavailableError,
+    ensure_runtime_profile_available,
+    public_runtime_profile_error_message,
+    resolve_runtime_profile_for_run_configuration,
+)
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json
 from migration_factory.control_tower.domain.gate_checksum import gate_checksum
 from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
@@ -147,9 +153,25 @@ class V2OrchestratorRunner:
         # have empty stored argv. Build real argv here.
         command_phase = _resolve_phase_from_checksum(manifest_checksum)
         if command_phase and not argv:
-            argv = _build_phase_argv(
-                self, job_id, command_id, command, stage_index, command_phase,
-            )
+            try:
+                argv = _build_phase_argv(
+                    self, job_id, command_id, command, stage_index, command_phase,
+                )
+            except RouteRuntimeProfileUnavailableError as exc:
+                message = public_runtime_profile_error_message(exc)
+                self._event(
+                    job_id=job_id,
+                    stage=stage_index,
+                    event_type="stage_failed",
+                    status="blocked",
+                    message=message,
+                    payload={
+                        "command_id": command_id,
+                        "command_phase": command_phase,
+                        "error_code": exc.code,
+                    },
+                )
+                raise
 
         thread = threading.Thread(
             target=self._run_process,
@@ -1742,10 +1764,6 @@ def _build_phase_argv(
     Loads the job/setup from the DB and constructs proper argv with
     --phase <phase> flag.
     """
-    from migration_factory.control_tower.application.v2_worker_stage import (
-        STAGE_JDK_MAP,
-    )
-
     with runner._unit_of_work_factory() as uow:
         job = uow.v2_jobs.get(job_id)
         if job is None:
@@ -1754,6 +1772,15 @@ def _build_phase_argv(
         setup = uow.v2_setups.get(job.setup_id)
         if setup is None:
             raise ValueError(f"Setup {job.setup_id!r} not found for phase command {command_id!r}")
+
+        run_configuration = uow.run_configurations.get_for_job(job_id)
+        if run_configuration is None:
+            raise ValueError(
+                "ROUTE_RUNTIME_PROFILE_UNAVAILABLE: persisted run configuration not found for job "
+                f"{job_id!r}"
+            )
+        runtime_profile = resolve_runtime_profile_for_run_configuration(run_configuration)
+        ensure_runtime_profile_available(setup.ai_hub_path, runtime_profile)
 
         effective_run_id = f"v2-{job_id[:8]}-s{stage_index}-{command_phase}"
         argv = [
@@ -1765,7 +1792,7 @@ def _build_phase_argv(
             "--legacy", setup.legacy_app_path,
             "--modernized", setup.output_parent_path,
             "--ai-hub", setup.ai_hub_path,
-            "--profile", "springboot-2.1.6-to-2.7-java11",
+            "--profile", runtime_profile,
             "--mode", "full_sandbox_migration",
             "--phase", command_phase,
         ]

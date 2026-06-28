@@ -6,6 +6,7 @@ from typing import Any
 
 from migration_factory.contracts import SCHEMA_VERSION
 from migration_factory.dependency_policy.models import PolicyReport
+from migration_factory.profile_semantics import requires_jakarta_migration
 
 
 POLICY_RULE_IDS = (
@@ -23,6 +24,8 @@ def build_target_dependency_plan(
     source_boot_version: str = "",
     target_boot_version: str = "",
     target_java_version: str = "",
+    profile_id: str = "",
+    migration_unit_ids: list[str] | tuple[str, ...] | None = None,
     openrewrite_recipes_expected: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -30,7 +33,12 @@ def build_target_dependency_plan(
         "source_boot_version": source_boot_version,
         "target_boot_version": target_boot_version,
         "target_java_version": target_java_version,
-        "target_jakarta_required": _boot_major(target_boot_version) >= 3,
+        "target_jakarta_required": requires_jakarta_migration(
+            source_boot_version=source_boot_version,
+            target_boot_version=target_boot_version,
+            profile_id=profile_id,
+            unit_ids=migration_unit_ids,
+        ),
         "openrewrite_recipes_expected": list(openrewrite_recipes_expected or []),
         "blocked_properties": [
             {
@@ -89,6 +97,8 @@ def write_target_dependency_plan(
     source_boot_version: str = "",
     target_boot_version: str = "",
     target_java_version: str = "",
+    profile_id: str = "",
+    migration_unit_ids: list[str] | tuple[str, ...] | None = None,
     openrewrite_recipes_expected: list[str] | tuple[str, ...] | None = None,
 ) -> Path:
     output_path = Path(run_dir) / "planning" / "target_dependency_plan.json"
@@ -97,6 +107,8 @@ def write_target_dependency_plan(
         source_boot_version=source_boot_version,
         target_boot_version=target_boot_version,
         target_java_version=target_java_version,
+        profile_id=profile_id,
+        migration_unit_ids=migration_unit_ids,
         openrewrite_recipes_expected=openrewrite_recipes_expected,
     )
     output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -134,10 +146,3 @@ def _markdown(payload: dict[str, Any]) -> str:
                 f"{risk.get('category')}: {risk.get('evidence')}"
             )
     return "\n".join(lines) + "\n"
-
-
-def _boot_major(version: str) -> int:
-    try:
-        return int(str(version).split(".", 1)[0])
-    except (TypeError, ValueError):
-        return 0
