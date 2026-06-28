@@ -248,6 +248,7 @@ def test_planning_phase_completed_creates_review_gate(tmp_path: Path) -> None:
         "sandbox_path": "/tmp/sandbox/planning",
         "final_status": "PLANNING_COMPLETED",
         "review_chain": {
+            "job_id": job_id,
             "deterministic_artifact_checksum": "sha256:d1",
             "primary_output_checksum": "sha256:p1",
             "reviewer_output_checksum": "sha256:r1",
@@ -532,6 +533,7 @@ def test_handle_exit_planning_success_creates_review_gate(tmp_path: Path) -> Non
         },
         "sandbox_path": "/tmp/sandbox/planning",
         "review_chain": {
+            "job_id": job_id,
             "deterministic_artifact_checksum": "sha256:d2",
             "primary_output_checksum": "sha256:p2",
             "reviewer_output_checksum": "sha256:r2",
