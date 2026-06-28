@@ -513,6 +513,7 @@ class V2GateActionService:
         user_feedback: str = "",
         idempotency_key: str | None = None,
         expected_gate_checksum: str | None = None,
+        open_followup_gate: bool = True,
     ) -> GateActionResult:
         """Request a repair revision at a repair_review gate.
 
@@ -545,6 +546,7 @@ class V2GateActionService:
             idempotency_key=idempotency_key,
             expected_gate_checksum=expected_gate_checksum,
             request_checksum=request_checksum,
+            open_followup_gate=open_followup_gate,
         )
         if base_result.status not in ("executed", "idempotent"):
             return base_result
@@ -1413,6 +1415,7 @@ class V2GateActionService:
         reason: str = "",
         actor_type: str = "human",
         request_checksum: str | None = None,
+        open_followup_gate: bool = True,
     ) -> GateActionResult:
         """Common validation and execution pipeline for all gate actions.
 
@@ -1620,7 +1623,7 @@ class V2GateActionService:
 
         result_gate_id: str | None = None
         # For reanalyze/revise, create a new open gate
-        if action in (GateDecision.REANALYZE, GateDecision.REVISE):
+        if open_followup_gate and action in (GateDecision.REANALYZE, GateDecision.REVISE):
             new_gate = self._gate_service.create_gate(CreateGateRequest(
                 job_id=gate.job_id,
                 gate_phase=gate.gate_phase,

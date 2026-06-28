@@ -1103,3 +1103,222 @@ class TestReviewedRepairApprovalEndpoint:
         result_json = json.dumps(data)
         for forbidden in ("sandbox_path", "argv", "env", "raw_command", "endpoint", "deployment", "env_ref"):
             assert forbidden not in result_json.lower(), f"forbidden key {forbidden!r} leaked"
+
+    def test_approve_reviewed_repair_applies_backend_artifact_when_runtime_context_is_available(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        from migration_factory.control_tower.application.v2_repair_flow import (
+            V2RepairFlowService,
+        )
+        from migration_factory.control_tower.application.v2_repair_flow import SandboxAction
+        from migration_factory.control_tower.domain.checksums import sha256_canonical_json, utc_now_text
+        from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
+            SqliteV2CommandRepository,
+            V2StageCommandRecord,
+        )
+        from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
+            SqliteV2RepairRepository,
+            V2RepairProposalRecord,
+        )
+
+        client, conn = _api_client(tmp_path)
+        setup_id = _ready_setup(conn)
+        job_id = _create_job(client, setup_id)
+        seed_job(conn, job_id=job_id)
+
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        (sandbox / "src").mkdir()
+        (sandbox / "src" / "App.java").write_text("class App {}\n", encoding="utf-8")
+
+        modernized = tmp_path / "modernized"
+        modernized.mkdir()
+        run_id = "run-1"
+        run_dir = modernized / ".migration" / "runs" / run_id
+        repairs_dir = run_dir / "repairs"
+        repairs_dir.mkdir(parents=True, exist_ok=True)
+
+        deterministic_artifact = repairs_dir / "deterministic_repair_artifact.json"
+        primary_output = repairs_dir / "primary_repair_llm_output.json"
+        final_artifact = repairs_dir / "final_reviewed_repair_artifact.json"
+        final_diff = repairs_dir / "final_reviewed_repair.diff"
+        reviewer_output = repairs_dir / "reviewer_repair_llm_output.json"
+
+        deterministic_artifact.write_text(
+            json.dumps(
+                {
+                    "deterministic_rule_id": "DEPENDENCY_ADD_H2_RUNTIME",
+                    "source_profile": "analysis",
+                    "target_profile": "finalize",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        diff_text = """diff --git a/src/App.java b/src/App.java
+--- a/src/App.java
++++ b/src/App.java
+@@
+-class App {}
++class App { int version = 2; }
+"""
+        final_diff.write_text(diff_text, encoding="utf-8")
+        primary_output.write_text(
+            json.dumps(
+                {
+                    "risk": "LOW",
+                    "proposed_diff": diff_text,
+                    "deterministic_rule_id": "DEPENDENCY_ADD_H2_RUNTIME",
+                    "changed_files": ["src/App.java"],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        reviewer_output.write_text(
+            json.dumps({"decision": "accept"}, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        final_artifact.write_text(
+            json.dumps({"risk": "LOW", "reviewer_decision": "accept"}, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        rerun_result_path = repairs_dir / "repair_rerun_result.json"
+        proof_path = repairs_dir / "repair_proof.json"
+        rerun_result_path.write_text(
+            json.dumps({"passed": True, "artifact_checksum": "sha256:rerun"}, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        proof_path.write_text(
+            json.dumps({"status": "REPAIR_VALIDATED", "artifact_checksum": "sha256:proof"}, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        command_id = "cmd-reviewed-repair"
+        command_repo = SqliteV2CommandRepository(conn)
+        command_repo.save(
+            V2StageCommandRecord(
+                command_id=command_id,
+                job_id=job_id,
+                stage_index=3,
+                manifest_checksum="manifest-reviewed",
+                argv_json=json.dumps(
+                    [
+                        "python",
+                        "-m",
+                        "migration_factory.orchestrator.runner",
+                        "--run-id",
+                        run_id,
+                        "--modernized",
+                        str(modernized),
+                    ],
+                    separators=(",", ":"),
+                ),
+                env_json=json.dumps({}, separators=(",", ":")),
+                status="completed",
+                created_at=utc_now_text(),
+                updated_at=utc_now_text(),
+                result_json=json.dumps(
+                    {"sandbox_path": str(sandbox)},
+                    separators=(",", ":"),
+                ),
+            )
+        )
+
+        binding = {
+            "failure_evidence_checksum": "sha256:ev",
+            "context_pack_checksum": "sha256:cp",
+            "primary_output_checksum": "sha256:po",
+            "reviewer_output_checksum": "sha256:ro",
+            "final_reviewed_diff_checksum": "sha256:rd",
+            "policy_validation_checksum": "sha256:pv",
+            "base_repo_state_checksum": "sha256:rs",
+            "final_artifact_checksum": "sha256:fa",
+        }
+        gate_result = V2PhaseGateService(SqliteUnitOfWork(conn).phase_gates).create_gate(
+            CreateGateRequest(
+                job_id=job_id,
+                gate_phase="repair_review",
+                stage_index=3,
+                source_artifact_checksum=sha256_canonical_json(binding),
+                source_artifact_refs=(
+                    str(deterministic_artifact),
+                    str(primary_output),
+                    str(reviewer_output),
+                    str(final_artifact),
+                    str(final_diff),
+                    *(f"{key}:{value}" for key, value in binding.items()),
+                ),
+            )
+        )
+        assert gate_result.status == "created"
+        gate_id = gate_result.gate_id
+
+        repair_repo = SqliteV2RepairRepository(conn)
+        repair_repo.save_proposal(
+            V2RepairProposalRecord(
+                proposal_id=gate_id,
+                command_id=command_id,
+                failure_summary="Build failed",
+                hypothesis="Missing dependency",
+                patch_summary="Add H2 runtime",
+                affected_paths_json=json.dumps(["src/App.java"]),
+                status="draft",
+                approval_checksum=None,
+                created_at=utc_now_text(),
+                proposal_checksum="sha256:prop",
+                source_proposal_id=None,
+                revision_of=None,
+                revision_number=None,
+                context_pack_checksum="sha256:cp",
+                allowed_scope=None,
+            )
+        )
+        self._seed_reviewer_critique(conn, gate_id, decision="accept")
+
+        gate_checksum = client.get(f"/v1/v2/jobs/{job_id}/gates/{gate_id}").json()["checksum"]
+        payload = {
+            "expected_gate_checksum": gate_checksum,
+            "proposal_checksum": "sha256:prop",
+            "context_pack_checksum": "sha256:cp",
+            "reviewer_output_checksum": "sha256:ro",
+            "final_reviewed_diff_checksum": "sha256:rd",
+            "policy_validation_checksum": "sha256:pv",
+            "base_repo_state_checksum": "sha256:rs",
+            "decided_by": "human-1",
+            "comments": "Apply exact reviewed diff",
+        }
+
+        calls: dict[str, object] = {}
+
+        def fake_apply(self, **kwargs):
+            calls.update(kwargs)
+            return SandboxAction(
+                action_id="action-1",
+                proposal_id=kwargs["proposal_id"],
+                target_path=kwargs["target_path"],
+                patch_content=str(final_diff.read_text(encoding="utf-8")),
+                status="applied",
+                result_summary="patched and validated",
+                created_at=utc_now_text(),
+            )
+
+        monkeypatch.setattr(V2RepairFlowService, "apply_reviewed_repair_diff", fake_apply)
+
+        response = client.post(
+            f"/v1/v2/jobs/{job_id}/gates/{gate_id}/approve-reviewed-repair",
+            json=payload,
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["result"]["apply_status"] == "applied"
+        assert calls["final_diff_ref"].endswith("final_reviewed_repair.diff")
+        assert calls["target_path"] == "src/App.java"
+        assert calls["deterministic_rule_id"] == "DEPENDENCY_ADD_H2_RUNTIME"

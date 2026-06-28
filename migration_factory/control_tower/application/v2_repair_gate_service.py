@@ -362,6 +362,18 @@ class V2RepairGateService:
         user_feedback: str = "",
         idempotency_key: str | None = None,
         expected_gate_checksum: str | None = None,
+        command_id: str = "",
+        model_client: Any | None = None,
+        prior_apply_rerun_info: dict[str, Any] | None = None,
+        source_profile: str = "",
+        target_profile: str = "",
+        sandbox_path: str = "",
+        run_dir: str | Path = "",
+        legacy_path: str = "",
+        deterministic_rule_id: str = "",
+        previous_repair_review_checksums: tuple[str, ...] = (),
+        cycle_number: int = 1,
+        h2_required: bool = False,
     ) -> GateActionResult:
         """Request a revision of the current repair proposal.
 
@@ -386,9 +398,18 @@ class V2RepairGateService:
                 reason="V2GateActionService is not configured",
             )
 
+        should_regenerate = bool(
+            model_client is not None
+            and command_id
+            and sandbox_path
+            and str(run_dir)
+            and legacy_path
+            and deterministic_rule_id
+        )
+
         # Use the repair-specific revise path so the revision history
         # remains tagged as repair, not planning.
-        return self._gate_action_service.request_repair_revision(
+        base_result = self._gate_action_service.request_repair_revision(
             gate_id=gate_id,
             job_id=job_id,
             decided_by=decided_by,
@@ -396,6 +417,65 @@ class V2RepairGateService:
             user_feedback=user_feedback,
             idempotency_key=idempotency_key,
             expected_gate_checksum=expected_gate_checksum,
+            open_followup_gate=not should_regenerate,
+        )
+
+        if base_result.status not in ("executed", "idempotent") or not should_regenerate:
+            return base_result
+
+        gate = self._gate_service._gate_repo.get(gate_id) if self._gate_service is not None else None
+        if gate is None:
+            return base_result
+
+        refs = _parse_gate_ref_checksums(gate.source_artifact_refs_json)
+        previous_checksums = previous_repair_review_checksums or (
+            gate.source_artifact_checksum,
+        )
+        reviewed_result = self.regenerate_reviewed_repair_chain_on_revision(
+            job_id=job_id,
+            stage_index=gate.stage_index,
+            command_id=command_id,
+            user_comments=user_feedback,
+            prior_evidence_checksum=refs.get("failure_evidence_checksum", gate.source_artifact_checksum),
+            prior_context_checksum=refs.get("context_pack_checksum", ""),
+            prior_primary_output_checksum=refs.get("primary_output_checksum", ""),
+            prior_reviewer_output_checksum=refs.get("reviewer_output_checksum", ""),
+            prior_final_diff_checksum=refs.get("final_reviewed_diff_checksum", ""),
+            prior_policy_validation_checksum=refs.get("policy_validation_checksum", ""),
+            prior_base_repo_state_checksum=refs.get("base_repo_state_checksum", ""),
+            prior_apply_rerun_info=prior_apply_rerun_info,
+            sandbox_path=sandbox_path,
+            run_dir=run_dir,
+            legacy_path=legacy_path,
+            deterministic_rule_id=deterministic_rule_id,
+            source_profile=source_profile,
+            target_profile=target_profile,
+            previous_repair_review_checksums=previous_checksums,
+            cycle_number=cycle_number,
+            model_client=model_client,
+            h2_required=h2_required,
+        )
+        if reviewed_result.status == "created":
+            return GateActionResult(
+                action=base_result.action,
+                gate_id=base_result.gate_id,
+                decision_id=base_result.decision_id,
+                status=base_result.status,
+                result_gate_id=reviewed_result.gate_id,
+                result_command_id=base_result.result_command_id,
+                result_revision_id=reviewed_result.revision_id or base_result.result_revision_id,
+                reason=base_result.reason or reviewed_result.reason,
+            )
+
+        return GateActionResult(
+            action=base_result.action,
+            gate_id=base_result.gate_id,
+            decision_id=base_result.decision_id,
+            status=reviewed_result.status,
+            result_gate_id=reviewed_result.gate_id or base_result.result_gate_id,
+            result_command_id=base_result.result_command_id,
+            result_revision_id=reviewed_result.revision_id or base_result.result_revision_id,
+            reason=reviewed_result.reason or base_result.reason,
         )
 
     # ── F5: Regenerate reviewed repair chain on revision ───────────────
@@ -814,7 +894,78 @@ class V2RepairGateService:
         effective_max = max_cycles or self._max_repair_attempts
         current_cycle = len(previous_repair_review_checksums) + 1
         remaining = effective_max - current_cycle
+        run_path = _Path(run_dir)
+        repairs_dir = run_path / "repairs"
+        repairs_dir.mkdir(parents=True, exist_ok=True)
+
+        def _write_cycle_artifact(filename: str, payload: dict[str, Any]) -> tuple[Path, str]:
+            checksum = sha256_canonical_json(payload)
+            artifact_path = repairs_dir / filename
+            artifact_path.write_text(
+                json.dumps({**payload, "artifact_checksum": checksum}, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            return artifact_path, checksum
+
+        if isinstance(rerun_result, dict) and rerun_result:
+            rerun_path, rerun_checksum = _write_cycle_artifact(
+                "repair_rerun_result.json",
+                {
+                    "job_id": job_id,
+                    "stage_index": stage_index,
+                    "command_id": command_id,
+                    "cycle_number": current_cycle,
+                    "rerun_result": dict(rerun_result),
+                    "prior_evidence_checksum": prior_evidence_checksum,
+                    "prior_context_checksum": prior_context_checksum,
+                    "prior_primary_output_checksum": prior_primary_output_checksum,
+                    "prior_reviewer_output_checksum": prior_reviewer_output_checksum,
+                    "prior_final_diff_checksum": prior_final_diff_checksum,
+                    "prior_policy_validation_checksum": prior_policy_validation_checksum,
+                    "prior_base_repo_state_checksum": prior_base_repo_state_checksum,
+                },
+            )
+            rerun_result = {**rerun_result, "artifact_ref": str(rerun_path), "artifact_checksum": rerun_checksum}
+        if isinstance(rollback_result, dict) and rollback_result:
+            rollback_path, rollback_checksum = _write_cycle_artifact(
+                "repair_rollback_result.json",
+                {
+                    "job_id": job_id,
+                    "stage_index": stage_index,
+                    "command_id": command_id,
+                    "cycle_number": current_cycle,
+                    "rollback_result": dict(rollback_result),
+                    "prior_evidence_checksum": prior_evidence_checksum,
+                    "prior_context_checksum": prior_context_checksum,
+                    "prior_primary_output_checksum": prior_primary_output_checksum,
+                    "prior_reviewer_output_checksum": prior_reviewer_output_checksum,
+                    "prior_final_diff_checksum": prior_final_diff_checksum,
+                    "prior_policy_validation_checksum": prior_policy_validation_checksum,
+                    "prior_base_repo_state_checksum": prior_base_repo_state_checksum,
+                },
+            )
+            rollback_result = {**rollback_result, "artifact_ref": str(rollback_path), "artifact_checksum": rollback_checksum}
+
         if remaining < 1:
+            _write_cycle_artifact(
+                "repair_terminal_failure.json",
+                {
+                    "job_id": job_id,
+                    "stage_index": stage_index,
+                    "command_id": command_id,
+                    "cycle_number": current_cycle,
+                    "status": "REPAIR_FAILED",
+                    "reason": f"All {effective_max} repair attempt(s) exhausted",
+                    "max_cycles": effective_max,
+                    "prior_evidence_checksum": prior_evidence_checksum,
+                    "prior_context_checksum": prior_context_checksum,
+                    "prior_primary_output_checksum": prior_primary_output_checksum,
+                    "prior_reviewer_output_checksum": prior_reviewer_output_checksum,
+                    "prior_final_diff_checksum": prior_final_diff_checksum,
+                    "prior_policy_validation_checksum": prior_policy_validation_checksum,
+                    "prior_base_repo_state_checksum": prior_base_repo_state_checksum,
+                },
+            )
             return RepairGateCreationResult(
                 gate_id="",
                 gate_checksum="",
@@ -871,6 +1022,25 @@ class V2RepairGateService:
                 model_client=model_client,
             )
         except Exception:
+            _write_cycle_artifact(
+                "repair_terminal_failure.json",
+                {
+                    "job_id": job_id,
+                    "stage_index": stage_index,
+                    "command_id": command_id,
+                    "cycle_number": current_cycle,
+                    "status": "REPAIR_FAILED",
+                    "reason": "Azure repair chain production failed on next cycle",
+                    "max_cycles": effective_max,
+                    "prior_evidence_checksum": prior_evidence_checksum,
+                    "prior_context_checksum": prior_context_checksum,
+                    "prior_primary_output_checksum": prior_primary_output_checksum,
+                    "prior_reviewer_output_checksum": prior_reviewer_output_checksum,
+                    "prior_final_diff_checksum": prior_final_diff_checksum,
+                    "prior_policy_validation_checksum": prior_policy_validation_checksum,
+                    "prior_base_repo_state_checksum": prior_base_repo_state_checksum,
+                },
+            )
             return RepairGateCreationResult(
                 gate_id="",
                 gate_checksum="",
@@ -1063,3 +1233,22 @@ def _build_failure_summary_from_payload(
         parts.append(f"stderr: {stderr}")
 
     return " | ".join(parts) if parts else f"{event_type} with no details"
+
+
+def _parse_gate_ref_checksums(source_artifact_refs_json: str) -> dict[str, str]:
+    try:
+        parsed = json.loads(source_artifact_refs_json)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(parsed, list):
+        return {}
+    refs: dict[str, str] = {}
+    for item in parsed:
+        if not isinstance(item, str):
+            continue
+        if ":" not in item:
+            continue
+        key, value = item.split(":", 1)
+        if key.endswith("_checksum") or key == "checksum":
+            refs[key] = value
+    return refs

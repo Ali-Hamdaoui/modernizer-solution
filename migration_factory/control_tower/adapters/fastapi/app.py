@@ -175,6 +175,7 @@ from migration_factory.control_tower.application.v2_gate_action_service import (
 from migration_factory.control_tower.application.v2_gate_artifact_resolver import (
     V2GateArtifactResolver,
 )
+from migration_factory.repair_loop.patch_gate import extract_touched_paths
 from migration_factory.control_tower.application.v2_evidence_pack_builder import (
     EvidencePackBuilder,
     evidence_pack_to_dict,
@@ -1604,6 +1605,12 @@ def create_app(
             )
         elif action_value == GateDecision.REVISE.value:
             if gate.gate_phase == GatePhase.REPAIR_REVIEW.value:
+                revision_context = _resolve_reviewed_repair_runtime_context(
+                    uow=uow,
+                    job_id=job_id,
+                    gate=gate,
+                    proposal_id=payload.proposal_id or "",
+                )
                 result = repair_gate_service.request_repair_revision(
                     gate_id=gate_id,
                     job_id=job_id,
@@ -1612,6 +1619,20 @@ def create_app(
                     user_feedback=payload.user_feedback,
                     idempotency_key=payload.idempotency_key,
                     expected_gate_checksum=payload.expected_gate_checksum,
+                    command_id="" if revision_context is None else revision_context["command_id"],
+                    model_client=app.state.v2_assistant_model_client,
+                    prior_apply_rerun_info=None if revision_context is None else revision_context["prior_apply_rerun_info"],
+                    source_profile="" if revision_context is None else revision_context["source_profile"],
+                    target_profile="" if revision_context is None else revision_context["target_profile"],
+                    sandbox_path="" if revision_context is None else revision_context["sandbox_path"],
+                    run_dir="" if revision_context is None else revision_context["run_dir"],
+                    legacy_path="" if revision_context is None else revision_context["legacy_path"],
+                    deterministic_rule_id="" if revision_context is None else revision_context["deterministic_rule_id"],
+                    previous_repair_review_checksums=()
+                    if revision_context is None
+                    else revision_context["previous_repair_review_checksums"],
+                    cycle_number=1 if revision_context is None else revision_context["cycle_number"],
+                    h2_required=bool(revision_context and revision_context["h2_required"]),
                 )
             else:
                 result = action_service.request_plan_revision(
@@ -1869,6 +1890,46 @@ def create_app(
                     approval_result.reason or approval_result.status,
                 )
 
+            apply_projection: dict[str, Any] = {}
+            apply_context = _resolve_reviewed_repair_runtime_context(
+                uow=uow,
+                job_id=job_id,
+                gate=gate,
+                proposal_id=payload.repair_revision_id or gate_id,
+            )
+            if apply_context is not None:
+                try:
+                    apply_action = repair_flow.apply_reviewed_repair_diff(
+                        proposal_id=apply_context["proposal_id"],
+                        final_diff_ref=apply_context["final_diff_ref"],
+                        final_diff_checksum=payload.final_reviewed_diff_checksum,
+                        reviewer_output_checksum=payload.reviewer_output_checksum,
+                        expected_reviewer_output_checksum=apply_context["reviewer_output_checksum"],
+                        policy_validation_checksum=payload.policy_validation_checksum,
+                        expected_policy_validation_checksum=apply_context["policy_validation_checksum"],
+                        policy_status=apply_context["policy_status"],
+                        expected_base_repo_state_checksum=payload.base_repo_state_checksum,
+                        current_base_repo_state_checksum=apply_context["base_repo_state_checksum"],
+                        target_path=apply_context["target_path"],
+                        run_dir=apply_context["run_dir"],
+                        sandbox_path=apply_context["sandbox_path"],
+                        legacy_path=apply_context["legacy_path"],
+                        deterministic_rule_id=apply_context["deterministic_rule_id"],
+                        risk=apply_context["risk"],
+                        expected_validation=apply_context["expected_validation"],
+                        h2_required=apply_context["h2_required"],
+                    )
+                except ValueError as exc:
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "REVIEWED_REPAIR_APPLY_FAILED",
+                        str(exc),
+                    ) from exc
+                apply_projection = _reviewed_repair_apply_projection(
+                    run_dir=apply_context["run_dir"],
+                    apply_action=apply_action,
+                )
+
             return {
                 "result": {
                     "decision_id": approval_result.decision_id,
@@ -1879,6 +1940,7 @@ def create_app(
                     "result_gate_id": approval_result.result_gate_id,
                     "result_revision_id": approval_result.result_revision_id,
                     "reason": approval_result.reason,
+                    **apply_projection,
                 },
                 "next_actions": ["apply_reviewed_diff"],
             }
@@ -10581,6 +10643,242 @@ def _v2_resume_run_dir_from_commands(commands: tuple[Any, ...], stage_index: int
         "RESUME_RUN_DIR_UNAVAILABLE",
         "Backend could not derive approval resume run directory from persisted command manifest.",
     )
+
+
+def _resolve_reviewed_repair_runtime_context(
+    *,
+    uow: Any,
+    job_id: str,
+    gate: Any,
+    proposal_id: str,
+) -> dict[str, Any] | None:
+    proposal = uow.v2_repairs.get_proposal(proposal_id)
+    if proposal is None or not getattr(proposal, "command_id", ""):
+        return None
+
+    job = uow.v2_jobs.get(job_id)
+    if job is None or not getattr(job, "setup_id", ""):
+        return None
+
+    setup = uow.v2_setups.get(job.setup_id)
+    if setup is None:
+        return None
+
+    commands = tuple(uow.v2_commands.list_by_job(job_id))
+    events = tuple(uow.v2_events.list_by_job(job_id))
+
+    sandbox_resolution = _resolve_stage_sandbox_root(
+        stage_index=int(getattr(gate, "stage_index", 0) or 0),
+        events=events,
+        commands=commands,
+    )
+    if sandbox_resolution is None:
+        return None
+    sandbox_path, _ = sandbox_resolution
+
+    try:
+        run_dir = _v2_resume_run_dir_from_commands(
+            commands,
+            int(getattr(gate, "stage_index", 0) or 0),
+            str(proposal.command_id),
+        )
+    except HTTPException:
+        return None
+
+    checksum_refs, artifact_refs = _parse_reviewed_repair_gate_refs(
+        getattr(gate, "source_artifact_refs_json", "")
+    )
+    if not checksum_refs:
+        return None
+
+    required_checksums = (
+        checksum_refs.get("context_pack_checksum", ""),
+        checksum_refs.get("reviewer_output_checksum", ""),
+        checksum_refs.get("final_reviewed_diff_checksum", ""),
+        checksum_refs.get("policy_validation_checksum", ""),
+        checksum_refs.get("base_repo_state_checksum", ""),
+    )
+    if any(not value for value in required_checksums):
+        return None
+
+    final_diff_ref = _first_reviewed_diff_ref(artifact_refs)
+    if not final_diff_ref:
+        return None
+
+    diff_path = Path(final_diff_ref)
+    if not diff_path.is_file():
+        return None
+
+    try:
+        diff_content = diff_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    touched_paths, path_errors = extract_touched_paths(diff_content)
+    if path_errors or not touched_paths:
+        return None
+
+    deterministic_artifact_ref = _first_artifact_ref(
+        artifact_refs,
+        "deterministic_repair_artifact.json",
+    )
+    deterministic_rule_id = ""
+    if deterministic_artifact_ref:
+        try:
+            deterministic_payload = json.loads(
+                Path(deterministic_artifact_ref).read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError, TypeError):
+            deterministic_payload = {}
+        deterministic_rule_id = str(
+            deterministic_payload.get("deterministic_rule_id") or ""
+        )
+    if not deterministic_rule_id:
+        return None
+
+    primary_output_ref = _first_artifact_ref(
+        artifact_refs,
+        "primary_repair_llm_output.json",
+    )
+    final_artifact_ref = _first_artifact_ref(
+        artifact_refs,
+        "final_reviewed_repair_artifact.json",
+    )
+
+    risk = ""
+    for candidate_ref in (final_artifact_ref, primary_output_ref):
+        if not candidate_ref:
+            continue
+        try:
+            payload = json.loads(Path(candidate_ref).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            continue
+        risk = str(payload.get("risk") or "").upper()
+        if risk:
+            break
+    if not risk:
+        risk = "LOW"
+
+    expected_validation = tuple(
+        str(value)
+        for value in (
+            checksum_refs.get("expected_validation_checksum", ""),
+        )
+        if value
+    )
+
+    repair_rerun_result = _read_json_artifact(run_dir, "repair_rerun_result.json")
+    previous_checksums = tuple(
+        value
+        for value in checksum_refs.values()
+        if value
+    )
+
+    h2_required = False
+    if isinstance(repair_rerun_result, dict):
+        h2_required = str(repair_rerun_result.get("h2_status", "")).lower() in {"required", "true", "yes"}
+
+    return {
+        "proposal_id": str(proposal_id),
+        "command_id": str(proposal.command_id),
+        "sandbox_path": str(sandbox_path),
+        "run_dir": run_dir,
+        "legacy_path": str(setup.legacy_app_path),
+        "deterministic_rule_id": deterministic_rule_id,
+        "source_profile": str(getattr(proposal, "source_profile", "") or ""),
+        "target_profile": str(getattr(proposal, "target_profile", "") or ""),
+        "previous_repair_review_checksums": previous_checksums or (str(getattr(gate, "source_artifact_checksum", "") or ""),),
+        "cycle_number": max(1, len(previous_checksums) + 1),
+        "prior_apply_rerun_info": repair_rerun_result,
+        "final_diff_ref": str(final_diff_ref),
+        "reviewer_output_checksum": str(checksum_refs.get("reviewer_output_checksum", "") or ""),
+        "policy_validation_checksum": str(checksum_refs.get("policy_validation_checksum", "") or ""),
+        "base_repo_state_checksum": str(checksum_refs.get("base_repo_state_checksum", "") or ""),
+        "policy_status": "allowed",
+        "risk": risk,
+        "expected_validation": expected_validation,
+        "h2_required": h2_required,
+        "target_path": ",".join(touched_paths),
+    }
+
+
+def _parse_reviewed_repair_gate_refs(source_artifact_refs_json: str) -> tuple[dict[str, str], tuple[str, ...]]:
+    try:
+        parsed = json.loads(source_artifact_refs_json)
+    except (json.JSONDecodeError, TypeError):
+        return {}, ()
+    if not isinstance(parsed, list):
+        return {}, ()
+
+    checksum_refs: dict[str, str] = {}
+    artifact_refs: list[str] = []
+    for item in parsed:
+        if not isinstance(item, str) or not item:
+            continue
+        if ":" in item:
+            key, value = item.split(":", 1)
+            if key.endswith("_checksum") or key == "checksum":
+                checksum_refs[key] = value
+                continue
+        artifact_refs.append(item)
+    return checksum_refs, tuple(artifact_refs)
+
+
+def _first_artifact_ref(artifact_refs: tuple[str, ...], filename: str) -> str:
+    for item in artifact_refs:
+        if item.endswith(filename):
+            return item
+    return ""
+
+
+def _first_reviewed_diff_ref(artifact_refs: tuple[str, ...]) -> str:
+    for item in artifact_refs:
+        lowered = item.lower()
+        if lowered.endswith(".diff") or lowered.endswith("final_reviewed_repair.diff"):
+            return item
+    return ""
+
+
+def _read_json_artifact(run_dir: str, filename: str) -> dict[str, Any] | None:
+    path = Path(run_dir) / "repairs" / filename
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def _reviewed_repair_apply_projection(*, run_dir: str, apply_action: Any) -> dict[str, Any]:
+    projection: dict[str, Any] = {
+        "apply_status": str(getattr(apply_action, "status", "") or ""),
+        "apply_reason": str(getattr(apply_action, "result_summary", "") or ""),
+    }
+
+    rerun_result = _read_json_artifact(run_dir, "repair_rerun_result.json")
+    if isinstance(rerun_result, dict):
+        projection["rerun_status"] = "passed" if bool(rerun_result.get("passed", False)) else "failed"
+        projection["rerun_checksum"] = str(rerun_result.get("artifact_checksum", "") or "")
+
+    proof_result = _read_json_artifact(run_dir, "repair_proof.json")
+    if isinstance(proof_result, dict):
+        projection["proof_status"] = str(proof_result.get("status", "") or "")
+        projection["proof_artifact_checksum"] = str(proof_result.get("artifact_checksum", "") or "")
+
+    rollback_result = _read_json_artifact(run_dir, "repair_rollback_result.json")
+    if isinstance(rollback_result, dict):
+        projection["rollback_status"] = str(rollback_result.get("status", "") or "")
+        projection["rollback_checksum"] = str(rollback_result.get("artifact_checksum", "") or "")
+
+    terminal_failure = _read_json_artifact(run_dir, "repair_terminal_failure.json")
+    if isinstance(terminal_failure, dict):
+        projection["terminal_failure_status"] = str(terminal_failure.get("status", "") or "")
+        projection["terminal_failure_checksum"] = str(terminal_failure.get("artifact_checksum", "") or "")
+
+    return projection
 
 
 def _argv_value(argv: list[Any], option: str) -> str:
