@@ -400,6 +400,16 @@ export type V2MigrationJobResponse = {
   pipeline_id: string;
   stages: V2StageEntry[];
   created_at: string;
+  // F3/F4 — profile routing fields (backend-returned)
+  source_profile?: MigrationProfileId;
+  target_profile?: MigrationProfileId;
+  validation_status?: "valid" | "invalid";
+  validation_reason?: string;
+  included_stages?: string[];
+  excluded_stages?: string[];
+  skipped_stages?: string[];
+  stage_continuation_policy?: string;
+  run_configuration_id?: string;
 };
 
 export type V2JobEvent = {
@@ -915,7 +925,8 @@ export type GateDecision =
   | "reanalyze"
   | "revise"
   | "approve"
-  | "reject";
+  | "reject"
+  | "override_source_profile";
 
 export type GateActorType =
   | "human"
@@ -966,6 +977,14 @@ export type GateActionRequest = {
   proposal_checksum?: string;
   context_pack_checksum?: string;
   user_feedback?: string;
+  // F3/F4 — source-profile override fields (only for analysis_review gates):
+  override_source_profile?: MigrationProfileId;
+  detection_artifact_ref?: string;
+  detected_source_profile?: MigrationProfileId;
+  requested_source_profile?: MigrationProfileId;
+  target_profile?: MigrationProfileId;
+  expected_detection_artifact_checksum?: string;
+  comments?: string;
 };
 
 export type GateActionResult = {
@@ -996,7 +1015,7 @@ export type RepairGateEvidence = {
 
 export type GateDetailResponse = {
   gate: GateRepresentation;
-  evidence: RepairGateEvidence | null;
+  evidence: RepairGateEvidence | GateEvidencePack | null;
   checksum: string;
 };
 
@@ -1032,4 +1051,164 @@ export type V2FinalReportResponse = {
   input_checksum: string | null;
   redacted_summary: string;
   artifacts: V2ReportArtifactSummary[];
+};
+
+// ── F3 / F4 — Profile routing types ────────────────────────────────────
+
+export type MigrationProfileId =
+  | "springboot-2.7-java11"
+  | "springboot-3.5-java17"
+  | "springboot-3.5-java21"
+  | "springboot-4.0-java21";
+
+export type MigrationProfileOption = {
+  id: MigrationProfileId;
+  label: string;
+  orderIndex: number;
+  selectableAsSource: boolean;
+  selectableAsTarget: boolean;
+};
+
+export const MIGRATION_PROFILE_OPTIONS: MigrationProfileOption[] = [
+  {
+    id: "springboot-2.7-java11",
+    label: "Spring Boot 2.7 / Java 11",
+    orderIndex: 0,
+    selectableAsSource: true,
+    selectableAsTarget: false,
+  },
+  {
+    id: "springboot-3.5-java17",
+    label: "Spring Boot 3.5 / Java 17",
+    orderIndex: 1,
+    selectableAsSource: true,
+    selectableAsTarget: true,
+  },
+  {
+    id: "springboot-3.5-java21",
+    label: "Spring Boot 3.5 / Java 21",
+    orderIndex: 2,
+    selectableAsSource: true,
+    selectableAsTarget: true,
+  },
+  {
+    id: "springboot-4.0-java21",
+    label: "Spring Boot 4.0 / Java 21",
+    orderIndex: 3,
+    selectableAsSource: false,
+    selectableAsTarget: true,
+  },
+];
+
+export const PROFILE_BY_ID: Record<MigrationProfileId, MigrationProfileOption> =
+  MIGRATION_PROFILE_OPTIONS.reduce(
+    (acc, profile) => {
+      acc[profile.id] = profile;
+      return acc;
+    },
+    {} as Record<MigrationProfileId, MigrationProfileOption>,
+  );
+
+// Migration path stage numbers per profile pair (1-based, per backend pipeline).
+// Stage 1 is analysis, Stage 2/3/4 are profile transitions.
+const PROFILE_TO_STAGE_INDEX: Record<MigrationProfileId, number> = {
+  "springboot-2.7-java11": 1,
+  "springboot-3.5-java17": 2,
+  "springboot-3.5-java21": 3,
+  "springboot-4.0-java21": 4,
+};
+
+export const TRANSITION_STAGE_INDEXES: number[] = [2, 3, 4];
+
+export type RoutePreview = {
+  included: string[];
+  skipped: string[];
+  excluded: string[];
+};
+
+export function getRouteValidationError(
+  source: MigrationProfileId | null | undefined,
+  target: MigrationProfileId | null | undefined,
+): string | null {
+  if (!source || !target) {
+    return "Source and target profiles are required.";
+  }
+  const sourceProfile = PROFILE_BY_ID[source];
+  const targetProfile = PROFILE_BY_ID[target];
+  if (!sourceProfile || !targetProfile) {
+    return "Unknown migration profile.";
+  }
+  if (source === target) {
+    return "Source and target profiles must differ.";
+  }
+  if (targetProfile.orderIndex <= sourceProfile.orderIndex) {
+    return "Target profile must be a higher stage than the source profile.";
+  }
+  if (!sourceProfile.selectableAsSource) {
+    return "Source profile is not selectable as a source.";
+  }
+  if (!targetProfile.selectableAsTarget) {
+    return "Target profile is not selectable as a target.";
+  }
+  return null;
+}
+
+export function getRoutePreview(
+  source: MigrationProfileId,
+  target: MigrationProfileId,
+): RoutePreview | null {
+  const error = getRouteValidationError(source, target);
+  if (error !== null) return null;
+  const sourceStage = PROFILE_TO_STAGE_INDEX[source];
+  const targetStage = PROFILE_TO_STAGE_INDEX[target];
+  const included: number[] = [];
+  const skipped: number[] = [];
+  const excluded: number[] = [];
+  for (const stage of TRANSITION_STAGE_INDEXES) {
+    if (stage <= sourceStage) {
+      skipped.push(stage);
+    } else if (stage <= targetStage) {
+      included.push(stage);
+    } else {
+      excluded.push(stage);
+    }
+  }
+  return {
+    included: included.map((stage) => String(stage)),
+    skipped: skipped.map((stage) => String(stage)),
+    excluded: excluded.map((stage) => String(stage)),
+  };
+}
+
+export function getRoutePreviewKey(
+  source: MigrationProfileId,
+  target: MigrationProfileId,
+): string {
+  return `${source}->${target}`;
+}
+
+// ── F4 — Source-profile detection evidence types ───────────────────────
+
+export type GateEvidenceArtifact = {
+  kind: string;
+  checksum_verified: boolean;
+  content: string;
+  size_bytes: number;
+  truncated: boolean;
+};
+
+export type GateEvidencePack = {
+  pack_id: string;
+  pack_type: string;
+  gate_id: string;
+  gate_phase: string;
+  summary: string;
+  artifacts: GateEvidenceArtifact[];
+  missing_refs: string[];
+  checksum_mismatches: string[];
+  failure_message: string | null;
+  resolved_artifact_count: number;
+  total_artifact_count: number;
+  redaction_status: string;
+  created_at: string;
 };

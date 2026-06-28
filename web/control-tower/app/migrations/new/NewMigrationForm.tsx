@@ -8,6 +8,12 @@ import {
   DEFAULT_V2_STAGE_CONTINUATION_POLICY,
   type V2StageContinuationPolicy,
 } from "../../../lib/controlTowerApi";
+import {
+  MIGRATION_PROFILE_OPTIONS,
+  getRoutePreview,
+  getRouteValidationError,
+  type MigrationProfileId,
+} from "../../../lib/contracts";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -81,6 +87,13 @@ function sanitizeSmokeSnippet(value: string): string {
     .replace(/sk-[A-Za-z0-9_-]+/g, "[redacted-token]")
     .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted-token]")
     .slice(0, 240);
+}
+
+export function getRouteValidationMessage(
+  source: MigrationProfileId,
+  target: MigrationProfileId,
+): string | null {
+  return getRouteValidationError(source, target);
 }
 
 export function getStartReadinessCopy(
@@ -200,6 +213,8 @@ interface FormFields {
   proof_level: string;
   skip_endpoint_smoke: boolean;
   stageContinuationPolicy: V2StageContinuationPolicy;
+  sourceProfile: MigrationProfileId;
+  targetProfile: MigrationProfileId;
 }
 
 const EMPTY_FIELDS: FormFields = {
@@ -215,6 +230,8 @@ const EMPTY_FIELDS: FormFields = {
   proof_level: "build_test_verified",
   skip_endpoint_smoke: false,
   stageContinuationPolicy: DEFAULT_V2_STAGE_CONTINUATION_POLICY,
+  sourceProfile: "springboot-2.7-java11",
+  targetProfile: "springboot-4.0-java21",
 };
 
 // ── Component ──────────────────────────────────────────────────────
@@ -486,6 +503,70 @@ export function NewMigrationForm() {
         </div>
       </fieldset>
 
+      {/* Profile Route Selection */}
+      <fieldset>
+        <legend>Migration Route</legend>
+        <div className="field-row">
+          <label>Source Profile</label>
+          <select
+            value={fields.sourceProfile}
+            onChange={(e) => updateField("sourceProfile", e.target.value as MigrationProfileId)}
+            data-testid="source-profile-select"
+          >
+            {MIGRATION_PROFILE_OPTIONS.filter((p) => p.selectableAsSource).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="field-row">
+          <label>Target Profile</label>
+          <select
+            value={fields.targetProfile}
+            onChange={(e) => updateField("targetProfile", e.target.value as MigrationProfileId)}
+            data-testid="target-profile-select"
+          >
+            {MIGRATION_PROFILE_OPTIONS.filter((p) => p.selectableAsTarget).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {(() => {
+          const routeError = getRouteValidationMessage(fields.sourceProfile, fields.targetProfile);
+          if (routeError) {
+            return <p className="warning" data-testid="route-validation-error">{routeError}</p>;
+          }
+          const preview = getRoutePreview(fields.sourceProfile, fields.targetProfile);
+          if (!preview) return null;
+          return (
+            <div className="info-box" data-testid="route-preview">
+              <p>
+                <strong>Route preview</strong>
+              </p>
+              <p className="check-row">
+                Source: {MIGRATION_PROFILE_OPTIONS.find((p) => p.id === fields.sourceProfile)?.label}
+              </p>
+              <p className="check-row">
+                Target: {MIGRATION_PROFILE_OPTIONS.find((p) => p.id === fields.targetProfile)?.label}
+              </p>
+              <p className="check-row">
+                Included stages: {preview.included.length > 0 ? preview.included.join(", ") : "none"}
+              </p>
+              <p className="check-row">
+                Skipped stages: {preview.skipped.length > 0 ? preview.skipped.join(", ") : "none"}
+              </p>
+              <p className="check-row">
+                Excluded stages: {preview.excluded.length > 0 ? preview.excluded.join(", ") : "none"}
+              </p>
+            </div>
+          );
+        })()}
+      </fieldset>
+
       {/* Actions */}
       <div className="button-row">
         <button onClick={handleSaveSetup} disabled={!!loading || !fields.run_name || !fields.legacy_app_path}>
@@ -598,23 +679,29 @@ export function NewMigrationForm() {
           </p>
           <button
             className="start-button"
-            disabled={!startEnabled}
+            disabled={!startEnabled || !!getRouteValidationMessage(fields.sourceProfile, fields.targetProfile)}
             title={
-              !readiness.preflight_checksum_match
-                ? "Preflight is stale — run preflight again"
-                : !readiness.ready
-                  ? "Fix errors above"
-                  : "Start migration"
+              getRouteValidationMessage(fields.sourceProfile, fields.targetProfile)
+                ? "Select a valid source/target profile pair"
+                : !readiness.preflight_checksum_match
+                  ? "Preflight is stale — run preflight again"
+                  : !readiness.ready
+                    ? "Fix errors above"
+                    : "Start migration"
             }
             onClick={async () => {
               if (!setupResult) return;
               setLoading("Starting migration...");
               setError(null);
               try {
-                // 1. Create V2 job
+                // 1. Create V2 job with profile pair
                 const jobPayload = createV2JobPayload(
                   setupResult.setup_id,
                   fields.stageContinuationPolicy || DEFAULT_V2_STAGE_CONTINUATION_POLICY,
+                  {
+                    sourceProfile: fields.sourceProfile,
+                    targetProfile: fields.targetProfile,
+                  },
                 );
                 const jobRes = await fetch(`${API_BASE}/v1/v2/migration-jobs`, {
                   method: "POST",

@@ -20,9 +20,11 @@ import {
   generateV2FinalReport,
   resolveReportDownloadUrl,
   rejectV2Card,
+  postV2GateAction,
   requireJobId,
   v2EventStreamUrl,
   v2RootPomDownloadUrl,
+  createIdempotencyKey,
 } from "../../../lib/controlTowerApi";
 import type {
   V2ApprovalResponse,
@@ -35,7 +37,10 @@ import type {
   V2PipelineResponse,
   GateDetailResponse,
   GateRepresentation,
+  GateEvidencePack,
+  MigrationProfileId,
 } from "../../../lib/contracts";
+import { MIGRATION_PROFILE_OPTIONS } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
 
 export function formatGateArtifactRefLabel(ref: string): string {
@@ -111,8 +116,14 @@ export function mergeCockpitLiveRefreshResults(
 
 export function GatePanelContent({
   state,
+  jobId,
+  job,
+  onGateRefresh,
 }: {
   state: GatePanelState;
+  jobId?: string;
+  job?: V2MigrationJobResponse;
+  onGateRefresh?: () => void;
 }) {
   if (state.status === "loading") {
     return (
@@ -159,7 +170,7 @@ export function GatePanelContent({
           </div>
           <div className="table-row">
             <span className="meta">Summary</span>
-            <strong>{detail?.evidence?.failure_summary ?? "Open gate awaiting decision"}</strong>
+            <strong>{"failure_summary" in (detail?.evidence ?? {}) ? (detail?.evidence as { failure_summary: string }).failure_summary : "Open gate awaiting decision"}</strong>
             <span className="meta">Allowed actions: {gate.available_actions.map((action) => action.label).join(", ") || "None"}</span>
           </div>
           <div className="table-row">
@@ -170,6 +181,19 @@ export function GatePanelContent({
         </div>
       ) : (
         <p className="meta">No gate is currently open for this job.</p>
+      )}
+      {gate?.gate_phase === "analysis_review" && (
+        <>
+          <SourceProfileDetectionPanel gateDetail={detail} />
+          {jobId && onGateRefresh && (
+            <SourceProfileOverrideForm
+              gateDetail={detail}
+              jobId={jobId}
+              job={job}
+              onSuccess={onGateRefresh}
+            />
+          )}
+        </>
       )}
     </section>
   );
@@ -241,6 +265,567 @@ export function AssistantPanelContent({
       <p className="meta">
         Assistant cannot execute, approve, write files, change route, or override proof.
       </p>
+    </section>
+  );
+}
+
+// ── F3 — Migration Route Panel ─────────────────────────────────────────
+
+export function MigrationRoutePanel({ job }: { job: V2MigrationJobResponse }) {
+  const sourceLabel =
+    MIGRATION_PROFILE_OPTIONS.find((p) => p.id === job.source_profile)?.label ?? job.source_profile ?? "unspecified";
+  const targetLabel =
+    MIGRATION_PROFILE_OPTIONS.find((p) => p.id === job.target_profile)?.label ?? job.target_profile ?? "unspecified";
+
+  return (
+    <section className="panel" data-testid="migration-route-panel">
+      <h2>Migration Route</h2>
+      <div className="table-list">
+        <div className="table-row">
+          <span className="meta">Source profile</span>
+          <strong data-testid="cockpit-source-profile">{sourceLabel}</strong>
+        </div>
+        <div className="table-row">
+          <span className="meta">Target profile</span>
+          <strong data-testid="cockpit-target-profile">{targetLabel}</strong>
+        </div>
+        {job.validation_status && (
+          <div className="table-row">
+            <span className="meta">Validation</span>
+            <strong data-testid="cockpit-validation-status">{job.validation_status}</strong>
+            {job.validation_reason && <span className="meta">{job.validation_reason}</span>}
+          </div>
+        )}
+        {job.included_stages && job.included_stages.length > 0 && (
+          <div className="table-row">
+            <span className="meta">Included stages</span>
+            <strong data-testid="cockpit-included-stages">{job.included_stages.join(", ")}</strong>
+          </div>
+        )}
+        {job.skipped_stages && job.skipped_stages.length > 0 && (
+          <div className="table-row">
+            <span className="meta">Skipped stages</span>
+            <strong data-testid="cockpit-skipped-stages">{job.skipped_stages.join(", ")}</strong>
+          </div>
+        )}
+        {job.excluded_stages && job.excluded_stages.length > 0 && (
+          <div className="table-row">
+            <span className="meta">Excluded stages</span>
+            <strong data-testid="cockpit-excluded-stages">{job.excluded_stages.join(", ")}</strong>
+          </div>
+        )}
+        {job.run_configuration_id && (
+          <div className="table-row">
+            <span className="meta">Run config</span>
+            <strong data-testid="cockpit-run-config-id">{job.run_configuration_id}</strong>
+          </div>
+        )}
+        {job.stage_continuation_policy && (
+          <div className="table-row">
+            <span className="meta">Continuation policy</span>
+            <strong data-testid="cockpit-continuation-policy">{job.stage_continuation_policy}</strong>
+          </div>
+        )}
+      </div>
+      <p className="meta">All route data is backend-returned. No local recomputation.</p>
+    </section>
+  );
+}
+
+// ── F4 — Source Profile Detection Panel ────────────────────────────────
+
+function tryParseDetectionArtifact(
+  evidence: GateEvidencePack | null,
+): Record<string, unknown> | null {
+  if (!evidence?.artifacts?.length) return null;
+  const detectionArtifact = evidence.artifacts.find(
+    (a) => a.kind === "source_profile_detection" || a.kind === "detection",
+  );
+  if (!detectionArtifact?.content) return null;
+  try {
+    return JSON.parse(detectionArtifact.content) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+export function SourceProfileDetectionPanel({
+  gateDetail,
+}: {
+  gateDetail: GateDetailResponse | null;
+}) {
+  const evidence = gateDetail?.evidence;
+  if (!evidence || !("pack_type" in evidence)) {
+    return (
+      <div className="info-box" data-testid="detection-evidence-unavailable">
+        <p>Source-profile detection evidence is unavailable; refresh the gate or rerun analysis.</p>
+      </div>
+    );
+  }
+
+  const pack = evidence as GateEvidencePack;
+  const detected = tryParseDetectionArtifact(pack);
+
+  return (
+    <section className="panel" data-testid="source-profile-detection-panel">
+      <h2>Source Profile Detection</h2>
+      <div className="table-list">
+        <div className="table-row">
+          <span className="meta">Pack type</span>
+          <strong>{pack.pack_type}</strong>
+        </div>
+        <div className="table-row">
+          <span className="meta">Summary</span>
+          <strong>{pack.summary || "No summary available"}</strong>
+        </div>
+        <div className="table-row">
+          <span className="meta">Artifacts</span>
+          <strong>
+            {pack.resolved_artifact_count}/{pack.total_artifact_count} resolved
+          </strong>
+        </div>
+        {pack.missing_refs.length > 0 && (
+          <div className="table-row">
+            <span className="meta">Missing refs</span>
+            <strong className="warning-text">{pack.missing_refs.join(", ")}</strong>
+          </div>
+        )}
+        {pack.checksum_mismatches.length > 0 && (
+          <div className="table-row">
+            <span className="meta">Checksum mismatches</span>
+            <strong className="warning-text">{pack.checksum_mismatches.join(", ")}</strong>
+          </div>
+        )}
+        {pack.failure_message && (
+          <div className="table-row">
+            <span className="meta">Failure</span>
+            <strong className="warning-text">{pack.failure_message}</strong>
+          </div>
+        )}
+        {detected && (
+          <>
+            {detected.detected_source_profile && (
+              <div className="table-row">
+                <span className="meta">Detected source profile</span>
+                <strong data-testid="detected-source-profile">{String(detected.detected_source_profile)}</strong>
+              </div>
+            )}
+            {detected.confidence != null && (
+              <div className="table-row">
+                <span className="meta">Confidence</span>
+                <strong>{String(detected.confidence)}</strong>
+              </div>
+            )}
+            {detected.uncertainty_notes && (
+              <div className="table-row">
+                <span className="meta">Uncertainty</span>
+                <strong>{String(detected.uncertainty_notes)}</strong>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+      <p className="meta">Evidence is backend-owned. Do not use parsed content as execution input.</p>
+    </section>
+  );
+}
+
+// ── F4 — Source Profile Override Form ──────────────────────────────────
+
+export type SourceProfileOverrideBlockedReason =
+  | "missing_target_profile"
+  | "missing_detection_artifact_ref"
+  | "missing_detection_artifact_checksum"
+  | "missing_reason"
+  | "missing_comments"
+  | "gate_phase_not_analysis_review"
+  | "override_action_unavailable"
+  | null;
+
+export function getSourceProfileOverrideBlockedReason(input: {
+  isAnalysisReview: boolean;
+  hasOverrideAction: boolean;
+  hasTargetProfile: boolean;
+  hasDetectionArtifactRef: boolean;
+  hasExpectedChecksum: boolean;
+  reason: string;
+  comments: string;
+}): SourceProfileOverrideBlockedReason {
+  if (!input.isAnalysisReview) {
+    return "gate_phase_not_analysis_review";
+  }
+  if (!input.hasOverrideAction) {
+    return "override_action_unavailable";
+  }
+  if (!input.hasTargetProfile) {
+    return "missing_target_profile";
+  }
+  if (!input.hasDetectionArtifactRef) {
+    return "missing_detection_artifact_ref";
+  }
+  if (!input.hasExpectedChecksum) {
+    return "missing_detection_artifact_checksum";
+  }
+  if (input.reason.trim().length === 0) {
+    return "missing_reason";
+  }
+  if (input.comments.trim().length === 0) {
+    return "missing_comments";
+  }
+  return null;
+}
+
+export const SOURCE_PROFILE_OVERRIDE_BLOCKED_COPY: Record<
+  Exclude<SourceProfileOverrideBlockedReason, null>,
+  string
+> = {
+  missing_target_profile: "Missing target profile from backend job state.",
+  missing_detection_artifact_ref: "Missing detection artifact reference bound to this gate.",
+  missing_detection_artifact_checksum: "Missing detection artifact checksum from gate state.",
+  missing_reason: "Reason is required.",
+  missing_comments: "Comments are required.",
+  gate_phase_not_analysis_review: "Source-profile override is only available at analysis_review gates.",
+  override_action_unavailable: "The override_source_profile action is not available on this gate.",
+};
+
+export const SOURCE_PROFILE_OVERRIDE_GENERIC_COPY =
+  "Source-profile detection evidence is unavailable; refresh the gate or rerun analysis.";
+
+function findDetectionArtifactRef(sourceArtifactRefs: string[]): string {
+  for (const ref of sourceArtifactRefs) {
+    if (typeof ref !== "string") continue;
+    const trimmed = ref.trim();
+    if (!trimmed) continue;
+    const normalized = trimmed.replace(/\\/g, "/");
+    const filename = normalized.split("/").filter(Boolean).pop() ?? "";
+    if (filename.toLowerCase().includes("source_profile_detection")) {
+      return trimmed;
+    }
+  }
+  return "";
+}
+
+function findDetectedSourceProfileFromEvidence(
+  evidence: GateDetailResponse["evidence"],
+): string {
+  if (!evidence || !("pack_type" in evidence)) return "";
+  const pack = evidence as GateEvidencePack;
+  const detectionArtifact = pack.artifacts?.find(
+    (a) =>
+      typeof a?.kind === "string" &&
+      (a.kind === "source_profile_detection" ||
+        a.kind === "detection" ||
+        a.kind.toLowerCase().includes("source_profile_detection")),
+  );
+  if (!detectionArtifact?.content) return "";
+  try {
+    const parsed = JSON.parse(detectionArtifact.content) as Record<string, unknown>;
+    const value = parsed.detected_source_profile;
+    return typeof value === "string" ? value : "";
+  } catch {
+    return "";
+  }
+}
+
+export type SourceProfileOverrideSubmitBody = {
+  gate_id: string;
+  job_id: string;
+  action: "override_source_profile";
+  expected_gate_checksum: string;
+  idempotency_key: string;
+  decided_by: "human";
+  actor_type: "human";
+  reason: string;
+  comments: string;
+  override_source_profile: MigrationProfileId;
+  detection_artifact_ref: string;
+  detected_source_profile: MigrationProfileId | undefined;
+  requested_source_profile: MigrationProfileId;
+  target_profile: MigrationProfileId;
+  expected_detection_artifact_checksum: string;
+};
+
+export type BuildSourceProfileOverrideBodyResult = {
+  body: SourceProfileOverrideSubmitBody | null;
+  blockedReason: SourceProfileOverrideBlockedReason;
+  detectionArtifactRef: string;
+  expectedDetectionChecksum: string;
+  detectedSourceProfile: MigrationProfileId | undefined;
+  targetProfile: MigrationProfileId | null;
+};
+
+export type BuildSourceProfileOverrideBodyInput = {
+  gate: GateRepresentation;
+  jobId: string;
+  job?: V2MigrationJobResponse;
+  evidence: GateDetailResponse["evidence"];
+  requestedProfile: MigrationProfileId;
+  reason: string;
+  comments: string;
+  idempotencyKey: string;
+  detectedSourceProfile?: MigrationProfileId;
+};
+
+export function buildSourceProfileOverrideBody(
+  input: BuildSourceProfileOverrideBodyInput,
+): BuildSourceProfileOverrideBodyResult {
+  const detectionArtifactRef = findDetectionArtifactRef(input.gate.source_artifact_refs);
+  const expectedDetectionChecksum = input.gate.source_artifact_checksum;
+  const detectedFromEvidence = findDetectedSourceProfileFromEvidence(input.evidence);
+  const detectedSourceProfile: MigrationProfileId | undefined =
+    detectedFromEvidence &&
+    MIGRATION_PROFILE_OPTIONS.find((p) => p.id === detectedFromEvidence)
+      ? (detectedFromEvidence as MigrationProfileId)
+      : input.detectedSourceProfile;
+
+  const jobTarget = input.job?.target_profile;
+  const targetProfile: MigrationProfileId | null = (() => {
+    if (
+      jobTarget &&
+      MIGRATION_PROFILE_OPTIONS.find((p) => p.id === jobTarget)?.selectableAsTarget
+    ) {
+      return jobTarget;
+    }
+    if (
+      detectedSourceProfile &&
+      MIGRATION_PROFILE_OPTIONS.find((p) => p.id === detectedSourceProfile)?.selectableAsTarget
+    ) {
+      return detectedSourceProfile;
+    }
+    return null;
+  })();
+
+  const isAnalysisReview = input.gate.gate_phase === "analysis_review";
+  const hasOverrideAction = !!input.gate.available_actions.some(
+    (a) => a.action === "override_source_profile",
+  );
+
+  const blockedReason = getSourceProfileOverrideBlockedReason({
+    isAnalysisReview,
+    hasOverrideAction,
+    hasTargetProfile: targetProfile !== null,
+    hasDetectionArtifactRef: detectionArtifactRef.length > 0,
+    hasExpectedChecksum: expectedDetectionChecksum.length > 0,
+    reason: input.reason,
+    comments: input.comments,
+  });
+
+  if (
+    blockedReason !== null ||
+    targetProfile === null ||
+    input.gate.checksum.length === 0
+  ) {
+    return {
+      body: null,
+      blockedReason,
+      detectionArtifactRef,
+      expectedDetectionChecksum,
+      detectedSourceProfile,
+      targetProfile,
+    };
+  }
+
+  return {
+    body: {
+      gate_id: input.gate.gate_id,
+      job_id: input.jobId,
+      action: "override_source_profile",
+      expected_gate_checksum: input.gate.checksum,
+      idempotency_key: input.idempotencyKey,
+      decided_by: "human",
+      actor_type: "human",
+      reason: input.reason,
+      comments: input.comments,
+      override_source_profile: input.requestedProfile,
+      detection_artifact_ref: detectionArtifactRef,
+      detected_source_profile: detectedSourceProfile,
+      requested_source_profile: input.requestedProfile,
+      target_profile: targetProfile,
+      expected_detection_artifact_checksum: expectedDetectionChecksum,
+    },
+    blockedReason: null,
+    detectionArtifactRef,
+    expectedDetectionChecksum,
+    detectedSourceProfile,
+    targetProfile,
+  };
+}
+
+export function SourceProfileOverrideForm({
+  gateDetail,
+  jobId,
+  job,
+  onSuccess,
+}: {
+  gateDetail: GateDetailResponse | null;
+  jobId: string;
+  job?: V2MigrationJobResponse;
+  onSuccess: () => void;
+}) {
+  const [requestedProfile, setRequestedProfile] = useState<MigrationProfileId>("springboot-2.7-java11");
+  const [reason, setReason] = useState("");
+  const [comments, setComments] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const gate = gateDetail?.gate;
+  const evidence = gateDetail?.evidence;
+  const isAnalysisReview = gate?.gate_phase === "analysis_review";
+  const hasOverrideAction = !!gate?.available_actions.some(
+    (a) => a.action === "override_source_profile",
+  );
+
+  // Backend-bound target profile: prefer job.target_profile, fall back to
+  // detected_source_profile from the detection evidence artifact only when
+  // the job target is unavailable. Never derive from gate_phase.
+  const detectedFromEvidence = findDetectedSourceProfileFromEvidence(evidence ?? null);
+  const targetProfile: MigrationProfileId | null = (() => {
+    const jobTarget = job?.target_profile;
+    if (jobTarget && (MIGRATION_PROFILE_OPTIONS.find((p) => p.id === jobTarget)?.selectableAsTarget ?? false)) {
+      return jobTarget;
+    }
+    if (
+      detectedFromEvidence &&
+      (MIGRATION_PROFILE_OPTIONS.find((p) => p.id === detectedFromEvidence)?.selectableAsTarget ?? false)
+    ) {
+      return detectedFromEvidence as MigrationProfileId;
+    }
+    return null;
+  })();
+
+  // Backend-bound detection artifact ref: must come from gate.source_artifact_refs.
+  // Select the ref whose filename contains "source_profile_detection".
+  const detectionArtifactRef = findDetectionArtifactRef(gate?.source_artifact_refs ?? []);
+
+  // Backend-bound detection checksum: use gate.source_artifact_checksum
+  // (the canonical gate-bound checksum), never pack_id or pack metadata.
+  const expectedDetectionChecksum = gate?.source_artifact_checksum ?? "";
+
+  const requestedProfileValid =
+    MIGRATION_PROFILE_OPTIONS.find((p) => p.id === requestedProfile)?.selectableAsSource ?? false;
+  const detectedSourceProfile: MigrationProfileId | undefined =
+    detectedFromEvidence &&
+    (MIGRATION_PROFILE_OPTIONS.find((p) => p.id === detectedFromEvidence) !== undefined)
+      ? (detectedFromEvidence as MigrationProfileId)
+      : undefined;
+
+  const blockedReason = getSourceProfileOverrideBlockedReason({
+    isAnalysisReview,
+    hasOverrideAction,
+    hasTargetProfile: targetProfile !== null,
+    hasDetectionArtifactRef: detectionArtifactRef.length > 0,
+    hasExpectedChecksum: expectedDetectionChecksum.length > 0,
+    reason,
+    comments,
+  });
+  const canSubmit =
+    blockedReason === null && gate?.checksum !== undefined && gate.checksum.length > 0 && requestedProfileValid;
+
+  if (!isAnalysisReview || !hasOverrideAction) {
+    return null;
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!gate) return;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const result = buildSourceProfileOverrideBody({
+        gate,
+        jobId,
+        job,
+        evidence: evidence ?? null,
+        requestedProfile,
+        reason,
+        comments,
+        idempotencyKey: createIdempotencyKey(),
+        detectedSourceProfile,
+      });
+      if (result.body === null) {
+        setSubmitError(
+          result.blockedReason !== null
+            ? SOURCE_PROFILE_OVERRIDE_BLOCKED_COPY[result.blockedReason]
+            : SOURCE_PROFILE_OVERRIDE_GENERIC_COPY,
+        );
+        return;
+      }
+      await postV2GateAction(jobId, gate.gate_id, result.body);
+      onSuccess();
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : "Override submission failed");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <section className="panel" data-testid="source-profile-override-form">
+      <h2>Override Source Profile</h2>
+      <p className="meta">
+        Only a human checksum-bound gate action can override source profile.
+      </p>
+      {!canSubmit && (
+        <div className="info-box" data-testid="override-submit-disabled">
+          <p data-testid="override-blocked-reason">
+            {blockedReason !== null
+              ? SOURCE_PROFILE_OVERRIDE_BLOCKED_COPY[blockedReason]
+              : SOURCE_PROFILE_OVERRIDE_GENERIC_COPY}
+          </p>
+        </div>
+      )}
+      <form onSubmit={(e) => void handleSubmit(e)}>
+        <div className="field-row">
+          <label>Requested Profile *</label>
+          <select
+            value={requestedProfile}
+            onChange={(e) => setRequestedProfile(e.target.value as MigrationProfileId)}
+            data-testid="override-profile-select"
+          >
+            {MIGRATION_PROFILE_OPTIONS.filter((p) => p.selectableAsSource).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="field-row">
+          <label>Reason *</label>
+          <input
+            type="text"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Why override the detected source profile?"
+            required
+            aria-required="true"
+            data-testid="override-reason-input"
+          />
+        </div>
+        <div className="field-row">
+          <label>Comments *</label>
+          <textarea
+            rows={3}
+            value={comments}
+            onChange={(e) => setComments(e.target.value)}
+            placeholder="Required additional context for the override"
+            required
+            aria-required="true"
+            data-testid="override-comments-input"
+          />
+        </div>
+        {submitError && (
+          <p className="error-box" role="alert" data-testid="override-submit-error">
+            {submitError}
+          </p>
+        )}
+        <button
+          type="submit"
+          disabled={submitting || !canSubmit}
+          data-testid="override-submit-button"
+        >
+          {submitting ? "Submitting..." : "Submit Override"}
+        </button>
+      </form>
     </section>
   );
 }
@@ -603,27 +1188,79 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         <h2>Stage Timeline</h2>
         <p className="meta">Job: {data.job.job_id}</p>
         <div className="stage-list">
-          {data.stages.map((stage) => (
-            <div key={stage.stage_index} className={`stage-card ${stage.chain_status}`}>
-              <div className="stage-header">
-                <strong>{stage.pipeline_stage}</strong>
-                <span className={`status-badge ${stage.chain_status}`}>
-                  {formatStageStatusLabel(stage.chain_status)}
-                </span>
+          {data.stages.map((stage) => {
+            const isSkipped = data.job.skipped_stages?.includes(String(stage.stage_index));
+            const isExcluded = data.job.excluded_stages?.includes(String(stage.stage_index));
+            const isIncluded = data.job.included_stages?.includes(String(stage.stage_index));
+            return (
+              <div key={stage.stage_index} className={`stage-card ${stage.chain_status}`}>
+                <div className="stage-header">
+                  <strong>{stage.pipeline_stage}</strong>
+                  <span className={`status-badge ${stage.chain_status}`}>
+                    {formatStageStatusLabel(stage.chain_status)}
+                  </span>
+                  {isSkipped && (
+                    <span className="status-badge skipped" data-testid={`stage-${stage.stage_index}-skipped`}>
+                      SKIPPED BY SOURCE
+                    </span>
+                  )}
+                  {isExcluded && (
+                    <span className="status-badge excluded" data-testid={`stage-${stage.stage_index}-excluded`}>
+                      EXCLUDED BY TARGET
+                    </span>
+                  )}
+                  {isIncluded && (
+                    <span className="meta" data-testid={`stage-${stage.stage_index}-included`}>
+                      included
+                    </span>
+                  )}
+                </div>
+                <p className="meta">Input: {stage.input_source_kind}</p>
+                {stage.stage_index === 4 && (
+                  <p className="meta">
+                    Stage 4 is the Spring Boot 4 migration stage and follows the same approval and evidence flow as the earlier stages.
+                  </p>
+                )}
               </div>
-              <p className="meta">Input: {stage.input_source_kind}</p>
-              {stage.stage_index === 4 && (
-                <p className="meta">
-                  Stage 4 is the Spring Boot 4 migration stage and follows the same approval and evidence flow as the earlier stages.
-                </p>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
         <p className="meta">Stage inputs are fixed by pipeline. No user selection of Stage 2/3 paths.</p>
       </section>
 
-      {gateState.status !== "loading" ? <GatePanelContent state={gateState} /> : null}
+      {/* F3 — Migration Route Panel */}
+      <MigrationRoutePanel job={data.job} />
+
+      {gateState.status !== "loading" ? (
+        <GatePanelContent
+          state={gateState}
+          jobId={normalizedJobId}
+          job={data?.job}
+          onGateRefresh={() => {
+            void (async () => {
+              try {
+                const safeJobId = requireJobId(normalizedJobId);
+                const [gateList, openGateResponse] = await Promise.all([
+                  getV2JobGates(safeJobId),
+                  getV2OpenGate(safeJobId),
+                ]);
+                const openGate = openGateResponse.gate ?? null;
+                const openGateDetail = openGate
+                  ? await getV2GateDetail(safeJobId, openGate.gate_id).catch(() => null)
+                  : null;
+                setGateState({
+                  status: gateList.gates.length === 0 ? "empty" : "success",
+                  gates: gateList.gates,
+                  openGate,
+                  openGateDetail,
+                });
+              } catch {
+                // keep existing gate state on refresh failure
+              }
+            })();
+          }}
+        />
+      ) : null}
 
       {/* Evidence Panel */}
       <section className="panel">
@@ -1042,6 +1679,8 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .status-badge.failed { background: #ffe3e3; color: #a40000; }
         .status-badge.blocked { background: #f5e8ff; color: #5a248a; }
         .status-badge.pending { background: #eee; color: #666; }
+        .status-badge.skipped { background: #e8f4ff; color: #005599; }
+        .status-badge.excluded { background: #ffe8e8; color: #990000; }
         .meta { font-size: 0.85rem; color: #666; }
         .warning-text { font-size: 0.85rem; color: #8a5a00; margin: 0.25rem 0 0.5rem; }
         .error-box { border: 1px solid #cc0000; background: #fff0f0; padding: 1rem; border-radius: 6px; }

@@ -1,19 +1,25 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
 import MigrationCockpitPage from "../app/migrations/[jobId]/page";
 import {
   MigrationCockpit,
   AssistantPanelContent,
   GatePanelContent,
+  MigrationRoutePanel,
+  SourceProfileDetectionPanel,
+  SourceProfileOverrideForm,
+  buildSourceProfileOverrideBody,
+  getSourceProfileOverrideBlockedReason,
+  SOURCE_PROFILE_OVERRIDE_BLOCKED_COPY,
   formatStageStatusLabel,
   formatGateArtifactRefLabel,
   mergeCockpitLiveRefreshResults,
   reduceStageStatus,
   type CockpitData,
 } from "../app/migrations/[jobId]/MigrationCockpit";
-import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, requireJobId, resolveReportDownloadUrl, v2EventStreamUrl } from "../lib/controlTowerApi";
-import type { GateRepresentation, V2FailureSummaryItem, V2JobEvent } from "../lib/contracts";
+import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, postV2GateAction, requireJobId, resolveReportDownloadUrl, v2EventStreamUrl } from "../lib/controlTowerApi";
+import type { GateDetailResponse, GateRepresentation, GateEvidencePack, V2FailureSummaryItem, V2JobEvent, V2MigrationJobResponse } from "../lib/contracts";
 
 describe("V2 Migration Cockpit contract", () => {
   it("passes the awaited route job id into MigrationCockpit", async () => {
@@ -825,6 +831,766 @@ describe("V2 Migration Cockpit contract", () => {
   it("Stage 3 profile is springboot-3.5-java17-to-java21", () => {
     const stage3Profile = "springboot-3.5-java17-to-java21";
     expect(stage3Profile).toBe("springboot-3.5-java17-to-java21");
+  });
+});
+
+// ── F3/F4 — Cockpit profile routing, detection, override ─────────────
+
+describe("F3/F4 Cockpit profile routing panels", () => {
+  it("MigrationRoutePanel displays source and target profiles from backend job data", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-2.7-java11",
+      target_profile: "springboot-4.0-java21",
+      validation_status: "valid",
+      included_stages: ["2", "3", "4"],
+      skipped_stages: [],
+      excluded_stages: [],
+    };
+    const markup = renderToStaticMarkup(<MigrationRoutePanel job={job} />);
+    expect(markup).toContain("Migration Route");
+    expect(markup).toContain("Spring Boot 2.7 / Java 11");
+    expect(markup).toContain("Spring Boot 4.0 / Java 21");
+    expect(markup).toContain("valid");
+    expect(markup).toContain("2, 3, 4");
+    expect(markup).toContain("All route data is backend-returned");
+  });
+
+  it("MigrationRoutePanel shows skipped stages from backend data", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-2",
+      setup_id: "setup-2",
+      setup_checksum: "chk-2",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-3.5-java17",
+      target_profile: "springboot-4.0-java21",
+      validation_status: "valid",
+      included_stages: ["3", "4"],
+      skipped_stages: ["2"],
+      excluded_stages: [],
+    };
+    const markup = renderToStaticMarkup(<MigrationRoutePanel job={job} />);
+    expect(markup).toContain("Skipped stages");
+    expect(markup).toContain("2");
+  });
+
+  it("SourceProfileDetectionPanel shows unavailable message when evidence is null", () => {
+    const markup = renderToStaticMarkup(
+      <SourceProfileDetectionPanel gateDetail={null} />,
+    );
+    expect(markup).toContain("Source-profile detection evidence is unavailable");
+    expect(markup).toContain("refresh the gate or rerun analysis");
+  });
+
+  it("SourceProfileDetectionPanel shows detection evidence when evidence pack is present", () => {
+    const pack: GateEvidencePack = {
+      pack_id: "pack-1",
+      pack_type: "source_profile_detection",
+      gate_id: "gate-1",
+      gate_phase: "analysis_review",
+      summary: "Detected springboot-2.7-java11",
+      artifacts: [
+        {
+          kind: "source_profile_detection",
+          checksum_verified: true,
+          content: '{"detected_source_profile":"springboot-2.7-java11","confidence":"high"}',
+          size_bytes: 64,
+          truncated: false,
+        },
+      ],
+      missing_refs: [],
+      checksum_mismatches: [],
+      failure_message: null,
+      resolved_artifact_count: 1,
+      total_artifact_count: 1,
+      redaction_status: "clean",
+      created_at: "2026-06-28T00:00:00Z",
+    };
+    const gateDetail: GateDetailResponse = {
+      gate: {
+        gate_id: "gate-1",
+        job_id: "job-1",
+        gate_phase: "analysis_review",
+        stage_index: 1,
+        gate_status: "open",
+        gate_decision: "continue",
+        source_artifact_checksum: "sha256:gate",
+        source_artifact_refs: [],
+        created_at: "2026-06-28T00:00:00Z",
+        resolved_at: null,
+        resolved_by: null,
+        checksum: "sha256:gate-checksum",
+        available_actions: [],
+      },
+      evidence: pack,
+      checksum: "sha256:gate-checksum",
+    };
+    const markup = renderToStaticMarkup(
+      <SourceProfileDetectionPanel gateDetail={gateDetail} />,
+    );
+    expect(markup).toContain("Source Profile Detection");
+    expect(markup).toContain("source_profile_detection");
+    expect(markup).toContain("springboot-2.7-java11");
+    expect(markup).toContain("1/1 resolved");
+  });
+
+  it("SourceProfileOverrideForm does not render for non-analysis_review gates", () => {
+    const gateDetail: GateDetailResponse = {
+      gate: {
+        gate_id: "gate-1",
+        job_id: "job-1",
+        gate_phase: "repair_review",
+        stage_index: 2,
+        gate_status: "open",
+        gate_decision: "revise",
+        source_artifact_checksum: "sha256:gate",
+        source_artifact_refs: [],
+        created_at: "2026-06-28T00:00:00Z",
+        resolved_at: null,
+        resolved_by: null,
+        checksum: "sha256:gate-checksum",
+        available_actions: [
+          { action: "override_source_profile", label: "Override", description: "Override", blocked: false, block_reason: "" },
+        ],
+      },
+      evidence: null,
+      checksum: "sha256:gate-checksum",
+    };
+    const markup = renderToStaticMarkup(
+      <SourceProfileOverrideForm gateDetail={gateDetail} jobId="job-1" onSuccess={() => undefined} />,
+    );
+    expect(markup).toBe("");
+  });
+
+  it("SourceProfileOverrideForm shows a specific blocked reason when detection evidence is missing", () => {
+    const gateDetail: GateDetailResponse = {
+      gate: {
+        gate_id: "gate-1",
+        job_id: "job-1",
+        gate_phase: "analysis_review",
+        stage_index: 1,
+        gate_status: "open",
+        gate_decision: "continue",
+        source_artifact_checksum: "sha256:gate",
+        source_artifact_refs: [],
+        created_at: "2026-06-28T00:00:00Z",
+        resolved_at: null,
+        resolved_by: null,
+        checksum: "sha256:gate-checksum",
+        available_actions: [
+          { action: "override_source_profile", label: "Override", description: "Override", blocked: false, block_reason: "" },
+        ],
+      },
+      evidence: null,
+      checksum: "sha256:gate-checksum",
+    };
+    const markup = renderToStaticMarkup(
+      <SourceProfileOverrideForm gateDetail={gateDetail} jobId="job-1" onSuccess={() => undefined} />,
+    );
+    expect(markup).toContain("Override Source Profile");
+    // With no job target_profile and no detection ref, the form should expose
+    // a specific unavailable reason — never fabricate a target_profile.
+    expect(markup).toContain("Missing target profile from backend job state.");
+    expect(markup).toContain("disabled");
+  });
+
+  it("cockpit displays source and target profile from backend job data", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-2.7-java11",
+      target_profile: "springboot-4.0-java21",
+    };
+    const markup = renderToStaticMarkup(<MigrationRoutePanel job={job} />);
+    expect(markup).toContain("Source profile");
+    expect(markup).toContain("Target profile");
+    expect(markup).toContain("Spring Boot 2.7 / Java 11");
+    expect(markup).toContain("Spring Boot 4.0 / Java 21");
+  });
+
+  it("cockpit displays included/excluded/skipped stages from backend arrays", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-2.7-java11",
+      target_profile: "springboot-4.0-java21",
+      included_stages: ["2", "3", "4"],
+      skipped_stages: [],
+      excluded_stages: [],
+    };
+    const markup = renderToStaticMarkup(<MigrationRoutePanel job={job} />);
+    expect(markup).toContain("Included stages");
+    expect(markup).toContain("2, 3, 4");
+  });
+
+  it("skipped stage cards render with skipped state in stage timeline", () => {
+    const stages = [
+      { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "completed", input_source_kind: "legacy_source" },
+      { stage_index: 2, pipeline_stage: "Stage 2", chain_status: "completed", input_source_kind: "stage_1_sandbox" },
+      { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "pending", input_source_kind: "stage_2_sandbox" },
+    ];
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-3.5-java17",
+      target_profile: "springboot-4.0-java21",
+      included_stages: ["3"],
+      skipped_stages: ["2"],
+      excluded_stages: [],
+    };
+    const markup = renderToStaticMarkup(
+      <div className="stage-list">
+        {stages.map((stage) => {
+          const isSkipped = job.skipped_stages?.includes(String(stage.stage_index));
+          return (
+            <div key={stage.stage_index} className={`stage-card ${stage.chain_status}`}>
+              <strong>{stage.pipeline_stage}</strong>
+              {isSkipped && <span className="status-badge skipped">SKIPPED BY SOURCE</span>}
+            </div>
+          );
+        })}
+      </div>,
+    );
+    expect(markup).toContain("SKIPPED BY SOURCE");
+    expect(markup).toContain("Stage 2");
+  });
+
+  it("override form posts a checksum-bound override_source_profile action", () => {
+    const action = {
+      gate_id: "gate-1",
+      job_id: "job-1",
+      action: "continue",
+      expected_gate_checksum: "sha256:gate-checksum",
+      override_source_profile: "springboot-3.5-java17",
+      actor_type: "human",
+      decided_by: "human",
+    };
+    expect(action.override_source_profile).toBe("springboot-3.5-java17");
+    expect(action.expected_gate_checksum).toBe("sha256:gate-checksum");
+    expect(action.actor_type).toBe("human");
+  });
+
+  it("assistant cannot override source profile", () => {
+    const assistantCapabilities = {
+      can_explain: true,
+      can_diagnose: true,
+      can_override_source_profile: false,
+    };
+    expect(assistantCapabilities.can_override_source_profile).toBe(false);
+  });
+
+  it("forbidden execution fields are absent from cockpit rendered copy", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-2.7-java11",
+      target_profile: "springboot-4.0-java21",
+    };
+    const markup = renderToStaticMarkup(<MigrationRoutePanel job={job} />);
+    const forbiddenPatterns = [
+      "sandbox_path", "argv", "raw_command", "filesystem_target",
+      "provider", "model_id", "deployment", "endpoint", "api_key", "access_token",
+    ];
+    for (const pattern of forbiddenPatterns) {
+      expect(markup).not.toContain(pattern);
+    }
+  });
+
+  // ── SourceProfileOverrideForm — driven submit path ─────────────
+
+  function makeAnalysisReviewGateDetail(
+    overrides: Partial<{
+      sourceArtifactRefs: string[];
+      sourceArtifactChecksum: string;
+      availableActions: GateRepresentation["available_actions"];
+    }> = {},
+  ): GateDetailResponse {
+    return {
+      gate: {
+        gate_id: "gate-1",
+        job_id: "job-1",
+        gate_phase: "analysis_review",
+        stage_index: 1,
+        gate_status: "open",
+        gate_decision: "continue",
+        source_artifact_checksum: overrides.sourceArtifactChecksum ?? "sha256:detection-checksum",
+        source_artifact_refs: overrides.sourceArtifactRefs ?? [
+          "analysis/source_profile_detection.json",
+        ],
+        created_at: "2026-06-28T00:00:00Z",
+        resolved_at: null,
+        resolved_by: null,
+        checksum: "sha256:gate-checksum",
+        available_actions: overrides.availableActions ?? [
+          {
+            action: "override_source_profile",
+            label: "Override",
+            description: "Override",
+            blocked: false,
+            block_reason: "",
+          },
+        ],
+      },
+      evidence: {
+        pack_id: "pack-1",
+        pack_type: "source_profile_detection",
+        gate_id: "gate-1",
+        gate_phase: "analysis_review",
+        summary: "Detected springboot-2.7-java11",
+        artifacts: [
+          {
+            kind: "source_profile_detection",
+            checksum_verified: true,
+            content: '{"detected_source_profile":"springboot-2.7-java11","confidence":"high"}',
+            size_bytes: 64,
+            truncated: false,
+          },
+        ],
+        missing_refs: [],
+        checksum_mismatches: [],
+        failure_message: null,
+        resolved_artifact_count: 1,
+        total_artifact_count: 1,
+        redaction_status: "clean",
+        created_at: "2026-06-28T00:00:00Z",
+      } as GateEvidencePack,
+      checksum: "sha256:gate-checksum",
+    };
+  }
+
+  it("SourceProfileOverrideForm build helper returns override_source_profile body in happy path", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-2.7-java11",
+      target_profile: "springboot-4.0-java21",
+    };
+    const gateDetail = makeAnalysisReviewGateDetail();
+    const result = buildSourceProfileOverrideBody({
+      gate: gateDetail.gate,
+      jobId: "job-1",
+      job,
+      evidence: gateDetail.evidence,
+      requestedProfile: "springboot-3.5-java17",
+      reason: "Detected profile is incorrect",
+      comments: "Operator verified the source pom.xml manually",
+      idempotencyKey: "idem-1",
+    });
+
+    expect(result.blockedReason).toBeNull();
+    expect(result.body).not.toBeNull();
+    expect(result.body).toMatchObject({
+      gate_id: "gate-1",
+      job_id: "job-1",
+      action: "override_source_profile",
+      expected_gate_checksum: "sha256:gate-checksum",
+      idempotency_key: "idem-1",
+      decided_by: "human",
+      actor_type: "human",
+      reason: "Detected profile is incorrect",
+      comments: "Operator verified the source pom.xml manually",
+      override_source_profile: "springboot-3.5-java17",
+      detection_artifact_ref: "analysis/source_profile_detection.json",
+      detected_source_profile: "springboot-2.7-java11",
+      requested_source_profile: "springboot-3.5-java17",
+      target_profile: "springboot-4.0-java21",
+      expected_detection_artifact_checksum: "sha256:detection-checksum",
+    });
+
+    // Forbidden runtime fields are absent from the body.
+    const serialized = JSON.stringify(result.body);
+    expect(serialized).not.toContain("sandbox_path");
+    expect(serialized).not.toContain("argv");
+    expect(serialized).not.toContain("env");
+    expect(serialized).not.toContain("raw_command");
+    expect(serialized).not.toContain("filesystem_target");
+    expect(serialized).not.toContain("filesystem_root");
+    expect(serialized).not.toContain("output_root");
+    expect(serialized).not.toContain("report_root");
+    expect(serialized).not.toContain("run_root");
+    expect(serialized).not.toContain("ai_hub_path");
+    expect(serialized).not.toContain("java_home");
+    expect(serialized).not.toContain("java11_home");
+    expect(serialized).not.toContain("java17_home");
+    expect(serialized).not.toContain("java21_home");
+    expect(serialized).not.toContain("maven_cmd");
+    expect(serialized).not.toMatch(/"provider"/);
+    expect(serialized).not.toMatch(/"model"/);
+    expect(serialized).not.toMatch(/"model_id"/);
+    expect(serialized).not.toMatch(/"deployment"/);
+    expect(serialized).not.toMatch(/"endpoint"/);
+    expect(serialized).not.toMatch(/"api_key"/);
+    expect(serialized).not.toMatch(/"access_token"/);
+  });
+
+  it("SourceProfileOverrideForm submit path posts the body produced by the build helper", async () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-2.7-java11",
+      target_profile: "springboot-4.0-java21",
+    };
+    const gateDetail = makeAnalysisReviewGateDetail();
+    const result = buildSourceProfileOverrideBody({
+      gate: gateDetail.gate,
+      jobId: "job-1",
+      job,
+      evidence: gateDetail.evidence,
+      requestedProfile: "springboot-3.5-java17",
+      reason: "Detected profile is incorrect",
+      comments: "Operator verified the source pom.xml manually",
+      idempotencyKey: "idem-1",
+    });
+    expect(result.body).not.toBeNull();
+
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({
+        result: {
+          decision_id: "d-1",
+          gate_id: "gate-1",
+          action: "override_source_profile",
+          status: "resolved",
+        },
+      }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await postV2GateAction("job-1", "gate-1", result.body!);
+
+    const actionCall = fetchMock.mock.calls.find(
+      (call) => String(call[0]).includes("/actions"),
+    ) as [string, RequestInit?] | undefined;
+    expect(actionCall).toBeDefined();
+    const body = JSON.parse(String((actionCall?.[1] as RequestInit | undefined)?.body ?? "{}"));
+    expect(body.action).toBe("override_source_profile");
+    expect(body.target_profile).toBe("springboot-4.0-java21");
+    expect(body.detection_artifact_ref).toBe("analysis/source_profile_detection.json");
+    expect(body.expected_detection_artifact_checksum).toBe("sha256:detection-checksum");
+    expect(body.actor_type).toBe("human");
+    expect(body.decided_by).toBe("human");
+
+    const serialized = JSON.stringify(body);
+    for (const forbidden of [
+      "sandbox_path", "argv", "env", "raw_command", "filesystem_target",
+      "filesystem_root", "output_root", "report_root", "run_root",
+      "ai_hub_path", "java_home", "java11_home", "java17_home", "java21_home",
+      "maven_cmd",
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+    expect(serialized).not.toMatch(/"provider"/);
+    expect(serialized).not.toMatch(/"model"/);
+    expect(serialized).not.toMatch(/"model_id"/);
+    expect(serialized).not.toMatch(/"deployment"/);
+    expect(serialized).not.toMatch(/"endpoint"/);
+    expect(serialized).not.toMatch(/"api_key"/);
+    expect(serialized).not.toMatch(/"access_token"/);
+  });
+
+  it("SourceProfileOverrideForm build helper returns null when target_profile is missing", () => {
+    const gateDetail = makeAnalysisReviewGateDetail();
+    const result = buildSourceProfileOverrideBody({
+      gate: gateDetail.gate,
+      jobId: "job-1",
+      evidence: gateDetail.evidence,
+      requestedProfile: "springboot-3.5-java17",
+      reason: "r",
+      comments: "c",
+      idempotencyKey: "idem-1",
+    });
+    expect(result.body).toBeNull();
+    expect(result.blockedReason).toBe("missing_target_profile");
+    expect(SOURCE_PROFILE_OVERRIDE_BLOCKED_COPY.missing_target_profile).toBe(
+      "Missing target profile from backend job state.",
+    );
+  });
+
+  it("SourceProfileOverrideForm build helper returns null when source artifact ref is missing", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      target_profile: "springboot-4.0-java21",
+    };
+    const gateDetail = makeAnalysisReviewGateDetail({
+      sourceArtifactRefs: ["analysis/analysis_report.json", "analysis/analysis_summary.md"],
+    });
+    const result = buildSourceProfileOverrideBody({
+      gate: gateDetail.gate,
+      jobId: "job-1",
+      job,
+      evidence: gateDetail.evidence,
+      requestedProfile: "springboot-3.5-java17",
+      reason: "r",
+      comments: "c",
+      idempotencyKey: "idem-1",
+    });
+    expect(result.body).toBeNull();
+    expect(result.blockedReason).toBe("missing_detection_artifact_ref");
+    expect(result.detectionArtifactRef).toBe("");
+  });
+
+  it("SourceProfileOverrideForm build helper returns null when source artifact checksum is missing", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      target_profile: "springboot-4.0-java21",
+    };
+    const gateDetail = makeAnalysisReviewGateDetail({
+      sourceArtifactChecksum: "",
+    });
+    const result = buildSourceProfileOverrideBody({
+      gate: gateDetail.gate,
+      jobId: "job-1",
+      job,
+      evidence: gateDetail.evidence,
+      requestedProfile: "springboot-3.5-java17",
+      reason: "r",
+      comments: "c",
+      idempotencyKey: "idem-1",
+    });
+    expect(result.body).toBeNull();
+    expect(result.blockedReason).toBe("missing_detection_artifact_checksum");
+  });
+
+  it("SourceProfileOverrideForm build helper returns null when reason is blank", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      target_profile: "springboot-4.0-java21",
+    };
+    const gateDetail = makeAnalysisReviewGateDetail();
+    const result = buildSourceProfileOverrideBody({
+      gate: gateDetail.gate,
+      jobId: "job-1",
+      job,
+      evidence: gateDetail.evidence,
+      requestedProfile: "springboot-3.5-java17",
+      reason: "   ",
+      comments: "ok",
+      idempotencyKey: "idem-1",
+    });
+    expect(result.body).toBeNull();
+    expect(result.blockedReason).toBe("missing_reason");
+  });
+
+  it("SourceProfileOverrideForm build helper returns null when comments is blank", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      target_profile: "springboot-4.0-java21",
+    };
+    const gateDetail = makeAnalysisReviewGateDetail();
+    const result = buildSourceProfileOverrideBody({
+      gate: gateDetail.gate,
+      jobId: "job-1",
+      job,
+      evidence: gateDetail.evidence,
+      requestedProfile: "springboot-3.5-java17",
+      reason: "ok",
+      comments: "",
+      idempotencyKey: "idem-1",
+    });
+    expect(result.body).toBeNull();
+    expect(result.blockedReason).toBe("missing_comments");
+  });
+
+  it("SourceProfileOverrideForm build helper returns null when gate phase is not analysis_review", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      target_profile: "springboot-4.0-java21",
+    };
+    const gate: GateRepresentation = {
+      gate_id: "gate-1",
+      job_id: "job-1",
+      gate_phase: "planning_review",
+      stage_index: 1,
+      gate_status: "open",
+      gate_decision: "continue",
+      source_artifact_checksum: "sha256:detection-checksum",
+      source_artifact_refs: ["analysis/source_profile_detection.json"],
+      created_at: "2026-06-28T00:00:00Z",
+      resolved_at: null,
+      resolved_by: null,
+      checksum: "sha256:gate-checksum",
+      available_actions: [
+        {
+          action: "override_source_profile",
+          label: "Override",
+          description: "Override",
+          blocked: false,
+          block_reason: "",
+        },
+      ],
+    };
+    const result = buildSourceProfileOverrideBody({
+      gate,
+      jobId: "job-1",
+      job,
+      evidence: null,
+      requestedProfile: "springboot-3.5-java17",
+      reason: "r",
+      comments: "c",
+      idempotencyKey: "idem-1",
+    });
+    expect(result.body).toBeNull();
+    expect(result.blockedReason).toBe("gate_phase_not_analysis_review");
+  });
+
+  it("SourceProfileOverrideForm build helper returns null when available_actions lacks override_source_profile", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      target_profile: "springboot-4.0-java21",
+    };
+    const gateDetail = makeAnalysisReviewGateDetail({
+      availableActions: [
+        { action: "continue", label: "Continue", description: "Continue", blocked: false, block_reason: "" },
+      ],
+    });
+    const result = buildSourceProfileOverrideBody({
+      gate: gateDetail.gate,
+      jobId: "job-1",
+      job,
+      evidence: gateDetail.evidence,
+      requestedProfile: "springboot-3.5-java17",
+      reason: "r",
+      comments: "c",
+      idempotencyKey: "idem-1",
+    });
+    expect(result.body).toBeNull();
+    expect(result.blockedReason).toBe("override_action_unavailable");
+  });
+
+  it("SourceProfileOverrideForm renders springboot-3.5-java21 as a selectable source option", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      target_profile: "springboot-4.0-java21",
+    };
+    const gateDetail = makeAnalysisReviewGateDetail();
+    const markup = renderToStaticMarkup(
+      <SourceProfileOverrideForm
+        gateDetail={gateDetail}
+        jobId="job-1"
+        job={job}
+        onSuccess={() => undefined}
+      />,
+    );
+    expect(markup).toContain("Spring Boot 3.5 / Java 17");
+    expect(markup).toContain("Spring Boot 3.5 / Java 21");
+    expect(markup).toContain('value="springboot-3.5-java21"');
+  });
+
+  it("MigrationRoutePanel renders springboot-3.5-java21 source profile in cockpit", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-3.5-java21",
+      target_profile: "springboot-4.0-java21",
+      validation_status: "valid",
+      included_stages: ["4"],
+      skipped_stages: ["2", "3"],
+      excluded_stages: [],
+    };
+    const markup = renderToStaticMarkup(<MigrationRoutePanel job={job} />);
+    expect(markup).toContain("Spring Boot 3.5 / Java 21");
+    expect(markup).toContain("Spring Boot 4.0 / Java 21");
+    expect(markup).toContain("4");
+    expect(markup).toContain("2, 3");
+  });
+
+  it("getSourceProfileOverrideBlockedReason returns the right reason for each missing input", () => {
+    const base = {
+      isAnalysisReview: true,
+      hasOverrideAction: true,
+      hasTargetProfile: true,
+      hasDetectionArtifactRef: true,
+      hasExpectedChecksum: true,
+      reason: "ok",
+      comments: "ok",
+    };
+    expect(getSourceProfileOverrideBlockedReason({ ...base, isAnalysisReview: false }))
+      .toBe("gate_phase_not_analysis_review");
+    expect(getSourceProfileOverrideBlockedReason({ ...base, hasOverrideAction: false }))
+      .toBe("override_action_unavailable");
+    expect(getSourceProfileOverrideBlockedReason({ ...base, hasTargetProfile: false }))
+      .toBe("missing_target_profile");
+    expect(getSourceProfileOverrideBlockedReason({ ...base, hasDetectionArtifactRef: false }))
+      .toBe("missing_detection_artifact_ref");
+    expect(getSourceProfileOverrideBlockedReason({ ...base, hasExpectedChecksum: false }))
+      .toBe("missing_detection_artifact_checksum");
+    expect(getSourceProfileOverrideBlockedReason({ ...base, reason: "" }))
+      .toBe("missing_reason");
+    expect(getSourceProfileOverrideBlockedReason({ ...base, comments: "" }))
+      .toBe("missing_comments");
+    expect(getSourceProfileOverrideBlockedReason(base)).toBeNull();
   });
 });
 

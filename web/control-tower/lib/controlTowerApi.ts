@@ -8,6 +8,7 @@ import type {
   CreateDiagnosticJobRequest,
   FilesystemRootOption,
   JobRepresentation,
+  MigrationProfileId,
   V2MigrationJobResponse,
   V2JobEventSnapshotResponse,
   V2PipelineResponse,
@@ -93,11 +94,17 @@ type V2JobPolicy = {
 export type CreateV2JobRequest = {
   setup_id: string;
   policy: V2JobPolicy;
+  source_profile?: MigrationProfileId;
+  target_profile?: MigrationProfileId;
 };
 
 export function createV2JobPayload(
   setupId: string,
   stageContinuationPolicy: V2StageContinuationPolicy = DEFAULT_V2_STAGE_CONTINUATION_POLICY,
+  options?: {
+    sourceProfile?: MigrationProfileId;
+    targetProfile?: MigrationProfileId;
+  },
 ): CreateV2JobRequest {
   return {
     setup_id: setupId,
@@ -107,7 +114,16 @@ export function createV2JobPayload(
       enable_endpoint_gate: false,
       stage_continuation_policy: stageContinuationPolicy,
     },
+    ...(options?.sourceProfile ? { source_profile: options.sourceProfile } : {}),
+    ...(options?.targetProfile ? { target_profile: options.targetProfile } : {}),
   };
+}
+
+export function createIdempotencyKey(): string {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+  return `idempotency-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 export function requireJobId(jobId: string): string {
@@ -294,10 +310,13 @@ export function assistantStreamUrl(jobId: string): string {
 
 // ── V2 migration cockpit API methods ──────────────────────────────────
 
-export async function createV2Job(setupId: string): Promise<V2MigrationJobResponse> {
+export async function createV2Job(
+  setupId: string,
+  options?: { sourceProfile?: MigrationProfileId; targetProfile?: MigrationProfileId },
+): Promise<V2MigrationJobResponse> {
   return postJson<V2MigrationJobResponse>(
     "/v1/v2/migration-jobs",
-    createV2JobPayload(setupId)
+    createV2JobPayload(setupId, DEFAULT_V2_STAGE_CONTINUATION_POLICY, options)
   );
 }
 

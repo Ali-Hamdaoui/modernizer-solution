@@ -4,6 +4,7 @@ import {
   DEFAULT_CONTROL_TOWER_API_BASE_URL,
   allowedStatusCopy,
   createDiagnosticJobPayload,
+  createIdempotencyKey,
   createV2JobPayload,
   eventStreamUrl,
   getV2AssistantMessages,
@@ -23,6 +24,8 @@ import {
   resolveReportDownloadUrl
 } from "../lib/controlTowerApi";
 import { applyPublicEvent, latestAppliedSequence, shouldRefetchJobProjection } from "../lib/eventReplay";
+import type { GateActionRequest, GateEvidencePack, V2MigrationJobResponse } from "../lib/contracts";
+import { MIGRATION_PROFILE_OPTIONS, type MigrationProfileId } from "../lib/contracts";
 
 describe("M2-01 frontend diagnostic contracts", () => {
   afterEach(() => {
@@ -572,5 +575,303 @@ describe("F15 Final Report API contracts", () => {
     expect(() => resolveReportDownloadUrl("/download/report")).toThrow(
       "Invalid report download URL."
     );
+  });
+});
+
+// ── F3 / F4 — Profile routing and override contracts ─────────────────
+
+describe("F3/F4 Profile routing contracts", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("createV2JobPayload includes source_profile and target_profile when provided", () => {
+    const payload = createV2JobPayload("setup-1", "auto_on_green", {
+      sourceProfile: "springboot-2.7-java11",
+      targetProfile: "springboot-4.0-java21",
+    });
+    expect(payload).toEqual({
+      setup_id: "setup-1",
+      policy: {
+        continue_after_warning: false,
+        enable_runtime_gate: false,
+        enable_endpoint_gate: false,
+        stage_continuation_policy: "auto_on_green",
+      },
+      source_profile: "springboot-2.7-java11",
+      target_profile: "springboot-4.0-java21",
+    });
+  });
+
+  it("createV2JobPayload omits profiles when not provided", () => {
+    const payload = createV2JobPayload("setup-2");
+    expect(payload.source_profile).toBeUndefined();
+    expect(payload.target_profile).toBeUndefined();
+    expect(payload).not.toHaveProperty("source_profile");
+    expect(payload).not.toHaveProperty("target_profile");
+  });
+
+  it("createV2JobPayload does not include forbidden execution fields", () => {
+    const payload = createV2JobPayload("setup-3", "auto_on_green", {
+      sourceProfile: "springboot-2.7-java11",
+      targetProfile: "springboot-4.0-java21",
+    });
+    const serialized = JSON.stringify(payload);
+    expect(serialized).not.toContain("sandbox_path");
+    expect(serialized).not.toContain("argv");
+    expect(serialized).not.toContain("raw_command");
+    expect(serialized).not.toContain("filesystem_target");
+    expect(serialized).not.toContain("filesystem_root");
+    expect(serialized).not.toContain("output_root");
+    expect(serialized).not.toContain("report_root");
+    expect(serialized).not.toContain("run_root");
+    expect(serialized).not.toContain("ai_hub_path");
+    expect(serialized).not.toContain("java_home");
+    expect(serialized).not.toContain("java11_home");
+    expect(serialized).not.toContain("java17_home");
+    expect(serialized).not.toContain("java21_home");
+    expect(serialized).not.toContain("maven_cmd");
+    // "provider" and "model" must not appear as standalone field names
+    // but may appear as substrings of allowed policy fields
+    expect(serialized).not.toMatch(/"provider"/);
+    expect(serialized).not.toMatch(/"model"/);
+    expect(serialized).not.toMatch(/"model_id"/);
+    expect(serialized).not.toMatch(/"deployment"/);
+    expect(serialized).not.toMatch(/"endpoint"/);
+    expect(serialized).not.toMatch(/"api_key"/);
+    expect(serialized).not.toMatch(/"access_token"/);
+  });
+
+  it("V2MigrationJobResponse includes optional profile routing fields", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-2.7-java11",
+      target_profile: "springboot-4.0-java21",
+      validation_status: "valid",
+      included_stages: ["2", "3", "4"],
+      skipped_stages: [],
+      excluded_stages: [],
+    };
+    expect(job.source_profile).toBe("springboot-2.7-java11");
+    expect(job.target_profile).toBe("springboot-4.0-java21");
+    expect(job.validation_status).toBe("valid");
+    expect(job.included_stages).toEqual(["2", "3", "4"]);
+  });
+
+  it("GateActionRequest includes override_source_profile and detection fields", () => {
+    const action: GateActionRequest = {
+      gate_id: "gate-1",
+      job_id: "job-1",
+      action: "continue",
+      expected_gate_checksum: "sha256:gate",
+      idempotency_key: "idem-1",
+      decided_by: "human",
+      actor_type: "human",
+      reason: "detected profile is correct",
+      override_source_profile: "springboot-3.5-java17",
+      detection_artifact_ref: "source_profile_detection",
+      detected_source_profile: "springboot-2.7-java11",
+      requested_source_profile: "springboot-3.5-java17",
+      expected_detection_artifact_checksum: "chk-detection",
+      comments: "Human verified detection result",
+    };
+    expect(action.override_source_profile).toBe("springboot-3.5-java17");
+    expect(action.detection_artifact_ref).toBe("source_profile_detection");
+    expect(action.detected_source_profile).toBe("springboot-2.7-java11");
+    expect(action.expected_detection_artifact_checksum).toBe("chk-detection");
+  });
+
+  it("GateEvidencePack shape matches the backend evidence pack contract", () => {
+    const pack: GateEvidencePack = {
+      pack_id: "pack-1",
+      pack_type: "source_profile_detection",
+      gate_id: "gate-1",
+      gate_phase: "analysis_review",
+      summary: "Detected springboot-2.7-java11 with high confidence",
+      artifacts: [
+        {
+          kind: "source_profile_detection",
+          checksum_verified: true,
+          content: '{"detected_source_profile":"springboot-2.7-java11"}',
+          size_bytes: 64,
+          truncated: false,
+        },
+      ],
+      missing_refs: [],
+      checksum_mismatches: [],
+      failure_message: null,
+      resolved_artifact_count: 1,
+      total_artifact_count: 1,
+      redaction_status: "clean",
+      created_at: "2026-06-28T00:00:00Z",
+    };
+    expect(pack.pack_type).toBe("source_profile_detection");
+    expect(pack.artifacts).toHaveLength(1);
+    expect(pack.artifacts[0].kind).toBe("source_profile_detection");
+    expect(pack.resolved_artifact_count).toBe(1);
+    expect(pack.failure_message).toBeNull();
+  });
+
+  it("createIdempotencyKey returns a string identifier", () => {
+    const key = createIdempotencyKey();
+    expect(typeof key).toBe("string");
+    expect(key.length).toBeGreaterThan(0);
+  });
+
+  it("postV2GateAction sends override fields without forbidden runtime fields", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({ result: { decision_id: "d-1", gate_id: "gate-1", action: "continue", status: "resolved" } }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await postV2GateAction("job-1", "gate-1", {
+      gate_id: "gate-1",
+      job_id: "job-1",
+      action: "continue",
+      expected_gate_checksum: "sha256:gate",
+      idempotency_key: "idem-1",
+      decided_by: "human",
+      actor_type: "human",
+      reason: "override",
+      override_source_profile: "springboot-3.5-java17",
+      detection_artifact_ref: "source_profile_detection",
+      expected_detection_artifact_checksum: "chk-detection",
+    });
+
+    const actionCall = fetchMock.mock.calls.find(
+      (call) => String(call[0]).includes("/actions"),
+    ) as [string, RequestInit?] | undefined;
+    const body = JSON.parse(String((actionCall?.[1] as RequestInit | undefined)?.body ?? "{}"));
+    expect(body.override_source_profile).toBe("springboot-3.5-java17");
+    expect(body.detection_artifact_ref).toBe("source_profile_detection");
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain("sandbox_path");
+    expect(serialized).not.toContain("argv");
+    expect(serialized).not.toContain("raw_command");
+    expect(serialized).not.toContain("filesystem_target");
+    expect(serialized).not.toContain("provider");
+    expect(serialized).not.toContain("model");
+    expect(serialized).not.toContain("endpoint");
+    expect(serialized).not.toContain("api_key");
+    expect(serialized).not.toContain("access_token");
+  });
+
+  it("MIGRATION_PROFILE_OPTIONS includes springboot-3.5-java21 as a selectable intermediate profile", () => {
+    const ids = MIGRATION_PROFILE_OPTIONS.map((p) => p.id);
+    expect(ids).toContain("springboot-2.7-java11");
+    expect(ids).toContain("springboot-3.5-java17");
+    expect(ids).toContain("springboot-3.5-java21");
+    expect(ids).toContain("springboot-4.0-java21");
+    const intermediate = MIGRATION_PROFILE_OPTIONS.find(
+      (p) => p.id === "springboot-3.5-java21",
+    );
+    expect(intermediate).toBeDefined();
+    expect(intermediate!.selectableAsSource).toBe(true);
+    expect(intermediate!.selectableAsTarget).toBe(true);
+    expect(intermediate!.orderIndex).toBe(2);
+  });
+
+  it("MIGRATION_PROFILE_OPTIONS enforces backend-supported orderIndex order", () => {
+    const order = MIGRATION_PROFILE_OPTIONS.map((p) => p.orderIndex);
+    const sorted = [...order].sort((a, b) => a - b);
+    expect(order).toEqual(sorted);
+  });
+
+  it("createV2JobPayload supports all 6 valid source/target profile pairs", () => {
+    const pairs: Array<{ source: MigrationProfileId; target: MigrationProfileId }> = [
+      { source: "springboot-2.7-java11", target: "springboot-3.5-java17" },
+      { source: "springboot-2.7-java11", target: "springboot-3.5-java21" },
+      { source: "springboot-2.7-java11", target: "springboot-4.0-java21" },
+      { source: "springboot-3.5-java17", target: "springboot-3.5-java21" },
+      { source: "springboot-3.5-java17", target: "springboot-4.0-java21" },
+      { source: "springboot-3.5-java21", target: "springboot-4.0-java21" },
+    ];
+    for (const pair of pairs) {
+      const payload = createV2JobPayload("setup-1", "auto_on_green", {
+        sourceProfile: pair.source,
+        targetProfile: pair.target,
+      });
+      expect(payload.source_profile).toBe(pair.source);
+      expect(payload.target_profile).toBe(pair.target);
+      expect(payload.setup_id).toBe("setup-1");
+      expect(payload.policy.stage_continuation_policy).toBe("auto_on_green");
+    }
+  });
+
+  it("createV2JobPayload keeps forbidden execution fields absent for every valid pair", () => {
+    const pairs: Array<{ source: MigrationProfileId; target: MigrationProfileId }> = [
+      { source: "springboot-2.7-java11", target: "springboot-3.5-java17" },
+      { source: "springboot-2.7-java11", target: "springboot-3.5-java21" },
+      { source: "springboot-2.7-java11", target: "springboot-4.0-java21" },
+      { source: "springboot-3.5-java17", target: "springboot-3.5-java21" },
+      { source: "springboot-3.5-java17", target: "springboot-4.0-java21" },
+      { source: "springboot-3.5-java21", target: "springboot-4.0-java21" },
+    ];
+    for (const pair of pairs) {
+      const payload = createV2JobPayload("setup-1", "auto_on_green", {
+        sourceProfile: pair.source,
+        targetProfile: pair.target,
+      });
+      const serialized = JSON.stringify(payload);
+      for (const forbidden of [
+        "sandbox_path", "argv", "raw_command", "filesystem_target",
+        "filesystem_root", "output_root", "report_root", "run_root",
+        "ai_hub_path", "java_home", "java11_home", "java17_home",
+        "java21_home", "maven_cmd",
+      ]) {
+        expect(serialized).not.toContain(forbidden);
+      }
+      expect(serialized).not.toMatch(/"provider"/);
+      expect(serialized).not.toMatch(/"model"/);
+      expect(serialized).not.toMatch(/"model_id"/);
+      expect(serialized).not.toMatch(/"deployment"/);
+      expect(serialized).not.toMatch(/"endpoint"/);
+      expect(serialized).not.toMatch(/"api_key"/);
+      expect(serialized).not.toMatch(/"access_token"/);
+    }
+  });
+
+  it("createIdempotencyKey works when crypto.randomUUID is available", () => {
+    const originalRandomUUID = globalThis.crypto?.randomUUID;
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: { ...(globalThis.crypto ?? {}), randomUUID: () => "00000000-0000-4000-8000-000000000000" },
+    });
+    try {
+      const key = createIdempotencyKey();
+      expect(key).toBe("00000000-0000-4000-8000-000000000000");
+    } finally {
+      if (originalRandomUUID) {
+        Object.defineProperty(globalThis, "crypto", {
+          configurable: true,
+          value: { ...(globalThis.crypto ?? {}), randomUUID: originalRandomUUID },
+        });
+      }
+    }
+  });
+
+  it("createIdempotencyKey falls back when crypto.randomUUID is missing", () => {
+    const originalCrypto = globalThis.crypto;
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: undefined,
+    });
+    try {
+      const key = createIdempotencyKey();
+      expect(typeof key).toBe("string");
+      expect(key.length).toBeGreaterThan(0);
+      expect(key.startsWith("idempotency-")).toBe(true);
+    } finally {
+      Object.defineProperty(globalThis, "crypto", {
+        configurable: true,
+        value: originalCrypto,
+      });
+    }
   });
 });
