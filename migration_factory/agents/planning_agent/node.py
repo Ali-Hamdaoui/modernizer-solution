@@ -141,7 +141,15 @@ def planning_node(state: MigrationState) -> MigrationState:
             "planning_assist_warnings": compatibility.warnings,
         }
 
-    risk_result = classify_planning_risks(loaded_artifacts, compatibility.source_stack)
+    units = build_migration_units(loaded_profile.profile)
+    unit_ids = tuple(unit.id for unit in units)
+
+    risk_result = classify_planning_risks(
+        loaded_artifacts,
+        compatibility.source_stack,
+        profile_id=profile_id,
+        migration_units=unit_ids,
+    )
     risk_messages = [f"[{risk.severity}] {risk.code}: {risk.message}" for risk in risk_result.risks]
     blocker_messages = [
         f"{risk.code}: {risk.message}"
@@ -155,7 +163,6 @@ def planning_node(state: MigrationState) -> MigrationState:
     ]
     deterministic_warnings = [*compatibility.warnings, *risk_warning_messages]
 
-    units = build_migration_units(loaded_profile.profile)
     profile_governance = _profile_governance(loaded_profile.profile)
     write_migration_plan(
         modernized_app_path=state.get("modernized_app_path", ""),
@@ -212,6 +219,8 @@ def planning_node(state: MigrationState) -> MigrationState:
         source_boot_version=compatibility.source_stack.spring_boot or "",
         target_boot_version=compatibility.target_stack.spring_boot or "",
         target_java_version=compatibility.target_stack.java or "",
+        profile_id=profile_id,
+        migration_unit_ids=unit_ids,
         openrewrite_recipes_expected=_expected_openrewrite_recipes(loaded_profile.profile, state),
     )
     validation_result = validate_planning_outputs(
