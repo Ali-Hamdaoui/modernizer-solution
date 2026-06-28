@@ -53,14 +53,15 @@ def _create_gate(gate_svc, phase, stage=1, job="job-abc") -> str:
 
 
 def test_analysis_gate_exposes_accept_and_reanalysis(tmp_path: Path) -> None:
-    """Analysis_review gate exposes accept (continue) and reanalysis."""
+    """Analysis_review gate exposes accept (continue), reanalysis, and
+    source profile override."""
     gate_repo, gate_svc, conn = _setup(tmp_path)
 
     gate_id = _create_gate(gate_svc, "analysis_review")
 
     actions = gate_svc.get_available_actions(gate_id)
 
-    assert len(actions) == 2
+    assert len(actions) == 3
 
     actions_by_label = {a.label: a for a in actions}
 
@@ -70,6 +71,9 @@ def test_analysis_gate_exposes_accept_and_reanalysis(tmp_path: Path) -> None:
 
     assert "Request Reanalysis" in actions_by_label
     assert actions_by_label["Request Reanalysis"].action == "reanalyze"
+
+    assert "Override Source Profile" in actions_by_label
+    assert actions_by_label["Override Source Profile"].action == "override_source_profile"
 
 
 # ── planning_review gate ─────────────────────────────────────────────
@@ -219,7 +223,7 @@ def test_blocked_action_marked_as_blocked(tmp_path: Path) -> None:
         blocked_actions={"continue"},
     )
 
-    assert len(actions) == 2
+    assert len(actions) == 3
     continue_action = [a for a in actions if a.action == "continue"][0]
     assert continue_action.blocked is True
     assert "blocked by an open or running command" in continue_action.block_reason

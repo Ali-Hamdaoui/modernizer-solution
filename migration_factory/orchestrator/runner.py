@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         thread_id=args.run_id,
         mode=args.mode,
     )
-    if args.job_id:
+    if getattr(args, "job_id", None):
         state["job_id"] = args.job_id
     phase = getattr(args, "phase", None)
     if phase:
