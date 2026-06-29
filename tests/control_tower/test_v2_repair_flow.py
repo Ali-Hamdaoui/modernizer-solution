@@ -665,6 +665,66 @@ def test_prepare_apply_context_requires_durable_command_sandbox_binding(tmp_path
     assert context.approval_eligible is True
 
 
+def test_prepare_apply_context_binds_when_modernized_path_is_redacted(tmp_path: Path) -> None:
+    conn, service, sandbox = _bound_repair_repo_service(tmp_path, redacted_modernized_path=True)
+    proposal = _proposal(service)
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        decision="accept",
+        reasoning="Looks good",
+    )
+
+    context = service.prepare_apply_context(
+        proposal_id=proposal.proposal_id,
+        command_id=proposal.command_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        reviewer_critique_id=critique.critique_id,
+        proposer_invocation_id="proposer-invoke-1",
+        reviewer_invocation_id="reviewer-invoke-1",
+        patch_preview=_h2_patch(),
+        target_path="pom.xml",
+        sandbox_reference=str(sandbox),
+        sandbox_checksum="sandbox-chk",
+        legacy_checksum="legacy-chk",
+        evidence_refs={"build_error": "artifact://build-error.json"},
+    )
+
+    assert context.sandbox_reference == str(sandbox)
+    assert context.approval_eligible is True
+
+
+def test_prepare_apply_context_rejects_target_escape(tmp_path: Path) -> None:
+    conn, service, sandbox = _bound_repair_repo_service(tmp_path)
+    proposal = _proposal(service)
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        decision="accept",
+        reasoning="Looks good",
+    )
+
+    with pytest.raises(v2_repair_flow.RepairContextBindingError, match="target is not sandbox-bound"):
+        service.prepare_apply_context(
+            proposal_id=proposal.proposal_id,
+            command_id=proposal.command_id,
+            proposal_checksum="pc-test",
+            context_pack_checksum="cp-test",
+            reviewer_critique_id=critique.critique_id,
+            proposer_invocation_id="proposer-invoke-1",
+            reviewer_invocation_id="reviewer-invoke-1",
+            patch_preview=_h2_patch(),
+            target_path="../legacy/pom.xml",
+            sandbox_reference=str(sandbox),
+            sandbox_checksum="sandbox-chk",
+            legacy_checksum="legacy-chk",
+            evidence_refs={"build_error": "artifact://build-error.json"},
+        )
+
+
 def test_prepare_apply_context_rejects_sandbox_reference_mismatch(tmp_path: Path) -> None:
     conn, service, sandbox = _bound_repair_repo_service(tmp_path)
     proposal = _proposal(service)
@@ -1391,6 +1451,8 @@ def _repair_repo_service(tmp_path: Path) -> tuple[sqlite3.Connection, V2RepairFl
 
 def _bound_repair_repo_service(
     tmp_path: Path,
+    *,
+    redacted_modernized_path: bool = False,
 ) -> tuple[sqlite3.Connection, V2RepairFlowService, Path]:
     conn = sqlite3.connect(
         str(tmp_path / "bound-repair-context.sqlite3"),
@@ -1469,7 +1531,9 @@ def _bound_repair_repo_service(
                 {
                     "run_id": run_id,
                     "sandbox_path": str(sandbox),
-                    "modernized_app_path": str(output_root),
+                    "modernized_app_path": "[redacted-windows-path]"
+                    if redacted_modernized_path
+                    else str(output_root),
                 }
             ),
             gate_id=None,

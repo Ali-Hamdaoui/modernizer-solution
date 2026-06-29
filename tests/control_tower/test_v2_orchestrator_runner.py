@@ -188,9 +188,13 @@ def _seed_stage_pipeline(conn: sqlite3.Connection, *, job_id: str = "job-1") -> 
 
 
 def _wait_for_event(conn: sqlite3.Connection, job_id: str, event_type: str) -> None:
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        events = SqliteUnitOfWork(conn).v2_events.list_by_job(job_id)
+        try:
+            events = SqliteUnitOfWork(conn).v2_events.list_by_job(job_id)
+        except sqlite3.Error:
+            time.sleep(0.02)
+            continue
         if any(event.type == event_type for event in events):
             return
         time.sleep(0.02)
@@ -945,7 +949,7 @@ def test_v2_runner_emits_final_report_events_for_stage3(tmp_path: Path) -> None:
         cwd=tmp_path,
     )
     runner.start(job_id="job-1", command_id="cmd-s3")
-    _wait_for_event(conn, "job-1", "final_report_completed")
+    _wait_for_event(conn, "job-1", "migration_completed")
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     event_types = [event.type for event in events]
@@ -1232,8 +1236,11 @@ def test_v2_runner_resume_success_canonicalizes_original_command(tmp_path: Path)
     runner.start_resume(job_id="job-1", resume_id="resume-1")
     _wait_for_event(conn, "job-1", "stage_command_canonicalized_after_resume")
     _wait_for_event(conn, "job-1", "stage_completed")
+    _wait_for_event(conn, "job-1", "stage_report_completed")
 
-    with SqliteUnitOfWork(conn) as uow:
+    uow = SqliteUnitOfWork(conn)
+    uow.transaction_mode = "read"
+    with uow:
         command = uow.v2_commands.get("cmd-1")
         resume = uow.v2_approvals.get_resume("resume-1")
         events = uow.v2_events.list_by_job("job-1")

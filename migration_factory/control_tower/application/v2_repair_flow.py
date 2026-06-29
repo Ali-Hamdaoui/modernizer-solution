@@ -419,6 +419,7 @@ class V2RepairFlowService:
         self._validate_prepare_binding(
             command_id=command_id,
             sandbox_reference=sandbox_reference,
+            target_path=target_path,
         )
 
         critique = self._reviewer.get_critique(reviewer_critique_id)
@@ -481,6 +482,7 @@ class V2RepairFlowService:
         *,
         command_id: str,
         sandbox_reference: str,
+        target_path: str,
     ) -> None:
         if self._job_repo is None and self._setup_repo is None and self._command_repo is None:
             return
@@ -516,19 +518,9 @@ class V2RepairFlowService:
             except (json.JSONDecodeError, TypeError):
                 result_data = {}
         run_id = str(result_data.get("run_id") or "").strip()
-        output_root = str(
-            result_data.get("modernized_app_path")
-            or result_data.get("output_root_dir")
-            or setup.output_parent_path
-            or ""
-        ).strip()
         if not run_id:
             raise RepairContextBindingError(
                 f"Command {command_id!r} result is missing run_id"
-            )
-        if not output_root or not Path(output_root).is_absolute():
-            raise RepairContextBindingError(
-                f"Command {command_id!r} cannot resolve absolute output root"
             )
 
         command_sandbox = str(
@@ -560,6 +552,31 @@ class V2RepairFlowService:
             raise RepairContextBindingError(
                 "Repair apply context sandbox reference could not be resolved"
             ) from exc
+        if not command_sandbox_path.exists():
+            raise RepairContextBindingError(
+                f"Command {command_id!r} sandbox path does not exist"
+            )
+        self._resolve_bound_run_dir(
+            result_data=result_data,
+            setup_output_parent=setup.output_parent_path,
+            sandbox_path=command_sandbox_path,
+            run_id=run_id,
+            error_cls=RepairContextBindingError,
+            command_id=command_id,
+        )
+        try:
+            command_sandbox_path.resolve().relative_to(legacy_path.resolve())
+            raise RepairContextBindingError("Repair apply context sandbox must not be inside legacy path")
+        except ValueError as exc:
+            if str(exc) == "Repair apply context sandbox must not be inside legacy path":
+                raise
+        if not self._is_sandbox_bound_target_values(
+            target_path=Path(sandbox_reference) / target_path
+            if not Path(target_path).is_absolute()
+            else Path(target_path),
+            sandbox_path=requested_sandbox_path,
+        ):
+            raise RepairContextBindingError("Repair apply context target is not sandbox-bound")
 
     def record_approval_only(
         self,
@@ -1177,20 +1194,19 @@ class V2RepairFlowService:
             except (json.JSONDecodeError, TypeError):
                 result_data = {}
         run_id = str(result_data.get("run_id") or command.command_id)
-        output_root = str(
-            result_data.get("modernized_app_path")
-            or result_data.get("output_root_dir")
-            or setup.output_parent_path
-            or ""
-        )
-        if not output_root:
-            raise ValueError("Repair-review apply cannot resolve output root")
-        run_dir = Path(output_root) / ".migration" / "runs" / run_id
         sandbox_path = Path(context.sandbox_reference)
         if not sandbox_path.is_absolute():
             raise ValueError("Repair-review apply requires an absolute sandbox reference")
         if not sandbox_path.exists():
             raise ValueError(f"Repair-review sandbox path does not exist: {sandbox_path}")
+        run_dir = self._resolve_bound_run_dir(
+            result_data=result_data,
+            setup_output_parent=setup.output_parent_path,
+            sandbox_path=sandbox_path,
+            run_id=run_id,
+            error_cls=ValueError,
+            command_id=context.command_id,
+        )
         command_sandbox = str(
             result_data.get("sandbox_path")
             or result_data.get("modernized_app_path")
@@ -1596,6 +1612,61 @@ class V2RepairFlowService:
             created_at=record.created_at,
         )
 
+    @staticmethod
+    def _absolute_path_or_none(value: object) -> Path | None:
+        text = str(value or "").strip()
+        if not text or text.startswith("[redacted"):
+            return None
+        path = Path(text)
+        return path if path.is_absolute() else None
+
+    def _resolve_bound_run_dir(
+        self,
+        *,
+        result_data: dict[str, Any],
+        setup_output_parent: str,
+        sandbox_path: Path,
+        run_id: str,
+        error_cls: type[Exception],
+        command_id: str,
+    ) -> Path:
+        output_root = next(
+            (
+                path
+                for path in (
+                    self._absolute_path_or_none(result_data.get("output_root_dir")),
+                    self._absolute_path_or_none(result_data.get("modernized_app_path")),
+                    self._absolute_path_or_none(setup_output_parent),
+                )
+                if path is not None
+            ),
+            None,
+        )
+        run_dir = (
+            output_root / ".migration" / "runs" / run_id
+            if output_root is not None
+            else self._run_dir_from_sandbox(sandbox_path=sandbox_path, run_id=run_id)
+        )
+        if run_dir is None:
+            raise error_cls(f"Command {command_id!r} cannot resolve absolute output root")
+        try:
+            sandbox_path.resolve().relative_to(run_dir.resolve())
+        except (OSError, ValueError) as exc:
+            raise error_cls("Repair sandbox is outside the bound run root") from exc
+        return run_dir
+
+    @staticmethod
+    def _run_dir_from_sandbox(*, sandbox_path: Path, run_id: str) -> Path | None:
+        resolved = sandbox_path.resolve()
+        for parent in (resolved, *resolved.parents):
+            if (
+                parent.name == run_id
+                and parent.parent.name == "runs"
+                and parent.parent.parent.name == ".migration"
+            ):
+                return parent
+        return None
+
     def proposal_to_dict(self, proposal: RepairProposal, *, reviewer_critique_id: str | None = None, reviewer_decision: str | None = None) -> dict[str, Any]:
         result: dict[str, Any] = {
             "proposal_id": proposal.proposal_id,
@@ -1726,6 +1797,16 @@ class V2RepairFlowService:
             sandbox_path = Path(sandbox)
             if not sandbox_path.is_absolute():
                 return False
+            return V2RepairFlowService._is_sandbox_bound_target_values(
+                target_path=target_path,
+                sandbox_path=sandbox_path,
+            )
+        except (OSError, ValueError):
+            return False
+
+    @staticmethod
+    def _is_sandbox_bound_target_values(*, target_path: Path, sandbox_path: Path) -> bool:
+        try:
             target_path.resolve().relative_to(sandbox_path.resolve())
             return True
         except (OSError, ValueError):

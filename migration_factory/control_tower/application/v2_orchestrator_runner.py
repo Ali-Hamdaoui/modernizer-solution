@@ -252,6 +252,14 @@ class V2OrchestratorRunner:
         resumed_from_command_id: str | None = None,
         command_phase: str | None = None,
     ) -> None:
+        self._event(
+            job_id=job_id,
+            stage=stage_index,
+            event_type="resume_started" if resume else "stage_started",
+            status="running",
+            message=f"Stage {stage_index} real orchestrator {'resume ' if resume else ''}started.",
+            payload={"command_id": command_id},
+        )
         if resume:
             self._event(
                 job_id=job_id,
@@ -261,15 +269,6 @@ class V2OrchestratorRunner:
                 message="Approval accepted; orchestrator resume process starting.",
                 payload={"command_id": command_id},
             )
-
-        self._event(
-            job_id=job_id,
-            stage=stage_index,
-            event_type="resume_started" if resume else "stage_started",
-            status="running",
-            message=f"Stage {stage_index} real orchestrator {'resume ' if resume else ''}started.",
-            payload={"command_id": command_id},
-        )
         self._event(
             job_id=job_id,
             stage=stage_index,

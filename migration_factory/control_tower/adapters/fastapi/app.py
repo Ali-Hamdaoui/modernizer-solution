@@ -102,6 +102,7 @@ from migration_factory.control_tower.domain.errors import (
     PlanReviewConflictError,
     PlanRevisionConflictError,
     StaleVersionError,
+    StorageIntegrityError,
     UnsupportedPlatformError,
 )
 from migration_factory.control_tower.domain.states import JobState, TargetProofLevel
@@ -721,20 +722,32 @@ def create_app(
         provider_kind: str,
         model_name: str,
         job_id: str | None,
+        command_id: str | None = None,
+        v2_job_id: str | None = None,
+        v2_command_id: str | None = None,
         redacted_summary: str,
         actor_id: str,
     ) -> str:
         service = ModelInvocationAuditService(unit_of_work_factory)
-        record = service.record_invocation(
-            invocation_id=uuid4().hex,
-            job_id=job_id,
-            profile_id="azure-foundry-v2",
-            provider_kind=provider_kind,
-            model_name=model_name,
-            redacted_summary=redacted_summary,
-            actor_type="api",
-            actor_id=actor_id,
-        )
+        try:
+            record = service.record_invocation(
+                invocation_id=uuid4().hex,
+                job_id=job_id,
+                v2_job_id=v2_job_id,
+                v2_command_id=v2_command_id or command_id,
+                profile_id="azure-foundry-v2",
+                provider_kind=provider_kind,
+                model_name=model_name,
+                redacted_summary=redacted_summary,
+                actor_type="api",
+                actor_id=actor_id,
+            )
+        except StorageIntegrityError as exc:
+            raise _error(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "MODEL_INVOCATION_AUDIT_FAILED",
+                f"Model invocation audit persistence failed: {exc}",
+            ) from exc
         return record.invocation_id
 
     # ── F02: Wire automatic failure diagnosis into the orchestrator ──
@@ -2811,6 +2824,7 @@ def create_app(
             )
             command = uow.v2_commands.get(command_id)
             proposer_job_id = command.job_id if command is not None else None
+            proposer_command_id = command.command_id if command is not None else None
             proposal = service.create_proposal(
                 command_id=payload.command_id,
                 failure_summary=payload.failure_summary,
@@ -2822,7 +2836,9 @@ def create_app(
             proposer_model_invocation_id = _record_model_invocation(
                 provider_kind=attempted_provider,
                 model_name=V2ModelRole.PROPOSER.value,
-                job_id=proposer_job_id,
+                job_id=None,
+                v2_job_id=proposer_job_id,
+                v2_command_id=proposer_command_id,
                 redacted_summary=getattr(proposer_model_result, "redacted_summary", "")
                 or getattr(proposer_model_result, "failure_reason", "")
                 or "",
@@ -3151,6 +3167,7 @@ def create_app(
                 ) from exc
             command = uow.v2_commands.get(command_id)
             reviewer_job_id = command.job_id if command is not None else None
+            reviewer_command_id = command.command_id if command is not None else None
             if command is not None:
                 _append_v2_event(
                     uow,
@@ -3166,7 +3183,9 @@ def create_app(
             reviewer_model_invocation_id = _record_model_invocation(
                 provider_kind=attempted_provider,
                 model_name=V2ModelRole.REVIEWER.value,
-                job_id=reviewer_job_id,
+                job_id=None,
+                v2_job_id=reviewer_job_id,
+                v2_command_id=reviewer_command_id,
                 redacted_summary=getattr(reviewer_model_result, "redacted_summary", "")
                 or getattr(reviewer_model_result, "failure_reason", "")
                 or "",

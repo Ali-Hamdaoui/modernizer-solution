@@ -77,6 +77,73 @@ def _api_client(tmp_path: Path, *, fake_model_client: object | None = None):
     return client, conn
 
 
+def _seed_v2_command_for_model_audit(conn: sqlite3.Connection, tmp_path: Path, command_id: str) -> None:
+    setup_repo = SqliteV2SetupRepository(conn)
+    job_repo = SqliteV2JobRepository(conn)
+    command_repo = SqliteV2CommandRepository(conn)
+    output_root = tmp_path / f"out-{command_id}"
+    sandbox = output_root / ".migration" / "runs" / "run-audit" / "workspaces" / "sandbox"
+    legacy = tmp_path / f"legacy-{command_id}"
+    sandbox.mkdir(parents=True, exist_ok=True)
+    legacy.mkdir(parents=True, exist_ok=True)
+    setup_repo.save(
+        V2MigrationSetupRecord(
+            setup_id=f"setup-{command_id}",
+            run_name="audit",
+            legacy_app_path=str(legacy),
+            output_parent_path=str(output_root),
+            ai_hub_path=str(tmp_path / "ai"),
+            java11_home="C:/java11",
+            java17_home="C:/java17",
+            java21_home="C:/java21",
+            maven_cmd="mvn",
+            proof_level="build_test_verified",
+            skip_endpoint_smoke=False,
+            migration_flags_json="{}",
+            setup_checksum="setup-chk",
+            checksum_algorithm="sha256",
+            created_at="2026-06-18T00:00:00Z",
+            created_by="test",
+            correlation_id=None,
+        )
+    )
+    job_repo.save(
+        V2MigrationJobRecord(
+            job_id=f"job-{command_id}",
+            setup_id=f"setup-{command_id}",
+            setup_checksum="setup-chk",
+            pipeline_id="pipeline-1",
+            stage_chain_json="[]",
+            status="created",
+            created_at="2026-06-18T00:00:00Z",
+            updated_at="2026-06-18T00:00:00Z",
+            correlation_id=None,
+        )
+    )
+    command_repo.save(
+        V2StageCommandRecord(
+            command_id=command_id,
+            job_id=f"job-{command_id}",
+            stage_index=1,
+            manifest_checksum="manifest-chk",
+            argv_json="[]",
+            env_json="{}",
+            status="failed",
+            created_at="2026-06-18T00:00:00Z",
+            updated_at="2026-06-18T00:00:00Z",
+            result_json=json.dumps(
+                {
+                    "run_id": "run-audit",
+                    "sandbox_path": str(sandbox),
+                    "modernized_app_path": "[redacted-windows-path]",
+                }
+            ),
+            gate_id=None,
+            decision_id=None,
+        )
+    )
+
+
 def _seed_repair_apply_context(
     conn: sqlite3.Connection,
     tmp_path: Path,
@@ -1134,6 +1201,54 @@ class TestRepairAPI:
         assert len(invocations) == 2
         assert {inv.model_name for inv in invocations} == {"proposer", "reviewer"}
         assert {inv.provider_kind for inv in invocations} == {"fake"}
+
+    def test_repair_model_invocations_bind_to_v2_command_without_v1_fk(self, tmp_path: Path) -> None:
+        command_id = "cmd-v2-audit"
+        proposer_client = _RecordingProposerClient()
+        client, conn = _api_client(tmp_path, fake_model_client=proposer_client)
+        _seed_v2_command_for_model_audit(conn, tmp_path, command_id)
+
+        create_resp = client.post(
+            f"/v1/v2/commands/{command_id}/repair/flow-proposal",
+            json={
+                "command_id": command_id,
+                "failure_summary": "Build failed",
+                "hypothesis": "Missing import",
+                "patch_summary": "Add import statement",
+                "affected_paths": ["src/main.java"],
+            },
+            headers=_mutation_headers(),
+        )
+        assert create_resp.status_code == 200, create_resp.text
+        proposal_id = create_resp.json()["proposal_id"]
+        proposal_checksum = create_resp.json()["proposal_checksum"]
+        proposer_invocation_id = create_resp.json()["proposal_model"]["model_invocation_id"]
+        assert proposer_invocation_id
+
+        reviewer_client = _RecordingReviewerClient()
+        client.app.state.v2_assistant_model_client = reviewer_client
+        review_resp = client.post(
+            f"/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/reviewer-critique",
+            json={
+                "proposal_id": proposal_id,
+                "proposal_type": "repair",
+                "proposal_checksum": proposal_checksum,
+                "context_pack_checksum": "cp-review",
+            },
+            headers=_mutation_headers(),
+        )
+        assert review_resp.status_code == 200, review_resp.text
+        reviewer_invocation_id = review_resp.json()["reviewer_model"]["model_invocation_id"]
+        assert reviewer_invocation_id
+
+        invocations = SqliteUnitOfWork(conn).v1_model_invocations.list()
+        by_id = {inv.invocation_id: inv for inv in invocations}
+        assert by_id[proposer_invocation_id].job_id is None
+        assert by_id[proposer_invocation_id].v2_job_id == f"job-{command_id}"
+        assert by_id[proposer_invocation_id].v2_command_id == command_id
+        assert by_id[reviewer_invocation_id].job_id is None
+        assert by_id[reviewer_invocation_id].v2_job_id == f"job-{command_id}"
+        assert by_id[reviewer_invocation_id].v2_command_id == command_id
 
     def test_create_reviewer_critique_accepts_markdown_fenced_json(
         self,

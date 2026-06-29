@@ -1527,13 +1527,15 @@ class SqliteV1ModelInvocationRepository:
         try:
             self._connection.execute(
                 """INSERT INTO v1_model_invocations (
-                    invocation_id, job_id, profile_id, provider_kind, model_name,
+                    invocation_id, job_id, v2_job_id, v2_command_id, profile_id, provider_kind, model_name,
                     prompt_tokens, completion_tokens, total_tokens, redacted_summary,
                     actor_type, actor_id, created_at, correlation_id, causation_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     invocation.invocation_id,
                     invocation.job_id,
+                    invocation.v2_job_id,
+                    invocation.v2_command_id,
                     invocation.profile_id,
                     invocation.provider_kind,
                     invocation.model_name,
@@ -1553,7 +1555,7 @@ class SqliteV1ModelInvocationRepository:
 
     def get(self, invocation_id: str) -> V1ModelInvocationRecord | None:
         row = self._connection.execute(
-            """SELECT invocation_id, job_id, profile_id, provider_kind, model_name,
+            """SELECT invocation_id, job_id, v2_job_id, v2_command_id, profile_id, provider_kind, model_name,
                       prompt_tokens, completion_tokens, total_tokens, redacted_summary,
                       actor_type, actor_id, created_at, correlation_id, causation_id
                FROM v1_model_invocations WHERE invocation_id = ?""",
@@ -1565,7 +1567,7 @@ class SqliteV1ModelInvocationRepository:
 
     def list(self) -> tuple[V1ModelInvocationRecord, ...]:
         rows = self._connection.execute(
-            """SELECT invocation_id, job_id, profile_id, provider_kind, model_name,
+            """SELECT invocation_id, job_id, v2_job_id, v2_command_id, profile_id, provider_kind, model_name,
                       prompt_tokens, completion_tokens, total_tokens, redacted_summary,
                       actor_type, actor_id, created_at, correlation_id, causation_id
                FROM v1_model_invocations ORDER BY created_at DESC"""
@@ -1574,7 +1576,7 @@ class SqliteV1ModelInvocationRepository:
 
     def list_for_job(self, job_id: str) -> tuple[V1ModelInvocationRecord, ...]:
         rows = self._connection.execute(
-            """SELECT invocation_id, job_id, profile_id, provider_kind, model_name,
+            """SELECT invocation_id, job_id, v2_job_id, v2_command_id, profile_id, provider_kind, model_name,
                       prompt_tokens, completion_tokens, total_tokens, redacted_summary,
                       actor_type, actor_id, created_at, correlation_id, causation_id
                FROM v1_model_invocations
@@ -1588,6 +1590,8 @@ def _model_invocation_record_from_row(row: sqlite3.Row) -> V1ModelInvocationReco
     return V1ModelInvocationRecord(
         invocation_id=str(row["invocation_id"]),
         job_id=str(row["job_id"]) if row["job_id"] is not None else None,
+        v2_job_id=str(row["v2_job_id"]) if "v2_job_id" in row.keys() and row["v2_job_id"] is not None else None,
+        v2_command_id=str(row["v2_command_id"]) if "v2_command_id" in row.keys() and row["v2_command_id"] is not None else None,
         profile_id=str(row["profile_id"]) if row["profile_id"] is not None else None,
         provider_kind=str(row["provider_kind"]) if row["provider_kind"] is not None else None,
         model_name=str(row["model_name"]) if row["model_name"] is not None else None,

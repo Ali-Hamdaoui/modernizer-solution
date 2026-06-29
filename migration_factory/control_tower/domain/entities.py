@@ -282,6 +282,8 @@ class V1ModelInvocationRecord:
     invocation_id: str
     created_at: str
     job_id: str | None = None
+    v2_job_id: str | None = None
+    v2_command_id: str | None = None
     profile_id: str | None = None
     provider_kind: str | None = None
     model_name: str | None = None
