@@ -10,6 +10,7 @@ import {
   SourceProfileDetectionPanel,
   SourceProfileOverrideForm,
   buildSourceProfileOverrideBody,
+  buildStageTimelineEntries,
   getSourceProfileOverrideBlockedReason,
   formatStageStatusLabel,
   formatGateArtifactRefLabel,
@@ -18,7 +19,7 @@ import {
   type CockpitData,
 } from "../app/migrations/[jobId]/MigrationCockpit";
 import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, postV2GateAction, requireJobId, resolveReportDownloadUrl, v2EventStreamUrl } from "../lib/controlTowerApi";
-import type { GateDetailResponse, GateRepresentation, GateEvidencePack, V2FailureSummaryItem, V2JobEvent, V2MigrationJobResponse } from "../lib/contracts";
+import type { GateDetailResponse, GateRepresentation, GateEvidencePack, V2FailureSummaryItem, V2JobEvent, V2MigrationJobResponse, V2RouteStepEntry } from "../lib/contracts";
 
 describe("V2 Migration Cockpit contract", () => {
   it("passes the awaited route job id into MigrationCockpit", async () => {
@@ -708,6 +709,46 @@ describe("V2 Migration Cockpit contract", () => {
 
   // ── Stage status lifecycle reducer tests (V2 cockpit state model) ──
 
+  it("buildStageTimelineEntries overlays route-step status from refreshed stages", () => {
+    const routeSteps: V2RouteStepEntry[] = [
+      {
+        route_step_index: 1,
+        stage_index: 1,
+        source_profile: "springboot-2.7-java11",
+        target_profile: "springboot-3.5-java17",
+        runtime_profile: "springboot-2.7-to-3.5-java17",
+        catalog: "springboot-3.5-java17",
+        execution_jdk: "java17",
+        status: "pending",
+        approval_gate_id: "",
+        artifact_refs: [],
+        evidence_refs: [],
+      },
+      {
+        route_step_index: 2,
+        stage_index: 2,
+        source_profile: "springboot-3.5-java17",
+        target_profile: "springboot-4.0-java21",
+        runtime_profile: "springboot-3.5-java17-to-java21",
+        catalog: "springboot-4.0-java21",
+        execution_jdk: "java21",
+        status: "pending",
+        approval_gate_id: "",
+        artifact_refs: [],
+        evidence_refs: [],
+      },
+    ];
+    const stages = [
+      { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "completed", input_source_kind: "legacy_source" },
+      { stage_index: 2, pipeline_stage: "Stage 2", chain_status: "running", input_source_kind: "stage_1_sandbox" },
+    ];
+
+    const entries = buildStageTimelineEntries(routeSteps, stages);
+
+    expect(entries[0]).toMatchObject({ route_step_index: 1, status: "completed" });
+    expect(entries[1]).toMatchObject({ route_step_index: 2, status: "running" });
+  });
+
   it("reduceStageStatus: blocked while approval pending", () => {
     // Only approval_required/blocked events → blocked
     const events: V2JobEvent[] = [
@@ -740,6 +781,31 @@ describe("V2 Migration Cockpit contract", () => {
     expect(actual).toBe("failed");
   });
 
+  it("reduceStageStatus: next_stage_queued completes prior stage and queues next stage", () => {
+    const priorStageEvents: V2JobEvent[] = [
+      { stage: 1, type: "stage_started", status: "running", sequence: 1 } as V2JobEvent,
+      {
+        stage: 2,
+        type: "next_stage_queued",
+        status: "queued",
+        sequence: 2,
+        payload: { from_stage: 1, to_stage: 2 },
+      } as V2JobEvent,
+    ];
+    const nextStageEvents: V2JobEvent[] = [
+      {
+        stage: 2,
+        type: "next_stage_queued",
+        status: "queued",
+        sequence: 2,
+        payload: { from_stage: 1, to_stage: 2 },
+      } as V2JobEvent,
+      { stage: 2, type: "stage_started", status: "running", sequence: 3 } as V2JobEvent,
+    ];
+
+    expect(reduceStageStatus(priorStageEvents, 1)).toBe("completed");
+    expect(reduceStageStatus(nextStageEvents, 2)).toBe("running");
+  });
   it("reduceStageStatus: completed after stage_completed, blocked does not regress", () => {
     const events: V2JobEvent[] = [
       { stage: 1, type: "stage_started", status: "running", sequence: 1 } as V2JobEvent,
@@ -1685,7 +1751,7 @@ describe("F15 Final Report and Stage 4 cockpit", () => {
     const source = cockpitFunc.toString();
     // All expected panel headings must appear in the component's rendering logic
     expect(source).toContain("Stage Timeline");
-    expect(source).toContain("data.job.route_steps?.length ? data.job.route_steps : data.stages");
+    expect(source).toContain("buildStageTimelineEntries(data.job.route_steps, data.stages)");
     expect(source).toContain("Pipeline Status");
     expect(source).toContain("Evidence");
     expect(source).toContain("Assistant");
