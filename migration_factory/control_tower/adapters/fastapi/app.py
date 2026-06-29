@@ -3162,11 +3162,10 @@ def create_app(
         job_id: str,
         payload: StageProgressRequest,
     ) -> dict[str, Any]:
-        """Auto-queue the next stage from persisted backend evidence.
+        """Auto-queue the next route step from persisted backend evidence.
 
-        Stage 2 input = Stage 1 sandbox.
-        Stage 3 input = Stage 2 sandbox.
-        No Boot 4 path. No user-selected stage inputs.
+        The selected source/target route controls which executable step
+        is queued next. Legacy stage indices remain for compatibility.
         """
         with unit_of_work_factory() as uow:
             service = V2StageProgressionService(

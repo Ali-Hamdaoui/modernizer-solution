@@ -22,6 +22,7 @@ ALLOWED_PROFILE_API_FIELDS: frozenset[str] = frozenset(
         "included_stages",
         "excluded_stages",
         "skipped_stages",
+        "route_steps",
         "job_id",
         "setup_id",
         "setup_checksum",
@@ -36,6 +37,13 @@ ALLOWED_PROFILE_API_FIELDS: frozenset[str] = frozenset(
         "stage_continuation_policy",
         "run_configuration_id",
         "policy",
+        "route_step_index",
+        "runtime_profile",
+        "catalog",
+        "execution_jdk",
+        "approval_gate_id",
+        "artifact_refs",
+        "evidence_refs",
     }
 )
 

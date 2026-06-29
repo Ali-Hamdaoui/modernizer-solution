@@ -314,10 +314,14 @@ export async function createV2Job(
   setupId: string,
   options?: { sourceProfile?: MigrationProfileId; targetProfile?: MigrationProfileId },
 ): Promise<V2MigrationJobResponse> {
-  return postJson<V2MigrationJobResponse>(
+  const job = await postJson<V2MigrationJobResponse>(
     "/v1/v2/migration-jobs",
     createV2JobPayload(setupId, DEFAULT_V2_STAGE_CONTINUATION_POLICY, options)
   );
+  return {
+    ...job,
+    route_steps: job.route_steps ?? [],
+  };
 }
 
 export async function startV2Stage1(jobId: string, setupId: string): Promise<V2StageCommandResponse> {
@@ -329,9 +333,13 @@ export async function startV2Stage1(jobId: string, setupId: string): Promise<V2S
 
 export async function getV2MigrationJob(jobId: string): Promise<V2MigrationJobResponse> {
   const safeJobId = requireJobId(jobId);
-  return getJson<V2MigrationJobResponse>(
+  const job = await getJson<V2MigrationJobResponse>(
     `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}`
   );
+  return {
+    ...job,
+    route_steps: job.route_steps ?? [],
+  };
 }
 
 export async function getV2JobApprovals(jobId: string): Promise<{ approvals: V2ApprovalResponse[] }> {

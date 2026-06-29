@@ -35,6 +35,7 @@ import type {
   V2JobEvent,
   V2MigrationJobResponse,
   V2PipelineResponse,
+  V2RouteStepEntry,
   GateDetailResponse,
   GateRepresentation,
   GateEvidencePack,
@@ -61,6 +62,23 @@ export interface Stage {
   pipeline_stage: string;
   chain_status: string;
   input_source_kind: string;
+}
+
+function formatRouteStepStatusLabel(status: string): string {
+  switch (status) {
+    case "completed":
+      return "COMPLETED";
+    case "running":
+      return "RUNNING";
+    case "blocked":
+      return "BLOCKED";
+    case "queued":
+      return "QUEUED";
+    case "failed":
+      return "FAILED";
+    default:
+      return "PENDING";
+  }
 }
 
 export interface CockpitData {
@@ -988,6 +1006,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       "final_report_completed",
       "artifact_written",
       "stage_completed",
+      "migration_completed",
       "stage_failed",
       "next_stage_queued",
       "job_completed",
@@ -1188,7 +1207,37 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         <h2>Stage Timeline</h2>
         <p className="meta">Job: {data.job.job_id}</p>
         <div className="stage-list">
-          {data.stages.map((stage) => {
+          {(data.job.route_steps?.length ? data.job.route_steps : data.stages).map((entry) => {
+            if ("route_step_index" in entry) {
+              const routeStep = entry as V2RouteStepEntry;
+              return (
+                <div key={routeStep.route_step_index} className={`stage-card ${routeStep.status}`}>
+                  <div className="stage-header">
+                    <strong>
+                      Route step {routeStep.route_step_index}: {routeStep.source_profile} → {routeStep.target_profile}
+                    </strong>
+                    <span className={`status-badge ${routeStep.status}`}>
+                      {formatRouteStepStatusLabel(routeStep.status)}
+                    </span>
+                    {routeStep.route_step_index === data.job.route_steps?.length && routeStep.status === "completed" && (
+                      <span className="status-badge completed">MIGRATION COMPLETED</span>
+                    )}
+                  </div>
+                  <p className="meta">Runtime profile: {routeStep.runtime_profile}</p>
+                  <p className="meta">Catalog: {routeStep.catalog}</p>
+                  <p className="meta">Execution JDK: {routeStep.execution_jdk}</p>
+                  {routeStep.approval_gate_id && <p className="meta">Approval gate: {routeStep.approval_gate_id}</p>}
+                  <p className="meta">
+                    Artifacts: {routeStep.artifact_refs.length > 0 ? routeStep.artifact_refs.join(", ") : "None yet"}
+                  </p>
+                  <p className="meta">
+                    Evidence: {routeStep.evidence_refs.length > 0 ? routeStep.evidence_refs.join(", ") : "None yet"}
+                  </p>
+                </div>
+              );
+            }
+
+            const stage = entry as Stage;
             const isSkipped = data.job.skipped_stages?.includes(String(stage.stage_index));
             const isExcluded = data.job.excluded_stages?.includes(String(stage.stage_index));
             const isIncluded = data.job.included_stages?.includes(String(stage.stage_index));
@@ -1225,7 +1274,13 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
             );
           })}
         </div>
-        <p className="meta">Stage inputs are fixed by pipeline. No user selection of Stage 2/3 paths.</p>
+        {data.job.route_steps?.length ? (
+          <p className="meta">
+            Executable route steps are backend-projected from the selected source/target pair. Skipped and excluded stages remain metadata only.
+          </p>
+        ) : (
+          <p className="meta">Stage inputs are fixed by pipeline. No user selection of Stage 2/3 paths.</p>
+        )}
       </section>
 
       {/* F3 — Migration Route Panel */}

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -39,7 +39,10 @@ from migration_factory.control_tower.schemas.profile_checkpoint_metadata import 
     SkippedStageLedgerEntry,
 )
 from migration_factory.control_tower.application.v2_profile_runtime import (
+    resolve_catalog_for_runtime_profile,
+    resolve_execution_jdk_id_for_runtime_profile,
     resolve_execution_jdk_env_var_for_runtime_profile,
+    resolve_runtime_profile_for_route,
 )
 
 
@@ -81,6 +84,21 @@ _PROFILE_TO_STAGE_INDEX: dict[str, int] = {
 }
 
 @dataclass(frozen=True)
+class RouteStep:
+    route_step_index: int
+    stage_index: int
+    source_profile: str
+    target_profile: str
+    runtime_profile: str
+    catalog: str
+    execution_jdk: str
+    status: str = "pending"
+    approval_gate_id: str = ""
+    artifact_refs: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ProfileRoute:
     source_profile: str
     target_profile: str
@@ -89,6 +107,7 @@ class ProfileRoute:
     included_stages: tuple[int, ...]
     excluded_stages: tuple[int, ...]
     skipped_stages: tuple[int, ...]
+    route_steps: tuple[RouteStep, ...]
     valid: bool
     reason: str = ""
 
@@ -112,6 +131,7 @@ def compute_profile_route(
             included_stages=(),
             excluded_stages=(),
             skipped_stages=(),
+            route_steps=(),
             valid=False,
             reason="source profile is not recognized",
         )
@@ -124,6 +144,7 @@ def compute_profile_route(
             included_stages=(),
             excluded_stages=(),
             skipped_stages=(),
+            route_steps=(),
             valid=False,
             reason="target profile is not recognized",
         )
@@ -146,6 +167,7 @@ def compute_profile_route(
         stage for stage in STAGE_CONFIG
         if stage <= source_stage
     )
+    route_steps = build_route_steps(source_profile, target_profile)
 
     return ProfileRoute(
         source_profile=source_profile,
@@ -155,6 +177,7 @@ def compute_profile_route(
         included_stages=included,
         excluded_stages=excluded,
         skipped_stages=skipped,
+        route_steps=route_steps,
         valid=True,
     )
 
@@ -170,16 +193,83 @@ def is_stage_excluded_from_route(route: ProfileRoute, stage_index: int) -> bool:
 def is_target_reached(route: ProfileRoute, current_stage: int) -> bool:
     if not route.valid:
         return True
+    if route.route_steps:
+        return current_stage >= len(route.route_steps)
     return current_stage >= max(route.included_stages) if route.included_stages else True
 
 
 def next_required_stage(route: ProfileRoute, current_stage: int) -> int | None:
     if not route.valid:
         return None
+    if route.route_steps:
+        next_step = current_stage + 1
+        if next_step <= len(route.route_steps):
+            return next_step
+        return None
     for stage in route.included_stages:
         if stage > current_stage:
             return stage
     return None
+
+
+def build_route_steps(source_profile: str, target_profile: str) -> tuple[RouteStep, ...]:
+    source_definition = get_migration_profile(source_profile)
+    target_definition = get_migration_profile(target_profile)
+    if source_definition is None or target_definition is None:
+        return ()
+
+    if target_definition.order_index <= source_definition.order_index:
+        return ()
+
+    route_steps: list[RouteStep] = []
+    ordered_profiles = list(_PROFILE_ORDERING[source_definition.order_index : target_definition.order_index + 1])
+    for route_step_index, (step_source, step_target) in enumerate(zip(ordered_profiles, ordered_profiles[1:]), start=1):
+        runtime_profile = resolve_runtime_profile_for_route(step_source, step_target)
+        route_steps.append(
+            RouteStep(
+                route_step_index=route_step_index,
+                stage_index=route_step_index,
+                source_profile=step_source,
+                target_profile=step_target,
+                runtime_profile=runtime_profile,
+                catalog=resolve_catalog_for_runtime_profile(runtime_profile),
+                execution_jdk=resolve_execution_jdk_id_for_runtime_profile(runtime_profile),
+            )
+        )
+    return tuple(route_steps)
+
+
+def project_route_steps(
+    route: ProfileRoute,
+    *,
+    stages: tuple[dict[str, Any], ...] = (),
+) -> tuple[RouteStep, ...]:
+    if not route.valid or not route.route_steps:
+        return ()
+
+    projected: list[RouteStep] = []
+    for index, step in enumerate(route.route_steps):
+        stage_state = stages[index] if index < len(stages) else {}
+        projected.append(
+            RouteStep(
+                route_step_index=step.route_step_index,
+                stage_index=int(stage_state.get("stage_index") or step.stage_index),
+                source_profile=step.source_profile,
+                target_profile=step.target_profile,
+                runtime_profile=step.runtime_profile,
+                catalog=step.catalog,
+                execution_jdk=step.execution_jdk,
+                status=str(stage_state.get("chain_status") or step.status or "pending"),
+                approval_gate_id=str(stage_state.get("approval_gate_id") or step.approval_gate_id),
+                artifact_refs=tuple(str(value) for value in stage_state.get("artifact_refs", ()) if str(value).strip())
+                if isinstance(stage_state.get("artifact_refs"), (list, tuple))
+                else step.artifact_refs,
+                evidence_refs=tuple(str(value) for value in stage_state.get("evidence_refs", ()) if str(value).strip())
+                if isinstance(stage_state.get("evidence_refs"), (list, tuple))
+                else step.evidence_refs,
+            )
+        )
+    return tuple(projected)
 
 
 def route_checksum(route: ProfileRoute) -> str:
@@ -191,9 +281,26 @@ def route_checksum(route: ProfileRoute) -> str:
         "included_stages": list(route.included_stages),
         "excluded_stages": list(route.excluded_stages),
         "skipped_stages": list(route.skipped_stages),
+        "route_steps": [route_step_to_dict(step) for step in route.route_steps],
         "valid": route.valid,
         "reason": route.reason,
     })
+
+
+def route_step_to_dict(route_step: RouteStep) -> dict[str, Any]:
+    return {
+        "route_step_index": route_step.route_step_index,
+        "stage_index": route_step.stage_index,
+        "source_profile": route_step.source_profile,
+        "target_profile": route_step.target_profile,
+        "runtime_profile": route_step.runtime_profile,
+        "catalog": route_step.catalog,
+        "execution_jdk": route_step.execution_jdk,
+        "status": route_step.status,
+        "approval_gate_id": route_step.approval_gate_id,
+        "artifact_refs": list(route_step.artifact_refs),
+        "evidence_refs": list(route_step.evidence_refs),
+    }
 
 
 def build_skipped_stage_ledger(
@@ -252,6 +359,7 @@ def route_to_dict(
         "included_stages": list(route.included_stages),
         "excluded_stages": list(route.excluded_stages),
         "skipped_stages": list(route.skipped_stages),
+        "route_steps": [route_step_to_dict(step) for step in route.route_steps],
         "valid": route.valid,
         "reason": route.reason,
         "route_checksum": route_checksum(route),
@@ -282,6 +390,7 @@ def _invalid_route_from_validation(validation: ProfilePairValidation) -> Profile
         included_stages=(),
         excluded_stages=(),
         skipped_stages=(),
+        route_steps=(),
         valid=False,
         reason=validation.reason,
     )
@@ -496,7 +605,7 @@ class StageContinuationResult:
     to_stage: int
     sandbox_path: str
     argv: tuple[str, ...]
-    status: str  # queued, blocked
+    status: str  # queued, blocked, completed
     reason: str = ""
     command_id: str | None = None
 
@@ -612,25 +721,182 @@ class V2StageProgressionService:
                         missing setup, sandbox path issues).
         """
         route = profile_route or self.compute_route_for_job(job_id)
+        if not route.valid:
+            return StageContinuationResult(
+                continuation_id=uuid4().hex,
+                job_id=job_id,
+                from_stage=current_stage,
+                to_stage=current_stage,
+                sandbox_path=sandbox_path,
+                argv=(),
+                status="blocked",
+                reason="profile_incompatible",
+                command_id=None,
+            )
+
+        policy = _coerce_stage_continuation_policy(stage_continuation_policy)
+        if route.route_steps:
+            if current_stage_result is not None and not self._result_has_successful_stage_output(
+                current_stage_result,
+                expected_sandbox_path=sandbox_path,
+            ):
+                build_status = str(current_stage_result.get("build_status", ""))
+                test_status = str(current_stage_result.get("test_status", ""))
+                if _is_failure_status(build_status):
+                    reason = "build_failed"
+                elif _is_failure_status(test_status):
+                    reason = "test_failed"
+                else:
+                    reason = "target_reached"
+                return StageContinuationResult(
+                    continuation_id=uuid4().hex,
+                    job_id=job_id,
+                    from_stage=current_stage,
+                    to_stage=current_stage,
+                    sandbox_path=sandbox_path,
+                    argv=(),
+                    status="blocked",
+                    reason=reason,
+                    command_id=None,
+                )
+
+            current_route_step = current_stage
+            if current_route_step >= len(route.route_steps):
+                if current_stage_result is not None and self._result_has_successful_stage_output(
+                    current_stage_result,
+                    expected_sandbox_path=sandbox_path,
+                ):
+                    return StageContinuationResult(
+                        continuation_id=uuid4().hex,
+                        job_id=job_id,
+                        from_stage=current_stage,
+                        to_stage=current_stage,
+                        sandbox_path=sandbox_path,
+                        argv=(),
+                        status="completed",
+                        reason="migration_completed",
+                        command_id=None,
+                    )
+                return StageContinuationResult(
+                    continuation_id=uuid4().hex,
+                    job_id=job_id,
+                    from_stage=current_stage,
+                    to_stage=current_stage,
+                    sandbox_path=sandbox_path,
+                    argv=(),
+                    status="blocked",
+                    reason="target_reached",
+                    command_id=None,
+                )
+
+            next_step_index = current_route_step + 1
+            next_route_step = route.route_steps[next_step_index - 1]
+            setup = self._setup_repo.get(setup_id)
+            if setup is None:
+                raise ValueError(f"Setup {setup_id!r} not found")
+
+            if policy in (StageContinuationPolicy.MANUAL, StageContinuationPolicy.MANUAL_ON_WARNING_OR_FAILURE):
+                reason = (
+                    "stage_continuation_policy_manual"
+                    if policy == StageContinuationPolicy.MANUAL
+                    else "stage_continuation_policy_warning_or_failure"
+                )
+                return StageContinuationResult(
+                    continuation_id=uuid4().hex,
+                    job_id=job_id,
+                    from_stage=current_stage,
+                    to_stage=next_step_index,
+                    sandbox_path=sandbox_path,
+                    argv=(),
+                    status="blocked",
+                    reason=reason,
+                    command_id=None,
+                )
+
+            # Route-step continuation is backend-owned. The selected route step
+            # provides the runtime profile, catalog, and execution JDK.
+            jdk_env_var = resolve_execution_jdk_env_var_for_runtime_profile(next_route_step.runtime_profile)
+            jdk_home = _get_jdk_home(setup, jdk_env_var)
+            path_prepend = str(Path(jdk_home) / "bin")
+
+            argv = (
+                sys.executable,
+                "-m",
+                RUNNER_MODULE,
+                "--run-id", f"v2-{job_id[:8]}-s{next_step_index}",
+                "--legacy", sandbox_path,
+                "--modernized", setup.output_parent_path,
+                "--ai-hub", setup.ai_hub_path,
+                "--profile", next_route_step.runtime_profile,
+                "--mode", "full_sandbox_migration",
+            )
+
+            existing_command_id: str | None = None
+            if self._command_repo is not None:
+                existing = self._command_repo.list_by_job_and_stage(job_id, next_step_index)
+                if existing:
+                    existing_command_id = existing[0].command_id
+                    return StageContinuationResult(
+                        continuation_id=uuid4().hex,
+                        job_id=job_id,
+                        from_stage=current_stage,
+                        to_stage=next_step_index,
+                        sandbox_path=sandbox_path,
+                        argv=argv,
+                        status="queued",
+                        reason="existing_next_stage_command",
+                        command_id=existing_command_id,
+                    )
+
+            if self._command_repo is not None:
+                command_id = uuid4().hex
+                now = utc_now_text()
+                env_manifest = {
+                    "JAVA_HOME": jdk_home,
+                    "JAVA11_HOME": setup.java11_home,
+                    "JAVA17_HOME": setup.java17_home,
+                    "JAVA21_HOME": setup.java21_home,
+                    "MAVEN_CMD": setup.maven_cmd,
+                    "PATH_PREPEND": path_prepend,
+                    "ROUTE_STEP_INDEX": str(next_route_step.route_step_index),
+                    "ROUTE_STEP_RUNTIME_PROFILE": next_route_step.runtime_profile,
+                    "ROUTE_STEP_CATALOG": next_route_step.catalog,
+                    "ROUTE_STEP_EXECUTION_JDK": next_route_step.execution_jdk,
+                }
+                command_record = V2StageCommandRecord(
+                    command_id=command_id,
+                    job_id=job_id,
+                    stage_index=next_step_index,
+                    manifest_checksum=f"v2-stage{next_step_index}",
+                    argv_json=json.dumps(list(argv), separators=(",", ":")),
+                    env_json=json.dumps(env_manifest, separators=(",", ":")),
+                    status="manifest_ready",
+                    created_at=now,
+                    updated_at=now,
+                    result_json=None,
+                    gate_id=gate_id,
+                    decision_id=decision_id,
+                )
+                self._command_repo.save(command_record)
+                existing_command_id = command_id
+
+            return StageContinuationResult(
+                continuation_id=uuid4().hex,
+                job_id=job_id,
+                from_stage=current_stage,
+                to_stage=next_step_index,
+                sandbox_path=sandbox_path,
+                argv=argv,
+                status="queued",
+                command_id=existing_command_id,
+            )
+
         next_stage = next_required_stage(route, current_stage) or current_stage + 1
 
         if next_stage not in STAGE_CONFIG:
             raise ValueError(
                 f"Cannot progress from stage {current_stage}: "
                 f"stage {next_stage} is not a valid target"
-            )
-
-        if not route.valid:
-            return StageContinuationResult(
-                continuation_id=uuid4().hex,
-                job_id=job_id,
-                from_stage=current_stage,
-                to_stage=next_stage,
-                sandbox_path=sandbox_path,
-                argv=(),
-                status="blocked",
-                reason="profile_incompatible",
-                command_id=None,
             )
 
         if is_stage_excluded_from_route(route, next_stage):
@@ -646,7 +912,6 @@ class V2StageProgressionService:
                 command_id=None,
             )
 
-        policy = _coerce_stage_continuation_policy(stage_continuation_policy)
         if next_stage == TERMINAL_STAGE_INDEX and not (
             current_stage != 3 and 3 in route.skipped_stages
         ):

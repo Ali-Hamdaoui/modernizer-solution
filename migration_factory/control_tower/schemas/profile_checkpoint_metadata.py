@@ -35,6 +35,14 @@ PROFILE_CHECKPOINT_FIELDS: frozenset[str] = frozenset({
     "excluded_stages",
     "skipped_stages",
     "skipped_stage_ledger",
+    "route_steps",
+    "route_step_index",
+    "runtime_profile",
+    "catalog",
+    "execution_jdk",
+    "approval_gate_id",
+    "artifact_refs",
+    "evidence_refs",
     "valid",
     "reason",
     "source_profile_detection_ref",
@@ -96,6 +104,57 @@ class SkippedStageLedgerEntry(StrictModel):
         )
 
 
+class RouteStepCheckpointMetadata(StrictModel):
+    """Safe route-step checkpoint metadata for cockpit and audit projections."""
+
+    route_step_index: int = Field(ge=1)
+    stage_index: int = Field(ge=1)
+    source_profile: str = ""
+    target_profile: str = ""
+    runtime_profile: str = ""
+    catalog: str = ""
+    execution_jdk: str = ""
+    status: str = "pending"
+    approval_gate_id: str = ""
+    artifact_refs: tuple[str, ...] = Field(default_factory=tuple)
+    evidence_refs: tuple[str, ...] = Field(default_factory=tuple)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "route_step_index": self.route_step_index,
+            "stage_index": self.stage_index,
+            "source_profile": self.source_profile,
+            "target_profile": self.target_profile,
+            "runtime_profile": self.runtime_profile,
+            "catalog": self.catalog,
+            "execution_jdk": self.execution_jdk,
+            "status": self.status,
+            "approval_gate_id": self.approval_gate_id,
+            "artifact_refs": list(self.artifact_refs),
+            "evidence_refs": list(self.evidence_refs),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RouteStepCheckpointMetadata":
+        return cls(
+            route_step_index=int(data.get("route_step_index") or 1),
+            stage_index=int(data.get("stage_index") or 1),
+            source_profile=str(data.get("source_profile") or ""),
+            target_profile=str(data.get("target_profile") or ""),
+            runtime_profile=str(data.get("runtime_profile") or ""),
+            catalog=str(data.get("catalog") or ""),
+            execution_jdk=str(data.get("execution_jdk") or ""),
+            status=str(data.get("status") or "pending"),
+            approval_gate_id=str(data.get("approval_gate_id") or ""),
+            artifact_refs=tuple(
+                str(ref) for ref in (data.get("artifact_refs") or ()) if str(ref).strip()
+            ) if isinstance(data.get("artifact_refs"), (list, tuple)) else (),
+            evidence_refs=tuple(
+                str(ref) for ref in (data.get("evidence_refs") or ()) if str(ref).strip()
+            ) if isinstance(data.get("evidence_refs"), (list, tuple)) else (),
+        )
+
+
 class CheckpointProfileMetadata(StrictModel):
     """Profile routing metadata persisted on artifacts and checkpoints.
 
@@ -119,6 +178,7 @@ class CheckpointProfileMetadata(StrictModel):
     excluded_stages: tuple[int, ...] = Field(default_factory=tuple)
     skipped_stages: tuple[int, ...] = Field(default_factory=tuple)
     skipped_stage_ledger: tuple[SkippedStageLedgerEntry, ...] = Field(default_factory=tuple)
+    route_steps: tuple[RouteStepCheckpointMetadata, ...] = Field(default_factory=tuple)
     valid: bool = False
     reason: str = ""
     source_profile_detection_ref: str = ""
@@ -141,6 +201,7 @@ class CheckpointProfileMetadata(StrictModel):
             "skipped_stage_ledger": [
                 entry.to_dict() for entry in self.skipped_stage_ledger
             ],
+            "route_steps": [entry.to_dict() for entry in self.route_steps],
             "valid": self.valid,
             "reason": self.reason,
             "source_profile_detection_ref": self.source_profile_detection_ref,
@@ -172,6 +233,7 @@ class CheckpointProfileMetadata(StrictModel):
         exc = data.get("excluded_stages")
         skp = data.get("skipped_stages")
         ledger = data.get("skipped_stage_ledger")
+        route_steps = data.get("route_steps")
         v = data.get("valid")
         r = data.get("reason")
         detection_ref = data.get("source_profile_detection_ref")
@@ -202,6 +264,17 @@ class CheckpointProfileMetadata(StrictModel):
                     if isinstance(item, (dict, SkippedStageLedgerEntry))
                 )
                 if ledger is not None
+                else ()
+            ),
+            route_steps=(
+                tuple(
+                    item
+                    if isinstance(item, RouteStepCheckpointMetadata)
+                    else RouteStepCheckpointMetadata.from_dict(item)
+                    for item in route_steps
+                    if isinstance(item, (dict, RouteStepCheckpointMetadata))
+                )
+                if route_steps is not None
                 else ()
             ),
             valid=bool(v) if v is not None else False,
@@ -251,6 +324,24 @@ class CheckpointProfileMetadata(StrictModel):
             excluded_stages=getattr(route, "excluded_stages", ()),
             skipped_stages=getattr(route, "skipped_stages", ()),
             skipped_stage_ledger=skipped_stage_ledger,
+            route_steps=tuple(
+                RouteStepCheckpointMetadata.from_dict(step)
+                if isinstance(step, dict)
+                else RouteStepCheckpointMetadata(
+                    route_step_index=getattr(step, "route_step_index", 1),
+                    stage_index=getattr(step, "stage_index", 1),
+                    source_profile=getattr(step, "source_profile", ""),
+                    target_profile=getattr(step, "target_profile", ""),
+                    runtime_profile=getattr(step, "runtime_profile", ""),
+                    catalog=getattr(step, "catalog", ""),
+                    execution_jdk=getattr(step, "execution_jdk", ""),
+                    status=getattr(step, "status", "pending"),
+                    approval_gate_id=getattr(step, "approval_gate_id", ""),
+                    artifact_refs=tuple(getattr(step, "artifact_refs", ()) or ()),
+                    evidence_refs=tuple(getattr(step, "evidence_refs", ()) or ()),
+                )
+                for step in getattr(route, "route_steps", ())
+            ),
             valid=getattr(route, "valid", False),
             reason=getattr(route, "reason", ""),
         )

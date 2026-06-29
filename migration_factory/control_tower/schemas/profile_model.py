@@ -35,6 +35,38 @@ class MigrationProfile(StrictModel):
     selectable_as_target: bool = True
 
 
+RouteStepStatus = Literal["pending", "queued", "running", "blocked", "completed", "failed"]
+
+
+class RouteStepProfile(StrictModel):
+    """Backend-owned route-step projection for route-driven migration execution."""
+
+    route_step_index: int = Field(ge=1)
+    stage_index: int = Field(ge=1)
+    source_profile: MigrationProfileId
+    target_profile: MigrationProfileId
+    runtime_profile: str
+    catalog: str
+    execution_jdk: str
+    status: RouteStepStatus = "pending"
+    approval_gate_id: str = ""
+    artifact_refs: tuple[str, ...] = Field(default_factory=tuple)
+    evidence_refs: tuple[str, ...] = Field(default_factory=tuple)
+
+    @field_validator("runtime_profile", "catalog", "execution_jdk", "approval_gate_id", mode="after")
+    @classmethod
+    def _route_step_text_is_safe(cls, value: str, info) -> str:
+        return reject_secret_like_value(value, info.field_name)
+
+    @field_validator("artifact_refs", "evidence_refs", mode="after")
+    @classmethod
+    def _route_step_refs_are_safe(cls, value: tuple[str, ...], info) -> tuple[str, ...]:
+        for ref in value:
+            require_non_empty_string(ref, info.field_name)
+            reject_secret_like_value(ref, info.field_name)
+        return value
+
+
 _PROFILE_SEQUENCE: tuple[MigrationProfile, ...] = (
     MigrationProfile(
         profile_id="springboot-2.7-java11",

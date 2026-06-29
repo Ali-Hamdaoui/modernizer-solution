@@ -25,7 +25,9 @@ from migration_factory.control_tower.infrastructure.sqlite.repositories import (
     SqliteRunConfigurationRepository,
 )
 from migration_factory.control_tower.application.v2_profile_runtime import (
+    resolve_catalog_for_runtime_profile,
     ensure_runtime_profile_available,
+    resolve_execution_jdk_id_for_runtime_profile,
     resolve_execution_jdk_env_var_for_runtime_profile,
     resolve_runtime_profile_for_run_configuration,
 )
@@ -51,6 +53,10 @@ class V2StageCommandResult:
     manifest_checksum: str
     argv: tuple[str, ...]
     created_at: str
+    route_step_index: int = 1
+    runtime_profile: str = ""
+    catalog: str = ""
+    execution_jdk: str = ""
 
 
 class V2WorkerStageService:
@@ -106,6 +112,8 @@ class V2WorkerStageService:
             )
         runtime_profile = resolve_runtime_profile_for_run_configuration(run_configuration)
         ensure_runtime_profile_available(setup.ai_hub_path, runtime_profile)
+        catalog = resolve_catalog_for_runtime_profile(runtime_profile)
+        execution_jdk = resolve_execution_jdk_id_for_runtime_profile(runtime_profile)
 
         command_id = uuid4().hex
         now = utc_now_text()
@@ -159,6 +167,10 @@ class V2WorkerStageService:
             manifest_checksum="v2-stage1",  # Simplified for now
             argv=argv,
             created_at=now,
+            route_step_index=1,
+            runtime_profile=runtime_profile,
+            catalog=catalog,
+            execution_jdk=execution_jdk,
         )
 
     def get_command(self, command_id: str) -> V2StageCommandResult | None:
@@ -179,6 +191,10 @@ class V2WorkerStageService:
             manifest_checksum=record.manifest_checksum,
             argv=argv,
             created_at=record.created_at,
+            route_step_index=1,
+            runtime_profile="",
+            catalog="",
+            execution_jdk="",
         )
 
     def result_to_dict(self, result: V2StageCommandResult) -> dict[str, Any]:
@@ -189,6 +205,10 @@ class V2WorkerStageService:
             "manifest_checksum": result.manifest_checksum,
             "argv": list(result.argv),
             "created_at": result.created_at,
+            "route_step_index": result.route_step_index,
+            "runtime_profile": result.runtime_profile,
+            "catalog": result.catalog,
+            "execution_jdk": result.execution_jdk,
         }
 
 

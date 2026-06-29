@@ -93,6 +93,8 @@ from .planning_checkpoint import (
 from .profile_model import (
     MigrationProfile,
     MigrationProfileId,
+    RouteStepProfile,
+    RouteStepStatus,
     SOURCE_PROFILE_DETECTION_FIELDS,
     SourceProfileDetectionArtifact,
     SourceProfileEvidenceRef,
@@ -117,6 +119,7 @@ from .profile_api_contract import (
 from .profile_checkpoint_metadata import (
     PROFILE_CHECKPOINT_FIELDS,
     CheckpointProfileMetadata,
+    RouteStepCheckpointMetadata,
     SkippedStageLedgerEntry,
 )
 from .run_configuration import (
@@ -235,6 +238,8 @@ __all__ = [
     "MavenConfiguration",
     "MigrationProfile",
     "MigrationProfileId",
+    "RouteStepProfile",
+    "RouteStepStatus",
     "MAX_PREVIEW_CONTENT_CHARS",
     "NetworkPolicy",
     "NONTERMINAL_CHECKPOINT_STATUSES",
@@ -276,6 +281,7 @@ __all__ = [
     "RunConfiguration",
     "RunPolicy",
     "RunnerProfile",
+    "RouteStepCheckpointMetadata",
     "SOURCE_PROFILE_DETECTION_FIELDS",
     "SourceProfileDetectionArtifact",
     "SourceProfileEvidenceRef",

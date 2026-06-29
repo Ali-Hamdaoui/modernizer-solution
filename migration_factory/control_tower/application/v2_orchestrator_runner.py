@@ -1266,8 +1266,6 @@ class V2OrchestratorRunner:
     ) -> None:
         from migration_factory.control_tower.application.v2_stage_progression import (
             V2StageProgressionService,
-            evaluate_auto_continue,
-            is_target_reached,
             route_to_dict,
         )
         from migration_factory.control_tower.application.v2_phase_gate_service import (
@@ -1280,6 +1278,7 @@ class V2OrchestratorRunner:
         )
 
         next_stage = stage_index + 1
+        queued_target_stage = next_stage
         next_command_id: str | None = None
 
         try:
@@ -1343,6 +1342,28 @@ class V2OrchestratorRunner:
                     current_stage_result=result,
                     profile_route=route,
                 )
+                queued_target_stage = queued.to_stage
+
+                if queued.status == "completed":
+                    route_payload = route_to_dict(route) if route.valid else {}
+                    uow.v2_events.save(
+                        job_id=job_id,
+                        stage=stage_index,
+                        event_type="migration_completed",
+                        status="completed",
+                        message=(
+                            f"Selected target profile '{target_profile}' reached. "
+                            "Migration completed."
+                        ),
+                        payload={
+                            "from_stage": stage_index,
+                            "to_stage": queued_target_stage,
+                            "reason": queued.reason,
+                            "route": route_payload,
+                            "command_id": command_id,
+                        },
+                    )
+                    return
 
                 # Handle blocked policy or target_reached
                 if queued.status == "blocked":
@@ -1432,7 +1453,7 @@ class V2OrchestratorRunner:
                         target_msg = (
                             f"Stage {stage_index} ({phase_label}) completed under manual policy. "
                             f"{gate_phase} gate review required before "
-                            f"stage {next_stage} can start."
+                            f"stage {queued_target_stage} can start."
                         )
                     uow.v2_events.save(
                         job_id=job_id,
@@ -1442,7 +1463,7 @@ class V2OrchestratorRunner:
                         message=target_msg,
                         payload={
                             "from_stage": stage_index,
-                            "to_stage": next_stage,
+                            "to_stage": queued_target_stage,
                             "gate_id": gate_result.gate_id,
                             "gate_checksum": gate_result.gate_checksum,
                             "gate_status": gate_result.status,
@@ -1454,14 +1475,18 @@ class V2OrchestratorRunner:
 
                 uow.v2_events.save(
                     job_id=job_id,
-                    stage=next_stage,
+                    stage=queued_target_stage,
                     event_type="next_stage_queued",
                     status="queued",
-                    message=f"Stage {next_stage} command manifest queued for real orchestrator execution.",
+                    message=(
+                        f"Stage {queued_target_stage} route step command manifest queued "
+                        "for real orchestrator execution."
+                    ),
                     payload={
                         "from_stage": stage_index,
-                        "to_stage": next_stage,
+                        "to_stage": queued_target_stage,
                         "sandbox_path": sandbox_path,
+                        "route": route_to_dict(route) if route.valid else {},
                     },
                 )
 
@@ -1472,7 +1497,7 @@ class V2OrchestratorRunner:
                     stage_commands = [
                         cmd
                         for cmd in commands
-                        if int(getattr(cmd, "stage_index", 0)) == next_stage
+                        if int(getattr(cmd, "stage_index", 0)) == queued_target_stage
                     ]
                     if stage_commands:
                         next_command_id = str(getattr(stage_commands[-1], "command_id", ""))
@@ -1496,7 +1521,7 @@ class V2OrchestratorRunner:
                 pass
             return
 
-        if next_command_id and not self._stage_has_started(job_id=job_id, stage_index=next_stage):
+        if next_command_id and not self._stage_has_started(job_id=job_id, stage_index=queued_target_stage):
             self.start(job_id=job_id, command_id=next_command_id)
 
     def _stage_has_started(self, *, job_id: str, stage_index: int) -> bool:

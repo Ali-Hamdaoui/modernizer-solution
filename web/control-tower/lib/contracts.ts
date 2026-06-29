@@ -400,6 +400,7 @@ export type V2MigrationJobResponse = {
   pipeline_id: string;
   stages: V2StageEntry[];
   created_at: string;
+  route_steps?: V2RouteStepEntry[];
   // F3/F4 — profile routing fields (backend-returned)
   source_profile?: MigrationProfileId;
   target_profile?: MigrationProfileId;
@@ -410,6 +411,20 @@ export type V2MigrationJobResponse = {
   skipped_stages?: string[];
   stage_continuation_policy?: string;
   run_configuration_id?: string;
+};
+
+export type V2RouteStepEntry = {
+  route_step_index: number;
+  stage_index: number;
+  source_profile: MigrationProfileId;
+  target_profile: MigrationProfileId;
+  runtime_profile: string;
+  catalog: string;
+  execution_jdk: string;
+  status: "pending" | "queued" | "running" | "blocked" | "completed" | "failed" | string;
+  approval_gate_id: string;
+  artifact_refs: string[];
+  evidence_refs: string[];
 };
 
 export type V2JobEvent = {

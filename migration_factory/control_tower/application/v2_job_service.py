@@ -39,7 +39,8 @@ from migration_factory.control_tower.schemas.profile_model import (
 from migration_factory.control_tower.schemas.profile_validation import validate_profile_pair
 from migration_factory.control_tower.application.v2_stage_progression import (
     compute_profile_route,
-    route_to_dict,
+    project_route_steps,
+    route_step_to_dict,
 )
 from migration_factory.control_tower.schemas.run_configuration import (
     RunConfiguration,
@@ -75,6 +76,7 @@ class V2MigrationJobResult:
     included_stages: tuple[int, ...] = ()
     excluded_stages: tuple[int, ...] = ()
     skipped_stages: tuple[int, ...] = ()
+    route_steps: tuple[dict[str, Any], ...] = ()
 
 
 class V2MigrationJobService:
@@ -221,7 +223,10 @@ class V2MigrationJobService:
                 ) from exc
 
         route = compute_profile_route(resolved_source_profile, resolved_target_profile)
-        route_dict = route_to_dict(route)
+        projected_route_steps = tuple(
+            route_step_to_dict(step)
+            for step in project_route_steps(route, stages=tuple(stages))
+        )
 
         return V2MigrationJobResult(
             job_id=job_id,
@@ -239,6 +244,7 @@ class V2MigrationJobService:
             included_stages=route.included_stages,
             excluded_stages=route.excluded_stages,
             skipped_stages=route.skipped_stages,
+            route_steps=projected_route_steps,
         )
 
     def _validate_run_configuration_dependencies(self, run_config: RunConfiguration) -> None:
@@ -313,6 +319,10 @@ class V2MigrationJobService:
             included_stages=route.included_stages,
             excluded_stages=route.excluded_stages,
             skipped_stages=route.skipped_stages,
+            route_steps=tuple(
+                route_step_to_dict(step)
+                for step in project_route_steps(route, stages=tuple(stages))
+            ),
         )
 
     def list_jobs(self) -> tuple[V2MigrationJobResult, ...]:
@@ -365,6 +375,10 @@ class V2MigrationJobService:
                 included_stages=route.included_stages,
                 excluded_stages=route.excluded_stages,
                 skipped_stages=route.skipped_stages,
+                route_steps=tuple(
+                    route_step_to_dict(step)
+                    for step in project_route_steps(route, stages=tuple(stages))
+                ),
             ))
         return tuple(results)
 
@@ -381,6 +395,7 @@ class V2MigrationJobService:
             "included_stages": list(result.included_stages),
             "excluded_stages": list(result.excluded_stages),
             "skipped_stages": list(result.skipped_stages),
+            "route_steps": [dict(step) for step in result.route_steps],
             "stages": [
                 {
                     "stage_index": s["stage_index"],

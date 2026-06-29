@@ -38,10 +38,22 @@ _ROUTE_RUNTIME_PROFILE_MAP: dict[tuple[str, str], str] = {
 
 _ROUTE_RUNTIME_PROFILE_IDS: frozenset[str] = frozenset(_ROUTE_RUNTIME_PROFILE_MAP.values())
 
+_ROUTE_RUNTIME_PROFILE_CATALOG_MAP: dict[str, str] = {
+    "springboot-2.7-to-3.5-java17": "springboot-3.5-java17",
+    "springboot-3.5-java17-to-java21": "springboot-3.5-java17-to-java21",
+    "springboot-3.5-java21-to-4.0-java21": "springboot-3.5-java21-to-4.0-java21",
+}
+
 _RUNTIME_PROFILE_EXECUTION_JDK_ENV_MAP: dict[str, str] = {
     "springboot-2.7-to-3.5-java17": "JAVA17_HOME",
     "springboot-3.5-java17-to-java21": "JAVA21_HOME",
     "springboot-3.5-java21-to-4.0-java21": "JAVA21_HOME",
+}
+
+_RUNTIME_PROFILE_EXECUTION_JDK_ID_MAP: dict[str, str] = {
+    "springboot-2.7-to-3.5-java17": "java17",
+    "springboot-3.5-java17-to-java21": "java21",
+    "springboot-3.5-java21-to-4.0-java21": "java21",
 }
 
 
@@ -84,6 +96,40 @@ def resolve_execution_jdk_env_var_for_runtime_profile(profile_id: str) -> str:
             f"runtime profile {runtime_profile!r}"
         )
     return env_var
+
+
+def resolve_execution_jdk_id_for_runtime_profile(profile_id: str) -> str:
+    """Resolve the backend-owned JDK id for a runtime profile."""
+    runtime_profile = str(profile_id or "").strip()
+    if not runtime_profile:
+        raise RouteRuntimeProfileUnavailableError(
+            "ROUTE_RUNTIME_PROFILE_UNAVAILABLE: runtime profile is required"
+        )
+
+    execution_jdk = _RUNTIME_PROFILE_EXECUTION_JDK_ID_MAP.get(runtime_profile)
+    if execution_jdk is None:
+        raise RouteRuntimeProfileUnavailableError(
+            "ROUTE_RUNTIME_PROFILE_UNAVAILABLE: no execution JDK mapping exists for "
+            f"runtime profile {runtime_profile!r}"
+        )
+    return execution_jdk
+
+
+def resolve_catalog_for_runtime_profile(profile_id: str) -> str:
+    """Resolve the backend-owned catalog id for a runtime profile."""
+    runtime_profile = str(profile_id or "").strip()
+    if not runtime_profile:
+        raise RouteRuntimeProfileUnavailableError(
+            "ROUTE_RUNTIME_PROFILE_UNAVAILABLE: runtime profile is required"
+        )
+
+    catalog = _ROUTE_RUNTIME_PROFILE_CATALOG_MAP.get(runtime_profile)
+    if catalog is None:
+        raise RouteRuntimeProfileUnavailableError(
+            "ROUTE_RUNTIME_PROFILE_UNAVAILABLE: no catalog mapping exists for "
+            f"runtime profile {runtime_profile!r}"
+        )
+    return catalog
 
 
 def resolve_runtime_profile_for_state(state: Any) -> str:
