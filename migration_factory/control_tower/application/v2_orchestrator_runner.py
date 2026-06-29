@@ -911,6 +911,7 @@ class V2OrchestratorRunner:
                 job_id=job_id,
                 stage_index=stage_index,
                 sandbox_path=sandbox_path,
+                command_id=command_id,
                 result=result,
             )
 
@@ -1262,6 +1263,7 @@ class V2OrchestratorRunner:
         job_id: str,
         stage_index: int,
         sandbox_path: str,
+        command_id: str,
         result: dict[str, Any] | None = None,
     ) -> None:
         from migration_factory.control_tower.application.v2_stage_progression import (
