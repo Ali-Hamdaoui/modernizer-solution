@@ -111,7 +111,7 @@ def _impact_summary(
     }
 
 
-def run_openrewrite_dryrun(context, analysis_facts=None):
+def run_openrewrite_dryrun(context, analysis_facts=None, project_dir: str | Path | None = None):
     result_data = {
         "status": "SKIPPED",
         "warnings": [],
@@ -123,7 +123,7 @@ def run_openrewrite_dryrun(context, analysis_facts=None):
         "stderr_tail": "",
         "patch_produced": False,
     }
-    project_dir = Path(context.legacy_app_path)
+    project_dir = Path(project_dir or context.legacy_app_path)
     preview_path = context.get_output_path("rewrite_preview.json")
     plan_path = context.get_output_path("rewrite_plugin_plan.json")
     impact_path = context.get_output_path("rewrite_impact_summary.json")

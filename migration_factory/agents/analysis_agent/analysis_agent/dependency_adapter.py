@@ -110,15 +110,16 @@ def _write_graph(context, graph: Dict[str, Any]) -> None:
         json.dump(graph, handle, indent=4)
 
 
-def run_dependency_tree(context):
+def run_dependency_tree(context, project_dir: str | None = None):
     maven_executable = resolve_maven_executable()
     json_cmd = [maven_executable, "dependency:tree", "-DoutputType=json"]
     text_cmd = [maven_executable, "dependency:tree", "-DoutputType=text"]
+    cwd = project_dir or context.legacy_app_path
 
     try:
         result = subprocess.run(
             json_cmd,
-            cwd=context.legacy_app_path,
+            cwd=cwd,
             capture_output=True,
             text=True,
             check=True,
@@ -134,7 +135,7 @@ def run_dependency_tree(context):
         try:
             result = subprocess.run(
                 text_cmd,
-                cwd=context.legacy_app_path,
+                cwd=cwd,
                 capture_output=True,
                 text=True,
                 check=True,

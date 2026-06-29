@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -66,19 +67,23 @@ def test_success_captures_patch_and_no_pom_write(monkeypatch, tmp_path):
     pom.write_text("<project/>", encoding="utf-8")
     before = pom.read_text(encoding="utf-8")
 
-    patch = legacy / "rewrite.patch"
+    workspace = tmp_path / "workspace"
+    shutil.copytree(legacy, workspace)
+
+    patch = workspace / "rewrite.patch"
     patch.write_text("diff --git a/src/main/java/A.java b/src/main/java/A.java\n+import jakarta.x.Y;\n", encoding="utf-8")
 
     def _ok(*args, **kwargs):
+        assert kwargs["cwd"] == str(workspace)
         return subprocess.CompletedProcess(args[0], 0, stdout="ok", stderr="")
 
     monkeypatch.setattr("subprocess.run", _ok)
 
-    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized))
+    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized), project_dir=workspace)
     assert result["status"] == "USED"
     preview = json.loads((output / "rewrite_preview.json").read_text(encoding="utf-8"))
     assert preview["command"]
-    assert preview["cwd"] == str(legacy)
+    assert preview["cwd"] == str(workspace)
     assert preview["exit_code"] == 0
     assert preview["patch_path"] == str(patch)
     assert preview["patch_produced"] is True
@@ -127,14 +132,17 @@ def test_source_modification_detection_fails(monkeypatch, tmp_path):
 
     source = legacy / "src" / "main" / "java" / "A.java"
     source.write_text("class A {}\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    shutil.copytree(legacy, workspace)
+    workspace_source = workspace / "src" / "main" / "java" / "A.java"
 
     def _mutate(*args, **kwargs):
-        source.write_text("class A { int x; }\n", encoding="utf-8")
+        workspace_source.write_text("class A { int x; }\n", encoding="utf-8")
         return subprocess.CompletedProcess(args[0], 0, stdout="ok", stderr="")
 
     monkeypatch.setattr("subprocess.run", _mutate)
 
-    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized))
+    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized), project_dir=workspace)
     assert result["status"] == "FAILED"
     assert any("Source safety violation" in w for w in result["warnings"])
 
@@ -152,14 +160,18 @@ def test_adapter_uses_catalog_values_not_hardcoded(monkeypatch, tmp_path):
 
     def _capture(cmd, *args, **kwargs):
         captured["cmd"] = cmd
+        captured["cwd"] = kwargs["cwd"]
         return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
 
     monkeypatch.setattr("subprocess.run", _capture)
 
-    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized))
+    workspace = tmp_path / "workspace-catalog"
+    shutil.copytree(legacy, workspace)
+    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized), project_dir=workspace)
     assert result["status"] == "USED"
     assert "-Drewrite.activeRecipes=org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_0" in captured["cmd"]
     assert "-Drewrite.recipeArtifactCoordinates=org.openrewrite.recipe:rewrite-spring:6.0.0" in captured["cmd"]
+    assert captured["cwd"] == str(workspace)
 
 
 def test_dryrun_failure_records_stdout_stderr_diagnostic(monkeypatch, tmp_path):
@@ -183,13 +195,15 @@ def test_dryrun_failure_records_stdout_stderr_diagnostic(monkeypatch, tmp_path):
 
     monkeypatch.setattr("subprocess.run", _fail)
 
-    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized))
+    workspace = tmp_path / "workspace-fail"
+    shutil.copytree(legacy, workspace)
+    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized), project_dir=workspace)
 
     assert result["status"] == "FAILED"
     diagnostic = result["failure_diagnostic"]
     assert diagnostic["exit_code"] == 1
     assert diagnostic["command"]
-    assert diagnostic["cwd"] == str(legacy)
+    assert diagnostic["cwd"] == str(workspace)
     assert "stdout detail" in diagnostic["stdout_tail"]
     assert "stderr detail" in diagnostic["stderr_tail"]
 
@@ -209,7 +223,10 @@ def test_preview_only_enforcer_skip_warns_and_uses_analysis_command(monkeypatch,
     modernized.mkdir()
     _write_catalog_with_preview_args(modernized)
 
-    patch = legacy / "target" / "rewrite" / "rewrite.patch"
+    workspace = tmp_path / "workspace-preview"
+    shutil.copytree(legacy, workspace)
+
+    patch = workspace / "target" / "rewrite" / "rewrite.patch"
     patch.parent.mkdir(parents=True)
     patch.write_text("diff --git a/pom.xml b/pom.xml\n+<maven.compiler.release>21</maven.compiler.release>\n", encoding="utf-8")
 
@@ -221,7 +238,7 @@ def test_preview_only_enforcer_skip_warns_and_uses_analysis_command(monkeypatch,
 
     monkeypatch.setattr("subprocess.run", _ok)
 
-    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized))
+    result = run_openrewrite_dryrun(DummyContext(legacy, output, modernized), project_dir=workspace)
 
     assert result["status"] == "USED"
     assert "-Denforcer.skip=true" in captured["cmd"]

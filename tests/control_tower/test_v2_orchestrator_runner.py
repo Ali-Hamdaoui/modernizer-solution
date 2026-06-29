@@ -1231,6 +1231,7 @@ def test_v2_runner_resume_success_canonicalizes_original_command(tmp_path: Path)
 
     runner.start_resume(job_id="job-1", resume_id="resume-1")
     _wait_for_event(conn, "job-1", "stage_command_canonicalized_after_resume")
+    _wait_for_event(conn, "job-1", "stage_completed")
 
     with SqliteUnitOfWork(conn) as uow:
         command = uow.v2_commands.get("cmd-1")

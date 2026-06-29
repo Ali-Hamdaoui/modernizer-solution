@@ -3,6 +3,7 @@ import inspect
 import json
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List
 
 from config_scanner import save_config_inventory, scan_config_files
@@ -39,10 +40,11 @@ def run_analysis_agent(context: MigrationContext) -> AnalysisResult:
     modernized_root = context.validate_read_path(context.modernized_app_path)
     before_legacy = snapshot_tree(legacy_root)
     before_modernized = snapshot_tree(modernized_root)
+    analysis_workspace = Path(context.prepare_workspace_copy("readonly-workspace", legacy_root))
 
     target_stack = load_profile_target_stack(context.ai_hub_path, context.profile)
     maven_results = _scan_root_pom_with_target(legacy_pom, target_stack)
-    run_dependency_tree(context)
+    run_dependency_tree(context, project_dir=str(analysis_workspace))
 
     import_results = scan_java_imports(legacy_root)
     analysis_facts = {
@@ -58,7 +60,11 @@ def run_analysis_agent(context: MigrationContext) -> AnalysisResult:
     test_inventory["surefire_summary"] = parse_surefire_reports(legacy_root)
     save_test_inventory(context, test_inventory)
 
-    rewrite_result = run_openrewrite_dryrun(context, analysis_facts=analysis_facts) or {}
+    rewrite_result = run_openrewrite_dryrun(
+        context,
+        analysis_facts=analysis_facts,
+        project_dir=str(analysis_workspace),
+    ) or {}
     rewrite_status = rewrite_result.get("status", "SKIPPED")
     warnings.extend(maven_results.get("warnings", []))
     warnings.extend(rewrite_result.get("warnings", []))
@@ -113,7 +119,7 @@ def run_analysis_agent(context: MigrationContext) -> AnalysisResult:
 
     read_only_verification = write_read_only_verification(context, before_legacy, before_modernized)
     if read_only_verification["source_modified"]:
-        errors.append("Analysis modified source files; see read_only_verification.json")
+        errors.append("LEGACY_MUTATION_DETECTED: Analysis modified source files; see read_only_verification.json")
 
     status = "COMPLETED" if not errors else "FAILED"
     return AnalysisResult(

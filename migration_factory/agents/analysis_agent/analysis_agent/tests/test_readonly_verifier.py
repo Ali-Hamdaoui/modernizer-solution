@@ -59,7 +59,7 @@ def test_readonly_verification_fails_for_source_modification(tmp_path):
     assert {"tree": "modernized", "path": "Dockerfile", "change_type": "added"} in verification["violations"]
 
 
-def test_readonly_verification_ignores_build_and_cache_paths(tmp_path):
+def test_readonly_verification_treats_legacy_target_as_mutation(tmp_path):
     legacy, modernized, output = _roots(tmp_path)
     before_legacy = snapshot_tree(legacy)
     before_modernized = snapshot_tree(modernized)
@@ -71,8 +71,9 @@ def test_readonly_verification_ignores_build_and_cache_paths(tmp_path):
 
     verification = _verify(legacy, modernized, output, before_legacy, before_modernized)
 
-    assert verification["status"] == "PASS"
-    assert verification["violations"] == []
+    assert verification["status"] == "FAIL"
+    assert verification["source_modified"] is True
+    assert {"tree": "legacy", "path": "target/classes/App.class", "change_type": "added"} in verification["violations"]
 
 
 def test_readonly_verification_ignores_openrewrite_patch_artifacts(tmp_path):

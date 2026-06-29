@@ -35,12 +35,13 @@ def test_run_dependency_tree_prefers_json_and_builds_structured_graph(tmp_path, 
 
     def fake_run(cmd, **kwargs):
         assert "-DoutputType=json" in cmd
+        assert Path(kwargs["cwd"]).name == "workspace"
         return ProcResult(json.dumps(payload))
 
     monkeypatch.setattr(dependency_adapter.subprocess, "run", fake_run)
     ctx = DummyContext(tmp_path)
 
-    graph = dependency_adapter.run_dependency_tree(ctx)
+    graph = dependency_adapter.run_dependency_tree(ctx, project_dir=str(tmp_path / "workspace"))
 
     assert graph["available"] is True
     assert graph["format"] == "json"
@@ -70,7 +71,7 @@ def test_run_dependency_tree_falls_back_to_text_and_parses_children(tmp_path, mo
     monkeypatch.setattr(dependency_adapter.subprocess, "run", fake_run)
     ctx = DummyContext(tmp_path)
 
-    graph = dependency_adapter.run_dependency_tree(ctx)
+    graph = dependency_adapter.run_dependency_tree(ctx, project_dir=str(tmp_path / "workspace"))
 
     assert calls["count"] == 2
     assert graph["available"] is True
@@ -89,7 +90,7 @@ def test_run_dependency_tree_emits_unavailable_graph_on_maven_failure(tmp_path, 
     monkeypatch.setattr(dependency_adapter.subprocess, "run", fake_run)
     ctx = DummyContext(tmp_path)
 
-    graph = dependency_adapter.run_dependency_tree(ctx)
+    graph = dependency_adapter.run_dependency_tree(ctx, project_dir=str(tmp_path / "workspace"))
 
     assert graph["available"] is False
     assert graph["root"] is None

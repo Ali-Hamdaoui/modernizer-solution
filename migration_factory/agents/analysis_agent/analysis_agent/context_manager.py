@@ -1,4 +1,6 @@
 import os
+import shutil
+from pathlib import Path
 
 class SecurityViolationError(Exception):
     """Exception critique levée si l'agent tente une opération illégale sur les chemins."""
@@ -53,6 +55,16 @@ class MigrationContext:
             raise SecurityViolationError(f"CRITIQUE : Écriture sur un motif interdit (Denylist) : {final_path}")
 
         return final_path
+
+    def prepare_workspace_copy(self, name, source_path):
+        """Create fresh writable workspace inside analysis output root."""
+        if ".." in name:
+            raise SecurityViolationError(f"CRITIQUE : Tentative de Path Traversal bloquée : {name}")
+        workspace_path = Path(self.get_output_path(name))
+        if workspace_path.exists():
+            shutil.rmtree(workspace_path)
+        shutil.copytree(source_path, workspace_path)
+        return str(workspace_path)
         
     def validate_read_path(self, target_path):
         """Garantit qu'on ne lit que dans les dossiers du projet (Problème 6)."""

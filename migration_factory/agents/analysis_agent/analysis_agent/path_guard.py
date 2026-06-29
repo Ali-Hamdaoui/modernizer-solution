@@ -8,7 +8,6 @@ IGNORED_DIR_NAMES = {
     "__pycache__",
     "build",
     "node_modules",
-    "target",
 }
 
 IGNORED_FILE_NAMES = {

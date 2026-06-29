@@ -62,6 +62,8 @@ def test_full_analysis_flow_generates_artifacts_without_source_writes(monkeypatc
 
     def _fake_maven(cmd, *args, **kwargs):
         cmd_text = " ".join(cmd)
+        assert Path(kwargs["cwd"]).resolve().is_relative_to((modernized / ".migration" / "runs" / "run-int" / "analysis").resolve())
+        assert not Path(kwargs["cwd"]).resolve().is_relative_to(legacy.resolve())
         if "dependency:tree" in cmd_text and "-DoutputType=json" in cmd_text:
             payload = {
                 "artifact": "com.example:fixture:jar:1.0.0",
@@ -92,6 +94,9 @@ def test_full_analysis_flow_generates_artifacts_without_source_writes(monkeypatc
 
     after_hash = _hash_tree(legacy)
     assert after_hash == before_hash
+    verification = json.loads(Path(result.artifact_paths["read_only_verification"]).read_text(encoding="utf-8"))
+    assert verification["checks"]["legacy_tree_unchanged"] is True
+    assert verification["source_modified"] is False
 
 
 def test_analysis_handles_missing_source_stack_contract(monkeypatch, tmp_path):
@@ -109,8 +114,8 @@ def test_analysis_handles_missing_source_stack_contract(monkeypatch, tmp_path):
         }
 
     monkeypatch.setattr("main.scan_root_pom", _fake_scan_root_pom)
-    monkeypatch.setattr("main.run_dependency_tree", lambda context: None)
-    def _fake_rewrite(context, analysis_facts=None):
+    monkeypatch.setattr("main.run_dependency_tree", lambda context, project_dir=None: None)
+    def _fake_rewrite(context, analysis_facts=None, project_dir=None):
         Path(context.get_output_path("rewrite_impact_summary.json")).write_text(
             json.dumps(
                 {
