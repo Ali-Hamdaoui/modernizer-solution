@@ -609,6 +609,18 @@ describe("V2 Migration Cockpit contract", () => {
       "sandbox_transform_started",
       "sandbox_transform_completed",
       "sandbox_transform_failed",
+      "analysis_started",
+      "analysis_completed",
+      "analysis_failed",
+      "planning_started",
+      "planning_completed",
+      "planning_failed",
+      "assessment_started",
+      "assessment_completed",
+      "assessment_failed",
+      "final_report_started",
+      "final_report_completed",
+      "final_report_failed",
       "stage_failed",
       "stage_completed",
       "model_invocation_completed",
@@ -627,6 +639,10 @@ describe("V2 Migration Cockpit contract", () => {
     ]);
     expect(important.has("approval_resume_queued")).toBe(true);
     expect(important.has("approval_completed")).toBe(true);
+    expect(important.has("analysis_started")).toBe(true);
+    expect(important.has("planning_started")).toBe(true);
+    expect(important.has("assessment_started")).toBe(true);
+    expect(important.has("final_report_started")).toBe(true);
     expect(important.has("transform_failed")).toBe(true);
     expect(important.has("build_failed")).toBe(true);
     expect(important.has("ai_diagnosis_created")).toBe(true);
@@ -752,8 +768,8 @@ describe("V2 Migration Cockpit contract", () => {
   it("reduceStageStatus: blocked while approval pending", () => {
     // Only approval_required/blocked events → blocked
     const events: V2JobEvent[] = [
-      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as V2JobEvent,
-      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 2 } as V2JobEvent,
+      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 2 } as unknown as V2JobEvent,
     ];
     const actual = reduceStageStatus(events);
     expect(actual).toBe("blocked");
@@ -762,10 +778,10 @@ describe("V2 Migration Cockpit contract", () => {
   it("reduceStageStatus: running after approval completed and transform started", () => {
     // Old blocked events must not prevent running
     const events: V2JobEvent[] = [
-      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as V2JobEvent,
-      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 2 } as V2JobEvent,
-      { stage: 1, type: "approval_resume_queued", status: "queued", sequence: 3 } as V2JobEvent,
-      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 4 } as V2JobEvent,
+      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 2 } as unknown as V2JobEvent,
+      { stage: 1, type: "approval_resume_queued", status: "queued", sequence: 3 } as unknown as V2JobEvent,
+      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 4 } as unknown as V2JobEvent,
     ];
     const actual = reduceStageStatus(events);
     expect(actual).toBe("running");
@@ -773,9 +789,9 @@ describe("V2 Migration Cockpit contract", () => {
 
   it("reduceStageStatus: failed after sandbox_transform_failed", () => {
     const events: V2JobEvent[] = [
-      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as V2JobEvent,
-      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 2 } as V2JobEvent,
-      { stage: 1, type: "sandbox_transform_failed", status: "failed", sequence: 3 } as V2JobEvent,
+      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 2 } as unknown as V2JobEvent,
+      { stage: 1, type: "sandbox_transform_failed", status: "failed", sequence: 3 } as unknown as V2JobEvent,
     ];
     const actual = reduceStageStatus(events);
     expect(actual).toBe("failed");
@@ -783,14 +799,14 @@ describe("V2 Migration Cockpit contract", () => {
 
   it("reduceStageStatus: next_stage_queued completes prior stage and queues next stage", () => {
     const priorStageEvents: V2JobEvent[] = [
-      { stage: 1, type: "stage_started", status: "running", sequence: 1 } as V2JobEvent,
+      { stage: 1, type: "stage_started", status: "running", sequence: 1 } as unknown as V2JobEvent,
       {
         stage: 2,
         type: "next_stage_queued",
         status: "queued",
         sequence: 2,
         payload: { from_stage: 1, to_stage: 2 },
-      } as V2JobEvent,
+      } as unknown as V2JobEvent,
     ];
     const nextStageEvents: V2JobEvent[] = [
       {
@@ -799,8 +815,8 @@ describe("V2 Migration Cockpit contract", () => {
         status: "queued",
         sequence: 2,
         payload: { from_stage: 1, to_stage: 2 },
-      } as V2JobEvent,
-      { stage: 2, type: "stage_started", status: "running", sequence: 3 } as V2JobEvent,
+      } as unknown as V2JobEvent,
+      { stage: 2, type: "stage_started", status: "running", sequence: 3 } as unknown as V2JobEvent,
     ];
 
     expect(reduceStageStatus(priorStageEvents, 1)).toBe("completed");
@@ -808,10 +824,10 @@ describe("V2 Migration Cockpit contract", () => {
   });
   it("reduceStageStatus: completed after stage_completed, blocked does not regress", () => {
     const events: V2JobEvent[] = [
-      { stage: 1, type: "stage_started", status: "running", sequence: 1 } as V2JobEvent,
-      { stage: 1, type: "stage_completed", status: "completed", sequence: 2 } as V2JobEvent,
+      { stage: 1, type: "stage_started", status: "running", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 1, type: "stage_completed", status: "completed", sequence: 2 } as unknown as V2JobEvent,
       // A late blocked event must NOT regress completed → blocked
-      { stage: 1, type: "approval_required", status: "blocked", sequence: 3 } as V2JobEvent,
+      { stage: 1, type: "approval_required", status: "blocked", sequence: 3 } as unknown as V2JobEvent,
     ];
     const actual = reduceStageStatus(events);
     expect(actual).toBe("completed");
@@ -819,8 +835,8 @@ describe("V2 Migration Cockpit contract", () => {
 
   it("reduceStageStatus: old blocked does not override later running", () => {
     const events: V2JobEvent[] = [
-      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 1 } as V2JobEvent,
-      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 2 } as V2JobEvent,
+      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 2 } as unknown as V2JobEvent,
     ];
     const actual = reduceStageStatus(events);
     expect(actual).toBe("running");
@@ -828,8 +844,8 @@ describe("V2 Migration Cockpit contract", () => {
 
   it("reduceStageStatus: old blocked does not override later failed", () => {
     const events: V2JobEvent[] = [
-      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 1 } as V2JobEvent,
-      { stage: 1, type: "stage_failed", status: "failed", sequence: 2 } as V2JobEvent,
+      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 1, type: "stage_failed", status: "failed", sequence: 2 } as unknown as V2JobEvent,
     ];
     const actual = reduceStageStatus(events);
     expect(actual).toBe("failed");
@@ -852,9 +868,9 @@ describe("V2 Migration Cockpit contract", () => {
     // The pipeline human_approval row must be "pass", not "blocked",
     // after approval_resume_queued. Stage must be "running".
     const events: V2JobEvent[] = [
-      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as V2JobEvent,
-      { stage: 1, type: "approval_resume_queued", status: "queued", sequence: 2 } as V2JobEvent,
-      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 3 } as V2JobEvent,
+      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 1, type: "approval_resume_queued", status: "queued", sequence: 2 } as unknown as V2JobEvent,
+      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 3 } as unknown as V2JobEvent,
     ];
     const stageStatus = reduceStageStatus(events);
     expect(stageStatus).toBe("running");
