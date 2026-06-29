@@ -155,6 +155,7 @@ def test_copilot_repair_subprocess_uses_availability_full_path(tmp_path: Path) -
 def test_copilot_availability_required_blocks_preflight(tmp_path: Path, monkeypatch) -> None:
     state = _valid_state(tmp_path)
     state["copilot_required"] = True
+    monkeypatch.setenv("AI_MIGRATION_COPILOT_PROVIDER", "copilot_cli")
 
     monkeypatch.setattr(
         preflight_module,
@@ -164,6 +165,27 @@ def test_copilot_availability_required_blocks_preflight(tmp_path: Path, monkeypa
 
     with pytest.raises(PreflightError, match="Copilot repair proposal preflight failed"):
         validate_preflight(state, build_langgraph_config(state["run_id"]))
+
+
+def test_copilot_provider_unset_skips_cli_probe_even_when_state_defaults_to_cli(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    state = _valid_state(tmp_path)
+    state["copilot_provider"] = "copilot_cli"
+    state["copilot_required"] = True
+    monkeypatch.delenv("AI_MIGRATION_COPILOT_PROVIDER", raising=False)
+
+    def fake_probe(**kwargs):
+        assert kwargs["provider"] == ""
+        return {"status": "SKIPPED", "reason": "provider  is not copilot_cli"}
+
+    monkeypatch.setattr(preflight_module, "probe_copilot_availability", fake_probe)
+
+    validate_preflight(state, build_langgraph_config(state["run_id"]))
+
+    assert state["copilot_availability_status"] == "SKIPPED"
+    assert state["copilot_feature_probe"]["reason"] == "provider  is not copilot_cli"
 
 
 def test_evidence_session_does_not_use_repo_or_sandbox_cwd(tmp_path: Path) -> None:

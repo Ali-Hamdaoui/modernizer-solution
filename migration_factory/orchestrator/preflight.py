@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import yaml
@@ -65,10 +66,11 @@ def validate_preflight(state: MigrationState, config: dict) -> None:
     if thread_id != run_id:
         raise PreflightError(f"thread_id must match run_id: {run_id}")
 
+    explicit_copilot_provider = os.environ.get("AI_MIGRATION_COPILOT_PROVIDER", "").strip()
     availability = probe_copilot_availability(
         repo_root=Path(__file__).resolve().parents[2],
         run_dir=state.get("run_dir", ""),
-        provider=str(state.get("copilot_provider") or "copilot_cli"),
+        provider=explicit_copilot_provider,
         model=str(state.get("copilot_model") or ""),
         required=bool(state.get("copilot_required", False)),
         timeout_seconds=min(int(state.get("copilot_timeout_seconds") or 300), 30),
@@ -80,7 +82,11 @@ def validate_preflight(state: MigrationState, config: dict) -> None:
     state["artifact_refs"] = artifact_refs
     state["copilot_availability_status"] = str(availability.get("status") or "SKIPPED")
     state["copilot_feature_probe"] = availability
-    if state.get("copilot_required") is True and availability.get("status") != "AVAILABLE":
+    if (
+        explicit_copilot_provider == "copilot_cli"
+        and state.get("copilot_required") is True
+        and availability.get("status") != "AVAILABLE"
+    ):
         raise PreflightError(f"Copilot repair proposal preflight failed: {availability.get('reason', '')}")
 
 
