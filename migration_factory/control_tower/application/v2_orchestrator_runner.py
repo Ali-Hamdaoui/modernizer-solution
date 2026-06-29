@@ -76,6 +76,7 @@ _COPILOT_ENV_KEYS = (
 
 _DEFAULT_STAGE_TIMEOUT_SECONDS = 900
 _TIMEOUT_KILL_GRACE_SECONDS = 5
+_AUTO_QUEUE_NEXT_STAGE_ENV = "AI_MIGRATION_AUTO_QUEUE_NEXT_STAGE"
 
 _SECRET_ENV_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL", "AUTHORIZATION")
 
@@ -201,6 +202,7 @@ class V2OrchestratorRunner:
                 argv = _load_json_list(resume.command_json)
                 stage_index = resume.stage_index
                 env_manifest = _load_env_manifest_for_stage(uow, job_id, stage_index)
+                original_command_id = _blocked_command_id_for_stage(uow, job_id, stage_index)
         except sqlite3.OperationalError as exc:
             if _is_sqlite_locked_error(exc):
                 return V2OrchestratorStart(
@@ -222,6 +224,7 @@ class V2OrchestratorRunner:
                 "argv": argv,
                 "env_manifest": env_manifest,
                 "resume": True,
+                "resumed_from_command_id": original_command_id,
             },
             name=f"v2-orchestrator-resume-{resume_id[:8]}",
             daemon=True,
@@ -246,6 +249,7 @@ class V2OrchestratorRunner:
         argv: list[str],
         env_manifest: dict[str, Any],
         resume: bool = False,
+        resumed_from_command_id: str | None = None,
         command_phase: str | None = None,
     ) -> None:
         if resume:
@@ -400,6 +404,7 @@ class V2OrchestratorRunner:
                 result=final_json,
                 stderr="\n".join(stderr_lines),
                 resume=resume,
+                resumed_from_command_id=resumed_from_command_id,
                 command_phase=command_phase,
             )
         except Exception as exc:
@@ -608,6 +613,7 @@ class V2OrchestratorRunner:
         result: dict[str, Any] | None,
         stderr: str,
         resume: bool = False,
+        resumed_from_command_id: str | None = None,
         command_phase: str | None = None,
     ) -> None:
         stdout_tail = _bounded("\n".join(self._last_stdout_lines) if hasattr(self, "_last_stdout_lines") else "")
@@ -981,6 +987,15 @@ class V2OrchestratorRunner:
             status="completed",
             result=_with_runner_status(result, "completed"),
         )
+        if resume and resumed_from_command_id:
+            self._canonicalize_resumed_stage_completion(
+                job_id=job_id,
+                stage_index=stage_index,
+                resume_id=command_id,
+                original_command_id=resumed_from_command_id,
+                result=result,
+                sandbox_path=sandbox_path,
+            )
         self._event(
             job_id=job_id,
             stage=stage_index,
@@ -1069,6 +1084,44 @@ class V2OrchestratorRunner:
             update = getattr(uow.v2_commands, "update_runtime_state", None)
             if update is not None:
                 update(command_id, status=status, result=safe_result)
+
+    def _canonicalize_resumed_stage_completion(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        resume_id: str,
+        original_command_id: str,
+        result: dict[str, Any],
+        sandbox_path: str,
+    ) -> None:
+        if not sandbox_path or not Path(sandbox_path).is_absolute():
+            return
+        canonical = _with_runner_status(result, "completed")
+        canonical["sandbox_path"] = sandbox_path
+        canonical["approval_resume_id"] = resume_id
+        canonical["resumed_from_blocked_command_id"] = original_command_id
+        canonical["sandbox_only"] = True
+        with self._unit_of_work_factory() as uow:
+            command = uow.v2_commands.get(original_command_id)
+            if command is None or command.job_id != job_id or command.stage_index != stage_index:
+                return
+            update = getattr(uow.v2_commands, "update_runtime_state", None)
+            if update is None:
+                return
+            update(original_command_id, status="completed", result=redact_public_value(canonical))
+            uow.v2_events.save(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="stage_command_canonicalized_after_resume",
+                status="completed",
+                message="Resumed Stage command result persisted to original command binding.",
+                payload={
+                    "command_id": original_command_id,
+                    "approval_resume_id": resume_id,
+                    "sandbox_path": sandbox_path,
+                },
+            )
 
     def reconcile_stale_orchestrator_command(
         self,
@@ -1479,6 +1532,21 @@ class V2OrchestratorRunner:
 
         next_stage = stage_index + 1
         next_command_id: str | None = None
+
+        if _auto_queue_next_stage_disabled():
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="next_stage_auto_queue_skipped",
+                status="skipped",
+                message="Automatic next-stage queue disabled by environment.",
+                payload={
+                    "from_stage": stage_index,
+                    "to_stage": next_stage,
+                    "env": _AUTO_QUEUE_NEXT_STAGE_ENV,
+                },
+            )
+            return
 
         try:
             with self._unit_of_work_factory() as uow:
@@ -1948,6 +2016,29 @@ def _load_env_manifest_for_stage(uow: Any, job_id: str, stage_index: int) -> dic
             except json.JSONDecodeError:
                 return {}
     return {}
+
+
+def _blocked_command_id_for_stage(uow: Any, job_id: str, stage_index: int) -> str | None:
+    commands = uow.v2_commands.list_by_job(job_id)
+    for cmd in reversed(commands):
+        if int(getattr(cmd, "stage_index", -1)) != stage_index:
+            continue
+        result_json = getattr(cmd, "result_json", None)
+        if str(getattr(cmd, "status", "")) != "blocked":
+            continue
+        if _runner_status_from_json(result_json) != "blocked_for_approval":
+            continue
+        return str(getattr(cmd, "command_id", ""))
+    return None
+
+
+def _auto_queue_next_stage_disabled() -> bool:
+    return str(os.environ.get(_AUTO_QUEUE_NEXT_STAGE_ENV) or "").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 
 
 def _with_runner_status(result: dict[str, Any], runner_status: str) -> dict[str, Any]:

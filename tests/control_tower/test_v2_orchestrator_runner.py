@@ -115,7 +115,14 @@ def _conn(tmp_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _save_command(conn: sqlite3.Connection, *, command_id: str = "cmd-1", job_id: str = "job-1") -> None:
+def _save_command(
+    conn: sqlite3.Connection,
+    *,
+    command_id: str = "cmd-1",
+    job_id: str = "job-1",
+    status: str = "manifest_ready",
+    result_json: str | None = None,
+) -> None:
     now = utc_now_text()
     SqliteUnitOfWork(conn).v2_commands.save(
         V2StageCommandRecord(
@@ -132,10 +139,10 @@ def _save_command(conn: sqlite3.Connection, *, command_id: str = "cmd-1", job_id
                 "MAVEN_CMD": "C:/maven/bin/mvn.cmd",
                 "PATH_PREPEND": "C:/jdk11/bin",
             }),
-            status="manifest_ready",
+            status=status,
             created_at=now,
             updated_at=now,
-            result_json=None,
+            result_json=result_json,
         )
     )
 
@@ -977,6 +984,33 @@ def test_stage1_pass_contract_with_pass_with_warnings_auto_queues_stage2(tmp_pat
     assert len(popen.calls) == 3
 
 
+def test_auto_queue_next_stage_can_be_disabled_by_env(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn)
+    monkeypatch.setenv("AI_MIGRATION_AUTO_QUEUE_NEXT_STAGE", "false")
+    popen = _SequentialFakePopen([
+        ([json.dumps(_success_result(sandbox_path=str(tmp_path / "stage-1"))) + "\n"], [], 0),
+    ])
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "next_stage_auto_queue_skipped")
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [event.type for event in events]
+    assert "stage_completed" in event_types
+    assert "next_stage_queued" not in event_types
+    assert not any(event.type == "stage_started" and event.stage == 2 for event in events)
+    assert len(popen.calls) == 1
+
+
 def test_stage2_pass_contract_with_pass_with_warnings_auto_queues_stage3(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _seed_stage_pipeline(conn)
@@ -1151,6 +1185,123 @@ def test_v2_runner_resume_passes_env_manifest_from_original_command(tmp_path: Pa
     assert env.get("JAVA11_HOME") == "C:/jdk11"
     assert env.get("JAVA17_HOME") == "C:/jdk17"
     assert env.get("JAVA21_HOME") == "C:/jdk21"
+
+
+def test_v2_runner_resume_success_canonicalizes_original_command(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    blocked_result = json.dumps({
+        "run_id": "run-1",
+        "runner_status": "blocked_for_approval",
+        "status": "human_approval_required",
+    })
+    _save_command(conn, status="blocked", result_json=blocked_result)
+    now = utc_now_text()
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_approvals.save_card(
+            V2ApprovalDecisionRecord(
+                card_id="card-1",
+                job_id="job-1",
+                interrupt_id="run-1",
+                request_checksum="chk",
+                stage_index=1,
+                summary="test",
+                status="approved",
+                created_at=now,
+            )
+        )
+        uow.v2_approvals.save_resume(
+            V2ResumeCommandRecord(
+                resume_id="resume-1",
+                card_id="card-1",
+                decision="approved",
+                job_id="job-1",
+                stage_index=1,
+                command_json=json.dumps(["python", "-m", "resume"]),
+                created_at=now,
+            )
+        )
+    result = _success_result(run_id="run-1", sandbox_path=str(sandbox))
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[json.dumps(result) + "\n"], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+
+    runner.start_resume(job_id="job-1", resume_id="resume-1")
+    _wait_for_event(conn, "job-1", "stage_command_canonicalized_after_resume")
+
+    with SqliteUnitOfWork(conn) as uow:
+        command = uow.v2_commands.get("cmd-1")
+        resume = uow.v2_approvals.get_resume("resume-1")
+        events = uow.v2_events.list_by_job("job-1")
+    assert resume is not None
+    assert resume.decision == "approved"
+    assert command is not None
+    assert command.status == "completed"
+    persisted = json.loads(command.result_json or "{}")
+    assert persisted["runner_status"] == "completed"
+    assert persisted["run_id"] == "run-1"
+    assert persisted["sandbox_path"] == str(sandbox)
+    assert Path(persisted["sandbox_path"]).is_absolute()
+    assert persisted["approval_resume_id"] == "resume-1"
+    assert persisted["resumed_from_blocked_command_id"] == "cmd-1"
+    assert persisted["sandbox_only"] is True
+    assert any(event.type == "stage_completed" for event in events)
+
+
+def test_v2_runner_resume_failure_does_not_fake_canonical_result(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    blocked_result = json.dumps({
+        "run_id": "run-1",
+        "runner_status": "blocked_for_approval",
+        "status": "human_approval_required",
+    })
+    _save_command(conn, status="blocked", result_json=blocked_result)
+    now = utc_now_text()
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_approvals.save_card(
+            V2ApprovalDecisionRecord(
+                card_id="card-1",
+                job_id="job-1",
+                interrupt_id="run-1",
+                request_checksum="chk",
+                stage_index=1,
+                summary="test",
+                status="approved",
+                created_at=now,
+            )
+        )
+        uow.v2_approvals.save_resume(
+            V2ResumeCommandRecord(
+                resume_id="resume-1",
+                card_id="card-1",
+                decision="approved",
+                job_id="job-1",
+                stage_index=1,
+                command_json=json.dumps(["python", "-m", "resume"]),
+                created_at=now,
+            )
+        )
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=["not json\n"], stderr=[], exit_code=1),
+        cwd=tmp_path,
+    )
+
+    runner.start_resume(job_id="job-1", resume_id="resume-1")
+    _wait_for_event(conn, "job-1", "stage_failed")
+
+    with SqliteUnitOfWork(conn) as uow:
+        command = uow.v2_commands.get("cmd-1")
+        events = uow.v2_events.list_by_job("job-1")
+    assert command is not None
+    assert command.status == "blocked"
+    persisted = json.loads(command.result_json or "{}")
+    assert persisted["runner_status"] == "blocked_for_approval"
+    assert "sandbox_path" not in persisted
+    assert not any(event.type == "stage_command_canonicalized_after_resume" for event in events)
 
 
 def test_v2_runner_emits_diagnostic_fields_in_build_failed(tmp_path: Path) -> None:
