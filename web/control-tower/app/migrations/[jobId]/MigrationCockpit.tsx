@@ -111,6 +111,21 @@ type LiveRefreshResults = [
   PromiseSettledResult<V2FailureSummaryResponse>,
 ];
 
+export function buildStageTimelineEntries(
+  routeSteps: V2RouteStepEntry[] | undefined,
+  stages: Stage[],
+): Array<V2RouteStepEntry | Stage> {
+  if (!routeSteps?.length) {
+    return stages;
+  }
+
+  const stageStatusByIndex = new Map(stages.map((stage) => [stage.stage_index, stage.chain_status]));
+  return routeSteps.map((routeStep) => ({
+    ...routeStep,
+    status: stageStatusByIndex.get(routeStep.stage_index) ?? routeStep.status,
+  }));
+}
+
 export function mergeCockpitLiveRefreshResults(
   current: CockpitData,
   results: LiveRefreshResults,
@@ -1200,6 +1215,8 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   if (error) return <div className="error-box">{error}</div>;
   if (!data) return <div className="info-box">Loading cockpit...</div>;
 
+  const stageTimelineEntries = buildStageTimelineEntries(data.job.route_steps, data.stages);
+
   return (
     <div className="cockpit-layout">
       {/* Stage Timeline */}
@@ -1207,7 +1224,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         <h2>Stage Timeline</h2>
         <p className="meta">Job: {data.job.job_id}</p>
         <div className="stage-list">
-          {(data.job.route_steps?.length ? data.job.route_steps : data.stages).map((entry) => {
+          {stageTimelineEntries.map((entry) => {
             if ("route_step_index" in entry) {
               const routeStep = entry as V2RouteStepEntry;
               return (
@@ -1797,10 +1814,21 @@ function artifactKindLabel(kind: string): string {
 function reduceAllStageStatuses(stages: Stage[], allEvents: V2JobEvent[]): Stage[] {
   return stages.map((stage) => {
     const stageEvents = allEvents
-      .filter((e) => e.stage === stage.stage_index)
+      .filter((event) => eventAppliesToStage(event, stage.stage_index))
       .sort((a, b) => a.sequence - b.sequence);
-    return { ...stage, chain_status: reduceStageStatus(stageEvents) };
+    return { ...stage, chain_status: reduceStageStatus(stageEvents, stage.stage_index) };
   });
+}
+
+function eventAppliesToStage(event: V2JobEvent, stageIndex: number): boolean {
+  if (event.type !== "next_stage_queued") {
+    return event.stage === stageIndex;
+  }
+
+  const payload = event.payload ?? {};
+  const fromStage = Number(payload.from_stage ?? 0);
+  const toStage = Number(payload.to_stage ?? event.stage ?? 0);
+  return fromStage === stageIndex || toStage === stageIndex;
 }
 
 /** Map a single (event.type, event.status) to a stage status *label*.
@@ -1847,9 +1875,22 @@ export function formatStageStatusLabel(status: string): string {
 }
 
 /** Reduce chronologically-ordered events to a single stage status. */
-export function reduceStageStatus(events: V2JobEvent[]): string {
+export function reduceStageStatus(events: V2JobEvent[], stageIndex?: number): string {
   let current = "pending";
   for (const event of events) {
+    if (event.type === "next_stage_queued" && stageIndex != null) {
+      const payload = event.payload ?? {};
+      const fromStage = Number(payload.from_stage ?? 0);
+      const toStage = Number(payload.to_stage ?? event.stage ?? 0);
+      if (fromStage === stageIndex) {
+        current = transitionStageStatus(current, "completed");
+        continue;
+      }
+      if (toStage === stageIndex) {
+        current = transitionStageStatus(current, "queued");
+        continue;
+      }
+    }
     current = transitionStageStatus(current, stageStatusFromEvent(event));
   }
   return current;
