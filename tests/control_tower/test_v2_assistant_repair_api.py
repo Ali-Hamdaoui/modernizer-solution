@@ -77,7 +77,13 @@ def _api_client(tmp_path: Path, *, fake_model_client: object | None = None):
     return client, conn
 
 
-def _seed_v2_command_for_model_audit(conn: sqlite3.Connection, tmp_path: Path, command_id: str) -> None:
+def _seed_v2_command_for_model_audit(
+    conn: sqlite3.Connection,
+    tmp_path: Path,
+    command_id: str,
+    *,
+    target_rel_path: str | None = None,
+) -> None:
     setup_repo = SqliteV2SetupRepository(conn)
     job_repo = SqliteV2JobRepository(conn)
     command_repo = SqliteV2CommandRepository(conn)
@@ -86,6 +92,15 @@ def _seed_v2_command_for_model_audit(conn: sqlite3.Connection, tmp_path: Path, c
     legacy = tmp_path / f"legacy-{command_id}"
     sandbox.mkdir(parents=True, exist_ok=True)
     legacy.mkdir(parents=True, exist_ok=True)
+    if target_rel_path:
+        target = sandbox / target_rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            "class App {\n"
+            "  private static final int CONTROLLED_REPAIR_FAILURE = doesNotCompile;\n"
+            "}\n",
+            encoding="utf-8",
+        )
     setup_repo.save(
         V2MigrationSetupRecord(
             setup_id=f"setup-{command_id}",
@@ -690,6 +705,37 @@ def _h2_patch() -> str:
     )
 
 
+def _safe_patch_package() -> dict:
+    return {
+        "repair_artifact": {
+            "unified_diff": "diff --git a/src/App.java b/src/App.java\n--- a/src/App.java\n+++ b/src/App.java\n@@\n-doesNotCompile\n+0\n",
+            "patch_path": "run/repairs/proposals/patch.diff",
+            "patch_checksum": "sha256:patch",
+        },
+        "target_files": [
+            {
+                "relative_path": "src/App.java",
+                "absolute_path": "C:/sandbox/src/App.java",
+                "before_checksum": "sha256:before",
+                "proposed_checksum": "sha256:after",
+            }
+        ],
+        "failure_evidence": {"diagnostic_line": "cannot find symbol variable doesNotCompile"},
+        "verification_plan": {
+            "command": ["mvn", "-q", "-DskipTests", "compile"],
+            "cwd": "C:/sandbox",
+            "llm_during_verification": False,
+        },
+        "containment": {
+            "all_targets_under_sandbox": True,
+            "legacy_target_present": False,
+            "sandbox_outside_legacy": True,
+        },
+        "approval_apply_separate": True,
+        "blockers": [],
+    }
+
+
 class _RecordingProposerClient:
     provider = "fake"
 
@@ -776,6 +822,41 @@ class _RecordingReviewerClient:
             fallback=fallback,
             conversation_history=conversation_history,
         )
+
+
+class _ControlledFailureProposerClient(_RecordingProposerClient):
+    def __init__(self, target_rel_path: str) -> None:
+        super().__init__()
+        self.target_rel_path = target_rel_path
+
+    def answer_with_role(
+        self,
+        *,
+        role,
+        prompt: str,
+        fallback: str,
+        conversation_history=None,
+        output_schema_name=None,
+        require_schema: bool = False,
+    ):
+        self.roles.append(role.value)
+        import json as _json
+
+        return type("Result", (), {
+            "content": _json.dumps({
+                "failure_hypothesis": "Undefined controlled symbol doesNotCompile",
+                "patch_summary": "Remove controlled undefined symbol in sandbox source",
+                "affected_paths": [self.target_rel_path],
+                "validation_plan": "Run mvn -q -DskipTests compile",
+            }),
+            "source": "fake",
+            "model_status": "live_ok",
+            "provider": "fake",
+            "role": role.value,
+            "success": True,
+            "redacted_summary": "Fake proposer response",
+            "failure_reason": "",
+        })()
 
 
 # ── Assistant API tests ────────────────────────────────────────────
@@ -899,6 +980,32 @@ class TestAssistantAPI:
 
 class TestRepairAPI:
 
+    def test_reviewer_preflight_accepts_patch_backed_safe_package(self) -> None:
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _repair_patch_package_review_blockers,
+        )
+
+        assert _repair_patch_package_review_blockers(_safe_patch_package()) == []
+
+    def test_reviewer_preflight_revises_vague_or_unsafe_packages(self) -> None:
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _repair_patch_package_review_blockers,
+        )
+
+        assert "proposal is missing patch package" in _repair_patch_package_review_blockers({})
+
+        missing_checksum = _safe_patch_package()
+        missing_checksum["target_files"][0]["before_checksum"] = ""
+        assert "proposal target is missing before checksum" in _repair_patch_package_review_blockers(missing_checksum)
+
+        escaping = _safe_patch_package()
+        escaping["blockers"] = ["target path escapes sandbox: ../App.java"]
+        assert "target path escapes sandbox: ../App.java" in _repair_patch_package_review_blockers(escaping)
+
+        legacy = _safe_patch_package()
+        legacy["containment"]["legacy_target_present"] = True
+        assert "proposal contains legacy write target" in _repair_patch_package_review_blockers(legacy)
+
     def test_create_proposal(self, tmp_path: Path) -> None:
         fake_client = _RecordingProposerClient()
         client, conn = _api_client(tmp_path, fake_model_client=fake_client)
@@ -1013,6 +1120,8 @@ class TestRepairAPI:
 
         class _FencedProposerClient:
             provider = "fake"
+            target_rel_path = "src/main/java/App.java"
+            target_rel_path = "src/main/java/App.java"
 
             def answer_with_role(
                 self,
@@ -1031,7 +1140,7 @@ class TestRepairAPI:
                         "{"
                         '"failure_hypothesis":"Root cause",'
                         '"patch_summary":"Fix issue",'
-                        '"affected_paths":["pom.xml"],'
+                        f'"affected_paths":["{self.target_rel_path}"],'
                         '"validation_plan":"Run mvn test"'
                         "}\n"
                         "```"
@@ -1152,23 +1261,35 @@ class TestRepairAPI:
         assert body["proposal_model"]["primary_failure_reason"] == ""
 
     def test_create_reviewer_critique(self, tmp_path: Path) -> None:
-        proposer_client = _RecordingProposerClient()
+        target_rel_path = "src/main/java/App.java"
+        proposer_client = _ControlledFailureProposerClient(target_rel_path)
         client, conn = _api_client(tmp_path, fake_model_client=proposer_client)
+        _seed_v2_command_for_model_audit(
+            conn,
+            tmp_path,
+            "cmd-review",
+            target_rel_path=target_rel_path,
+        )
 
         create_resp = client.post(
             "/v1/v2/commands/cmd-review/repair/flow-proposal",
             json={
                 "command_id": "cmd-review",
-                "failure_summary": "Build failed",
-                "hypothesis": "Missing import",
-                "patch_summary": "Add import statement",
-                "affected_paths": ["src/main.java"],
+                "failure_summary": "cannot find symbol variable doesNotCompile",
+                "hypothesis": "Undefined controlled symbol",
+                "patch_summary": "Remove controlled undefined symbol",
+                "affected_paths": [target_rel_path],
             },
             headers=_mutation_headers(),
         )
         assert create_resp.status_code == 200, create_resp.text
-        proposal_id = create_resp.json()["proposal_id"]
-        proposal_checksum = create_resp.json()["proposal_checksum"]
+        proposal_body = create_resp.json()
+        proposal_id = proposal_body["proposal_id"]
+        proposal_checksum = proposal_body["proposal_checksum"]
+        assert proposal_body["target_files"][0]["relative_path"] == target_rel_path
+        assert proposal_body["target_files"][0]["before_checksum"].startswith("sha256:")
+        assert proposal_body["repair_artifact"]["unified_diff"]
+        assert Path(proposal_body["repair_artifact"]["patch_path"]).is_file()
 
         reviewer_client = _RecordingReviewerClient()
         client.app.state.v2_assistant_model_client = reviewer_client
@@ -1260,6 +1381,7 @@ class TestRepairAPI:
 
         class _FencedProposerClient:
             provider = "fake"
+            target_rel_path = "src/main/java/App.java"
 
             def answer_with_role(
                 self,
@@ -1277,7 +1399,7 @@ class TestRepairAPI:
                         "{"
                         '"failure_hypothesis":"Root cause",'
                         '"patch_summary":"Fix issue",'
-                        '"affected_paths":["pom.xml"],'
+                        f'"affected_paths":["{self.target_rel_path}"],'
                         '"validation_plan":"Run mvn test"'
                         "}\n"
                         "```"
@@ -1342,15 +1464,21 @@ class TestRepairAPI:
                 )
 
         client, conn = _api_client(tmp_path, fake_model_client=_FencedProposerClient())
+        _seed_v2_command_for_model_audit(
+            conn,
+            tmp_path,
+            "cmd-review-fenced",
+            target_rel_path=_FencedProposerClient.target_rel_path,
+        )
 
         create_resp = client.post(
             "/v1/v2/commands/cmd-review-fenced/repair/flow-proposal",
             json={
                 "command_id": "cmd-review-fenced",
-                "failure_summary": "Build failed",
-                "hypothesis": "Missing import",
-                "patch_summary": "Add import statement",
-                "affected_paths": ["src/main.java"],
+                "failure_summary": "cannot find symbol variable doesNotCompile",
+                "hypothesis": "Undefined controlled symbol",
+                "patch_summary": "Remove controlled undefined symbol",
+                "affected_paths": [_FencedProposerClient.target_rel_path],
             },
             headers=_mutation_headers(),
         )

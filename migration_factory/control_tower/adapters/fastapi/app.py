@@ -2821,16 +2821,24 @@ def create_app(
         with unit_of_work_factory() as uow:
             service = V2RepairFlowService(
                 repair_repo=uow.v2_repairs,
+                job_repo=uow.v2_jobs,
+                setup_repo=uow.v2_setups,
+                command_repo=uow.v2_commands,
             )
             command = uow.v2_commands.get(command_id)
             proposer_job_id = command.job_id if command is not None else None
             proposer_command_id = command.command_id if command is not None else None
-            proposal = service.create_proposal(
-                command_id=payload.command_id,
-                failure_summary=payload.failure_summary,
-                hypothesis=str(model_output.value["failure_hypothesis"]),
-                patch_summary=str(model_output.value["patch_summary"]),
-                affected_paths=tuple(str(path) for path in model_output.value["affected_paths"]),
+            create_kwargs = {
+                "command_id": payload.command_id,
+                "failure_summary": payload.failure_summary,
+                "hypothesis": str(model_output.value["failure_hypothesis"]),
+                "patch_summary": str(model_output.value["patch_summary"]),
+                "affected_paths": tuple(str(path) for path in model_output.value["affected_paths"]),
+            }
+            proposal = (
+                service.create_patch_backed_proposal(**create_kwargs)
+                if command is not None
+                else service.create_proposal(**create_kwargs)
             )
         if proposer_model_result is not None:
             proposer_model_invocation_id = _record_model_invocation(
@@ -3068,6 +3076,8 @@ def create_app(
                     "PROPOSAL_NOT_FOUND",
                     f"Proposal {proposal_id!r} not found",
                 )
+            patch_package = _safe_json_dict(getattr(proposal_record, "patch_package_json", "{}"))
+            review_blockers = _repair_patch_package_review_blockers(patch_package)
 
             # Build the reviewer prompt using the existing template
             from migration_factory.control_tower.application.v2_prompt_router import (
@@ -3083,10 +3093,27 @@ def create_app(
                 "event_type": "review_requested",
                 "stage_index": "1",
                 "failure_summary": proposal_record.failure_summary,
-                "evidence_refs": "none",
-                "sandbox_binding_ref": "none",
+                "evidence_refs": json.dumps({
+                    "proposal_id": proposal_id,
+                    "target_files": patch_package.get("target_files", []),
+                    "repair_artifact": patch_package.get("repair_artifact", {}),
+                    "failure_evidence": patch_package.get("failure_evidence", {}),
+                    "verification_plan": patch_package.get("verification_plan", {}),
+                    "evidence_artifact_path": patch_package.get("evidence_artifact_path", ""),
+                }, separators=(",", ":"), sort_keys=True),
+                "sandbox_binding_ref": json.dumps({
+                    "run_id": patch_package.get("run_id", ""),
+                    "sandbox_path": patch_package.get("sandbox_path", ""),
+                    "containment": patch_package.get("containment", {}),
+                    "approval_apply_separate": patch_package.get("approval_apply_separate", False),
+                }, separators=(",", ":"), sort_keys=True),
                 "pom_summary_ref": "none",
-                "safety_policy": "No legacy source mutation. Only sandbox changes. Human approval required.",
+                "safety_policy": (
+                    "No legacy source mutation. Only sandbox changes. Human approval required. "
+                    "Accept only if unified diff exists, target files are sandbox-contained, "
+                    "checksums exist, failure evidence matches the patch, and verification plan exists. "
+                    f"Backend preflight blockers: {review_blockers or 'none'}."
+                ),
                 "proposal_checksum": payload.proposal_checksum,
                 "context_pack_checksum": payload.context_pack_checksum,
             }
@@ -3117,7 +3144,26 @@ def create_app(
             })
             reviewer_client = app.state.v2_assistant_model_client
             attempted_provider = str(getattr(reviewer_client, "provider", "") or "azure_openai")
-            if hasattr(reviewer_client, "answer_with_role"):
+            if review_blockers:
+                reviewer_model_result = V2AssistantModelResult(
+                    content=json.dumps({
+                        "decision": "revise",
+                        "reasoning": "Backend reviewer preflight blocked unsafe or incomplete proposal package.",
+                        "missing_evidence": review_blockers,
+                        "unsafe_assumptions": ["Patch-backed reviewer package is incomplete or unsafe"],
+                    }),
+                    source="deterministic",
+                    model_status="blocked",
+                    provider="deterministic",
+                    role=V2ModelRole.REVIEWER.value,
+                    success=False,
+                    redacted_summary="Reviewer preflight blocked proposal",
+                    failure_reason="reviewer_preflight_blocked",
+                    primary_failure_reason="reviewer_preflight_blocked",
+                    fallback_used=True,
+                    schema_validated=True,
+                )
+            elif hasattr(reviewer_client, "answer_with_role"):
                 reviewer_model_result = reviewer_client.answer_with_role(
                     role=V2ModelRole.REVIEWER,
                     prompt=reviewer_prompt,
@@ -12726,6 +12772,61 @@ def _parse_and_validate_model_output(
         validation_failure
         or f"Model output could not be parsed as valid {schema_name}"
     )
+
+
+def _safe_json_dict(raw: object) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    try:
+        parsed = json.loads(str(raw or "{}"))
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _repair_patch_package_review_blockers(package: dict[str, Any]) -> list[str]:
+    blockers = [str(item) for item in package.get("blockers", []) if str(item).strip()]
+    if not package:
+        blockers.append("proposal is missing patch package")
+        return blockers
+    repair_artifact = package.get("repair_artifact") if isinstance(package.get("repair_artifact"), dict) else {}
+    target_files = package.get("target_files") if isinstance(package.get("target_files"), list) else []
+    failure_evidence = package.get("failure_evidence") if isinstance(package.get("failure_evidence"), dict) else {}
+    verification_plan = package.get("verification_plan") if isinstance(package.get("verification_plan"), dict) else {}
+    containment = package.get("containment") if isinstance(package.get("containment"), dict) else {}
+    if not str(repair_artifact.get("unified_diff") or "").strip():
+        blockers.append("proposal is missing unified diff")
+    if not str(repair_artifact.get("patch_path") or "").strip():
+        blockers.append("proposal is missing patch artifact path")
+    if not target_files:
+        blockers.append("proposal is missing target files")
+    for target in target_files:
+        if not isinstance(target, dict):
+            blockers.append("proposal target file entry is malformed")
+            continue
+        if not str(target.get("relative_path") or "").strip():
+            blockers.append("proposal target is missing relative path")
+        if not str(target.get("absolute_path") or "").strip():
+            blockers.append("proposal target is missing absolute sandbox path")
+        if not str(target.get("before_checksum") or "").startswith("sha256:"):
+            blockers.append("proposal target is missing before checksum")
+        if not str(target.get("proposed_checksum") or "").startswith("sha256:"):
+            blockers.append("proposal target is missing proposed checksum")
+    if not str(failure_evidence.get("diagnostic_line") or "").strip():
+        blockers.append("proposal is missing diagnostic line")
+    if not verification_plan.get("command") or not str(verification_plan.get("cwd") or "").strip():
+        blockers.append("proposal is missing deterministic verification plan")
+    if verification_plan.get("llm_during_verification") is not False:
+        blockers.append("verification plan must state no LLM during verification")
+    if containment.get("all_targets_under_sandbox") is not True:
+        blockers.append("proposal targets are not proven sandbox-contained")
+    if containment.get("legacy_target_present") is True:
+        blockers.append("proposal contains legacy write target")
+    if containment.get("sandbox_outside_legacy") is not True:
+        blockers.append("proposal sandbox is not proven outside legacy")
+    if package.get("approval_apply_separate") is not True:
+        blockers.append("proposal must keep approval and apply separate")
+    return list(dict.fromkeys(blockers))
 
 
 def _json_error(request: Request, status_code: int, code: str, message: str) -> JSONResponse:

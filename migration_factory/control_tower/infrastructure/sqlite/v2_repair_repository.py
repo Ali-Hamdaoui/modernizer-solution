@@ -25,6 +25,7 @@ class V2RepairProposalRecord:
     revision_number: int | None = None
     context_pack_checksum: str | None = None
     allowed_scope: str | None = None
+    patch_package_json: str = "{}"
 
 
 @dataclass(frozen=True)
@@ -57,8 +58,8 @@ class SqliteV2RepairRepository:
                 patch_summary, affected_paths_json, status,
                 approval_checksum, created_at, proposal_checksum, source_proposal_id,
                 revision_of, revision_number, context_pack_checksum,
-                allowed_scope
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                allowed_scope, patch_package_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 record.proposal_id,
                 record.command_id,
@@ -75,6 +76,7 @@ class SqliteV2RepairRepository:
                 record.revision_number,
                 record.context_pack_checksum,
                 record.allowed_scope,
+                record.patch_package_json,
             ),
         )
 
@@ -167,6 +169,7 @@ class SqliteV2RepairRepository:
             revision_number=int(row["revision_number"]) if "revision_number" in row.keys() and row["revision_number"] is not None else None,
             context_pack_checksum=str(row["context_pack_checksum"]) if "context_pack_checksum" in row.keys() and row["context_pack_checksum"] else None,
             allowed_scope=str(row["allowed_scope"]) if "allowed_scope" in row.keys() and row["allowed_scope"] else None,
+            patch_package_json=str(row["patch_package_json"]) if "patch_package_json" in row.keys() and row["patch_package_json"] else "{}",
         )
 
     def _row_to_action(self, row: sqlite3.Row) -> V2SandboxActionRecord:

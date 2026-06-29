@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import difflib
+import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -49,6 +52,13 @@ ValidationRunner = Callable[..., ValidationResult]
 RepairEventRecorder = Callable[[str, dict[str, Any]], None]
 
 
+def _json_or_text(value: str) -> object:
+    try:
+        return json.loads(value or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return value
+
+
 class RepairContextBindingError(ValueError):
     """Raised when a repair-review context is not bound to durable run state."""
 
@@ -71,6 +81,7 @@ class RepairProposal:
     revision_number: int | None = None
     context_pack_checksum: str | None = None
     allowed_scope: str | None = None
+    patch_package_json: str = "{}"
 
 
 @dataclass(frozen=True)
@@ -178,6 +189,7 @@ class V2RepairFlowService:
         hypothesis: str,
         patch_summary: str,
         affected_paths: tuple[str, ...],
+        patch_package_json: str = "{}",
     ) -> RepairProposal:
         proposal_checksum = self._proposal_checksum(
             command_id=command_id,
@@ -185,6 +197,7 @@ class V2RepairFlowService:
             hypothesis=hypothesis,
             patch_summary=patch_summary,
             affected_paths=affected_paths,
+            patch_package_json=patch_package_json,
         )
         proposal = RepairProposal(
             proposal_id=uuid4().hex,
@@ -197,6 +210,7 @@ class V2RepairFlowService:
             approval_checksum=None,
             created_at=utc_now_text(),
             proposal_checksum=proposal_checksum,
+            patch_package_json=patch_package_json,
         )
         self._proposals[proposal.proposal_id] = proposal
         # Persist if repo available
@@ -217,9 +231,35 @@ class V2RepairFlowService:
                 revision_number=proposal.revision_number,
                 context_pack_checksum=proposal.context_pack_checksum,
                 allowed_scope=proposal.allowed_scope,
+                patch_package_json=proposal.patch_package_json,
             )
             self._repo.save_proposal(record)
         return proposal
+
+    def create_patch_backed_proposal(
+        self,
+        *,
+        command_id: str,
+        failure_summary: str,
+        hypothesis: str,
+        patch_summary: str,
+        affected_paths: tuple[str, ...],
+        verification_command: tuple[str, ...] = ("mvn", "-q", "-DskipTests", "compile"),
+    ) -> RepairProposal:
+        patch_package_json = self._build_patch_package_json(
+            command_id=command_id,
+            failure_summary=failure_summary,
+            affected_paths=affected_paths,
+            verification_command=verification_command,
+        )
+        return self.create_proposal(
+            command_id=command_id,
+            failure_summary=failure_summary,
+            hypothesis=hypothesis,
+            patch_summary=patch_summary,
+            affected_paths=affected_paths,
+            patch_package_json=patch_package_json,
+        )
 
     def create_revision_proposal(
         self,
@@ -234,6 +274,7 @@ class V2RepairFlowService:
         context_pack_checksum: str = "",
         allowed_scope: str = "any",
         revision_number: int = 1,
+        patch_package_json: str = "{}",
     ) -> RepairProposal:
         """Create a revised proposal draft from a source proposal.
 
@@ -252,6 +293,7 @@ class V2RepairFlowService:
             revision_number=revision_number,
             context_pack_checksum=context_pack_checksum,
             allowed_scope=allowed_scope,
+            patch_package_json=patch_package_json,
         )
         proposal = RepairProposal(
             proposal_id=uuid4().hex,
@@ -269,6 +311,7 @@ class V2RepairFlowService:
             revision_number=revision_number,
             context_pack_checksum=context_pack_checksum,
             allowed_scope=allowed_scope,
+            patch_package_json=patch_package_json,
         )
         self._proposals[proposal.proposal_id] = proposal
         if self._repo is not None:
@@ -288,6 +331,7 @@ class V2RepairFlowService:
                 revision_number=proposal.revision_number,
                 context_pack_checksum=proposal.context_pack_checksum,
                 allowed_scope=proposal.allowed_scope,
+                patch_package_json=proposal.patch_package_json,
             )
             self._repo.save_proposal(record)
         return proposal
@@ -310,35 +354,7 @@ class V2RepairFlowService:
         if proposal is None and self._repo is not None:
             record = self._repo.get_proposal(proposal_id)
             if record is not None:
-                proposal = RepairProposal(
-                    proposal_id=record.proposal_id,
-                    command_id=record.command_id,
-                    failure_summary=record.failure_summary,
-                    hypothesis=record.hypothesis,
-                    patch_summary=record.patch_summary,
-                    affected_paths=tuple(json.loads(record.affected_paths_json)),
-                    status=record.status,
-                    approval_checksum=record.approval_checksum,
-                    created_at=record.created_at,
-                    proposal_checksum=record.proposal_checksum
-                    or self._proposal_checksum(
-                        command_id=record.command_id,
-                        failure_summary=record.failure_summary,
-                        hypothesis=record.hypothesis,
-                        patch_summary=record.patch_summary,
-                        affected_paths=tuple(json.loads(record.affected_paths_json)),
-                        source_proposal_id=record.source_proposal_id,
-                        revision_of=record.revision_of,
-                        revision_number=record.revision_number,
-                        context_pack_checksum=record.context_pack_checksum,
-                        allowed_scope=record.allowed_scope,
-                    ),
-                    source_proposal_id=record.source_proposal_id,
-                    revision_of=record.revision_of,
-                    revision_number=record.revision_number,
-                    context_pack_checksum=record.context_pack_checksum,
-                    allowed_scope=record.allowed_scope,
-                )
+                proposal = self._record_to_proposal(record)
                 self._proposals[proposal_id] = proposal
         if proposal is None:
             raise ValueError(f"Proposal {proposal_id!r} not found")
@@ -372,6 +388,12 @@ class V2RepairFlowService:
             approval_checksum=approval_checksum,
             created_at=proposal.created_at,
             proposal_checksum=proposal.proposal_checksum,
+            source_proposal_id=proposal.source_proposal_id,
+            revision_of=proposal.revision_of,
+            revision_number=proposal.revision_number,
+            context_pack_checksum=proposal.context_pack_checksum,
+            allowed_scope=proposal.allowed_scope,
+            patch_package_json=proposal.patch_package_json,
         )
         self._proposals[proposal_id] = updated
         # Persist if repo available
@@ -654,35 +676,7 @@ class V2RepairFlowService:
         if proposal is None and self._repo is not None:
             record = self._repo.get_proposal(proposal_id)
             if record is not None:
-                proposal = RepairProposal(
-                    proposal_id=record.proposal_id,
-                    command_id=record.command_id,
-                    failure_summary=record.failure_summary,
-                    hypothesis=record.hypothesis,
-                    patch_summary=record.patch_summary,
-                    affected_paths=tuple(json.loads(record.affected_paths_json)),
-                    status=record.status,
-                    approval_checksum=record.approval_checksum,
-                    created_at=record.created_at,
-                    proposal_checksum=record.proposal_checksum
-                    or self._proposal_checksum(
-                        command_id=record.command_id,
-                        failure_summary=record.failure_summary,
-                        hypothesis=record.hypothesis,
-                        patch_summary=record.patch_summary,
-                        affected_paths=tuple(json.loads(record.affected_paths_json)),
-                        source_proposal_id=record.source_proposal_id,
-                        revision_of=record.revision_of,
-                        revision_number=record.revision_number,
-                        context_pack_checksum=record.context_pack_checksum,
-                        allowed_scope=record.allowed_scope,
-                    ),
-                    source_proposal_id=record.source_proposal_id,
-                    revision_of=record.revision_of,
-                    revision_number=record.revision_number,
-                    context_pack_checksum=record.context_pack_checksum,
-                    allowed_scope=record.allowed_scope,
-                )
+                proposal = self._record_to_proposal(record)
                 self._proposals[proposal_id] = proposal
         if proposal is None:
             raise ValueError(f"Proposal {proposal_id!r} not found")
@@ -1260,6 +1254,7 @@ class V2RepairFlowService:
             revision_number=proposal.revision_number,
             context_pack_checksum=proposal.context_pack_checksum,
             allowed_scope=proposal.allowed_scope,
+            patch_package_json=proposal.patch_package_json,
         )
         self._proposals[proposal.proposal_id] = approved
         if self._repo is not None:
@@ -1454,6 +1449,12 @@ class V2RepairFlowService:
             approval_checksum=proposal.approval_checksum,
             created_at=proposal.created_at,
             proposal_checksum=proposal.proposal_checksum,
+            source_proposal_id=proposal.source_proposal_id,
+            revision_of=proposal.revision_of,
+            revision_number=proposal.revision_number,
+            context_pack_checksum=proposal.context_pack_checksum,
+            allowed_scope=proposal.allowed_scope,
+            patch_package_json=proposal.patch_package_json,
         )
         if self._repo is not None:
             self._repo.update_proposal_status(proposal.proposal_id, "applied")
@@ -1537,6 +1538,167 @@ class V2RepairFlowService:
             raise ValueError(f"Proposal {proposal_id!r} not found")
         return proposal
 
+    def _build_patch_package_json(
+        self,
+        *,
+        command_id: str,
+        failure_summary: str,
+        affected_paths: tuple[str, ...],
+        verification_command: tuple[str, ...],
+    ) -> str:
+        if self._job_repo is None or self._setup_repo is None or self._command_repo is None:
+            return "{}"
+        command = self._command_repo.get(command_id)
+        if command is None:
+            return "{}"
+        job = self._job_repo.get(command.job_id)
+        if job is None:
+            return "{}"
+        setup = self._setup_repo.get(job.setup_id)
+        if setup is None:
+            return "{}"
+
+        result_data: dict[str, Any] = {}
+        if command.result_json:
+            try:
+                parsed = json.loads(command.result_json)
+                if isinstance(parsed, dict):
+                    result_data = parsed
+            except (json.JSONDecodeError, TypeError):
+                result_data = {}
+        run_id = str(result_data.get("run_id") or "").strip()
+        sandbox_text = str(result_data.get("sandbox_path") or "").strip()
+        if not run_id or not sandbox_text:
+            return "{}"
+        sandbox_path = Path(sandbox_text)
+        legacy_path = Path(setup.legacy_app_path)
+        if not sandbox_path.is_absolute() or not legacy_path.is_absolute() or not sandbox_path.exists():
+            return "{}"
+        run_dir = self._resolve_bound_run_dir(
+            result_data=result_data,
+            setup_output_parent=setup.output_parent_path,
+            sandbox_path=sandbox_path,
+            run_id=run_id,
+            error_cls=ValueError,
+            command_id=command_id,
+        )
+
+        targets: list[dict[str, Any]] = []
+        unified_diffs: list[str] = []
+        blockers: list[str] = []
+        for raw_path in affected_paths:
+            rel_path = str(raw_path).replace("\\", "/").strip()
+            if not rel_path or Path(rel_path).is_absolute() or ".." in Path(rel_path).parts:
+                blockers.append(f"target path is not a safe relative path: {raw_path}")
+                continue
+            absolute_path = (sandbox_path / rel_path).resolve()
+            if not self._is_sandbox_bound_target_values(target_path=absolute_path, sandbox_path=sandbox_path):
+                blockers.append(f"target path escapes sandbox: {rel_path}")
+                continue
+            if absolute_path == legacy_path.resolve() or absolute_path.is_relative_to(legacy_path.resolve()):
+                blockers.append(f"target path touches legacy: {rel_path}")
+                continue
+            if not absolute_path.is_file():
+                blockers.append(f"target file is missing: {rel_path}")
+                continue
+            before_text = absolute_path.read_text(encoding="utf-8")
+            after_text = self._propose_controlled_source_fix(before_text, failure_summary)
+            before_checksum = self._sha256_text(before_text)
+            after_checksum = self._sha256_text(after_text)
+            target: dict[str, Any] = {
+                "relative_path": rel_path,
+                "absolute_path": str(absolute_path),
+                "before_checksum": before_checksum,
+                "proposed_checksum": after_checksum,
+            }
+            if after_text == before_text:
+                blockers.append(f"no concrete patch generated for target: {rel_path}")
+            else:
+                diff = "".join(
+                    difflib.unified_diff(
+                        before_text.splitlines(keepends=True),
+                        after_text.splitlines(keepends=True),
+                        fromfile=f"a/{rel_path}",
+                        tofile=f"b/{rel_path}",
+                    )
+                )
+                unified_diffs.append(f"diff --git a/{rel_path} b/{rel_path}\n{diff}")
+            targets.append(target)
+
+        unified_diff = "\n".join(part.rstrip() for part in unified_diffs if part.strip()).rstrip() + ("\n" if unified_diffs else "")
+        patch_checksum = self._sha256_text(unified_diff) if unified_diff else ""
+        repairs_dir = run_dir / "repairs" / "proposals"
+        repairs_dir.mkdir(parents=True, exist_ok=True)
+        patch_path = repairs_dir / f"patch-{patch_checksum[:12] or 'missing'}.diff"
+        if unified_diff:
+            patch_path.write_text(unified_diff, encoding="utf-8")
+
+        failure_evidence = {
+            "verification_command": list(verification_command),
+            "cwd": str(sandbox_path),
+            "exit_code": 1,
+            "stdout_stderr_tail": failure_summary,
+            "diagnostic_line": self._diagnostic_line(failure_summary),
+            "failing_file": targets[0]["relative_path"] if targets else "",
+        }
+        package: dict[str, Any] = {
+            "schema_version": "1.0",
+            "command_id": command_id,
+            "job_id": command.job_id,
+            "run_id": run_id,
+            "sandbox_path": str(sandbox_path),
+            "failure_evidence": failure_evidence,
+            "target_files": targets,
+            "repair_artifact": {
+                "unified_diff": unified_diff,
+                "patch_path": str(patch_path) if unified_diff else "",
+                "patch_checksum": patch_checksum,
+            },
+            "containment": {
+                "all_targets_under_sandbox": not any("escapes sandbox" in item for item in blockers),
+                "legacy_target_present": any("touches legacy" in item for item in blockers),
+                "sandbox_outside_legacy": not self._is_sandbox_bound_target_values(
+                    target_path=sandbox_path,
+                    sandbox_path=legacy_path,
+                ),
+            },
+            "verification_plan": {
+                "command": list(verification_command),
+                "cwd": str(sandbox_path),
+                "llm_during_verification": False,
+            },
+            "approval_apply_separate": True,
+            "blockers": blockers,
+        }
+        package["package_checksum"] = sha256_canonical_json(package)
+        evidence_path = repairs_dir / f"evidence-{str(package['package_checksum'])[:12]}.json"
+        evidence_path.write_text(json.dumps(package, indent=2, sort_keys=True), encoding="utf-8")
+        package["evidence_artifact_path"] = str(evidence_path)
+        package["package_checksum"] = sha256_canonical_json(package)
+        return json.dumps(package, separators=(",", ":"), sort_keys=True)
+
+    @staticmethod
+    def _sha256_text(text: str) -> str:
+        return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _diagnostic_line(text: str) -> str:
+        for line in text.splitlines():
+            if "cannot find symbol" in line or "doesNotCompile" in line:
+                return line.strip()
+        return text.strip().splitlines()[0] if text.strip() else ""
+
+    @staticmethod
+    def _propose_controlled_source_fix(source: str, failure_summary: str) -> str:
+        match = re.search(r"variable\s+([A-Za-z_][A-Za-z0-9_]*)", failure_summary)
+        symbol = match.group(1) if match else "doesNotCompile"
+        return re.sub(
+            rf"=\s*{re.escape(symbol)}\s*;",
+            "= 0;",
+            source,
+            count=1,
+        )
+
     def _record_to_proposal(self, record: V2RepairProposalRecord) -> RepairProposal:
         affected_paths = tuple(json.loads(record.affected_paths_json))
         return RepairProposal(
@@ -1561,12 +1723,14 @@ class V2RepairFlowService:
                 revision_number=record.revision_number,
                 context_pack_checksum=record.context_pack_checksum,
                 allowed_scope=record.allowed_scope,
+                patch_package_json=record.patch_package_json,
             ),
             source_proposal_id=record.source_proposal_id,
             revision_of=record.revision_of,
             revision_number=record.revision_number,
             context_pack_checksum=record.context_pack_checksum,
             allowed_scope=record.allowed_scope,
+            patch_package_json=record.patch_package_json,
         )
 
     def _record_to_apply_context(self, record: V2SandboxActionRecord) -> RepairApplyContext:
@@ -1692,6 +1856,14 @@ class V2RepairFlowService:
             result["revision_number"] = proposal.revision_number
         if proposal.allowed_scope is not None:
             result["allowed_scope"] = proposal.allowed_scope
+        patch_package = _json_or_text(proposal.patch_package_json)
+        if isinstance(patch_package, dict) and patch_package:
+            result["patch_package"] = patch_package
+            result["target_files"] = patch_package.get("target_files", [])
+            result["failure_evidence"] = patch_package.get("failure_evidence", {})
+            result["repair_artifact"] = patch_package.get("repair_artifact", {})
+            result["verification_plan"] = patch_package.get("verification_plan", {})
+            result["containment"] = patch_package.get("containment", {})
         return result
 
     def action_to_dict(self, action: SandboxAction) -> dict[str, Any]:
@@ -1825,6 +1997,7 @@ class V2RepairFlowService:
         revision_number: int | None = None,
         context_pack_checksum: str | None = None,
         allowed_scope: str | None = None,
+        patch_package_json: str = "{}",
     ) -> str:
         payload: dict[str, Any] = {
             "command_id": command_id,
@@ -1832,6 +2005,7 @@ class V2RepairFlowService:
             "hypothesis": hypothesis,
             "patch_summary": patch_summary,
             "affected_paths": list(affected_paths),
+            "patch_package": _json_or_text(patch_package_json),
         }
         if source_proposal_id is not None:
             payload["source_proposal_id"] = source_proposal_id

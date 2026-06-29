@@ -49,6 +49,43 @@ def test_create_proposal() -> None:
     assert proposal.proposal_checksum
 
 
+def test_create_patch_backed_proposal_writes_artifacts_without_applying(tmp_path: Path) -> None:
+    conn, service, sandbox = _bound_repair_repo_service(tmp_path, redacted_modernized_path=True)
+    target_rel = "src/main/java/App.java"
+    target = sandbox / target_rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    original = (
+        "class App {\n"
+        "  private static final int CONTROLLED_REPAIR_FAILURE = doesNotCompile;\n"
+        "}\n"
+    )
+    target.write_text(original, encoding="utf-8")
+
+    proposal = service.create_patch_backed_proposal(
+        command_id="cmd-1",
+        failure_summary="cannot find symbol variable doesNotCompile",
+        hypothesis="Undefined controlled symbol",
+        patch_summary="Remove controlled undefined symbol",
+        affected_paths=(target_rel,),
+    )
+    body = service.proposal_to_dict(proposal)
+
+    assert target.read_text(encoding="utf-8") == original
+    assert body["target_files"][0]["relative_path"] == target_rel
+    assert body["target_files"][0]["before_checksum"].startswith("sha256:")
+    assert body["target_files"][0]["proposed_checksum"].startswith("sha256:")
+    assert body["repair_artifact"]["unified_diff"].startswith("diff --git")
+    assert "-  private static final int CONTROLLED_REPAIR_FAILURE = doesNotCompile;" in body["repair_artifact"]["unified_diff"]
+    assert "+  private static final int CONTROLLED_REPAIR_FAILURE = 0;" in body["repair_artifact"]["unified_diff"]
+    assert Path(body["repair_artifact"]["patch_path"]).is_file()
+    assert body["failure_evidence"]["diagnostic_line"] == "cannot find symbol variable doesNotCompile"
+    assert body["verification_plan"]["command"] == ["mvn", "-q", "-DskipTests", "compile"]
+    assert body["verification_plan"]["cwd"] == str(sandbox)
+    assert body["verification_plan"]["llm_during_verification"] is False
+    assert body["containment"]["all_targets_under_sandbox"] is True
+    assert body["containment"]["legacy_target_present"] is False
+
+
 def test_approve_proposal_requires_accepted_reviewer_critique() -> None:
     service = V2RepairFlowService()
     proposal = _proposal(service)
@@ -693,6 +730,64 @@ def test_prepare_apply_context_binds_when_modernized_path_is_redacted(tmp_path: 
     )
 
     assert context.sandbox_reference == str(sandbox)
+
+
+def test_prepare_apply_context_consumes_patch_backed_proposal_artifacts(tmp_path: Path) -> None:
+    conn, service, sandbox = _bound_repair_repo_service(tmp_path, redacted_modernized_path=True)
+    target_rel = "src/main/java/App.java"
+    target = sandbox / target_rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        "class App {\n"
+        "  private static final int CONTROLLED_REPAIR_FAILURE = doesNotCompile;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    proposal = service.create_patch_backed_proposal(
+        command_id="cmd-1",
+        failure_summary="cannot find symbol variable doesNotCompile",
+        hypothesis="Undefined controlled symbol",
+        patch_summary="Remove controlled undefined symbol",
+        affected_paths=(target_rel,),
+    )
+    package = service.proposal_to_dict(proposal)["patch_package"]
+    service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum=proposal.proposal_checksum,
+        context_pack_checksum=package["package_checksum"],
+        decision="accept",
+        reasoning="Patch-backed package is sandbox-only.",
+        missing_evidence=(),
+        unsafe_assumptions=(),
+    )
+    critique = service._reviewer.check_reviewer_gate(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum=proposal.proposal_checksum,
+        context_pack_checksum=package["package_checksum"],
+    )
+
+    context = service.prepare_apply_context(
+        proposal_id=proposal.proposal_id,
+        command_id="cmd-1",
+        proposal_checksum=proposal.proposal_checksum,
+        context_pack_checksum=package["package_checksum"],
+        reviewer_critique_id=critique.critique_id,
+        proposer_invocation_id="proposer-1",
+        reviewer_invocation_id="reviewer-1",
+        patch_preview=package["repair_artifact"]["unified_diff"],
+        target_path=target_rel,
+        sandbox_reference=str(sandbox),
+        sandbox_checksum="sandbox-chk",
+        legacy_checksum="legacy-chk",
+        evidence_refs={
+            "patch_path": package["repair_artifact"]["patch_path"],
+            "evidence_artifact": package["evidence_artifact_path"],
+        },
+    )
+
+    assert context.approval_eligible is True
+    assert context.target_path == target_rel
+    assert json.loads(context.evidence_refs_json)["patch_path"] == package["repair_artifact"]["patch_path"]
     assert context.approval_eligible is True
 
 
