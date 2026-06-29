@@ -11,7 +11,6 @@ import {
   SourceProfileOverrideForm,
   buildSourceProfileOverrideBody,
   getSourceProfileOverrideBlockedReason,
-  SOURCE_PROFILE_OVERRIDE_BLOCKED_COPY,
   formatStageStatusLabel,
   formatGateArtifactRefLabel,
   mergeCockpitLiveRefreshResults,
@@ -851,6 +850,21 @@ describe("F3/F4 Cockpit profile routing panels", () => {
       included_stages: ["2", "3", "4"],
       skipped_stages: [],
       excluded_stages: [],
+      route_steps: [
+        {
+          route_step_index: 1,
+          stage_index: 1,
+          source_profile: "springboot-2.7-java11",
+          target_profile: "springboot-3.5-java17",
+          runtime_profile: "springboot-2.7-to-3.5-java17",
+          catalog: "springboot-3.5-java17",
+          execution_jdk: "java17",
+          status: "completed",
+          approval_gate_id: "",
+          artifact_refs: [],
+          evidence_refs: [],
+        },
+      ],
     };
     const markup = renderToStaticMarkup(<MigrationRoutePanel job={job} />);
     expect(markup).toContain("Migration Route");
@@ -1321,7 +1335,7 @@ describe("F3/F4 Cockpit profile routing panels", () => {
     expect(serialized).not.toMatch(/"access_token"/);
   });
 
-  it("SourceProfileOverrideForm build helper returns null when target_profile is missing", () => {
+  it("SourceProfileOverrideForm build helper uses the gate target profile when present", () => {
     const gateDetail = makeAnalysisReviewGateDetail();
     const result = buildSourceProfileOverrideBody({
       gate: gateDetail.gate,
@@ -1332,11 +1346,9 @@ describe("F3/F4 Cockpit profile routing panels", () => {
       comments: "c",
       idempotencyKey: "idem-1",
     });
-    expect(result.body).toBeNull();
-    expect(result.blockedReason).toBe("missing_target_profile");
-    expect(SOURCE_PROFILE_OVERRIDE_BLOCKED_COPY.missing_target_profile).toBe(
-      "Missing target profile from backend job state.",
-    );
+    expect(result.body).not.toBeNull();
+    expect(result.body?.target_profile).toBe("springboot-2.7-java11");
+    expect(result.blockedReason).toBeNull();
   });
 
   it("SourceProfileOverrideForm build helper returns null when source artifact ref is missing", () => {
@@ -1673,6 +1685,7 @@ describe("F15 Final Report and Stage 4 cockpit", () => {
     const source = cockpitFunc.toString();
     // All expected panel headings must appear in the component's rendering logic
     expect(source).toContain("Stage Timeline");
+    expect(source).toContain("data.job.route_steps?.length ? data.job.route_steps : data.stages");
     expect(source).toContain("Pipeline Status");
     expect(source).toContain("Evidence");
     expect(source).toContain("Assistant");

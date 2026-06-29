@@ -189,6 +189,24 @@ def test_infer_source_profile_reports_uncertainty_for_unknown_boot() -> None:
     assert notes
 
 
+def test_infer_source_profile_splits_boot_21_from_boot_27() -> None:
+    profile_21, confidence_21, notes_21 = infer_source_profile_from_stack(
+        java_version="11",
+        spring_boot_version="2.1.6",
+    )
+    profile_27, confidence_27, notes_27 = infer_source_profile_from_stack(
+        java_version="11",
+        spring_boot_version="2.7.18",
+    )
+
+    assert profile_21 == "springboot-2.1-java11"
+    assert confidence_21 == 0.9
+    assert notes_21 == ()
+    assert profile_27 == "springboot-2.7-java11"
+    assert confidence_27 == 0.9
+    assert notes_27 == ()
+
+
 def test_source_profile_detection_fields_are_public_safe() -> None:
     dangerous = {
         "sandbox_path",

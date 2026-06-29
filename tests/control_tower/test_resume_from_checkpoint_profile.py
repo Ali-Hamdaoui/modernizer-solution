@@ -269,6 +269,40 @@ def test_approval_acceptance_persists_profile_metadata_for_resume_checkpoint(tmp
     assert popen.calls
 
 
+def test_approval_acceptance_persists_boot21_route_metadata_for_resume_checkpoint(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    resume_id = _seed_resume_checkpoint(
+        conn,
+        source_profile="springboot-2.1-java11",
+        target_profile="springboot-4.0-java21",
+    )
+    popen = _FakePopen()
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    result = runner.start_resume(job_id="job-resume", resume_id=resume_id)
+    _wait_for_event(conn, "job-resume", "resume_started")
+
+    assert result.status == "started"
+    accepted = SqliteUnitOfWork(conn).artifact_revisions.find_accepted("job-resume", 2, "planning")
+    assert accepted is not None
+    refs = json.loads(accepted.artifact_refs_json)
+    profile_refs = [
+        ref for ref in refs
+        if isinstance(ref, dict) and isinstance(ref.get("profile_metadata"), dict)
+    ]
+    assert profile_refs
+    profile_metadata = profile_refs[0]["profile_metadata"]
+    assert profile_metadata["source_profile"] == "springboot-2.1-java11"
+    assert profile_metadata["target_profile"] == "springboot-4.0-java21"
+    assert len(profile_metadata["route_steps"]) == 4
+    assert profile_metadata["route_steps"][0]["runtime_profile"] == "springboot-2.1.6-to-2.7-java11"
+    assert popen.calls
+
+
 def test_resume_rejects_stale_artifact_checksum_before_launch(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     resume_id = _seed_resume_checkpoint(

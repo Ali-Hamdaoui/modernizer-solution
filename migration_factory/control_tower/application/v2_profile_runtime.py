@@ -27,10 +27,14 @@ class RouteRuntimeProfileUnavailableError(ValueError):
 
 _ROUTE_RUNTIME_PROFILE_MAP: dict[tuple[str, str], str] = {
     # Exact route profiles that exist in the checked-in AI Hub.
+    ("springboot-2.1-java11", "springboot-2.7-java11"): "springboot-2.1.6-to-2.7-java11",
     ("springboot-2.7-java11", "springboot-3.5-java17"): "springboot-2.7-to-3.5-java17",
     ("springboot-3.5-java17", "springboot-3.5-java21"): "springboot-3.5-java17-to-java21",
     ("springboot-3.5-java21", "springboot-4.0-java21"): "springboot-3.5-java21-to-4.0-java21",
     # Multi-stage routes reuse the first concrete route profile available in repo.
+    ("springboot-2.1-java11", "springboot-3.5-java17"): "springboot-2.1.6-to-2.7-java11",
+    ("springboot-2.1-java11", "springboot-3.5-java21"): "springboot-2.1.6-to-2.7-java11",
+    ("springboot-2.1-java11", "springboot-4.0-java21"): "springboot-2.1.6-to-2.7-java11",
     ("springboot-2.7-java11", "springboot-3.5-java21"): "springboot-2.7-to-3.5-java17",
     ("springboot-2.7-java11", "springboot-4.0-java21"): "springboot-2.7-to-3.5-java17",
     ("springboot-3.5-java17", "springboot-4.0-java21"): "springboot-3.5-java17-to-java21",
@@ -39,18 +43,21 @@ _ROUTE_RUNTIME_PROFILE_MAP: dict[tuple[str, str], str] = {
 _ROUTE_RUNTIME_PROFILE_IDS: frozenset[str] = frozenset(_ROUTE_RUNTIME_PROFILE_MAP.values())
 
 _ROUTE_RUNTIME_PROFILE_CATALOG_MAP: dict[str, str] = {
+    "springboot-2.1.6-to-2.7-java11": "springboot-2.1.6-to-2.7-java11",
     "springboot-2.7-to-3.5-java17": "springboot-3.5-java17",
     "springboot-3.5-java17-to-java21": "springboot-3.5-java17-to-java21",
     "springboot-3.5-java21-to-4.0-java21": "springboot-3.5-java21-to-4.0-java21",
 }
 
 _RUNTIME_PROFILE_EXECUTION_JDK_ENV_MAP: dict[str, str] = {
+    "springboot-2.1.6-to-2.7-java11": "JAVA11_HOME",
     "springboot-2.7-to-3.5-java17": "JAVA17_HOME",
     "springboot-3.5-java17-to-java21": "JAVA21_HOME",
     "springboot-3.5-java21-to-4.0-java21": "JAVA21_HOME",
 }
 
 _RUNTIME_PROFILE_EXECUTION_JDK_ID_MAP: dict[str, str] = {
+    "springboot-2.1.6-to-2.7-java11": "java11",
     "springboot-2.7-to-3.5-java17": "java17",
     "springboot-3.5-java17-to-java21": "java21",
     "springboot-3.5-java21-to-4.0-java21": "java21",

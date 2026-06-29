@@ -686,6 +686,42 @@ def test_stage1_profile_matches_terminal_path(tmp_path: Path) -> None:
     assert result.argv[profile_idx] == "springboot-2.7-to-3.5-java17"
 
 
+def test_stage1_manifest_uses_boot21_first_hop_runtime_profile(tmp_path: Path) -> None:
+    conn = sqlite3.connect(
+        tmp_path / "boot21_route.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_test_setup(repo)
+    _seed_job_run_configuration(
+        conn,
+        setup_id=setup_id,
+        job_id="boot21-route-job",
+        source_profile="springboot-2.1-java11",
+        target_profile="springboot-4.0-java21",
+    )
+
+    result = _make_worker_service(conn).build_stage1_manifest(
+        job_id="boot21-route-job",
+        setup_id=setup_id,
+    )
+
+    assert result.runtime_profile == "springboot-2.1.6-to-2.7-java11"
+    assert result.catalog == "springboot-2.1.6-to-2.7-java11"
+    assert result.execution_jdk == "java11"
+    profile_idx = result.argv.index("--profile") + 1
+    assert result.argv[profile_idx] == "springboot-2.1.6-to-2.7-java11"
+    record = SqliteV2CommandRepository(conn).get(result.command_id)
+    assert record is not None
+    env = json.loads(record.env_json)
+    assert env.get("JAVA_HOME") == "/usr/lib/jvm/java-11"
+    assert env.get("PATH_PREPEND") == str(Path(env["JAVA_HOME"]) / "bin")
+
+
 def test_stage1_manifest_uses_route_aware_profile_for_boot35_java21_target(tmp_path: Path) -> None:
     conn = sqlite3.connect(
         tmp_path / "route_java21.sqlite3",
@@ -734,6 +770,32 @@ def test_missing_runtime_profile_fails_closed_without_legacy_default(tmp_path: P
     with pytest.raises(ValueError, match="ROUTE_RUNTIME_PROFILE_UNAVAILABLE"):
         _make_worker_service(conn).build_stage1_manifest(
             job_id="missing-profile-job",
+            setup_id=setup_id,
+        )
+
+
+def test_stage1_manifest_fails_closed_when_java11_home_missing_for_boot21(tmp_path: Path) -> None:
+    conn = sqlite3.connect(
+        tmp_path / "boot21_missing_java11.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_test_setup(repo, java11_home="")
+    _seed_job_run_configuration(
+        conn,
+        setup_id=setup_id,
+        job_id="boot21-missing-java11",
+        source_profile="springboot-2.1-java11",
+        target_profile="springboot-2.7-java11",
+    )
+
+    with pytest.raises(ValueError, match="JAVA11_HOME"):
+        _make_worker_service(conn).build_stage1_manifest(
+            job_id="boot21-missing-java11",
             setup_id=setup_id,
         )
 

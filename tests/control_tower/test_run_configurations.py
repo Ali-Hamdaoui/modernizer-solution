@@ -217,6 +217,10 @@ def test_invalid_profile_pair_same_rejected() -> None:
 @pytest.mark.parametrize(
     ("source", "target"),
     [
+        ("springboot-2.1-java11", "springboot-2.7-java11"),
+        ("springboot-2.1-java11", "springboot-3.5-java17"),
+        ("springboot-2.1-java11", "springboot-3.5-java21"),
+        ("springboot-2.1-java11", "springboot-4.0-java21"),
         ("springboot-2.7-java11", "springboot-3.5-java17"),
         ("springboot-2.7-java11", "springboot-3.5-java21"),
         ("springboot-2.7-java11", "springboot-4.0-java21"),
@@ -249,10 +253,10 @@ def test_source_not_selectable_rejected() -> None:
 
 
 def test_target_not_selectable_rejected() -> None:
-    """springboot-2.7-java11 is not selectable as target."""
+    """springboot-2.1-java11 is not selectable as target."""
     payload = _run_configuration_payload()
     payload["source_profile"] = "springboot-3.5-java17"
-    payload["target_profile"] = "springboot-2.7-java11"
+    payload["target_profile"] = "springboot-2.1-java11"
 
     with pytest.raises(ValidationError):
         RunConfiguration.model_validate(payload)

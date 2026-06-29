@@ -1071,6 +1071,7 @@ export type V2FinalReportResponse = {
 // ── F3 / F4 — Profile routing types ────────────────────────────────────
 
 export type MigrationProfileId =
+  | "springboot-2.1-java11"
   | "springboot-2.7-java11"
   | "springboot-3.5-java17"
   | "springboot-3.5-java21"
@@ -1086,30 +1087,37 @@ export type MigrationProfileOption = {
 
 export const MIGRATION_PROFILE_OPTIONS: MigrationProfileOption[] = [
   {
-    id: "springboot-2.7-java11",
-    label: "Spring Boot 2.7 / Java 11",
+    id: "springboot-2.1-java11",
+    label: "Spring Boot 2.1 / Java 11",
     orderIndex: 0,
     selectableAsSource: true,
     selectableAsTarget: false,
   },
   {
+    id: "springboot-2.7-java11",
+    label: "Spring Boot 2.7 / Java 11",
+    orderIndex: 1,
+    selectableAsSource: true,
+    selectableAsTarget: true,
+  },
+  {
     id: "springboot-3.5-java17",
     label: "Spring Boot 3.5 / Java 17",
-    orderIndex: 1,
+    orderIndex: 2,
     selectableAsSource: true,
     selectableAsTarget: true,
   },
   {
     id: "springboot-3.5-java21",
     label: "Spring Boot 3.5 / Java 21",
-    orderIndex: 2,
+    orderIndex: 3,
     selectableAsSource: true,
     selectableAsTarget: true,
   },
   {
     id: "springboot-4.0-java21",
     label: "Spring Boot 4.0 / Java 21",
-    orderIndex: 3,
+    orderIndex: 4,
     selectableAsSource: false,
     selectableAsTarget: true,
   },
@@ -1124,16 +1132,17 @@ export const PROFILE_BY_ID: Record<MigrationProfileId, MigrationProfileOption> =
     {} as Record<MigrationProfileId, MigrationProfileOption>,
   );
 
-// Migration path stage numbers per profile pair (1-based, per backend pipeline).
-// Stage 1 is analysis, Stage 2/3/4 are profile transitions.
+// Migration path stage numbers per profile pair (route-step aligned).
+// Stage 0 is the public 2.1 source state; Stage 1..4 are executable route steps.
 const PROFILE_TO_STAGE_INDEX: Record<MigrationProfileId, number> = {
+  "springboot-2.1-java11": 0,
   "springboot-2.7-java11": 1,
   "springboot-3.5-java17": 2,
   "springboot-3.5-java21": 3,
   "springboot-4.0-java21": 4,
 };
 
-export const TRANSITION_STAGE_INDEXES: number[] = [2, 3, 4];
+export const TRANSITION_STAGE_INDEXES: number[] = [1, 2, 3, 4];
 
 export type RoutePreview = {
   included: string[];

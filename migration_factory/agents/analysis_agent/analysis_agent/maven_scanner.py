@@ -232,12 +232,18 @@ def build_source_profile_detection(
 def infer_source_profile_from_stack(*, java_version, spring_boot_version):
     java_major = _major_version(java_version)
     boot_major = _major_version(spring_boot_version)
+    spring_boot_text = str(spring_boot_version or "").strip()
 
     notes = []
     if boot_major == 2:
         confidence = 0.9 if java_major == 11 else 0.7
         if java_major not in (None, 11):
             notes.append("Spring Boot 2 detected with a Java version outside the canonical Java 11 profile.")
+        if spring_boot_text.startswith("2.1"):
+            return "springboot-2.1-java11", confidence, tuple(notes)
+        if spring_boot_text.startswith("2.7"):
+            return "springboot-2.7-java11", confidence, tuple(notes)
+        notes.append("Spring Boot 2 detected and normalized to the canonical Spring Boot 2.7 source profile.")
         return "springboot-2.7-java11", confidence, tuple(notes)
 
     if boot_major == 3:

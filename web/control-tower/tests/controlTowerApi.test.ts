@@ -764,6 +764,7 @@ describe("F3/F4 Profile routing contracts", () => {
 
   it("MIGRATION_PROFILE_OPTIONS includes springboot-3.5-java21 as a selectable intermediate profile", () => {
     const ids = MIGRATION_PROFILE_OPTIONS.map((p) => p.id);
+    expect(ids).toContain("springboot-2.1-java11");
     expect(ids).toContain("springboot-2.7-java11");
     expect(ids).toContain("springboot-3.5-java17");
     expect(ids).toContain("springboot-3.5-java21");
@@ -774,7 +775,15 @@ describe("F3/F4 Profile routing contracts", () => {
     expect(intermediate).toBeDefined();
     expect(intermediate!.selectableAsSource).toBe(true);
     expect(intermediate!.selectableAsTarget).toBe(true);
-    expect(intermediate!.orderIndex).toBe(2);
+    expect(intermediate!.orderIndex).toBe(3);
+    const boot21 = MIGRATION_PROFILE_OPTIONS.find((p) => p.id === "springboot-2.1-java11");
+    expect(boot21).toBeDefined();
+    expect(boot21!.selectableAsSource).toBe(true);
+    expect(boot21!.selectableAsTarget).toBe(false);
+    const boot27 = MIGRATION_PROFILE_OPTIONS.find((p) => p.id === "springboot-2.7-java11");
+    expect(boot27).toBeDefined();
+    expect(boot27!.selectableAsSource).toBe(true);
+    expect(boot27!.selectableAsTarget).toBe(true);
   });
 
   it("MIGRATION_PROFILE_OPTIONS enforces backend-supported orderIndex order", () => {
@@ -783,8 +792,12 @@ describe("F3/F4 Profile routing contracts", () => {
     expect(order).toEqual(sorted);
   });
 
-  it("createV2JobPayload supports all 6 valid source/target profile pairs", () => {
+  it("createV2JobPayload supports canonical source/target profile pairs", () => {
     const pairs: Array<{ source: MigrationProfileId; target: MigrationProfileId }> = [
+      { source: "springboot-2.1-java11", target: "springboot-2.7-java11" },
+      { source: "springboot-2.1-java11", target: "springboot-3.5-java17" },
+      { source: "springboot-2.1-java11", target: "springboot-3.5-java21" },
+      { source: "springboot-2.1-java11", target: "springboot-4.0-java21" },
       { source: "springboot-2.7-java11", target: "springboot-3.5-java17" },
       { source: "springboot-2.7-java11", target: "springboot-3.5-java21" },
       { source: "springboot-2.7-java11", target: "springboot-4.0-java21" },
@@ -806,6 +819,10 @@ describe("F3/F4 Profile routing contracts", () => {
 
   it("createV2JobPayload keeps forbidden execution fields absent for every valid pair", () => {
     const pairs: Array<{ source: MigrationProfileId; target: MigrationProfileId }> = [
+      { source: "springboot-2.1-java11", target: "springboot-2.7-java11" },
+      { source: "springboot-2.1-java11", target: "springboot-3.5-java17" },
+      { source: "springboot-2.1-java11", target: "springboot-3.5-java21" },
+      { source: "springboot-2.1-java11", target: "springboot-4.0-java21" },
       { source: "springboot-2.7-java11", target: "springboot-3.5-java17" },
       { source: "springboot-2.7-java11", target: "springboot-3.5-java21" },
       { source: "springboot-2.7-java11", target: "springboot-4.0-java21" },

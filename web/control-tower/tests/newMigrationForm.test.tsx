@@ -305,6 +305,8 @@ describe("F3/F4 Profile selectors and route preview", () => {
     const targets = MIGRATION_PROFILE_OPTIONS.filter((p) => p.selectableAsTarget);
     expect(sources.length).toBeGreaterThanOrEqual(1);
     expect(targets.length).toBeGreaterThanOrEqual(1);
+    expect(MIGRATION_PROFILE_OPTIONS.find((p) => p.id === "springboot-2.1-java11")?.selectableAsSource).toBe(true);
+    expect(MIGRATION_PROFILE_OPTIONS.find((p) => p.id === "springboot-2.7-java11")?.selectableAsTarget).toBe(true);
   });
 
   it("defaults are springboot-2.7-java11 source and springboot-4.0-java21 target", () => {
@@ -316,7 +318,7 @@ describe("F3/F4 Profile selectors and route preview", () => {
     const targetOption = MIGRATION_PROFILE_OPTIONS.find((p) => p.id === defaults.targetProfile);
     expect(sourceOption).toBeDefined();
     expect(sourceOption!.selectableAsSource).toBe(true);
-    expect(sourceOption!.selectableAsTarget).toBe(false);
+    expect(sourceOption!.selectableAsTarget).toBe(true);
     expect(targetOption).toBeDefined();
     expect(targetOption!.selectableAsSource).toBe(false);
     expect(targetOption!.selectableAsTarget).toBe(true);
@@ -329,10 +331,10 @@ describe("F3/F4 Profile selectors and route preview", () => {
     expect(intermediate).toBeDefined();
     expect(intermediate!.selectableAsSource).toBe(true);
     expect(intermediate!.selectableAsTarget).toBe(true);
-    expect(intermediate!.orderIndex).toBe(2);
+    expect(intermediate!.orderIndex).toBe(3);
   });
 
-  it("supports all 6 valid profile pairs and reports expected stages", () => {
+  it("supports canonical profile pairs and reports expected stages", () => {
     const pairs: Array<{
       source: MigrationProfileId;
       target: MigrationProfileId;
@@ -340,12 +342,16 @@ describe("F3/F4 Profile selectors and route preview", () => {
       skipped: string[];
       excluded: string[];
     }> = [
-      { source: "springboot-2.7-java11", target: "springboot-3.5-java17", included: ["2"], skipped: [], excluded: ["3", "4"] },
-      { source: "springboot-2.7-java11", target: "springboot-3.5-java21", included: ["2", "3"], skipped: [], excluded: ["4"] },
-      { source: "springboot-2.7-java11", target: "springboot-4.0-java21", included: ["2", "3", "4"], skipped: [], excluded: [] },
-      { source: "springboot-3.5-java17", target: "springboot-3.5-java21", included: ["3"], skipped: ["2"], excluded: ["4"] },
-      { source: "springboot-3.5-java17", target: "springboot-4.0-java21", included: ["3", "4"], skipped: ["2"], excluded: [] },
-      { source: "springboot-3.5-java21", target: "springboot-4.0-java21", included: ["4"], skipped: ["2", "3"], excluded: [] },
+      { source: "springboot-2.1-java11", target: "springboot-2.7-java11", included: ["1"], skipped: [], excluded: ["2", "3", "4"] },
+      { source: "springboot-2.1-java11", target: "springboot-3.5-java17", included: ["1", "2"], skipped: [], excluded: ["3", "4"] },
+      { source: "springboot-2.1-java11", target: "springboot-3.5-java21", included: ["1", "2", "3"], skipped: [], excluded: ["4"] },
+      { source: "springboot-2.1-java11", target: "springboot-4.0-java21", included: ["1", "2", "3", "4"], skipped: [], excluded: [] },
+      { source: "springboot-2.7-java11", target: "springboot-3.5-java17", included: ["2"], skipped: ["1"], excluded: ["3", "4"] },
+      { source: "springboot-2.7-java11", target: "springboot-3.5-java21", included: ["2", "3"], skipped: ["1"], excluded: ["4"] },
+      { source: "springboot-2.7-java11", target: "springboot-4.0-java21", included: ["2", "3", "4"], skipped: ["1"], excluded: [] },
+      { source: "springboot-3.5-java17", target: "springboot-3.5-java21", included: ["3"], skipped: ["1", "2"], excluded: ["4"] },
+      { source: "springboot-3.5-java17", target: "springboot-4.0-java21", included: ["3", "4"], skipped: ["1", "2"], excluded: [] },
+      { source: "springboot-3.5-java21", target: "springboot-4.0-java21", included: ["4"], skipped: ["1", "2", "3"], excluded: [] },
     ];
     for (const pair of pairs) {
       const validation = getRouteValidationError(pair.source, pair.target);
@@ -390,6 +396,22 @@ describe("F3/F4 Profile selectors and route preview", () => {
     const preview = getRoutePreview("springboot-2.7-java11", "springboot-4.0-java21");
     expect(preview).toBeDefined();
     expect(preview!.included).toEqual(["2", "3", "4"]);
+    expect(preview!.skipped).toEqual(["1"]);
+    expect(preview!.excluded).toEqual([]);
+  });
+
+  it("route preview includes one step for springboot-2.1 to springboot-2.7", () => {
+    const preview = getRoutePreview("springboot-2.1-java11", "springboot-2.7-java11");
+    expect(preview).toBeDefined();
+    expect(preview!.included).toEqual(["1"]);
+    expect(preview!.skipped).toEqual([]);
+    expect(preview!.excluded).toEqual(["2", "3", "4"]);
+  });
+
+  it("route preview includes four steps for springboot-2.1 to springboot-4.0", () => {
+    const preview = getRoutePreview("springboot-2.1-java11", "springboot-4.0-java21");
+    expect(preview).toBeDefined();
+    expect(preview!.included).toEqual(["1", "2", "3", "4"]);
     expect(preview!.skipped).toEqual([]);
     expect(preview!.excluded).toEqual([]);
   });
@@ -398,7 +420,7 @@ describe("F3/F4 Profile selectors and route preview", () => {
     const preview = getRoutePreview("springboot-3.5-java17", "springboot-4.0-java21");
     expect(preview).toBeDefined();
     expect(preview!.included).toEqual(["3", "4"]);
-    expect(preview!.skipped).toEqual(["2"]);
+    expect(preview!.skipped).toEqual(["1", "2"]);
     expect(preview!.excluded).toEqual([]);
   });
 

@@ -17,6 +17,7 @@ from .common import (
 
 
 MigrationProfileId = Literal[
+    "springboot-2.1-java11",
     "springboot-2.7-java11",
     "springboot-3.5-java17",
     "springboot-3.5-java21",
@@ -69,19 +70,29 @@ class RouteStepProfile(StrictModel):
 
 _PROFILE_SEQUENCE: tuple[MigrationProfile, ...] = (
     MigrationProfile(
-        profile_id="springboot-2.7-java11",
-        display_name="Spring Boot 2.7 / Java 11",
+        profile_id="springboot-2.1-java11",
+        display_name="Spring Boot 2.1 / Java 11",
         order_index=0,
         java_version=11,
-        spring_boot_line="2.7",
-        stage_index=1,
+        spring_boot_line="2.1",
+        stage_index=0,
         selectable_as_source=True,
         selectable_as_target=False,
     ),
     MigrationProfile(
+        profile_id="springboot-2.7-java11",
+        display_name="Spring Boot 2.7 / Java 11",
+        order_index=1,
+        java_version=11,
+        spring_boot_line="2.7",
+        stage_index=1,
+        selectable_as_source=True,
+        selectable_as_target=True,
+    ),
+    MigrationProfile(
         profile_id="springboot-3.5-java17",
         display_name="Spring Boot 3.5 / Java 17",
-        order_index=1,
+        order_index=2,
         java_version=17,
         spring_boot_line="3.5",
         stage_index=2,
@@ -89,7 +100,7 @@ _PROFILE_SEQUENCE: tuple[MigrationProfile, ...] = (
     MigrationProfile(
         profile_id="springboot-3.5-java21",
         display_name="Spring Boot 3.5 / Java 21",
-        order_index=2,
+        order_index=3,
         java_version=21,
         spring_boot_line="3.5",
         stage_index=3,
@@ -97,7 +108,7 @@ _PROFILE_SEQUENCE: tuple[MigrationProfile, ...] = (
     MigrationProfile(
         profile_id="springboot-4.0-java21",
         display_name="Spring Boot 4.0 / Java 21",
-        order_index=3,
+        order_index=4,
         java_version=21,
         spring_boot_line="4.0",
         stage_index=4,

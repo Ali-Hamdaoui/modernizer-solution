@@ -269,6 +269,35 @@ def test_valid_route_stops_at_target_boot_4() -> None:
     assert route.included_stages == (2, 3, 4)
     assert route.excluded_stages == ()
     assert route.skipped_stages == ()
+    assert len(route.route_steps) == 3
+    assert is_target_reached(route, 4) is True
+
+
+def test_valid_route_from_boot21_to_boot27_has_one_route_step() -> None:
+    route = compute_profile_route("springboot-2.1-java11", "springboot-2.7-java11")
+    assert route.valid is True
+    assert len(route.route_steps) == 1
+    assert route.route_steps[0].source_profile == "springboot-2.1-java11"
+    assert route.route_steps[0].target_profile == "springboot-2.7-java11"
+    assert route.route_steps[0].runtime_profile == "springboot-2.1.6-to-2.7-java11"
+    assert route.route_steps[0].catalog == "springboot-2.1.6-to-2.7-java11"
+    assert route.route_steps[0].execution_jdk == "java11"
+    assert is_target_reached(route, 1) is True
+
+
+def test_valid_route_from_boot21_to_boot4_has_four_route_steps() -> None:
+    route = compute_profile_route("springboot-2.1-java11", "springboot-4.0-java21")
+    assert route.valid is True
+    assert len(route.route_steps) == 4
+    assert [
+        (step.source_profile, step.target_profile, step.runtime_profile, step.execution_jdk)
+        for step in route.route_steps
+    ] == [
+        ("springboot-2.1-java11", "springboot-2.7-java11", "springboot-2.1.6-to-2.7-java11", "java11"),
+        ("springboot-2.7-java11", "springboot-3.5-java17", "springboot-2.7-to-3.5-java17", "java17"),
+        ("springboot-3.5-java17", "springboot-3.5-java21", "springboot-3.5-java17-to-java21", "java21"),
+        ("springboot-3.5-java21", "springboot-4.0-java21", "springboot-3.5-java21-to-4.0-java21", "java21"),
+    ]
     assert is_target_reached(route, 4) is True
 
 

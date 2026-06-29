@@ -79,8 +79,8 @@ def test_unknown_target_rejected() -> None:
 
 
 def test_non_selectable_target_rejected() -> None:
-    """springboot-2.7-java11 is not selectable as target."""
-    result = validate_profile_pair("springboot-3.5-java17", "springboot-2.7-java11")
+    """springboot-2.1-java11 is not selectable as target."""
+    result = validate_profile_pair("springboot-3.5-java17", "springboot-2.1-java11")
     assert result.valid is False
     assert result.error_type == ProfilePairErrorType.TARGET_NOT_SELECTABLE
     assert "cannot be used as a migration target" in result.reason.lower()

@@ -1766,10 +1766,11 @@ def test_auto_queue_next_stage_blocked_at_target(tmp_path: Path) -> None:
         stderr="",
         command_phase=None,
     )
-    _wait_for_event(conn, "job-1", "target_reached")
+    _wait_for_event(conn, "job-1", "migration_completed")
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     event_types = [e.type for e in events]
-    assert "target_reached" in event_types
+    assert "migration_completed" in event_types
+    assert "target_reached" not in event_types
 
 
 def test_higher_profile_exists_but_excluded_from_auto_queue(tmp_path: Path) -> None:
@@ -1869,3 +1870,42 @@ def test_target_reached_stop_condition_emitted(tmp_path: Path) -> None:
     route = payload.get("route", {})
     assert route.get("source_profile") == "springboot-2.7-java11"
     assert route.get("target_profile") == "springboot-3.5-java17"
+
+
+def test_migration_completed_emitted_for_boot35_java17_to_java21(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn, seed_run_configuration=False)
+    _insert_run_config(
+        conn,
+        job_id="job-1",
+        rc_id="rc-5",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-3.5-java21",
+        policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}),
+    )
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(
+            stdout=[json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"],
+            stderr=[],
+            exit_code=0,
+        ),
+        cwd=tmp_path,
+    )
+    setattr(runner, "_last_stdout_lines", [json.dumps(_success_result(sandbox_path="/tmp/stage-3"))])
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=3,
+        command_id="cmd-1",
+        exit_code=0,
+        result=_success_result(sandbox_path="/tmp/stage-3"),
+        stderr="",
+        command_phase=None,
+    )
+    _wait_for_event(conn, "job-1", "migration_completed")
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [e.type for e in events]
+    assert "migration_completed" in event_types
+    assert "stage4_started" not in event_types
+    stage4_commands = SqliteUnitOfWork(conn).v2_commands.list_by_job_and_stage("job-1", 4)
+    assert len(stage4_commands) == 0

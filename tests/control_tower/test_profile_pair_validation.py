@@ -67,7 +67,7 @@ def test_directional_profile_misuse_is_rejected() -> None:
 
     target_only_source = validate_profile_pair(
         "springboot-3.5-java17",
-        "springboot-2.7-java11",
+        "springboot-2.1-java11",
     )
     assert target_only_source.valid is False
     assert target_only_source.error_type == ProfilePairErrorType.TARGET_NOT_SELECTABLE
