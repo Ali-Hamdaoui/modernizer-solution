@@ -143,6 +143,7 @@ from migration_factory.control_tower.application.v2_approval_mapping import (
 )
 from migration_factory.control_tower.application.v2_stage_progression import (
     V2StageProgressionService,
+    route_to_dict,
 )
 from migration_factory.control_tower.application.v2_assistant_service import (
     V2AssistantService,
@@ -171,6 +172,7 @@ from migration_factory.control_tower.application.v2_failure_diagnosis import (
 )
 from migration_factory.control_tower.application.v2_gate_action_service import (
     V2GateActionService,
+    persist_approved_approval_review_revision,
 )
 from migration_factory.control_tower.application.v2_gate_artifact_resolver import (
     V2GateArtifactResolver,
@@ -199,6 +201,7 @@ from migration_factory.control_tower.application.v2_orchestrator_runner import (
 from migration_factory.control_tower.application.v2_profile_runtime import (
     RouteRuntimeProfileUnavailableError,
     public_runtime_profile_error_message,
+    resolve_runtime_profile_for_route,
 )
 from migration_factory.control_tower.application.v2_failure_diagnosis import (
     create_orchestrator_diagnosis_callback,
@@ -1687,6 +1690,19 @@ def create_app(
                         )
                         is not None
                     )
+                profile_metadata: dict[str, Any] | None = None
+                if gate.gate_phase == GatePhase.APPROVAL_REVIEW.value:
+                    profile_metadata = _approval_review_profile_metadata_for_resume(
+                        uow,
+                        job_id=job_id,
+                        stage_index=gate.stage_index,
+                    )
+                    if profile_metadata is None:
+                        raise _error(
+                            status.HTTP_400_BAD_REQUEST,
+                            "APPROVAL_FAILED",
+                            "checkpoint_profile_metadata_missing",
+                        )
                 result = action_service.approve_transformation(
                     gate_id=gate_id,
                     job_id=job_id,
@@ -1695,6 +1711,7 @@ def create_app(
                     expected_gate_checksum=payload.expected_gate_checksum,
                     actor_type=actor_type,
                     revision_requested_active=revision_requested_active,
+                    profile_metadata=profile_metadata,
                 )
         elif action_value == GateDecision.REJECT.value:
             if gate.gate_phase == GatePhase.REPAIR_REVIEW.value:
@@ -2199,6 +2216,7 @@ def create_app(
         """
         launch_result: V2OrchestratorStart | None = None
         launch_status: str | None = None
+        should_launch_resume = False
         with unit_of_work_factory() as uow:
             _require_v2_job(uow, job_id)
             card = uow.v2_approvals.get_card(card_id)
@@ -2228,13 +2246,39 @@ def create_app(
                         job_id=job_id,
                         resume_id=resume.resume_id,
                     )
+                should_launch_resume = is_new_approve and bool(resume.resume_id)
+                if should_launch_resume and resume.resume_id:
+                    approval_gate = _approval_review_gate_for_checksum(
+                        uow,
+                        job_id=job_id,
+                        stage_index=resume.stage_index,
+                        gate_checksum_value=card.request_checksum,
+                    )
+                    if approval_gate is not None:
+                        profile_metadata = _approval_review_profile_metadata_for_resume(
+                            uow,
+                            job_id=job_id,
+                            stage_index=resume.stage_index,
+                        )
+                        if profile_metadata is None:
+                            raise _error(
+                                status.HTTP_400_BAD_REQUEST,
+                                "APPROVAL_FAILED",
+                                "checkpoint_profile_metadata_missing",
+                            )
+                        persist_approved_approval_review_revision(
+                            gate=approval_gate,
+                            revision_repo=uow.artifact_revisions,
+                            decided_by="human",
+                            profile_metadata=profile_metadata,
+                        )
             except ValueError as exc:
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,
                     "APPROVAL_FAILED",
                     str(exc),
                 ) from exc
-        if is_new_approve and resume.resume_id:
+        if should_launch_resume and resume.resume_id:
             launch_result = _start_resume_command(
                 app,
                 job_id=job_id,
@@ -2242,23 +2286,25 @@ def create_app(
                 stage_index=resume.stage_index,
             )
             with unit_of_work_factory() as event_uow:
-                _append_v2_event(
-                    event_uow,
-                    job_id=job_id,
-                    stage=resume.stage_index,
-                    event_type="approval_resume_queued",
-                    status="retrying" if launch_result.status == "retrying" else "queued",
-                    message=(
-                        "Approval accepted; backend-owned resume command is retrying."
-                        if launch_result.status == "retrying"
-                        else "Approval accepted; backend-owned resume command queued."
-                    ),
-                    payload={
-                        "card_id": card_id,
-                        "resume_id": resume.resume_id,
-                        "resume_status": launch_result.status,
-                    },
-                )
+                if launch_result.status != "rejected":
+                    message = "Approval accepted; backend-owned resume command queued."
+                    if launch_result.status == "retrying":
+                        message = "Approval accepted; backend-owned resume command is retrying."
+                    elif launch_result.status == "started":
+                        message = "Approval accepted; backend-owned resume command started."
+                    _append_v2_event(
+                        event_uow,
+                        job_id=job_id,
+                        stage=resume.stage_index,
+                        event_type="approval_resume_queued",
+                        status=launch_result.status,
+                        message=message,
+                        payload={
+                            "card_id": card_id,
+                            "resume_id": resume.resume_id,
+                            "resume_status": launch_result.status,
+                        },
+                    )
         asyncio.run(app.state.public_event_notifier.notify())
         response = service.resume_to_dict(resume)
         response["launch_status"] = (
@@ -5597,11 +5643,23 @@ def _handle_gate_aware_ask(
                     revision_repo=uow.artifact_revisions,
                     command_repo=uow.v2_commands,
                 )
+                profile_metadata = _approval_review_profile_metadata_for_resume(
+                    uow,
+                    job_id=job_id,
+                    stage_index=open_gate.stage_index,
+                )
+                if profile_metadata is None:
+                    raise _error(
+                        status.HTTP_400_BAD_REQUEST,
+                        "APPROVAL_FAILED",
+                        "checkpoint_profile_metadata_missing",
+                    )
                 gate_result = action_service.approve_from_gate(
                     gate_id=open_gate.gate_id,
                     job_id=job_id,
                     decided_by="human",
                     expected_gate_checksum=context.checksum,
+                    profile_metadata=profile_metadata,
                 )
 
                 existing_resume_status = (
@@ -5618,6 +5676,20 @@ def _handle_gate_aware_ask(
 
                 resume_launch: V2OrchestratorStart | None = None
                 if is_new_approve and resume.resume_id:
+                    if open_gate.gate_phase == GatePhase.APPROVAL_REVIEW.value:
+                        try:
+                            persist_approved_approval_review_revision(
+                                gate=open_gate,
+                                revision_repo=uow.artifact_revisions,
+                                decided_by="human",
+                                profile_metadata=profile_metadata,
+                            )
+                        except ValueError as exc:
+                            raise _error(
+                                status.HTTP_400_BAD_REQUEST,
+                                "APPROVAL_FAILED",
+                                str(exc),
+                            ) from exc
                     resume_launch = _start_resume_command(
                         app,
                         job_id=job_id,
@@ -5625,23 +5697,25 @@ def _handle_gate_aware_ask(
                         stage_index=resume.stage_index,
                     )
                     with unit_of_work_factory() as event_uow:
-                        _append_v2_event(
-                            event_uow,
-                            job_id=job_id,
-                            stage=resume.stage_index,
-                            event_type="approval_resume_queued",
-                            status="retrying" if resume_launch.status == "retrying" else "queued",
-                            message=(
-                                "Approval accepted; backend-owned resume command is retrying."
-                                if resume_launch.status == "retrying"
-                                else "Approval accepted; backend-owned resume command queued."
-                            ),
-                            payload={
-                                "card_id": pending_card.card_id,
-                                "resume_id": resume.resume_id,
-                                "resume_status": resume_launch.status,
-                            },
-                        )
+                        if resume_launch.status != "rejected":
+                            message = "Approval accepted; backend-owned resume command queued."
+                            if resume_launch.status == "retrying":
+                                message = "Approval accepted; backend-owned resume command is retrying."
+                            elif resume_launch.status == "started":
+                                message = "Approval accepted; backend-owned resume command started."
+                            _append_v2_event(
+                                event_uow,
+                                job_id=job_id,
+                                stage=resume.stage_index,
+                                event_type="approval_resume_queued",
+                                status=resume_launch.status,
+                                message=message,
+                                payload={
+                                    "card_id": pending_card.card_id,
+                                    "resume_id": resume.resume_id,
+                                    "resume_status": resume_launch.status,
+                                },
+                            )
 
                 resume_status = resume_launch.status if resume_launch is not None else existing_resume_status
                 if resume_status is None and resume.resume_id:
@@ -6627,7 +6701,7 @@ def _approval_review_model_payload(model_result: V2AssistantModelResult) -> dict
 def _resume_launch_state_from_events(uow: Any, *, job_id: str, resume_id: str) -> str | None:
     events = uow.v2_events.list_by_job(job_id)
     for event in reversed(events):
-        if event.type not in {"approval_resume_queued", "resume_started"}:
+        if event.type not in {"approval_resume_queued", "resume_started", "resume_rejected"}:
             continue
         try:
             payload = json.loads(event.payload_json or "{}")
@@ -6636,11 +6710,102 @@ def _resume_launch_state_from_events(uow: Any, *, job_id: str, resume_id: str) -
         event_resume_id = str(payload.get("resume_id") or payload.get("command_id") or "").strip()
         if event_resume_id != resume_id:
             continue
+        if event.type == "resume_rejected":
+            return "rejected"
         if event.type == "resume_started":
             return "started"
         launch_status = str(payload.get("resume_status") or event.status or "queued").strip()
         return launch_status or "queued"
     return None
+
+
+def _approval_review_gate_for_checksum(
+    uow: Any,
+    *,
+    job_id: str,
+    stage_index: int,
+    gate_checksum_value: str,
+) -> Any | None:
+    for gate in uow.phase_gates.list_by_job_and_stage(job_id, stage_index):
+        try:
+            refs = json.loads(gate.source_artifact_refs_json or "[]")
+        except (json.JSONDecodeError, TypeError):
+            refs = []
+        current_checksum = gate_checksum(
+            gate_id=gate.gate_id,
+            job_id=gate.job_id,
+            gate_phase=gate.gate_phase,
+            stage_index=gate.stage_index,
+            source_artifact_checksum=gate.source_artifact_checksum,
+            source_artifact_refs=refs if isinstance(refs, list) else [],
+        )
+        if current_checksum == gate_checksum_value:
+            return gate
+    return None
+
+
+def _approval_review_profile_metadata_for_resume(
+    uow: Any,
+    *,
+    job_id: str,
+    stage_index: int,
+) -> dict[str, Any] | None:
+    run_config_repo = getattr(uow, "run_configurations", None)
+    setup_repo = getattr(uow, "v2_setups", None)
+    command_repo = getattr(uow, "v2_commands", None)
+    artifact_revision_repo = getattr(uow, "artifact_revisions", None)
+    if run_config_repo is None or setup_repo is None:
+        return None
+
+    route_service = V2StageProgressionService(
+        setup_repo=setup_repo,
+        command_repo=command_repo,
+        artifact_revision_repo=artifact_revision_repo,
+        run_config_repo=run_config_repo,
+    )
+    route = route_service.compute_route_for_job(job_id)
+    if route is None or not route.valid:
+        return None
+
+    metadata = route_to_dict(route)
+    try:
+        metadata["runtime_profile"] = resolve_runtime_profile_for_route(
+            route.source_profile,
+            route.target_profile,
+        )
+    except RouteRuntimeProfileUnavailableError:
+        metadata["runtime_profile"] = ""
+
+    metadata["stage_index"] = stage_index
+    metadata["run_id"] = _approval_review_run_id_for_stage(
+        uow,
+        job_id=job_id,
+        stage_index=stage_index,
+    )
+    return metadata
+
+
+def _approval_review_run_id_for_stage(
+    uow: Any,
+    *,
+    job_id: str,
+    stage_index: int,
+) -> str:
+    command_repo = getattr(uow, "v2_commands", None)
+    if command_repo is None:
+        return ""
+
+    for command in command_repo.list_by_job_and_stage(job_id, stage_index):
+        try:
+            argv = json.loads(getattr(command, "argv_json", "") or "[]")
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(argv, list):
+            continue
+        run_id = _argv_value(argv, "--run-id")
+        if run_id:
+            return run_id
+    return ""
 
 
 def _start_resume_command(
@@ -10915,6 +11080,7 @@ _PIPELINE_PHASES = (
     ("human_approval", "Human Approval", {
         "approval_required", "approval_blocked", "stage_blocked_for_approval",
         "approval_started", "approval_completed", "approval_resume_queued", "resume_started",
+        "resume_rejected",
     }),
     ("sandbox_transform", "Transform Agent", {
         "sandbox_transform_started", "sandbox_transform_completed", "sandbox_transform_failed",
@@ -10940,6 +11106,7 @@ _IMPORTANT_EVENT_TYPES = {
     "approval_completed",
     "stage_blocked_for_approval",
     "approval_resume_queued",
+    "resume_rejected",
     "artifact_written",
     "proof_updated",
     "stage_failed",
@@ -10977,6 +11144,7 @@ def _active_stage_index(events: tuple[Any, ...]) -> int:
             "stage_failed", "stage_started", "resume_started",
             "sandbox_transform_started", "build_started", "test_started",
             "approval_required", "stage_blocked_for_approval",
+            "resume_rejected",
             "final_report_started", "final_report_completed", "final_report_failed",
             "stage_report_started", "stage_report_completed", "stage_report_failed",
         }
@@ -11089,7 +11257,11 @@ def _pipeline_row_status(key: str, events: list[Any]) -> str:
             return "pass"
         if any(event.type == "approval_started" for event in events):
             return "running"
-        if any(event.status == "blocked" or event.type in {"approval_required", "stage_blocked_for_approval"} for event in events):
+        if any(
+            event.status == "blocked"
+            or event.type in {"approval_required", "stage_blocked_for_approval", "resume_rejected"}
+            for event in events
+        ):
             return "blocked"
         return "pending"
     latest = events[-1]
@@ -11798,7 +11970,7 @@ def _stage_status_from_event(event_type: str, event_status: str) -> str:
         "build_started", "test_started",
     } or event_status == "running":
         return "running"
-    if event_type in {"approval_required", "stage_blocked_for_approval"} or event_status == "blocked":
+    if event_type in {"approval_required", "stage_blocked_for_approval", "resume_rejected"} or event_status == "blocked":
         return "blocked"
     if event_type in {"stage_queued", "next_stage_queued"} or event_status == "queued":
         return "queued"

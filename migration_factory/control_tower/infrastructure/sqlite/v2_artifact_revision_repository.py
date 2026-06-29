@@ -86,6 +86,7 @@ class SqliteArtifactRevisionRepository:
             """SELECT * FROM v2_artifact_revisions
                WHERE job_id = ? AND stage_index = ? AND revision_kind = ?
                  AND revision_status = 'accepted'
+               ORDER BY revision_order DESC
                LIMIT 1""",
             (job_id, stage_index, revision_kind),
         ).fetchone()

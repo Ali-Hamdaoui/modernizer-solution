@@ -36,6 +36,8 @@ _ROUTE_RUNTIME_PROFILE_MAP: dict[tuple[str, str], str] = {
     ("springboot-3.5-java17", "springboot-4.0-java21"): "springboot-3.5-java17-to-java21",
 }
 
+_ROUTE_RUNTIME_PROFILE_IDS: frozenset[str] = frozenset(_ROUTE_RUNTIME_PROFILE_MAP.values())
+
 
 def resolve_runtime_profile_for_route(source_profile: str, target_profile: str) -> str:
     """Resolve the backend-owned AI Hub profile for a persisted route."""
@@ -61,6 +63,27 @@ def resolve_runtime_profile_for_run_configuration(run_configuration: Any) -> str
     return resolve_runtime_profile_for_route(source_profile, target_profile)
 
 
+def resolve_runtime_profile_for_state(state: Any) -> str:
+    """Resolve a runtime profile from a persisted orchestration state payload."""
+    source_profile, target_profile = extract_profile_route(state)
+    if source_profile and target_profile:
+        return resolve_runtime_profile_for_route(source_profile, target_profile)
+
+    profile_id = ""
+    if isinstance(state, dict):
+        profile_id = str(state.get("profile_id") or "").strip()
+    else:
+        profile_id = str(getattr(state, "profile_id", "") or "").strip()
+
+    if profile_id in _ROUTE_RUNTIME_PROFILE_IDS:
+        return profile_id
+
+    raise RouteRuntimeProfileUnavailableError(
+        "ROUTE_RUNTIME_PROFILE_UNAVAILABLE: unable to resolve a runtime profile "
+        "from the persisted orchestration state"
+    )
+
+
 def extract_profile_route(run_configuration: Any) -> tuple[str, str]:
     """Extract source/target profiles from a run-configuration-like object."""
     source_profile = ""
@@ -69,6 +92,8 @@ def extract_profile_route(run_configuration: Any) -> tuple[str, str]:
     if isinstance(run_configuration, dict):
         source_profile = str(run_configuration.get("source_profile") or "").strip()
         target_profile = str(run_configuration.get("target_profile") or "").strip()
+        if not (source_profile and target_profile):
+            source_profile, target_profile = _extract_from_nested_profile_metadata(run_configuration)
         if not (source_profile and target_profile):
             source_profile, target_profile = _extract_from_payload_json(run_configuration.get("payload_json"))
         return source_profile, target_profile
@@ -118,3 +143,23 @@ def _extract_from_payload_json(payload_json: Any) -> tuple[str, str]:
         str(payload.get("source_profile") or "").strip(),
         str(payload.get("target_profile") or "").strip(),
     )
+
+
+def _extract_from_nested_profile_metadata(value: Any) -> tuple[str, str]:
+    if isinstance(value, dict):
+        candidate = value.get("profile_metadata")
+        if isinstance(candidate, dict):
+            source_profile = str(candidate.get("source_profile") or "").strip()
+            target_profile = str(candidate.get("target_profile") or "").strip()
+            if source_profile and target_profile:
+                return source_profile, target_profile
+        for nested in value.values():
+            source_profile, target_profile = _extract_from_nested_profile_metadata(nested)
+            if source_profile and target_profile:
+                return source_profile, target_profile
+    elif isinstance(value, list):
+        for item in value:
+            source_profile, target_profile = _extract_from_nested_profile_metadata(item)
+            if source_profile and target_profile:
+                return source_profile, target_profile
+    return "", ""

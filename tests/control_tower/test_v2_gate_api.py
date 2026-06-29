@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import io
 import json
 import sqlite3
+import time
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
@@ -13,12 +16,20 @@ from migration_factory.control_tower.application.v2_phase_gate_service import (
     CreateGateRequest,
     V2PhaseGateService,
 )
+from migration_factory.control_tower.application.v2_orchestrator_runner import (
+    V2OrchestratorStart,
+)
+from migration_factory.control_tower.application.v2_stage_progression import (
+    compute_profile_route,
+    route_to_dict,
+)
 from migration_factory.control_tower.application.v2_setup_service import (
     CreateSetupRequest,
     V2SetupService,
 )
 from migration_factory.control_tower.domain.checksums import utc_now_text
-from migration_factory.control_tower.domain.entities import RunConfigurationRecord
+from migration_factory.control_tower.domain.entities import ArtifactRevisionRecord, PhaseGateRecord, RunConfigurationRecord
+from migration_factory.control_tower.domain.gate_checksum import gate_checksum
 from migration_factory.control_tower.domain.states import TargetProofLevel
 from migration_factory.control_tower.infrastructure.sqlite.migrations import (
     apply_pending_migrations,
@@ -66,6 +77,39 @@ def _api_client(tmp_path: Path) -> tuple[TestClient, sqlite3.Connection]:
     _seed_fk_refs(conn)
     app = create_app(lambda: SqliteUnitOfWork(conn))
     return TestClient(app, base_url="http://127.0.0.1:8000"), conn
+
+
+class _FakePopen:
+    def __init__(self, *, stdout: list[str], stderr: list[str], exit_code: int = 0) -> None:
+        self.stdout = io.StringIO("".join(stdout))
+        self.stderr = io.StringIO("".join(stderr))
+        self._exit_code = exit_code
+        self.pid = 4321
+
+    def wait(self) -> int:
+        return self._exit_code
+
+
+class _FakePopenFactory:
+    def __init__(self, *, stdout: list[str], stderr: list[str], exit_code: int = 0) -> None:
+        self.stdout = stdout
+        self.stderr = stderr
+        self.exit_code = exit_code
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(self, *args, **kwargs) -> _FakePopen:
+        self.calls.append({"args": args, "kwargs": kwargs})
+        return _FakePopen(stdout=self.stdout, stderr=self.stderr, exit_code=self.exit_code)
+
+
+def _wait_for_event(conn: sqlite3.Connection, job_id: str, event_type: str) -> None:
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        events = SqliteUnitOfWork(conn).v2_events.list_by_job(job_id)
+        if any(event.type == event_type for event in events):
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"event {event_type!r} was not emitted")
 
 
 def _seed_fk_refs(conn: sqlite3.Connection) -> None:
@@ -292,6 +336,66 @@ def _create_gate(conn: sqlite3.Connection, job_id: str, phase: str = "approval_r
     )
     assert result.status == "created"
     return result.gate_id
+
+
+def _create_profile_gate(conn: sqlite3.Connection, job_id: str, *, stage_index: int = 3) -> str:
+    route = route_to_dict(compute_profile_route("springboot-3.5-java17", "springboot-3.5-java21"))
+    refs = [
+        {
+            "kind": "profile_route",
+            "path_or_ref": "metadata:profile-route",
+            "checksum": "sha256:route",
+            "profile_metadata": route,
+        }
+    ]
+    now = utc_now_text()
+    gate = PhaseGateRecord(
+        gate_id=uuid4().hex,
+        job_id=job_id,
+        gate_phase="approval_review",
+        stage_index=stage_index,
+        gate_status="open",
+        gate_decision="pending",
+        source_artifact_checksum="sha256:gate",
+        resolved_artifact_checksum=None,
+        source_artifact_refs_json=json.dumps(refs, separators=(",", ":")),
+        created_at=now,
+        resolved_at=None,
+        resolved_by=None,
+    )
+    SqliteUnitOfWork(conn).phase_gates.save(gate)
+    return gate.gate_id
+
+
+def _seed_source_profile_override(conn: sqlite3.Connection, job_id: str) -> None:
+    now = utc_now_text()
+    SqliteUnitOfWork(conn).artifact_revisions.save(
+        ArtifactRevisionRecord(
+            revision_id=uuid4().hex,
+            job_id=job_id,
+            stage_index=1,
+            revision_kind="source_profile_override",
+            revision_status="accepted",
+            revision_order=1,
+            evidence_checksum="sha256:source-profile-override",
+            prior_revision_checksum=None,
+            artifact_refs_json=json.dumps(
+                {
+                    "requested_source_profile": "springboot-3.5-java17",
+                    "target_profile": "springboot-3.5-java21",
+                    "detected_source_profile": "springboot-2.7-java11",
+                },
+                separators=(",", ":"),
+            ),
+            prior_revision_id=None,
+            superseded_by_revision_id=None,
+            accepted_at_gate_id="gate-source-profile-override",
+            created_at=now,
+            created_by="human",
+            accepted_at=now,
+            accepted_by="human",
+        )
+    )
 
 
 def _seed_approval_card(
@@ -685,6 +789,372 @@ def test_v2_approval_route_retries_when_resume_launch_is_locked(tmp_path: Path) 
     repeat_data = repeat.json()
     assert repeat_data["launch_status"] == "retrying"
     assert runner.started == [data["resume_id"]]
+
+
+def test_approval_acceptance_persists_profile_metadata_for_resume_checkpoint(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    _seed_source_profile_override(conn, job_id)
+    _seed_approval_resume_command(conn, job_id=job_id, stage_index=3, run_id="run-approval")
+    gate_id = _create_profile_gate(conn, job_id)
+    gate = SqliteUnitOfWork(conn).phase_gates.get(gate_id)
+    assert gate is not None
+    checksum = gate_checksum(
+        gate_id=gate.gate_id,
+        job_id=gate.job_id,
+        gate_phase=gate.gate_phase,
+        stage_index=gate.stage_index,
+        source_artifact_checksum=gate.source_artifact_checksum,
+        source_artifact_refs=json.loads(gate.source_artifact_refs_json),
+    )
+    card_id = _seed_approval_card(conn, job_id=job_id, checksum=checksum, stage_index=3)
+
+    class _ApprovalLaunchRunner:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self.connection = connection
+            self.started: list[str] = []
+
+        def start_resume(self, *, job_id: str, resume_id: str) -> V2OrchestratorStart:
+            self.started.append(resume_id)
+            with SqliteUnitOfWork(self.connection) as uow:
+                uow.v2_events.save(
+                    job_id=job_id,
+                    stage=3,
+                    event_type="approval_started",
+                    status="running",
+                    message="Approval accepted; orchestrator resume process starting.",
+                    payload={"command_id": resume_id},
+                )
+                uow.v2_events.save(
+                    job_id=job_id,
+                    stage=3,
+                    event_type="resume_started",
+                    status="running",
+                    message="Stage 3 real orchestrator resume started.",
+                    payload={"command_id": resume_id},
+                )
+                uow.v2_events.save(
+                    job_id=job_id,
+                    stage=3,
+                    event_type="sandbox_transform_started",
+                    status="running",
+                    message="Transform started.",
+                    payload={"command_id": resume_id},
+                )
+            return V2OrchestratorStart(
+                command_id=resume_id,
+                job_id=job_id,
+                stage_index=3,
+                pid=None,
+                status="started",
+                message="",
+            )
+
+        def start(self, *, job_id: str, command_id: str) -> V2OrchestratorStart:
+            raise AssertionError("transform launch is not expected in this test")
+
+    runner = _ApprovalLaunchRunner(conn)
+    client.app.state.v2_orchestrator_runner = runner
+
+    response = client.post(
+        f"/v1/v2/jobs/{job_id}/approvals/{card_id}/approve",
+        json={"expected_checksum": checksum},
+        headers=_mutation_headers(),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["launch_status"] == "started"
+    assert runner.started == [body["resume_id"]]
+
+    _wait_for_event(conn, job_id, "resume_started")
+    _wait_for_event(conn, job_id, "sandbox_transform_started")
+
+    accepted = SqliteUnitOfWork(conn).artifact_revisions.find_accepted(job_id, 3, "approval_review")
+    assert accepted is not None
+    assert accepted.evidence_checksum == "sha256:gate"
+    refs = json.loads(accepted.artifact_refs_json)
+    assert isinstance(refs, list)
+    profile_refs = [
+        ref for ref in refs
+        if isinstance(ref, dict) and isinstance(ref.get("profile_metadata"), dict)
+    ]
+    assert profile_refs, "accepted approval_review revision should persist profile_metadata"
+    profile_metadata = profile_refs[0]["profile_metadata"]
+    assert profile_metadata["source_profile"] == "springboot-3.5-java17"
+    assert profile_metadata["target_profile"] == "springboot-3.5-java21"
+    assert profile_metadata["runtime_profile"] == "springboot-3.5-java17-to-java21"
+    assert profile_metadata["included_stages"] == [3]
+    assert profile_metadata["skipped_stages"] == [2]
+    assert profile_metadata["excluded_stages"] == [4]
+    assert profile_metadata["stage_index"] == 3
+    assert profile_metadata["run_id"] == "run-approval"
+
+
+def test_stage3_java21_route_assistant_confirm_starts_transform(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    _seed_source_profile_override(conn, job_id)
+    _seed_approval_resume_command(conn, job_id=job_id, stage_index=3, run_id="run-ask")
+    gate_id = _create_profile_gate(conn, job_id)
+    gate = SqliteUnitOfWork(conn).phase_gates.get(gate_id)
+    assert gate is not None
+    checksum = gate_checksum(
+        gate_id=gate.gate_id,
+        job_id=gate.job_id,
+        gate_phase=gate.gate_phase,
+        stage_index=gate.stage_index,
+        source_artifact_checksum=gate.source_artifact_checksum,
+        source_artifact_refs=json.loads(gate.source_artifact_refs_json),
+    )
+    card_id = _seed_approval_card(conn, job_id=job_id, checksum=checksum, stage_index=3)
+
+    class _ApprovalLaunchRunner:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self.connection = connection
+            self.started: list[str] = []
+
+        def start_resume(self, *, job_id: str, resume_id: str) -> V2OrchestratorStart:
+            self.started.append(resume_id)
+            with SqliteUnitOfWork(self.connection) as uow:
+                uow.v2_events.save(
+                    job_id=job_id,
+                    stage=3,
+                    event_type="approval_started",
+                    status="running",
+                    message="Approval accepted; orchestrator resume process starting.",
+                    payload={"command_id": resume_id},
+                )
+                uow.v2_events.save(
+                    job_id=job_id,
+                    stage=3,
+                    event_type="resume_started",
+                    status="running",
+                    message="Stage 3 real orchestrator resume started.",
+                    payload={"command_id": resume_id},
+                )
+                uow.v2_events.save(
+                    job_id=job_id,
+                    stage=3,
+                    event_type="sandbox_transform_started",
+                    status="running",
+                    message="Transform started.",
+                    payload={"command_id": resume_id},
+                )
+            return V2OrchestratorStart(
+                command_id=resume_id,
+                job_id=job_id,
+                stage_index=3,
+                pid=None,
+                status="started",
+                message="",
+            )
+
+        def start(self, *, job_id: str, command_id: str) -> V2OrchestratorStart:
+            raise AssertionError("transform launch is not expected in this test")
+
+    runner = _ApprovalLaunchRunner(conn)
+    client.app.state.v2_orchestrator_runner = runner
+
+    preview = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": "approve"},
+        headers=_mutation_headers(),
+    )
+    assert preview.status_code == 200, preview.text
+    preview_body = preview.json()
+    assert preview_body.get("executed") is False
+
+    confirm = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        json={"question": f"confirm checksum {checksum}"},
+        headers=_mutation_headers(),
+    )
+    assert confirm.status_code == 200, confirm.text
+    body = confirm.json()
+    assert body.get("executed") is True
+    execution_result = body.get("execution_result", {})
+    assert execution_result.get("success") is True
+    assert execution_result.get("resume_status") in {"queued", "started"}
+    assert len(runner.started) == 1
+
+    _wait_for_event(conn, job_id, "resume_started")
+    _wait_for_event(conn, job_id, "sandbox_transform_started")
+
+    accepted = SqliteUnitOfWork(conn).artifact_revisions.find_accepted(job_id, 3, "approval_review")
+    assert accepted is not None
+    refs = json.loads(accepted.artifact_refs_json)
+    assert isinstance(refs, list)
+    profile_refs = [
+        ref for ref in refs
+        if isinstance(ref, dict) and isinstance(ref.get("profile_metadata"), dict)
+    ]
+    assert profile_refs, "accepted approval_review revision should persist profile_metadata"
+    profile_metadata = profile_refs[0]["profile_metadata"]
+    assert profile_metadata["source_profile"] == "springboot-3.5-java17"
+    assert profile_metadata["target_profile"] == "springboot-3.5-java21"
+    assert profile_metadata["runtime_profile"] == "springboot-3.5-java17-to-java21"
+    assert profile_metadata["included_stages"] == [3]
+    assert profile_metadata["skipped_stages"] == [2]
+    assert profile_metadata["excluded_stages"] == [4]
+    assert profile_metadata["stage_index"] == 3
+    assert profile_metadata["run_id"] == "run-ask"
+
+
+def test_stage3_java21_route_approval_resume_starts_transform(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    _seed_source_profile_override(conn, job_id)
+    _seed_approval_resume_command(conn, job_id=job_id, stage_index=3, run_id="run-stage3")
+    gate_id = _create_profile_gate(conn, job_id)
+    gate = SqliteUnitOfWork(conn).phase_gates.get(gate_id)
+    assert gate is not None
+    checksum = gate_checksum(
+        gate_id=gate.gate_id,
+        job_id=gate.job_id,
+        gate_phase=gate.gate_phase,
+        stage_index=gate.stage_index,
+        source_artifact_checksum=gate.source_artifact_checksum,
+        source_artifact_refs=json.loads(gate.source_artifact_refs_json),
+    )
+    card_id = _seed_approval_card(conn, job_id=job_id, checksum=checksum, stage_index=3)
+
+    class _ApprovalLaunchRunner:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self.connection = connection
+            self.started: list[str] = []
+
+        def start_resume(self, *, job_id: str, resume_id: str) -> V2OrchestratorStart:
+            self.started.append(resume_id)
+            with SqliteUnitOfWork(self.connection) as uow:
+                uow.v2_events.save(
+                    job_id=job_id,
+                    stage=3,
+                    event_type="approval_started",
+                    status="running",
+                    message="Approval accepted; orchestrator resume process starting.",
+                    payload={"command_id": resume_id},
+                )
+                uow.v2_events.save(
+                    job_id=job_id,
+                    stage=3,
+                    event_type="resume_started",
+                    status="running",
+                    message="Stage 3 real orchestrator resume started.",
+                    payload={"command_id": resume_id},
+                )
+                uow.v2_events.save(
+                    job_id=job_id,
+                    stage=3,
+                    event_type="sandbox_transform_started",
+                    status="running",
+                    message="Transform started.",
+                    payload={"command_id": resume_id},
+                )
+            return V2OrchestratorStart(
+                command_id=resume_id,
+                job_id=job_id,
+                stage_index=3,
+                pid=None,
+                status="started",
+                message="",
+            )
+
+        def start(self, *, job_id: str, command_id: str) -> V2OrchestratorStart:
+            raise AssertionError("transform launch is not expected in this test")
+
+    runner = _ApprovalLaunchRunner(conn)
+    client.app.state.v2_orchestrator_runner = runner
+
+    response = client.post(
+        f"/v1/v2/jobs/{job_id}/approvals/{card_id}/approve",
+        json={"expected_checksum": checksum},
+        headers=_mutation_headers(),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["launch_status"] == "started"
+    assert runner.started == [body["resume_id"]]
+
+    _wait_for_event(conn, job_id, "resume_started")
+    _wait_for_event(conn, job_id, "sandbox_transform_started")
+
+
+def test_v2_approval_route_surfaces_resume_rejection_without_queued_event(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    _seed_source_profile_override(conn, job_id)
+    _seed_approval_resume_command(conn, job_id=job_id, stage_index=3, run_id="run-reject")
+    gate_id = _create_gate(conn, job_id)
+    gate = SqliteUnitOfWork(conn).phase_gates.get(gate_id)
+    assert gate is not None
+    checksum = gate_checksum(
+        gate_id=gate.gate_id,
+        job_id=gate.job_id,
+        gate_phase=gate.gate_phase,
+        stage_index=gate.stage_index,
+        source_artifact_checksum=gate.source_artifact_checksum,
+        source_artifact_refs=json.loads(gate.source_artifact_refs_json),
+    )
+    card_id = _seed_approval_card(conn, job_id=job_id, checksum=checksum, stage_index=3)
+
+    class _RejectedResumeRunner:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self.connection = connection
+            self.started: list[str] = []
+
+        def start_resume(self, *, job_id: str, resume_id: str) -> V2OrchestratorStart:
+            self.started.append(resume_id)
+            with SqliteUnitOfWork(self.connection) as uow:
+                uow.v2_events.save(
+                    job_id=job_id,
+                    stage=3,
+                    event_type="resume_rejected",
+                    status="blocked",
+                    message="Resume checkpoint validation rejected the request.",
+                    payload={
+                        "command_id": resume_id,
+                        "reason": "checkpoint_profile_metadata_missing",
+                    },
+                )
+            return V2OrchestratorStart(
+                command_id=resume_id,
+                job_id=job_id,
+                stage_index=3,
+                pid=None,
+                status="rejected",
+                message="checkpoint_profile_metadata_missing",
+            )
+
+        def start(self, *, job_id: str, command_id: str) -> V2OrchestratorStart:
+            raise AssertionError("transform launch is not expected in this test")
+
+    runner = _RejectedResumeRunner(conn)
+    client.app.state.v2_orchestrator_runner = runner
+
+    response = client.post(
+        f"/v1/v2/jobs/{job_id}/approvals/{card_id}/approve",
+        json={"expected_checksum": checksum},
+        headers=_mutation_headers(),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["launch_status"] == "rejected"
+    assert runner.started == [body["resume_id"]]
+
+    _wait_for_event(conn, job_id, "resume_rejected")
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job(job_id)
+    assert not any(event.type == "approval_resume_queued" for event in events)
+    pipeline = client.get(f"/v1/v2/migration-jobs/{job_id}/pipeline").json()
+    approval_row = [row for row in pipeline["rows"] if row["key"] == "human_approval"][0]
+    assert approval_row["status"] == "blocked"
 
 
 class TestV2JobPolicyPersistence:

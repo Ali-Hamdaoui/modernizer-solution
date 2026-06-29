@@ -284,6 +284,10 @@ def test_approve_transformation_on_already_resolved_gate(tmp_path: Path) -> None
         decided_by="user-1",
     )
     assert r1.status == "executed"
+    accepted = revision_repo.find_accepted("job-abc", 1, "approval_review")
+    assert accepted is not None
+    assert accepted.evidence_checksum == "sha256:abc"
+    assert r1.result_revision_id == accepted.revision_id
 
     # Second attempt should fail (gate is now resolved)
     r2 = action_svc.approve_transformation(

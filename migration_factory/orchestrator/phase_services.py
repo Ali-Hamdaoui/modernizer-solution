@@ -125,6 +125,9 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         STATUS_APPLIED,
         apply_approved_sandbox_transform,
     )
+    from migration_factory.control_tower.application.v2_profile_runtime import (
+        resolve_runtime_profile_for_state,
+    )
 
     emit_control_tower_event(
         phase="sandbox_transform",
@@ -133,12 +136,13 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
     )
     started = time.monotonic()
     try:
+        runtime_profile = resolve_runtime_profile_for_state(state)
         result = apply_approved_sandbox_transform(
             run_dir=Path(state.get("run_dir", "")),
             legacy_app=Path(state.get("legacy_app_path", "")),
             modernized_app=Path(state.get("modernized_app_path", "")),
             ai_hub=state.get("ai_hub_path", ""),
-            profile=state.get("profile_id", ""),
+            profile=runtime_profile,
             approved_by=state.get("approved_by") or "human",
             quiet=True,
             status_writer=None,
@@ -212,6 +216,7 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
                 "sandbox_path": str(result.sandbox_path or ""),
                 "transform_log_path": str(result.log_file),
                 "artifact_refs": artifact_refs,
+                "profile_id": runtime_profile,
                 "final_status": result.status,
                 "stop_reason": message,
                 "timing": _merged_timing_state(Path(state.get("run_dir", "")), state),
@@ -294,6 +299,7 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         "sandbox_path": str(result.sandbox_path),
         "transform_log_path": str(result.log_file),
         "artifact_refs": artifact_refs,
+        "profile_id": runtime_profile,
         "final_status": STATUS_APPLIED,
         "stop_reason": result.message,
         "timing": _merged_timing_state(Path(state.get("run_dir", "")), state),

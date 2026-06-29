@@ -110,6 +110,7 @@ def _seed_resume_checkpoint(
     gate_source_checksum: str | None = None,
     gate_status: str = "open",
     include_accepted_revision: bool = True,
+    include_profile_metadata: bool = True,
 ) -> str:
     _insert_run_config(
         conn,
@@ -121,14 +122,24 @@ def _seed_resume_checkpoint(
         checkpoint_source_profile or source_profile,
         checkpoint_target_profile or target_profile,
     ))
-    refs = [
-        {
-            "kind": "profile_route",
-            "path_or_ref": "metadata:profile-route",
-            "checksum": "sha256:route",
-            "profile_metadata": route,
-        }
-    ]
+    refs = (
+        [
+            {
+                "kind": "profile_route",
+                "path_or_ref": "metadata:profile-route",
+                "checksum": "sha256:route",
+                "profile_metadata": route,
+            }
+        ]
+        if include_profile_metadata
+        else [
+            {
+                "kind": "profile_route",
+                "path_or_ref": "metadata:profile-route",
+                "checksum": "sha256:route",
+            }
+        ]
+    )
     now = utc_now_text()
     source_checksum = gate_source_checksum or accepted_checksum
     gate = PhaseGateRecord(
@@ -226,6 +237,38 @@ def test_valid_resume_launches_only_after_profile_and_checksum_validation(tmp_pa
     assert popen.calls
 
 
+def test_approval_acceptance_persists_profile_metadata_for_resume_checkpoint(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    resume_id = _seed_resume_checkpoint(conn)
+    popen = _FakePopen()
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    result = runner.start_resume(job_id="job-resume", resume_id=resume_id)
+    _wait_for_event(conn, "job-resume", "resume_started")
+
+    assert result.status == "started"
+    accepted = SqliteUnitOfWork(conn).artifact_revisions.find_accepted("job-resume", 2, "planning")
+    assert accepted is not None
+    refs = json.loads(accepted.artifact_refs_json)
+    assert isinstance(refs, list)
+    profile_refs = [
+        ref for ref in refs
+        if isinstance(ref, dict) and isinstance(ref.get("profile_metadata"), dict)
+    ]
+    assert profile_refs, "accepted revision should persist profile_metadata for resume validation"
+    profile_metadata = profile_refs[0]["profile_metadata"]
+    assert profile_metadata["source_profile"] == "springboot-2.7-java11"
+    assert profile_metadata["target_profile"] == "springboot-3.5-java17"
+    assert profile_metadata["included_stages"] == [2]
+    assert profile_metadata["excluded_stages"] == [3, 4]
+    assert profile_metadata["skipped_stages"] == []
+    assert popen.calls
+
+
 def test_resume_rejects_stale_artifact_checksum_before_launch(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     resume_id = _seed_resume_checkpoint(
@@ -284,4 +327,21 @@ def test_resume_rejects_missing_accepted_artifact_before_launch(tmp_path: Path) 
 
     assert result.status == "rejected"
     assert result.message == "accepted_artifact_not_found"
+    assert popen.calls == []
+
+
+def test_resume_rejected_when_profile_metadata_missing(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    resume_id = _seed_resume_checkpoint(conn, include_profile_metadata=False)
+    popen = _FakePopen()
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    result = runner.start_resume(job_id="job-resume", resume_id=resume_id)
+
+    assert result.status == "rejected"
+    assert result.message == "checkpoint_profile_metadata_missing"
     assert popen.calls == []
