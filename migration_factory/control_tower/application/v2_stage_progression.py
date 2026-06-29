@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -36,6 +37,9 @@ from migration_factory.control_tower.schemas.profile_validation import (
 from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
 from migration_factory.control_tower.schemas.profile_checkpoint_metadata import (
     SkippedStageLedgerEntry,
+)
+from migration_factory.control_tower.application.v2_profile_runtime import (
+    resolve_execution_jdk_env_var_for_runtime_profile,
 )
 
 
@@ -677,8 +681,10 @@ class V2StageProgressionService:
 
         config = STAGE_CONFIG[next_stage]
 
-        # Build backend-owned argv for next stage
-        jdk_home = _get_jdk_home(setup, config["jdk_env"])
+        # Build backend-owned argv/env for next stage from the selected runtime profile.
+        jdk_env_var = resolve_execution_jdk_env_var_for_runtime_profile(config["profile"])
+        jdk_home = _get_jdk_home(setup, jdk_env_var)
+        path_prepend = str(Path(jdk_home) / "bin")
 
         argv = (
             sys.executable,
@@ -713,20 +719,21 @@ class V2StageProgressionService:
         if self._command_repo is not None:
             command_id = uuid4().hex
             now = utc_now_text()
+            env_manifest = {
+                "JAVA_HOME": jdk_home,
+                "JAVA11_HOME": setup.java11_home,
+                "JAVA17_HOME": setup.java17_home,
+                "JAVA21_HOME": setup.java21_home,
+                "MAVEN_CMD": setup.maven_cmd,
+                "PATH_PREPEND": path_prepend,
+            }
             command_record = V2StageCommandRecord(
                 command_id=command_id,
                 job_id=job_id,
                 stage_index=next_stage,
                 manifest_checksum=f"v2-stage{next_stage}",
                 argv_json=json.dumps(list(argv), separators=(",", ":")),
-                env_json=json.dumps({
-                    "JAVA_HOME": jdk_home,
-                    "JAVA11_HOME": setup.java11_home,
-                    "JAVA17_HOME": setup.java17_home,
-                    "JAVA21_HOME": setup.java21_home,
-                    "MAVEN_CMD": setup.maven_cmd,
-                    "PATH_PREPEND": f"{jdk_home}/bin",
-                }, separators=(",", ":")),
+                env_json=json.dumps(env_manifest, separators=(",", ":")),
                 status="manifest_ready",
                 created_at=now,
                 updated_at=now,
@@ -1061,7 +1068,12 @@ def _get_jdk_home(setup: V2MigrationSetupRecord, env_var: str) -> str:
         "JAVA17_HOME": setup.java17_home,
         "JAVA21_HOME": setup.java21_home,
     }
-    return mapping.get(env_var, "")
+    jdk_home = mapping.get(env_var, "")
+    if not jdk_home:
+        raise ValueError(
+            f"Required JDK home {env_var!r} is missing for the selected runtime profile"
+        )
+    return jdk_home
 
 
 def _coerce_stage_continuation_policy(

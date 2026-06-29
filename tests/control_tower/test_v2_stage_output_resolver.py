@@ -47,16 +47,22 @@ def _connection(tmp_path: Path, name: str) -> sqlite3.Connection:
     return conn
 
 
-def _create_setup(repo: SqliteV2SetupRepository) -> str:
+def _create_setup(
+    repo: SqliteV2SetupRepository,
+    *,
+    java11_home: str = "/usr/lib/jvm/java-11",
+    java17_home: str = "/usr/lib/jvm/java-17",
+    java21_home: str = "/usr/lib/jvm/java-21",
+) -> str:
     service = V2SetupService(repo)
     req = CreateSetupRequest(
         run_name="test-output-resolver",
         legacy_app_path="/tmp/legacy",
         output_parent_path="/tmp/output",
         ai_hub_path="/tmp/ai-hub",
-        java11_home="/usr/lib/jvm/java-11",
-        java17_home="/usr/lib/jvm/java-17",
-        java21_home="/usr/lib/jvm/java-21",
+        java11_home=java11_home,
+        java17_home=java17_home,
+        java21_home=java21_home,
         maven_cmd="/usr/bin/mvn",
     )
     return service.create_setup(req).setup_id
@@ -248,3 +254,46 @@ def test_queue_next_stage_from_persisted_respects_manual_policy(tmp_path: Path) 
     assert result.reason == "stage_continuation_policy_manual"
     assert result.sandbox_path == "/tmp/sandbox/stage1"
     assert result.argv == ()
+
+
+def test_queue_next_stage_persists_java17_env_for_stage2(tmp_path: Path) -> None:
+    conn = _connection(tmp_path, "resolve8.sqlite3")
+    setup_repo = SqliteV2SetupRepository(conn)
+    command_repo = SqliteV2CommandRepository(conn)
+    setup_id = _create_setup(setup_repo)
+
+    _seed_command(command_repo, "job-stage2", 1, "/tmp/sandbox/stage1")
+
+    service = V2StageProgressionService(setup_repo, command_repo)
+    result = service.queue_next_stage_from_persisted(
+        job_id="job-stage2",
+        setup_id=setup_id,
+        current_stage=1,
+    )
+
+    assert result.status == "queued"
+    assert result.to_stage == 2
+    record = command_repo.get(result.command_id or "")
+    assert record is not None
+    env = json.loads(record.env_json)
+    assert env.get("JAVA_HOME") == "/usr/lib/jvm/java-17"
+    assert env.get("PATH_PREPEND") == str(Path(env["JAVA17_HOME"]) / "bin")
+    assert env.get("JAVA11_HOME") == "/usr/lib/jvm/java-11"
+    assert env.get("JAVA21_HOME") == "/usr/lib/jvm/java-21"
+
+
+def test_queue_next_stage_fails_closed_when_stage2_jdk_missing(tmp_path: Path) -> None:
+    conn = _connection(tmp_path, "resolve9.sqlite3")
+    setup_repo = SqliteV2SetupRepository(conn)
+    command_repo = SqliteV2CommandRepository(conn)
+    setup_id = _create_setup(setup_repo, java17_home="")
+
+    _seed_command(command_repo, "job-stage2-missing-jdk", 1, "/tmp/sandbox/stage1")
+
+    service = V2StageProgressionService(setup_repo, command_repo)
+    with pytest.raises(ValueError, match="JAVA17_HOME"):
+        service.queue_next_stage_from_persisted(
+            job_id="job-stage2-missing-jdk",
+            setup_id=setup_id,
+            current_stage=1,
+        )

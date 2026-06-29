@@ -38,6 +38,12 @@ _ROUTE_RUNTIME_PROFILE_MAP: dict[tuple[str, str], str] = {
 
 _ROUTE_RUNTIME_PROFILE_IDS: frozenset[str] = frozenset(_ROUTE_RUNTIME_PROFILE_MAP.values())
 
+_RUNTIME_PROFILE_EXECUTION_JDK_ENV_MAP: dict[str, str] = {
+    "springboot-2.7-to-3.5-java17": "JAVA17_HOME",
+    "springboot-3.5-java17-to-java21": "JAVA21_HOME",
+    "springboot-3.5-java21-to-4.0-java21": "JAVA21_HOME",
+}
+
 
 def resolve_runtime_profile_for_route(source_profile: str, target_profile: str) -> str:
     """Resolve the backend-owned AI Hub profile for a persisted route."""
@@ -61,6 +67,23 @@ def resolve_runtime_profile_for_run_configuration(run_configuration: Any) -> str
     """Resolve a runtime profile from a persisted run-configuration record."""
     source_profile, target_profile = extract_profile_route(run_configuration)
     return resolve_runtime_profile_for_route(source_profile, target_profile)
+
+
+def resolve_execution_jdk_env_var_for_runtime_profile(profile_id: str) -> str:
+    """Resolve the required JAVA*_HOME env var for a runtime profile."""
+    runtime_profile = str(profile_id or "").strip()
+    if not runtime_profile:
+        raise RouteRuntimeProfileUnavailableError(
+            "ROUTE_RUNTIME_PROFILE_UNAVAILABLE: runtime profile is required"
+        )
+
+    env_var = _RUNTIME_PROFILE_EXECUTION_JDK_ENV_MAP.get(runtime_profile)
+    if env_var is None:
+        raise RouteRuntimeProfileUnavailableError(
+            "ROUTE_RUNTIME_PROFILE_UNAVAILABLE: no execution JDK mapping exists for "
+            f"runtime profile {runtime_profile!r}"
+        )
+    return env_var
 
 
 def resolve_runtime_profile_for_state(state: Any) -> str:

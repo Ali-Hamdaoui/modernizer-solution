@@ -81,6 +81,9 @@ def _create_test_setup(
     *,
     ai_hub_path: str | None = None,
     skip_endpoint_smoke: bool = False,
+    java11_home: str = "/usr/lib/jvm/java-11",
+    java17_home: str = "/usr/lib/jvm/java-17",
+    java21_home: str = "/usr/lib/jvm/java-21",
 ) -> str:
     service = V2SetupService(repo)
     req = CreateSetupRequest(
@@ -88,9 +91,9 @@ def _create_test_setup(
         legacy_app_path="/tmp/legacy-app",
         output_parent_path="/tmp/output",
         ai_hub_path=ai_hub_path or str(AI_HUB),
-        java11_home="/usr/lib/jvm/java-11",
-        java17_home="/usr/lib/jvm/java-17",
-        java21_home="/usr/lib/jvm/java-21",
+        java11_home=java11_home,
+        java17_home=java17_home,
+        java21_home=java21_home,
         maven_cmd="/usr/bin/mvn",
         skip_endpoint_smoke=skip_endpoint_smoke,
     )
@@ -835,7 +838,7 @@ def test_stage_run_ids_are_unique(tmp_path: Path) -> None:
 
 
 def test_stage_env_includes_all_required_java_maven_vars(tmp_path: Path) -> None:
-    """Stage env manifest must include JAVA_HOME, JAVA11/17/21_HOME, and MAVEN_CMD."""
+    """Stage env manifest must follow the selected runtime profile and include all JDK homes."""
     conn = sqlite3.connect(
         tmp_path / "sa4_env.sqlite3",
         check_same_thread=False,
@@ -855,11 +858,69 @@ def test_stage_env_includes_all_required_java_maven_vars(tmp_path: Path) -> None
     record = cmd_repo.get(result.command_id)
     assert record is not None
     env = json.loads(record.env_json)
-    assert env.get("JAVA_HOME") == "/usr/lib/jvm/java-11"
+    assert env.get("JAVA_HOME") == "/usr/lib/jvm/java-21"
     assert env.get("JAVA11_HOME") == "/usr/lib/jvm/java-11"
     assert env.get("JAVA17_HOME") == "/usr/lib/jvm/java-17"
     assert env.get("JAVA21_HOME") == "/usr/lib/jvm/java-21"
     assert env.get("MAVEN_CMD") == "/usr/bin/mvn"
+    assert env.get("PATH_PREPEND") == str(Path(env["JAVA_HOME"]) / "bin")
+
+
+def test_stage_env_uses_java17_for_java17_target_route(tmp_path: Path) -> None:
+    conn = sqlite3.connect(
+        tmp_path / "sa4_env_java17.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_test_setup(repo)
+    _seed_job_run_configuration(
+        conn,
+        setup_id=setup_id,
+        job_id="j17",
+        source_profile="springboot-2.7-java11",
+        target_profile="springboot-3.5-java17",
+    )
+    service = _make_worker_service(conn)
+    result = service.build_stage1_manifest(job_id="j17", setup_id=setup_id)
+
+    record = SqliteV2CommandRepository(conn).get(result.command_id)
+    assert record is not None
+    env = json.loads(record.env_json)
+    assert env.get("JAVA_HOME") == env.get("JAVA17_HOME") == "/usr/lib/jvm/java-17"
+    assert env.get("PATH_PREPEND") == str(Path(env["JAVA17_HOME"]) / "bin")
+
+
+def test_stage_env_fails_closed_when_required_jdk_home_missing(tmp_path: Path) -> None:
+    conn = sqlite3.connect(
+        tmp_path / "sa4_env_missing_java21.sqlite3",
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    setup_id = _create_test_setup(
+        repo,
+        java21_home="",
+    )
+    _seed_job_run_configuration(
+        conn,
+        setup_id=setup_id,
+        job_id="j-missing-java21",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-3.5-java21",
+    )
+
+    with pytest.raises(ValueError, match="JAVA21_HOME"):
+        _make_worker_service(conn).build_stage1_manifest(
+            job_id="j-missing-java21",
+            setup_id=setup_id,
+        )
 
 
 def test_stage_env_excludes_secret_keys(tmp_path: Path) -> None:
