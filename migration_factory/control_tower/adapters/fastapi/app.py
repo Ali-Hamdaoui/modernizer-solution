@@ -167,6 +167,15 @@ from migration_factory.control_tower.application.v2_repair_gate_service import (
 from migration_factory.control_tower.application.v2_reviewer_service import (
     V2ReviewerService,
 )
+from migration_factory.control_tower.application.v2_repair_projection import (
+    build_reviewed_diff_proposal_from_record,
+    record_to_attempt_summary,
+    reviewed_diff_proposal_to_safe_dict,
+)
+from migration_factory.control_tower.application.safe_diff_preview import (
+    build_safe_diff_preview,
+    safe_diff_preview_to_dict,
+)
 from migration_factory.control_tower.application.v2_failure_diagnosis import (
     V2FailureDiagnosisService,
 )
@@ -3156,6 +3165,146 @@ def create_app(
                 f"Reviewer critique {critique_id!r} not found",
             )
         return service.critique_to_dict(critique)
+
+    # ── PR-B: Reviewed-diff proposal read APIs ─────────────────────────
+
+    @app.get("/v1/v2/jobs/{job_id}/repair/proposals/current")
+    def get_current_repair_proposal(job_id: str) -> dict[str, Any]:
+        """Return the current (latest user-reviewable) repair proposal for a job.
+
+        Safe read-only projection. No raw patch, path, or env data.
+        """
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            record = uow.v2_repairs.get_current_proposal_for_job(job_id)
+            if record is None:
+                return {"proposal": None, "job_id": job_id}
+            if getattr(record, "diff_ref", None) is not None:
+                try:
+                    projection = build_reviewed_diff_proposal_from_record(
+                        proposal_id=record.proposal_id,
+                        status=record.status,
+                        failure_summary=record.failure_summary,
+                        job_id=getattr(record, "job_id", None) or job_id,
+                        command_id=record.command_id,
+                        gate_id=getattr(record, "gate_id", None),
+                        route_step_index=getattr(record, "route_step_index", None),
+                        attempt_number=getattr(record, "attempt_number", None),
+                        revision_number=getattr(record, "revision_number", None),
+                        diagnosis_ref=getattr(record, "diagnosis_ref", None),
+                        repair_plan_ref=getattr(record, "repair_plan_ref", None),
+                        diff_ref=getattr(record, "diff_ref", None),
+                        diff_checksum=getattr(record, "diff_checksum", None),
+                        reviewer_verdict_id=getattr(record, "reviewer_verdict_id", None),
+                        reviewer_output_checksum=getattr(record, "reviewer_output_checksum", None),
+                        policy_validation_checksum=getattr(record, "policy_validation_checksum", None),
+                    )
+                    return {
+                        "proposal": reviewed_diff_proposal_to_safe_dict(projection),
+                        "job_id": job_id,
+                    }
+                except (ValueError, OSError):
+                    pass
+            return {"proposal": None, "job_id": job_id}
+
+    @app.get("/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}")
+    def get_repair_proposal(
+        job_id: str,
+        proposal_id: str,
+    ) -> dict[str, Any]:
+        """Return a specific repair proposal for a job.
+
+        Validates job/proposal ownership. Safe read-only projection.
+        """
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            record = uow.v2_repairs.get_proposal_for_job(job_id, proposal_id)
+            if record is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "PROPOSAL_NOT_FOUND",
+                    f"Proposal {proposal_id!r} not found for job {job_id!r}.",
+                )
+            if getattr(record, "diff_ref", None) is not None:
+                try:
+                    projection = build_reviewed_diff_proposal_from_record(
+                        proposal_id=record.proposal_id,
+                        status=record.status,
+                        failure_summary=record.failure_summary,
+                        job_id=getattr(record, "job_id", None) or job_id,
+                        command_id=record.command_id,
+                        gate_id=getattr(record, "gate_id", None),
+                        route_step_index=getattr(record, "route_step_index", None),
+                        attempt_number=getattr(record, "attempt_number", None),
+                        revision_number=getattr(record, "revision_number", None),
+                        diagnosis_ref=getattr(record, "diagnosis_ref", None),
+                        repair_plan_ref=getattr(record, "repair_plan_ref", None),
+                        diff_ref=getattr(record, "diff_ref", None),
+                        diff_checksum=getattr(record, "diff_checksum", None),
+                        reviewer_verdict_id=getattr(record, "reviewer_verdict_id", None),
+                        reviewer_output_checksum=getattr(record, "reviewer_output_checksum", None),
+                        policy_validation_checksum=getattr(record, "policy_validation_checksum", None),
+                    )
+                    return {
+                        "proposal": reviewed_diff_proposal_to_safe_dict(projection),
+                        "job_id": job_id,
+                    }
+                except (ValueError, OSError):
+                    pass
+            return {"proposal": None, "job_id": job_id}
+
+    @app.get("/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/diff")
+    def get_repair_proposal_diff(
+        job_id: str,
+        proposal_id: str,
+    ) -> dict[str, Any]:
+        """Return the SafeDiffPreview for a reviewed repair proposal.
+
+        Validates proposal belongs to job. Returns safe structured diff
+        preview only — never raw patch text.
+        """
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            record = uow.v2_repairs.get_proposal_for_job(job_id, proposal_id)
+            if record is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "PROPOSAL_NOT_FOUND",
+                    f"Proposal {proposal_id!r} not found for job {job_id!r}.",
+                )
+            diff_ref = getattr(record, "diff_ref", None)
+            diff_checksum = getattr(record, "diff_checksum", None)
+            if not diff_ref:
+                return {"safe_diff_preview": None, "job_id": job_id, "reason": "no_diff_ref"}
+            try:
+                preview = build_safe_diff_preview(
+                    proposal_id=proposal_id,
+                    diff_ref=diff_ref,
+                )
+                return {
+                    "safe_diff_preview": safe_diff_preview_to_dict(preview),
+                    "job_id": job_id,
+                }
+            except (ValueError, OSError):
+                return {
+                    "safe_diff_preview": None,
+                    "job_id": job_id,
+                    "reason": "could not load diff",
+                }
+
+    @app.get("/v1/v2/jobs/{job_id}/repair/attempts")
+    def list_repair_attempts(job_id: str) -> dict[str, Any]:
+        """Return attempt history for a job.
+
+        Safe summaries only — no raw patch, path, or env data.
+        """
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            records = uow.v2_repairs.list_attempts_by_job(job_id)
+            return {
+                "attempts": [record_to_attempt_summary(r) for r in records],
+                "job_id": job_id,
+            }
 
     @app.post("/v1/v2/jobs/{job_id}/stages/progress")
     def progress_to_next_stage(

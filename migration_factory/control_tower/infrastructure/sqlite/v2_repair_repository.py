@@ -25,6 +25,23 @@ class V2RepairProposalRecord:
     revision_number: int | None = None
     context_pack_checksum: str | None = None
     allowed_scope: str | None = None
+    # PR-B: reviewed-diff and job-scoped fields (all nullable)
+    job_id: str | None = None
+    route_step_index: int | None = None
+    attempt_number: int | None = None
+    failure_evidence_ref: str | None = None
+    repair_context_ref: str | None = None
+    diagnosis_ref: str | None = None
+    repair_plan_ref: str | None = None
+    diff_ref: str | None = None
+    diff_checksum: str | None = None
+    safe_diff_preview_ref: str | None = None
+    reviewer_verdict_id: str | None = None
+    reviewer_verdict_ref: str | None = None
+    reviewer_output_checksum: str | None = None
+    policy_validation_checksum: str | None = None
+    gate_id: str | None = None
+    status_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -51,8 +68,15 @@ class SqliteV2RepairRepository:
                 patch_summary, affected_paths_json, status,
                 approval_checksum, created_at, proposal_checksum, source_proposal_id,
                 revision_of, revision_number, context_pack_checksum,
-                allowed_scope
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                allowed_scope,
+                job_id, route_step_index, attempt_number,
+                failure_evidence_ref, repair_context_ref, diagnosis_ref,
+                repair_plan_ref, diff_ref, diff_checksum,
+                safe_diff_preview_ref, reviewer_verdict_id,
+                reviewer_verdict_ref, reviewer_output_checksum,
+                policy_validation_checksum, gate_id, status_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 record.proposal_id,
                 record.command_id,
@@ -69,6 +93,22 @@ class SqliteV2RepairRepository:
                 record.revision_number,
                 record.context_pack_checksum,
                 record.allowed_scope,
+                record.job_id,
+                record.route_step_index,
+                record.attempt_number,
+                record.failure_evidence_ref,
+                record.repair_context_ref,
+                record.diagnosis_ref,
+                record.repair_plan_ref,
+                record.diff_ref,
+                record.diff_checksum,
+                record.safe_diff_preview_ref,
+                record.reviewer_verdict_id,
+                record.reviewer_verdict_ref,
+                record.reviewer_output_checksum,
+                record.policy_validation_checksum,
+                record.gate_id,
+                record.status_reason,
             ),
         )
 
@@ -98,6 +138,49 @@ class SqliteV2RepairRepository:
         rows = self._connection.execute(
             "SELECT * FROM v2_repair_proposals WHERE command_id = ? ORDER BY created_at DESC",
             (command_id,),
+        ).fetchall()
+        return tuple(self._row_to_proposal(row) for row in rows)
+
+    def list_proposals_by_job(self, job_id: str) -> tuple[V2RepairProposalRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT * FROM v2_repair_proposals
+               WHERE job_id = ?
+               ORDER BY created_at DESC""",
+            (job_id,),
+        ).fetchall()
+        return tuple(self._row_to_proposal(row) for row in rows)
+
+    def get_proposal_for_job(self, job_id: str, proposal_id: str) -> V2RepairProposalRecord | None:
+        row = self._connection.execute(
+            """SELECT * FROM v2_repair_proposals
+               WHERE proposal_id = ? AND job_id = ?""",
+            (proposal_id, job_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_proposal(row)
+
+    def get_current_proposal_for_job(self, job_id: str) -> V2RepairProposalRecord | None:
+        row = self._connection.execute(
+            """SELECT * FROM v2_repair_proposals
+               WHERE job_id = ?
+                 AND (status = 'user_review_required'
+                      OR (gate_id IS NOT NULL AND status IN ('user_review_required', 'reviewer_accepted', 'diff_materialized')))
+               ORDER BY created_at DESC
+               LIMIT 1""",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_proposal(row)
+
+    def list_attempts_by_job(self, job_id: str) -> tuple[V2RepairProposalRecord, ...]:
+        rows = self._connection.execute(
+            """SELECT * FROM v2_repair_proposals
+               WHERE job_id = ?
+                 AND attempt_number IS NOT NULL
+               ORDER BY attempt_number DESC, created_at DESC""",
+            (job_id,),
         ).fetchall()
         return tuple(self._row_to_proposal(row) for row in rows)
 
@@ -135,6 +218,7 @@ class SqliteV2RepairRepository:
         return tuple(self._row_to_action(row) for row in rows)
 
     def _row_to_proposal(self, row: sqlite3.Row) -> V2RepairProposalRecord:
+        keys = row.keys()
         return V2RepairProposalRecord(
             proposal_id=str(row["proposal_id"]),
             command_id=str(row["command_id"]),
@@ -145,12 +229,28 @@ class SqliteV2RepairRepository:
             status=str(row["status"]),
             approval_checksum=str(row["approval_checksum"]) if row["approval_checksum"] else None,
             created_at=str(row["created_at"]),
-            proposal_checksum=str(row["proposal_checksum"]) if "proposal_checksum" in row.keys() and row["proposal_checksum"] else None,
-            source_proposal_id=str(row["source_proposal_id"]) if "source_proposal_id" in row.keys() and row["source_proposal_id"] else None,
-            revision_of=str(row["revision_of"]) if "revision_of" in row.keys() and row["revision_of"] else None,
-            revision_number=int(row["revision_number"]) if "revision_number" in row.keys() and row["revision_number"] is not None else None,
-            context_pack_checksum=str(row["context_pack_checksum"]) if "context_pack_checksum" in row.keys() and row["context_pack_checksum"] else None,
-            allowed_scope=str(row["allowed_scope"]) if "allowed_scope" in row.keys() and row["allowed_scope"] else None,
+            proposal_checksum=str(row["proposal_checksum"]) if "proposal_checksum" in keys and row["proposal_checksum"] else None,
+            source_proposal_id=str(row["source_proposal_id"]) if "source_proposal_id" in keys and row["source_proposal_id"] else None,
+            revision_of=str(row["revision_of"]) if "revision_of" in keys and row["revision_of"] else None,
+            revision_number=int(row["revision_number"]) if "revision_number" in keys and row["revision_number"] is not None else None,
+            context_pack_checksum=str(row["context_pack_checksum"]) if "context_pack_checksum" in keys and row["context_pack_checksum"] else None,
+            allowed_scope=str(row["allowed_scope"]) if "allowed_scope" in keys and row["allowed_scope"] else None,
+            job_id=str(row["job_id"]) if "job_id" in keys and row["job_id"] else None,
+            route_step_index=int(row["route_step_index"]) if "route_step_index" in keys and row["route_step_index"] is not None else None,
+            attempt_number=int(row["attempt_number"]) if "attempt_number" in keys and row["attempt_number"] is not None else None,
+            failure_evidence_ref=str(row["failure_evidence_ref"]) if "failure_evidence_ref" in keys and row["failure_evidence_ref"] else None,
+            repair_context_ref=str(row["repair_context_ref"]) if "repair_context_ref" in keys and row["repair_context_ref"] else None,
+            diagnosis_ref=str(row["diagnosis_ref"]) if "diagnosis_ref" in keys and row["diagnosis_ref"] else None,
+            repair_plan_ref=str(row["repair_plan_ref"]) if "repair_plan_ref" in keys and row["repair_plan_ref"] else None,
+            diff_ref=str(row["diff_ref"]) if "diff_ref" in keys and row["diff_ref"] else None,
+            diff_checksum=str(row["diff_checksum"]) if "diff_checksum" in keys and row["diff_checksum"] else None,
+            safe_diff_preview_ref=str(row["safe_diff_preview_ref"]) if "safe_diff_preview_ref" in keys and row["safe_diff_preview_ref"] else None,
+            reviewer_verdict_id=str(row["reviewer_verdict_id"]) if "reviewer_verdict_id" in keys and row["reviewer_verdict_id"] else None,
+            reviewer_verdict_ref=str(row["reviewer_verdict_ref"]) if "reviewer_verdict_ref" in keys and row["reviewer_verdict_ref"] else None,
+            reviewer_output_checksum=str(row["reviewer_output_checksum"]) if "reviewer_output_checksum" in keys and row["reviewer_output_checksum"] else None,
+            policy_validation_checksum=str(row["policy_validation_checksum"]) if "policy_validation_checksum" in keys and row["policy_validation_checksum"] else None,
+            gate_id=str(row["gate_id"]) if "gate_id" in keys and row["gate_id"] else None,
+            status_reason=str(row["status_reason"]) if "status_reason" in keys and row["status_reason"] else None,
         )
 
     def _row_to_action(self, row: sqlite3.Row) -> V2SandboxActionRecord:

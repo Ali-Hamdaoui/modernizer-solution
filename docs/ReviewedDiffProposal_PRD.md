@@ -18,7 +18,7 @@ Current known branch state from latest reports:
 
 ```text
 branch: demov3
-HEAD:   3420d429cba3fddd7c547f6e578e0e8d9b666dd4
+HEAD:   45a6e9f3fb6f12ffe2142cd85118437f38e44f42
 ```
 
 Known dirty files from the active worktree may include:
@@ -35,7 +35,7 @@ graphify-out/manifest.json
 |---|---|---|---|---|---|
 | Phase 0 / Plan | Done | branch `demov3`, HEAD `3420d429cba3fddd7c547f6e578e0e8d9b666dd4`, commit none | docs only | read-only audit completed | Existing F5 repair engine is reused, not replaced. |
 | PR-A / Safe Read-Only Projection | Done | branch `demov3`, PR-A commit `9de9c17f322e646238821c8ee914a3683f9b5a3e`, route-progression fix commit `3420d429cba3fddd7c547f6e578e0e8d9b666dd4` | `migration_factory/control_tower/application/safe_diff_preview.py`; `migration_factory/control_tower/application/v2_model_schemas.py`; `migration_factory/control_tower/application/v2_repair_projection.py`; `tests/control_tower/test_safe_diff_preview.py`; `tests/control_tower/test_reviewed_diff_proposal_projection.py`; `migration_factory/control_tower/application/v2_stage_progression.py`; `tests/control_tower/test_v2_stage_progression.py`; `tests/control_tower/test_v2_orchestrator_runner.py`; `tests/control_tower/test_resume_from_checkpoint_profile.py` | `tests/control_tower/test_safe_diff_preview.py` 13 passed; `tests/control_tower/test_reviewed_diff_proposal_projection.py` 2 passed; `tests/control_tower/test_v2_repair_gate_service.py` 30 passed; `tests/control_tower/test_v2_stage_progression.py` 55 passed; `tests/control_tower/test_v2_worker_stage.py` 26 passed; `tests/control_tower/test_v2_orchestrator_runner.py` 50 passed; `tests/control_tower/test_resume_from_checkpoint_profile.py` 7 passed; `tests/control_tower/test_profile_validation.py` 17 passed; `tests/control_tower/test_profile_pair_validation.py` 5 passed; `tests/control_tower/test_run_configurations.py` 38 passed; `git diff --check` passed | PR-A projection is committed, and the route-progression baseline debt is fixed in the follow-up route-step commit. |
-| PR-B / Durable Proposal Persistence + Read APIs | Not Started | | | | Depends on PR-A closeout. |
+| PR-B / Durable Proposal Persistence + Read APIs | Done | branch `demov3`, HEAD `45a6e9f3fb6f12ffe2142cd85118437f38e44f42` (not committed) | `0048_v2_repair_proposals_reviewed_diff_fields.sql`, `v2_repair_repository.py`, `dto.py`, `v2_repair_projection.py`, `app.py`, `tests/control_tower/test_v2_repair_proposal_api.py` | PR-B focused tests 25 passed; all regression suites green | Migration adds 16 nullable fields; 4 read-only GET endpoints added; no raw patch/path/env exposure; old records remain compatible. |
 | PR-C / Cockpit Read-Only UI | Not Started | | | | Depends on PR-B. |
 | PR-D / Revision Endpoint | Not Started | | | | Depends on PR-C. |
 | PR-E / Approve/Apply Hardening | Not Started | | | | Depends on PR-D. |
@@ -1319,7 +1319,7 @@ PR-A implementation is complete. PR-B remains blocked by unrelated route-progres
 
 ### 16.3 PR-B — Durable Proposal Persistence + Job-Scoped Read APIs
 
-Status: **Not started**
+Status: **Done**
 
 Goal:
 
@@ -1333,7 +1333,6 @@ Planned files:
 migration_factory/control_tower/infrastructure/sqlite/migrations/0048_v2_repair_proposals_reviewed_diff_fields.sql
 migration_factory/control_tower/infrastructure/sqlite/v2_repair_repository.py
 migration_factory/control_tower/application/dto.py
-migration_factory/control_tower/application/ports.py
 migration_factory/control_tower/application/v2_repair_projection.py
 migration_factory/control_tower/adapters/fastapi/app.py
 tests/control_tower/test_v2_repair_proposal_api.py
@@ -1348,17 +1347,71 @@ GET /v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/diff
 GET /v1/v2/jobs/{job_id}/repair/attempts
 ```
 
+Completion record:
+
+```text
+Date/time: 2026-06-30
+Branch: demov3
+HEAD: 45a6e9f3fb6f12ffe2142cd85118437f38e44f42 (not committed yet)
+
+Changed files:
+  migration_factory/control_tower/infrastructure/sqlite/migrations/0048_v2_repair_proposals_reviewed_diff_fields.sql
+  migration_factory/control_tower/infrastructure/sqlite/v2_repair_repository.py
+  migration_factory/control_tower/application/dto.py
+  migration_factory/control_tower/application/v2_repair_projection.py
+  migration_factory/control_tower/adapters/fastapi/app.py
+  tests/control_tower/test_v2_repair_proposal_api.py
+
+Migration: 0048_v2_repair_proposals_reviewed_diff_fields.sql — ALTER TABLE ADD COLUMN for 16 nullable fields
+
+Endpoints added:
+  GET /v1/v2/jobs/{job_id}/repair/proposals/current
+  GET /v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}
+  GET /v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/diff
+  GET /v1/v2/jobs/{job_id}/repair/attempts
+
+Persistence changes:
+  V2RepairProposalRecord extended with job_id, route_step_index, attempt_number,
+  failure_evidence_ref, repair_context_ref, diagnosis_ref, repair_plan_ref,
+  diff_ref, diff_checksum, safe_diff_preview_ref, reviewer_verdict_id,
+  reviewer_verdict_ref, reviewer_output_checksum, policy_validation_checksum,
+  gate_id, status_reason
+  New repository methods: list_proposals_by_job, get_proposal_for_job,
+  get_current_proposal_for_job, list_attempts_by_job
+
+Security rules enforced:
+  - No raw sandbox path, argv, env, raw_command in API responses
+  - No endpoint exposes target_path or patch_content
+  - No mutation endpoints (no POST)
+  - API validates job/proposal ownership
+  - Diff endpoint returns SafeDiffPreview only
+
+Tests:
+  tests/control_tower/test_v2_repair_proposal_api.py — 25 passed
+  tests/control_tower/test_safe_diff_preview.py — 13 passed
+  tests/control_tower/test_reviewed_diff_proposal_projection.py — 2 passed
+  tests/control_tower/test_v2_repair_gate_service.py — 30 passed
+  tests/control_tower/test_v2_stage_progression.py — 55 passed
+  tests/control_tower/test_v2_worker_stage.py — 26 passed
+  tests/control_tower/test_v2_orchestrator_runner.py — 50 passed
+  tests/control_tower/test_resume_from_checkpoint_profile.py — 7 passed
+  tests/control_tower/test_profile_validation.py — 17 passed
+  tests/control_tower/test_profile_pair_validation.py — 5 passed
+  tests/control_tower/test_run_configurations.py — 60 passed
+  git diff --check — no whitespace errors
+```
+
 Completion checklist:
 
-- [ ] Migration adds nullable reviewed-diff fields.
-- [ ] Repository supports job-scoped current/detail/list retrieval.
-- [ ] Read APIs return safe projections only.
-- [ ] Diff endpoint returns `SafeDiffPreview` only.
-- [ ] No mutation endpoints added.
-- [ ] No raw patch/path/env/argv exposed.
-- [ ] Existing old repair proposal records remain compatible.
-- [ ] Current proposal survives backend restart.
-- [ ] Tests pass.
+- [x] Migration adds nullable reviewed-diff fields.
+- [x] Repository supports job-scoped current/detail/list retrieval.
+- [x] Read APIs return safe projections only.
+- [x] Diff endpoint returns `SafeDiffPreview` only.
+- [x] No mutation endpoints added.
+- [x] No raw patch/path/env/argv exposed.
+- [x] Existing old repair proposal records remain compatible.
+- [x] Current proposal survives backend restart.
+- [x] Tests pass.
 
 ### 16.4 PR-C — Cockpit Read-Only Proposal/Diff UI
 
@@ -1641,6 +1694,7 @@ Append a new row after each implementation step.
 | 2026-06-30 | Phase 0 | Done | `demov3` / `6dec64d726f4932c798f10652c8969be27989012` | none | read-only audit | Hybrid persistence chosen; PR-A recommended. |
 | 2026-06-30 | PR-A | Done | `demov3` / `9de9c17f322e646238821c8ee914a3683f9b5a3e` | `safe_diff_preview.py`, `v2_model_schemas.py`, `v2_repair_projection.py`, PR-A tests | PR-A focused tests pass; route-progression baseline debt fixed in follow-up commit `3420d429cba3fddd7c547f6e578e0e8d9b666dd4` | Read-only projection is committed and the route graph is green. |
 | 2026-06-30 | Route progression fix | Done | `demov3` / `3420d429cba3fddd7c547f6e578e0e8d9b666dd4` | `v2_stage_progression.py`, `test_v2_stage_progression.py`, `test_v2_orchestrator_runner.py`, `test_resume_from_checkpoint_profile.py` | Stage progression, orchestrator, resume, validation, and repair-gate focused tests passed | Fixed route-step indexing, target-reached semantics, and one stale metadata expectation. |
+| 2026-06-30 | PR-B | Done | `demov3` / `45a6e9f3fb6f12ffe2142cd85118437f38e44f42` (not committed) | `0048_v2_repair_proposals_reviewed_diff_fields.sql`, `v2_repair_repository.py`, `dto.py`, `v2_repair_projection.py`, `app.py`, `tests/control_tower/test_v2_repair_proposal_api.py` | 25 PR-B tests passed; all 283 regression tests passed across 11 test files | PR-B complete. 4 read-only GET endpoints, 16 nullable columns, no mutation endpoints, all security rules enforced. |
 
 Template for next update:
 
@@ -1662,6 +1716,7 @@ Template for next update:
 | Generic `ContextPackBuilder` synthetic checksums | Open | Reviewed repair must use content-derived checksums. |
 | Reviewer-edited diffs not currently supported | Open | If required later, add distinct reviewer-reviewed diff artifact contract. |
 | Route-step vs legacy stage indexing inconsistency | Open | Bind proposal APIs to actual route-step state, not labels. |
+| PR-B diff endpoint reads from filesystem path in diff_ref | Open | Future PR should load diff from artifact repository, not direct filesystem. |
 | `v1_model_invocations` insufficient for repair proof | Open | Add `v2_llm_invocations` in PR-G or earlier if required. |
 | Deployment display policy | Open | Decide admin-only vs alias-only before public LLM activity UI. |
 

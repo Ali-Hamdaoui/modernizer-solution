@@ -198,7 +198,9 @@ def _safe_model_status(value: Any) -> dict[str, Any]:
 READ_ONLY_REPAIR_ACTIONS: tuple[str, ...] = (
     "view_diff",
     "view_reviewer_opinion",
+    "view_files_changed",
     "ask_explanation",
+    "view_attempt_history",
 )
 
 
@@ -457,6 +459,107 @@ def _bounded_redacted_text(value: str, *, limit: int = 1000) -> str:
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[: limit - len("...[truncated]")] + "...[truncated]"
+
+
+def build_reviewed_diff_proposal_from_record(
+    *,
+    proposal_id: str,
+    status: str,
+    failure_summary: str,
+    job_id: str | None = None,
+    command_id: str | None = None,
+    gate_id: str | None = None,
+    route_step_index: int | None = None,
+    stage_index: int | None = None,
+    attempt_number: int | None = None,
+    revision_number: int | None = None,
+    diagnosis_ref: str | None = None,
+    repair_plan_ref: str | None = None,
+    diff_ref: str | None = None,
+    diff_checksum: str | None = None,
+    reviewer_verdict_id: str | None = None,
+    reviewer_output_checksum: str | None = None,
+    policy_validation_checksum: str | None = None,
+    status_reason: str | None = None,
+    required_validation: tuple[str, ...] = (),
+    allowed_actions: tuple[str, ...] = READ_ONLY_REPAIR_ACTIONS,
+    risk: str | None = None,
+    final_diff_text: str | None = None,
+    reviewer_decision: str | None = None,
+    reviewer_reasoning: str | None = None,
+) -> ReviewedDiffProposal:
+    """Build a ReviewedDiffProposal from persisted V2RepairProposalRecord fields.
+
+    This is the durable-persistence path (PR-B). Unlike
+    build_reviewed_diff_proposal_projection which builds from a
+    review_chain dict, this function reads from persisted column values.
+    """
+    if diff_ref is None:
+        raise ValueError("reviewed diff ref is required for projection")
+
+    safe_diff_preview = build_safe_diff_preview(
+        proposal_id=proposal_id,
+        diff_ref=diff_ref,
+        diff_text=final_diff_text,
+    )
+    verdict = ReviewerVerdictProjection(
+        reviewer_verdict_id=reviewer_verdict_id,
+        decision=reviewer_decision or "unknown",
+        reasoning=_bounded_redacted_text(reviewer_reasoning) if reviewer_reasoning else None,
+        output_checksum=reviewer_output_checksum,
+    )
+    files_changed = [
+        FilesChangedSummary(
+            path=file.path,
+            change_type=file.change_type,
+            additions=file.additions,
+            deletions=file.deletions,
+        )
+        for file in safe_diff_preview.files
+    ]
+    redactions = list(safe_diff_preview.redactions)
+
+    return ReviewedDiffProposal(
+        proposal_id=proposal_id,
+        job_id=_maybe_str(job_id),
+        command_id=_maybe_str(command_id),
+        gate_id=_maybe_str(gate_id),
+        route_step_index=_maybe_int(route_step_index),
+        stage_index=_maybe_int(stage_index),
+        status=status,
+        attempt_number=_maybe_int(attempt_number),
+        revision_number=_maybe_int(revision_number),
+        failure_summary=failure_summary,
+        diagnosis_ref=_maybe_str(diagnosis_ref),
+        repair_plan_ref=_maybe_str(repair_plan_ref),
+        diff_ref=safe_diff_preview.diff_ref,
+        diff_checksum=safe_diff_preview.diff_checksum,
+        safe_diff_preview=safe_diff_preview,
+        reviewer_verdict=verdict,
+        files_changed=files_changed,
+        risk=_maybe_str(risk),
+        required_validation=required_validation,
+        allowed_actions=allowed_actions,
+        redactions=tuple(dict.fromkeys(redactions)),
+    )
+
+
+def record_to_attempt_summary(record: Any) -> dict[str, Any]:
+    """Convert a V2RepairProposalRecord to a safe attempt summary dict."""
+    return {
+        "proposal_id": record.proposal_id,
+        "command_id": record.command_id if hasattr(record, "command_id") else None,
+        "job_id": getattr(record, "job_id", None),
+        "gate_id": getattr(record, "gate_id", None),
+        "attempt_number": getattr(record, "attempt_number", None),
+        "revision_number": getattr(record, "revision_number", None),
+        "status": record.status,
+        "reviewer_decision": None,
+        "diff_checksum": getattr(record, "diff_checksum", None),
+        "policy_validation_checksum": getattr(record, "policy_validation_checksum", None),
+        "status_reason": getattr(record, "status_reason", None),
+        "created_at": record.created_at,
+    }
 
 
 def _maybe_str(value: Any) -> str | None:

@@ -476,6 +476,28 @@ class SandboxSnapshotDto:
 
 
 @dataclass(frozen=True, slots=True)
+class RepairAttemptSummaryDto:
+    """Safe attempt summary for PR-B attempt-history endpoint.
+
+    Contains only redacted/safe metadata. Never includes raw patch
+    content, target_path, raw command, argv, env, or secrets.
+    """
+
+    proposal_id: str
+    command_id: str | None = None
+    job_id: str | None = None
+    gate_id: str | None = None
+    attempt_number: int | None = None
+    revision_number: int | None = None
+    status: str = ""
+    reviewer_decision: str | None = None
+    diff_checksum: str | None = None
+    policy_validation_checksum: str | None = None
+    status_reason: str | None = None
+    created_at: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class PatchApplicationDto:
     """DTO for an approved patch application result."""
 
