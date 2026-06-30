@@ -18,7 +18,9 @@ Current known branch state from latest reports:
 
 ```text
 branch: demov3
-HEAD:   68d7ad9a5784af1c0e0dcba8adc8af64856372ad
+HEAD:   7318fcbc3b2f7b0a510e7bb66edf2fcb7a8ce9a5
+PR-D feature commit: 68d7ad9a5784af1c0e0dcba8adc8af64856372ad
+PRD closeout commit: 7318fcbc3b2f7b0a510e7bb66edf2fcb7a8ce9a5
 ```
 
 Known dirty files from the active worktree may include:
