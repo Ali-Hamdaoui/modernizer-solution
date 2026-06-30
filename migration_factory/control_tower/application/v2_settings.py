@@ -33,6 +33,11 @@ from migration_factory.control_tower.application.redaction import (
 )
 
 
+AUTO_QUEUE_NEXT_STAGE_ENV = "AI_MIGRATION_AUTO_QUEUE_NEXT_STAGE"
+_AUTO_QUEUE_TRUE_VALUES = {"1", "true", "yes", "on"}
+_AUTO_QUEUE_FALSE_VALUES = {"0", "false", "no", "off"}
+
+
 # ── V2 Settings class ────────────────────────────────────────────────
 
 
@@ -138,6 +143,65 @@ class SettingsProjection:
     """Complete redacted settings projection for public API."""
     azure: AzureFoundryProjection
     local_mode: LocalModeProjection
+
+
+@dataclass(frozen=True)
+class AutoQueueNextStagePolicy:
+    """Effective next-stage auto-queue policy derived from env."""
+
+    env_var: str
+    env_present: bool
+    configured_value: str | None
+    effective: bool
+    valid: bool
+    reason: str
+
+
+def resolve_auto_queue_next_stage_policy() -> AutoQueueNextStagePolicy:
+    """Resolve next-stage auto-queue policy from env with safe defaults.
+
+    Missing env preserves legacy default behavior (enabled). Invalid values
+    fail closed so Stage2 does not auto-start silently.
+    """
+    raw_value = os.environ.get(AUTO_QUEUE_NEXT_STAGE_ENV)
+    normalized = raw_value.strip().lower() if isinstance(raw_value, str) else ""
+    env_present = isinstance(raw_value, str) and bool(raw_value.strip())
+
+    if not env_present:
+        return AutoQueueNextStagePolicy(
+            env_var=AUTO_QUEUE_NEXT_STAGE_ENV,
+            env_present=False,
+            configured_value=None,
+            effective=True,
+            valid=True,
+            reason="default_enabled",
+        )
+    if normalized in _AUTO_QUEUE_TRUE_VALUES:
+        return AutoQueueNextStagePolicy(
+            env_var=AUTO_QUEUE_NEXT_STAGE_ENV,
+            env_present=True,
+            configured_value=normalized,
+            effective=True,
+            valid=True,
+            reason="enabled_by_policy",
+        )
+    if normalized in _AUTO_QUEUE_FALSE_VALUES:
+        return AutoQueueNextStagePolicy(
+            env_var=AUTO_QUEUE_NEXT_STAGE_ENV,
+            env_present=True,
+            configured_value=normalized,
+            effective=False,
+            valid=True,
+            reason="auto_queue_disabled_by_policy",
+        )
+    return AutoQueueNextStagePolicy(
+        env_var=AUTO_QUEUE_NEXT_STAGE_ENV,
+        env_present=True,
+        configured_value=normalized,
+        effective=False,
+        valid=False,
+        reason="auto_queue_invalid_policy_value",
+    )
 
 
 def build_settings_projection(settings: ControlTowerSettings) -> SettingsProjection:

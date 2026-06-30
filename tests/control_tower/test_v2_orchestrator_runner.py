@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from migration_factory.control_tower.application.v2_orchestrator_runner import V2OrchestratorRunner
 from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
@@ -988,13 +990,15 @@ def test_stage1_pass_contract_with_pass_with_warnings_auto_queues_stage2(tmp_pat
     assert len(popen.calls) == 3
 
 
+@pytest.mark.parametrize("value", ["false", "False", "FALSE", "0", "no", "off"])
 def test_auto_queue_next_stage_can_be_disabled_by_env(
     tmp_path: Path,
     monkeypatch: Any,
+    value: str,
 ) -> None:
     conn = _conn(tmp_path)
     _seed_stage_pipeline(conn)
-    monkeypatch.setenv("AI_MIGRATION_AUTO_QUEUE_NEXT_STAGE", "false")
+    monkeypatch.setenv("AI_MIGRATION_AUTO_QUEUE_NEXT_STAGE", value)
     popen = _SequentialFakePopen([
         ([json.dumps(_success_result(sandbox_path=str(tmp_path / "stage-1"))) + "\n"], [], 0),
     ])
@@ -1008,16 +1012,85 @@ def test_auto_queue_next_stage_can_be_disabled_by_env(
     _wait_for_event(conn, "job-1", "next_stage_auto_queue_skipped")
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    skipped = [event for event in events if event.type == "next_stage_auto_queue_skipped"][-1]
+    skipped_payload = json.loads(skipped.payload_json or "{}")
     event_types = [event.type for event in events]
     assert "stage_completed" in event_types
     assert "next_stage_queued" not in event_types
     assert not any(event.type == "stage_started" and event.stage == 2 for event in events)
+    assert skipped_payload["reason"] == "auto_queue_disabled_by_policy"
+    assert skipped_payload["configured_value"] == value.strip().lower()
+    assert skipped_payload["valid"] is True
+    assert len(SqliteUnitOfWork(conn).v2_commands.list_by_job_and_stage("job-1", 2)) == 0
     assert len(popen.calls) == 1
 
 
-def test_stage2_pass_contract_with_pass_with_warnings_auto_queues_stage3(tmp_path: Path) -> None:
+def test_auto_queue_next_stage_invalid_env_value_fails_closed(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
     conn = _conn(tmp_path)
     _seed_stage_pipeline(conn)
+    monkeypatch.setenv("AI_MIGRATION_AUTO_QUEUE_NEXT_STAGE", "banana")
+    popen = _SequentialFakePopen([
+        ([json.dumps(_success_result(sandbox_path=str(tmp_path / "stage-1"))) + "\n"], [], 0),
+    ])
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "next_stage_auto_queue_skipped")
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    skipped = [event for event in events if event.type == "next_stage_auto_queue_skipped"][-1]
+    skipped_payload = json.loads(skipped.payload_json or "{}")
+    event_types = [event.type for event in events]
+    assert "next_stage_queued" not in event_types
+    assert not any(event.type == "stage_started" and event.stage == 2 for event in events)
+    assert skipped_payload["reason"] == "auto_queue_invalid_policy_value"
+    assert skipped_payload["configured_value"] == "banana"
+    assert skipped_payload["valid"] is False
+    assert len(SqliteUnitOfWork(conn).v2_commands.list_by_job_and_stage("job-1", 2)) == 0
+    assert len(popen.calls) == 1
+
+
+def test_auto_queue_next_stage_can_be_explicitly_enabled_by_env(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn)
+    monkeypatch.setenv("AI_MIGRATION_AUTO_QUEUE_NEXT_STAGE", "TRUE")
+    popen = _SequentialFakePopen([
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-1")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"], [], 0),
+    ])
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "final_report_completed")
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    assert any(event.type == "next_stage_queued" and json.loads(event.payload_json or "{}").get("to_stage") == 2 for event in events)
+    assert any(event.type == "stage_started" and event.stage == 2 for event in events)
+    assert "next_stage_auto_queue_skipped" not in [event.type for event in events]
+
+
+def test_stage2_pass_contract_with_pass_with_warnings_auto_queues_stage3(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn)
+    monkeypatch.setenv("AI_MIGRATION_AUTO_QUEUE_NEXT_STAGE", "true")
     popen = _SequentialFakePopen([
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-1")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"], [], 0),

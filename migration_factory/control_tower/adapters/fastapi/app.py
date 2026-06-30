@@ -136,6 +136,7 @@ from migration_factory.control_tower.application.v2_setup_service import (
 from migration_factory.control_tower.application.v2_settings import (
     ControlTowerSettings,
     build_settings_projection,
+    resolve_auto_queue_next_stage_policy,
     settings_projection_to_dict,
 )
 from migration_factory.control_tower.application.v2_approval_mapping import (
@@ -12880,6 +12881,7 @@ def _dependencies_payload(
     unit_of_work_factory: UnitOfWorkFactory,
 ) -> dict[str, Any]:
     settings: LocalApiSecuritySettings = app.state.security_settings
+    auto_queue_policy = resolve_auto_queue_next_stage_policy()
     return {
         "status": "ok",
         "correlation_id": request.state.correlation_id,
@@ -12887,6 +12889,12 @@ def _dependencies_payload(
         "origins": {
             "api": settings.api_origin,
             "frontend": settings.frontend_origin,
+        },
+        "policy": {
+            "auto_queue_next_stage_effective": auto_queue_policy.effective,
+            "auto_queue_next_stage_env_present": auto_queue_policy.env_present,
+            "auto_queue_next_stage_source": auto_queue_policy.reason,
+            "auto_queue_next_stage_value_valid": auto_queue_policy.valid,
         },
         "db_migrations": _migration_status(unit_of_work_factory),
         "process_control": _process_control_status(app),

@@ -17,6 +17,10 @@ from migration_factory.control_tower.application.redaction import (
     redact_model_summary,
     redact_public_value,
 )
+from migration_factory.control_tower.application.v2_settings import (
+    AUTO_QUEUE_NEXT_STAGE_ENV,
+    resolve_auto_queue_next_stage_policy,
+)
 from migration_factory.control_tower.application.v2_approval_mapping import V2ApprovalMappingService
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json, utc_now_text
 from migration_factory.control_tower.domain.gate_checksum import gate_checksum
@@ -76,8 +80,6 @@ _COPILOT_ENV_KEYS = (
 
 _DEFAULT_STAGE_TIMEOUT_SECONDS = 900
 _TIMEOUT_KILL_GRACE_SECONDS = 5
-_AUTO_QUEUE_NEXT_STAGE_ENV = "AI_MIGRATION_AUTO_QUEUE_NEXT_STAGE"
-
 _SECRET_ENV_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL", "AUTHORIZATION")
 
 _TERMINAL_FAILURES = {
@@ -1532,17 +1534,26 @@ class V2OrchestratorRunner:
         next_stage = stage_index + 1
         next_command_id: str | None = None
 
-        if _auto_queue_next_stage_disabled():
+        auto_queue_policy = resolve_auto_queue_next_stage_policy()
+        if not auto_queue_policy.effective:
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="next_stage_auto_queue_skipped",
                 status="skipped",
-                message="Automatic next-stage queue disabled by environment.",
+                message=(
+                    "Automatic next-stage queue disabled by policy."
+                    if auto_queue_policy.valid
+                    else "Automatic next-stage queue disabled because policy value is invalid."
+                ),
                 payload={
                     "from_stage": stage_index,
                     "to_stage": next_stage,
-                    "env": _AUTO_QUEUE_NEXT_STAGE_ENV,
+                    "env": auto_queue_policy.env_var,
+                    "reason": auto_queue_policy.reason,
+                    "env_present": auto_queue_policy.env_present,
+                    "configured_value": auto_queue_policy.configured_value,
+                    "valid": auto_queue_policy.valid,
                 },
             )
             return
@@ -2029,15 +2040,6 @@ def _blocked_command_id_for_stage(uow: Any, job_id: str, stage_index: int) -> st
             continue
         return str(getattr(cmd, "command_id", ""))
     return None
-
-
-def _auto_queue_next_stage_disabled() -> bool:
-    return str(os.environ.get(_AUTO_QUEUE_NEXT_STAGE_ENV) or "").strip().lower() in {
-        "0",
-        "false",
-        "no",
-        "off",
-    }
 
 
 def _with_runner_status(result: dict[str, Any], runner_status: str) -> dict[str, Any]:

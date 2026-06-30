@@ -90,6 +90,24 @@ def test_health_dependencies_reports_only_non_secret_versions_and_config_state(t
     assert "process_control_id" not in snapshot
 
 
+def test_health_dependencies_reports_auto_queue_policy_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    connection = _seeded_connection(tmp_path)
+    monkeypatch.setenv("AI_MIGRATION_AUTO_QUEUE_NEXT_STAGE", "False")
+    client = _client_from_connection(connection, process_control=True)
+
+    response = client.get("/v1/health/dependencies")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["policy"]["auto_queue_next_stage_effective"] is False
+    assert body["policy"]["auto_queue_next_stage_env_present"] is True
+    assert body["policy"]["auto_queue_next_stage_source"] == "auto_queue_disabled_by_policy"
+    assert body["policy"]["auto_queue_next_stage_value_valid"] is True
+
+
 def _client(tmp_path: Path) -> TestClient:
     connection = _api_test_connection(tmp_path)
     apply_pending_migrations(connection)
