@@ -1336,6 +1336,90 @@ def test_apply_prepared_context_applies_only_sandbox_and_records_verification(
     ]
 
 
+def test_apply_prepared_context_audits_missing_git_without_mutating_sandbox(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn, service, sandbox = _bound_repair_repo_service(tmp_path, redacted_modernized_path=True)
+    legacy = tmp_path / "legacy"
+    target_rel = "src/main/java/App.java"
+    target = sandbox / target_rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("import jakarta.servlet.http.HttpServletRequest;\nclass App {}\n", encoding="utf-8")
+    sandbox_before = target.read_text(encoding="utf-8")
+    proposal = service.create_proposal(
+        command_id="cmd-1",
+        failure_summary="package jakarta.servlet.http does not exist",
+        hypothesis="Import namespace mismatch",
+        patch_summary="Switch import back to javax",
+        affected_paths=(target_rel,),
+    )
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        decision="accept",
+        reasoning="Looks good",
+    )
+    patch = (
+        f"diff --git a/{target_rel} b/{target_rel}\n"
+        f"--- a/{target_rel}\n"
+        f"+++ b/{target_rel}\n"
+        "@@\n"
+        "-import jakarta.servlet.http.HttpServletRequest;\n"
+        "+import javax.servlet.http.HttpServletRequest;\n"
+    )
+    context = service.prepare_apply_context(
+        proposal_id=proposal.proposal_id,
+        command_id=proposal.command_id,
+        proposal_checksum="pc-test",
+        context_pack_checksum="cp-test",
+        reviewer_critique_id=critique.critique_id,
+        proposer_invocation_id="proposer-invoke-1",
+        reviewer_invocation_id="reviewer-invoke-1",
+        patch_preview=patch,
+        target_path=target_rel,
+        sandbox_reference=str(sandbox),
+        sandbox_checksum="sandbox-chk",
+        legacy_checksum="legacy-chk",
+        evidence_refs={"deterministic_rule_id": "JAKARTA_IMPORT_MECHANICAL_SOURCE"},
+    )
+    approval = service.record_approval_only(
+        context_id=context.context_id,
+        approval_checksum="approval-chk",
+        approval_note="Human approves sandbox-only apply later.",
+        approval_scope="sandbox_only",
+    )
+
+    def missing_git(**kwargs) -> PatchApplyResult:
+        return PatchApplyResult(
+            status="REJECTED",
+            reason="PATCH_APPLY_GIT_NOT_AVAILABLE: git executable not found or not runnable",
+            patch_path=Path(kwargs["run_dir"]) / "repairs" / "patch_attempt_1.diff",
+            touched_paths=[target_rel],
+            before_hashes={target_rel: "before"},
+            after_hashes={},
+            snapshot_dir=Path(kwargs["run_dir"]) / "repairs" / "snapshots" / "attempt_1",
+            created_paths=[],
+            errors=["PATCH_APPLY_GIT_NOT_AVAILABLE: git executable not found or not runnable"],
+        )
+
+    monkeypatch.setattr(v2_repair_flow, "apply_patch_to_sandbox", missing_git)
+    action = service.apply_prepared_context(
+        context_id=context.context_id,
+        approval_id=approval.approval_id,
+        expected_approval_checksum="approval-chk",
+        expected_sandbox_checksum="sandbox-chk",
+        expected_legacy_checksum="legacy-chk",
+        validation_runner=lambda **kwargs: _validation(True),
+    )
+
+    assert action.status == "failed"
+    assert "PATCH_APPLY_GIT_NOT_AVAILABLE" in action.result_summary
+    assert target.read_text(encoding="utf-8") == sandbox_before
+    assert not (legacy / target_rel).exists()
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [

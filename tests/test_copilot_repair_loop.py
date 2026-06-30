@@ -365,6 +365,8 @@ def test_git_apply_check_failure_rejects_patch(tmp_path: Path) -> None:
     sandbox = _sandbox(tmp_path)
 
     def fake_run(command, **kwargs):
+        if command[1:] == ["--version"]:
+            return subprocess.CompletedProcess(command, 0, stdout="git version fake", stderr="")
         return subprocess.CompletedProcess(command, 1, stdout="", stderr="bad patch")
 
     result = apply_patch_to_sandbox(
@@ -378,6 +380,130 @@ def test_git_apply_check_failure_rejects_patch(tmp_path: Path) -> None:
 
     assert result.status == "REJECTED"
     assert "bad patch" in result.reason
+
+
+def test_patch_apply_uses_configured_git_when_path_hides_git(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from migration_factory.repair_loop.patch_apply import apply_patch_to_sandbox
+
+    sandbox = _sandbox(tmp_path)
+    fake_git = str(tmp_path / "fake-git.cmd")
+    monkeypatch.setenv("AI_MIGRATION_GIT_CMD", fake_git)
+    monkeypatch.setattr("migration_factory.repair_loop.patch_apply.shutil.which", lambda _name: None)
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        if command == [fake_git, "--version"]:
+            return subprocess.CompletedProcess(command, 0, stdout="git version fake", stderr="")
+        if command[:3] == [fake_git, "apply", "--check"]:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[:2] == [fake_git, "apply"]:
+            (sandbox / "pom.xml").write_text("<project><dependency>h2</dependency></project>", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="unexpected")
+
+    result = apply_patch_to_sandbox(
+        run_dir=tmp_path / "run",
+        sandbox_path=sandbox,
+        attempt=1,
+        unified_diff=_h2_patch(),
+        touched_paths=["pom.xml"],
+        run=fake_run,
+    )
+
+    assert result.status == "APPLIED"
+    assert commands[0] == [fake_git, "--version"]
+    assert all(command[0] == fake_git for command in commands)
+
+
+def test_patch_apply_uses_path_git_when_no_explicit_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from migration_factory.repair_loop.patch_apply import apply_patch_to_sandbox
+
+    sandbox = _sandbox(tmp_path)
+    fake_git = str(tmp_path / "path-git.cmd")
+    monkeypatch.delenv("AI_MIGRATION_GIT_CMD", raising=False)
+    monkeypatch.setattr("migration_factory.repair_loop.patch_apply.shutil.which", lambda name: fake_git if name == "git" else None)
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        if command == [fake_git, "--version"]:
+            return subprocess.CompletedProcess(command, 0, stdout="git version fake", stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    result = apply_patch_to_sandbox(
+        run_dir=tmp_path / "run",
+        sandbox_path=sandbox,
+        attempt=1,
+        unified_diff=_h2_patch(),
+        touched_paths=["pom.xml"],
+        run=fake_run,
+    )
+
+    assert result.status == "APPLIED"
+    assert commands[0] == [fake_git, "--version"]
+    assert commands[1][:3] == [fake_git, "apply", "--check"]
+
+
+def test_patch_apply_missing_git_returns_domain_error_and_preserves_sandbox(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from migration_factory.repair_loop.patch_apply import GIT_NOT_AVAILABLE, apply_patch_to_sandbox
+
+    sandbox = _sandbox(tmp_path)
+    before = (sandbox / "pom.xml").read_text(encoding="utf-8")
+    monkeypatch.delenv("AI_MIGRATION_GIT_CMD", raising=False)
+    monkeypatch.setattr("migration_factory.repair_loop.patch_apply.shutil.which", lambda _name: None)
+    monkeypatch.setattr("migration_factory.repair_loop.patch_apply._COMMON_WINDOWS_GIT_PATHS", ())
+
+    result = apply_patch_to_sandbox(
+        run_dir=tmp_path / "run",
+        sandbox_path=sandbox,
+        attempt=1,
+        unified_diff=_h2_patch(),
+        touched_paths=["pom.xml"],
+        run=lambda command, **kwargs: subprocess.CompletedProcess(command, 127, stdout="", stderr="should not run"),
+    )
+
+    assert result.status == "REJECTED"
+    assert result.reason.startswith(GIT_NOT_AVAILABLE)
+    assert "WinError" not in result.reason
+    assert "FileNotFoundError" not in result.reason
+    assert (sandbox / "pom.xml").read_text(encoding="utf-8") == before
+
+
+def test_patch_apply_os_error_during_git_apply_is_domain_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from migration_factory.repair_loop.patch_apply import GIT_NOT_AVAILABLE, apply_patch_to_sandbox
+
+    sandbox = _sandbox(tmp_path)
+    monkeypatch.setenv("AI_MIGRATION_GIT_CMD", "git")
+
+    def fake_run(command, **kwargs):
+        if command == ["git", "--version"]:
+            return subprocess.CompletedProcess(command, 0, stdout="git version fake", stderr="")
+        raise FileNotFoundError("[WinError 2] Le fichier specifie est introuvable")
+
+    result = apply_patch_to_sandbox(
+        run_dir=tmp_path / "run",
+        sandbox_path=sandbox,
+        attempt=1,
+        unified_diff=_h2_patch(),
+        touched_paths=["pom.xml"],
+        run=fake_run,
+    )
+
+    assert result.status == "REJECTED"
+    assert result.reason == f"{GIT_NOT_AVAILABLE}: FileNotFoundError"
 
 
 def test_auto_patch_validation_pass_keeps_patch_and_marks_validated(tmp_path: Path, monkeypatch) -> None:

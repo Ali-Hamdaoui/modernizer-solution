@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -9,6 +10,12 @@ from typing import Any, Callable
 
 
 RunCallable = Callable[..., subprocess.CompletedProcess]
+GIT_CMD_ENV = "AI_MIGRATION_GIT_CMD"
+GIT_NOT_AVAILABLE = "PATCH_APPLY_GIT_NOT_AVAILABLE"
+_COMMON_WINDOWS_GIT_PATHS = (
+    Path(r"C:\Program Files\Git\cmd\git.exe"),
+    Path(r"C:\Program Files\Git\bin\git.exe"),
+)
 
 
 @dataclass(frozen=True)
@@ -44,7 +51,21 @@ def apply_patch_to_sandbox(
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     before_hashes, created_paths = _snapshot_files(sandbox, snapshot_dir, touched_paths)
 
-    check = _git_apply(["git", "apply", "--check", str(patch_path)], cwd=sandbox, run=run)
+    git_cmd, git_error = _resolve_git_executable(run=run)
+    if git_cmd is None:
+        return PatchApplyResult(
+            status="REJECTED",
+            reason=git_error,
+            patch_path=patch_path,
+            touched_paths=touched_paths,
+            before_hashes=before_hashes,
+            after_hashes={},
+            snapshot_dir=snapshot_dir,
+            created_paths=created_paths,
+            errors=[git_error],
+        )
+
+    check = _git_apply([git_cmd, "apply", "--check", str(patch_path)], cwd=sandbox, run=run)
     if check.returncode != 0:
         return PatchApplyResult(
             status="REJECTED",
@@ -58,7 +79,7 @@ def apply_patch_to_sandbox(
             errors=[_stderr_reason(check, "git apply --check failed")],
         )
 
-    applied = _git_apply(["git", "apply", str(patch_path)], cwd=sandbox, run=run)
+    applied = _git_apply([git_cmd, "apply", str(patch_path)], cwd=sandbox, run=run)
     if applied.returncode != 0:
         return PatchApplyResult(
             status="FAILED",
@@ -151,9 +172,47 @@ def _git_apply(command: list[str], *, cwd: Path, run: RunCallable) -> subprocess
     try:
         return run(command, cwd=str(cwd), capture_output=True, text=True, check=False, timeout=60)
     except OSError as exc:
-        return subprocess.CompletedProcess(command, 127, stdout="", stderr=str(exc))
+        return subprocess.CompletedProcess(command, 127, stdout="", stderr=f"{GIT_NOT_AVAILABLE}: {type(exc).__name__}")
     except subprocess.TimeoutExpired as exc:
         return subprocess.CompletedProcess(command, 124, stdout=exc.stdout or "", stderr=str(exc))
+
+
+def _resolve_git_executable(*, run: RunCallable) -> tuple[str | None, str]:
+    for candidate in _git_candidates():
+        validation = _validate_git(candidate, run=run)
+        if validation.returncode == 0:
+            return candidate, ""
+    return None, f"{GIT_NOT_AVAILABLE}: git executable not found or not runnable"
+
+
+def _git_candidates() -> list[str]:
+    candidates: list[str] = []
+    configured = os.environ.get(GIT_CMD_ENV, "").strip()
+    if configured:
+        candidates.append(configured)
+    path_git = shutil.which("git")
+    if path_git:
+        candidates.append(path_git)
+    for path in _COMMON_WINDOWS_GIT_PATHS:
+        if path.is_file():
+            candidates.append(str(path))
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = candidate.lower()
+        if key not in seen:
+            seen.add(key)
+            deduped.append(candidate)
+    return deduped
+
+
+def _validate_git(candidate: str, *, run: RunCallable) -> subprocess.CompletedProcess:
+    try:
+        return run([candidate, "--version"], capture_output=True, text=True, check=False, timeout=10)
+    except OSError:
+        return subprocess.CompletedProcess([candidate, "--version"], 127, stdout="", stderr="")
+    except subprocess.TimeoutExpired as exc:
+        return subprocess.CompletedProcess([candidate, "--version"], 124, stdout=exc.stdout or "", stderr="")
 
 
 def _stderr_reason(result: subprocess.CompletedProcess, fallback: str) -> str:
