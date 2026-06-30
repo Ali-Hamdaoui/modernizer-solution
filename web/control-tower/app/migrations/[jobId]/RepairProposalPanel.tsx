@@ -5,6 +5,7 @@ import {
   getCurrentRepairProposal,
   getRepairProposalDiff,
   getRepairAttempts,
+  requestRepairProposalRevision,
 } from "../../../lib/controlTowerApi";
 import type {
   ReviewedDiffProposal,
@@ -38,6 +39,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
   const [diffState, setDiffState] = useState<DiffState>({ status: "idle" });
   const [attemptsState, setAttemptsState] = useState<AttemptsState>({ status: "idle" });
   const [showAttempts, setShowAttempts] = useState(false);
+  const [revisionPending, setRevisionPending] = useState(false);
 
   useEffect(() => {
     if (!jobId) return;
@@ -81,6 +83,59 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
     load();
     return () => { cancelled = true; };
   }, [jobId]);
+
+  async function refreshProposalData() {
+    if (!jobId) return;
+    try {
+      const response = await getCurrentRepairProposal(jobId);
+      if (response.proposal) {
+        setProposalState({ status: "available", proposal: response.proposal });
+        setDiffState({ status: "loading" });
+        setAttemptsState({ status: "loading" });
+        const [diffResponse, attemptsResponse] = await Promise.all([
+          getRepairProposalDiff(jobId, response.proposal.proposal_id).catch(() => null),
+          getRepairAttempts(jobId).catch(() => null),
+        ]);
+        if (diffResponse?.safe_diff_preview) {
+          setDiffState({ status: "available", diff: diffResponse.safe_diff_preview });
+        } else {
+          setDiffState({ status: "error", message: diffResponse?.reason ?? "Diff unavailable" });
+        }
+        if (attemptsResponse?.attempts) {
+          setAttemptsState({ status: "available", attempts: attemptsResponse.attempts });
+        } else {
+          setAttemptsState({ status: "available", attempts: [] });
+        }
+      } else {
+        setProposalState({ status: "no-proposal" });
+      }
+    } catch {
+      setProposalState({
+        status: "error",
+        message: "Failed to refresh proposal data",
+      });
+    }
+  }
+
+  async function handleRequestRevision(instruction: string) {
+    if (!jobId) return;
+    setRevisionPending(true);
+    try {
+      const state = proposalState;
+      if (state.status !== "available") return;
+      const result = await requestRepairProposalRevision(jobId, state.proposal.proposal_id, {
+        user_instruction: instruction,
+        previous_diff_checksum: state.proposal.diff_checksum,
+        previous_reviewer_verdict_id:
+          state.proposal.reviewer_verdict?.reviewer_verdict_id ?? "",
+      });
+      await refreshProposalData();
+    } catch {
+      // Safe error display — no raw paths/stacks
+    } finally {
+      setRevisionPending(false);
+    }
+  }
 
   if (proposalState.status === "loading") {
     return (
@@ -199,6 +254,8 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
           tabEl?.click();
         }}
         onViewAttemptHistory={() => setShowAttempts((v) => !v)}
+        onRequestRevision={handleRequestRevision}
+        revisionPending={revisionPending}
       />
     </section>
   );

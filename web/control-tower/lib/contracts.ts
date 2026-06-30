@@ -1240,6 +1240,25 @@ export type RepairAttemptsResponse = {
   job_id: string;
 };
 
+// ── PR-D — User Revision Request types ───────────────────────────────────
+
+export type RepairProposalRevisionRequest = {
+  user_instruction: string;
+  previous_diff_checksum: string;
+  previous_reviewer_verdict_id: string;
+  expected_gate_checksum?: string;
+  idempotency_key?: string;
+};
+
+export type RepairProposalRevisionResponse = {
+  job_id: string;
+  previous_proposal_id: string;
+  proposal: ReviewedDiffProposal | null;
+  status: "revision_requested" | "user_review_required" | "failed";
+  event_ids: string[];
+  artifact_refs: Record<string, string>;
+};
+
 export const PROFILE_BY_ID: Record<MigrationProfileId, MigrationProfileOption> =
   MIGRATION_PROFILE_OPTIONS.reduce(
     (acc, profile) => {

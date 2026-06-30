@@ -112,9 +112,9 @@ export function ReviewedDiffTabs({
             <p className="meta">
               Chat is read-only in the current view. Use the assistant panel to ask questions about this proposal.
             </p>
-            <button type="button" disabled title="Coming in PR-D" data-testid="chat-revise-disabled">
-              Request revision
-            </button>
+            <p className="meta">
+              Use the "Request revision" button in the actions bar to request changes.
+            </p>
           </div>
         )}
       </div>

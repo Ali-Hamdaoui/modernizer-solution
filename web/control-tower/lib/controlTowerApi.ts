@@ -58,6 +58,9 @@ import type {
   RepairProposalDetailResponse,
   RepairProposalDiffResponse,
   RepairAttemptsResponse,
+  // PR-D types
+  RepairProposalRevisionRequest,
+  RepairProposalRevisionResponse,
 } from "./contracts";
 
 export const CONTROL_TOWER_FRONTEND_CLIENT_ID = "control-tower-frontend";
@@ -754,6 +757,24 @@ export async function getRepairAttempts(
   const safeJobId = requireJobId(jobId);
   return getJson<RepairAttemptsResponse>(
     `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/attempts`,
+  );
+}
+
+// ── PR-D — Request repair proposal revision ─────────────────────────────
+
+export async function requestRepairProposalRevision(
+  jobId: string,
+  proposalId: string,
+  request: RepairProposalRevisionRequest,
+): Promise<RepairProposalRevisionResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) {
+    throw new Error("Proposal id is required.");
+  }
+  return postJson<RepairProposalRevisionResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/${encodeURIComponent(safeProposalId)}/revise`,
+    request,
   );
 }
 

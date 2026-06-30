@@ -637,6 +637,22 @@ class ApproveRepairProposalRequest(BaseModel):
     context_pack_checksum: str
 
 
+# ── PR-D: User revision request for reviewed repair proposals ─────────
+
+
+class RepairProposalRevisionRequest(BaseModel):
+    """PR-D revision request — accepts only checksums and instruction text.
+
+    No raw patch, path, env, argv, or sandbox fields are accepted.
+    """
+    model_config = ConfigDict(extra="forbid")
+    user_instruction: str = Field(min_length=1, max_length=4000)
+    previous_diff_checksum: str = Field(min_length=1)
+    previous_reviewer_verdict_id: str = Field(min_length=1)
+    expected_gate_checksum: str | None = None
+    idempotency_key: str | None = None
+
+
 # ── F5 Reviewed repair approval (checksum-only, no raw diff/patch) ────
 
 
@@ -3307,6 +3323,224 @@ def create_app(
             return {
                 "attempts": [record_to_attempt_summary(r) for r in records],
                 "job_id": job_id,
+            }
+
+    # ── PR-D: User revision request for reviewed repair proposals ────────
+
+    @app.post("/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/revise")
+    def request_repair_proposal_revision(
+        job_id: str,
+        proposal_id: str,
+        payload: RepairProposalRevisionRequest,
+    ) -> dict[str, Any]:
+        """Request a revision of an existing reviewed repair proposal.
+
+        Validates ownership, checksums, and gate state. Creates a
+        UserRevisionRequest event, delegates to the existing revision
+        repair chain (regenerate_proposal -> review -> persist), and
+        returns the new reviewed proposal projection.
+
+        No patch is applied. No sandbox mutation. No validation rerun.
+        The old proposal remains immutable.
+        """
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            record = uow.v2_repairs.get_proposal_for_job(job_id, proposal_id)
+            if record is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "PROPOSAL_NOT_FOUND",
+                    f"Proposal {proposal_id!r} not found for job {job_id!r}.",
+                )
+            diff_ref = getattr(record, "diff_ref", None)
+            diff_checksum = getattr(record, "diff_checksum", None)
+            if not diff_ref or not diff_checksum:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "PROPOSAL_NO_DIFF",
+                    "Proposal has no diff_ref or diff_checksum.",
+                )
+            if payload.previous_diff_checksum != diff_checksum:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "STALE_DIFF_CHECKSUM",
+                    "previous_diff_checksum does not match the current proposal diff checksum.",
+                )
+            stored_verdict_id = getattr(record, "reviewer_verdict_id", None)
+            if not stored_verdict_id or payload.previous_reviewer_verdict_id != stored_verdict_id:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "STALE_REVIEWER_VERDICT",
+                    "previous_reviewer_verdict_id does not match the current proposal reviewer verdict.",
+                )
+            gate_id = getattr(record, "gate_id", None)
+            if not gate_id:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "PROPOSAL_NO_GATE",
+                    "Proposal has no gate_id.",
+                )
+            gate = uow.phase_gates.get(gate_id)
+            if gate is None or gate.job_id != job_id:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "GATE_NOT_FOUND",
+                    f"Gate {gate_id!r} not found for job {job_id!r}.",
+                )
+            if gate.gate_status != "open":
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "GATE_NOT_OPEN",
+                    f"Gate is {gate.gate_status}, not open.",
+                )
+            if payload.expected_gate_checksum:
+                actual_checksum = gate_checksum(
+                    gate_id=gate.gate_id,
+                    job_id=gate.job_id,
+                    gate_phase=gate.gate_phase,
+                    stage_index=gate.stage_index,
+                    source_artifact_checksum=gate.source_artifact_checksum,
+                    source_artifact_refs=tuple(json.loads(gate.source_artifact_refs_json or "[]")),
+                )
+                if payload.expected_gate_checksum != actual_checksum:
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "STALE_GATE_CHECKSUM",
+                        "expected_gate_checksum does not match current gate checksum.",
+                    )
+            user_instruction = (payload.user_instruction or "").strip()
+            if not user_instruction:
+                raise _error(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "EMPTY_USER_INSTRUCTION",
+                    "User instruction must be non-empty.",
+                )
+            if len(user_instruction) > 4000:
+                raise _error(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "INSTRUCTION_TOO_LONG",
+                    "User instruction must be 4000 characters or fewer.",
+                )
+            prohibited_patterns = ("sandbox_path", "argv", "env", "raw_command", "endpoint",
+                                   "deployment", "env_ref", "filesystem_target", "user_supplied_file_path")
+            instruction_lower = user_instruction.lower()
+            for prohibited in prohibited_patterns:
+                if prohibited in instruction_lower:
+                    raise _error(
+                        status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        "FORBIDDEN_INSTRUCTION_CONTENT",
+                        f"User instruction must not contain {prohibited!r}.",
+                    )
+            superseded_statuses = frozenset({"superseded", "approved", "rejected", "exhausted"})
+            if getattr(record, "status", "") in superseded_statuses:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "PROPOSAL_ALREADY_FINAL",
+                    f"Proposal status is {record.status!r}; cannot revise a finalized proposal.",
+                )
+            event_record = _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=getattr(record, "route_step_index", None) or getattr(gate, "stage_index", None),
+                event_type="repair_revision_requested",
+                status="requested",
+                message="User requested revision of repair proposal",
+                payload={
+                    "proposal_id": proposal_id,
+                    "previous_diff_checksum": payload.previous_diff_checksum,
+                    "previous_reviewer_verdict_id": payload.previous_reviewer_verdict_id,
+                    "user_instruction": redact_public_value(user_instruction),
+                    "idempotency_key": payload.idempotency_key or "",
+                },
+            )
+            gate_service = V2PhaseGateService(uow.phase_gates)
+            repair_flow = V2RepairFlowService(repair_repo=uow.v2_repairs)
+            action_service = V2GateActionService(
+                uow.phase_gates,
+                uow.gate_decisions,
+                gate_service,
+                revision_repo=uow.artifact_revisions,
+                repair_service=repair_flow,
+            )
+            repair_gate_service = V2RepairGateService(
+                gate_service=gate_service,
+                gate_action_service=action_service,
+                repair_flow=repair_flow,
+            )
+            revision_context = _resolve_reviewed_repair_runtime_context(
+                uow=uow,
+                job_id=job_id,
+                gate=gate,
+                proposal_id=proposal_id,
+            )
+            result = repair_gate_service.request_repair_revision(
+                gate_id=gate_id,
+                job_id=job_id,
+                decided_by="human",
+                proposal_id=proposal_id,
+                user_feedback=user_instruction,
+                idempotency_key=payload.idempotency_key,
+                expected_gate_checksum=payload.expected_gate_checksum,
+                command_id="" if revision_context is None else revision_context["command_id"],
+                model_client=app.state.v2_assistant_model_client,
+                prior_apply_rerun_info=None if revision_context is None else revision_context["prior_apply_rerun_info"],
+                source_profile="" if revision_context is None else revision_context["source_profile"],
+                target_profile="" if revision_context is None else revision_context["target_profile"],
+                sandbox_path="" if revision_context is None else revision_context["sandbox_path"],
+                run_dir="" if revision_context is None else revision_context["run_dir"],
+                legacy_path="" if revision_context is None else revision_context["legacy_path"],
+                deterministic_rule_id="" if revision_context is None else revision_context["deterministic_rule_id"],
+                previous_repair_review_checksums=()
+                if revision_context is None
+                else revision_context["previous_repair_review_checksums"],
+                cycle_number=1 if revision_context is None else revision_context["cycle_number"],
+                h2_required=bool(revision_context and revision_context["h2_required"]),
+            )
+            if result.status not in ("executed", "idempotent", "created"):
+                if revision_context is None and result.status in ("no_action_service",):
+                    pass
+                else:
+                    raise _error(
+                        http_status_for_gate_status(result.status),
+                        result.status.upper(),
+                        result.reason or result.status,
+                    )
+            new_record = uow.v2_repairs.get_current_proposal_for_job(job_id)
+            new_projection = None
+            if new_record is not None and getattr(new_record, "diff_ref", None) is not None:
+                try:
+                    new_projection = reviewed_diff_proposal_to_safe_dict(
+                        build_reviewed_diff_proposal_from_record(
+                            proposal_id=new_record.proposal_id,
+                            status=new_record.status,
+                            failure_summary=new_record.failure_summary,
+                            job_id=getattr(new_record, "job_id", None) or job_id,
+                            command_id=new_record.command_id,
+                            gate_id=getattr(new_record, "gate_id", None),
+                            route_step_index=getattr(new_record, "route_step_index", None),
+                            attempt_number=getattr(new_record, "attempt_number", None),
+                            revision_number=getattr(new_record, "revision_number", None),
+                            diagnosis_ref=getattr(new_record, "diagnosis_ref", None),
+                            repair_plan_ref=getattr(new_record, "repair_plan_ref", None),
+                            diff_ref=getattr(new_record, "diff_ref", None),
+                            diff_checksum=getattr(new_record, "diff_checksum", None),
+                            reviewer_verdict_id=getattr(new_record, "reviewer_verdict_id", None),
+                            reviewer_output_checksum=getattr(new_record, "reviewer_output_checksum", None),
+                            policy_validation_checksum=getattr(new_record, "policy_validation_checksum", None),
+                        )
+                    )
+                except (ValueError, OSError):
+                    pass
+            return {
+                "job_id": job_id,
+                "previous_proposal_id": proposal_id,
+                "proposal": new_projection,
+                "status": "revision_requested" if new_projection is None else "user_review_required",
+                "event_ids": [event_record.event_id] if event_record else [],
+                "artifact_refs": {
+                    "result_gate_id": result.result_gate_id or "",
+                    "result_revision_id": result.result_revision_id or "",
+                },
             }
 
     @app.post("/v1/v2/jobs/{job_id}/stages/progress")

@@ -1,22 +1,30 @@
 "use client";
 
-const FUTURE_ACTIONS = [
-  { label: "Request revision", description: "Coming in PR-D", disabled: true },
-  { label: "Approve sandbox apply", description: "Coming in PR-E", disabled: true },
-  { label: "Reject", description: "Coming in PR-D/PR-E", disabled: true },
-];
+import { useState } from "react";
+import { RepairRevisionDialog } from "./RepairRevisionDialog";
 
 export function RepairActionsBar({
   onViewDiff,
   onViewReviewerOpinion,
   onViewFilesChanged,
   onViewAttemptHistory,
+  onRequestRevision,
+  revisionPending,
 }: {
   onViewDiff: () => void;
   onViewReviewerOpinion: () => void;
   onViewFilesChanged: () => void;
   onViewAttemptHistory: () => void;
+  onRequestRevision: (instruction: string) => Promise<void>;
+  revisionPending: boolean;
 }) {
+  const [showDialog, setShowDialog] = useState(false);
+
+  async function handleSubmit(instruction: string) {
+    await onRequestRevision(instruction);
+    setShowDialog(false);
+  }
+
   return (
     <div className="repair-actions-bar" data-testid="repair-actions-bar">
       <div className="repair-actions-readonly">
@@ -34,20 +42,39 @@ export function RepairActionsBar({
           View attempt history
         </button>
       </div>
-      <div className="repair-actions-future">
-        <strong>Future</strong>
-        {FUTURE_ACTIONS.map((action) => (
-          <button
-            key={action.label}
-            type="button"
-            disabled={action.disabled}
-            title={action.description}
-            data-testid={`action-future-${action.label.toLowerCase().replace(/\s+/g, "-")}`}
-          >
-            {action.label}
-          </button>
-        ))}
+      <div className="repair-actions-mutation">
+        <strong>Actions</strong>
+        <button
+          type="button"
+          onClick={() => setShowDialog(true)}
+          disabled={revisionPending}
+          data-testid="action-request-revision"
+        >
+          Request revision
+        </button>
+        <button
+          type="button"
+          disabled
+          title="Coming in PR-E"
+          data-testid="action-approve-sandbox-apply"
+        >
+          Approve sandbox apply
+        </button>
+        <button
+          type="button"
+          disabled
+          title="Coming in PR-D/PR-E"
+          data-testid="action-reject-repair"
+        >
+          Reject
+        </button>
       </div>
+      <RepairRevisionDialog
+        open={showDialog}
+        onClose={() => setShowDialog(false)}
+        onSubmit={handleSubmit}
+        pending={revisionPending}
+      />
     </div>
   );
 }

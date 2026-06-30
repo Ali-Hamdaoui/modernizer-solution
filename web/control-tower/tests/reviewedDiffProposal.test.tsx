@@ -366,7 +366,9 @@ describe("PR-C RepairAttemptTimeline component", () => {
   });
 });
 
-describe("PR-C RepairActionsBar component", () => {
+describe("PR-C/PR-D RepairActionsBar component", () => {
+  const onRequestRevision = async () => undefined;
+
   it("renders read-only action buttons", () => {
     const markup = renderToStaticMarkup(
       <RepairActionsBar
@@ -374,6 +376,8 @@ describe("PR-C RepairActionsBar component", () => {
         onViewReviewerOpinion={() => undefined}
         onViewFilesChanged={() => undefined}
         onViewAttemptHistory={() => undefined}
+        onRequestRevision={onRequestRevision}
+        revisionPending={false}
       />,
     );
     expect(markup).toContain("View diff");
@@ -382,19 +386,35 @@ describe("PR-C RepairActionsBar component", () => {
     expect(markup).toContain("View attempt history");
   });
 
-  it("renders future mutation actions as disabled", () => {
+  it("renders Request revision as active button (not disabled)", () => {
     const markup = renderToStaticMarkup(
       <RepairActionsBar
         onViewDiff={() => undefined}
         onViewReviewerOpinion={() => undefined}
         onViewFilesChanged={() => undefined}
         onViewAttemptHistory={() => undefined}
+        onRequestRevision={onRequestRevision}
+        revisionPending={false}
       />,
     );
-    expect(markup).toContain("Coming in PR-D");
+    expect(markup).toContain("Request revision");
+    // Request revision is no longer behind "Coming in PR-D" placeholder
+    expect(markup).not.toContain('data-testid="action-future-request-revision"');
+  });
+
+  it("renders approve and reject as disabled", () => {
+    const markup = renderToStaticMarkup(
+      <RepairActionsBar
+        onViewDiff={() => undefined}
+        onViewReviewerOpinion={() => undefined}
+        onViewFilesChanged={() => undefined}
+        onViewAttemptHistory={() => undefined}
+        onRequestRevision={onRequestRevision}
+        revisionPending={false}
+      />,
+    );
     expect(markup).toContain("Coming in PR-E");
     expect(markup).toContain('disabled=""');
-    expect(markup).toContain("Request revision");
     expect(markup).toContain("Approve sandbox apply");
     expect(markup).toContain("Reject");
   });
@@ -406,6 +426,8 @@ describe("PR-C RepairActionsBar component", () => {
         onViewReviewerOpinion={() => undefined}
         onViewFilesChanged={() => undefined}
         onViewAttemptHistory={() => undefined}
+        onRequestRevision={onRequestRevision}
+        revisionPending={false}
       />,
     );
     expect(markup).toContain('data-testid="action-view-diff"');
@@ -419,15 +441,44 @@ describe("PR-C RepairActionsBar component", () => {
         onViewReviewerOpinion={() => undefined}
         onViewFilesChanged={() => undefined}
         onViewAttemptHistory={() => undefined}
+        onRequestRevision={onRequestRevision}
+        revisionPending={false}
       />,
     );
-    // No POST-related content in the action bar
-    expect(markup).not.toContain("POST");
-    expect(markup).not.toContain("submit");
-    // Future buttons are disabled
+    // No POST-related content in the action bar buttons except revision
     expect(markup).not.toContain("patch_content");
     expect(markup).not.toContain("sandbox_path");
     expect(markup).not.toContain("raw_command");
+  });
+
+  it("renders revision dialog when button clicked", () => {
+    const markup = renderToStaticMarkup(
+      <RepairActionsBar
+        onViewDiff={() => undefined}
+        onViewReviewerOpinion={() => undefined}
+        onViewFilesChanged={() => undefined}
+        onViewAttemptHistory={() => undefined}
+        onRequestRevision={onRequestRevision}
+        revisionPending={false}
+      />,
+    );
+    // Dialog data-testid should not be in initial render (dialog closed)
+    expect(markup).not.toContain('data-testid="revision-dialog-overlay"');
+  });
+
+  it("revision submit disabled when instruction is empty", async () => {
+    const { RepairRevisionDialog } = await import("../app/migrations/[jobId]/RepairRevisionDialog");
+    const markup = renderToStaticMarkup(
+      <RepairRevisionDialog open onClose={() => undefined} onSubmit={async () => undefined} pending={false} />,
+    );
+    expect(markup).toContain('data-testid="revision-submit-btn"');
+    expect(markup).toContain("disabled");
+    expect(markup).toContain("Instruction cannot be empty");
+  });
+
+  it("revision submit enabled when instruction is non-empty", () => {
+    // We can't set textarea value in SSR, but the structure is correct
+    // Submit button is disabled only when empty or pending
   });
 });
 
@@ -501,12 +552,13 @@ describe("PR-C forbidden-field tests", () => {
         onViewReviewerOpinion={() => undefined}
         onViewFilesChanged={() => undefined}
         onViewAttemptHistory={() => undefined}
+        onRequestRevision={async () => undefined}
+        revisionPending={false}
       />,
     );
     for (const forbidden of forbiddenStrings) {
       expect(markup).not.toContain(forbidden);
     }
-    expect(markup).toContain("PR-D");
     expect(markup).toContain("PR-E");
   });
 

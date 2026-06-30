@@ -1033,6 +1033,185 @@ describe("PR-C Reviewed Diff Proposal API client", () => {
     expect(result.job_id).toBe("job-1");
   });
 
+  // ── PR-D — Repair proposal revision API client tests ─────────────────
+
+  describe("PR-D RepairProposalRevision API client", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("requestRepairProposalRevision calls POST revise endpoint", async () => {
+      const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+        ok: true,
+        json: async () => ({
+          job_id: "job-1",
+          previous_proposal_id: "proposal-1",
+          proposal: null,
+          status: "revision_requested",
+          event_ids: ["evt-1"],
+          artifact_refs: {},
+        }),
+      } as Response));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { requestRepairProposalRevision } = await import("../lib/controlTowerApi");
+      await requestRepairProposalRevision("job-1", "proposal-1", {
+        user_instruction: "Only update validation dependency",
+        previous_diff_checksum: "sha256:abc",
+        previous_reviewer_verdict_id: "verdict-1",
+        idempotency_key: "idem-1",
+      });
+
+      const call = fetchMock.mock.calls[0] as [string, RequestInit?];
+      const url = String(call[0]);
+      expect(url).toContain("/v1/v2/jobs/job-1/repair/proposals/proposal-1/revise");
+      const body = JSON.parse(String(call[1]?.body ?? "{}"));
+      expect(body).toEqual({
+        user_instruction: "Only update validation dependency",
+        previous_diff_checksum: "sha256:abc",
+        previous_reviewer_verdict_id: "verdict-1",
+        idempotency_key: "idem-1",
+      });
+    });
+
+    it("request body contains only allowed fields", async () => {
+      const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+        ok: true,
+        json: async () => ({
+          job_id: "job-1",
+          previous_proposal_id: "proposal-1",
+          proposal: null,
+          status: "revision_requested",
+          event_ids: [],
+          artifact_refs: {},
+        }),
+      } as Response));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { requestRepairProposalRevision } = await import("../lib/controlTowerApi");
+      await requestRepairProposalRevision("job-1", "proposal-1", {
+        user_instruction: "Fix it",
+        previous_diff_checksum: "sha256:abc",
+        previous_reviewer_verdict_id: "verdict-1",
+        expected_gate_checksum: "sha256:gate",
+        idempotency_key: "idem-2",
+      });
+
+      const call = fetchMock.mock.calls[0] as [string, RequestInit?];
+      const body = JSON.parse(String(call[1]?.body ?? "{}"));
+      expect(body).toEqual({
+        user_instruction: "Fix it",
+        previous_diff_checksum: "sha256:abc",
+        previous_reviewer_verdict_id: "verdict-1",
+        expected_gate_checksum: "sha256:gate",
+        idempotency_key: "idem-2",
+      });
+      const serialized = JSON.stringify(body);
+      expect(serialized).not.toContain("patch_content");
+      expect(serialized).not.toContain("target_path");
+      expect(serialized).not.toContain("sandbox_path");
+      expect(serialized).not.toContain("argv");
+      expect(serialized).not.toContain("raw_command");
+    });
+
+    it("throws on empty proposal id", async () => {
+      const { requestRepairProposalRevision } = await import("../lib/controlTowerApi");
+      await expect(
+        requestRepairProposalRevision("job-1", "", {
+          user_instruction: "Fix it",
+          previous_diff_checksum: "sha256:abc",
+          previous_reviewer_verdict_id: "verdict-1",
+        }),
+      ).rejects.toThrow("Proposal id is required.");
+    });
+
+    it("POST method is used", async () => {
+      const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+        ok: true,
+        json: async () => ({
+          job_id: "job-1",
+          previous_proposal_id: "proposal-1",
+          proposal: null,
+          status: "revision_requested",
+          event_ids: [],
+          artifact_refs: {},
+        }),
+      } as Response));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { requestRepairProposalRevision } = await import("../lib/controlTowerApi");
+      await requestRepairProposalRevision("job-1", "proposal-1", {
+        user_instruction: "Fix it",
+        previous_diff_checksum: "sha256:abc",
+        previous_reviewer_verdict_id: "verdict-1",
+      });
+
+      const call = fetchMock.mock.calls[0] as [string, RequestInit?];
+      expect(call[1]?.method).toBe("POST");
+    });
+
+    it("response shape matches contract", async () => {
+      const mockResponse = {
+        job_id: "job-1",
+        previous_proposal_id: "proposal-1",
+        proposal: null,
+        status: "revision_requested",
+        event_ids: ["evt-1"],
+        artifact_refs: { result_revision_id: "rev-1" },
+      };
+      const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+        ok: true,
+        json: async () => mockResponse,
+      } as Response));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { requestRepairProposalRevision } = await import("../lib/controlTowerApi");
+      const result = await requestRepairProposalRevision("job-1", "proposal-1", {
+        user_instruction: "Fix it",
+        previous_diff_checksum: "sha256:abc",
+        previous_reviewer_verdict_id: "verdict-1",
+      });
+      expect(result.job_id).toBe("job-1");
+      expect(result.previous_proposal_id).toBe("proposal-1");
+      expect(result.status).toBe("revision_requested");
+      expect(result.event_ids).toContain("evt-1");
+      expect(result.artifact_refs.result_revision_id).toBe("rev-1");
+      expect("patch_content" in result).toBe(false);
+      expect("target_path" in result).toBe(false);
+      expect("sandbox_path" in result).toBe(false);
+    });
+
+    it("no raw fields in revision request or response", async () => {
+      const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+        ok: true,
+        json: async () => ({
+          job_id: "job-1",
+          previous_proposal_id: "proposal-1",
+          proposal: null,
+          status: "revision_requested",
+          event_ids: [],
+          artifact_refs: {},
+        }),
+      } as Response));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { requestRepairProposalRevision } = await import("../lib/controlTowerApi");
+      const result = await requestRepairProposalRevision("job-1", "proposal-1", {
+        user_instruction: "Fix it",
+        previous_diff_checksum: "sha256:abc",
+        previous_reviewer_verdict_id: "verdict-1",
+      });
+      const serialized = JSON.stringify(result);
+      expect(serialized).not.toContain("sandbox_path");
+      expect(serialized).not.toContain("argv");
+      expect(serialized).not.toContain("raw_command");
+      expect(serialized).not.toContain("endpoint");
+      expect(serialized).not.toContain("deployment");
+      expect(serialized).not.toContain("api_key");
+      expect(serialized).not.toContain("secret");
+    });
+  });
+
   it("no raw field exposure in PR-C responses", async () => {
     const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
       ok: true,
