@@ -545,7 +545,11 @@ def build_reviewed_diff_proposal_from_record(
 
 
 def record_to_attempt_summary(record: Any) -> dict[str, Any]:
-    """Convert a V2RepairProposalRecord to a safe attempt summary dict."""
+    """Convert a V2RepairProposalRecord to a safe attempt summary dict.
+
+    PR-F: Extended with apply/rerun/rollback/validation/attempt fields.
+    No raw patch, path, env, argv, command, or secrets exposed.
+    """
     return {
         "proposal_id": record.proposal_id,
         "command_id": record.command_id if hasattr(record, "command_id") else None,
@@ -554,11 +558,19 @@ def record_to_attempt_summary(record: Any) -> dict[str, Any]:
         "attempt_number": getattr(record, "attempt_number", None),
         "revision_number": getattr(record, "revision_number", None),
         "status": record.status,
-        "reviewer_decision": None,
+        "apply_status": getattr(record, "apply_status", None),
+        "rerun_status": getattr(record, "rerun_status", None),
+        "rollback_status": getattr(record, "rollback_status", None),
+        "reviewer_decision": getattr(record, "reviewer_decision", None),
         "diff_checksum": getattr(record, "diff_checksum", None),
         "policy_validation_checksum": getattr(record, "policy_validation_checksum", None),
+        "validation_result_ref": getattr(record, "validation_result_ref", None),
+        "next_gate_id": getattr(record, "next_gate_id", None),
+        "next_gate_status": getattr(record, "next_gate_status", None),
+        "remaining_attempts": getattr(record, "remaining_attempts", None),
         "status_reason": getattr(record, "status_reason", None),
         "created_at": record.created_at,
+        "completed_at": getattr(record, "completed_at", None),
     }
 
 

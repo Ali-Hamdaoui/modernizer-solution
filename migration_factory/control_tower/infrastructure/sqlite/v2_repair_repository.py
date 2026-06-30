@@ -42,6 +42,16 @@ class V2RepairProposalRecord:
     policy_validation_checksum: str | None = None
     gate_id: str | None = None
     status_reason: str | None = None
+    # PR-F: retry/attempt history fields (all nullable)
+    apply_status: str | None = None
+    rerun_status: str | None = None
+    rollback_status: str | None = None
+    validation_result_ref: str | None = None
+    next_gate_id: str | None = None
+    next_gate_status: str | None = None
+    remaining_attempts: int | None = None
+    completed_at: str | None = None
+    reviewer_decision: str | None = None
 
 
 @dataclass(frozen=True)
@@ -74,9 +84,13 @@ class SqliteV2RepairRepository:
                 repair_plan_ref, diff_ref, diff_checksum,
                 safe_diff_preview_ref, reviewer_verdict_id,
                 reviewer_verdict_ref, reviewer_output_checksum,
-                policy_validation_checksum, gate_id, status_reason
+                policy_validation_checksum, gate_id, status_reason,
+                apply_status, rerun_status, rollback_status,
+                validation_result_ref, next_gate_id, next_gate_status,
+                remaining_attempts, completed_at, reviewer_decision
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 record.proposal_id,
                 record.command_id,
@@ -109,6 +123,15 @@ class SqliteV2RepairRepository:
                 record.policy_validation_checksum,
                 record.gate_id,
                 record.status_reason,
+                record.apply_status,
+                record.rerun_status,
+                record.rollback_status,
+                record.validation_result_ref,
+                record.next_gate_id,
+                record.next_gate_status,
+                record.remaining_attempts,
+                record.completed_at,
+                record.reviewer_decision,
             ),
         )
 
@@ -130,6 +153,32 @@ class SqliteV2RepairRepository:
         self._connection.execute(
             "UPDATE v2_repair_proposals SET status = ?, status_reason = ? WHERE proposal_id = ?",
             (status, status_reason, proposal_id),
+        )
+
+    def update_proposal_prf_fields(self, proposal_id: str, **fields) -> None:
+        """Update PR-F retry/attempt history fields for a proposal.
+
+        Accepts keyword args matching column names:
+        apply_status, rerun_status, rollback_status, validation_result_ref,
+        next_gate_id, next_gate_status, remaining_attempts, completed_at,
+        reviewer_decision, status, status_reason
+        """
+        allowed = frozenset({
+            "apply_status", "rerun_status", "rollback_status",
+            "validation_result_ref", "next_gate_id", "next_gate_status",
+            "remaining_attempts", "completed_at", "reviewer_decision",
+            "status", "status_reason",
+        })
+        bad = [k for k in fields if k not in allowed]
+        if bad:
+            raise ValueError(f"Unknown PR-F fields: {bad}")
+        if not fields:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        values = tuple(fields[k] for k in fields) + (proposal_id,)
+        self._connection.execute(
+            f"UPDATE v2_repair_proposals SET {set_clause} WHERE proposal_id = ?",
+            values,
         )
 
     def get_proposal(self, proposal_id: str) -> V2RepairProposalRecord | None:
@@ -258,6 +307,15 @@ class SqliteV2RepairRepository:
             policy_validation_checksum=str(row["policy_validation_checksum"]) if "policy_validation_checksum" in keys and row["policy_validation_checksum"] else None,
             gate_id=str(row["gate_id"]) if "gate_id" in keys and row["gate_id"] else None,
             status_reason=str(row["status_reason"]) if "status_reason" in keys and row["status_reason"] else None,
+            apply_status=str(row["apply_status"]) if "apply_status" in keys and row["apply_status"] else None,
+            rerun_status=str(row["rerun_status"]) if "rerun_status" in keys and row["rerun_status"] else None,
+            rollback_status=str(row["rollback_status"]) if "rollback_status" in keys and row["rollback_status"] else None,
+            validation_result_ref=str(row["validation_result_ref"]) if "validation_result_ref" in keys and row["validation_result_ref"] else None,
+            next_gate_id=str(row["next_gate_id"]) if "next_gate_id" in keys and row["next_gate_id"] else None,
+            next_gate_status=str(row["next_gate_status"]) if "next_gate_status" in keys and row["next_gate_status"] else None,
+            remaining_attempts=int(row["remaining_attempts"]) if "remaining_attempts" in keys and row["remaining_attempts"] is not None else None,
+            completed_at=str(row["completed_at"]) if "completed_at" in keys and row["completed_at"] else None,
+            reviewer_decision=str(row["reviewer_decision"]) if "reviewer_decision" in keys and row["reviewer_decision"] else None,
         )
 
     def _row_to_action(self, row: sqlite3.Row) -> V2SandboxActionRecord:

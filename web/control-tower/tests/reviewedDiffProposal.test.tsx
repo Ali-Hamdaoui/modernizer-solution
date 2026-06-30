@@ -300,11 +300,19 @@ describe("PR-C RepairAttemptTimeline component", () => {
         attempt_number: 1,
         revision_number: null,
         status: "reviewer_accepted",
+        apply_status: null,
+        rerun_status: null,
+        rollback_status: null,
+        validation_result_ref: null,
+        next_gate_id: null,
+        next_gate_status: null,
+        remaining_attempts: null,
         reviewer_decision: null,
         diff_checksum: "sha256:abc",
         policy_validation_checksum: null,
         status_reason: null,
         created_at: "2026-06-30T00:00:00Z",
+        completed_at: null,
       },
     ];
     const markup = renderToStaticMarkup(<RepairAttemptTimeline attempts={attempts} />);
@@ -326,11 +334,19 @@ describe("PR-C RepairAttemptTimeline component", () => {
         attempt_number: 1,
         revision_number: 2,
         status: "user_review_required",
+        apply_status: null,
+        rerun_status: null,
+        rollback_status: null,
+        validation_result_ref: null,
+        next_gate_id: null,
+        next_gate_status: null,
+        remaining_attempts: null,
         reviewer_decision: null,
         diff_checksum: null,
         policy_validation_checksum: null,
         status_reason: "revision requested",
         created_at: "2026-06-30T01:00:00Z",
+        completed_at: null,
       },
     ];
     const markup = renderToStaticMarkup(<RepairAttemptTimeline attempts={attempts} />);
@@ -348,11 +364,19 @@ describe("PR-C RepairAttemptTimeline component", () => {
         attempt_number: 1,
         revision_number: null,
         status: "pending",
+        apply_status: null,
+        rerun_status: null,
+        rollback_status: null,
+        validation_result_ref: null,
+        next_gate_id: null,
+        next_gate_status: null,
+        remaining_attempts: null,
         reviewer_decision: null,
         diff_checksum: null,
         policy_validation_checksum: null,
         status_reason: null,
         created_at: "2026-06-30T00:00:00Z",
+        completed_at: null,
       },
     ];
     const markup = renderToStaticMarkup(<RepairAttemptTimeline attempts={attempts} />);
@@ -757,11 +781,19 @@ describe("PR-C forbidden-field tests", () => {
         attempt_number: 1,
         revision_number: null,
         status: "pending",
+        apply_status: null,
+        rerun_status: null,
+        rollback_status: null,
+        validation_result_ref: null,
+        next_gate_id: null,
+        next_gate_status: null,
+        remaining_attempts: null,
         reviewer_decision: null,
         diff_checksum: null,
         policy_validation_checksum: null,
         status_reason: null,
         created_at: "2026-06-30T00:00:00Z",
+        completed_at: null,
       },
     ];
     const markup = renderToStaticMarkup(<RepairAttemptTimeline attempts={attempts} />);
@@ -769,5 +801,138 @@ describe("PR-C forbidden-field tests", () => {
       expect(markup).not.toContain(forbidden);
     }
     expect(markup).toContain("p-1");
+  });
+});
+
+describe("PR-F RepairAttemptTimeline enrichments", () => {
+  it("renders validation passed status and apply status", () => {
+    const attempts: RepairAttemptSummary[] = [
+      {
+        proposal_id: "p-pass",
+        command_id: null,
+        job_id: "job-1",
+        gate_id: null,
+        attempt_number: 1,
+        revision_number: null,
+        status: "approved_applied",
+        apply_status: "APPLIED",
+        rerun_status: "passed",
+        rollback_status: "",
+        validation_result_ref: null,
+        next_gate_id: null,
+        next_gate_status: null,
+        remaining_attempts: 3,
+        reviewer_decision: null,
+        diff_checksum: null,
+        policy_validation_checksum: null,
+        status_reason: null,
+        created_at: "2026-06-30T00:00:00Z",
+        completed_at: null,
+      },
+    ];
+    const markup = renderToStaticMarkup(<RepairAttemptTimeline attempts={attempts} />);
+    expect(markup).toContain("APPROVED APPLIED");
+    expect(markup).toContain("APPLIED");
+    expect(markup).toContain("passed");
+    expect(markup).toContain("3 remaining");
+  });
+
+  it("renders validation failed status and rollback status", () => {
+    const attempts: RepairAttemptSummary[] = [
+      {
+        proposal_id: "p-fail",
+        command_id: null,
+        job_id: "job-1",
+        gate_id: null,
+        attempt_number: 2,
+        revision_number: null,
+        status: "approve_failed",
+        apply_status: "APPLIED",
+        rerun_status: "failed",
+        rollback_status: "rolled_back",
+        validation_result_ref: null,
+        next_gate_id: "next-gate-2",
+        next_gate_status: "repair_gate_created",
+        remaining_attempts: 2,
+        reviewer_decision: null,
+        diff_checksum: null,
+        policy_validation_checksum: null,
+        status_reason: null,
+        created_at: "2026-06-30T00:00:00Z",
+        completed_at: "2026-06-30T01:00:00Z",
+      },
+    ];
+    const markup = renderToStaticMarkup(<RepairAttemptTimeline attempts={attempts} />);
+    expect(markup).toContain("failed");
+    expect(markup).toContain("rolled_back");
+    expect(markup).toContain("next-gate-2");
+    expect(markup).toContain("repair_gate_created");
+    expect(markup).toContain("2 remaining");
+    expect(markup).toContain("Completed");
+  });
+
+  it("renders exhausted state", () => {
+    const attempts: RepairAttemptSummary[] = [
+      {
+        proposal_id: "p-exhaust",
+        command_id: null,
+        job_id: "job-1",
+        gate_id: null,
+        attempt_number: 3,
+        revision_number: null,
+        status: "exhausted",
+        apply_status: "APPLIED",
+        rerun_status: "failed",
+        rollback_status: "rolled_back",
+        validation_result_ref: null,
+        next_gate_id: null,
+        next_gate_status: null,
+        remaining_attempts: 0,
+        reviewer_decision: null,
+        diff_checksum: null,
+        policy_validation_checksum: null,
+        status_reason: "All repair attempts exhausted for stage 1",
+        created_at: "2026-06-30T00:00:00Z",
+        completed_at: "2026-06-30T02:00:00Z",
+      },
+    ];
+    const markup = renderToStaticMarkup(<RepairAttemptTimeline attempts={attempts} />);
+    expect(markup).toContain("exhausted-notice");
+    expect(markup).toContain("All repair attempts exhausted");
+    expect(markup).toContain("0 remaining");
+  });
+
+  it("forbidden fields are not rendered in enriched attempt data", () => {
+    const attempts: RepairAttemptSummary[] = [
+      {
+        proposal_id: "p-safe",
+        command_id: null,
+        job_id: "job-1",
+        gate_id: null,
+        attempt_number: 1,
+        revision_number: null,
+        status: "approved_applied",
+        apply_status: "APPLIED",
+        rerun_status: "passed",
+        rollback_status: "",
+        validation_result_ref: null,
+        next_gate_id: null,
+        next_gate_status: null,
+        remaining_attempts: 3,
+        reviewer_decision: null,
+        diff_checksum: null,
+        policy_validation_checksum: null,
+        status_reason: null,
+        created_at: "2026-06-30T00:00:00Z",
+        completed_at: null,
+      },
+    ];
+    const markup = renderToStaticMarkup(<RepairAttemptTimeline attempts={attempts} />);
+    expect(markup).not.toContain("target_path");
+    expect(markup).not.toContain("patch_content");
+    expect(markup).not.toContain("sandbox_path");
+    expect(markup).not.toContain("raw_command");
+    expect(markup).not.toContain("C:\\");
+    expect(markup).not.toContain("AZURE_OPENAI");
   });
 });

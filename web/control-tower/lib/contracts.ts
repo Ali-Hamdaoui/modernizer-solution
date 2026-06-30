@@ -1228,11 +1228,19 @@ export type RepairAttemptSummary = {
   attempt_number: number | null;
   revision_number: number | null;
   status: string;
+  apply_status: string | null;
+  rerun_status: string | null;
+  rollback_status: string | null;
   reviewer_decision: string | null;
   diff_checksum: string | null;
   policy_validation_checksum: string | null;
+  validation_result_ref: string | null;
+  next_gate_id: string | null;
+  next_gate_status: string | null;
+  remaining_attempts: number | null;
   status_reason: string | null;
   created_at: string;
+  completed_at: string | null;
 };
 
 export type RepairAttemptsResponse = {

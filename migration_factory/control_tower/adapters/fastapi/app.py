@@ -3855,10 +3855,16 @@ def create_app(
             apply_reason = apply_result.reason
 
             if apply_status != "APPLIED":
-                uow.v2_repairs.update_proposal_status_with_reason(
+                completed_at = utc_now_text()
+                uow.v2_repairs.update_proposal_prf_fields(
                     proposal_id,
-                    "approve_failed",
-                    f"Sandbox apply failed: {apply_reason}",
+                    status="approve_failed",
+                    status_reason=f"Sandbox apply failed: {apply_reason}",
+                    apply_status=apply_status,
+                    rerun_status="",
+                    rollback_status="",
+                    remaining_attempts=0,
+                    completed_at=completed_at,
                 )
                 _append_v2_event(
                     uow,
@@ -3895,11 +3901,32 @@ def create_app(
             allowed_next_actions: tuple[str, ...] = ()
 
             if validation.passed:
-                # Update proposal status
-                uow.v2_repairs.update_proposal_status_with_reason(
+                # Handle route progression via repair gate service
+                repair_gate_svc = V2RepairGateService(
+                    gate_service=V2PhaseGateService(uow.phase_gates),
+                )
+                transition = repair_gate_svc.handle_repair_validation_result(
+                    job_id=job_id,
+                    stage_index=int(getattr(gate, "stage_index", 0) or 0),
+                    validation_passed=True,
+                    validation_id=proposal_id,
+                    sandbox_path=sandbox_path,
+                )
+                next_gate_id = transition.gate_id or None
+                next_gate_status = transition.status or None
+                remaining_attempts = transition.remaining_attempts or 0
+                completed_at = utc_now_text()
+                uow.v2_repairs.update_proposal_prf_fields(
                     proposal_id,
-                    "approved_applied",
-                    "Patch applied to sandbox and validation passed.",
+                    status="approved_applied",
+                    status_reason="Patch applied to sandbox and validation passed.",
+                    apply_status=apply_status,
+                    rerun_status=rerun_status,
+                    rollback_status=None,
+                    remaining_attempts=remaining_attempts,
+                    completed_at=completed_at,
+                    next_gate_id=next_gate_id,
+                    next_gate_status=next_gate_status,
                 )
                 _append_v2_event(
                     uow,
@@ -3912,22 +3939,8 @@ def create_app(
                 )
                 allowed_next_actions = ("view_result", "continue_migration")
 
-                # Handle route progression via repair gate service
-                repair_gate_svc = V2RepairGateService(
-                    gate_service=V2PhaseGateService(uow.phase_gates),
-                )
-                transition = repair_gate_svc.handle_repair_validation_result(
-                    job_id=job_id,
-                    stage_index=int(getattr(gate, "stage_index", 0) or 0),
-                    validation_passed=True,
-                    validation_id=proposal_id,
-                    sandbox_path=sandbox_path,
-                )
-                next_gate_id = transition.gate_id or ""
-                next_gate_status = transition.status or ""
-
             else:
-                # Validation failed - rollback
+                # Validation failed - rollback, then create next repair cycle
                 rollback_ok, rollback_reason = rollback_patch(
                     sandbox_path=sandbox_path,
                     snapshot_dir=apply_result.snapshot_dir,
@@ -3935,10 +3948,32 @@ def create_app(
                     created_paths=apply_result.created_paths,
                 )
                 rollback_status = "rolled_back" if rollback_ok else "rollback_failed"
-                uow.v2_repairs.update_proposal_status_with_reason(
+                # Create next repair cycle
+                repair_gate_svc = V2RepairGateService(
+                    gate_service=V2PhaseGateService(uow.phase_gates),
+                )
+                transition = repair_gate_svc.handle_repair_validation_result(
+                    job_id=job_id,
+                    stage_index=int(getattr(gate, "stage_index", 0) or 0),
+                    validation_passed=False,
+                    validation_id=proposal_id,
+                    sandbox_path=sandbox_path,
+                )
+                next_gate_id = transition.gate_id or None
+                next_gate_status = transition.status or None
+                remaining_attempts = transition.remaining_attempts or 0
+                completed_at = utc_now_text()
+                uow.v2_repairs.update_proposal_prf_fields(
                     proposal_id,
-                    "approve_failed",
-                    f"Validation failed after sandbox apply: {'; '.join(validation.errors)}",
+                    status="approve_failed",
+                    status_reason=f"Validation failed after sandbox apply: {'; '.join(validation.errors)}",
+                    apply_status=apply_status,
+                    rerun_status=rerun_status,
+                    rollback_status=rollback_status,
+                    remaining_attempts=remaining_attempts,
+                    completed_at=completed_at,
+                    next_gate_id=next_gate_id,
+                    next_gate_status=next_gate_status,
                 )
                 _append_v2_event(
                     uow,
@@ -3953,21 +3988,6 @@ def create_app(
                         "rollback_status": rollback_status,
                     },
                 )
-
-                # Create next repair cycle
-                repair_gate_svc = V2RepairGateService(
-                    gate_service=V2PhaseGateService(uow.phase_gates),
-                )
-                transition = repair_gate_svc.handle_repair_validation_result(
-                    job_id=job_id,
-                    stage_index=int(getattr(gate, "stage_index", 0) or 0),
-                    validation_passed=False,
-                    validation_id=proposal_id,
-                    sandbox_path=sandbox_path,
-                )
-                next_gate_id = transition.gate_id or ""
-                next_gate_status = transition.status or ""
-                remaining_attempts = transition.remaining_attempts or 0
                 allowed_next_actions = ("view_result", "request_revision")
 
         return RepairProposalApproveResponse(
