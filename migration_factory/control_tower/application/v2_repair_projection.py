@@ -7,8 +7,16 @@ or execution details. Full diff loaded by backend artifact ref endpoint only.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
+from migration_factory.control_tower.application.redaction import redact_model_summary
+from migration_factory.control_tower.application.safe_diff_preview import (
+    SafeDiffFile,
+    SafeDiffPreview,
+    build_safe_diff_preview,
+    safe_diff_preview_to_dict,
+)
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json
 
 
@@ -185,3 +193,291 @@ def _safe_model_status(value: Any) -> dict[str, Any]:
             "fallback_used": bool(raw.get("fallback_used")),
         }
     return safe
+
+
+READ_ONLY_REPAIR_ACTIONS: tuple[str, ...] = (
+    "view_diff",
+    "view_reviewer_opinion",
+    "ask_explanation",
+)
+
+
+@dataclass(frozen=True)
+class FilesChangedSummary:
+    path: str
+    change_type: str
+    additions: int
+    deletions: int
+
+
+@dataclass(frozen=True)
+class ReviewerVerdictProjection:
+    reviewer_verdict_id: str | None = None
+    decision: str = "unknown"
+    reasoning: str | None = None
+    missing_evidence: tuple[str, ...] = ()
+    unsafe_assumptions: tuple[str, ...] = ()
+    model_invocation_id: str | None = None
+    output_checksum: str | None = None
+
+
+@dataclass(frozen=True)
+class ReviewedDiffProposal:
+    proposal_id: str
+    job_id: str | None = None
+    command_id: str | None = None
+    gate_id: str | None = None
+    route_step_index: int | None = None
+    stage_index: int | None = None
+    status: str = ""
+    attempt_number: int | None = None
+    revision_number: int | None = None
+    failure_summary: str = ""
+    diagnosis_ref: str | None = None
+    repair_plan_ref: str | None = None
+    diff_ref: str | None = None
+    diff_checksum: str = ""
+    safe_diff_preview: SafeDiffPreview | None = None
+    reviewer_verdict: ReviewerVerdictProjection | None = None
+    files_changed: list[FilesChangedSummary] = field(default_factory=list)
+    risk: str | None = None
+    required_validation: tuple[str, ...] = ()
+    allowed_actions: tuple[str, ...] = READ_ONLY_REPAIR_ACTIONS
+    redactions: tuple[str, ...] = ()
+
+
+def build_reviewed_diff_proposal_projection(
+    *,
+    proposal_id: str,
+    status: str,
+    failure_summary: str,
+    review_chain: dict[str, Any] | None = None,
+    reviewer_verdict: dict[str, Any] | None = None,
+    job_id: str | None = None,
+    command_id: str | None = None,
+    gate_id: str | None = None,
+    route_step_index: int | None = None,
+    stage_index: int | None = None,
+    attempt_number: int | None = None,
+    revision_number: int | None = None,
+    diagnosis_ref: str | None = None,
+    repair_plan_ref: str | None = None,
+    required_validation: tuple[str, ...] = (),
+    allowed_actions: tuple[str, ...] = READ_ONLY_REPAIR_ACTIONS,
+    risk: str | None = None,
+    final_diff_text: str | None = None,
+) -> ReviewedDiffProposal:
+    chain = review_chain or {}
+    diff_ref = _reviewed_diff_ref_from_chain(chain)
+    if diff_ref is None:
+        raise ValueError("reviewed diff ref is required for projection")
+
+    safe_diff_preview = build_safe_diff_preview(
+        proposal_id=proposal_id,
+        diff_ref=diff_ref,
+        diff_text=final_diff_text,
+    )
+    verdict = _build_reviewer_verdict_projection(
+        reviewer_verdict=reviewer_verdict,
+        review_chain=chain,
+    )
+    files_changed = [
+        FilesChangedSummary(
+            path=file.path,
+            change_type=file.change_type,
+            additions=file.additions,
+            deletions=file.deletions,
+        )
+        for file in safe_diff_preview.files
+    ]
+    redactions = list(safe_diff_preview.redactions)
+    if verdict.reasoning:
+        redactions.append("reviewer reasoning redacted or bounded")
+    return ReviewedDiffProposal(
+        proposal_id=proposal_id,
+        job_id=_maybe_str(job_id or chain.get("job_id")),
+        command_id=_maybe_str(command_id or chain.get("command_id")),
+        gate_id=_maybe_str(gate_id or chain.get("gate_id")),
+        route_step_index=_maybe_int(route_step_index if route_step_index is not None else chain.get("route_step_index")),
+        stage_index=_maybe_int(stage_index if stage_index is not None else chain.get("stage_index")),
+        status=status,
+        attempt_number=_maybe_int(attempt_number if attempt_number is not None else chain.get("attempt_number")),
+        revision_number=_maybe_int(revision_number if revision_number is not None else chain.get("revision_number")),
+        failure_summary=failure_summary,
+        diagnosis_ref=_maybe_str(diagnosis_ref or chain.get("diagnosis_ref")),
+        repair_plan_ref=_maybe_str(repair_plan_ref or chain.get("repair_plan_ref")),
+        diff_ref=safe_diff_preview.diff_ref,
+        diff_checksum=safe_diff_preview.diff_checksum,
+        safe_diff_preview=safe_diff_preview,
+        reviewer_verdict=verdict,
+        files_changed=files_changed,
+        risk=_maybe_str(risk or chain.get("risk")),
+        required_validation=required_validation,
+        allowed_actions=allowed_actions,
+        redactions=tuple(dict.fromkeys(redactions)),
+    )
+
+
+def reviewed_diff_proposal_to_safe_dict(proposal: ReviewedDiffProposal) -> dict[str, Any]:
+    return {
+        "proposal_id": proposal.proposal_id,
+        "job_id": proposal.job_id,
+        "command_id": proposal.command_id,
+        "gate_id": proposal.gate_id,
+        "route_step_index": proposal.route_step_index,
+        "stage_index": proposal.stage_index,
+        "status": proposal.status,
+        "attempt_number": proposal.attempt_number,
+        "revision_number": proposal.revision_number,
+        "failure_summary": proposal.failure_summary,
+        "diagnosis_ref": proposal.diagnosis_ref,
+        "repair_plan_ref": proposal.repair_plan_ref,
+        "diff_ref": proposal.diff_ref,
+        "diff_checksum": proposal.diff_checksum,
+        "safe_diff_preview": safe_diff_preview_to_dict(proposal.safe_diff_preview) if proposal.safe_diff_preview is not None else None,
+        "reviewer_verdict": reviewer_verdict_projection_to_safe_dict(proposal.reviewer_verdict) if proposal.reviewer_verdict is not None else None,
+        "files_changed": [files_changed_summary_to_dict(file) for file in proposal.files_changed],
+        "risk": proposal.risk,
+        "required_validation": list(proposal.required_validation),
+        "allowed_actions": list(proposal.allowed_actions),
+        "redactions": list(proposal.redactions),
+    }
+
+
+def reviewer_verdict_projection_to_safe_dict(verdict: ReviewerVerdictProjection) -> dict[str, Any]:
+    return {
+        "reviewer_verdict_id": verdict.reviewer_verdict_id,
+        "decision": verdict.decision,
+        "reasoning": verdict.reasoning,
+        "missing_evidence": list(verdict.missing_evidence),
+        "unsafe_assumptions": list(verdict.unsafe_assumptions),
+        "model_invocation_id": verdict.model_invocation_id,
+        "output_checksum": verdict.output_checksum,
+    }
+
+
+def files_changed_summary_to_dict(summary: FilesChangedSummary) -> dict[str, Any]:
+    return {
+        "path": summary.path,
+        "change_type": summary.change_type,
+        "additions": summary.additions,
+        "deletions": summary.deletions,
+    }
+
+
+def _build_reviewer_verdict_projection(
+    *,
+    reviewer_verdict: dict[str, Any] | None,
+    review_chain: dict[str, Any],
+) -> ReviewerVerdictProjection:
+    payload = reviewer_verdict or {}
+    decision = str(
+        payload.get("decision")
+        or review_chain.get("reviewer_decision")
+        or "unknown"
+    ).strip().lower()
+    if decision not in {"accept", "revise", "reject"}:
+        decision = "unknown"
+
+    reasoning_source = (
+        payload.get("reasoning")
+        or payload.get("notes")
+        or review_chain.get("reviewer_reasoning")
+        or review_chain.get("reviewer_notes")
+        or ""
+    )
+    reasoning = _bounded_redacted_text(_stringify_reasoning(reasoning_source)) if reasoning_source else None
+    missing_evidence = _normalize_text_list(
+        payload.get("missing_evidence")
+        or review_chain.get("missing_evidence")
+        or (),
+    )
+    unsafe_assumptions = _normalize_text_list(
+        payload.get("unsafe_assumptions")
+        or review_chain.get("unsafe_assumptions")
+        or (),
+    )
+    reviewer_verdict_id = _maybe_str(
+        payload.get("reviewer_verdict_id")
+        or review_chain.get("reviewer_verdict_id")
+        or review_chain.get("reviewer_critique_id")
+    )
+    model_invocation_id = _maybe_str(
+        payload.get("model_invocation_id")
+        or review_chain.get("model_invocation_id")
+    )
+    output_checksum = _maybe_str(
+        payload.get("output_checksum")
+        or review_chain.get("reviewer_output_checksum")
+        or review_chain.get("reviewer_verdict_checksum")
+    )
+    return ReviewerVerdictProjection(
+        reviewer_verdict_id=reviewer_verdict_id,
+        decision=decision,
+        reasoning=reasoning,
+        missing_evidence=tuple(missing_evidence),
+        unsafe_assumptions=tuple(unsafe_assumptions),
+        model_invocation_id=model_invocation_id,
+        output_checksum=output_checksum,
+    )
+
+
+def _reviewed_diff_ref_from_chain(review_chain: dict[str, Any]) -> str | None:
+    candidates = (
+        review_chain.get("final_diff_ref"),
+        review_chain.get("final_reviewed_diff_ref"),
+    )
+    artifact_refs = review_chain.get("artifact_refs")
+    if isinstance(artifact_refs, dict):
+        candidates = candidates + (
+            artifact_refs.get("final_reviewed_diff"),
+            artifact_refs.get("final_diff"),
+        )
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate
+    return None
+
+
+def _normalize_text_list(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (_bounded_redacted_text(value),)
+    if not isinstance(value, (list, tuple)):
+        return ()
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            item = str(item)
+        result.append(_bounded_redacted_text(item))
+    return tuple(result)
+
+
+def _bounded_redacted_text(value: str, *, limit: int = 1000) -> str:
+    cleaned = redact_model_summary(value)
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - len("...[truncated]")] + "...[truncated]"
+
+
+def _maybe_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _maybe_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _stringify_reasoning(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return "\n".join(str(item) for item in value)
+    return str(value)
