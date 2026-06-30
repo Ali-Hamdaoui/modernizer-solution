@@ -38,6 +38,7 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_reviewer_repositor
 )
 from migration_factory.repair_loop.patch_apply import (
     GIT_NOT_AVAILABLE,
+    apply_patch_to_sandbox,
     validate_patch_artifact,
 )
 
@@ -181,23 +182,19 @@ def test_generated_import_package_patch_passes_git_apply_check_and_apply(tmp_pat
     assert Path(body["repair_artifact"]["patch_path"]).is_file()
     assert patch_path.is_relative_to(sandbox.parent / "repairs" / "proposals")
 
-    check = subprocess.run(
-        [git, "apply", "--check", str(patch_path)],
-        cwd=str(sandbox),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert check.returncode == 0, check.stderr
+    patch_valid, patch_error = validate_patch_artifact(patch_path=patch_path, cwd=sandbox)
+    assert patch_valid is True, patch_error
 
-    apply = subprocess.run(
-        [git, "apply", str(patch_path)],
-        cwd=str(sandbox),
-        capture_output=True,
-        text=True,
-        check=False,
+    apply_result = apply_patch_to_sandbox(
+        run_dir=sandbox.parent,
+        sandbox_path=sandbox,
+        attempt=1,
+        unified_diff=patch_text,
+        touched_paths=[target_rel],
     )
-    assert apply.returncode == 0, apply.stderr
+
+    assert apply_result.status == "APPLIED"
+    assert apply_result.patch_path.read_text(encoding="utf-8") == patch_text
     assert target.read_text(encoding="utf-8") == original.replace("import javax.validation.Valid;", "import jakarta.validation.Valid;")
     diff_lines = body["repair_artifact"]["unified_diff"].splitlines()
     assert diff_lines[0] == f"diff --git a/{target_rel} b/{target_rel}"
@@ -215,6 +212,42 @@ def test_generated_import_package_patch_passes_git_apply_check_and_apply(tmp_pat
         unified_diff=patch_text,
     )
     assert decision.allowed is True
+
+
+def test_apply_patch_to_sandbox_preserves_trailing_blank_context_line(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    target_rel = "src/main/java/App.java"
+    target = sandbox / target_rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("class App {\nimport javax.validation.Valid;\n\n", encoding="utf-8")
+    patch_text = (
+        "diff --git a/src/main/java/App.java b/src/main/java/App.java\n"
+        "--- a/src/main/java/App.java\n"
+        "+++ b/src/main/java/App.java\n"
+        "@@ -1,3 +1,3 @@\n"
+        " class App {\n"
+        "-import javax.validation.Valid;\n"
+        "+import jakarta.validation.Valid;\n"
+        " \n"
+    )
+
+    def fake_run(command, **kwargs):
+        if command[1:] == ["--version"]:
+            return subprocess.CompletedProcess(command, 0, stdout="git version fake", stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    result = apply_patch_to_sandbox(
+        run_dir=tmp_path / "run",
+        sandbox_path=sandbox,
+        attempt=1,
+        unified_diff=patch_text,
+        touched_paths=[target_rel],
+        run=fake_run,
+    )
+
+    assert result.status == "APPLIED"
+    assert result.patch_path.read_text(encoding="utf-8") == patch_text
 
 
 def test_invalid_patch_artifact_is_rejected_before_actionable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
