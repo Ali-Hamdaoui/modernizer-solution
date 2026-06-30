@@ -43,6 +43,7 @@ import type {
 } from "../../../lib/contracts";
 import { MIGRATION_PROFILE_OPTIONS } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
+import { RepairProposalPanel } from "./RepairProposalPanel";
 
 export function formatGateArtifactRefLabel(ref: string): string {
   const text = ref.trim();
@@ -1665,6 +1666,11 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
             </div>
           )}
         </section>
+      )}
+
+      {/* PR-C — Repair Proposal Panel */}
+      {normalizedJobId && (
+        <RepairProposalPanel jobId={normalizedJobId} />
       )}
 
       {/* Assistant Panel */}

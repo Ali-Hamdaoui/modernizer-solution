@@ -1123,6 +1123,123 @@ export const MIGRATION_PROFILE_OPTIONS: MigrationProfileOption[] = [
   },
 ];
 
+// ── PR-C — Reviewed Diff Proposal types (PR-B response contracts) ──────
+
+export type SafeDiffLine = {
+  kind: "context" | "addition" | "deletion";
+  old_line_number: number | null;
+  new_line_number: number | null;
+  text: string;
+  redacted: boolean;
+};
+
+export type SafeDiffHunk = {
+  old_start: number;
+  old_lines: number;
+  new_start: number;
+  new_lines: number;
+  section_header: string | null;
+  lines: SafeDiffLine[];
+};
+
+export type SafeDiffFile = {
+  path: string;
+  change_type: string;
+  additions: number;
+  deletions: number;
+  hunks: SafeDiffHunk[];
+  truncated: boolean;
+};
+
+export type SafeDiffPreview = {
+  proposal_id: string;
+  diff_ref: string | null;
+  diff_checksum: string;
+  files: SafeDiffFile[];
+  total_additions: number;
+  total_deletions: number;
+  truncated: boolean;
+  checksum_mismatch: boolean;
+  redactions: string[];
+};
+
+export type ReviewerVerdictProjection = {
+  reviewer_verdict_id: string | null;
+  decision: string;
+  reasoning: string | null;
+  missing_evidence: string[];
+  unsafe_assumptions: string[];
+  model_invocation_id: string | null;
+  output_checksum: string | null;
+};
+
+export type FilesChangedSummary = {
+  path: string;
+  change_type: string;
+  additions: number;
+  deletions: number;
+};
+
+export type ReviewedDiffProposal = {
+  proposal_id: string;
+  job_id: string | null;
+  command_id: string | null;
+  gate_id: string | null;
+  route_step_index: number | null;
+  stage_index: number | null;
+  status: string;
+  attempt_number: number | null;
+  revision_number: number | null;
+  failure_summary: string;
+  diagnosis_ref: string | null;
+  repair_plan_ref: string | null;
+  diff_ref: string | null;
+  diff_checksum: string;
+  safe_diff_preview: SafeDiffPreview | null;
+  reviewer_verdict: ReviewerVerdictProjection | null;
+  files_changed: FilesChangedSummary[];
+  risk: string | null;
+  required_validation: string[];
+  allowed_actions: string[];
+  redactions: string[];
+};
+
+export type RepairProposalCurrentResponse = {
+  proposal: ReviewedDiffProposal | null;
+  job_id: string;
+};
+
+export type RepairProposalDetailResponse = {
+  proposal: ReviewedDiffProposal | null;
+  job_id: string;
+};
+
+export type RepairProposalDiffResponse = {
+  safe_diff_preview: SafeDiffPreview | null;
+  job_id: string;
+  reason?: string;
+};
+
+export type RepairAttemptSummary = {
+  proposal_id: string;
+  command_id: string | null;
+  job_id: string | null;
+  gate_id: string | null;
+  attempt_number: number | null;
+  revision_number: number | null;
+  status: string;
+  reviewer_decision: string | null;
+  diff_checksum: string | null;
+  policy_validation_checksum: string | null;
+  status_reason: string | null;
+  created_at: string;
+};
+
+export type RepairAttemptsResponse = {
+  attempts: RepairAttemptSummary[];
+  job_id: string;
+};
+
 export const PROFILE_BY_ID: Record<MigrationProfileId, MigrationProfileOption> =
   MIGRATION_PROFILE_OPTIONS.reduce(
     (acc, profile) => {

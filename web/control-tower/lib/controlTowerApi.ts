@@ -53,6 +53,11 @@ import type {
   PomRollbackResult,
   PomProposeRequest,
   PomApplyRequest,
+  // PR-C types
+  RepairProposalCurrentResponse,
+  RepairProposalDetailResponse,
+  RepairProposalDiffResponse,
+  RepairAttemptsResponse,
 } from "./contracts";
 
 export const CONTROL_TOWER_FRONTEND_CLIENT_ID = "control-tower-frontend";
@@ -703,6 +708,54 @@ export async function rollbackPomChange(
   );
 }
 
+
+// ── PR-C — Reviewed Diff Proposal read-only API methods ────────────────
+
+export async function getCurrentRepairProposal(
+  jobId: string,
+): Promise<RepairProposalCurrentResponse> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<RepairProposalCurrentResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/current`,
+  );
+}
+
+export async function getRepairProposal(
+  jobId: string,
+  proposalId: string,
+): Promise<RepairProposalDetailResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) {
+    throw new Error("Proposal id is required.");
+  }
+  return getJson<RepairProposalDetailResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/${encodeURIComponent(safeProposalId)}`,
+  );
+}
+
+export async function getRepairProposalDiff(
+  jobId: string,
+  proposalId: string,
+): Promise<RepairProposalDiffResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) {
+    throw new Error("Proposal id is required.");
+  }
+  return getJson<RepairProposalDiffResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/${encodeURIComponent(safeProposalId)}/diff`,
+  );
+}
+
+export async function getRepairAttempts(
+  jobId: string,
+): Promise<RepairAttemptsResponse> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<RepairAttemptsResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/attempts`,
+  );
+}
 
 export async function postJson<TResponse>(
   path: string,

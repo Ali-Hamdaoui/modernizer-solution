@@ -1850,6 +1850,71 @@ describe("F15 Final Report and Stage 4 cockpit", () => {
   });
 });
 
+// ── PR-C — Cockpit integration tests ─────────────────────────────────
+
+describe("PR-C Repair Proposal Panel integration", () => {
+  it("MigrationCockpit source references RepairProposalPanel", () => {
+    const source = MigrationCockpit.toString();
+    expect(source).toContain("RepairProposalPanel");
+    expect(source).toContain("normalizedJobId &&");
+  });
+
+  it("RepairProposalPanel renders with jobId and shows loading state", () => {
+    const markup = renderToStaticMarkup(
+      <MigrationCockpit jobId="test-job-123" />
+    );
+    expect(markup).toContain("Loading cockpit");
+  });
+
+  it("route_steps still override legacy stages in cockpit", () => {
+    const routeSteps: V2RouteStepEntry[] = [
+      {
+        route_step_index: 1,
+        stage_index: 1,
+        source_profile: "springboot-2.7-java11",
+        target_profile: "springboot-3.5-java17",
+        runtime_profile: "springboot-2.7-to-3.5-java17",
+        catalog: "springboot-3.5-java17",
+        execution_jdk: "java17",
+        status: "running",
+        approval_gate_id: "",
+        artifact_refs: [],
+        evidence_refs: [],
+      },
+    ];
+    const stages = [
+      { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "running", input_source_kind: "legacy_source" },
+    ];
+    const entries = buildStageTimelineEntries(routeSteps, stages);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ route_step_index: 1, status: "running" });
+  });
+
+  it("no POST mutation APIs called from cockpit repair panel import", () => {
+    const source = MigrationCockpit.toString();
+    expect(source).not.toContain("getCurrentRepairProposal");
+    expect(source).not.toContain("getRepairAttempts");
+  });
+
+  it("PR-C cockpit source does not contain forbidden fields", () => {
+    const source = MigrationCockpit.toString();
+    const forbidden = [
+      "target_path",
+      "patch_content",
+      "sandbox_path",
+      "argv",
+      "env",
+      "raw_command",
+      "azure_endpoint",
+      "api_key",
+      "password",
+    ];
+    for (const f of forbidden) {
+      expect(source).not.toContain(f);
+    }
+  });
+});
+
 function makeCockpitData(): CockpitData {
   return {
     job: {

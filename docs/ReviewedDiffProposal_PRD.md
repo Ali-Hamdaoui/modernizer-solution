@@ -18,7 +18,7 @@ Current known branch state from latest reports:
 
 ```text
 branch: demov3
-HEAD:   cbfbcabf45b6d3d4990c2985f5eb4d4dbcddc407
+HEAD:   73ab1fcb3081a83ceee6f08cd41722a8a00c01b9
 ```
 
 Known dirty files from the active worktree may include:
@@ -36,7 +36,7 @@ graphify-out/manifest.json
 | Phase 0 / Plan | Done | branch `demov3`, HEAD `3420d429cba3fddd7c547f6e578e0e8d9b666dd4`, commit none | docs only | read-only audit completed | Existing F5 repair engine is reused, not replaced. |
 | PR-A / Safe Read-Only Projection | Done | branch `demov3`, PR-A commit `9de9c17f322e646238821c8ee914a3683f9b5a3e`, route-progression fix commit `3420d429cba3fddd7c547f6e578e0e8d9b666dd4` | `migration_factory/control_tower/application/safe_diff_preview.py`; `migration_factory/control_tower/application/v2_model_schemas.py`; `migration_factory/control_tower/application/v2_repair_projection.py`; `tests/control_tower/test_safe_diff_preview.py`; `tests/control_tower/test_reviewed_diff_proposal_projection.py`; `migration_factory/control_tower/application/v2_stage_progression.py`; `tests/control_tower/test_v2_stage_progression.py`; `tests/control_tower/test_v2_orchestrator_runner.py`; `tests/control_tower/test_resume_from_checkpoint_profile.py` | `tests/control_tower/test_safe_diff_preview.py` 13 passed; `tests/control_tower/test_reviewed_diff_proposal_projection.py` 2 passed; `tests/control_tower/test_v2_repair_gate_service.py` 30 passed; `tests/control_tower/test_v2_stage_progression.py` 55 passed; `tests/control_tower/test_v2_worker_stage.py` 26 passed; `tests/control_tower/test_v2_orchestrator_runner.py` 50 passed; `tests/control_tower/test_resume_from_checkpoint_profile.py` 7 passed; `tests/control_tower/test_profile_validation.py` 17 passed; `tests/control_tower/test_profile_pair_validation.py` 5 passed; `tests/control_tower/test_run_configurations.py` 38 passed; `git diff --check` passed | PR-A projection is committed, and the route-progression baseline debt is fixed in the follow-up route-step commit. |
 | PR-B / Durable Proposal Persistence + Read APIs | Done (contract hardening) | branch `demov3`, HEAD `cbfbcabf45b6d3d4990c2985f5eb4d4dbcddc407` (+ hardening commit) | `0048_v2_repair_proposals_reviewed_diff_fields.sql`, `v2_repair_repository.py`, `dto.py`, `v2_repair_projection.py`, `app.py`, `tests/control_tower/test_v2_repair_proposal_api.py`, `safe_diff_preview.py`, `docs/ReviewedDiffProposal_PRD.md` | PR-B focused tests 25 passed; all regression suites green; + HTTP contract tests; + checksum mismatch tests | Migration adds 16 nullable fields; 4 read-only GET endpoints added; no raw patch/path/env exposure; old records remain compatible; checksum mismatch flag added to SafeDiffPreview; HTTP route contract tests added. |
-| PR-C / Cockpit Read-Only UI | Not Started | | | | Depends on PR-B. |
+| PR-C / Cockpit Read-Only UI | Done | branch `demov3`, HEAD `73ab1fc` (+ PR-C commit) | `contracts.ts`, `controlTowerApi.ts`, `MigrationCockpit.tsx`, `RepairProposalPanel.tsx`, `ReviewedDiffTabs.tsx`, `SafeDiffPreview.tsx`, `ReviewerVerdictCard.tsx`, `RepairAttemptTimeline.tsx`, `RepairActionsBar.tsx`, `controlTowerApi.test.ts`, `migrationCockpit.test.tsx`, `reviewedDiffProposal.test.tsx` | Frontend API tests, component tests, cockpit integration tests, forbidden-field tests all pass; typecheck passes; build passes; backend PR-B/PR-A smoke tests pass | No mutation actions wired; no POST calls; no forbidden fields exposed; diff renders hunks/line numbers/redactions; checksum mismatch warning renders; attempt timeline renders; action bar shows disabled future controls. |
 | PR-D / Revision Endpoint | Not Started | | | | Depends on PR-C. |
 | PR-E / Approve/Apply Hardening | Not Started | | | | Depends on PR-D. |
 | PR-F / Retry/Attempt History | Not Started | | | | Depends on PR-E. |
@@ -1434,7 +1434,7 @@ Completion checklist:
 
 ### 16.4 PR-C — Cockpit Read-Only Proposal/Diff UI
 
-Status: **Not started**
+Status: **Done**
 
 Goal:
 
@@ -1442,34 +1442,77 @@ Goal:
 Render failure, diagnosis, repair plan, reviewer opinion, safe diff, files changed, and attempt timeline.
 ```
 
-Planned files:
+Completion record:
 
 ```text
-web/control-tower/lib/contracts.ts
-web/control-tower/lib/controlTowerApi.ts
-web/control-tower/app/migrations/[jobId]/MigrationCockpit.tsx
-web/control-tower/app/migrations/[jobId]/RepairProposalPanel.tsx
-web/control-tower/app/migrations/[jobId]/ReviewedDiffTabs.tsx
-web/control-tower/app/migrations/[jobId]/SafeDiffPreview.tsx
-web/control-tower/app/migrations/[jobId]/ReviewerVerdictCard.tsx
-web/control-tower/app/migrations/[jobId]/RepairAttemptTimeline.tsx
-web/control-tower/app/migrations/[jobId]/RepairActionsBar.tsx
-web/control-tower/tests/migrationCockpit.test.tsx
-web/control-tower/tests/reviewedDiffProposal.test.tsx
+Date/time: 2026-06-30
+Branch: demov3
+HEAD: 73ab1fcb3081a83ceee6f08cd41722a8a00c01b9 (+ PR-C commit)
+
+Changed files:
+  web/control-tower/lib/contracts.ts
+  web/control-tower/lib/controlTowerApi.ts
+  web/control-tower/app/migrations/[jobId]/MigrationCockpit.tsx
+  web/control-tower/app/migrations/[jobId]/RepairProposalPanel.tsx
+  web/control-tower/app/migrations/[jobId]/ReviewedDiffTabs.tsx
+  web/control-tower/app/migrations/[jobId]/SafeDiffPreview.tsx
+  web/control-tower/app/migrations/[jobId]/ReviewerVerdictCard.tsx
+  web/control-tower/app/migrations/[jobId]/RepairAttemptTimeline.tsx
+  web/control-tower/app/migrations/[jobId]/RepairActionsBar.tsx
+  web/control-tower/tests/controlTowerApi.test.ts
+  web/control-tower/tests/migrationCockpit.test.tsx
+  web/control-tower/tests/reviewedDiffProposal.test.tsx
+
+New types:
+  SafeDiffLine, SafeDiffHunk, SafeDiffFile, SafeDiffPreview,
+  ReviewerVerdictProjection, FilesChangedSummary, ReviewedDiffProposal,
+  RepairProposalCurrentResponse, RepairProposalDetailResponse,
+  RepairProposalDiffResponse, RepairAttemptSummary, RepairAttemptsResponse
+
+API client methods (read-only GET):
+  getCurrentRepairProposal(jobId)
+  getRepairProposal(jobId, proposalId)
+  getRepairProposalDiff(jobId, proposalId)
+  getRepairAttempts(jobId)
+
+Components added:
+  RepairProposalPanel — fetches current proposal, renders failure summary/status/gate/route step
+  ReviewedDiffTabs — 5 tabs: Diff, Static Analysis, Files Changed, Reviewer Opinion, Chat
+  SafeDiffPreview — renders hunks with old/new line numbers, truncation/checksum/redaction warnings
+  ReviewerVerdictCard — renders decision, reasoning, missing evidence, unsafe assumptions
+  RepairAttemptTimeline — renders attempt entries with status/checksums/revisions
+  RepairActionsBar — read-only view buttons + disabled future mutation buttons
+
+Security rules enforced:
+  - No POST/PUT/PATCH/DELETE methods added
+  - No raw target_path, patch_content, sandbox_path, argv, env, raw_command in any component
+  - No Azure endpoints, keys, deployment secrets rendered
+  - No Bearer tokens, passwords, or authorization headers rendered
+  - No C:\ /Users/ /home/ filesystem paths rendered
+  - Diff paths are safe relative paths from SafeDiffPreview
+  - Redacted lines show [redacted] instead of raw content
+  - Checksum mismatch shows clear warning that proposal cannot be approved
+  - Mutation buttons are disabled with "Coming in PR-D/PR-E" titles
+  - No click handlers for mutation actions
+
+Tests:
+  controlTowerApi.test.ts — 11 new tests: URL verification, method GET, null proposal, diff reason, attempts, forbidden fields
+  reviewedDiffProposal.test.tsx — 16 component tests across SafeDiffPreview, ReviewerVerdictCard, RepairAttemptTimeline, RepairActionsBar, forbidden-field enforcement
+  migrationCockpit.test.tsx — 5 integration tests: component reference, route_step override, no POST, forbidden fields
 ```
 
 Completion checklist:
 
-- [ ] Contracts added for proposal/diff/verdict/attempts.
-- [ ] API client methods added for read endpoints.
-- [ ] Proposal panel renders in migration cockpit.
-- [ ] Diff tab renders additions/deletions/context.
-- [ ] Reviewer verdict card renders.
-- [ ] Files changed tab renders.
-- [ ] Attempt timeline renders.
-- [ ] Buttons are disabled/read-only unless backend exposes allowed mutation action.
-- [ ] No forbidden fields display.
-- [ ] Tests pass.
+- [x] Contracts added for proposal/diff/verdict/attempts.
+- [x] API client methods added for read endpoints.
+- [x] Proposal panel renders in migration cockpit.
+- [x] Diff tab renders additions/deletions/context.
+- [x] Reviewer verdict card renders.
+- [x] Files changed tab renders.
+- [x] Attempt timeline renders.
+- [x] Buttons are disabled/read-only unless backend exposes allowed mutation action.
+- [x] No forbidden fields display.
+- [x] Tests pass.
 
 ### 16.5 PR-D — User Revision Lifecycle
 
@@ -1715,6 +1758,7 @@ Append a new row after each implementation step.
 | 2026-06-30 | Route progression fix | Done | `demov3` / `3420d429cba3fddd7c547f6e578e0e8d9b666dd4` | `v2_stage_progression.py`, `test_v2_stage_progression.py`, `test_v2_orchestrator_runner.py`, `test_resume_from_checkpoint_profile.py` | Stage progression, orchestrator, resume, validation, and repair-gate focused tests passed | Fixed route-step indexing, target-reached semantics, and one stale metadata expectation. |
 | 2026-06-30 | PR-B | Done | `demov3` / `cbfbcabf45b6d3d4990c2985f5eb4d4dbcddc407` | `0048_v2_repair_proposals_reviewed_diff_fields.sql`, `v2_repair_repository.py`, `dto.py`, `v2_repair_projection.py`, `app.py`, `tests/control_tower/test_v2_repair_proposal_api.py` | 25 PR-B tests passed; all 283 regression tests passed across 11 test files | PR-B complete. 4 read-only GET endpoints, 16 nullable columns, no mutation endpoints, all security rules enforced. |
 | 2026-06-30 | PR-B contract hardening | Done | `demov3` / `cbfbcabf45b6d3d4990c2985f5eb4d4dbcddc407` + hardening commit | `safe_diff_preview.py`, `app.py`, `tests/control_tower/test_v2_repair_proposal_api.py`, `docs/ReviewedDiffProposal_PRD.md` | 14 HTTP contract tests; checksum mismatch tests; all regression suites green | HTTP route contract tests added; checksum mismatch detection added to SafeDiffPreview; checksum_mismatch flag in diff endpoint; no filesystem paths leaked. |
+| 2026-06-30 | PR-C | Done | `demov3` / `73ab1fc` (+ PR-C commit) | `contracts.ts`, `controlTowerApi.ts`, `MigrationCockpit.tsx`, `RepairProposalPanel.tsx`, `ReviewedDiffTabs.tsx`, `SafeDiffPreview.tsx`, `ReviewerVerdictCard.tsx`, `RepairAttemptTimeline.tsx`, `RepairActionsBar.tsx`, `controlTowerApi.test.ts`, `migrationCockpit.test.tsx`, `reviewedDiffProposal.test.tsx` | Frontend API tests, component tests, forbidden-field tests, typecheck, build all pass; backend PR-B/PR-A smoke tests pass | PR-C committed. Read-only proposal/diff UI renders in cockpit. No mutation actions wired. graphify-out remains unstaged. |
 
 Template for next update:
 
@@ -1742,6 +1786,7 @@ Template for next update:
 | Checksum mismatch detection | Closed | Implemented in contract hardening. `SafeDiffPreview.checksum_mismatch` flag returned by diff endpoint. Proposal not marked approvable on mismatch (enforced in PR-E). |
 | No FastAPI TestClient HTTP contract tests | Closed | 14 HTTP route contract tests added covering all 4 GET endpoints with forbidden key/value assertions. |
 | Missing diff file error leaks filesystem path | Closed | Diff endpoint returns "could not load diff" with no filesystem path in error responses. |
+| PR-C frontend implementation | Closed | PR-C committed. All frontend tests pass. No mutation actions wired. graphify-out remains unstaged. |
 
 ---
 

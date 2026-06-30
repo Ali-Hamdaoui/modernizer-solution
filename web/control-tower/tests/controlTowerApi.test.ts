@@ -873,7 +873,208 @@ describe("F3/F4 Profile routing contracts", () => {
     }
   });
 
-  it("createIdempotencyKey falls back when crypto.randomUUID is missing", () => {
+// ── PR-C — Reviewed Diff Proposal API client tests ────────────────────
+
+describe("PR-C Reviewed Diff Proposal API client", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("getCurrentRepairProposal calls GET /v1/v2/jobs/{jobId}/repair/proposals/current", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({ proposal: null, job_id: "job-1" }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getCurrentRepairProposal } = await import("../lib/controlTowerApi");
+    await getCurrentRepairProposal("job-1");
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain("/v1/v2/jobs/job-1/repair/proposals/current");
+    const init = fetchMock.mock.calls[0][1] as RequestInit | undefined;
+    expect(init?.method ?? "GET").toBe("GET");
+    expect(url).not.toContain("undefined");
+  });
+
+  it("getRepairProposal calls GET detail endpoint", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({ proposal: null, job_id: "job-1" }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getRepairProposal } = await import("../lib/controlTowerApi");
+    await getRepairProposal("job-1", "proposal-1");
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain("/v1/v2/jobs/job-1/repair/proposals/proposal-1");
+    const init = fetchMock.mock.calls[0][1] as RequestInit | undefined;
+    expect(init?.method ?? "GET").toBe("GET");
+  });
+
+  it("getRepairProposal throws on empty proposalId", async () => {
+    const { getRepairProposal } = await import("../lib/controlTowerApi");
+    await expect(getRepairProposal("job-1", " ")).rejects.toThrow("Proposal id is required.");
+  });
+
+  it("getRepairProposalDiff calls GET diff endpoint", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({ safe_diff_preview: null, job_id: "job-1", reason: "no_diff_ref" }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getRepairProposalDiff } = await import("../lib/controlTowerApi");
+    await getRepairProposalDiff("job-1", "proposal-1");
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain("/v1/v2/jobs/job-1/repair/proposals/proposal-1/diff");
+    const init = fetchMock.mock.calls[0][1] as RequestInit | undefined;
+    expect(init?.method ?? "GET").toBe("GET");
+  });
+
+  it("getRepairProposalDiff throws on empty proposalId", async () => {
+    const { getRepairProposalDiff } = await import("../lib/controlTowerApi");
+    await expect(getRepairProposalDiff("job-1", "")).rejects.toThrow("Proposal id is required.");
+  });
+
+  it("getRepairAttempts calls GET attempts endpoint", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({ attempts: [], job_id: "job-1" }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getRepairAttempts } = await import("../lib/controlTowerApi");
+    await getRepairAttempts("job-1");
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain("/v1/v2/jobs/job-1/repair/attempts");
+    const init = fetchMock.mock.calls[0][1] as RequestInit | undefined;
+    expect(init?.method ?? "GET").toBe("GET");
+  });
+
+  it("no POST method is introduced by PR-C", async () => {
+    const {
+      getCurrentRepairProposal,
+      getRepairProposal,
+      getRepairProposalDiff,
+      getRepairAttempts,
+    } = await import("../lib/controlTowerApi");
+    expect(typeof getCurrentRepairProposal).toBe("function");
+    expect(typeof getRepairProposal).toBe("function");
+    expect(typeof getRepairProposalDiff).toBe("function");
+    expect(typeof getRepairAttempts).toBe("function");
+  });
+
+  it("response parsing: null proposal shape", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({ proposal: null, job_id: "job-1" }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getCurrentRepairProposal } = await import("../lib/controlTowerApi");
+    const result = await getCurrentRepairProposal("job-1");
+    expect(result.proposal).toBeNull();
+    expect(result.job_id).toBe("job-1");
+  });
+
+  it("response parsing: diff response shape with reason", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({
+        safe_diff_preview: null,
+        job_id: "job-1",
+        reason: "no_diff_ref",
+      }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getRepairProposalDiff } = await import("../lib/controlTowerApi");
+    const result = await getRepairProposalDiff("job-1", "proposal-1");
+    expect(result.safe_diff_preview).toBeNull();
+    expect(result.job_id).toBe("job-1");
+    expect(result.reason).toBe("no_diff_ref");
+  });
+
+  it("response parsing: attempts response shape", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({
+        attempts: [
+          {
+            proposal_id: "p-1",
+            command_id: "cmd-1",
+            job_id: "job-1",
+            gate_id: null,
+            attempt_number: 1,
+            revision_number: null,
+            status: "reviewer_accepted",
+            reviewer_decision: null,
+            diff_checksum: "sha256:abc",
+            policy_validation_checksum: null,
+            status_reason: null,
+            created_at: "2026-06-30T00:00:00Z",
+          },
+        ],
+        job_id: "job-1",
+      }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getRepairAttempts } = await import("../lib/controlTowerApi");
+    const result = await getRepairAttempts("job-1");
+    expect(result.attempts).toHaveLength(1);
+    expect(result.attempts[0].proposal_id).toBe("p-1");
+    expect(result.attempts[0].attempt_number).toBe(1);
+    expect(result.attempts[0].status).toBe("reviewer_accepted");
+    expect(result.job_id).toBe("job-1");
+  });
+
+  it("no raw field exposure in PR-C responses", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({
+        proposal: {
+          proposal_id: "p-1",
+          failure_summary: "Build failed",
+          safe_diff_preview: {
+            proposal_id: "p-1",
+            diff_ref: null,
+            diff_checksum: "sha256:abc",
+            files: [],
+            total_additions: 0,
+            total_deletions: 0,
+            truncated: false,
+            checksum_mismatch: false,
+            redactions: [],
+          },
+        },
+        job_id: "job-1",
+      }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getCurrentRepairProposal } = await import("../lib/controlTowerApi");
+    const result = await getCurrentRepairProposal("job-1");
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("target_path");
+    expect(serialized).not.toContain("patch_content");
+    expect(serialized).not.toContain("sandbox_path");
+    expect(serialized).not.toContain("argv");
+    expect(serialized).not.toContain("env");
+    expect(serialized).not.toContain("raw_command");
+    expect(serialized).not.toContain("azure_endpoint");
+    expect(serialized).not.toContain("api_key");
+    expect(serialized).not.toContain("password");
+    expect(serialized).not.toContain("authorization");
+    expect(serialized).not.toContain("secret");
+  });
+});
+
+it("createIdempotencyKey falls back when crypto.randomUUID is missing", () => {
     const originalCrypto = globalThis.crypto;
     Object.defineProperty(globalThis, "crypto", {
       configurable: true,

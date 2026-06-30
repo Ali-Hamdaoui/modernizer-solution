@@ -1,0 +1,553 @@
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
+import { SafeDiffPreview } from "../app/migrations/[jobId]/SafeDiffPreview";
+import { ReviewerVerdictCard } from "../app/migrations/[jobId]/ReviewerVerdictCard";
+import { RepairAttemptTimeline } from "../app/migrations/[jobId]/RepairAttemptTimeline";
+import { RepairActionsBar } from "../app/migrations/[jobId]/RepairActionsBar";
+import type {
+  SafeDiffPreview as SafeDiffPreviewType,
+  SafeDiffFile,
+  SafeDiffHunk,
+  ReviewerVerdictProjection,
+  RepairAttemptSummary,
+  ReviewedDiffProposal,
+} from "../lib/contracts";
+
+describe("PR-C SafeDiffPreview component", () => {
+  it("renders missing state when diff is null", () => {
+    const markup = renderToStaticMarkup(<SafeDiffPreview diff={null} />);
+    expect(markup).toContain("No diff preview available");
+    expect(markup).not.toContain("safe-diff-file");
+  });
+
+  it("renders file summaries with additions/deletions", () => {
+    const diff: SafeDiffPreviewType = {
+      proposal_id: "p-1",
+      diff_ref: null,
+      diff_checksum: "sha256:abc",
+      files: [
+        {
+          path: "pom.xml",
+          change_type: "modified",
+          additions: 3,
+          deletions: 1,
+          hunks: [],
+          truncated: false,
+        },
+      ],
+      total_additions: 3,
+      total_deletions: 1,
+      truncated: false,
+      checksum_mismatch: false,
+      redactions: [],
+    };
+    const markup = renderToStaticMarkup(<SafeDiffPreview diff={diff} />);
+    expect(markup).toContain("pom.xml");
+    expect(markup).toContain("modified");
+    expect(markup).toContain("+3");
+    expect(markup).toContain("/ -1");
+    expect(markup).toContain("1 file changed");
+  });
+
+  it("renders hunks with old/new line numbers", () => {
+    const diff: SafeDiffPreviewType = {
+      proposal_id: "p-1",
+      diff_ref: null,
+      diff_checksum: "sha256:abc",
+      files: [
+        {
+          path: "src/main.java",
+          change_type: "modified",
+          additions: 1,
+          deletions: 0,
+          hunks: [
+            {
+              old_start: 10,
+              old_lines: 5,
+              new_start: 10,
+              new_lines: 6,
+              section_header: null,
+              lines: [
+                { kind: "context", old_line_number: 10, new_line_number: 10, text: "  existing", redacted: false },
+                { kind: "addition", old_line_number: null, new_line_number: 11, text: "+ new line", redacted: false },
+              ],
+            },
+          ],
+          truncated: false,
+        },
+      ],
+      total_additions: 1,
+      total_deletions: 0,
+      truncated: false,
+      checksum_mismatch: false,
+      redactions: [],
+    };
+    const markup = renderToStaticMarkup(<SafeDiffPreview diff={diff} />);
+    expect(markup).toContain("src/main.java");
+    expect(markup).toContain("@@ -10,5 +10,6 @@");
+    expect(markup).toContain("10 | 10");
+    expect(markup).toContain("  | 11");
+    expect(markup).toContain("+ new line");
+    expect(markup).not.toContain("undefined");
+  });
+
+  it("renders truncation notice", () => {
+    const diff: SafeDiffPreviewType = {
+      proposal_id: "p-1",
+      diff_ref: null,
+      diff_checksum: "sha256:abc",
+      files: [],
+      total_additions: 0,
+      total_deletions: 0,
+      truncated: true,
+      checksum_mismatch: false,
+      redactions: [],
+    };
+    const markup = renderToStaticMarkup(<SafeDiffPreview diff={diff} />);
+    expect(markup).toContain("truncation-notice");
+    expect(markup).toContain("Diff truncated");
+  });
+
+  it("renders checksum mismatch warning", () => {
+    const diff: SafeDiffPreviewType = {
+      proposal_id: "p-1",
+      diff_ref: null,
+      diff_checksum: "sha256:abc",
+      files: [],
+      total_additions: 0,
+      total_deletions: 0,
+      truncated: false,
+      checksum_mismatch: true,
+      redactions: [],
+    };
+    const markup = renderToStaticMarkup(<SafeDiffPreview diff={diff} />);
+    expect(markup).toContain("checksum-mismatch-warning");
+    expect(markup).toContain("checksum mismatch");
+    expect(markup).toContain("cannot be approved until regenerated");
+  });
+
+  it("renders redaction notice", () => {
+    const diff: SafeDiffPreviewType = {
+      proposal_id: "p-1",
+      diff_ref: null,
+      diff_checksum: "sha256:abc",
+      files: [],
+      total_additions: 0,
+      total_deletions: 0,
+      truncated: false,
+      checksum_mismatch: false,
+      redactions: ["secret_token"],
+    };
+    const markup = renderToStaticMarkup(<SafeDiffPreview diff={diff} />);
+    expect(markup).toContain("redaction-notice");
+    expect(markup).toContain("1 redaction applied");
+  });
+
+  it("renders redacted lines as [redacted]", () => {
+    const diff: SafeDiffPreviewType = {
+      proposal_id: "p-1",
+      diff_ref: null,
+      diff_checksum: "sha256:abc",
+      files: [
+        {
+          path: "config.properties",
+          change_type: "modified",
+          additions: 1,
+          deletions: 0,
+          hunks: [
+            {
+              old_start: 1,
+              old_lines: 1,
+              new_start: 1,
+              new_lines: 2,
+              section_header: null,
+              lines: [
+                { kind: "addition", old_line_number: null, new_line_number: 2, text: "secret line", redacted: true },
+              ],
+            },
+          ],
+          truncated: false,
+        },
+      ],
+      total_additions: 1,
+      total_deletions: 0,
+      truncated: false,
+      checksum_mismatch: false,
+      redactions: ["secret"],
+    };
+    const markup = renderToStaticMarkup(<SafeDiffPreview diff={diff} />);
+    expect(markup).toContain("redacted-line");
+    expect(markup).toContain("[redacted]");
+    expect(markup).not.toContain("secret line");
+  });
+
+  it("does not expose raw paths, env, or secrets", () => {
+    const diff: SafeDiffPreviewType = {
+      proposal_id: "p-1",
+      diff_ref: null,
+      diff_checksum: "sha256:abc",
+      files: [],
+      total_additions: 0,
+      total_deletions: 0,
+      truncated: false,
+      checksum_mismatch: false,
+      redactions: [],
+    };
+    const markup = renderToStaticMarkup(<SafeDiffPreview diff={diff} />);
+    expect(markup).not.toContain("target_path");
+    expect(markup).not.toContain("patch_content");
+    expect(markup).not.toContain("sandbox_path");
+    expect(markup).not.toContain("argv");
+    expect(markup).not.toContain("C:\\");
+    expect(markup).not.toContain("/Users/");
+    expect(markup).not.toContain("/home/");
+    expect(markup).not.toContain("AZURE_OPENAI");
+    expect(markup).not.toContain("Bearer ");
+  });
+});
+
+describe("PR-C ReviewerVerdictCard component", () => {
+  it("renders missing state when verdict is null", () => {
+    const markup = renderToStaticMarkup(<ReviewerVerdictCard verdict={null} />);
+    expect(markup).toContain("No reviewer verdict available");
+  });
+
+  it("renders accept decision with reasoning", () => {
+    const verdict: ReviewerVerdictProjection = {
+      reviewer_verdict_id: "v-1",
+      decision: "accept",
+      reasoning: "Evidence is sufficient and patch scope is correct.",
+      missing_evidence: [],
+      unsafe_assumptions: [],
+      model_invocation_id: "inv-1",
+      output_checksum: "sha256:output",
+    };
+    const markup = renderToStaticMarkup(<ReviewerVerdictCard verdict={verdict} />);
+    expect(markup).toContain("Accepted");
+    expect(markup).toContain("Evidence is sufficient");
+    expect(markup).toContain("v-1");
+    expect(markup).toContain("inv-1");
+    expect(markup).toContain("sha256:output");
+  });
+
+  it("renders revise decision", () => {
+    const verdict: ReviewerVerdictProjection = {
+      reviewer_verdict_id: "v-2",
+      decision: "revise",
+      reasoning: "Patch scope is too broad.",
+      missing_evidence: ["test_results"],
+      unsafe_assumptions: [],
+      model_invocation_id: null,
+      output_checksum: null,
+    };
+    const markup = renderToStaticMarkup(<ReviewerVerdictCard verdict={verdict} />);
+    expect(markup).toContain("Revision Requested");
+    expect(markup).toContain("Patch scope is too broad");
+    expect(markup).toContain("test_results");
+  });
+
+  it("renders missing evidence and unsafe assumptions", () => {
+    const verdict: ReviewerVerdictProjection = {
+      reviewer_verdict_id: "v-3",
+      decision: "reject",
+      reasoning: "Patch introduces security risk.",
+      missing_evidence: ["security_audit"],
+      unsafe_assumptions: ["assumes dependency exists"],
+      model_invocation_id: null,
+      output_checksum: null,
+    };
+    const markup = renderToStaticMarkup(<ReviewerVerdictCard verdict={verdict} />);
+    expect(markup).toContain("Rejected");
+    expect(markup).toContain("security_audit");
+    expect(markup).toContain("assumes dependency exists");
+  });
+
+  it("does not expose raw fields", () => {
+    const verdict: ReviewerVerdictProjection = {
+      reviewer_verdict_id: "v-4",
+      decision: "accept",
+      reasoning: "ok",
+      missing_evidence: [],
+      unsafe_assumptions: [],
+      model_invocation_id: null,
+      output_checksum: null,
+    };
+    const markup = renderToStaticMarkup(<ReviewerVerdictCard verdict={verdict} />);
+    expect(markup).not.toContain("azure_endpoint");
+    expect(markup).not.toContain("api_key");
+    expect(markup).not.toContain("deployment");
+    expect(markup).not.toContain("Bearer ");
+    expect(markup).not.toContain("password");
+    expect(markup).not.toContain("secret");
+    expect(markup).not.toContain("sandbox_path");
+  });
+});
+
+describe("PR-C RepairAttemptTimeline component", () => {
+  it("renders empty state when no attempts", () => {
+    const markup = renderToStaticMarkup(<RepairAttemptTimeline attempts={[]} />);
+    expect(markup).toContain("No repair attempts yet");
+  });
+
+  it("renders attempt entries with status and checksums", () => {
+    const attempts: RepairAttemptSummary[] = [
+      {
+        proposal_id: "p-1",
+        command_id: "cmd-1",
+        job_id: "job-1",
+        gate_id: "gate-1",
+        attempt_number: 1,
+        revision_number: null,
+        status: "reviewer_accepted",
+        reviewer_decision: null,
+        diff_checksum: "sha256:abc",
+        policy_validation_checksum: null,
+        status_reason: null,
+        created_at: "2026-06-30T00:00:00Z",
+      },
+    ];
+    const markup = renderToStaticMarkup(<RepairAttemptTimeline attempts={attempts} />);
+    expect(markup).toContain("Repair Attempts");
+    expect(markup).toContain("Attempt 1");
+    expect(markup).toContain("p-1");
+    expect(markup).toContain("gate-1");
+    expect(markup).toContain("sha256:abc");
+    expect(markup).toContain("REVIEWER ACCEPTED");
+  });
+
+  it("renders revision numbers when present", () => {
+    const attempts: RepairAttemptSummary[] = [
+      {
+        proposal_id: "p-2",
+        command_id: null,
+        job_id: "job-1",
+        gate_id: null,
+        attempt_number: 1,
+        revision_number: 2,
+        status: "user_review_required",
+        reviewer_decision: null,
+        diff_checksum: null,
+        policy_validation_checksum: null,
+        status_reason: "revision requested",
+        created_at: "2026-06-30T01:00:00Z",
+      },
+    ];
+    const markup = renderToStaticMarkup(<RepairAttemptTimeline attempts={attempts} />);
+    expect(markup).toContain("Revision 2");
+    expect(markup).toContain("revision requested");
+  });
+
+  it("does not expose raw fields", () => {
+    const attempts: RepairAttemptSummary[] = [
+      {
+        proposal_id: "p-1",
+        command_id: null,
+        job_id: "job-1",
+        gate_id: null,
+        attempt_number: 1,
+        revision_number: null,
+        status: "pending",
+        reviewer_decision: null,
+        diff_checksum: null,
+        policy_validation_checksum: null,
+        status_reason: null,
+        created_at: "2026-06-30T00:00:00Z",
+      },
+    ];
+    const markup = renderToStaticMarkup(<RepairAttemptTimeline attempts={attempts} />);
+    expect(markup).not.toContain("target_path");
+    expect(markup).not.toContain("patch_content");
+    expect(markup).not.toContain("sandbox_path");
+    expect(markup).not.toContain("raw_command");
+    expect(markup).not.toContain("C:\\");
+    expect(markup).not.toContain("/Users/");
+    expect(markup).not.toContain("AZURE_OPENAI");
+  });
+});
+
+describe("PR-C RepairActionsBar component", () => {
+  it("renders read-only action buttons", () => {
+    const markup = renderToStaticMarkup(
+      <RepairActionsBar
+        onViewDiff={() => undefined}
+        onViewReviewerOpinion={() => undefined}
+        onViewFilesChanged={() => undefined}
+        onViewAttemptHistory={() => undefined}
+      />,
+    );
+    expect(markup).toContain("View diff");
+    expect(markup).toContain("View reviewer opinion");
+    expect(markup).toContain("View files changed");
+    expect(markup).toContain("View attempt history");
+  });
+
+  it("renders future mutation actions as disabled", () => {
+    const markup = renderToStaticMarkup(
+      <RepairActionsBar
+        onViewDiff={() => undefined}
+        onViewReviewerOpinion={() => undefined}
+        onViewFilesChanged={() => undefined}
+        onViewAttemptHistory={() => undefined}
+      />,
+    );
+    expect(markup).toContain("Coming in PR-D");
+    expect(markup).toContain("Coming in PR-E");
+    expect(markup).toContain('disabled=""');
+    expect(markup).toContain("Request revision");
+    expect(markup).toContain("Approve sandbox apply");
+    expect(markup).toContain("Reject");
+  });
+
+  it("read-only buttons are not disabled", () => {
+    const markup = renderToStaticMarkup(
+      <RepairActionsBar
+        onViewDiff={() => undefined}
+        onViewReviewerOpinion={() => undefined}
+        onViewFilesChanged={() => undefined}
+        onViewAttemptHistory={() => undefined}
+      />,
+    );
+    expect(markup).toContain('data-testid="action-view-diff"');
+    expect(markup).not.toContain('data-testid="action-view-diff" disabled=""');
+  });
+
+  it("clicking read-only tabs does not call mutation APIs", () => {
+    const markup = renderToStaticMarkup(
+      <RepairActionsBar
+        onViewDiff={() => undefined}
+        onViewReviewerOpinion={() => undefined}
+        onViewFilesChanged={() => undefined}
+        onViewAttemptHistory={() => undefined}
+      />,
+    );
+    // No POST-related content in the action bar
+    expect(markup).not.toContain("POST");
+    expect(markup).not.toContain("submit");
+    // Future buttons are disabled
+    expect(markup).not.toContain("patch_content");
+    expect(markup).not.toContain("sandbox_path");
+    expect(markup).not.toContain("raw_command");
+  });
+});
+
+describe("PR-C forbidden-field tests", () => {
+  const forbiddenStrings = [
+    "target_path",
+    "patch_content",
+    "sandbox_path",
+    "argv",
+    "env",
+    "raw_command",
+    "azure_endpoint",
+    "api_key",
+    "password",
+    "authorization",
+    "secret",
+    "C:\\",
+    "/Users/",
+    "/home/",
+    ".control-tower",
+    ".control-tower-dev",
+    "AZURE_OPENAI",
+    "Bearer ",
+  ];
+
+  it("SafeDiffPreview rendered output contains no forbidden fields", () => {
+    const diff: SafeDiffPreviewType = {
+      proposal_id: "p-1",
+      diff_ref: null,
+      diff_checksum: "sha256:abc",
+      files: [
+        {
+          path: "src/main.java",
+          change_type: "modified",
+          additions: 1,
+          deletions: 0,
+          hunks: [
+            {
+              old_start: 1,
+              old_lines: 1,
+              new_start: 1,
+              new_lines: 2,
+              section_header: null,
+              lines: [
+                { kind: "context", old_line_number: 1, new_line_number: 1, text: "existing", redacted: false },
+                { kind: "addition", old_line_number: null, new_line_number: 2, text: "new", redacted: false },
+              ],
+            },
+          ],
+          truncated: false,
+        },
+      ],
+      total_additions: 1,
+      total_deletions: 0,
+      truncated: false,
+      checksum_mismatch: false,
+      redactions: [],
+    };
+    const markup = renderToStaticMarkup(<SafeDiffPreview diff={diff} />);
+    for (const forbidden of forbiddenStrings) {
+      expect(markup).not.toContain(forbidden);
+    }
+    // Safe values render
+    expect(markup).toContain("src/main.java");
+  });
+
+  it("RepairActionsBar rendered output contains no forbidden fields", () => {
+    const markup = renderToStaticMarkup(
+      <RepairActionsBar
+        onViewDiff={() => undefined}
+        onViewReviewerOpinion={() => undefined}
+        onViewFilesChanged={() => undefined}
+        onViewAttemptHistory={() => undefined}
+      />,
+    );
+    for (const forbidden of forbiddenStrings) {
+      expect(markup).not.toContain(forbidden);
+    }
+    expect(markup).toContain("PR-D");
+    expect(markup).toContain("PR-E");
+  });
+
+  it("ReviewerVerdictCard rendered output contains no forbidden fields", () => {
+    const verdict: ReviewerVerdictProjection = {
+      reviewer_verdict_id: "v-1",
+      decision: "accept",
+      reasoning: "ok",
+      missing_evidence: [],
+      unsafe_assumptions: [],
+      model_invocation_id: null,
+      output_checksum: null,
+    };
+    const markup = renderToStaticMarkup(<ReviewerVerdictCard verdict={verdict} />);
+    for (const forbidden of forbiddenStrings) {
+      expect(markup).not.toContain(forbidden);
+    }
+    expect(markup).toContain("v-1");
+  });
+
+  it("RepairAttemptTimeline rendered output contains no forbidden fields", () => {
+    const attempts: RepairAttemptSummary[] = [
+      {
+        proposal_id: "p-1",
+        command_id: null,
+        job_id: "job-1",
+        gate_id: null,
+        attempt_number: 1,
+        revision_number: null,
+        status: "pending",
+        reviewer_decision: null,
+        diff_checksum: null,
+        policy_validation_checksum: null,
+        status_reason: null,
+        created_at: "2026-06-30T00:00:00Z",
+      },
+    ];
+    const markup = renderToStaticMarkup(<RepairAttemptTimeline attempts={attempts} />);
+    for (const forbidden of forbiddenStrings) {
+      expect(markup).not.toContain(forbidden);
+    }
+    expect(markup).toContain("p-1");
+  });
+});
