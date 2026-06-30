@@ -18,7 +18,7 @@ Current known branch state from latest reports:
 
 ```text
 branch: demov3
-HEAD:   6dec64d726f4932c798f10652c8969be27989012
+HEAD:   3420d429cba3fddd7c547f6e578e0e8d9b666dd4
 ```
 
 Known dirty files from the active worktree may include:
@@ -27,19 +27,14 @@ Known dirty files from the active worktree may include:
 graphify-out/GRAPH_REPORT.md
 graphify-out/graph.json
 graphify-out/manifest.json
-migration_factory/control_tower/application/v2_model_schemas.py
-migration_factory/control_tower/application/v2_repair_projection.py
-migration_factory/control_tower/application/safe_diff_preview.py
-tests/control_tower/test_reviewed_diff_proposal_projection.py
-tests/control_tower/test_safe_diff_preview.py
 ```
 
 ## Current Implementation Status
 
 | Phase | Status | Commit/Branch | Files | Tests | Notes |
 |---|---|---|---|---|---|
-| Phase 0 / Plan | Done | branch `demov3`, HEAD `6dec64d726f4932c798f10652c8969be27989012`, commit none | docs only | read-only audit completed | Existing F5 repair engine is reused, not replaced. |
-| PR-A / Safe Read-Only Projection | Blocked | branch `demov3`, HEAD `6dec64d726f4932c798f10652c8969be27989012`, commit none | `migration_factory/control_tower/application/safe_diff_preview.py`; `migration_factory/control_tower/application/v2_model_schemas.py`; `migration_factory/control_tower/application/v2_repair_projection.py`; `tests/control_tower/test_safe_diff_preview.py`; `tests/control_tower/test_reviewed_diff_proposal_projection.py` | `tests/control_tower/test_safe_diff_preview.py` 13 passed; `tests/control_tower/test_reviewed_diff_proposal_projection.py` 2 passed; `tests/control_tower/test_v2_repair_gate_service.py` 30 passed; `tests/control_tower/test_v2_stage_progression.py` 13 failed / 42 passed | PR-A implementation is complete, but closeout is blocked by baseline stage-progression debt that is unrelated to the PR-A read-only projection. |
+| Phase 0 / Plan | Done | branch `demov3`, HEAD `3420d429cba3fddd7c547f6e578e0e8d9b666dd4`, commit none | docs only | read-only audit completed | Existing F5 repair engine is reused, not replaced. |
+| PR-A / Safe Read-Only Projection | Done | branch `demov3`, PR-A commit `9de9c17f322e646238821c8ee914a3683f9b5a3e`, route-progression fix commit `3420d429cba3fddd7c547f6e578e0e8d9b666dd4` | `migration_factory/control_tower/application/safe_diff_preview.py`; `migration_factory/control_tower/application/v2_model_schemas.py`; `migration_factory/control_tower/application/v2_repair_projection.py`; `tests/control_tower/test_safe_diff_preview.py`; `tests/control_tower/test_reviewed_diff_proposal_projection.py`; `migration_factory/control_tower/application/v2_stage_progression.py`; `tests/control_tower/test_v2_stage_progression.py`; `tests/control_tower/test_v2_orchestrator_runner.py`; `tests/control_tower/test_resume_from_checkpoint_profile.py` | `tests/control_tower/test_safe_diff_preview.py` 13 passed; `tests/control_tower/test_reviewed_diff_proposal_projection.py` 2 passed; `tests/control_tower/test_v2_repair_gate_service.py` 30 passed; `tests/control_tower/test_v2_stage_progression.py` 55 passed; `tests/control_tower/test_v2_worker_stage.py` 26 passed; `tests/control_tower/test_v2_orchestrator_runner.py` 50 passed; `tests/control_tower/test_resume_from_checkpoint_profile.py` 7 passed; `tests/control_tower/test_profile_validation.py` 17 passed; `tests/control_tower/test_profile_pair_validation.py` 5 passed; `tests/control_tower/test_run_configurations.py` 38 passed; `git diff --check` passed | PR-A projection is committed, and the route-progression baseline debt is fixed in the follow-up route-step commit. |
 | PR-B / Durable Proposal Persistence + Read APIs | Not Started | | | | Depends on PR-A closeout. |
 | PR-C / Cockpit Read-Only UI | Not Started | | | | Depends on PR-B. |
 | PR-D / Revision Endpoint | Not Started | | | | Depends on PR-C. |
@@ -47,7 +42,7 @@ tests/control_tower/test_safe_diff_preview.py
 | PR-F / Retry/Attempt History | Not Started | | | | Depends on PR-E. |
 | PR-G / LLM Invocation Ledger | Not Started | | | | Later hardening phase. |
 
-**Current blocker before PR-B:** baseline comparison proves the 13 `test_v2_stage_progression.py` failures are pre-existing at the same HEAD and not caused by PR-A. PR-B cannot start until the user accepts that baseline debt or a separate route-progression fix lands first.
+**Current blocker before PR-B:** none on the route-progression side. PR-B can start because the stage-progression suite is green and the PR-A projection tests remain green.
 
 ---
 
@@ -1244,7 +1239,7 @@ Completion checklist:
 
 ### 16.2 PR-A — Safe Read-Only Projection
 
-Status: **Implemented in worktree; baseline comparison complete; closeout blocked by unrelated route debt**
+Status: **Done**
 
 Goal:
 
@@ -1258,7 +1253,7 @@ Completion record:
 ```text
 Date/time: 2026-06-30 12:47:07 +01:00
 Branch: demov3
-HEAD: 6dec64d726f4932c798f10652c8969be27989012
+HEAD: 3420d429cba3fddd7c547f6e578e0e8d9b666dd4
 Changed files:
   migration_factory/control_tower/application/safe_diff_preview.py
   migration_factory/control_tower/application/v2_model_schemas.py
@@ -1281,7 +1276,7 @@ Tests:
   py -3 -m pytest tests/control_tower/test_v2_stage_progression.py -q -vv --tb=short
   clean baseline worktree comparison at HEAD 6dec64d726f4932c798f10652c8969be27989012
   git diff --check
-Baseline comparison result: same 13 failures in PR-A worktree and clean baseline with the same assertions/errors, so the stage-progression failures are baseline/unrelated to PR-A.
+Route-progression result: the 13 stage-progression failures were fixed in commit `3420d429cba3fddd7c547f6e578e0e8d9b666dd4`; focused route/projection tests are now green.
 ```
 
 Files changed in reported PR-A:
@@ -1558,43 +1553,34 @@ Completion checklist:
 
 ---
 
-## 17. Baseline Stage Progression Status
+## 17. Route Progression Status
 
-Clean baseline worktree:
-
-```text
-path: ..\modernizer-demov3-baseline
-HEAD: 6dec64d726f4932c798f10652c8969be27989012
-status: clean
-```
-
-Baseline test result:
+Fixed commit:
 
 ```text
-13 failed, 42 passed
+3420d429cba3fddd7c547f6e578e0e8d9b666dd4
 ```
 
-| Test name | Fails in PR-A worktree? | Fails in clean baseline? | Same assertion/error? | Verdict |
-|---|---:|---:|---|---|
-| `test_queue_stage2_from_stage1` | Yes | Yes | Yes | baseline failure |
-| `test_queue_stage3_from_stage2` | Yes | Yes | Yes | baseline failure |
-| `test_queue_stage4_from_stage3_with_successful_evidence` | Yes | Yes | Yes | baseline failure |
-| `test_stage4_blocks_when_stage3_success_evidence_missing` | Yes | Yes | Yes | baseline failure |
-| `test_valid_route_stops_at_target_springboot_35_java21` | Yes | Yes | Yes | baseline failure |
-| `test_stage_progression_still_routes_boot35_java17_to_java21_as_stage3_only` | Yes | Yes | Yes | baseline failure |
-| `test_clean_green_stage3_auto_continues_to_4` | Yes | Yes | Yes | baseline failure |
-| `test_target_reached_after_stage3_for_boot35_target` | Yes | Yes | Yes | baseline failure |
-| `test_stage3_continues_to_4_when_target_is_boot4` | Yes | Yes | Yes | baseline failure |
-| `test_profile_metadata_preserves_source_and_target` | Yes | Yes | Yes | baseline failure |
-| `test_next_required_stage_starts_after_current_profile_for_boot35_java17` | Yes | Yes | Yes | baseline failure |
-| `test_next_required_stage_starts_after_current_profile_for_boot35_java21` | Yes | Yes | Yes | baseline failure |
-| `test_already_modernized_java21_source_queues_stage4_without_stage3_evidence` | Yes | Yes | Yes | baseline failure |
+Focused route/projection result:
+
+```text
+tests/control_tower/test_v2_stage_progression.py      55 passed
+tests/control_tower/test_v2_worker_stage.py           26 passed
+tests/control_tower/test_v2_orchestrator_runner.py    50 passed
+tests/control_tower/test_resume_from_checkpoint_profile.py 7 passed
+tests/control_tower/test_profile_validation.py        17 passed
+tests/control_tower/test_profile_pair_validation.py   5 passed
+tests/control_tower/test_run_configurations.py        38 passed
+tests/control_tower/test_safe_diff_preview.py         13 passed
+tests/control_tower/test_reviewed_diff_proposal_projection.py 2 passed
+tests/control_tower/test_v2_repair_gate_service.py    30 passed
+```
 
 Conclusion:
 
 ```text
-The 13 stage-progression failures are baseline/unrelated to PR-A.
-PR-B cannot start until the user accepts this baseline debt or a separate route-progression fix is completed.
+The route-progression baseline debt is fixed.
+PR-B can start.
 ```
 
 ---
@@ -1653,7 +1639,8 @@ Append a new row after each implementation step.
 | Date | Phase | Status | Branch / Commit | Files Changed | Tests | Notes |
 |---|---|---|---|---|---|---|
 | 2026-06-30 | Phase 0 | Done | `demov3` / `6dec64d726f4932c798f10652c8969be27989012` | none | read-only audit | Hybrid persistence chosen; PR-A recommended. |
-| 2026-06-30 | PR-A | Implemented, closeout blocked by baseline debt | `demov3` / not committed in report | `safe_diff_preview.py`, `v2_model_schemas.py`, `v2_repair_projection.py`, PR-A tests | PR-A focused tests pass; baseline `test_v2_stage_progression.py` comparison ran cleanly but still fails 13 tests at the same HEAD | PR-A is complete; PR-B cannot start until route-progression debt is handled separately or accepted. |
+| 2026-06-30 | PR-A | Done | `demov3` / `9de9c17f322e646238821c8ee914a3683f9b5a3e` | `safe_diff_preview.py`, `v2_model_schemas.py`, `v2_repair_projection.py`, PR-A tests | PR-A focused tests pass; route-progression baseline debt fixed in follow-up commit `3420d429cba3fddd7c547f6e578e0e8d9b666dd4` | Read-only projection is committed and the route graph is green. |
+| 2026-06-30 | Route progression fix | Done | `demov3` / `3420d429cba3fddd7c547f6e578e0e8d9b666dd4` | `v2_stage_progression.py`, `test_v2_stage_progression.py`, `test_v2_orchestrator_runner.py`, `test_resume_from_checkpoint_profile.py` | Stage progression, orchestrator, resume, validation, and repair-gate focused tests passed | Fixed route-step indexing, target-reached semantics, and one stale metadata expectation. |
 
 Template for next update:
 
@@ -1667,7 +1654,8 @@ Template for next update:
 
 | Risk / Decision | Status | Owner / Next Action |
 |---|---|---|
-| `test_v2_stage_progression.py` failures | Baseline/unrelated debt | Separate route-progression fix or explicit user acceptance before PR-B. |
+| `graphify-out/*` dirty | Open | Do not stage unless explicitly part of tooling update. |
+| Route-progression baseline debt | Closed | Fixed in commit `3420d429cba3fddd7c547f6e578e0e8d9b666dd4`. |
 | Graphify outputs dirty | Open | Do not stage unless explicitly part of tooling update. |
 | `v2_sandbox_actions` exposes `target_path`/patch preview | Open | Public proposal APIs must avoid this projection. |
 | Existing approval endpoint may infer proposal ID from revision/gate ID | Open | Harden in PR-E. |
