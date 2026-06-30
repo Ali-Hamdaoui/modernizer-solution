@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sqlite3
 import time
@@ -244,6 +245,9 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_reposit
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_artifact_revision_repository import (
     SqliteArtifactRevisionRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
+    V2StageCommandRecord,
 )
 from migration_factory.control_tower.application.v2_gate_errors import (
     http_status_for_gate_status,
@@ -2884,6 +2888,174 @@ def create_app(
                 "schema_validated": proposer_model_schema_validated,
                 "model_invocation_id": proposer_model_invocation_id,
             }
+        }
+
+    @app.post("/v1/v2/jobs/{job_id}/repair/demo/r6-controlled")
+    def create_controlled_r6_repair_demo(job_id: str) -> dict[str, Any]:
+        """Create a local/dev-only governed R6 repair proposal from sandbox state."""
+        settings: ControlTowerSettings = app.state.v2_settings
+        demo_enabled = os.environ.get("CONTROL_TOWER_R6_DEMO_ENABLED", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if not settings.local_mode or not demo_enabled:
+            raise _error(
+                status.HTTP_403_FORBIDDEN,
+                "R6_DEMO_DISABLED",
+                "Controlled R6 repair demo requires local mode and CONTROL_TOWER_R6_DEMO_ENABLED=true.",
+            )
+
+        target_rel = "src/main/java/com/example/R6ControlledRepairDemo.java"
+        failure_summary = "[ERROR] package jakarta.servlet.http does not exist"
+        source_text = (
+            "package com.example;\n\n"
+            "import jakarta.servlet.http.HttpServletRequest;\n\n"
+            "final class R6ControlledRepairDemo {\n"
+            "  private HttpServletRequest request;\n"
+            "}\n"
+        )
+
+        def _payload(record_payload_json: str | None) -> dict[str, Any]:
+            if not record_payload_json:
+                return {}
+            try:
+                parsed = json.loads(record_payload_json)
+            except (TypeError, json.JSONDecodeError):
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+
+        with unit_of_work_factory() as uow:
+            job = uow.v2_jobs.get(job_id)
+            if job is None:
+                raise _error(status.HTTP_404_NOT_FOUND, "JOB_NOT_FOUND", f"Migration job {job_id!r} not found")
+            setup = uow.v2_setups.get(job.setup_id)
+            if setup is None:
+                raise _error(status.HTTP_404_NOT_FOUND, "SETUP_NOT_FOUND", f"Setup {job.setup_id!r} not found")
+
+            run_id = ""
+            sandbox_path = Path()
+            for command in reversed(uow.v2_commands.list_by_job(job_id)):
+                payload = _payload(command.result_json)
+                candidate_run = str(payload.get("run_id") or "").strip()
+                candidate_sandbox = str(payload.get("sandbox_path") or "").strip()
+                if candidate_run and candidate_sandbox:
+                    run_id = candidate_run
+                    sandbox_path = Path(candidate_sandbox)
+                    break
+            if not run_id or not str(sandbox_path):
+                for event in reversed(uow.v2_events.list_by_job(job_id)):
+                    payload = _payload(event.payload_json)
+                    candidate_run = str(payload.get("run_id") or "").strip()
+                    candidate_sandbox = str(payload.get("sandbox_path") or "").strip()
+                    if candidate_run and candidate_sandbox:
+                        run_id = candidate_run
+                        sandbox_path = Path(candidate_sandbox)
+                        break
+
+            if not run_id or not sandbox_path.is_absolute() or not sandbox_path.exists():
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "R6_DEMO_SANDBOX_MISSING",
+                    "Controlled R6 repair demo requires an existing Stage1 sandbox.",
+                )
+
+            legacy_path = Path(setup.legacy_app_path)
+            if legacy_path.exists():
+                try:
+                    sandbox_path.resolve().relative_to(legacy_path.resolve())
+                except ValueError:
+                    pass
+                else:
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "R6_DEMO_SANDBOX_UNSAFE",
+                        "Controlled R6 repair demo sandbox must not be inside legacy source.",
+                    )
+
+            target_path = (sandbox_path / target_rel).resolve()
+            try:
+                target_path.relative_to(sandbox_path.resolve())
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "R6_DEMO_TARGET_UNSAFE",
+                    "Controlled R6 repair demo target escaped sandbox.",
+                ) from exc
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(source_text, encoding="utf-8")
+
+            now = utc_now_text()
+            command_id = f"r6-demo-{uuid4().hex}"
+            result = {
+                "run_id": run_id,
+                "sandbox_path": str(sandbox_path),
+                "status": "BUILD_FAILED_IN_SANDBOX",
+                "failure_class": "JAKARTA_IMPORT_MECHANICAL_SOURCE",
+                "build_error_contract": {
+                    "result_kind": "compilation_error",
+                    "message": failure_summary,
+                    "target": target_rel,
+                },
+            }
+            uow.v2_commands.save(
+                V2StageCommandRecord(
+                    command_id=command_id,
+                    job_id=job_id,
+                    stage_index=1,
+                    manifest_checksum="sha256:r6-controlled-demo",
+                    argv_json="[]",
+                    env_json="{}",
+                    status="failed",
+                    created_at=now,
+                    updated_at=now,
+                    result_json=json.dumps(result, separators=(",", ":"), sort_keys=True),
+                    gate_id=None,
+                    decision_id=None,
+                )
+            )
+            service = V2RepairFlowService(
+                repair_repo=uow.v2_repairs,
+                job_repo=uow.v2_jobs,
+                setup_repo=uow.v2_setups,
+                command_repo=uow.v2_commands,
+            )
+            proposal = service.create_patch_backed_proposal(
+                command_id=command_id,
+                failure_summary=failure_summary,
+                hypothesis="Controlled R6 demo Jakarta/javax namespace mismatch",
+                patch_summary="Repair controlled sandbox import namespace",
+                affected_paths=(target_rel,),
+            )
+            proposal_dict = service.proposal_to_dict(proposal)
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=1,
+                event_type="r6_controlled_demo_proposal_created",
+                status="completed",
+                message="Controlled R6 repair demo proposal created in sandbox.",
+                payload={
+                    "command_id": command_id,
+                    "proposal_id": proposal.proposal_id,
+                    "run_id": run_id,
+                    "repair_family": "JAKARTA_IMPORT_MECHANICAL_SOURCE",
+                    "sandbox_only": True,
+                    "stage2_started": False,
+                },
+            )
+
+        return {
+            "job_id": job_id,
+            "run_id": run_id,
+            "command_id": command_id,
+            "demo_mode": "local_dev",
+            "repair_family": "JAKARTA_IMPORT_MECHANICAL_SOURCE",
+            "sandbox_only": True,
+            "legacy_unchanged": True,
+            "stage2_started": False,
+            "repair_proposal": proposal_dict,
         }
 
     @app.post("/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/prepare-apply-context")

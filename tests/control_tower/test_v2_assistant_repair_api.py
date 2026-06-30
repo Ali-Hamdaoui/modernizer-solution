@@ -1050,6 +1050,47 @@ class TestRepairAPI:
         assert invocations[0].provider_kind == "fake"
         assert invocations[0].model_name == "proposer"
 
+    def test_controlled_r6_demo_route_is_dev_only_and_creates_patch_backed_proposal(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, conn = _api_client(tmp_path)
+        _seed_v2_command_for_model_audit(conn, tmp_path, "cmd-r6-demo")
+
+        disabled = client.post(
+            "/v1/v2/jobs/job-cmd-r6-demo/repair/demo/r6-controlled",
+            json={},
+            headers=_mutation_headers(),
+        )
+        assert disabled.status_code == 403
+
+        monkeypatch.setenv("CONTROL_TOWER_R6_DEMO_ENABLED", "true")
+        response = client.post(
+            "/v1/v2/jobs/job-cmd-r6-demo/repair/demo/r6-controlled",
+            json={},
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        proposal = body["repair_proposal"]
+        package = proposal["patch_package"]
+
+        assert body["sandbox_only"] is True
+        assert body["legacy_unchanged"] is True
+        assert body["stage2_started"] is False
+        assert body["repair_family"] == "JAKARTA_IMPORT_MECHANICAL_SOURCE"
+        assert proposal["command_id"].startswith("r6-demo-")
+        assert package["repair_family"] == "JAKARTA_IMPORT_MECHANICAL_SOURCE"
+        assert package["deterministic_rule_id"] == "JAKARTA_IMPORT_MECHANICAL_SOURCE"
+        assert package["repair_artifact"]["patch_checksum"]
+        assert Path(package["repair_artifact"]["patch_path"]).is_file()
+        assert "import javax.servlet.http.HttpServletRequest;" in package["repair_artifact"]["unified_diff"]
+
+        records = SqliteV2RepairRepository(conn).list_proposals_by_command(proposal["command_id"])
+        assert len(records) == 1
+        assert records[0].proposal_id == proposal["proposal_id"]
+
     def test_create_proposal_surfaces_schema_validation_failure_reason(
         self,
         tmp_path: Path,

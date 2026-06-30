@@ -650,6 +650,18 @@ export type V2AssistantAskResponse = {
   migration_intelligence_warnings?: string[];
 };
 
+export type ControlledR6RepairDemoResponse = {
+  job_id: string;
+  run_id: string;
+  command_id: string;
+  demo_mode: string;
+  repair_family: string;
+  sandbox_only: boolean;
+  legacy_unchanged: boolean;
+  stage2_started: boolean;
+  repair_proposal: GovernedRepairProposalResponse;
+};
+
 export type V2ReviewerCritiqueResponse = {
   critique_id: string;
   proposal_id: string;

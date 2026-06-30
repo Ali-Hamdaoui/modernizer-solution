@@ -17,6 +17,7 @@ import {
   postJson,
   postV2GateAction,
   requireJobId,
+  runControlledR6RepairDemo,
   resolveControlTowerApiBaseUrl
 } from "../lib/controlTowerApi";
 import { applyPublicEvent, latestAppliedSequence, shouldRefetchJobProjection } from "../lib/eventReplay";
@@ -323,6 +324,45 @@ describe("M2-01 frontend diagnostic contracts", () => {
     expect(body.preview_persisted).toBe(false);
     expect(body.preview_applied).toBe(false);
     expect(body.redacted_summary.non_authoritative).toBe(true);
+  });
+
+  it("runs controlled R6 demo with job id only and empty payload", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        job_id: "job-123",
+        run_id: "run-1",
+        command_id: "r6-demo-1",
+        demo_mode: "local_dev",
+        repair_family: "JAKARTA_IMPORT_MECHANICAL_SOURCE",
+        sandbox_only: true,
+        legacy_unchanged: true,
+        stage2_started: false,
+        repair_proposal: { proposal_id: "proposal-1", command_id: "r6-demo-1" },
+      })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const body = await runControlledR6RepairDemo("job-123");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/v1/v2/jobs/job-123/repair/demo/r6-controlled"),
+      expect.objectContaining({
+        method: "POST",
+        body: "{}",
+        headers: expect.objectContaining({
+          "Content-Type": "application/json",
+          "X-Control-Tower-Client": CONTROL_TOWER_FRONTEND_CLIENT_ID
+        })
+      })
+    );
+    const firstCall = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
+    const requestBody = JSON.parse(firstCall[1].body);
+    expect(requestBody).toEqual({});
+    expect(JSON.stringify(requestBody)).not.toContain("patch");
+    expect(JSON.stringify(requestBody)).not.toContain("path");
+    expect(JSON.stringify(requestBody)).not.toContain("command");
+    expect(body.repair_family).toBe("JAKARTA_IMPORT_MECHANICAL_SOURCE");
   });
 
   // ── V1-18D model activity normalization ────────────────────────────

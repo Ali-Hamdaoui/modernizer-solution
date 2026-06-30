@@ -4,11 +4,14 @@ import MigrationCockpitPage from "../app/migrations/[jobId]/page";
 import {
   MigrationCockpit,
   AssistantPanelContent,
+  ControlledR6RepairDemoPanel,
   GovernedRepairProposalCard,
   R6GovernedRepairPanel,
   EMPTY_R6_REPAIR_UI_STATE,
   GatePanelContent,
   formatGateArtifactRefLabel,
+  hasUnknownNonRepairableFailure,
+  isControlledR6DemoUiEnabled,
   mergeCockpitLiveRefreshResults,
   reduceStageStatus,
   shouldShowApprovalDecisionControls,
@@ -27,6 +30,7 @@ import type {
   GateRepresentation,
   GovernedRepairProposalResponse,
   MigrationIntelligenceSummary,
+  V2FailureSummaryResponse,
   V2JobEvent,
   V2ReviewerCritiqueResponse,
   RepairApplyContextResponse,
@@ -521,6 +525,62 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).not.toContain(">Run<");
     expect(markup).not.toContain("Resume");
     expect(markup).not.toContain(">Verify<");
+  });
+
+  it("controlled R6 demo action is hidden unless dev demo mode or unknown failure is present", () => {
+    expect(isControlledR6DemoUiEnabled("true")).toBe(true);
+    expect(isControlledR6DemoUiEnabled("false")).toBe(false);
+
+    const hidden = renderToStaticMarkup(
+      <ControlledR6RepairDemoPanel
+        enabled={false}
+        hasProposal={false}
+        unknownFailure={false}
+        busy={false}
+        onRun={() => undefined}
+      />
+    );
+    expect(hidden).not.toContain("Run controlled R6 repair demo");
+  });
+
+  it("controlled R6 demo panel shows unknown failures as non-repairable without production action", () => {
+    const failureSummary = {
+      failures: [
+        {
+          type: "build_failed",
+          message: "Failure: UNKNOWN",
+          repair_loop_status: "DISABLED",
+        },
+      ],
+    } as V2FailureSummaryResponse;
+    expect(hasUnknownNonRepairableFailure(failureSummary)).toBe(true);
+
+    const markup = renderToStaticMarkup(
+      <ControlledR6RepairDemoPanel
+        enabled={false}
+        hasProposal={false}
+        unknownFailure={true}
+        busy={false}
+        onRun={() => undefined}
+      />
+    );
+    expect(markup).toContain("Failure is not eligible for governed R6 repair");
+    expect(markup).toContain("Controlled demo action disabled outside explicit local/dev demo mode");
+    expect(markup).not.toContain("<button");
+  });
+
+  it("controlled R6 demo action disables once durable proposal exists", () => {
+    const markup = renderToStaticMarkup(
+      <ControlledR6RepairDemoPanel
+        enabled={true}
+        hasProposal={true}
+        unknownFailure={false}
+        busy={false}
+        onRun={() => undefined}
+      />
+    );
+    expect(markup).toContain("Run controlled R6 repair demo");
+    expect(markup).toContain("disabled=\"\"");
   });
 
   it("renders governed R6 repair controls with apply disabled until reviewer accept and human approval", () => {

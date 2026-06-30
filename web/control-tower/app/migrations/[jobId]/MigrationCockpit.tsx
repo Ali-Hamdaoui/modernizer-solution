@@ -22,6 +22,7 @@ import {
   rejectV2Card,
   requestV2ReviewerCritique,
   requireJobId,
+  runControlledR6RepairDemo,
   v2EventStreamUrl,
   v2RootPomDownloadUrl,
 } from "../../../lib/controlTowerApi";
@@ -102,6 +103,23 @@ export function shouldShowApprovalDecisionControls(status: string, approvalRevie
   return !approvalReviewOpen && status === "pending";
 }
 
+export function isControlledR6DemoUiEnabled(
+  value: string | undefined = process.env.NEXT_PUBLIC_CONTROL_TOWER_R6_DEMO_ENABLED,
+): boolean {
+  return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
+}
+
+export function hasUnknownNonRepairableFailure(summary: V2FailureSummaryResponse | null | undefined): boolean {
+  return Boolean(
+    summary?.failures?.some((failure) => {
+      const repairStatus = String(failure.repair_loop_status ?? "").toUpperCase();
+      const type = String(failure.type ?? "").toLowerCase();
+      const message = String(failure.message ?? "").toLowerCase();
+      return repairStatus === "DISABLED" && (type.includes("unknown") || message.includes("unknown"));
+    }),
+  );
+}
+
 function hasMigrationIntelligence(migrationIntelligence: MigrationIntelligenceSummary | null | undefined): boolean {
   if (!migrationIntelligence) {
     return false;
@@ -136,7 +154,7 @@ type R6RepairUiState = {
   approval: RepairApprovalResponse | null;
   applyResult: ApplyRepairReviewContextResponse | null;
   approvalChecksumInput: string;
-  busy: "reviewer" | "context" | "approval" | "apply" | null;
+  busy: "demo" | "reviewer" | "context" | "approval" | "apply" | null;
   error: string | null;
 };
 
@@ -745,6 +763,45 @@ export function R6GovernedRepairPanel({
   );
 }
 
+export function ControlledR6RepairDemoPanel({
+  enabled,
+  hasProposal,
+  unknownFailure,
+  busy,
+  onRun,
+}: {
+  enabled: boolean;
+  hasProposal: boolean;
+  unknownFailure: boolean;
+  busy: boolean;
+  onRun: () => void;
+}) {
+  if (!enabled && !unknownFailure) {
+    return null;
+  }
+
+  return (
+    <section className="panel stack" aria-label="Controlled R6 repair demo">
+      <h2>Controlled R6 Repair Demo</h2>
+      {unknownFailure && (
+        <p className="meta">
+          Failure is not eligible for governed R6 repair. Use controlled R6 repair demo scenario.
+        </p>
+      )}
+      <p className="meta">
+        Local/dev only. Backend injects known sandbox-only Jakarta/javax failure and creates durable governed proposal.
+      </p>
+      {enabled ? (
+        <button type="button" disabled={busy || hasProposal} onClick={onRun}>
+          Run controlled R6 repair demo
+        </button>
+      ) : (
+        <p className="meta">Controlled demo action disabled outside explicit local/dev demo mode.</p>
+      )}
+    </section>
+  );
+}
+
 interface AssistantPanelContentProps {
   assistantModel: CockpitData["assistantModel"];
   messages: V2AssistantMessageResponse[];
@@ -1048,6 +1105,29 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       setAssistantError(e instanceof Error ? e.message : "Assistant request failed");
     } finally {
       setAssistantBusy(false);
+    }
+  }
+
+  async function runControlledR6Demo() {
+    if (!normalizedJobId) return;
+    setR6RepairState((current) => ({ ...current, busy: "demo", error: null }));
+    try {
+      const response = await runControlledR6RepairDemo(normalizedJobId);
+      setData((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          repairProposal: response.repair_proposal,
+        };
+      });
+      setR6RepairState(EMPTY_R6_REPAIR_UI_STATE);
+      await refreshLiveState();
+    } catch (e) {
+      setR6RepairState((current) => ({
+        ...current,
+        busy: null,
+        error: e instanceof Error ? e.message : "Controlled R6 repair demo failed.",
+      }));
     }
   }
 
@@ -1644,6 +1724,14 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         repairProposal={data.repairProposal}
         onQuestionChange={setAssistantQuestion}
         onAsk={() => void askAssistant()}
+      />
+
+      <ControlledR6RepairDemoPanel
+        enabled={isControlledR6DemoUiEnabled()}
+        hasProposal={Boolean(data.repairProposal)}
+        unknownFailure={hasUnknownNonRepairableFailure(data.failureSummary)}
+        busy={r6RepairState.busy === "demo"}
+        onRun={() => void runControlledR6Demo()}
       />
 
       <R6GovernedRepairPanel

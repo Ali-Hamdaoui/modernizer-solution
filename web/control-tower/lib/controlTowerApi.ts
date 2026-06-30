@@ -23,6 +23,7 @@ import type {
   V2ArtifactPreviewResponse,
   V2ReviewerCritiqueResponse,
   V2ReviewerCritiquesListResponse,
+  ControlledR6RepairDemoResponse,
   PrepareRepairApplyContextRequest,
   PrepareRepairApplyContextResponse,
   ApproveRepairReviewContextResponse,
@@ -601,6 +602,13 @@ export async function applyV2RepairReviewContext(
   return postJson<ApplyRepairReviewContextResponse>(
     `/v1/v2/repair-review/${encodeURIComponent(contextId)}/apply`,
     payload
+  );
+}
+
+export async function runControlledR6RepairDemo(jobId: string): Promise<ControlledR6RepairDemoResponse> {
+  return postJson<ControlledR6RepairDemoResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(jobId)}/repair/demo/r6-controlled`,
+    {}
   );
 }
 
