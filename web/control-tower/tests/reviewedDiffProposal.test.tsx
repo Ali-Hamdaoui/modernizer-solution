@@ -402,7 +402,7 @@ describe("PR-C/PR-D RepairActionsBar component", () => {
     expect(markup).not.toContain('data-testid="action-future-request-revision"');
   });
 
-  it("renders approve and reject as disabled", () => {
+  it("renders approve button disabled by default (no approveEnabled prop)", () => {
     const markup = renderToStaticMarkup(
       <RepairActionsBar
         onViewDiff={() => undefined}
@@ -413,10 +413,10 @@ describe("PR-C/PR-D RepairActionsBar component", () => {
         revisionPending={false}
       />,
     );
-    expect(markup).toContain("Coming in PR-E");
     expect(markup).toContain('disabled=""');
     expect(markup).toContain("Approve sandbox apply");
     expect(markup).toContain("Reject");
+    expect(markup).not.toContain("PR-E");
   });
 
   it("read-only buttons are not disabled", () => {
@@ -559,7 +559,7 @@ describe("PR-C forbidden-field tests", () => {
     for (const forbidden of forbiddenStrings) {
       expect(markup).not.toContain(forbidden);
     }
-    expect(markup).toContain("PR-E");
+    expect(markup).toContain("Approve sandbox apply");
   });
 
   it("ReviewerVerdictCard rendered output contains no forbidden fields", () => {

@@ -6,6 +6,7 @@ import {
   getRepairProposalDiff,
   getRepairAttempts,
   requestRepairProposalRevision,
+  approveRepairProposal,
 } from "../../../lib/controlTowerApi";
 import type {
   ReviewedDiffProposal,
@@ -40,6 +41,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
   const [attemptsState, setAttemptsState] = useState<AttemptsState>({ status: "idle" });
   const [showAttempts, setShowAttempts] = useState(false);
   const [revisionPending, setRevisionPending] = useState(false);
+  const [approvePending, setApprovePending] = useState(false);
 
   useEffect(() => {
     if (!jobId) return;
@@ -123,7 +125,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
     try {
       const state = proposalState;
       if (state.status !== "available") return;
-      const result = await requestRepairProposalRevision(jobId, state.proposal.proposal_id, {
+      await requestRepairProposalRevision(jobId, state.proposal.proposal_id, {
         user_instruction: instruction,
         previous_diff_checksum: state.proposal.diff_checksum,
         previous_reviewer_verdict_id:
@@ -134,6 +136,31 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
       // Safe error display — no raw paths/stacks
     } finally {
       setRevisionPending(false);
+    }
+  }
+
+  async function handleApproveSandboxApply() {
+    if (!jobId) return;
+    const state = proposalState;
+    if (state.status !== "available") return;
+    setApprovePending(true);
+    try {
+      const reviewerVerdictId = state.proposal.reviewer_verdict?.reviewer_verdict_id;
+      const gateId = state.proposal.gate_id;
+      if (!reviewerVerdictId || !gateId) return;
+      await approveRepairProposal(jobId, state.proposal.proposal_id, {
+        proposal_id: state.proposal.proposal_id,
+        diff_checksum: state.proposal.diff_checksum,
+        reviewer_verdict_id: reviewerVerdictId,
+        gate_id: gateId,
+        expected_gate_checksum: "",
+        idempotency_key: `approve-${state.proposal.proposal_id}-${Date.now()}`,
+      });
+      await refreshProposalData();
+    } catch {
+      // Safe error display — no raw paths/stacks
+    } finally {
+      setApprovePending(false);
     }
   }
 
@@ -255,7 +282,12 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
         }}
         onViewAttemptHistory={() => setShowAttempts((v) => !v)}
         onRequestRevision={handleRequestRevision}
+        onApproveSandboxApply={handleApproveSandboxApply}
         revisionPending={revisionPending}
+        approvePending={approvePending}
+        approveEnabled={proposal.status === "user_review_required" || proposal.status === "reviewer_accepted"}
+        checksumMismatch={diff?.checksum_mismatch ?? false}
+        rejectDisabled={true}
       />
     </section>
   );

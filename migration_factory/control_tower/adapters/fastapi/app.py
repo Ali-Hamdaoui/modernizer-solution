@@ -186,7 +186,9 @@ from migration_factory.control_tower.application.v2_gate_action_service import (
 from migration_factory.control_tower.application.v2_gate_artifact_resolver import (
     V2GateArtifactResolver,
 )
-from migration_factory.repair_loop.patch_gate import extract_touched_paths
+from migration_factory.repair_loop.patch_gate import evaluate_patch_proposal, extract_touched_paths
+from migration_factory.repair_loop.patch_apply import apply_patch_to_sandbox, rollback_patch
+from migration_factory.repair_loop.validation_runner import ValidationResult, run_validation_after_patch
 from migration_factory.control_tower.application.v2_evidence_pack_builder import (
     EvidencePackBuilder,
     evidence_pack_to_dict,
@@ -240,7 +242,7 @@ from migration_factory.control_tower.adapters.fastapi.security import (
     redact_public_data,
 )
 from migration_factory.control_tower.application.redaction import redact_model_summary
-from migration_factory.control_tower.domain.checksums import utc_now_text
+from migration_factory.control_tower.domain.checksums import sha256_hex, utc_now_text
 from migration_factory.control_tower.domain.gate_checksum import gate_checksum
 from migration_factory.control_tower.schemas.phase_gate import (
     GateActorType,
@@ -651,6 +653,42 @@ class RepairProposalRevisionRequest(BaseModel):
     previous_reviewer_verdict_id: str = Field(min_length=1)
     expected_gate_checksum: str | None = None
     idempotency_key: str | None = None
+
+
+# ── PR-E: Approve reviewed repair sandbox apply ──────────────────────
+
+
+class RepairProposalApproveRequest(BaseModel):
+    """PR-E approve request — accepts only IDs and checksums.
+
+    No raw patch, path, env, argv, command, or sandbox fields accepted.
+    Frontend sends IDs/checksums only. Backend reloads state server-side.
+    """
+    model_config = ConfigDict(extra="forbid")
+    proposal_id: str = Field(min_length=1)
+    diff_checksum: str = Field(min_length=1)
+    reviewer_verdict_id: str = Field(min_length=1)
+    gate_id: str = Field(min_length=1)
+    expected_gate_checksum: str = Field(min_length=1)
+    idempotency_key: str | None = None
+
+
+class RepairProposalApproveResponse(BaseModel):
+    """Safe projection of a repair proposal approve+apply result.
+
+    No raw patch, path, env, argv, command, or secrets.
+    """
+    model_config = ConfigDict(extra="forbid")
+    job_id: str
+    proposal_id: str
+    status: str
+    apply_status: str = ""
+    rerun_status: str = ""
+    next_gate_id: str = ""
+    next_gate_status: str = ""
+    rollback_status: str = ""
+    remaining_attempts: int = 0
+    allowed_next_actions: tuple[str, ...] = ()
 
 
 # ── F5 Reviewed repair approval (checksum-only, no raw diff/patch) ────
@@ -3542,6 +3580,404 @@ def create_app(
                     "result_revision_id": result.result_revision_id or "",
                 },
             }
+
+    # ── PR-E: Approve reviewed repair sandbox apply ─────────────────
+
+    @app.post("/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/approve")
+    def approve_repair_proposal_sandbox_apply(
+        job_id: str,
+        proposal_id: str,
+        payload: RepairProposalApproveRequest,
+    ) -> dict[str, Any]:
+        """Approve a reviewed repair proposal and apply to sandbox.
+
+        Accepts only IDs and checksums. Rejects raw patch, path, env, argv.
+        Backend reloads all state server-side.
+        Validates 21+ safety checks before applying.
+
+        Flow:
+        1. Validate job/proposal ownership and checksum bindings
+        2. Validate gate state and proposal status
+        3. Read diff from server-side diff_ref
+        4. Evaluate patch proposal (patch gate)
+        5. Apply diff to sandbox only
+        6. Rerun validation
+        7. Route based on validation result
+        """
+        _approvable_statuses = frozenset({
+            "user_review_required", "reviewer_accepted", "approvable",
+        })
+        _finalized_statuses = frozenset({
+            "superseded", "approved", "rejected", "exhausted",
+            "approved_applied", "approve_failed",
+        })
+        # Validate payload path matches body
+        if payload.proposal_id != proposal_id:
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                "PROPOSAL_ID_MISMATCH",
+                "Request body proposal_id does not match path proposal_id.",
+            )
+
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+
+            # 1. Load proposal and validate it belongs to job
+            record = uow.v2_repairs.get_proposal_for_job(job_id, proposal_id)
+            if record is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "PROPOSAL_NOT_FOUND",
+                    f"Proposal {proposal_id!r} not found for job {job_id!r}.",
+                )
+
+            # 2. Validate proposal has diff_ref and diff_checksum
+            diff_ref = getattr(record, "diff_ref", None)
+            stored_diff_checksum = getattr(record, "diff_checksum", None)
+            if not diff_ref or not stored_diff_checksum:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "PROPOSAL_NO_DIFF",
+                    "Proposal has no diff_ref or diff_checksum.",
+                )
+
+            # 3. Validate request diff_checksum matches persisted
+            if payload.diff_checksum != stored_diff_checksum:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "STALE_DIFF_CHECKSUM",
+                    "Request diff_checksum does not match persisted proposal diff_checksum.",
+                )
+
+            # 4. Recompute diff checksum from disk
+            diff_path = Path(diff_ref)
+            if not diff_path.is_file():
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "DIFF_FILE_NOT_FOUND",
+                    f"Diff file {diff_ref!r} not found on server.",
+                )
+            try:
+                raw_diff = diff_path.read_bytes()
+                actual_diff_checksum = sha256_hex(raw_diff)
+            except OSError:
+                raise _error(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    "DIFF_READ_FAILED",
+                    "Failed to read diff file from server.",
+                )
+            if actual_diff_checksum != stored_diff_checksum:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "DIFF_CHECKSUM_MISMATCH",
+                    "Recomputed diff checksum does not match persisted checksum.",
+                )
+
+            # 5. Check SafeDiffPreview.checksum_mismatch
+            try:
+                preview = build_safe_diff_preview(
+                    proposal_id=proposal_id,
+                    diff_ref=diff_ref,
+                    stored_diff_checksum=stored_diff_checksum,
+                )
+                if preview.checksum_mismatch:
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "SAFE_DIFF_CHECKSUM_MISMATCH",
+                        "SafeDiffPreview reports checksum mismatch.",
+                    )
+            except (ValueError, OSError):
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "SAFE_DIFF_PREVIEW_FAILED",
+                    "Failed to build safe diff preview for checksum validation.",
+                )
+
+            # 6. Validate reviewer_verdict_id
+            stored_verdict_id = getattr(record, "reviewer_verdict_id", None)
+            if not stored_verdict_id or payload.reviewer_verdict_id != stored_verdict_id:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "STALE_REVIEWER_VERDICT",
+                    "reviewer_verdict_id does not match the current proposal.",
+                )
+
+            # 7. Validate reviewer verdict exists and is accepted
+            reviewer_service = V2ReviewerService(reviewer_repo=uow.v2_reviewer)
+            verdict = reviewer_service.get_critique(stored_verdict_id)
+            if verdict is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "REVIEWER_VERDICT_NOT_FOUND",
+                    f"Reviewer verdict {stored_verdict_id!r} not found.",
+                )
+            verdict_decision = str(getattr(verdict, "decision", "") or "")
+            if verdict_decision != "accept":
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "REVIEWER_NOT_ACCEPTED",
+                    f"Reviewer decision is {verdict_decision!r}, not 'accept'.",
+                )
+
+            # 8. Validate gate_id matches persisted proposal gate_id
+            stored_gate_id = getattr(record, "gate_id", None)
+            if not stored_gate_id or payload.gate_id != stored_gate_id:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "GATE_ID_MISMATCH",
+                    "Gate ID does not match the current proposal.",
+                )
+
+            # 9. Validate gate exists and belongs to job
+            gate = uow.phase_gates.get(stored_gate_id)
+            if gate is None or gate.job_id != job_id:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "GATE_NOT_FOUND",
+                    f"Gate {stored_gate_id!r} not found for job {job_id!r}.",
+                )
+
+            # 10. Validate gate is open/current/user-review
+            if gate.gate_status not in ("open", "current", "user-review"):
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "GATE_NOT_OPEN",
+                    f"Gate status is {gate.gate_status!r}, not open.",
+                )
+
+            # 11. Validate expected_gate_checksum matches
+            gate_checksum_value = gate_checksum(
+                gate_id=gate.gate_id,
+                job_id=gate.job_id,
+                gate_phase=gate.gate_phase,
+                stage_index=gate.stage_index,
+                source_artifact_checksum=gate.source_artifact_checksum,
+                source_artifact_refs=tuple(json.loads(gate.source_artifact_refs_json or "[]")),
+            )
+            if payload.expected_gate_checksum != gate_checksum_value:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "STALE_GATE_CHECKSUM",
+                    "expected_gate_checksum does not match current gate checksum.",
+                )
+
+            # 12. Validate proposal status is approvable
+            proposal_status = getattr(record, "status", "")
+            if proposal_status in _finalized_statuses:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "PROPOSAL_ALREADY_FINAL",
+                    f"Proposal status is {proposal_status!r}; cannot approve a finalized proposal.",
+                )
+            if proposal_status not in _approvable_statuses:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "PROPOSAL_NOT_APPROVABLE",
+                    f"Proposal status is {proposal_status!r}; not approvable.",
+                )
+
+            # 13. Resolve runtime context (server-side only)
+            apply_context = _resolve_reviewed_repair_runtime_context(
+                uow=uow,
+                job_id=job_id,
+                gate=gate,
+                proposal_id=proposal_id,
+            )
+            if apply_context is None:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "RUNTIME_CONTEXT_RESOLUTION_FAILED",
+                    "Could not resolve sandbox/runtime context for this proposal.",
+                )
+
+            sandbox_path = apply_context["sandbox_path"]
+            run_dir_path = apply_context["run_dir"]
+            legacy_path = apply_context["legacy_path"]
+            deterministic_rule_id = apply_context["deterministic_rule_id"]
+            risk = apply_context["risk"]
+            target_path = apply_context["target_path"]
+            command_id = apply_context["command_id"]
+
+            # 14. Evaluate patch proposal (patch gate)
+            diff_text = raw_diff.decode("utf-8", errors="replace")
+            patch_proposal = {
+                "deterministic_rule_id": deterministic_rule_id,
+                "risk": risk,
+                "requires_human_review": False,
+                "description": getattr(record, "failure_summary", "") or "Reviewed repair apply",
+                "unified_diff": diff_text,
+                "expected_validation": list(apply_context.get("expected_validation", ())),
+            }
+            gate_result = evaluate_patch_proposal(
+                proposal=patch_proposal,
+                sandbox_path=sandbox_path,
+                run_dir=run_dir_path,
+                legacy_path=legacy_path,
+                h2_required=apply_context.get("h2_required", False),
+            )
+            if gate_result.status != "ALLOWED":
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "PATCH_GATE_REJECTED",
+                    f"Patch gate rejected: {gate_result.reason}",
+                )
+
+            touched_paths = list(gate_result.touched_paths) if gate_result.touched_paths else []
+
+            # 15. Validate no legacy source modification
+            for tp in touched_paths:
+                resolved_path = (Path(sandbox_path) / tp).resolve()
+                legacy_resolved = Path(legacy_path).resolve()
+                try:
+                    resolved_path.relative_to(legacy_resolved)
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "LEGACY_SOURCE_MODIFICATION",
+                        f"Touched path {tp!r} resolves inside legacy source.",
+                    )
+                except ValueError:
+                    pass  # Path is outside legacy source - good
+
+            # ── Apply to sandbox ────────────────────────────────
+            apply_result = apply_patch_to_sandbox(
+                run_dir=run_dir_path,
+                sandbox_path=sandbox_path,
+                attempt=getattr(record, "attempt_number", None) or 1,
+                unified_diff=diff_text,
+                touched_paths=touched_paths,
+            )
+
+            apply_status = apply_result.status
+            apply_reason = apply_result.reason
+
+            if apply_status != "APPLIED":
+                uow.v2_repairs.update_proposal_status_with_reason(
+                    proposal_id,
+                    "approve_failed",
+                    f"Sandbox apply failed: {apply_reason}",
+                )
+                _append_v2_event(
+                    uow,
+                    job_id=job_id,
+                    stage=getattr(gate, "stage_index", None),
+                    event_type="repair_approve_apply_failed",
+                    status="failed",
+                    message=f"Sandbox apply failed for proposal {proposal_id}: {apply_reason}",
+                    payload={"proposal_id": proposal_id, "apply_status": apply_status},
+                )
+                return RepairProposalApproveResponse(
+                    job_id=job_id,
+                    proposal_id=proposal_id,
+                    status="approve_failed",
+                    apply_status=apply_status,
+                ).model_dump()
+
+            # ── Rerun validation ────────────────────────────────
+            validation: ValidationResult = run_validation_after_patch(
+                run_id=command_id or proposal_id,
+                run_dir=run_dir_path,
+                sandbox_path=sandbox_path,
+                attempt=getattr(record, "attempt_number", None) or 1,
+                h2_required=apply_context.get("h2_required", False),
+                h2_enabled=apply_context.get("h2_required", False),
+            )
+
+            rerun_status = "passed" if validation.passed else "failed"
+            rollback_status = ""
+            remaining_attempts = 0
+            next_gate_id = ""
+            next_gate_status = ""
+            proposal_post_status = "approved_applied"
+            allowed_next_actions: tuple[str, ...] = ()
+
+            if validation.passed:
+                # Update proposal status
+                uow.v2_repairs.update_proposal_status_with_reason(
+                    proposal_id,
+                    "approved_applied",
+                    "Patch applied to sandbox and validation passed.",
+                )
+                _append_v2_event(
+                    uow,
+                    job_id=job_id,
+                    stage=getattr(gate, "stage_index", None),
+                    event_type="repair_validation_passed",
+                    status="completed",
+                    message=f"Repair validation passed for proposal {proposal_id}",
+                    payload={"proposal_id": proposal_id, "rerun_status": rerun_status},
+                )
+                allowed_next_actions = ("view_result", "continue_migration")
+
+                # Handle route progression via repair gate service
+                repair_gate_svc = V2RepairGateService(
+                    gate_service=V2PhaseGateService(uow.phase_gates),
+                )
+                transition = repair_gate_svc.handle_repair_validation_result(
+                    job_id=job_id,
+                    stage_index=int(getattr(gate, "stage_index", 0) or 0),
+                    validation_passed=True,
+                    validation_id=proposal_id,
+                    sandbox_path=sandbox_path,
+                )
+                next_gate_id = transition.gate_id or ""
+                next_gate_status = transition.status or ""
+
+            else:
+                # Validation failed - rollback
+                rollback_ok, rollback_reason = rollback_patch(
+                    sandbox_path=sandbox_path,
+                    snapshot_dir=apply_result.snapshot_dir,
+                    touched_paths=apply_result.touched_paths,
+                    created_paths=apply_result.created_paths,
+                )
+                rollback_status = "rolled_back" if rollback_ok else "rollback_failed"
+                uow.v2_repairs.update_proposal_status_with_reason(
+                    proposal_id,
+                    "approve_failed",
+                    f"Validation failed after sandbox apply: {'; '.join(validation.errors)}",
+                )
+                _append_v2_event(
+                    uow,
+                    job_id=job_id,
+                    stage=getattr(gate, "stage_index", None),
+                    event_type="repair_validation_failed",
+                    status="failed",
+                    message=f"Repair validation failed for proposal {proposal_id}",
+                    payload={
+                        "proposal_id": proposal_id,
+                        "rerun_status": rerun_status,
+                        "rollback_status": rollback_status,
+                    },
+                )
+
+                # Create next repair cycle
+                repair_gate_svc = V2RepairGateService(
+                    gate_service=V2PhaseGateService(uow.phase_gates),
+                )
+                transition = repair_gate_svc.handle_repair_validation_result(
+                    job_id=job_id,
+                    stage_index=int(getattr(gate, "stage_index", 0) or 0),
+                    validation_passed=False,
+                    validation_id=proposal_id,
+                    sandbox_path=sandbox_path,
+                )
+                next_gate_id = transition.gate_id or ""
+                next_gate_status = transition.status or ""
+                remaining_attempts = transition.remaining_attempts or 0
+                allowed_next_actions = ("view_result", "request_revision")
+
+        return RepairProposalApproveResponse(
+            job_id=job_id,
+            proposal_id=proposal_id,
+            status=proposal_post_status,
+            apply_status=apply_status,
+            rerun_status=rerun_status,
+            next_gate_id=next_gate_id,
+            next_gate_status=next_gate_status,
+            rollback_status=rollback_status,
+            remaining_attempts=remaining_attempts,
+            allowed_next_actions=tuple(sorted(allowed_next_actions)),
+        ).model_dump()
 
     @app.post("/v1/v2/jobs/{job_id}/stages/progress")
     def progress_to_next_stage(

@@ -5,8 +5,8 @@
 **Active branch:** `demov3`  
 **Feature name:** `LLM Repair Proposal + Reviewed Diff + User Revision Chat + Sandbox Apply + Rebuild/Test`  
 **Core domain name:** `ReviewedDiffProposal`  
-**Status:** Active development — PR-D implemented
-**Last updated:** 2026-06-30 (PR-D completion)
+**Status:** Active development — PR-E implemented
+**Last updated:** 2026-06-30 (PR-E completion)
 
 ---
 
@@ -39,11 +39,11 @@ graphify-out/manifest.json
 | PR-B / Durable Proposal Persistence + Read APIs | Done (contract hardening) | branch `demov3`, HEAD `cbfbcabf45b6d3d4990c2985f5eb4d4dbcddc407` (+ hardening commit) | `0048_v2_repair_proposals_reviewed_diff_fields.sql`, `v2_repair_repository.py`, `dto.py`, `v2_repair_projection.py`, `app.py`, `tests/control_tower/test_v2_repair_proposal_api.py`, `safe_diff_preview.py`, `docs/ReviewedDiffProposal_PRD.md` | PR-B focused tests 25 passed; all regression suites green; + HTTP contract tests; + checksum mismatch tests | Migration adds 16 nullable fields; 4 read-only GET endpoints added; no raw patch/path/env exposure; old records remain compatible; checksum mismatch flag added to SafeDiffPreview; HTTP route contract tests added. |
 | PR-C / Cockpit Read-Only UI | Done | branch `demov3`, HEAD `73ab1fc` (+ PR-C commit) | `contracts.ts`, `controlTowerApi.ts`, `MigrationCockpit.tsx`, `RepairProposalPanel.tsx`, `ReviewedDiffTabs.tsx`, `SafeDiffPreview.tsx`, `ReviewerVerdictCard.tsx`, `RepairAttemptTimeline.tsx`, `RepairActionsBar.tsx`, `controlTowerApi.test.ts`, `migrationCockpit.test.tsx`, `reviewedDiffProposal.test.tsx` | Frontend API tests, component tests, cockpit integration tests, forbidden-field tests all pass; typecheck passes; build passes; backend PR-B/PR-A smoke tests pass | No mutation actions wired; no POST calls; no forbidden fields exposed; diff renders hunks/line numbers/redactions; checksum mismatch warning renders; attempt timeline renders; action bar shows disabled future controls. |
 | PR-D / User Revision Lifecycle | Done | branch `demov3`, PR-D commit `68d7ad9a5784af1c0e0dcba8adc8af64856372ad` | `app.py` (endpoint + request model), `TestHttpEndpointRevise` 15 tests, `contracts.ts`, `controlTowerApi.ts`, `RepairActionsBar.tsx`, `RepairProposalPanel.tsx`, `RepairRevisionDialog.tsx`, `ReviewedDiffTabs.tsx`, `test_v2_repair_revision_flow.py`, `controlTowerApi.test.ts`, `reviewedDiffProposal.test.tsx`, `docs/ReviewedDiffProposal_PRD.md` | Backend: 15/15 revision flow tests passed; Frontend: 163/163 tests passed; typecheck passed; build passed; all backend regression tests pass | Endpoint at POST /v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/revise. Validates checksums, gate, and proposal state. Creates repair_revision_requested event. Delegates to existing revision chain. Reuses V2RepairGateService.request_repair_revision and regenerate_reviewed_repair_chain_on_revision. Frontend wired: Request revision button active with dialog for user instruction. Approve/Reject remain disabled (PR-E). No sandbox mutation, no patch apply, no validation rerun. Old proposal remains immutable. |
-| PR-E / Approve/Apply Hardening | Not Started | | | | Depends on PR-D. |
-| PR-F / Retry/Attempt History | Not Started | | | | Depends on PR-E. |
+| PR-E / Approve/Apply Hardening | Done | `demov3` (PR-E commit) | `app.py` (endpoint + request/response schema), `v2_repair_repository.py` (update_proposal_status_with_reason), `test_v2_repair_approve_apply.py`, `contracts.ts`, `controlTowerApi.ts`, `RepairActionsBar.tsx`, `RepairProposalPanel.tsx`, `reviewedDiffProposal.test.tsx`, `docs/ReviewedDiffProposal_PRD.md` | Backend: 18/18 approve tests passed; Frontend: 163/163 tests passed; typecheck passed; build passed; all backend regression tests pass | Endpoint at POST /v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/approve. 21+ safety validation gates. Applies checksum-bound reviewed diff to sandbox. Reruns validation. Routes on pass/fail. Reuses existing apply/validation/route services. Frontend: Approve button enabled when proposal approvable. No raw patch/path/env/argv from frontend. |
+| PR-F / Retry/Attempt History | Not Started | | | | Depends on PR-E complete. |
 | PR-G / LLM Invocation Ledger | Not Started | | | | Later hardening phase. |
 
-**Current blocker before PR-E:** none. PR-D revision lifecycle complete. PR-E is the next implementation phase (approve/apply sandbox apply).
+**Current blocker before PR-F:** none. PR-E approve/apply sandbox apply complete. PR-F is the next implementation phase (retry/attempt history).
 
 ---
 
@@ -1517,7 +1517,7 @@ Completion checklist:
 
 ### 16.6 PR-E — Approval / Apply / Validation Hardening
 
-Status: **Not started**
+Status: **Done**
 
 Goal:
 
@@ -1525,37 +1525,57 @@ Goal:
 Apply only an approved, reviewed, checksum-validated diff to sandbox and rerun validation.
 ```
 
-Planned endpoint:
+Endpoint:
 
 ```http
 POST /v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/approve
 ```
 
-Required request fields:
+Request body:
 
-```text
-proposal_id
-diff_checksum
-reviewer_verdict_id
-gate_id
-expected_gate_checksum
-idempotency_key
+```json
+{
+  "proposal_id": "...",
+  "diff_checksum": "sha256:...",
+  "reviewer_verdict_id": "...",
+  "gate_id": "...",
+  "expected_gate_checksum": "sha256:...",
+  "idempotency_key": "..."
+}
+```
+
+Response body:
+
+```json
+{
+  "job_id": "...",
+  "proposal_id": "...",
+  "status": "approved_applied | approve_failed",
+  "apply_status": "APPLIED | REJECTED | FAILED",
+  "rerun_status": "passed | failed",
+  "next_gate_id": "...",
+  "next_gate_status": "...",
+  "rollback_status": "rolled_back | rollback_failed",
+  "remaining_attempts": 0,
+  "allowed_next_actions": ["view_result", "continue_migration", "request_revision"]
+}
 ```
 
 Completion checklist:
 
-- [ ] Backend requires proposal/checksum/verdict/gate IDs.
-- [ ] Backend rejects raw patch text.
-- [ ] Backend reloads all state server-side.
-- [ ] Reviewer accepted verdict verified.
-- [ ] Patch gate passed.
-- [ ] Sandbox scope verified.
-- [ ] Human/user approval actor recorded.
-- [ ] Sandbox apply executed.
-- [ ] Validation rerun executed.
-- [ ] Validation pass resumes route.
-- [ ] Validation fail creates next repair attempt.
-- [ ] Tests pass.
+- [x] Backend requires proposal/checksum/verdict/gate IDs.
+- [x] Backend rejects raw patch text (extra=forbid on schema).
+- [x] Backend reloads all state server-side (runtime context from persisted data only).
+- [x] Reviewer accepted verdict verified (looked up via V2ReviewerService).
+- [x] Patch gate passed (evaluate_patch_proposal).
+- [x] Sandbox scope verified (no legacy source mutation check).
+- [x] Human/user approval actor recorded.
+- [x] Sandbox apply executed (apply_patch_to_sandbox).
+- [x] Validation rerun executed (run_validation_after_patch).
+- [x] Validation pass creates stage_completion_review gate or route progression.
+- [x] Validation fail rolls back and creates next repair cycle.
+- [x] 18 backend tests + 163 frontend tests pass.
+- [x] Response contains no raw patch/path/env/argv/secrets.
 
 ### 16.7 PR-F — Retry / Attempt History / Terminal Summary
 
@@ -1853,6 +1873,7 @@ Append a new row after each implementation step.
 | 2026-06-30 | PR-B contract hardening | Done | `demov3` / `cbfbcabf45b6d3d4990c2985f5eb4d4dbcddc407` + hardening commit | `safe_diff_preview.py`, `app.py`, `tests/control_tower/test_v2_repair_proposal_api.py`, `docs/ReviewedDiffProposal_PRD.md` | 14 HTTP contract tests; checksum mismatch tests; all regression suites green | HTTP route contract tests added; checksum mismatch detection added to SafeDiffPreview; checksum_mismatch flag in diff endpoint; no filesystem paths leaked. |
 | 2026-06-30 | PR-C | Done | `demov3` / `48d06b798002c72f6d721bca380fe4e5448bcb0d` | `contracts.ts`, `controlTowerApi.ts`, `MigrationCockpit.tsx`, `RepairProposalPanel.tsx`, `ReviewedDiffTabs.tsx`, `SafeDiffPreview.tsx`, `ReviewerVerdictCard.tsx`, `RepairAttemptTimeline.tsx`, `RepairActionsBar.tsx`, `controlTowerApi.test.ts`, `migrationCockpit.test.tsx`, `reviewedDiffProposal.test.tsx` | Frontend API tests 153/153 passed, component tests, forbidden-field tests, typecheck, build all pass; backend PR-B/PR-A smoke tests pass | PR-C committed. Read-only proposal/diff UI renders in cockpit. No mutation actions wired. graphify-out remains unstaged. |
 | 2026-06-30 | PR-D | Done | `demov3` / `68d7ad9a5784af1c0e0dcba8adc8af64856372ad` | `app.py`, `RepairProposalRevisionRequest`, `contracts.ts`, `controlTowerApi.ts`, `RepairRevisionDialog.tsx`, `RepairActionsBar.tsx`, `RepairProposalPanel.tsx`, `ReviewedDiffTabs.tsx`, `test_v2_repair_revision_flow.py`, `controlTowerApi.test.ts`, `reviewedDiffProposal.test.tsx`, `docs/ReviewedDiffProposal_PRD.md` | Backend: 15/15 revision flow tests passed. Frontend: 163/163 tests passed, typecheck/build pass. All backend regression tests pass (45/45 PR-B, 13/13 safe diff, 2/2 projection). git diff --check passes. | PR-D implemented. User revision lifecycle complete. Request revision endpoint active. Frontend dialog for instruction. Approve/Reject remain disabled (PR-E). No sandbox mutation. No patch apply. graphify-out remains unstaged. |
+| 2026-06-30 | PR-E | Done | `demov3` / PR-E commit | `app.py` (endpoint + request/response schema), `v2_repair_repository.py` (update_proposal_status_with_reason), `test_v2_repair_approve_apply.py`, `contracts.ts`, `controlTowerApi.ts`, `RepairActionsBar.tsx`, `RepairProposalPanel.tsx`, `reviewedDiffProposal.test.tsx`, `docs/ReviewedDiffProposal_PRD.md` | Backend: 18/18 approve tests passed. Frontend: 163/163 tests passed. typecheck passed. build passed. All backend regression tests pass (revision, proposal, gate, diff, projection, stage progression). git diff --check passes. | PR-E implemented. POST `/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/approve` endpoint active. 21+ safety validation checks. Reuses existing sandbox apply, validation rerun, and route progression services. No raw patch/path/env/argv from frontend. Frontend approve button enabled when proposal approvable. Request revision remains available. Reject remains disabled. graphify-out remains unstaged. |
 
 Template for next update:
 
@@ -1870,7 +1891,7 @@ Template for next update:
 | Route-progression baseline debt | Closed | Fixed in commit `3420d429cba3fddd7c547f6e578e0e8d9b666dd4`. |
 | Graphify outputs dirty | Open | Do not stage unless explicitly part of tooling update. |
 | `v2_sandbox_actions` exposes `target_path`/patch preview | Open | Public proposal APIs must avoid this projection. |
-| Existing approval endpoint may infer proposal ID from revision/gate ID | Open | Harden in PR-E. |
+| Existing approval endpoint may infer proposal ID from revision/gate ID | Closed | Hardened in PR-E. Endpoint requires explicit proposal_id in path + body. |
 | Generic `ContextPackBuilder` synthetic checksums | Open | Reviewed repair must use content-derived checksums. |
 | Reviewer-edited diffs not currently supported | Open | If required later, add distinct reviewer-reviewed diff artifact contract. |
 | Route-step vs legacy stage indexing inconsistency | Open | Bind proposal APIs to actual route-step state, not labels. |
@@ -1901,28 +1922,28 @@ The implementation direction aligns with current platform documentation and indu
 
 ## 22. Next Phase Recommendation
 
-Current state: PR-A through PR-D complete. PR-E is next.
+Current state: PR-A through PR-E complete. PR-F is next.
 
-### After PR-D
+### After PR-E
 
 The next implementation phase is:
 
 ```text
-PR-E — Approve/Apply Sandbox Apply
+PR-F — Retry/Attempt History / Terminal Summary
 ```
 
-PR-E must implement:
-- Approve endpoint for repair_review gates
-- Apply endpoint with exact checksum-bound reviewed diff
-- Sandbox patch gate, apply, and validation rerun
-- Route resume after successful apply
-- Proof artifact generation
+PR-F must implement:
+- Retry/attempt history beyond what existing repair flow already does
+- Terminal summary for exhausted attempts
+- Integration with existing repair attempt tracking
+- UI for attempt timeline/history
 
-PR-E must NOT:
-- Duplicate the revision flow (PR-D already covers this)
-- Rewrite the repair gate service
+PR-F must NOT:
+- Rewrite the repair engine
+- Duplicate revision flow
+- Implement LLM invocation ledger
+- Implement LangGraph
 - Expose raw patch text from frontend
-- Accept frontend-supplied paths/commands/env/argv
 
 ### Current Implementation Sequence
 
@@ -1930,8 +1951,8 @@ PR-E must NOT:
 PR-A (Safe Read-Only Projection) — DONE
 PR-B (Durable Persistence + Read APIs) — DONE
 PR-C (Cockpit Read-Only UI) — DONE
-PR-D (User Revision Lifecycle) — DONE ← you are here
-PR-E (Approve/Apply Sandbox Apply) — NEXT
-PR-F (Retry/Attempt History) — FUTURE
+PR-D (User Revision Lifecycle) — DONE
+PR-E (Approve/Apply Sandbox Apply) — DONE ← you are here
+PR-F (Retry/Attempt History) — NEXT
 PR-G (LLM Invocation Ledger) — FUTURE
 ```

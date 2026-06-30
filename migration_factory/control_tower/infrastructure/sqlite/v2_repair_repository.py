@@ -125,6 +125,13 @@ class SqliteV2RepairRepository:
                 (status, proposal_id),
             )
 
+    def update_proposal_status_with_reason(self, proposal_id: str, status: str, status_reason: str) -> None:
+        """Update proposal status and reason."""
+        self._connection.execute(
+            "UPDATE v2_repair_proposals SET status = ?, status_reason = ? WHERE proposal_id = ?",
+            (status, status_reason, proposal_id),
+        )
+
     def get_proposal(self, proposal_id: str) -> V2RepairProposalRecord | None:
         row = self._connection.execute(
             "SELECT * FROM v2_repair_proposals WHERE proposal_id = ?",

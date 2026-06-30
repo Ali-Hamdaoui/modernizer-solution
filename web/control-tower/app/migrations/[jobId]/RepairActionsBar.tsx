@@ -9,14 +9,24 @@ export function RepairActionsBar({
   onViewFilesChanged,
   onViewAttemptHistory,
   onRequestRevision,
+  onApproveSandboxApply,
   revisionPending,
+  approvePending,
+  approveEnabled,
+  checksumMismatch,
+  rejectDisabled,
 }: {
   onViewDiff: () => void;
   onViewReviewerOpinion: () => void;
   onViewFilesChanged: () => void;
   onViewAttemptHistory: () => void;
   onRequestRevision: (instruction: string) => Promise<void>;
+  onApproveSandboxApply?: () => void;
   revisionPending: boolean;
+  approvePending?: boolean;
+  approveEnabled?: boolean;
+  checksumMismatch?: boolean;
+  rejectDisabled?: boolean;
 }) {
   const [showDialog, setShowDialog] = useState(false);
 
@@ -54,16 +64,23 @@ export function RepairActionsBar({
         </button>
         <button
           type="button"
-          disabled
-          title="Coming in PR-E"
+          onClick={onApproveSandboxApply}
+          disabled={!approveEnabled || approvePending || checksumMismatch}
+          title={
+            checksumMismatch
+              ? "Cannot approve: diff checksum mismatch detected"
+              : approvePending
+                ? "Approving and applying to sandbox..."
+                : "Approve and apply reviewed repair to sandbox"
+          }
           data-testid="action-approve-sandbox-apply"
         >
-          Approve sandbox apply
+          {approvePending ? "Applying..." : "Approve sandbox apply"}
         </button>
         <button
           type="button"
-          disabled
-          title="Coming in PR-D/PR-E"
+          disabled={rejectDisabled !== false}
+          title="Not yet implemented"
           data-testid="action-reject-repair"
         >
           Reject

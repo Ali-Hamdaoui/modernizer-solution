@@ -1259,6 +1259,30 @@ export type RepairProposalRevisionResponse = {
   artifact_refs: Record<string, string>;
 };
 
+// ── PR-E — Approve Reviewed Repair Sandbox Apply types ───────────────────
+
+export type RepairProposalApproveRequest = {
+  proposal_id: string;
+  diff_checksum: string;
+  reviewer_verdict_id: string;
+  gate_id: string;
+  expected_gate_checksum: string;
+  idempotency_key?: string;
+};
+
+export type RepairProposalApproveResponse = {
+  job_id: string;
+  proposal_id: string;
+  status: string;
+  apply_status: string;
+  rerun_status: string;
+  next_gate_id: string;
+  next_gate_status: string;
+  rollback_status: string;
+  remaining_attempts: number;
+  allowed_next_actions: string[];
+};
+
 export const PROFILE_BY_ID: Record<MigrationProfileId, MigrationProfileOption> =
   MIGRATION_PROFILE_OPTIONS.reduce(
     (acc, profile) => {
