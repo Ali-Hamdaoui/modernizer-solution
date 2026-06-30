@@ -1266,7 +1266,7 @@ export type RepairProposalApproveRequest = {
   diff_checksum: string;
   reviewer_verdict_id: string;
   gate_id: string;
-  expected_gate_checksum: string;
+  expected_gate_checksum?: string;
   idempotency_key?: string;
 };
 

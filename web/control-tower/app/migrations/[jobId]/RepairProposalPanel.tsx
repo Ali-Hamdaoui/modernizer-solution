@@ -153,7 +153,6 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
         diff_checksum: state.proposal.diff_checksum,
         reviewer_verdict_id: reviewerVerdictId,
         gate_id: gateId,
-        expected_gate_checksum: "",
         idempotency_key: `approve-${state.proposal.proposal_id}-${Date.now()}`,
       });
       await refreshProposalData();

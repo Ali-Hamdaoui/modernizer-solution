@@ -662,14 +662,18 @@ class RepairProposalApproveRequest(BaseModel):
     """PR-E approve request — accepts only IDs and checksums.
 
     No raw patch, path, env, argv, command, or sandbox fields accepted.
-    Frontend sends IDs/checksums only. Backend reloads state server-side.
+    Frontend sends IDs/checksums only. Backend reloads all state server-side.
+
+    expected_gate_checksum is optional (None = skip check) so the
+    frontend is not required to compute server-side gate checksums.
+    When provided, it MUST match the persisted gate checksum.
     """
     model_config = ConfigDict(extra="forbid")
     proposal_id: str = Field(min_length=1)
     diff_checksum: str = Field(min_length=1)
     reviewer_verdict_id: str = Field(min_length=1)
     gate_id: str = Field(min_length=1)
-    expected_gate_checksum: str = Field(min_length=1)
+    expected_gate_checksum: str | None = None
     idempotency_key: str | None = None
 
 
@@ -3655,7 +3659,7 @@ def create_app(
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,
                     "DIFF_FILE_NOT_FOUND",
-                    f"Diff file {diff_ref!r} not found on server.",
+                    "Diff file not found on server.",
                 )
             try:
                 raw_diff = diff_path.read_bytes()
@@ -3745,7 +3749,7 @@ def create_app(
                     f"Gate status is {gate.gate_status!r}, not open.",
                 )
 
-            # 11. Validate expected_gate_checksum matches
+            # 11. Validate expected_gate_checksum if provided
             gate_checksum_value = gate_checksum(
                 gate_id=gate.gate_id,
                 job_id=gate.job_id,
@@ -3754,7 +3758,7 @@ def create_app(
                 source_artifact_checksum=gate.source_artifact_checksum,
                 source_artifact_refs=tuple(json.loads(gate.source_artifact_refs_json or "[]")),
             )
-            if payload.expected_gate_checksum != gate_checksum_value:
+            if payload.expected_gate_checksum is not None and payload.expected_gate_checksum != gate_checksum_value:
                 raise _error(
                     status.HTTP_409_CONFLICT,
                     "STALE_GATE_CHECKSUM",
