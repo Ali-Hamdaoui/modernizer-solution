@@ -751,8 +751,8 @@ def test_profile_metadata_preserves_source_and_target() -> None:
     d = route_to_dict(route)
     assert d["source_profile"] == "springboot-2.7-java11"
     assert d["target_profile"] == "springboot-3.5-java21"
-    assert d["source_level"] == 0
-    assert d["target_level"] == 2
+    assert d["source_level"] == 1
+    assert d["target_level"] == 3
 
 
 # ── AMF-274 / F4-T6: already-modernized app start routes ───────────

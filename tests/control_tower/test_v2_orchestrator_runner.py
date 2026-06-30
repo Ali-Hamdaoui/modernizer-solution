@@ -1799,7 +1799,7 @@ def test_higher_profile_exists_but_excluded_from_auto_queue(tmp_path: Path) -> N
         stderr="",
         command_phase=None,
     )
-    _wait_for_event(conn, "job-1", "target_reached")
+    _wait_for_event(conn, "job-1", "migration_completed")
     stage3_commands = SqliteUnitOfWork(conn).v2_commands.list_by_job_and_stage("job-1", 3)
     assert len(stage3_commands) == 0
 
@@ -1861,12 +1861,12 @@ def test_target_reached_stop_condition_emitted(tmp_path: Path) -> None:
         stderr="",
         command_phase=None,
     )
-    _wait_for_event(conn, "job-1", "target_reached")
+    _wait_for_event(conn, "job-1", "migration_completed")
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
-    target_events = [e for e in events if e.type == "target_reached"]
+    target_events = [e for e in events if e.type == "migration_completed"]
     assert len(target_events) >= 1
     payload = json.loads(target_events[0].payload_json or "{}")
-    assert payload.get("reason") == "target_reached"
+    assert payload.get("reason") == "migration_completed"
     route = payload.get("route", {})
     assert route.get("source_profile") == "springboot-2.7-java11"
     assert route.get("target_profile") == "springboot-3.5-java17"

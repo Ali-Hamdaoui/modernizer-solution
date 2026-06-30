@@ -193,23 +193,28 @@ def is_stage_excluded_from_route(route: ProfileRoute, stage_index: int) -> bool:
 def is_target_reached(route: ProfileRoute, current_stage: int) -> bool:
     if not route.valid:
         return True
-    if route.route_steps:
-        return current_stage >= len(route.route_steps)
     return current_stage >= max(route.included_stages) if route.included_stages else True
 
 
 def next_required_stage(route: ProfileRoute, current_stage: int) -> int | None:
     if not route.valid:
         return None
-    if route.route_steps:
-        next_step = current_stage + 1
-        if next_step <= len(route.route_steps):
-            return next_step
-        return None
     for stage in route.included_stages:
         if stage > current_stage:
             return stage
     return None
+
+
+def _route_step_for_stage(route: ProfileRoute, stage_index: int) -> RouteStep | None:
+    if not route.valid or not route.route_steps:
+        return None
+    try:
+        route_step_index = route.included_stages.index(stage_index)
+    except ValueError:
+        return None
+    if route_step_index < 0 or route_step_index >= len(route.route_steps):
+        return None
+    return route.route_steps[route_step_index]
 
 
 def build_route_steps(source_profile: str, target_profile: str) -> tuple[RouteStep, ...]:
@@ -760,8 +765,8 @@ class V2StageProgressionService:
                     command_id=None,
                 )
 
-            current_route_step = current_stage
-            if current_route_step >= len(route.route_steps):
+            next_stage = next_required_stage(route, current_stage)
+            if next_stage is None:
                 if current_stage_result is not None and self._result_has_successful_stage_output(
                     current_stage_result,
                     expected_sandbox_path=sandbox_path,
@@ -789,11 +794,23 @@ class V2StageProgressionService:
                     command_id=None,
                 )
 
-            next_step_index = current_route_step + 1
-            next_route_step = route.route_steps[next_step_index - 1]
+            next_route_step = _route_step_for_stage(route, next_stage)
+            if next_route_step is None:
+                raise ValueError(
+                    f"Cannot progress from stage {current_stage}: "
+                    f"no route step exists for stage {next_stage}"
+                )
             setup = self._setup_repo.get(setup_id)
             if setup is None:
                 raise ValueError(f"Setup {setup_id!r} not found")
+
+            if next_stage == TERMINAL_STAGE_INDEX and 3 in route.included_stages:
+                self._validate_stage4_input(
+                    job_id,
+                    current_stage,
+                    sandbox_path=sandbox_path,
+                    current_stage_result=current_stage_result,
+                )
 
             if policy in (StageContinuationPolicy.MANUAL, StageContinuationPolicy.MANUAL_ON_WARNING_OR_FAILURE):
                 reason = (
@@ -823,7 +840,7 @@ class V2StageProgressionService:
                 sys.executable,
                 "-m",
                 RUNNER_MODULE,
-                "--run-id", f"v2-{job_id[:8]}-s{next_step_index}",
+                "--run-id", f"v2-{job_id[:8]}-s{next_stage}",
                 "--legacy", sandbox_path,
                 "--modernized", setup.output_parent_path,
                 "--ai-hub", setup.ai_hub_path,
@@ -833,14 +850,14 @@ class V2StageProgressionService:
 
             existing_command_id: str | None = None
             if self._command_repo is not None:
-                existing = self._command_repo.list_by_job_and_stage(job_id, next_step_index)
+                existing = self._command_repo.list_by_job_and_stage(job_id, next_stage)
                 if existing:
                     existing_command_id = existing[0].command_id
                     return StageContinuationResult(
                         continuation_id=uuid4().hex,
                         job_id=job_id,
                         from_stage=current_stage,
-                        to_stage=next_step_index,
+                        to_stage=next_stage,
                         sandbox_path=sandbox_path,
                         argv=argv,
                         status="queued",
@@ -866,8 +883,8 @@ class V2StageProgressionService:
                 command_record = V2StageCommandRecord(
                     command_id=command_id,
                     job_id=job_id,
-                    stage_index=next_step_index,
-                    manifest_checksum=f"v2-stage{next_step_index}",
+                    stage_index=next_stage,
+                    manifest_checksum=f"v2-stage{next_stage}",
                     argv_json=json.dumps(list(argv), separators=(",", ":")),
                     env_json=json.dumps(env_manifest, separators=(",", ":")),
                     status="manifest_ready",
@@ -884,7 +901,7 @@ class V2StageProgressionService:
                 continuation_id=uuid4().hex,
                 job_id=job_id,
                 from_stage=current_stage,
-                to_stage=next_step_index,
+                to_stage=next_stage,
                 sandbox_path=sandbox_path,
                 argv=argv,
                 status="queued",

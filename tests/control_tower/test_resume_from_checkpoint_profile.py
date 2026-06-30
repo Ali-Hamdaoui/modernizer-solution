@@ -220,6 +220,15 @@ def _wait_for_event(conn: sqlite3.Connection, job_id: str, event_type: str) -> N
     raise AssertionError(f"event {event_type!r} was not emitted")
 
 
+def _wait_for_popen_calls(popen: _FakePopen) -> None:
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        if popen.calls:
+            return
+        time.sleep(0.01)
+    raise AssertionError("process launch was not observed")
+
+
 def test_valid_resume_launches_only_after_profile_and_checksum_validation(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     resume_id = _seed_resume_checkpoint(conn)
@@ -234,7 +243,7 @@ def test_valid_resume_launches_only_after_profile_and_checksum_validation(tmp_pa
     _wait_for_event(conn, "job-resume", "resume_started")
 
     assert result.status == "started"
-    assert popen.calls
+    _wait_for_popen_calls(popen)
 
 
 def test_approval_acceptance_persists_profile_metadata_for_resume_checkpoint(tmp_path: Path) -> None:
@@ -266,7 +275,7 @@ def test_approval_acceptance_persists_profile_metadata_for_resume_checkpoint(tmp
     assert profile_metadata["included_stages"] == [2]
     assert profile_metadata["excluded_stages"] == [3, 4]
     assert profile_metadata["skipped_stages"] == []
-    assert popen.calls
+    _wait_for_popen_calls(popen)
 
 
 def test_approval_acceptance_persists_boot21_route_metadata_for_resume_checkpoint(tmp_path: Path) -> None:
@@ -300,7 +309,7 @@ def test_approval_acceptance_persists_boot21_route_metadata_for_resume_checkpoin
     assert profile_metadata["target_profile"] == "springboot-4.0-java21"
     assert len(profile_metadata["route_steps"]) == 4
     assert profile_metadata["route_steps"][0]["runtime_profile"] == "springboot-2.1.6-to-2.7-java11"
-    assert popen.calls
+    _wait_for_popen_calls(popen)
 
 
 def test_resume_rejects_stale_artifact_checksum_before_launch(tmp_path: Path) -> None:
