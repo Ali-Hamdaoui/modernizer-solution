@@ -6,7 +6,7 @@
 **Feature name:** `LLM Repair Proposal + Reviewed Diff + User Revision Chat + Sandbox Apply + Rebuild/Test`  
 **Core domain name:** `ReviewedDiffProposal`  
 **Status:** Draft PRD, ready to add before PR-B  
-**Last updated:** 2026-06-30  
+**Last updated:** 2026-06-30 (contract hardening)
 
 ---
 
@@ -18,7 +18,7 @@ Current known branch state from latest reports:
 
 ```text
 branch: demov3
-HEAD:   45a6e9f3fb6f12ffe2142cd85118437f38e44f42
+HEAD:   cbfbcabf45b6d3d4990c2985f5eb4d4dbcddc407
 ```
 
 Known dirty files from the active worktree may include:
@@ -35,14 +35,14 @@ graphify-out/manifest.json
 |---|---|---|---|---|---|
 | Phase 0 / Plan | Done | branch `demov3`, HEAD `3420d429cba3fddd7c547f6e578e0e8d9b666dd4`, commit none | docs only | read-only audit completed | Existing F5 repair engine is reused, not replaced. |
 | PR-A / Safe Read-Only Projection | Done | branch `demov3`, PR-A commit `9de9c17f322e646238821c8ee914a3683f9b5a3e`, route-progression fix commit `3420d429cba3fddd7c547f6e578e0e8d9b666dd4` | `migration_factory/control_tower/application/safe_diff_preview.py`; `migration_factory/control_tower/application/v2_model_schemas.py`; `migration_factory/control_tower/application/v2_repair_projection.py`; `tests/control_tower/test_safe_diff_preview.py`; `tests/control_tower/test_reviewed_diff_proposal_projection.py`; `migration_factory/control_tower/application/v2_stage_progression.py`; `tests/control_tower/test_v2_stage_progression.py`; `tests/control_tower/test_v2_orchestrator_runner.py`; `tests/control_tower/test_resume_from_checkpoint_profile.py` | `tests/control_tower/test_safe_diff_preview.py` 13 passed; `tests/control_tower/test_reviewed_diff_proposal_projection.py` 2 passed; `tests/control_tower/test_v2_repair_gate_service.py` 30 passed; `tests/control_tower/test_v2_stage_progression.py` 55 passed; `tests/control_tower/test_v2_worker_stage.py` 26 passed; `tests/control_tower/test_v2_orchestrator_runner.py` 50 passed; `tests/control_tower/test_resume_from_checkpoint_profile.py` 7 passed; `tests/control_tower/test_profile_validation.py` 17 passed; `tests/control_tower/test_profile_pair_validation.py` 5 passed; `tests/control_tower/test_run_configurations.py` 38 passed; `git diff --check` passed | PR-A projection is committed, and the route-progression baseline debt is fixed in the follow-up route-step commit. |
-| PR-B / Durable Proposal Persistence + Read APIs | Done | branch `demov3`, HEAD `45a6e9f3fb6f12ffe2142cd85118437f38e44f42` (not committed) | `0048_v2_repair_proposals_reviewed_diff_fields.sql`, `v2_repair_repository.py`, `dto.py`, `v2_repair_projection.py`, `app.py`, `tests/control_tower/test_v2_repair_proposal_api.py` | PR-B focused tests 25 passed; all regression suites green | Migration adds 16 nullable fields; 4 read-only GET endpoints added; no raw patch/path/env exposure; old records remain compatible. |
+| PR-B / Durable Proposal Persistence + Read APIs | Done (contract hardening) | branch `demov3`, HEAD `cbfbcabf45b6d3d4990c2985f5eb4d4dbcddc407` (+ hardening commit) | `0048_v2_repair_proposals_reviewed_diff_fields.sql`, `v2_repair_repository.py`, `dto.py`, `v2_repair_projection.py`, `app.py`, `tests/control_tower/test_v2_repair_proposal_api.py`, `safe_diff_preview.py`, `docs/ReviewedDiffProposal_PRD.md` | PR-B focused tests 25 passed; all regression suites green; + HTTP contract tests; + checksum mismatch tests | Migration adds 16 nullable fields; 4 read-only GET endpoints added; no raw patch/path/env exposure; old records remain compatible; checksum mismatch flag added to SafeDiffPreview; HTTP route contract tests added. |
 | PR-C / Cockpit Read-Only UI | Not Started | | | | Depends on PR-B. |
 | PR-D / Revision Endpoint | Not Started | | | | Depends on PR-C. |
 | PR-E / Approve/Apply Hardening | Not Started | | | | Depends on PR-D. |
 | PR-F / Retry/Attempt History | Not Started | | | | Depends on PR-E. |
 | PR-G / LLM Invocation Ledger | Not Started | | | | Later hardening phase. |
 
-**Current blocker before PR-B:** none on the route-progression side. PR-B can start because the stage-progression suite is green and the PR-A projection tests remain green.
+**Current blocker before PR-C:** none. PR-B contract hardening complete. HTTP route contract tests pass. Checksum mismatch detection added to SafeDiffPreview.
 
 ---
 
@@ -757,6 +757,8 @@ do not expose omitted raw content
 
 `diff_checksum` must be SHA-256 over exact reviewed diff bytes/string content, not over the sanitized preview.
 
+When a stored `diff_checksum` exists and the recomputed SHA-256 of the loaded diff differs, `SafeDiffPreview.checksum_mismatch` is set to `True`. The diff endpoint returns the preview with the mismatch flag but never exposes the raw filesystem path. A proposal with a checksum mismatch must not be marked approvable (enforced in PR-E).
+
 ---
 
 ## 10. `ReviewedDiffProposal` Contract
@@ -1352,7 +1354,9 @@ Completion record:
 ```text
 Date/time: 2026-06-30
 Branch: demov3
-HEAD: 45a6e9f3fb6f12ffe2142cd85118437f38e44f42 (not committed yet)
+HEAD: cbfbcabf45b6d3d4990c2985f5eb4d4dbcddc407
+
+Committed: cbfbcab feat(control-tower): add reviewed diff proposal read APIs
 
 Changed files:
   migration_factory/control_tower/infrastructure/sqlite/migrations/0048_v2_repair_proposals_reviewed_diff_fields.sql
@@ -1387,7 +1391,7 @@ Security rules enforced:
   - Diff endpoint returns SafeDiffPreview only
 
 Tests:
-  tests/control_tower/test_v2_repair_proposal_api.py — 25 passed
+  tests/control_tower/test_v2_repair_proposal_api.py — 25 passed (unit) + 14 HTTP contract tests added
   tests/control_tower/test_safe_diff_preview.py — 13 passed
   tests/control_tower/test_reviewed_diff_proposal_projection.py — 2 passed
   tests/control_tower/test_v2_repair_gate_service.py — 30 passed
@@ -1397,8 +1401,17 @@ Tests:
   tests/control_tower/test_resume_from_checkpoint_profile.py — 7 passed
   tests/control_tower/test_profile_validation.py — 17 passed
   tests/control_tower/test_profile_pair_validation.py — 5 passed
-  tests/control_tower/test_run_configurations.py — 60 passed
+  tests/control_tower/test_run_configurations.py — 38 passed
   git diff --check — no whitespace errors
+
+Contract hardening (post-PR-B commit):
+  - 14 HTTP route contract tests using FastAPI TestClient
+  - Checksum mismatch detection added to SafeDiffPreview
+  - checksum_mismatch bool field in SafeDiffPreview dataclass
+  - stored_diff_checksum parameter added to build_safe_diff_preview
+  - Diff endpoint passes stored checksum; mismatch returns flag
+  - Responses verified for forbidden keys/patterns
+  - No filesystem paths in error responses
 ```
 
 Completion checklist:
@@ -1412,6 +1425,12 @@ Completion checklist:
 - [x] Existing old repair proposal records remain compatible.
 - [x] Current proposal survives backend restart.
 - [x] Tests pass.
+- [x] HTTP route contract tests use FastAPI TestClient (14 tests).
+- [x] All 4 GET endpoints tested for stable shape.
+- [x] Forbidden key/value patterns asserted at HTTP level.
+- [x] Checksum mismatch detection added to SafeDiffPreview.
+- [x] Diff endpoint passes stored checksum; mismatch flag returned safely.
+- [x] Error responses never include filesystem paths.
 
 ### 16.4 PR-C — Cockpit Read-Only Proposal/Diff UI
 
@@ -1694,7 +1713,8 @@ Append a new row after each implementation step.
 | 2026-06-30 | Phase 0 | Done | `demov3` / `6dec64d726f4932c798f10652c8969be27989012` | none | read-only audit | Hybrid persistence chosen; PR-A recommended. |
 | 2026-06-30 | PR-A | Done | `demov3` / `9de9c17f322e646238821c8ee914a3683f9b5a3e` | `safe_diff_preview.py`, `v2_model_schemas.py`, `v2_repair_projection.py`, PR-A tests | PR-A focused tests pass; route-progression baseline debt fixed in follow-up commit `3420d429cba3fddd7c547f6e578e0e8d9b666dd4` | Read-only projection is committed and the route graph is green. |
 | 2026-06-30 | Route progression fix | Done | `demov3` / `3420d429cba3fddd7c547f6e578e0e8d9b666dd4` | `v2_stage_progression.py`, `test_v2_stage_progression.py`, `test_v2_orchestrator_runner.py`, `test_resume_from_checkpoint_profile.py` | Stage progression, orchestrator, resume, validation, and repair-gate focused tests passed | Fixed route-step indexing, target-reached semantics, and one stale metadata expectation. |
-| 2026-06-30 | PR-B | Done | `demov3` / `45a6e9f3fb6f12ffe2142cd85118437f38e44f42` (not committed) | `0048_v2_repair_proposals_reviewed_diff_fields.sql`, `v2_repair_repository.py`, `dto.py`, `v2_repair_projection.py`, `app.py`, `tests/control_tower/test_v2_repair_proposal_api.py` | 25 PR-B tests passed; all 283 regression tests passed across 11 test files | PR-B complete. 4 read-only GET endpoints, 16 nullable columns, no mutation endpoints, all security rules enforced. |
+| 2026-06-30 | PR-B | Done | `demov3` / `cbfbcabf45b6d3d4990c2985f5eb4d4dbcddc407` | `0048_v2_repair_proposals_reviewed_diff_fields.sql`, `v2_repair_repository.py`, `dto.py`, `v2_repair_projection.py`, `app.py`, `tests/control_tower/test_v2_repair_proposal_api.py` | 25 PR-B tests passed; all 283 regression tests passed across 11 test files | PR-B complete. 4 read-only GET endpoints, 16 nullable columns, no mutation endpoints, all security rules enforced. |
+| 2026-06-30 | PR-B contract hardening | Done | `demov3` / `cbfbcabf45b6d3d4990c2985f5eb4d4dbcddc407` + hardening commit | `safe_diff_preview.py`, `app.py`, `tests/control_tower/test_v2_repair_proposal_api.py`, `docs/ReviewedDiffProposal_PRD.md` | 14 HTTP contract tests; checksum mismatch tests; all regression suites green | HTTP route contract tests added; checksum mismatch detection added to SafeDiffPreview; checksum_mismatch flag in diff endpoint; no filesystem paths leaked. |
 
 Template for next update:
 
@@ -1716,9 +1736,12 @@ Template for next update:
 | Generic `ContextPackBuilder` synthetic checksums | Open | Reviewed repair must use content-derived checksums. |
 | Reviewer-edited diffs not currently supported | Open | If required later, add distinct reviewer-reviewed diff artifact contract. |
 | Route-step vs legacy stage indexing inconsistency | Open | Bind proposal APIs to actual route-step state, not labels. |
-| PR-B diff endpoint reads from filesystem path in diff_ref | Open | Future PR should load diff from artifact repository, not direct filesystem. |
+| PR-B diff endpoint reads from filesystem path in diff_ref | Closed for hardening | Diff path sanitized to filename in safe_diff_preview. Remaining artifact-repo migration deferred to future PR. |
 | `v1_model_invocations` insufficient for repair proof | Open | Add `v2_llm_invocations` in PR-G or earlier if required. |
 | Deployment display policy | Open | Decide admin-only vs alias-only before public LLM activity UI. |
+| Checksum mismatch detection | Closed | Implemented in contract hardening. `SafeDiffPreview.checksum_mismatch` flag returned by diff endpoint. Proposal not marked approvable on mismatch (enforced in PR-E). |
+| No FastAPI TestClient HTTP contract tests | Closed | 14 HTTP route contract tests added covering all 4 GET endpoints with forbidden key/value assertions. |
+| Missing diff file error leaks filesystem path | Closed | Diff endpoint returns "could not load diff" with no filesystem path in error responses. |
 
 ---
 

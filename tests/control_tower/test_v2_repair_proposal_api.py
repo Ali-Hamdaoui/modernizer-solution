@@ -21,10 +21,15 @@ from migration_factory.control_tower.application.v2_repair_projection import (
     reviewed_diff_proposal_to_safe_dict,
 )
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
+from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository import V2MigrationJobRecord
 from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
     SqliteV2RepairRepository,
     V2RepairProposalRecord,
 )
+from migration_factory.control_tower.domain.checksums import utc_now_text
+from migration_factory.control_tower.adapters.fastapi.app import create_app
+from fastapi.testclient import TestClient
 
 FORBIDDEN_FIELDS = frozenset({
     "sandbox_path",
@@ -528,3 +533,372 @@ def test_mixed_old_and_new_records_in_same_db(tmp_path: Path) -> None:
     new_loaded = repo.get_proposal(new.proposal_id)
     assert new_loaded is not None
     assert new_loaded.job_id == "job-mixed"
+
+
+# ── HTTP route contract tests (TestClient) ────────────────────────────
+
+HTTP_FORBIDDEN_KEYS = frozenset({
+    "target_path",
+    "patch_content",
+    "sandbox_path",
+    "argv",
+    "env",
+    "raw_command",
+    "azure_endpoint",
+    "api_key",
+    "password",
+    "authorization",
+    "secret",
+})
+
+HTTP_FORBIDDEN_PATTERNS = [
+    "C:\\",
+    "/Users/",
+    "/home/",
+    ".control-tower",
+    ".control-tower-dev",
+    "AZURE_OPENAI",
+    "Bearer",
+]
+
+
+def _check_no_forbidden_keys(data):
+    if isinstance(data, dict):
+        for key, value in data.items():
+            assert key not in HTTP_FORBIDDEN_KEYS, f"Forbidden key {key!r} found in response"
+            _check_no_forbidden_keys(value)
+    elif isinstance(data, list):
+        for item in data:
+            _check_no_forbidden_keys(item)
+
+
+def _check_no_forbidden_values(data):
+    text = json.dumps(data)
+    for pattern in HTTP_FORBIDDEN_PATTERNS:
+        assert pattern not in text, f"Forbidden pattern {pattern!r} found in response content"
+
+
+def _api_client_with_job(tmp_path: Path) -> tuple[TestClient, sqlite3.Connection, str]:
+    conn = _connection(tmp_path)
+    uow = SqliteUnitOfWork(conn)
+    job_id = "test-job-http-1"
+    job = V2MigrationJobRecord(
+        job_id=job_id,
+        setup_id="test-setup",
+        setup_checksum="abc",
+        pipeline_id="test-pipeline",
+        stage_chain_json="[]",
+        status="running",
+        created_at=utc_now_text(),
+        updated_at=utc_now_text(),
+        correlation_id=None,
+    )
+    uow.v2_jobs.save(job)
+    client = TestClient(create_app(lambda: SqliteUnitOfWork(conn)), base_url="http://127.0.0.1:8000")
+    return client, conn, job_id
+
+
+def _api_client_with_proposal(tmp_path: Path, diff_path: Path | None = None) -> tuple[TestClient, sqlite3.Connection, str, V2RepairProposalRecord]:
+    client, conn, job_id = _api_client_with_job(tmp_path)
+    repo = SqliteV2RepairRepository(conn)
+    diff_ref = str(diff_path) if diff_path is not None else None
+    record = _make_new_style_record(job_id=job_id, diff_ref=diff_ref)
+    repo.save_proposal(record)
+    return client, conn, job_id, record
+
+
+class TestHttpEndpointCurrentProposal:
+    def test_current_proposal_returns_stable_shape(self, tmp_path: Path) -> None:
+        client, conn, job_id, _ = _api_client_with_proposal(tmp_path, diff_path=None)
+        response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["job_id"] == job_id
+        assert "proposal" in data
+
+    def test_current_proposal_contains_proposal_when_diff_ref_present(self, tmp_path: Path) -> None:
+        diff_path = _write_diff(tmp_path, _make_simple_diff_text())
+        client, conn, job_id, record = _api_client_with_proposal(tmp_path, diff_path=diff_path)
+        response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["proposal"] is not None
+        assert data["proposal"]["proposal_id"] == record.proposal_id
+
+    def test_current_proposal_no_forbidden_fields(self, tmp_path: Path) -> None:
+        diff_path = _write_diff(tmp_path, _make_simple_diff_text())
+        client, conn, job_id, record = _api_client_with_proposal(tmp_path, diff_path=diff_path)
+        response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
+        data = response.json()
+        _check_no_forbidden_keys(data)
+        _check_no_forbidden_values(data)
+
+    def test_current_proposal_none_for_nonexistent_job(self, tmp_path: Path) -> None:
+        client, conn, _, _ = _api_client_with_proposal(tmp_path, diff_path=None)
+        response = client.get("/v1/v2/jobs/nonexistent/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
+        assert response.status_code == 404
+
+
+class TestHttpEndpointGetProposal:
+    def test_get_proposal_returns_proposal_for_matching_job(self, tmp_path: Path) -> None:
+        diff_path = _write_diff(tmp_path, _make_simple_diff_text())
+        client, conn, job_id, record = _api_client_with_proposal(tmp_path, diff_path=diff_path)
+        response = client.get(
+            f"/v1/v2/jobs/{job_id}/repair/proposals/{record.proposal_id}",
+            headers={"host": "127.0.0.1:8000"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["job_id"] == job_id
+        assert data["proposal"]["proposal_id"] == record.proposal_id
+
+    def test_get_proposal_wrong_job_returns_404(self, tmp_path: Path) -> None:
+        diff_path = _write_diff(tmp_path, _make_simple_diff_text())
+        client, conn, job_id, record = _api_client_with_proposal(tmp_path, diff_path=diff_path)
+        response = client.get(
+            f"/v1/v2/jobs/wrong-job/repair/proposals/{record.proposal_id}",
+            headers={"host": "127.0.0.1:8000"},
+        )
+        assert response.status_code == 404
+
+    def test_get_proposal_no_forbidden_fields(self, tmp_path: Path) -> None:
+        diff_path = _write_diff(tmp_path, _make_simple_diff_text())
+        client, conn, job_id, record = _api_client_with_proposal(tmp_path, diff_path=diff_path)
+        response = client.get(
+            f"/v1/v2/jobs/{job_id}/repair/proposals/{record.proposal_id}",
+            headers={"host": "127.0.0.1:8000"},
+        )
+        data = response.json()
+        _check_no_forbidden_keys(data)
+        _check_no_forbidden_values(data)
+
+    def test_get_proposal_nonexistent_proposal_returns_404(self, tmp_path: Path) -> None:
+        client, conn, job_id, _ = _api_client_with_proposal(tmp_path, diff_path=None)
+        response = client.get(
+            f"/v1/v2/jobs/{job_id}/repair/proposals/nonexistent-prop",
+            headers={"host": "127.0.0.1:8000"},
+        )
+        assert response.status_code == 404
+
+    def test_get_proposal_stable_shape(self, tmp_path: Path) -> None:
+        diff_path = _write_diff(tmp_path, _make_simple_diff_text())
+        client, conn, job_id, record = _api_client_with_proposal(tmp_path, diff_path=diff_path)
+        response = client.get(
+            f"/v1/v2/jobs/{job_id}/repair/proposals/{record.proposal_id}",
+            headers={"host": "127.0.0.1:8000"},
+        )
+        data = response.json()
+        assert data["job_id"] == job_id
+        assert isinstance(data["proposal"], dict)
+
+
+class TestHttpEndpointDiff:
+    def test_diff_endpoint_returns_stable_shape(self, tmp_path: Path) -> None:
+        diff_path = _write_diff(tmp_path, _make_simple_diff_text())
+        client, conn, job_id, record = _api_client_with_proposal(tmp_path, diff_path=diff_path)
+        response = client.get(
+            f"/v1/v2/jobs/{job_id}/repair/proposals/{record.proposal_id}/diff",
+            headers={"host": "127.0.0.1:8000"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["job_id"] == job_id
+        assert "safe_diff_preview" in data
+
+    def test_diff_endpoint_has_no_top_level_diff_ref(self, tmp_path: Path) -> None:
+        diff_path = _write_diff(tmp_path, _make_simple_diff_text())
+        client, conn, job_id, record = _api_client_with_proposal(tmp_path, diff_path=diff_path)
+        response = client.get(
+            f"/v1/v2/jobs/{job_id}/repair/proposals/{record.proposal_id}/diff",
+            headers={"host": "127.0.0.1:8000"},
+        )
+        data = response.json()
+        assert "diff_ref" not in data
+
+    def test_diff_endpoint_no_forbidden_fields(self, tmp_path: Path) -> None:
+        diff_path = _write_diff(tmp_path, _make_simple_diff_text())
+        client, conn, job_id, record = _api_client_with_proposal(tmp_path, diff_path=diff_path)
+        response = client.get(
+            f"/v1/v2/jobs/{job_id}/repair/proposals/{record.proposal_id}/diff",
+            headers={"host": "127.0.0.1:8000"},
+        )
+        data = response.json()
+        _check_no_forbidden_keys(data)
+        _check_no_forbidden_values(data)
+
+    def test_diff_endpoint_missing_diff_file_returns_safe_reason(self, tmp_path: Path) -> None:
+        client, conn, job_id, record = _api_client_with_proposal(
+            tmp_path, diff_path=tmp_path / "nonexistent.diff"
+        )
+        response = client.get(
+            f"/v1/v2/jobs/{job_id}/repair/proposals/{record.proposal_id}/diff",
+            headers={"host": "127.0.0.1:8000"},
+        )
+        data = response.json()
+        assert data["safe_diff_preview"] is None
+        assert data["reason"] == "could not load diff"
+
+    def test_diff_endpoint_error_has_no_filesystem_path(self, tmp_path: Path) -> None:
+        client, conn, job_id, record = _api_client_with_proposal(
+            tmp_path, diff_path=tmp_path / "nonexistent.diff"
+        )
+        response = client.get(
+            f"/v1/v2/jobs/{job_id}/repair/proposals/{record.proposal_id}/diff",
+            headers={"host": "127.0.0.1:8000"},
+        )
+        data = json.dumps(response.json())
+        assert "C:\\" not in data
+        assert "/tmp/" not in data
+        assert data == '{"safe_diff_preview": null, "job_id": "test-job-http-1", "reason": "could not load diff"}'
+
+
+class TestHttpEndpointAttempts:
+    def test_attempts_returns_stable_shape(self, tmp_path: Path) -> None:
+        client, conn, job_id = _api_client_with_job(tmp_path)
+        repo = SqliteV2RepairRepository(conn)
+        r1 = _make_new_style_record(job_id=job_id, attempt_number=1)
+        r2 = _make_new_style_record(job_id=job_id, attempt_number=2)
+        repo.save_proposal(r1)
+        repo.save_proposal(r2)
+        response = client.get(
+            f"/v1/v2/jobs/{job_id}/repair/attempts",
+            headers={"host": "127.0.0.1:8000"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["job_id"] == job_id
+        assert isinstance(data["attempts"], list)
+
+    def test_attempts_returns_only_same_job_attempts(self, tmp_path: Path) -> None:
+        client, conn, job_id = _api_client_with_job(tmp_path)
+        repo = SqliteV2RepairRepository(conn)
+        r1 = _make_new_style_record(job_id=job_id, attempt_number=1)
+        r_other = _make_new_style_record(job_id="other-job", attempt_number=1)
+        repo.save_proposal(r1)
+        repo.save_proposal(r_other)
+        response = client.get(
+            f"/v1/v2/jobs/{job_id}/repair/attempts",
+            headers={"host": "127.0.0.1:8000"},
+        )
+        data = response.json()
+        assert len(data["attempts"]) == 1
+        assert data["attempts"][0]["proposal_id"] == r1.proposal_id
+
+    def test_attempts_no_forbidden_fields(self, tmp_path: Path) -> None:
+        client, conn, job_id = _api_client_with_job(tmp_path)
+        repo = SqliteV2RepairRepository(conn)
+        r = _make_new_style_record(job_id=job_id, attempt_number=1)
+        repo.save_proposal(r)
+        response = client.get(
+            f"/v1/v2/jobs/{job_id}/repair/attempts",
+            headers={"host": "127.0.0.1:8000"},
+        )
+        data = response.json()
+        _check_no_forbidden_keys(data)
+        _check_no_forbidden_values(data)
+
+
+class TestHttpChecksumMismatch:
+    def test_diff_checksum_mismatch_detected(self, tmp_path: Path) -> None:
+        diff_path = _write_diff(tmp_path, _make_simple_diff_text())
+        conn = _connection(tmp_path)
+        uow = SqliteUnitOfWork(conn)
+        job_id = "job-cs-mismatch"
+        job = V2MigrationJobRecord(
+            job_id=job_id,
+            setup_id="test-setup",
+            setup_checksum="abc",
+            pipeline_id="test-pipeline",
+            stage_chain_json="[]",
+            status="running",
+            created_at=utc_now_text(),
+            updated_at=utc_now_text(),
+            correlation_id=None,
+        )
+        uow.v2_jobs.save(job)
+        repo = SqliteV2RepairRepository(conn)
+        record = _make_new_style_record(
+            job_id=job_id,
+            diff_ref=str(diff_path),
+            diff_checksum="sha256:wrongchecksum",
+        )
+        repo.save_proposal(record)
+        client = TestClient(create_app(lambda: SqliteUnitOfWork(conn)), base_url="http://127.0.0.1:8000")
+        response = client.get(
+            f"/v1/v2/jobs/{job_id}/repair/proposals/{record.proposal_id}/diff",
+            headers={"host": "127.0.0.1:8000"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["safe_diff_preview"] is not None
+        assert data["safe_diff_preview"]["checksum_mismatch"] is True
+
+    def test_diff_checksum_match_no_mismatch_flag(self, tmp_path: Path) -> None:
+        diff_path = _write_diff(tmp_path, _make_simple_diff_text())
+        from migration_factory.control_tower.domain.checksums import sha256_hex
+        stored_checksum = sha256_hex(_make_simple_diff_text().encode("utf-8"))
+        conn = _connection(tmp_path)
+        uow = SqliteUnitOfWork(conn)
+        job_id = "job-cs-match"
+        job = V2MigrationJobRecord(
+            job_id=job_id,
+            setup_id="test-setup",
+            setup_checksum="abc",
+            pipeline_id="test-pipeline",
+            stage_chain_json="[]",
+            status="running",
+            created_at=utc_now_text(),
+            updated_at=utc_now_text(),
+            correlation_id=None,
+        )
+        uow.v2_jobs.save(job)
+        repo = SqliteV2RepairRepository(conn)
+        record = _make_new_style_record(
+            job_id=job_id,
+            diff_ref=str(diff_path),
+            diff_checksum=stored_checksum,
+        )
+        repo.save_proposal(record)
+        client = TestClient(create_app(lambda: SqliteUnitOfWork(conn)), base_url="http://127.0.0.1:8000")
+        response = client.get(
+            f"/v1/v2/jobs/{job_id}/repair/proposals/{record.proposal_id}/diff",
+            headers={"host": "127.0.0.1:8000"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["safe_diff_preview"] is not None
+        assert data["safe_diff_preview"]["checksum_mismatch"] is False
+
+    def test_diff_no_stored_checksum_does_not_set_mismatch(self, tmp_path: Path) -> None:
+        diff_path = _write_diff(tmp_path, _make_simple_diff_text())
+        conn = _connection(tmp_path)
+        uow = SqliteUnitOfWork(conn)
+        job_id = "job-cs-none"
+        job = V2MigrationJobRecord(
+            job_id=job_id,
+            setup_id="test-setup",
+            setup_checksum="abc",
+            pipeline_id="test-pipeline",
+            stage_chain_json="[]",
+            status="running",
+            created_at=utc_now_text(),
+            updated_at=utc_now_text(),
+            correlation_id=None,
+        )
+        uow.v2_jobs.save(job)
+        repo = SqliteV2RepairRepository(conn)
+        record = _make_new_style_record(
+            job_id=job_id,
+            diff_ref=str(diff_path),
+            diff_checksum=None,
+        )
+        repo.save_proposal(record)
+        client = TestClient(create_app(lambda: SqliteUnitOfWork(conn)), base_url="http://127.0.0.1:8000")
+        response = client.get(
+            f"/v1/v2/jobs/{job_id}/repair/proposals/{record.proposal_id}/diff",
+            headers={"host": "127.0.0.1:8000"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["safe_diff_preview"] is not None
+        assert data["safe_diff_preview"]["checksum_mismatch"] is False

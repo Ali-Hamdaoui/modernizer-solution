@@ -67,6 +67,7 @@ class SafeDiffPreview:
     total_additions: int = 0
     total_deletions: int = 0
     truncated: bool = False
+    checksum_mismatch: bool = False
     redactions: list[str] = field(default_factory=list)
 
 
@@ -75,13 +76,23 @@ def build_safe_diff_preview(
     proposal_id: str,
     diff_ref: str | Path | None,
     diff_text: str | None = None,
+    stored_diff_checksum: str | None = None,
 ) -> SafeDiffPreview:
-    """Parse and sanitize a reviewed diff into a bounded preview."""
+    """Parse and sanitize a reviewed diff into a bounded preview.
+
+    If stored_diff_checksum is provided and differs from the SHA-256
+    of the loaded diff bytes, the preview carries checksum_mismatch=True.
+    """
     raw_diff_bytes = _load_diff_bytes(diff_ref=diff_ref, diff_text=diff_text)
     diff_checksum = sha256_hex(raw_diff_bytes)
+    checksum_mismatch = (
+        stored_diff_checksum is not None
+        and stored_diff_checksum != diff_checksum
+    )
     preview_bytes = raw_diff_bytes[:MAX_TOTAL_BYTES]
     preview_text = preview_bytes.decode("utf-8", errors="replace")
     parsed = _SafeDiffParser(proposal_id=proposal_id, diff_ref=diff_ref, diff_checksum=diff_checksum)
+    parsed._checksum_mismatch = checksum_mismatch
     parsed.parse(preview_text)
     if len(raw_diff_bytes) > MAX_TOTAL_BYTES:
         parsed.truncate("diff truncated to 200KB preview window")
@@ -97,6 +108,7 @@ def safe_diff_preview_to_dict(preview: SafeDiffPreview) -> dict[str, Any]:
         "total_additions": preview.total_additions,
         "total_deletions": preview.total_deletions,
         "truncated": preview.truncated,
+        "checksum_mismatch": preview.checksum_mismatch,
         "redactions": list(preview.redactions),
     }
 
@@ -146,6 +158,7 @@ class _SafeDiffParser:
         self._proposal_id = proposal_id
         self._diff_ref = _safe_diff_ref(diff_ref)
         self._diff_checksum = diff_checksum
+        self._checksum_mismatch = False
         self._files: list[SafeDiffFile] = []
         self._redactions: list[str] = []
         self._truncated = False
@@ -214,6 +227,7 @@ class _SafeDiffParser:
             total_additions=self._total_additions,
             total_deletions=self._total_deletions,
             truncated=self._truncated or any(file.truncated for file in self._files),
+            checksum_mismatch=self._checksum_mismatch,
             redactions=self._redactions,
         )
 

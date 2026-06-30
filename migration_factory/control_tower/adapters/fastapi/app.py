@@ -3262,6 +3262,8 @@ def create_app(
 
         Validates proposal belongs to job. Returns safe structured diff
         preview only — never raw patch text.
+        Checksum mismatch is reported via checksum_mismatch flag;
+        raw filesystem path is never exposed.
         """
         with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
@@ -3273,13 +3275,14 @@ def create_app(
                     f"Proposal {proposal_id!r} not found for job {job_id!r}.",
                 )
             diff_ref = getattr(record, "diff_ref", None)
-            diff_checksum = getattr(record, "diff_checksum", None)
+            stored_checksum = getattr(record, "diff_checksum", None)
             if not diff_ref:
                 return {"safe_diff_preview": None, "job_id": job_id, "reason": "no_diff_ref"}
             try:
                 preview = build_safe_diff_preview(
                     proposal_id=proposal_id,
                     diff_ref=diff_ref,
+                    stored_diff_checksum=stored_checksum,
                 )
                 return {
                     "safe_diff_preview": safe_diff_preview_to_dict(preview),
