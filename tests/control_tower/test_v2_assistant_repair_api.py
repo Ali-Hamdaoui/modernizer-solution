@@ -707,8 +707,17 @@ def _h2_patch() -> str:
 
 def _safe_patch_package() -> dict:
     return {
+        "repair_family": "JAKARTA_IMPORT_MECHANICAL_SOURCE",
+        "deterministic_rule_id": "JAKARTA_IMPORT_MECHANICAL_SOURCE",
         "repair_artifact": {
-            "unified_diff": "diff --git a/src/App.java b/src/App.java\n--- a/src/App.java\n+++ b/src/App.java\n@@\n-doesNotCompile\n+0\n",
+            "unified_diff": (
+                "diff --git a/src/App.java b/src/App.java\n"
+                "--- a/src/App.java\n"
+                "+++ b/src/App.java\n"
+                "@@\n"
+                "-import javax.validation.Valid;\n"
+                "+import jakarta.validation.Valid;\n"
+            ),
             "patch_path": "run/repairs/proposals/patch.diff",
             "patch_checksum": "sha256:patch",
         },
@@ -720,7 +729,7 @@ def _safe_patch_package() -> dict:
                 "proposed_checksum": "sha256:after",
             }
         ],
-        "failure_evidence": {"diagnostic_line": "cannot find symbol variable doesNotCompile"},
+        "failure_evidence": {"diagnostic_line": "package javax.validation does not exist"},
         "verification_plan": {
             "command": ["mvn", "-q", "-DskipTests", "compile"],
             "cwd": "C:/sandbox",

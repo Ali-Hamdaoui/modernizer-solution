@@ -1586,6 +1586,7 @@ class V2RepairFlowService:
         targets: list[dict[str, Any]] = []
         unified_diffs: list[str] = []
         blockers: list[str] = []
+        repair_family = ""
         for raw_path in affected_paths:
             rel_path = str(raw_path).replace("\\", "/").strip()
             if not rel_path or Path(rel_path).is_absolute() or ".." in Path(rel_path).parts:
@@ -1602,7 +1603,14 @@ class V2RepairFlowService:
                 blockers.append(f"target file is missing: {rel_path}")
                 continue
             before_text = absolute_path.read_text(encoding="utf-8")
-            after_text = self._propose_controlled_source_fix(before_text, failure_summary)
+            after_text, target_repair_family = self._propose_deterministic_source_fix(
+                before_text,
+                failure_summary,
+            )
+            if target_repair_family:
+                if repair_family and repair_family != target_repair_family:
+                    blockers.append("mixed repair families are not supported")
+                repair_family = repair_family or target_repair_family
             before_checksum = self._sha256_text(before_text)
             after_checksum = self._sha256_text(after_text)
             target: dict[str, Any] = {
@@ -1610,6 +1618,7 @@ class V2RepairFlowService:
                 "absolute_path": str(absolute_path),
                 "before_checksum": before_checksum,
                 "proposed_checksum": after_checksum,
+                "repair_family": target_repair_family,
             }
             if after_text == before_text:
                 blockers.append(f"no concrete patch generated for target: {rel_path}")
@@ -1647,6 +1656,8 @@ class V2RepairFlowService:
             "job_id": command.job_id,
             "run_id": run_id,
             "sandbox_path": str(sandbox_path),
+            "repair_family": repair_family,
+            "deterministic_rule_id": repair_family if repair_family == "JAKARTA_IMPORT_MECHANICAL_SOURCE" else "",
             "failure_evidence": failure_evidence,
             "target_files": targets,
             "repair_artifact": {
@@ -1686,7 +1697,50 @@ class V2RepairFlowService:
         for line in text.splitlines():
             if "cannot find symbol" in line or "doesNotCompile" in line:
                 return line.strip()
+            if "does not exist" in line and ("package javax." in line or "package jakarta." in line):
+                return line.strip()
         return text.strip().splitlines()[0] if text.strip() else ""
+
+    @classmethod
+    def _propose_deterministic_source_fix(cls, source: str, failure_summary: str) -> tuple[str, str]:
+        import_fix = cls._propose_import_package_source_fix(source, failure_summary)
+        if import_fix != source:
+            return import_fix, "JAKARTA_IMPORT_MECHANICAL_SOURCE"
+
+        controlled_fix = cls._propose_controlled_source_fix(source, failure_summary)
+        if controlled_fix != source:
+            return controlled_fix, "CONTROLLED_ASSIGNMENT_SOURCE"
+        return source, ""
+
+    @staticmethod
+    def _propose_import_package_source_fix(source: str, failure_summary: str) -> str:
+        match = re.search(
+            r"package\s+(javax|jakarta)\.([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s+does\s+not\s+exist",
+            failure_summary,
+        )
+        if not match:
+            return source
+
+        from_namespace = match.group(1)
+        package_suffix = match.group(2)
+        to_namespace = "jakarta" if from_namespace == "javax" else "javax"
+        package_prefix = re.escape(f"{from_namespace}.{package_suffix}")
+        lines = source.splitlines(keepends=True)
+        line_pattern = re.compile(
+            rf"^(?P<indent>\s*)(?P<kind>import|package)\s+{package_prefix}"
+            r"(?P<tail>(?:\.[A-Za-z_][A-Za-z0-9_]*|\.\*)*)\s*;(?P<ending>\r?\n?)$"
+        )
+        for index, line in enumerate(lines):
+            line_match = line_pattern.match(line)
+            if line_match is None:
+                continue
+            lines[index] = (
+                f"{line_match.group('indent')}{line_match.group('kind')} "
+                f"{to_namespace}.{package_suffix}{line_match.group('tail')};"
+                f"{line_match.group('ending')}"
+            )
+            return "".join(lines)
+        return source
 
     @staticmethod
     def _propose_controlled_source_fix(source: str, failure_summary: str) -> str:
@@ -1864,6 +1918,8 @@ class V2RepairFlowService:
             result["repair_artifact"] = patch_package.get("repair_artifact", {})
             result["verification_plan"] = patch_package.get("verification_plan", {})
             result["containment"] = patch_package.get("containment", {})
+            result["repair_family"] = patch_package.get("repair_family", "")
+            result["deterministic_rule_id"] = patch_package.get("deterministic_rule_id", "")
         return result
 
     def action_to_dict(self, action: SandboxAction) -> dict[str, Any]:

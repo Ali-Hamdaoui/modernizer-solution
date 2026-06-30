@@ -13,6 +13,7 @@ from migration_factory.control_tower.application.v2_repair_flow import (
     V2RepairFlowService,
 )
 from migration_factory.repair_loop.patch_apply import PatchApplyResult
+from migration_factory.repair_loop.rule_registry import evaluate_rule
 from migration_factory.repair_loop.validation_runner import ValidationResult
 from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
     SqliteV2CommandRepository,
@@ -84,6 +85,81 @@ def test_create_patch_backed_proposal_writes_artifacts_without_applying(tmp_path
     assert body["verification_plan"]["llm_during_verification"] is False
     assert body["containment"]["all_targets_under_sandbox"] is True
     assert body["containment"]["legacy_target_present"] is False
+
+
+def test_create_import_package_patch_backed_proposal_is_gate_compatible(tmp_path: Path) -> None:
+    conn, service, sandbox = _bound_repair_repo_service(tmp_path, redacted_modernized_path=True)
+    target_rel = "src/main/java/App.java"
+    target = sandbox / target_rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    original = (
+        "package com.example;\n\n"
+        "import javax.validation.Valid;\n\n"
+        "class App {\n"
+        "  @Valid Object value;\n"
+        "}\n"
+    )
+    target.write_text(original, encoding="utf-8")
+
+    proposal = service.create_patch_backed_proposal(
+        command_id="cmd-1",
+        failure_summary="[ERROR] package javax.validation does not exist",
+        hypothesis="Controlled namespace mismatch",
+        patch_summary="Repair import namespace",
+        affected_paths=(target_rel,),
+    )
+    body = service.proposal_to_dict(proposal)
+    diff = body["repair_artifact"]["unified_diff"]
+
+    assert target.read_text(encoding="utf-8") == original
+    assert body["repair_family"] == "JAKARTA_IMPORT_MECHANICAL_SOURCE"
+    assert body["deterministic_rule_id"] == "JAKARTA_IMPORT_MECHANICAL_SOURCE"
+    assert body["target_files"][0]["relative_path"] == target_rel
+    assert body["target_files"][0]["before_checksum"].startswith("sha256:")
+    assert body["target_files"][0]["repair_family"] == "JAKARTA_IMPORT_MECHANICAL_SOURCE"
+    assert diff.startswith("diff --git")
+    assert "-import javax.validation.Valid;" in diff
+    assert "+import jakarta.validation.Valid;" in diff
+    assert "  @Valid Object value;" not in "".join(
+        line for line in diff.splitlines() if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+    )
+    assert Path(body["repair_artifact"]["patch_path"]).is_file()
+    assert body["failure_evidence"]["diagnostic_line"] == "[ERROR] package javax.validation does not exist"
+    assert body["verification_plan"]["command"] == ["mvn", "-q", "-DskipTests", "compile"]
+    assert body["verification_plan"]["llm_during_verification"] is False
+
+    decision = evaluate_rule(
+        rule_id="JAKARTA_IMPORT_MECHANICAL_SOURCE",
+        sandbox_path=sandbox,
+        touched_paths=[target_rel],
+        unified_diff=diff,
+    )
+    assert decision.allowed is True
+
+
+def test_jakarta_import_mechanical_rule_rejects_body_edits(tmp_path: Path) -> None:
+    sandbox = _sandbox(tmp_path)
+    target_rel = "src/main/java/App.java"
+    (sandbox / target_rel).parent.mkdir(parents=True, exist_ok=True)
+    (sandbox / target_rel).write_text("class App {}\n", encoding="utf-8")
+    diff = (
+        "diff --git a/src/main/java/App.java b/src/main/java/App.java\n"
+        "--- a/src/main/java/App.java\n"
+        "+++ b/src/main/java/App.java\n"
+        "@@\n"
+        "-class App { int value = doesNotCompile; }\n"
+        "+class App { int value = 0; }\n"
+    )
+
+    decision = evaluate_rule(
+        rule_id="JAKARTA_IMPORT_MECHANICAL_SOURCE",
+        sandbox_path=sandbox,
+        touched_paths=[target_rel],
+        unified_diff=diff,
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "source diff is not import/package-only"
 
 
 def test_approve_proposal_requires_accepted_reviewer_critique() -> None:
@@ -738,16 +814,18 @@ def test_prepare_apply_context_consumes_patch_backed_proposal_artifacts(tmp_path
     target = sandbox / target_rel
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
+        "package com.example;\n\n"
+        "import javax.validation.Valid;\n\n"
         "class App {\n"
-        "  private static final int CONTROLLED_REPAIR_FAILURE = doesNotCompile;\n"
+        "  @Valid Object value;\n"
         "}\n",
         encoding="utf-8",
     )
     proposal = service.create_patch_backed_proposal(
         command_id="cmd-1",
-        failure_summary="cannot find symbol variable doesNotCompile",
-        hypothesis="Undefined controlled symbol",
-        patch_summary="Remove controlled undefined symbol",
+        failure_summary="[ERROR] package javax.validation does not exist",
+        hypothesis="Controlled namespace mismatch",
+        patch_summary="Repair import namespace",
         affected_paths=(target_rel,),
     )
     package = service.proposal_to_dict(proposal)["patch_package"]
@@ -782,12 +860,14 @@ def test_prepare_apply_context_consumes_patch_backed_proposal_artifacts(tmp_path
         evidence_refs={
             "patch_path": package["repair_artifact"]["patch_path"],
             "evidence_artifact": package["evidence_artifact_path"],
+            "deterministic_rule_id": package["deterministic_rule_id"],
         },
     )
 
     assert context.approval_eligible is True
     assert context.target_path == target_rel
     assert json.loads(context.evidence_refs_json)["patch_path"] == package["repair_artifact"]["patch_path"]
+    assert json.loads(context.evidence_refs_json)["deterministic_rule_id"] == "JAKARTA_IMPORT_MECHANICAL_SOURCE"
     assert context.approval_eligible is True
 
 

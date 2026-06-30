@@ -3095,6 +3095,8 @@ def create_app(
                 "failure_summary": proposal_record.failure_summary,
                 "evidence_refs": json.dumps({
                     "proposal_id": proposal_id,
+                    "repair_family": patch_package.get("repair_family", ""),
+                    "deterministic_rule_id": patch_package.get("deterministic_rule_id", ""),
                     "target_files": patch_package.get("target_files", []),
                     "repair_artifact": patch_package.get("repair_artifact", {}),
                     "failure_evidence": patch_package.get("failure_evidence", {}),
