@@ -18,14 +18,13 @@ Current known branch state from latest reports:
 
 ```text
 branch: demov3
-HEAD:   73ab1fcb3081a83ceee6f08cd41722a8a00c01b9
+HEAD:   48d06b798002c72f6d721bca380fe4e5448bcb0d
 ```
 
 Known dirty files from the active worktree may include:
 
 ```text
 graphify-out/GRAPH_REPORT.md
-graphify-out/graph.json
 graphify-out/manifest.json
 ```
 
@@ -42,7 +41,7 @@ graphify-out/manifest.json
 | PR-F / Retry/Attempt History | Not Started | | | | Depends on PR-E. |
 | PR-G / LLM Invocation Ledger | Not Started | | | | Later hardening phase. |
 
-**Current blocker before PR-C:** none. PR-B contract hardening complete. HTTP route contract tests pass. Checksum mismatch detection added to SafeDiffPreview.
+**Current blocker before PR-D:** none. PR-C frontend implementation complete. HTTP route contract tests pass. Checksum mismatch detection added to SafeDiffPreview.
 
 ---
 
@@ -1447,7 +1446,7 @@ Completion record:
 ```text
 Date/time: 2026-06-30
 Branch: demov3
-HEAD: 73ab1fcb3081a83ceee6f08cd41722a8a00c01b9 (+ PR-C commit)
+HEAD: 48d06b798002c72f6d721bca380fe4e5448bcb0d
 
 Changed files:
   web/control-tower/lib/contracts.ts
@@ -1758,7 +1757,7 @@ Append a new row after each implementation step.
 | 2026-06-30 | Route progression fix | Done | `demov3` / `3420d429cba3fddd7c547f6e578e0e8d9b666dd4` | `v2_stage_progression.py`, `test_v2_stage_progression.py`, `test_v2_orchestrator_runner.py`, `test_resume_from_checkpoint_profile.py` | Stage progression, orchestrator, resume, validation, and repair-gate focused tests passed | Fixed route-step indexing, target-reached semantics, and one stale metadata expectation. |
 | 2026-06-30 | PR-B | Done | `demov3` / `cbfbcabf45b6d3d4990c2985f5eb4d4dbcddc407` | `0048_v2_repair_proposals_reviewed_diff_fields.sql`, `v2_repair_repository.py`, `dto.py`, `v2_repair_projection.py`, `app.py`, `tests/control_tower/test_v2_repair_proposal_api.py` | 25 PR-B tests passed; all 283 regression tests passed across 11 test files | PR-B complete. 4 read-only GET endpoints, 16 nullable columns, no mutation endpoints, all security rules enforced. |
 | 2026-06-30 | PR-B contract hardening | Done | `demov3` / `cbfbcabf45b6d3d4990c2985f5eb4d4dbcddc407` + hardening commit | `safe_diff_preview.py`, `app.py`, `tests/control_tower/test_v2_repair_proposal_api.py`, `docs/ReviewedDiffProposal_PRD.md` | 14 HTTP contract tests; checksum mismatch tests; all regression suites green | HTTP route contract tests added; checksum mismatch detection added to SafeDiffPreview; checksum_mismatch flag in diff endpoint; no filesystem paths leaked. |
-| 2026-06-30 | PR-C | Done | `demov3` / `73ab1fc` (+ PR-C commit) | `contracts.ts`, `controlTowerApi.ts`, `MigrationCockpit.tsx`, `RepairProposalPanel.tsx`, `ReviewedDiffTabs.tsx`, `SafeDiffPreview.tsx`, `ReviewerVerdictCard.tsx`, `RepairAttemptTimeline.tsx`, `RepairActionsBar.tsx`, `controlTowerApi.test.ts`, `migrationCockpit.test.tsx`, `reviewedDiffProposal.test.tsx` | Frontend API tests, component tests, forbidden-field tests, typecheck, build all pass; backend PR-B/PR-A smoke tests pass | PR-C committed. Read-only proposal/diff UI renders in cockpit. No mutation actions wired. graphify-out remains unstaged. |
+| 2026-06-30 | PR-C | Done | `demov3` / `48d06b798002c72f6d721bca380fe4e5448bcb0d` | `contracts.ts`, `controlTowerApi.ts`, `MigrationCockpit.tsx`, `RepairProposalPanel.tsx`, `ReviewedDiffTabs.tsx`, `SafeDiffPreview.tsx`, `ReviewerVerdictCard.tsx`, `RepairAttemptTimeline.tsx`, `RepairActionsBar.tsx`, `controlTowerApi.test.ts`, `migrationCockpit.test.tsx`, `reviewedDiffProposal.test.tsx` | Frontend API tests 153/153 passed, component tests, forbidden-field tests, typecheck, build all pass; backend PR-B/PR-A smoke tests pass | PR-C committed. Read-only proposal/diff UI renders in cockpit. No mutation actions wired. graphify-out remains unstaged. |
 
 Template for next update:
 
