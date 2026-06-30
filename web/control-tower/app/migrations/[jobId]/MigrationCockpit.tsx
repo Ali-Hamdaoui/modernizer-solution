@@ -98,6 +98,10 @@ function formatFlag(value: boolean | undefined | null): string {
   return "unknown";
 }
 
+export function shouldShowApprovalDecisionControls(status: string, approvalReviewOpen: boolean): boolean {
+  return !approvalReviewOpen && status === "pending";
+}
+
 function hasMigrationIntelligence(migrationIntelligence: MigrationIntelligenceSummary | null | undefined): boolean {
   if (!migrationIntelligence) {
     return false;
@@ -1367,15 +1371,19 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
                 <p className="meta">
                   Review in chatbot. Exact checksum confirmation is required before transform resumes.
                 </p>
-              ) : (
+              ) : shouldShowApprovalDecisionControls(a.status, approvalReviewOpen) ? (
                 <div className="approval-actions">
-                  <button type="button" disabled={a.status !== "pending" || approvalBusy === a.card_id} onClick={() => void approveCard(a)}>
+                  <button type="button" disabled={approvalBusy === a.card_id} onClick={() => void approveCard(a)}>
                     Approve
                   </button>
-                  <button type="button" disabled={a.status !== "pending" || approvalBusy === a.card_id} onClick={() => void rejectCard(a)}>
+                  <button type="button" disabled={approvalBusy === a.card_id} onClick={() => void rejectCard(a)}>
                     Reject
                   </button>
                 </div>
+              ) : (
+                <p className="meta">
+                  Decision recorded: {a.status.toUpperCase()}. No further approval actions available.
+                </p>
               )}
             </div>
           ))

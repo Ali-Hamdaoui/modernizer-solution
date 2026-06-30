@@ -11,6 +11,7 @@ import {
   formatGateArtifactRefLabel,
   mergeCockpitLiveRefreshResults,
   reduceStageStatus,
+  shouldShowApprovalDecisionControls,
   type CockpitData,
 } from "../app/migrations/[jobId]/MigrationCockpit";
 import {
@@ -1298,15 +1299,11 @@ describe("V2 Migration Cockpit contract", () => {
 
   // ── Pipeline / stage consistency tests ──
 
-  it("approved card has disabled buttons and no active blocked state implication", () => {
-    // When approval card status is "approved", buttons are disabled
-    const approved = { card_id: "c1", status: "approved", request_checksum: "chk-1" };
-    const pending = { card_id: "c2", status: "pending", request_checksum: "chk-2" };
-    const isPending = (s: string) => s === "pending";
-    expect(isPending(approved.status)).toBe(false);
-    expect(isPending(pending.status)).toBe(true);
-    // Disabled guard: button disabled unless status === "pending"
-    expect(approved.status !== "pending").toBe(true);
+  it("approval decision controls appear only while pending", () => {
+    expect(shouldShowApprovalDecisionControls("pending", false)).toBe(true);
+    expect(shouldShowApprovalDecisionControls("approved", false)).toBe(false);
+    expect(shouldShowApprovalDecisionControls("rejected", false)).toBe(false);
+    expect(shouldShowApprovalDecisionControls("pending", true)).toBe(false);
   });
 
   it("pipeline and stage status consistent after approval lifecycle", () => {
