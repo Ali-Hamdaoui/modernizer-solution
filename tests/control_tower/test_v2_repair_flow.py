@@ -92,6 +92,8 @@ def test_create_patch_backed_proposal_writes_artifacts_without_applying(tmp_path
     assert body["verification_plan"]["llm_during_verification"] is False
     assert body["containment"]["all_targets_under_sandbox"] is True
     assert body["containment"]["legacy_target_present"] is False
+    assert body["sandbox_checksum"].startswith("sha256:")
+    assert body["legacy_checksum"].startswith("sha256:")
 
 
 def test_create_import_package_patch_backed_proposal_is_gate_compatible(tmp_path: Path) -> None:
@@ -134,6 +136,8 @@ def test_create_import_package_patch_backed_proposal_is_gate_compatible(tmp_path
     assert body["failure_evidence"]["diagnostic_line"] == "[ERROR] package javax.validation does not exist"
     assert body["verification_plan"]["command"] == ["mvn", "-q", "-DskipTests", "compile"]
     assert body["verification_plan"]["llm_during_verification"] is False
+    assert body["sandbox_checksum"].startswith("sha256:")
+    assert body["legacy_checksum"].startswith("sha256:")
 
     decision = evaluate_rule(
         rule_id="JAKARTA_IMPORT_MECHANICAL_SOURCE",

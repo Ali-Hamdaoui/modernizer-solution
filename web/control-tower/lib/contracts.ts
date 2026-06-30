@@ -532,16 +532,87 @@ export type GovernedRepairProposalGovernanceSummary = {
   status?: string;
 };
 
+export type GovernedRepairTargetFile = {
+  relative_path?: string;
+  absolute_path?: string;
+  before_checksum?: string;
+  proposed_checksum?: string;
+  repair_family?: string;
+};
+
+export type GovernedRepairArtifact = {
+  unified_diff?: string;
+  patch_path?: string;
+  patch_checksum?: string;
+};
+
+export type GovernedRepairFailureEvidence = {
+  verification_command?: string[];
+  cwd?: string;
+  exit_code?: number;
+  stdout_stderr_tail?: string;
+  diagnostic_line?: string;
+  failing_file?: string;
+};
+
+export type GovernedRepairPatchPackage = {
+  schema_version?: string;
+  command_id?: string;
+  job_id?: string;
+  run_id?: string;
+  sandbox_path?: string;
+  sandbox_checksum?: string;
+  legacy_checksum?: string;
+  repair_family?: string;
+  deterministic_rule_id?: string;
+  failure_evidence?: GovernedRepairFailureEvidence;
+  target_files?: GovernedRepairTargetFile[];
+  repair_artifact?: GovernedRepairArtifact;
+  containment?: Record<string, unknown>;
+  verification_plan?: Record<string, unknown>;
+  approval_apply_separate?: boolean;
+  blockers?: string[];
+  package_checksum?: string;
+  evidence_artifact_path?: string;
+};
+
 export type GovernedRepairProposalResponse = {
   proposal_id?: string;
+  command_id?: string;
   intent?: string;
   status?: string;
   title?: string;
+  failure_summary?: string;
+  hypothesis?: string;
+  patch_summary?: string;
   summary?: string;
   proposed_action?: string;
   proposal_text?: string;
   affected_files?: string[];
   affected_components?: string[];
+  affected_paths?: string[];
+  proposal_checksum?: string;
+  context_pack_checksum?: string;
+  sandbox_checksum?: string;
+  legacy_checksum?: string;
+  approval_checksum?: string | null;
+  reviewer_critique_id?: string;
+  reviewer_decision?: string;
+  repair_family?: string;
+  deterministic_rule_id?: string;
+  repair_artifact?: GovernedRepairArtifact;
+  target_files?: GovernedRepairTargetFile[];
+  failure_evidence?: GovernedRepairFailureEvidence;
+  containment?: Record<string, unknown>;
+  verification_plan?: Record<string, unknown>;
+  patch_package?: GovernedRepairPatchPackage;
+  proposal_model?: {
+    model_invocation_id?: string;
+    status?: string;
+    source?: string;
+    provider?: string;
+    role?: string;
+  };
   confidence?: string | number;
   risk?: string | number;
   proposer?: GovernedRepairProposalPartySummary | null;
@@ -591,12 +662,118 @@ export type V2ReviewerCritiqueResponse = {
   unsafe_assumptions: string[];
   model_invocation_id: string | null;
   created_at: string;
+  reviewer_model?: {
+    model_invocation_id?: string;
+    status?: string;
+    source?: string;
+    provider?: string;
+    role?: string;
+  };
 };
 
 export type V2ReviewerCritiquesListResponse = {
   command_id: string;
   proposal_id: string;
   critiques: V2ReviewerCritiqueResponse[];
+};
+
+export type PrepareRepairApplyContextRequest = {
+  proposal_checksum: string;
+  context_pack_checksum: string;
+  reviewer_critique_id: string;
+  proposer_invocation_id: string;
+  reviewer_invocation_id: string;
+  patch_preview: string;
+  target_path: string;
+  sandbox_reference: string;
+  sandbox_checksum: string;
+  legacy_checksum: string;
+  evidence_refs: Record<string, string>;
+  approval_scope: "sandbox_only";
+};
+
+export type RepairApplyContextResponse = {
+  context_id: string;
+  proposal_id: string;
+  command_id: string;
+  reviewer_critique_id: string;
+  proposer_invocation_id: string;
+  reviewer_invocation_id: string;
+  reviewer_decision: string;
+  proposal_summary: string;
+  patch_preview: string;
+  patch_preview_checksum: string;
+  target_path: string;
+  sandbox_reference: string;
+  sandbox_checksum: string;
+  legacy_checksum: string;
+  proposal_checksum: string;
+  context_pack_checksum: string;
+  evidence_refs: Record<string, string>;
+  approval_eligible: boolean;
+  blockers: string[];
+  approval_scope: string;
+  created_at: string;
+  sandbox_only: boolean;
+  source_mutated: boolean;
+  apply_ready: boolean;
+  llm_invoked: boolean;
+};
+
+export type PrepareRepairApplyContextResponse = {
+  repair_review_context: RepairApplyContextResponse;
+};
+
+export type RepairApprovalResponse = {
+  approval_id: string;
+  context_id: string;
+  proposal_id: string;
+  approval_status: string;
+  approval_scope: string;
+  approval_note: string;
+  approval_checksum: string;
+  sandbox_checksum: string;
+  legacy_checksum: string;
+  created_at: string;
+  apply_ready: boolean;
+  sandbox_only: boolean;
+  source_mutated: boolean;
+  llm_invoked: boolean;
+};
+
+export type ApproveRepairReviewContextResponse = {
+  approval: RepairApprovalResponse;
+  repair_review_context: RepairApplyContextResponse | null;
+};
+
+export type RepairActionResponse = {
+  action_id: string;
+  proposal_id: string;
+  target_path: string;
+  patch_content: string;
+  status: string;
+  result_summary: string;
+  created_at: string;
+  verification_status: string;
+  verification_build_status: string;
+  verification_test_status: string;
+  verification_h2_status: string;
+  verification_artifact_refs: Record<string, string>;
+  verification_failure_classification_ref: string;
+  human_approved: boolean;
+  sandbox_only: boolean;
+  source_mutated: boolean;
+  sandbox_mutated: boolean;
+  stage_resumed: boolean;
+  backend_runner_invoked: boolean;
+  llm_invoked: boolean;
+  approval_bypass: boolean;
+};
+
+export type ApplyRepairReviewContextResponse = {
+  context_id: string;
+  approval_id: string;
+  repair_action: RepairActionResponse;
 };
 
 export type V2DraftActionResponse = {

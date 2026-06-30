@@ -5,23 +5,47 @@ import {
   MigrationCockpit,
   AssistantPanelContent,
   GovernedRepairProposalCard,
+  R6GovernedRepairPanel,
+  EMPTY_R6_REPAIR_UI_STATE,
   GatePanelContent,
   formatGateArtifactRefLabel,
   mergeCockpitLiveRefreshResults,
   reduceStageStatus,
   type CockpitData,
 } from "../app/migrations/[jobId]/MigrationCockpit";
-import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, requireJobId, v2EventStreamUrl } from "../lib/controlTowerApi";
-import type { GateRepresentation, GovernedRepairProposalResponse, MigrationIntelligenceSummary, V2JobEvent } from "../lib/contracts";
+import {
+  applyV2RepairReviewContext,
+  askV2Assistant,
+  CONTROL_TOWER_API_BASE_URL,
+  getV2ArtifactPreview,
+  prepareV2RepairApplyContext,
+  requireJobId,
+  v2EventStreamUrl,
+} from "../lib/controlTowerApi";
+import type {
+  GateRepresentation,
+  GovernedRepairProposalResponse,
+  MigrationIntelligenceSummary,
+  V2JobEvent,
+  V2ReviewerCritiqueResponse,
+  RepairApplyContextResponse,
+  RepairApprovalResponse,
+  ApplyRepairReviewContextResponse,
+} from "../lib/contracts";
 
 const GOVERNED_REPAIR_PROPOSAL: GovernedRepairProposalResponse = {
   proposal_id: "proposal-9a-1",
+  command_id: "cmd-repair-1",
   intent: "solve_this",
   status: "awaiting_human_approval",
+  proposal_checksum: "sha256:proposal-checksum",
+  context_pack_checksum: "sha256:context-checksum",
   title: "Stabilize dependency alignment after failed build",
+  failure_summary: "package jakarta.servlet.http does not exist",
   summary: "Review failure evidence, preserve sandbox-only flow, and require human approval before apply.",
   proposed_action: "Prepare governed repair proposal for dependency update",
   proposal_text: "Adjust dependency graph in sandbox only after human approval.",
+  affected_paths: ["src/main/java/com/example/App.java"],
   affected_files: ["pom.xml", "src/main/java/com/example/App.java"],
   affected_components: ["build-agent", "stage3-dependency-review"],
   confidence: "high",
@@ -97,6 +121,43 @@ const GOVERNED_REPAIR_PROPOSAL: GovernedRepairProposalResponse = {
     migration_intelligence_warnings: ["runtime_contract: warn"],
     evidence_references: ["diagnosis:1", "evidence:2"],
     evidence_checksums: ["sha256:proposal", "sha256:evidence"],
+  },
+  repair_family: "JAKARTA_IMPORT_MECHANICAL_SOURCE",
+  deterministic_rule_id: "JAKARTA_IMPORT_MECHANICAL_SOURCE",
+  repair_artifact: {
+    unified_diff: "diff --git a/src/main/java/com/example/App.java b/src/main/java/com/example/App.java\n--- a/src/main/java/com/example/App.java\n+++ b/src/main/java/com/example/App.java\n@@ -1 +1 @@\n-import jakarta.servlet.http.HttpServletRequest;\n+import javax.servlet.http.HttpServletRequest;\n",
+    patch_path: "C:/work/out/.migration/runs/run-9a/repairs/proposals/patch-abc.diff",
+    patch_checksum: "sha256:patch-checksum",
+  },
+  target_files: [
+    {
+      relative_path: "src/main/java/com/example/App.java",
+      before_checksum: "sha256:before",
+      proposed_checksum: "sha256:after",
+      repair_family: "JAKARTA_IMPORT_MECHANICAL_SOURCE",
+    },
+  ],
+  failure_evidence: {
+    diagnostic_line: "package jakarta.servlet.http does not exist",
+    failing_file: "src/main/java/com/example/App.java",
+  },
+  patch_package: {
+    sandbox_path: "C:/work/out/.migration/runs/run-9a/sandbox",
+    sandbox_checksum: "sha256:sandbox-checksum",
+    legacy_checksum: "sha256:legacy-checksum",
+    repair_family: "JAKARTA_IMPORT_MECHANICAL_SOURCE",
+    deterministic_rule_id: "JAKARTA_IMPORT_MECHANICAL_SOURCE",
+    approval_apply_separate: true,
+    repair_artifact: {
+      unified_diff: "diff --git a/src/main/java/com/example/App.java b/src/main/java/com/example/App.java\n--- a/src/main/java/com/example/App.java\n+++ b/src/main/java/com/example/App.java\n@@ -1 +1 @@\n-import jakarta.servlet.http.HttpServletRequest;\n+import javax.servlet.http.HttpServletRequest;\n",
+      patch_path: "C:/work/out/.migration/runs/run-9a/repairs/proposals/patch-abc.diff",
+      patch_checksum: "sha256:patch-checksum",
+    },
+    target_files: [{ relative_path: "src/main/java/com/example/App.java" }],
+    failure_evidence: {
+      diagnostic_line: "package jakarta.servlet.http does not exist",
+      failing_file: "src/main/java/com/example/App.java",
+    },
   },
   migration_intelligence_warnings: ["runtime_contract: warn", "reference_delta: warn"],
   governance: {
@@ -461,6 +522,165 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).not.toContain(">Verify<");
   });
 
+  it("renders governed R6 repair controls with apply disabled until reviewer accept and human approval", () => {
+    const markup = renderToStaticMarkup(
+      <R6GovernedRepairPanel
+        proposal={GOVERNED_REPAIR_PROPOSAL}
+        state={EMPTY_R6_REPAIR_UI_STATE}
+        onApprovalChecksumChange={() => undefined}
+        onRequestReviewer={() => undefined}
+        onPrepareContext={() => undefined}
+        onApproveRepair={() => undefined}
+        onOfficialApply={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("Governed R6 Repair");
+    expect(markup).toContain("Stage2 disabled during R6");
+    expect(markup).toContain("Failed command: cmd-repair-1");
+    expect(markup).toContain("Repair family: JAKARTA_IMPORT_MECHANICAL_SOURCE");
+    expect(markup).toContain("patch-abc.diff");
+    expect(markup).toContain("Pre-validation: passed before proposal became actionable");
+    expect(markup).toContain("Request reviewer critique");
+    expect(markup).toContain("Prepare apply context");
+    expect(markup).toContain("Record human repair approval");
+    expect(markup).toContain("Run official apply");
+    expect(markup).toContain("disabled=\"\"");
+  });
+
+  it("enables official apply only after reviewer accept and recorded human approval", () => {
+    const reviewer: V2ReviewerCritiqueResponse = {
+      critique_id: "crit-1",
+      proposal_id: "proposal-9a-1",
+      proposal_type: "repair_proposal",
+      proposal_checksum: "sha256:proposal-checksum",
+      context_pack_checksum: "sha256:context-checksum",
+      decision: "accept",
+      reasoning: "Patch is sandbox-bound and evidence-backed.",
+      missing_evidence: [],
+      unsafe_assumptions: [],
+      model_invocation_id: null,
+      created_at: "2026-06-30T00:00:00Z",
+      reviewer_model: { model_invocation_id: "model-reviewer-1" },
+    };
+    const context: RepairApplyContextResponse = {
+      context_id: "ctx-1",
+      proposal_id: "proposal-9a-1",
+      command_id: "cmd-repair-1",
+      reviewer_critique_id: "crit-1",
+      proposer_invocation_id: "model-proposer-1",
+      reviewer_invocation_id: "model-reviewer-1",
+      reviewer_decision: "accept",
+      proposal_summary: "Repair import",
+      patch_preview: GOVERNED_REPAIR_PROPOSAL.repair_artifact?.unified_diff ?? "",
+      patch_preview_checksum: "sha256:patch-checksum",
+      target_path: "src/main/java/com/example/App.java",
+      sandbox_reference: "C:/work/out/.migration/runs/run-9a/sandbox",
+      sandbox_checksum: "sha256:sandbox-checksum",
+      legacy_checksum: "sha256:legacy-checksum",
+      proposal_checksum: "sha256:proposal-checksum",
+      context_pack_checksum: "sha256:context-checksum",
+      evidence_refs: { patch_checksum: "sha256:patch-checksum" },
+      approval_eligible: true,
+      blockers: [],
+      approval_scope: "sandbox_only",
+      created_at: "2026-06-30T00:00:00Z",
+      sandbox_only: true,
+      source_mutated: false,
+      apply_ready: false,
+      llm_invoked: false,
+    };
+    const approval: RepairApprovalResponse = {
+      approval_id: "approval-1",
+      context_id: "ctx-1",
+      proposal_id: "proposal-9a-1",
+      approval_status: "recorded",
+      approval_scope: "sandbox_only",
+      approval_note: "Human approved exact repair checksum from Control Tower UI.",
+      approval_checksum: "sha256:proposal-checksum",
+      sandbox_checksum: "sha256:sandbox-checksum",
+      legacy_checksum: "sha256:legacy-checksum",
+      created_at: "2026-06-30T00:00:00Z",
+      apply_ready: true,
+      sandbox_only: true,
+      source_mutated: false,
+      llm_invoked: false,
+    };
+    const markup = renderToStaticMarkup(
+      <R6GovernedRepairPanel
+        proposal={GOVERNED_REPAIR_PROPOSAL}
+        state={{
+          ...EMPTY_R6_REPAIR_UI_STATE,
+          reviewer,
+          context,
+          approval,
+          approvalChecksumInput: "sha256:proposal-checksum",
+        }}
+        onApprovalChecksumChange={() => undefined}
+        onRequestReviewer={() => undefined}
+        onPrepareContext={() => undefined}
+        onApproveRepair={() => undefined}
+        onOfficialApply={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("Decision: accept");
+    expect(markup).toContain("Context: ctx-1");
+    expect(markup).toContain("Approval: approval-1");
+    expect(markup).toContain(">Run official apply</button>");
+  });
+
+  it("displays git apply check Maven verification and sandbox-only proof after apply", () => {
+    const applyResult: ApplyRepairReviewContextResponse = {
+      context_id: "ctx-1",
+      approval_id: "approval-1",
+      repair_action: {
+        action_id: "action-1",
+        proposal_id: "proposal-9a-1",
+        target_path: "src/main/java/com/example/App.java",
+        patch_content: "diff --git",
+        status: "applied",
+        result_summary: "Patch applied",
+        created_at: "2026-06-30T00:00:00Z",
+        verification_status: "passed",
+        verification_build_status: "BUILD_PASSED_IN_SANDBOX",
+        verification_test_status: "TEST_PASSED",
+        verification_h2_status: "NOT_REQUIRED",
+        verification_artifact_refs: {
+          repair_test_report: "C:/work/out/.migration/runs/run-9a/repairs/test_report.json",
+        },
+        verification_failure_classification_ref: "",
+        human_approved: true,
+        sandbox_only: true,
+        source_mutated: false,
+        sandbox_mutated: true,
+        stage_resumed: false,
+        backend_runner_invoked: false,
+        llm_invoked: false,
+        approval_bypass: false,
+      },
+    };
+    const markup = renderToStaticMarkup(
+      <R6GovernedRepairPanel
+        proposal={GOVERNED_REPAIR_PROPOSAL}
+        state={{ ...EMPTY_R6_REPAIR_UI_STATE, applyResult }}
+        onApprovalChecksumChange={() => undefined}
+        onRequestReviewer={() => undefined}
+        onPrepareContext={() => undefined}
+        onApproveRepair={() => undefined}
+        onOfficialApply={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("Patch gate: accepted by backend before apply");
+    expect(markup).toContain("git apply --check: passed");
+    expect(markup).toContain("git apply result: applied");
+    expect(markup).toContain("Maven verification: passed");
+    expect(markup).toContain("Build: BUILD_PASSED_IN_SANDBOX");
+    expect(markup).toContain("Legacy unchanged: true");
+    expect(markup).toContain("repair_test_report: test_report.json");
+  });
+
   it("redacts absolute Windows artifact refs down to short labels", () => {
     const absoluteRef = "C:\\Users\\abdelilah.mortaki\\Desktop\\modernizer-solution\\SecurityConfig.java";
     expect(formatGateArtifactRefLabel(absoluteRef)).toBe("SecurityConfig.java");
@@ -631,6 +851,126 @@ describe("V2 Migration Cockpit contract", () => {
       expect(calls[0]).not.toContain("path=");
       expect(response.exists).toBe(true);
       expect(response.preview).toContain("BUILD_FAILED_IN_SANDBOX");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("prepare repair apply context sends backend proposal patch exactly and no raw commands", async () => {
+    const originalFetch = global.fetch;
+    const calls: { url: string; body: Record<string, unknown> }[] = [];
+    const patchText = GOVERNED_REPAIR_PROPOSAL.repair_artifact?.unified_diff ?? "";
+    global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> });
+      return new Response(JSON.stringify({
+        repair_review_context: {
+          context_id: "ctx-1",
+          proposal_id: "proposal-9a-1",
+          command_id: "cmd-repair-1",
+          reviewer_critique_id: "crit-1",
+          proposer_invocation_id: "model-proposer-1",
+          reviewer_invocation_id: "model-reviewer-1",
+          reviewer_decision: "accept",
+          proposal_summary: "Repair import",
+          patch_preview: patchText,
+          patch_preview_checksum: "sha256:patch-checksum",
+          target_path: "src/main/java/com/example/App.java",
+          sandbox_reference: "C:/work/out/.migration/runs/run-9a/sandbox",
+          sandbox_checksum: "sha256:sandbox-checksum",
+          legacy_checksum: "sha256:legacy-checksum",
+          proposal_checksum: "sha256:proposal-checksum",
+          context_pack_checksum: "sha256:context-checksum",
+          evidence_refs: { patch_checksum: "sha256:patch-checksum" },
+          approval_eligible: true,
+          blockers: [],
+          approval_scope: "sandbox_only",
+          created_at: "2026-06-30T00:00:00Z",
+          sandbox_only: true,
+          source_mutated: false,
+          apply_ready: false,
+          llm_invoked: false,
+        },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    try {
+      await prepareV2RepairApplyContext("cmd-repair-1", "proposal-9a-1", {
+        proposal_checksum: "sha256:proposal-checksum",
+        context_pack_checksum: "sha256:context-checksum",
+        reviewer_critique_id: "crit-1",
+        proposer_invocation_id: "model-proposer-1",
+        reviewer_invocation_id: "model-reviewer-1",
+        patch_preview: patchText,
+        target_path: "src/main/java/com/example/App.java",
+        sandbox_reference: "C:/work/out/.migration/runs/run-9a/sandbox",
+        sandbox_checksum: "sha256:sandbox-checksum",
+        legacy_checksum: "sha256:legacy-checksum",
+        evidence_refs: { patch_checksum: "sha256:patch-checksum" },
+        approval_scope: "sandbox_only",
+      });
+
+      expect(calls[0].url).toBe(`${CONTROL_TOWER_API_BASE_URL}/v1/v2/commands/cmd-repair-1/repair/proposal/proposal-9a-1/prepare-apply-context`);
+      expect(calls[0].body.patch_preview).toBe(patchText);
+      expect(calls[0].body.patch_preview).not.toContain("browser edit");
+      expect(calls[0].body).not.toHaveProperty("argv");
+      expect(calls[0].body).not.toHaveProperty("env");
+      expect(calls[0].body).not.toHaveProperty("command");
+      expect(calls[0].body).not.toHaveProperty("maven_goal");
+      expect(calls[0].body).not.toHaveProperty("model_deployment");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("official repair apply sends only approval and checksum guards", async () => {
+    const originalFetch = global.fetch;
+    const calls: { url: string; body: Record<string, unknown> }[] = [];
+    global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> });
+      return new Response(JSON.stringify({
+        context_id: "ctx-1",
+        approval_id: "approval-1",
+        repair_action: {
+          action_id: "action-1",
+          proposal_id: "proposal-9a-1",
+          target_path: "src/main/java/com/example/App.java",
+          patch_content: "diff --git",
+          status: "applied",
+          result_summary: "Patch applied",
+          created_at: "2026-06-30T00:00:00Z",
+          verification_status: "passed",
+          verification_build_status: "BUILD_PASSED_IN_SANDBOX",
+          verification_test_status: "TEST_PASSED",
+          verification_h2_status: "NOT_REQUIRED",
+          verification_artifact_refs: {},
+          verification_failure_classification_ref: "",
+          human_approved: true,
+          sandbox_only: true,
+          source_mutated: false,
+          sandbox_mutated: true,
+          stage_resumed: false,
+          backend_runner_invoked: false,
+          llm_invoked: false,
+          approval_bypass: false,
+        },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    try {
+      await applyV2RepairReviewContext("ctx-1", {
+        approval_id: "approval-1",
+        expected_approval_checksum: "sha256:proposal-checksum",
+        expected_sandbox_checksum: "sha256:sandbox-checksum",
+        expected_legacy_checksum: "sha256:legacy-checksum",
+      });
+
+      expect(calls[0].url).toBe(`${CONTROL_TOWER_API_BASE_URL}/v1/v2/repair-review/ctx-1/apply`);
+      expect(calls[0].body).toEqual({
+        approval_id: "approval-1",
+        expected_approval_checksum: "sha256:proposal-checksum",
+        expected_sandbox_checksum: "sha256:sandbox-checksum",
+        expected_legacy_checksum: "sha256:legacy-checksum",
+      });
+      expect(JSON.stringify(calls[0].body)).not.toContain("mvn");
+      expect(JSON.stringify(calls[0].body)).not.toContain("diff --git");
     } finally {
       global.fetch = originalFetch;
     }

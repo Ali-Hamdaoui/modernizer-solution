@@ -1656,6 +1656,8 @@ class V2RepairFlowService:
             "job_id": command.job_id,
             "run_id": run_id,
             "sandbox_path": str(sandbox_path),
+            "sandbox_checksum": self._path_tree_checksum(sandbox_path),
+            "legacy_checksum": self._path_tree_checksum(legacy_path),
             "repair_family": repair_family,
             "deterministic_rule_id": repair_family if repair_family == "JAKARTA_IMPORT_MECHANICAL_SOURCE" else "",
             "failure_evidence": failure_evidence,
@@ -1691,6 +1693,24 @@ class V2RepairFlowService:
     @staticmethod
     def _sha256_text(text: str) -> str:
         return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _path_tree_checksum(root: Path) -> str:
+        digest = hashlib.sha256()
+        if root.is_file():
+            digest.update(root.name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(root.read_bytes())
+            return "sha256:" + digest.hexdigest()
+        for path in sorted((item for item in root.rglob("*") if item.is_file()), key=lambda item: item.relative_to(root).as_posix()):
+            rel = path.relative_to(root).as_posix()
+            if rel.startswith(".git/") or rel.startswith(".migration/") or "/.git/" in rel or "/.migration/" in rel:
+                continue
+            digest.update(rel.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(path.read_bytes())
+            digest.update(b"\0")
+        return "sha256:" + digest.hexdigest()
 
     @staticmethod
     def _build_unified_diff(rel_path: str, before_text: str, after_text: str) -> str:
@@ -1929,6 +1949,8 @@ class V2RepairFlowService:
             result["repair_artifact"] = patch_package.get("repair_artifact", {})
             result["verification_plan"] = patch_package.get("verification_plan", {})
             result["containment"] = patch_package.get("containment", {})
+            result["sandbox_checksum"] = patch_package.get("sandbox_checksum", "")
+            result["legacy_checksum"] = patch_package.get("legacy_checksum", "")
             result["repair_family"] = patch_package.get("repair_family", "")
             result["deterministic_rule_id"] = patch_package.get("deterministic_rule_id", "")
         return result

@@ -3,6 +3,8 @@
 import { useState, useEffect } from "react";
 import {
   askV2Assistant,
+  applyV2RepairReviewContext,
+  approveV2RepairReviewContext,
   approveV2Card,
   getV2ArtifactPreview,
   getV2RootPomPreview,
@@ -16,7 +18,9 @@ import {
   getV2JobGates,
   getV2OpenGate,
   getV2MigrationJobStages,
+  prepareV2RepairApplyContext,
   rejectV2Card,
+  requestV2ReviewerCritique,
   requireJobId,
   v2EventStreamUrl,
   v2RootPomDownloadUrl,
@@ -33,6 +37,10 @@ import type {
   GateDetailResponse,
   GateRepresentation,
   MigrationIntelligenceSummary,
+  V2ReviewerCritiqueResponse,
+  RepairApplyContextResponse,
+  RepairApprovalResponse,
+  ApplyRepairReviewContextResponse,
 } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
 
@@ -116,6 +124,117 @@ function hasVerificationFields(proposal: GovernedRepairProposalResponse): boolea
     proposal.verification_failure_classification_ref,
     ...artifactValues,
   ].some(Boolean);
+}
+
+type R6RepairUiState = {
+  reviewer: V2ReviewerCritiqueResponse | null;
+  context: RepairApplyContextResponse | null;
+  approval: RepairApprovalResponse | null;
+  applyResult: ApplyRepairReviewContextResponse | null;
+  approvalChecksumInput: string;
+  busy: "reviewer" | "context" | "approval" | "apply" | null;
+  error: string | null;
+};
+
+export const EMPTY_R6_REPAIR_UI_STATE: R6RepairUiState = {
+  reviewer: null,
+  context: null,
+  approval: null,
+  applyResult: null,
+  approvalChecksumInput: "",
+  busy: null,
+  error: null,
+};
+
+function latestReviewerDecision(
+  proposal: GovernedRepairProposalResponse | null,
+  reviewer: V2ReviewerCritiqueResponse | null,
+): string {
+  return reviewer?.decision ?? proposal?.reviewer_decision ?? proposal?.reviewer?.verdict ?? "";
+}
+
+function proposalPatchArtifactRef(proposal: GovernedRepairProposalResponse): string {
+  return proposal.repair_artifact?.patch_path
+    ?? proposal.patch_package?.repair_artifact?.patch_path
+    ?? proposal.patch_package?.evidence_artifact_path
+    ?? "";
+}
+
+function proposalPatchChecksum(proposal: GovernedRepairProposalResponse): string {
+  return proposal.repair_artifact?.patch_checksum
+    ?? proposal.patch_package?.repair_artifact?.patch_checksum
+    ?? "";
+}
+
+function proposalUnifiedDiff(proposal: GovernedRepairProposalResponse): string {
+  return proposal.repair_artifact?.unified_diff
+    ?? proposal.patch_package?.repair_artifact?.unified_diff
+    ?? "";
+}
+
+function proposalTargetPath(proposal: GovernedRepairProposalResponse): string {
+  return proposal.target_files?.[0]?.relative_path
+    ?? proposal.patch_package?.target_files?.[0]?.relative_path
+    ?? proposal.affected_paths?.[0]
+    ?? proposal.affected_files?.[0]
+    ?? "";
+}
+
+function proposalSandboxReference(proposal: GovernedRepairProposalResponse): string {
+  return proposal.patch_package?.sandbox_path ?? "";
+}
+
+function proposalSandboxChecksum(proposal: GovernedRepairProposalResponse): string {
+  return proposal.sandbox_checksum ?? proposal.patch_package?.sandbox_checksum ?? "";
+}
+
+function proposalLegacyChecksum(proposal: GovernedRepairProposalResponse): string {
+  return proposal.legacy_checksum ?? proposal.patch_package?.legacy_checksum ?? "";
+}
+
+function proposalRepairFamily(proposal: GovernedRepairProposalResponse): string {
+  return proposal.repair_family ?? proposal.patch_package?.repair_family ?? "";
+}
+
+function proposalDeterministicRule(proposal: GovernedRepairProposalResponse): string {
+  return proposal.deterministic_rule_id ?? proposal.patch_package?.deterministic_rule_id ?? proposalRepairFamily(proposal);
+}
+
+function proposerInvocationId(proposal: GovernedRepairProposalResponse): string {
+  return proposal.proposal_model?.model_invocation_id ?? "";
+}
+
+function reviewerInvocationId(reviewer: V2ReviewerCritiqueResponse | null): string {
+  return reviewer?.reviewer_model?.model_invocation_id ?? reviewer?.model_invocation_id ?? "";
+}
+
+function canPrepareR6ApplyContext(
+  proposal: GovernedRepairProposalResponse | null,
+  reviewer: V2ReviewerCritiqueResponse | null,
+): boolean {
+  if (!proposal || latestReviewerDecision(proposal, reviewer) !== "accept") {
+    return false;
+  }
+  return [
+    proposal.proposal_id,
+    proposal.command_id,
+    proposal.proposal_checksum,
+    proposal.context_pack_checksum,
+    reviewer?.critique_id ?? proposal.reviewer_critique_id,
+    proposalUnifiedDiff(proposal),
+    proposalTargetPath(proposal),
+    proposalSandboxReference(proposal),
+    proposalSandboxChecksum(proposal),
+    proposalLegacyChecksum(proposal),
+  ].every((value) => String(value ?? "").trim().length > 0);
+}
+
+function r6ApplyButtonDisabled(state: R6RepairUiState): boolean {
+  return !state.context
+    || !state.approval
+    || state.approval.approval_status !== "recorded"
+    || state.approval.approval_checksum !== state.context.proposal_checksum
+    || state.busy === "apply";
 }
 
 interface Stage {
@@ -494,6 +613,134 @@ export function GovernedRepairProposalCard({ proposal }: { proposal: GovernedRep
   );
 }
 
+export function R6GovernedRepairPanel({
+  proposal,
+  state,
+  onApprovalChecksumChange,
+  onRequestReviewer,
+  onPrepareContext,
+  onApproveRepair,
+  onOfficialApply,
+}: {
+  proposal: GovernedRepairProposalResponse | null;
+  state: R6RepairUiState;
+  onApprovalChecksumChange: (value: string) => void;
+  onRequestReviewer: () => void;
+  onPrepareContext: () => void;
+  onApproveRepair: () => void;
+  onOfficialApply: () => void;
+}) {
+  if (!proposal) {
+    return null;
+  }
+
+  const commandId = proposal.command_id ?? "";
+  const proposalId = proposal.proposal_id ?? "";
+  const proposalChecksum = proposal.proposal_checksum ?? "";
+  const contextChecksum = proposal.context_pack_checksum ?? "";
+  const reviewerDecision = latestReviewerDecision(proposal, state.reviewer);
+  const patchArtifact = proposalPatchArtifactRef(proposal);
+  const patchChecksum = proposalPatchChecksum(proposal);
+  const sandboxChecksum = state.context?.sandbox_checksum ?? proposalSandboxChecksum(proposal);
+  const legacyChecksum = state.context?.legacy_checksum ?? proposalLegacyChecksum(proposal);
+  const approvalChecksumMatches = state.approvalChecksumInput.trim() === proposalChecksum;
+  const prepareEnabled = canPrepareR6ApplyContext(proposal, state.reviewer) && state.busy !== "context";
+  const approvalEnabled = Boolean(state.context)
+    && approvalChecksumMatches
+    && !state.approval
+    && state.busy !== "approval";
+  const applyDisabled = r6ApplyButtonDisabled(state);
+  const action = state.applyResult?.repair_action ?? null;
+
+  return (
+    <section className="panel stack r6-repair-panel" aria-label="Governed R6 repair flow">
+      <h2>Governed R6 Repair</h2>
+      <p className="meta">Stage2 disabled during R6. LLM can propose and reviewer can critique; human approves; backend applies and verifies in sandbox.</p>
+      {state.error && <p className="assistant-error" role="alert">{state.error}</p>}
+
+      <div className="trace-section">
+        <strong>Repair Proposal</strong>
+        <p className="meta">Failed command: {commandId || "n/a"}</p>
+        <p className="meta">Failure evidence: {proposal.failure_evidence?.diagnostic_line ?? proposal.patch_package?.failure_evidence?.diagnostic_line ?? proposal.failure_summary ?? "n/a"}</p>
+        <p className="meta">Repair family: {proposalRepairFamily(proposal) || "n/a"}</p>
+        <p className="meta">Proposal: {proposalId || "n/a"}</p>
+        <p className="checksum">Proposal checksum: {proposalChecksum || "n/a"}</p>
+        <p className="meta">Patch artifact: {patchArtifact ? formatGateArtifactRefLabel(patchArtifact) : "n/a"}</p>
+        <p className="checksum">Patch checksum: {patchChecksum || "n/a"}</p>
+        <p className="meta">Pre-validation: {patchArtifact && patchChecksum ? "passed before proposal became actionable" : "not available"}</p>
+      </div>
+
+      <div className="trace-section">
+        <strong>Reviewer</strong>
+        <p className="meta">Decision: {reviewerDecision || "not requested"}</p>
+        <p className="meta">Critique: {state.reviewer?.critique_id ?? proposal.reviewer_critique_id ?? "n/a"}</p>
+        <p className="meta">Model invocation: {reviewerInvocationId(state.reviewer) || "n/a"}</p>
+        {state.reviewer?.reasoning && <p className="meta">{state.reviewer.reasoning}</p>}
+        <button
+          type="button"
+          disabled={!proposalId || !commandId || !proposalChecksum || !contextChecksum || state.busy === "reviewer"}
+          onClick={onRequestReviewer}
+        >
+          Request reviewer critique
+        </button>
+      </div>
+
+      <div className="trace-section">
+        <strong>Apply Context &amp; Human Approval</strong>
+        <p className="meta">Context: {state.context?.context_id ?? "not prepared"}</p>
+        <p className="checksum">Sandbox checksum: {sandboxChecksum || "n/a"}</p>
+        <p className="checksum">Legacy checksum: {legacyChecksum || "n/a"}</p>
+        <p className="meta">Approval scope: sandbox_only</p>
+        <button type="button" disabled={!prepareEnabled} onClick={onPrepareContext}>
+          Prepare apply context
+        </button>
+        <label className="checksum-input">
+          Exact approval checksum
+          <input
+            value={state.approvalChecksumInput}
+            onChange={(event) => onApprovalChecksumChange(event.target.value)}
+            placeholder={proposalChecksum || "proposal checksum"}
+            aria-label="Exact approval checksum"
+          />
+        </label>
+        <button type="button" disabled={!approvalEnabled} onClick={onApproveRepair}>
+          Record human repair approval
+        </button>
+        <p className="meta">Approval: {state.approval?.approval_id ?? "not recorded"}</p>
+      </div>
+
+      <div className="trace-section">
+        <strong>Official Apply &amp; Verification</strong>
+        <button type="button" disabled={applyDisabled} onClick={onOfficialApply}>
+          Run official apply
+        </button>
+        <p className="meta">Patch gate: {action ? "accepted by backend before apply" : "not run"}</p>
+        <p className="meta">git apply --check: {action ? (action.status === "applied" || action.status === "idempotent" ? "passed" : "failed") : "not run"}</p>
+        <p className="meta">git apply result: {action?.status ?? "not run"}</p>
+        <p className="meta">Maven verification: {action?.verification_status ?? "not run"}</p>
+        <p className="meta">Build: {action?.verification_build_status || "not run"}</p>
+        <p className="meta">Test: {action?.verification_test_status || "not run"}</p>
+        <p className="meta">Rollback: {action?.status === "failed" ? "backend rollback/evidence expected" : "not needed"}</p>
+        <p className="meta">Sandbox-only: {action ? formatFlag(action.sandbox_only) : "unknown"}</p>
+        <p className="meta">Legacy unchanged: {action ? formatFlag(!action.source_mutated) : "unknown"}</p>
+        <p className="meta">Verification artifacts: {summarizeArtifactRefs(action?.verification_artifact_refs)}</p>
+      </div>
+
+      <details>
+        <summary>Guardrails</summary>
+        <ul className="meta">
+          <li>LLM cannot approve.</li>
+          <li>LLM cannot apply.</li>
+          <li>UI cannot mutate files directly.</li>
+          <li>Backend owns execution, patch gates, git apply --check, and Maven verification.</li>
+          <li>No browser-chosen shell commands, Maven goals, argv, env, model deployments, or patch editor.</li>
+          <li>Stage2 remains disabled for R6.</li>
+        </ul>
+      </details>
+    </section>
+  );
+}
+
 interface AssistantPanelContentProps {
   assistantModel: CockpitData["assistantModel"];
   messages: V2AssistantMessageResponse[];
@@ -579,6 +826,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [streamState, setStreamState] = useState<"connecting" | "connected" | "reconnecting">("connecting");
   const [liveRefreshWarning, setLiveRefreshWarning] = useState<string | null>(null);
   const [gateState, setGateState] = useState<GatePanelState>({ status: "loading" });
+  const [r6RepairState, setR6RepairState] = useState<R6RepairUiState>(EMPTY_R6_REPAIR_UI_STATE);
   const normalizedJobId = jobId?.trim() ?? "";
   const approvalReviewOpen = gateState.status === "success" && gateState.openGate?.gate_phase === "approval_review";
 
@@ -790,6 +1038,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           repairProposal: response.repair_proposal ?? response.repairProposal ?? null,
         };
       });
+      setR6RepairState(EMPTY_R6_REPAIR_UI_STATE);
       setAssistantQuestion("");
     } catch (e) {
       setAssistantError(e instanceof Error ? e.message : "Assistant request failed");
@@ -847,6 +1096,125 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       setError(e instanceof Error ? e.message : "Rejection failed");
     } finally {
       setApprovalBusy(null);
+    }
+  }
+
+  async function requestReviewerForCurrentProposal() {
+    const proposal = data?.repairProposal ?? null;
+    if (!proposal?.command_id || !proposal.proposal_id || !proposal.proposal_checksum || !proposal.context_pack_checksum) {
+      setR6RepairState((current) => ({ ...current, error: "Reviewer requires proposal id, command id, proposal checksum, and context checksum." }));
+      return;
+    }
+    setR6RepairState((current) => ({ ...current, busy: "reviewer", error: null }));
+    try {
+      const critique = await requestV2ReviewerCritique(proposal.command_id, proposal.proposal_id, {
+        proposal_type: "repair_proposal",
+        proposal_checksum: proposal.proposal_checksum,
+        context_pack_checksum: proposal.context_pack_checksum,
+        model_invocation_id: proposerInvocationId(proposal) || null,
+      });
+      setR6RepairState((current) => ({ ...current, reviewer: critique, busy: null }));
+    } catch (e) {
+      setR6RepairState((current) => ({
+        ...current,
+        busy: null,
+        error: e instanceof Error ? e.message : "Reviewer request failed.",
+      }));
+    }
+  }
+
+  async function prepareCurrentRepairApplyContext() {
+    const proposal = data?.repairProposal ?? null;
+    const reviewer = r6RepairState.reviewer;
+    if (!proposal?.command_id || !proposal.proposal_id || !canPrepareR6ApplyContext(proposal, reviewer)) {
+      setR6RepairState((current) => ({ ...current, error: "Apply context requires reviewer accept plus proposal patch, target, sandbox, legacy, and checksums from backend." }));
+      return;
+    }
+    const patchPreview = proposalUnifiedDiff(proposal);
+    setR6RepairState((current) => ({ ...current, busy: "context", error: null }));
+    try {
+      const response = await prepareV2RepairApplyContext(proposal.command_id, proposal.proposal_id, {
+        proposal_checksum: proposal.proposal_checksum ?? "",
+        context_pack_checksum: proposal.context_pack_checksum ?? "",
+        reviewer_critique_id: reviewer?.critique_id ?? proposal.reviewer_critique_id ?? "",
+        proposer_invocation_id: proposerInvocationId(proposal),
+        reviewer_invocation_id: reviewerInvocationId(reviewer),
+        patch_preview: patchPreview,
+        target_path: proposalTargetPath(proposal),
+        sandbox_reference: proposalSandboxReference(proposal),
+        sandbox_checksum: proposalSandboxChecksum(proposal),
+        legacy_checksum: proposalLegacyChecksum(proposal),
+        evidence_refs: {
+          deterministic_rule_id: proposalDeterministicRule(proposal),
+          repair_family: proposalRepairFamily(proposal),
+          patch_checksum: proposalPatchChecksum(proposal),
+          patch_artifact: proposalPatchArtifactRef(proposal),
+          expected_validation: "maven_compile",
+        },
+        approval_scope: "sandbox_only",
+      });
+      setR6RepairState((current) => ({ ...current, context: response.repair_review_context, busy: null }));
+    } catch (e) {
+      setR6RepairState((current) => ({
+        ...current,
+        busy: null,
+        error: e instanceof Error ? e.message : "Apply context preparation failed.",
+      }));
+    }
+  }
+
+  async function approveCurrentRepair() {
+    const context = r6RepairState.context;
+    const checksum = r6RepairState.approvalChecksumInput.trim();
+    if (!context || checksum !== context.proposal_checksum) {
+      setR6RepairState((current) => ({ ...current, error: "Human approval requires exact proposal checksum." }));
+      return;
+    }
+    setR6RepairState((current) => ({ ...current, busy: "approval", error: null }));
+    try {
+      const response = await approveV2RepairReviewContext(context.context_id, {
+        approval_checksum: checksum,
+        approval_note: "Human approved exact repair checksum from Control Tower UI.",
+        approval_scope: "sandbox_only",
+      });
+      setR6RepairState((current) => ({
+        ...current,
+        approval: response.approval,
+        context: response.repair_review_context ?? current.context,
+        busy: null,
+      }));
+    } catch (e) {
+      setR6RepairState((current) => ({
+        ...current,
+        busy: null,
+        error: e instanceof Error ? e.message : "Repair approval failed.",
+      }));
+    }
+  }
+
+  async function applyCurrentRepair() {
+    const context = r6RepairState.context;
+    const approval = r6RepairState.approval;
+    if (!context || !approval) {
+      setR6RepairState((current) => ({ ...current, error: "Official apply requires prepared context and recorded human approval." }));
+      return;
+    }
+    setR6RepairState((current) => ({ ...current, busy: "apply", error: null }));
+    try {
+      const response = await applyV2RepairReviewContext(context.context_id, {
+        approval_id: approval.approval_id,
+        expected_approval_checksum: approval.approval_checksum,
+        expected_sandbox_checksum: context.sandbox_checksum,
+        expected_legacy_checksum: context.legacy_checksum,
+      });
+      setR6RepairState((current) => ({ ...current, applyResult: response, busy: null }));
+      await refreshLiveState();
+    } catch (e) {
+      setR6RepairState((current) => ({
+        ...current,
+        busy: null,
+        error: e instanceof Error ? e.message : "Official repair apply failed.",
+      }));
     }
   }
 
@@ -1270,6 +1638,16 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         onAsk={() => void askAssistant()}
       />
 
+      <R6GovernedRepairPanel
+        proposal={data.repairProposal}
+        state={r6RepairState}
+        onApprovalChecksumChange={(value) => setR6RepairState((current) => ({ ...current, approvalChecksumInput: value }))}
+        onRequestReviewer={() => void requestReviewerForCurrentProposal()}
+        onPrepareContext={() => void prepareCurrentRepairApplyContext()}
+        onApproveRepair={() => void approveCurrentRepair()}
+        onOfficialApply={() => void applyCurrentRepair()}
+      />
+
       {/* Proof & Report */}
       <section className="panel">
         <h2>Proof & Report</h2>
@@ -1335,6 +1713,11 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .assistant-error { border: 1px solid #c98300; background: #fff8ea; color: #7a4a00; padding: 0.65rem 0.75rem; border-radius: 4px; margin: 0.5rem 0 0.75rem; }
         .message-content { margin: 0.25rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
         .repair-proposal-card { border: 1px solid #c9ab4b; background: #fffdf5; padding: 0.75rem; margin-top: 0.75rem; border-radius: 4px; }
+        .r6-repair-panel { grid-column: 1 / -1; }
+        .r6-repair-panel button { padding: 0.45rem 0.7rem; border: 1px solid #333; border-radius: 4px; background: #fff; width: fit-content; }
+        .r6-repair-panel button:disabled { color: #777; border-color: #bbb; }
+        .checksum-input { display: grid; gap: 0.25rem; max-width: 42rem; font-size: 0.85rem; color: #666; }
+        .checksum-input input { min-width: 0; padding: 0.5rem; border: 1px solid #aaa; border-radius: 4px; font-family: monospace; }
         .failure-panel { border-color: #a40000; background: #fffafa; }
         .failure-card { border: 1px solid #ffcccc; padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; }
         .failure-card .meta { margin: 0.2rem 0; }

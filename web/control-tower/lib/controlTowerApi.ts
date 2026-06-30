@@ -23,6 +23,10 @@ import type {
   V2ArtifactPreviewResponse,
   V2ReviewerCritiqueResponse,
   V2ReviewerCritiquesListResponse,
+  PrepareRepairApplyContextRequest,
+  PrepareRepairApplyContextResponse,
+  ApproveRepairReviewContextResponse,
+  ApplyRepairReviewContextResponse,
   V2DraftActionResponse,
   ModelActivityRawResponse,
   ModelActivityResponse,
@@ -556,6 +560,47 @@ export async function getV2ReviewerCritiques(
 ): Promise<V2ReviewerCritiquesListResponse> {
   return getJson<V2ReviewerCritiquesListResponse>(
     `/v1/v2/commands/${encodeURIComponent(commandId)}/repair/proposal/${encodeURIComponent(proposalId)}/reviewer-critiques`
+  );
+}
+
+export async function prepareV2RepairApplyContext(
+  commandId: string,
+  proposalId: string,
+  payload: PrepareRepairApplyContextRequest
+): Promise<PrepareRepairApplyContextResponse> {
+  return postJson<PrepareRepairApplyContextResponse>(
+    `/v1/v2/commands/${encodeURIComponent(commandId)}/repair/proposal/${encodeURIComponent(proposalId)}/prepare-apply-context`,
+    payload
+  );
+}
+
+export async function approveV2RepairReviewContext(
+  contextId: string,
+  payload: {
+    approval_checksum: string;
+    approval_note: string;
+    approval_scope: "sandbox_only";
+  }
+): Promise<ApproveRepairReviewContextResponse> {
+  return postJson<ApproveRepairReviewContextResponse>(
+    `/v1/v2/repair-review/${encodeURIComponent(contextId)}/approve`,
+    payload
+  );
+}
+
+export async function applyV2RepairReviewContext(
+  contextId: string,
+  payload: {
+    approval_id: string;
+    expected_approval_checksum: string;
+    expected_sandbox_checksum: string;
+    expected_legacy_checksum: string;
+    idempotency_key?: string;
+  }
+): Promise<ApplyRepairReviewContextResponse> {
+  return postJson<ApplyRepairReviewContextResponse>(
+    `/v1/v2/repair-review/${encodeURIComponent(contextId)}/apply`,
+    payload
   );
 }
 
