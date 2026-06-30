@@ -4331,6 +4331,41 @@ def create_app(
         return {"model_invocations": invocations}
 
     # ------------------------------------------------------------------
+    # V2 LLM invocation ledger activity endpoint (PR-G)
+    # ------------------------------------------------------------------
+
+    @app.get("/v1/v2/jobs/{job_id}/llm/activity")
+    def list_v2_llm_activity(job_id: str) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            records = uow.v2_llm_invocations.list_by_job(job_id)
+            invocations = [
+                {
+                    "invocation_id": r.invocation_id,
+                    "job_id": r.job_id,
+                    "role": r.role,
+                    "responsibility": r.responsibility,
+                    "status": r.status,
+                    "proposal_id": r.proposal_id,
+                    "gate_id": r.gate_id,
+                    "provider_alias": r.provider_alias,
+                    "deployment_alias_hash": r.deployment_alias_hash,
+                    "context_checksum": r.context_checksum,
+                    "output_checksum": r.output_checksum,
+                    "schema_name": r.schema_name,
+                    "fallback_used": bool(r.fallback_used),
+                    "redacted_summary": r.redacted_summary,
+                    "prompt_tokens": r.prompt_tokens,
+                    "completion_tokens": r.completion_tokens,
+                    "total_tokens": r.total_tokens,
+                    "latency_ms": r.latency_ms,
+                    "created_at": r.created_at,
+                    "completed_at": r.completed_at,
+                }
+                for r in records
+            ]
+        return {"invocations": invocations}
+
+    # ------------------------------------------------------------------
     # Context pack manifest endpoints (V1-11A)
     # ------------------------------------------------------------------
 

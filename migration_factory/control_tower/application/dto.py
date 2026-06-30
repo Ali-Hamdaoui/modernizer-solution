@@ -498,6 +498,36 @@ class RepairAttemptSummaryDto:
 
 
 @dataclass(frozen=True, slots=True)
+class LlmInvocationDto:
+    """API-safe projection of a governed LLM invocation.
+
+    Raw prompts, completions, endpoints, and API keys are never exposed.
+    Only redacted summaries, checksums, token counts, and safe alias values.
+    """
+
+    invocation_id: str
+    job_id: str
+    role: str
+    responsibility: str
+    status: str
+    created_at: str
+    proposal_id: str | None = None
+    gate_id: str | None = None
+    provider_alias: str | None = None
+    deployment_alias_hash: str | None = None
+    context_checksum: str | None = None
+    output_checksum: str | None = None
+    schema_name: str | None = None
+    fallback_used: bool = False
+    redacted_summary: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    latency_ms: int | None = None
+    completed_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PatchApplicationDto:
     """DTO for an approved patch application result."""
 

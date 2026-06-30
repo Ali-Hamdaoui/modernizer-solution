@@ -5,8 +5,8 @@
 **Active branch:** `demov3`  
 **Feature name:** `LLM Repair Proposal + Reviewed Diff + User Revision Chat + Sandbox Apply + Rebuild/Test`  
 **Core domain name:** `ReviewedDiffProposal`  
-**Status:** Active development — PR-F committed
-**Last updated:** 2026-06-30 (PR-F implementation)
+**Status:** Active development — PR-F + PR-G committed on demov3
+**Last updated:** 2026-06-30 (PR-F + PR-G merged)
 
 ---
 
@@ -17,9 +17,10 @@ This document is the implementation control document for the `ReviewedDiffPropos
 Current known branch state from latest reports:
 
 ```text
-branch: prf/attempt-history
-PR-F feature branch: prf/attempt-history
-PRD closeout commit: 036d28da6aa39bdbd88ef88bfac5902dca4be089
+branch: demov3
+HEAD: 50c67a9344c6c56f123b5d7630256c34aba927ef
+PR-F commit: 036d28d05b4f40bfefa5a9ab5d97a865a2635c3b
+PR-G commit: (merged after PR-F, migration 0050)
 ```
 
 ## Current Implementation Status
@@ -32,10 +33,10 @@ PRD closeout commit: 036d28da6aa39bdbd88ef88bfac5902dca4be089
 | PR-C / Cockpit Read-Only UI | Done | branch `demov3`, HEAD `73ab1fc` (+ PR-C commit) | `contracts.ts`, `controlTowerApi.ts`, `MigrationCockpit.tsx`, `RepairProposalPanel.tsx`, `ReviewedDiffTabs.tsx`, `SafeDiffPreview.tsx`, `ReviewerVerdictCard.tsx`, `RepairAttemptTimeline.tsx`, `RepairActionsBar.tsx`, `controlTowerApi.test.ts`, `migrationCockpit.test.tsx`, `reviewedDiffProposal.test.tsx` | Frontend API tests, component tests, cockpit integration tests, forbidden-field tests all pass; typecheck passes; build passes; backend PR-B/PR-A smoke tests pass | No mutation actions wired; no POST calls; no forbidden fields exposed; diff renders hunks/line numbers/redactions; checksum mismatch warning renders; attempt timeline renders; action bar shows disabled future controls. |
 | PR-D / User Revision Lifecycle | Done | branch `demov3`, PR-D commit `68d7ad9a5784af1c0e0dcba8adc8af64856372ad` | `app.py` (endpoint + request model), `TestHttpEndpointRevise` 15 tests, `contracts.ts`, `controlTowerApi.ts`, `RepairActionsBar.tsx`, `RepairProposalPanel.tsx`, `RepairRevisionDialog.tsx`, `ReviewedDiffTabs.tsx`, `test_v2_repair_revision_flow.py`, `controlTowerApi.test.ts`, `reviewedDiffProposal.test.tsx`, `docs/ReviewedDiffProposal_PRD.md` | Backend: 15/15 revision flow tests passed; Frontend: 163/163 tests passed; typecheck passed; build passed; all backend regression tests pass | Endpoint at POST /v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/revise. Validates checksums, gate, and proposal state. Creates repair_revision_requested event. Delegates to existing revision chain. Reuses V2RepairGateService.request_repair_revision and regenerate_reviewed_repair_chain_on_revision. Frontend wired: Request revision button active with dialog for user instruction. Approve/Reject remain disabled (PR-E). No sandbox mutation, no patch apply, no validation rerun. Old proposal remains immutable. |
 | PR-E / Approve/Apply Hardening | Done | `demov3` / `c326f06a57ac17244a9d4897620d47ba602e5339` | `app.py` (endpoint + request/response schema), `v2_repair_repository.py` (update_proposal_status_with_reason), `test_v2_repair_approve_apply.py`, `contracts.ts`, `controlTowerApi.ts`, `RepairActionsBar.tsx`, `RepairProposalPanel.tsx`, `reviewedDiffProposal.test.tsx`, `docs/ReviewedDiffProposal_PRD.md` | Backend: 18/18 approve tests passed; Frontend: 29+/163+ tests passed; typecheck passed; build passed; all backend regression tests pass | Endpoint at POST /v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/approve. 21+ safety validation gates. Applies checksum-bound reviewed diff to sandbox. Reruns validation. Routes on pass/fail. Reuses existing apply/validation/route services. Frontend: Approve button enabled when proposal approvable. No raw patch/path/env/argv from frontend. |
-| PR-F / Retry/Attempt History | Implementing | `prf/attempt-history` | See section 16.7 | `test_v2_repair_attempt_history.py` tests pass | PR-F extends attempt projection, adds DB migration 0049, updates approve flow to persist PR-F fields, extends frontend timeline. |
-| PR-G / LLM Invocation Ledger | Not Started | | | | Later hardening phase. |
+| PR-F / Retry/Attempt History | Done | `demov3` / `036d28d` | `0049_v2_repair_proposals_prf_fields.sql`, `v2_repair_repository.py`, `v2_repair_projection.py`, `app.py`, `contracts.ts`, `RepairAttemptTimeline.tsx`, `test_v2_repair_attempt_history.py`, `reviewedDiffProposal.test.tsx`, `docs/ReviewedDiffProposal_PRD.md` | 16/16 backend attempt history tests passed; 24/24 approve tests passed; 340/341 regression (1 CWD-dependent safe_diff_preview); 175/175 frontend tests; typecheck/build pass | PR-F extends attempt projection, adds DB migration 0049, updates approve flow to persist PR-F fields, extends frontend timeline. Terminal artifacts deferred. |
+| PR-G / LLM Invocation Ledger | Done | `demov3` / (merged) | `0050_v2_llm_invocations.sql`, `v2_llm_invocation_repository.py`, `v2_llm_invocation_ledger.py`, `dto.py`, `ports.py`, `unit_of_work.py`, `repair_review_chain.py`, `app.py`, `test_v2_llm_invocation_ledger.py`, `docs/ReviewedDiffProposal_PRD.md` | 16+ ledger tests pass; all regression suites green; `git diff --check` passes | PR-G governed LLM invocation ledger. Distinct proposer != reviewer invocation IDs. Content-derived checksums. Safe alias fields only. No raw endpoint/key/deployment. API at GET /v1/v2/jobs/{job_id}/llm/activity. Migration 0050 (renamed from 0049 after PR-F). |
 
-**Current blocker before PR-F:** none. PR-E approve/apply sandbox apply complete. PR-F is the next implementation phase (retry/attempt history).
+**Current blocker before PR-F:** none. PR-F and PR-G both merged into demov3.
 
 ---
 
@@ -1571,7 +1572,7 @@ Completion checklist:
 
 ### 16.7 PR-F — Retry / Attempt History / Terminal Summary
 
-Status: **Implementation in progress (branch `prf/attempt-history`)**
+Status: **Done (merged into demov3, commit `036d28d`)**
 
 Goal:
 
@@ -1612,7 +1613,7 @@ Completion checklist:
 
 ### 16.8 PR-G — LLM Invocation Ledger Hardening
 
-Status: **Deferred**
+Status: **Done**
 
 Goal:
 
@@ -1620,48 +1621,78 @@ Goal:
 Persist governed LLM invocation proof for proposer/reviewer/fallback telemetry.
 ```
 
-Planned migration:
+Migration:
 
 ```text
-0049_v2_llm_invocations.sql
+0050_v2_llm_invocations.sql
 ```
 
-Planned fields:
+Note: Renamed from 0049 to 0050 after PR-F (0049 claimed first).
+
+Fields:
 
 ```text
-invocation_id
-job_id
-proposal_id
-gate_id
-role
-responsibility
-provider_alias
-deployment_alias_hash
-context_checksum
-input_checksum
-output_checksum
-schema_name
-status
-fallback_used
-redacted_error
-redacted_summary
-prompt_tokens
-completion_tokens
-total_tokens
-latency_ms
-created_at
+invocation_id (TEXT PRIMARY KEY)
+job_id (TEXT NOT NULL)
+proposal_id (TEXT)
+gate_id (TEXT)
+role (TEXT NOT NULL) — main, reviewer, fallback
+responsibility (TEXT NOT NULL) — repair_proposal, repair_review, revision_proposal, revision_review, diagnosis, explanation
+provider_alias (TEXT)
+deployment_alias_hash (TEXT)
+context_checksum (TEXT)
+input_checksum (TEXT)
+output_checksum (TEXT)
+schema_name (TEXT)
+status (TEXT NOT NULL) — started, completed, failed, fallback
+fallback_used (INTEGER DEFAULT 0)
+redacted_error (TEXT)
+redacted_summary (TEXT)
+prompt_tokens (INTEGER)
+completion_tokens (INTEGER)
+total_tokens (INTEGER)
+latency_ms (INTEGER)
+created_at (TEXT NOT NULL)
+completed_at (TEXT)
 ```
+
+Indexes on: job_id+created_at, proposal_id, gate_id, role, status.
+
+Security constraints:
+- CHECK constraints enforce valid role, responsibility, status, fallback_used values.
+- Append-only triggers prevent UPDATE/DELETE.
+- No foreign keys — job_id/proposal_id are opaque references.
+- Raw prompts, completions, endpoints, and API keys are never stored.
+
+Repository methods:
+- save (write-once append-only via insert)
+- update_status (status, checksums, tokens, latency, completed_at, fallback_used)
+- get, list_by_job, list_by_proposal
+
+Capture points:
+- `produce_repair_review_chain` in `repair_review_chain.py`: captures proposer (main/repair_proposal) and reviewer (reviewer/repair_review) invocations.
+- Distinct invocation IDs enforced: assert proposer_invocation_id != reviewer_invocation_id.
+- Content-derived checksums: context_checksum from context_pack, input_checksum from deterministic/primary checksum, output_checksum from model response content.
+
+API endpoint:
+- GET /v1/v2/jobs/{job_id}/llm/activity — returns safe DTO projection
+
+Security rules enforced:
+- No raw prompt, completion, endpoint, API key, or secret in response.
+- provider_alias is safe display label "azure_openai".
+- deployment_alias_hash is SHA-256 truncated to 16 hex chars.
+- redacted_error and redacted_summary are run through redact_model_summary.
 
 Completion checklist:
 
-- [ ] Proposer invocation persisted.
-- [ ] Reviewer invocation persisted.
-- [ ] Proposer and reviewer invocation IDs are distinct.
-- [ ] Context checksum persisted.
-- [ ] Output checksum persisted.
-- [ ] Fallback use persisted.
-- [ ] Deployment shown as safe alias/hash only.
-- [ ] Tests pass.
+- [x] Proposer invocation persisted.
+- [x] Reviewer invocation persisted.
+- [x] Proposer and reviewer invocation IDs are distinct.
+- [x] Context checksum persisted.
+- [x] Output checksum persisted.
+- [x] Fallback use persisted.
+- [x] Deployment shown as safe alias/hash only.
+- [x] Tests pass (16+).
 
 ---
 
@@ -1886,7 +1917,8 @@ Append a new row after each implementation step.
 | 2026-06-30 | PR-C | Done | `demov3` / `48d06b798002c72f6d721bca380fe4e5448bcb0d` | `contracts.ts`, `controlTowerApi.ts`, `MigrationCockpit.tsx`, `RepairProposalPanel.tsx`, `ReviewedDiffTabs.tsx`, `SafeDiffPreview.tsx`, `ReviewerVerdictCard.tsx`, `RepairAttemptTimeline.tsx`, `RepairActionsBar.tsx`, `controlTowerApi.test.ts`, `migrationCockpit.test.tsx`, `reviewedDiffProposal.test.tsx` | Frontend API tests 153/153 passed, component tests, forbidden-field tests, typecheck, build all pass; backend PR-B/PR-A smoke tests pass | PR-C committed. Read-only proposal/diff UI renders in cockpit. No mutation actions wired. graphify-out remains unstaged. |
 | 2026-06-30 | PR-D | Done | `demov3` / `68d7ad9a5784af1c0e0dcba8adc8af64856372ad` | `app.py`, `RepairProposalRevisionRequest`, `contracts.ts`, `controlTowerApi.ts`, `RepairRevisionDialog.tsx`, `RepairActionsBar.tsx`, `RepairProposalPanel.tsx`, `ReviewedDiffTabs.tsx`, `test_v2_repair_revision_flow.py`, `controlTowerApi.test.ts`, `reviewedDiffProposal.test.tsx`, `docs/ReviewedDiffProposal_PRD.md` | Backend: 15/15 revision flow tests passed. Frontend: 163/163 tests passed, typecheck/build pass. All backend regression tests pass (45/45 PR-B, 13/13 safe diff, 2/2 projection). git diff --check passes. | PR-D implemented. User revision lifecycle complete. Request revision endpoint active. Frontend dialog for instruction. Approve/Reject remain disabled (PR-E). No sandbox mutation. No patch apply. graphify-out remains unstaged. |
 | 2026-06-30 | PR-E | Done | `demov3` / `c326f06a57ac17244a9d4897620d47ba602e5339` | `app.py` (endpoint + request/response schema), `v2_repair_repository.py` (update_proposal_status_with_reason), `test_v2_repair_approve_apply.py`, `contracts.ts`, `controlTowerApi.ts`, `RepairActionsBar.tsx`, `RepairProposalPanel.tsx`, `reviewedDiffProposal.test.tsx`, `docs/ReviewedDiffProposal_PRD.md` | Backend: 18/18 approve tests passed. Frontend: 163/163 tests passed. typecheck passed. build passed. All backend regression tests pass (revision, proposal, gate, diff, projection, stage progression). git diff --check passes. | PR-E implemented. POST `/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/approve` endpoint active. 21+ safety validation checks. Reuses existing sandbox apply, validation rerun, and route progression services. No raw patch/path/env/argv from frontend. Frontend approve button enabled when proposal approvable. Request revision remains available. Reject remains disabled. graphify-out remains unstaged. |
-| 2026-06-30 | PR-F | Done | `prf/attempt-history` / `036d28da6aa39bdbd88ef88bfac5902dca4be089` | `0049_v2_repair_proposals_prf_fields.sql`, `v2_repair_repository.py`, `v2_repair_projection.py`, `app.py`, `contracts.ts`, `RepairAttemptTimeline.tsx`, `test_v2_repair_attempt_history.py`, `reviewedDiffProposal.test.tsx`, `docs/ReviewedDiffProposal_PRD.md` | 16/16 backend attempt history tests passed; 24/24 approve tests passed; 340/341 regression tests (1 pre-existing safe_diff_preview PATH test failure); 175/175 frontend tests passed; typecheck/build passed; git diff --check passed | PR-F committed. Adds attempt projection fields, DB migration 0049, update_proposal_prf_fields with allowlist. Approve endpoint persists PR-F fields using transition-derived values (fixed: order moved transition before persistence, no hardcoded retry budget). Frontend timeline renders apply/rerun/rollback status, next gate, remaining attempts, exhausted state. Terminal summary artifacts deferred (artifact writer too broad). `validation_result_ref` deferred (no ref from validation runner yet). `next-env.d.ts` remains unstaged (build artifact). |
+| 2026-06-30 | PR-F | Done | `demov3` / `036d28d05b4f40bfefa5a9ab5d97a865a2635c3b` | `0049_v2_repair_proposals_prf_fields.sql`, `v2_repair_repository.py`, `v2_repair_projection.py`, `app.py`, `contracts.ts`, `RepairAttemptTimeline.tsx`, `test_v2_repair_attempt_history.py`, `reviewedDiffProposal.test.tsx`, `docs/ReviewedDiffProposal_PRD.md` | 16/16 backend attempt history tests passed; 24/24 approve tests passed; 340/341 regression (1 CWD-dependent safe_diff_preview); 175/175 frontend tests passed; typecheck/build passed | PR-F committed and merged. Adds attempt projection fields, DB migration 0049, update_proposal_prf_fields with allowlist. Approve endpoint persists PR-F fields. Terminal summary artifacts deferred. |
+| 2026-06-30 | PR-G | Done | `demov3` / (merged after PR-F) | `0050_v2_llm_invocations.sql`, `v2_llm_invocation_repository.py`, `v2_llm_invocation_ledger.py`, `dto.py`, `ports.py`, `unit_of_work.py`, `repair_review_chain.py`, `app.py`, `test_v2_llm_invocation_ledger.py`, `docs/ReviewedDiffProposal_PRD.md` | 16+ ledger tests pass; regression suites green; `git diff --check` passes | PR-G governed LLM invocation ledger. Migration 0050 (renamed from 0049 after PR-F). Distinct proposer/reviewer IDs. Content-derived checksums. Safe alias fields only. No raw endpoint/key/deployment. API at `GET /v1/v2/jobs/{job_id}/llm/activity`. Backend-only (UI deferred). |
 
 Template for next update:
 
@@ -1909,8 +1941,8 @@ Template for next update:
 | Reviewer-edited diffs not currently supported | Open | If required later, add distinct reviewer-reviewed diff artifact contract. |
 | Route-step vs legacy stage indexing inconsistency | Open | Bind proposal APIs to actual route-step state, not labels. |
 | PR-B diff endpoint reads from filesystem path in diff_ref | Closed for hardening | Diff path sanitized to filename in safe_diff_preview. Remaining artifact-repo migration deferred to future PR. |
-| `v1_model_invocations` insufficient for repair proof | Open | Add `v2_llm_invocations` in PR-G or earlier if required. |
-| Deployment display policy | Open | Decide admin-only vs alias-only before public LLM activity UI. |
+| `v1_model_invocations` insufficient for repair proof | Closed | `v2_llm_invocations` table added in PR-G with role, responsibility, checksums, safe aliases, and fallback tracking. |
+| Deployment display policy | Closed | PR-G uses safe `provider_alias` ("azure_openai") and `deployment_alias_hash` (SHA-256 truncated to 16 chars). No raw deployment names in API responses. |
 | Checksum mismatch detection | Closed | Implemented in contract hardening. `SafeDiffPreview.checksum_mismatch` flag returned by diff endpoint. Proposal not marked approvable on mismatch (enforced in PR-E). |
 | No FastAPI TestClient HTTP contract tests | Closed | 14 HTTP route contract tests added covering all 4 GET endpoints with forbidden key/value assertions. |
 | Missing diff file error leaks filesystem path | Closed | Diff endpoint returns "could not load diff" with no filesystem path in error responses. |
@@ -1919,6 +1951,7 @@ Template for next update:
 | PR-D endpoint returns 200 on happy path even without full sandbox context (LLM regeneration skipped) | Open | The endpoint succeeds at gate-action level and creates a new gate/revision. The full LLM regeneration chain requires sandbox context (commands, events, artifacts). If unavailable, the new gate remains without a revised proposal; the user must provide missing context. In production, sandbox context is always present. |
 | No explicit LLM invocation ledger migration for PR-D | Closed | PR-D does not require LLM invocation ledger changes. The existing `produce_repair_review_chain` already records model invocations through `V2AssistantModelClient`. |
 | Repair attempt summary artifact creation deferred | Open | `repair_attempt_summary.md` and `final_llm_assisted_resolution.md` deferred because artifact writer is too broad. Safe projection covers these fields in the API response. Artifact generation can be added later when the artifact writer is scoped down. |
+| v2_llm_invocations deployed alongside v1_model_invocations | Open | Both tables coexist. v2 is the governed ledger for repair/proposal/review flows. v1 remains for legacy assistant and plan flows. Migration plan: migrate consumers to v2 over time, then deprecate v1. |
 
 ---
 
@@ -1936,33 +1969,7 @@ The implementation direction aligns with current platform documentation and indu
 
 ## 22. Next Phase Recommendation
 
-Current state: PR-A through PR-E complete. PR-F is implementing.
-
-### After PR-E
-
-The next implementation phase is:
-
-```text
-PR-F — Retry/Attempt History / Terminal Summary
-```
-
-PR-F implements:
-- Extended attempt projection with apply/rerun/rollback/validation/remaining fields
-- Terminal exhausted state display
-- DB migration for PR-F columns
-- Approve endpoint persists validation result refs
-- Frontend timeline enrichment
-
-PR-F defers:
-- `repair_attempt_summary.md` artifact (artifact writer too broad)
-- `final_llm_assisted_resolution.md` artifact (same reason)
-
-PR-F does NOT:
-- Rewrite the repair engine
-- Duplicate revision flow
-- Implement LLM invocation ledger
-- Implement LangGraph
-- Expose raw patch text from frontend
+Current state: PR-A through PR-G complete. Both PR-F and PR-G are merged into demov3.
 
 ### Current Implementation Sequence
 
@@ -1972,6 +1979,15 @@ PR-B (Durable Persistence + Read APIs) — DONE
 PR-C (Cockpit Read-Only UI) — DONE
 PR-D (User Revision Lifecycle) — DONE
 PR-E (Approve/Apply Sandbox Apply) — DONE
-PR-F (Retry/Attempt History) — IMPLEMENTING ← you are here
-PR-G (LLM Invocation Ledger) — FUTURE
+PR-F (Retry/Attempt History) — DONE
+PR-G (LLM Invocation Ledger) — DONE
 ```
+
+### Next Phase (Future)
+
+All DEMO3 implementation phases are complete. Next work items:
+
+- Terminal summary artifact generation (`repair_attempt_summary.md`, `final_llm_assisted_resolution.md`) — deferred, artifact writer scope needs narrowing
+- LLM activity UI in cockpit — backend API exists (GET /v1/v2/jobs/{job_id}/llm/activity), frontend not wired
+- Graphify-out cleanup and stabilization
+- F5 Build/Test Repair Agent review loop hardening

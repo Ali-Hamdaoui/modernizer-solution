@@ -361,12 +361,17 @@ def produce_repair_review_chain(
     source_profile: str = "",
     target_profile: str = "",
     model_client: V2AssistantModelClient | None = None,
+    invocation_ledger: Any = None,
 ) -> dict[str, Any]:
     """Produce the F5 model-reviewed repair chain.
 
     Deterministic repair artifact -> Primary Repair LLM -> Reviewer LLM -> Final reviewed diff.
 
     Fails closed when any model call is unavailable, malformed, rejected, or misbound.
+
+    Args:
+        invocation_ledger: Optional V2LLMInvocationLedger instance for capturing
+            proposer/reviewer invocations to the governed ledger table.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -382,6 +387,20 @@ def produce_repair_review_chain(
 
     client = model_client or V2AssistantModelClient()
 
+    # ── PR-G: Capture proposer invocation ────────────────────────────
+    proposer_invocation_id: str | None = None
+    reviewer_invocation_id: str | None = None
+    if invocation_ledger is not None:
+        context_checksum_for_ledger = getattr(context_pack, "context_pack_checksum", "") or ""
+        proposer_invocation_id = invocation_ledger.start_invocation(
+            job_id=context_pack.job_id,
+            role="main",
+            responsibility="repair_proposal",
+            context_checksum=context_checksum_for_ledger,
+            input_checksum=deterministic_checksum,
+            schema_name="RepairPrimaryOutput",
+        )
+
     # Primary Repair LLM (PROPOSER)
     primary_result = client.answer_with_role(
         role=V2ModelRole.PROPOSER,
@@ -390,6 +409,25 @@ def produce_repair_review_chain(
         output_schema_name="RepairPrimaryOutput",
         require_schema=True,
     )
+
+    # ── PR-G: Complete/fail proposer invocation ──────────────────────
+    fallback_used_primary = str(getattr(primary_result, "source", "") or "") == "deterministic"
+    if proposer_invocation_id is not None:
+        if primary_result.success:
+            invocation_ledger.complete_invocation(
+                proposer_invocation_id,
+                output=primary_result.content,
+                redacted_summary=primary_result.redacted_summary,
+                fallback_used=fallback_used_primary,
+            )
+        else:
+            invocation_ledger.fail_invocation(
+                proposer_invocation_id,
+                redacted_error=primary_result.failure_reason,
+                redacted_summary=primary_result.redacted_summary,
+                fallback_used=fallback_used_primary,
+            )
+
     if not primary_result.success:
         raise RepairReviewChainProductionError(
             f"primary repair model failed closed: {primary_result.failure_reason or primary_result.model_status}"
@@ -411,6 +449,17 @@ def produce_repair_review_chain(
     proposed_diff = str(primary_output.get("proposed_diff", ""))
     diff_checksum = sha256_canonical_json({"unified_diff": proposed_diff})
 
+    # ── PR-G: Capture reviewer invocation ────────────────────────────
+    if invocation_ledger is not None:
+        reviewer_invocation_id = invocation_ledger.start_invocation(
+            job_id=context_pack.job_id,
+            role="reviewer",
+            responsibility="repair_review",
+            context_checksum=context_checksum,
+            input_checksum=primary_checksum,
+            schema_name="RepairReviewerOutput",
+        )
+
     # Reviewer Repair LLM (REVIEWER)
     reviewer_result = client.answer_with_role(
         role=V2ModelRole.REVIEWER,
@@ -425,6 +474,25 @@ def produce_repair_review_chain(
         output_schema_name="RepairReviewerOutput",
         require_schema=True,
     )
+
+    # ── PR-G: Complete/fail reviewer invocation ──────────────────────
+    fallback_used_reviewer = str(getattr(reviewer_result, "source", "") or "") == "deterministic"
+    if reviewer_invocation_id is not None:
+        if reviewer_result.success:
+            invocation_ledger.complete_invocation(
+                reviewer_invocation_id,
+                output=reviewer_result.content,
+                redacted_summary=reviewer_result.redacted_summary,
+                fallback_used=fallback_used_reviewer,
+            )
+        else:
+            invocation_ledger.fail_invocation(
+                reviewer_invocation_id,
+                redacted_error=reviewer_result.failure_reason,
+                redacted_summary=reviewer_result.redacted_summary,
+                fallback_used=fallback_used_reviewer,
+            )
+
     if not reviewer_result.success:
         raise RepairReviewChainProductionError(
             f"reviewer repair model failed closed: {reviewer_result.failure_reason or reviewer_result.model_status}"
@@ -480,7 +548,7 @@ def produce_repair_review_chain(
     diff_path = output_dir / "final_reviewed_repair.diff"
     diff_path.write_text(proposed_diff, encoding="utf-8")
 
-    review_chain = {
+    review_chain: dict[str, Any] = {
         "deterministic_artifact_checksum": deterministic_checksum,
         "context_pack_checksum": context_checksum,
         "primary_output_checksum": primary_checksum,
@@ -500,6 +568,10 @@ def produce_repair_review_chain(
             "reviewer": _safe_model_role_status(reviewer_result),
         },
     }
+    if proposer_invocation_id is not None and reviewer_invocation_id is not None:
+        review_chain["proposer_invocation_id"] = proposer_invocation_id
+        review_chain["reviewer_invocation_id"] = reviewer_invocation_id
+        assert proposer_invocation_id != reviewer_invocation_id, "proposer and reviewer invocation IDs must be distinct"
     review_chain_path = output_dir / "review_chain.json"
     _write_json(review_chain_path, review_chain)
 

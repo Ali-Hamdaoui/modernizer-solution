@@ -48,6 +48,9 @@ from migration_factory.control_tower.domain.entities import (
 )
 from migration_factory.control_tower.domain.entities import V1ContextPackManifestRecord
 from migration_factory.control_tower.domain.entities import V1ModelInvocationRecord
+from migration_factory.control_tower.infrastructure.sqlite.v2_llm_invocation_repository import (
+    V2LLMInvocationRecord,
+)
 from migration_factory.control_tower.domain.entities import V1PrivilegedActionDecisionRecord
 from migration_factory.control_tower.domain.entities import V1PrivilegedActionExecutionRecord
 from migration_factory.control_tower.domain.entities import V1PrivilegedActionRecord
@@ -319,6 +322,34 @@ class V1ModelInvocationRepository(Protocol):
     def list(self) -> tuple[V1ModelInvocationRecord, ...]: ...
 
     def list_for_job(self, job_id: str) -> tuple[V1ModelInvocationRecord, ...]: ...
+
+
+class V2LLMInvocationRepository(Protocol):
+    """Append-only repository for governed LLM invocation ledger."""
+
+    def save(self, invocation: V2LLMInvocationRecord) -> None: ...
+
+    def get(self, invocation_id: str) -> V2LLMInvocationRecord | None: ...
+
+    def list_by_job(self, job_id: str) -> tuple[V2LLMInvocationRecord, ...]: ...
+
+    def list_by_proposal(self, proposal_id: str) -> tuple[V2LLMInvocationRecord, ...]: ...
+
+    def update_status(
+        self,
+        invocation_id: str,
+        status: str,
+        *,
+        output_checksum: str | None = None,
+        redacted_error: str | None = None,
+        redacted_summary: str | None = None,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        total_tokens: int | None = None,
+        latency_ms: int | None = None,
+        completed_at: str | None = None,
+        fallback_used: int | None = None,
+    ) -> None: ...
 
 
 class V1ContextPackManifestRepository(Protocol):
@@ -602,6 +633,7 @@ class ControlTowerUnitOfWork(Protocol):
     v1_patch_rollbacks: V1PatchRollbackRepository
     v1_proof_reports: V1ProofReportRepository
     v1_proof_report_gates: V1ProofReportGateRepository
+    v2_llm_invocations: V2LLMInvocationRepository
 
     def __enter__(self) -> Self: ...
 

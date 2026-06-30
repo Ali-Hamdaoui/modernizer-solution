@@ -79,6 +79,9 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_pom_change_reposit
 from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_repository import (
     SqlitePhaseGateRepository,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_llm_invocation_repository import (
+    SqliteV2LLMInvocationRepository,
+)
 from migration_factory.control_tower.infrastructure.sqlite.v2_gate_decision_repository import (
     SqliteGateDecisionRepository,
 )
@@ -154,6 +157,7 @@ class SqliteControlTowerUnitOfWork:
         self.phase_gates = SqlitePhaseGateRepository(connection)
         self.gate_decisions = SqliteGateDecisionRepository(connection)
         self.artifact_revisions = SqliteArtifactRevisionRepository(connection)
+        self.v2_llm_invocations = SqliteV2LLMInvocationRepository(connection)
 
     def __enter__(self) -> "SqliteControlTowerUnitOfWork":
         if self.transaction_mode == "write":
