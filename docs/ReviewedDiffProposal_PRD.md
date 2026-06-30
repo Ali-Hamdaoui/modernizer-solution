@@ -5,7 +5,7 @@
 **Active branch:** `demov3`  
 **Feature name:** `LLM Repair Proposal + Reviewed Diff + User Revision Chat + Sandbox Apply + Rebuild/Test`  
 **Core domain name:** `ReviewedDiffProposal`  
-**Status:** Active development — PR-F implementing
+**Status:** Active development — PR-F committed
 **Last updated:** 2026-06-30 (PR-F implementation)
 
 ---
@@ -19,7 +19,7 @@ Current known branch state from latest reports:
 ```text
 branch: prf/attempt-history
 PR-F feature branch: prf/attempt-history
-PRD closeout commit: (not committed)
+PRD closeout commit: 036d28da6aa39bdbd88ef88bfac5902dca4be089
 ```
 
 ## Current Implementation Status
@@ -1886,7 +1886,7 @@ Append a new row after each implementation step.
 | 2026-06-30 | PR-C | Done | `demov3` / `48d06b798002c72f6d721bca380fe4e5448bcb0d` | `contracts.ts`, `controlTowerApi.ts`, `MigrationCockpit.tsx`, `RepairProposalPanel.tsx`, `ReviewedDiffTabs.tsx`, `SafeDiffPreview.tsx`, `ReviewerVerdictCard.tsx`, `RepairAttemptTimeline.tsx`, `RepairActionsBar.tsx`, `controlTowerApi.test.ts`, `migrationCockpit.test.tsx`, `reviewedDiffProposal.test.tsx` | Frontend API tests 153/153 passed, component tests, forbidden-field tests, typecheck, build all pass; backend PR-B/PR-A smoke tests pass | PR-C committed. Read-only proposal/diff UI renders in cockpit. No mutation actions wired. graphify-out remains unstaged. |
 | 2026-06-30 | PR-D | Done | `demov3` / `68d7ad9a5784af1c0e0dcba8adc8af64856372ad` | `app.py`, `RepairProposalRevisionRequest`, `contracts.ts`, `controlTowerApi.ts`, `RepairRevisionDialog.tsx`, `RepairActionsBar.tsx`, `RepairProposalPanel.tsx`, `ReviewedDiffTabs.tsx`, `test_v2_repair_revision_flow.py`, `controlTowerApi.test.ts`, `reviewedDiffProposal.test.tsx`, `docs/ReviewedDiffProposal_PRD.md` | Backend: 15/15 revision flow tests passed. Frontend: 163/163 tests passed, typecheck/build pass. All backend regression tests pass (45/45 PR-B, 13/13 safe diff, 2/2 projection). git diff --check passes. | PR-D implemented. User revision lifecycle complete. Request revision endpoint active. Frontend dialog for instruction. Approve/Reject remain disabled (PR-E). No sandbox mutation. No patch apply. graphify-out remains unstaged. |
 | 2026-06-30 | PR-E | Done | `demov3` / `c326f06a57ac17244a9d4897620d47ba602e5339` | `app.py` (endpoint + request/response schema), `v2_repair_repository.py` (update_proposal_status_with_reason), `test_v2_repair_approve_apply.py`, `contracts.ts`, `controlTowerApi.ts`, `RepairActionsBar.tsx`, `RepairProposalPanel.tsx`, `reviewedDiffProposal.test.tsx`, `docs/ReviewedDiffProposal_PRD.md` | Backend: 18/18 approve tests passed. Frontend: 163/163 tests passed. typecheck passed. build passed. All backend regression tests pass (revision, proposal, gate, diff, projection, stage progression). git diff --check passes. | PR-E implemented. POST `/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/approve` endpoint active. 21+ safety validation checks. Reuses existing sandbox apply, validation rerun, and route progression services. No raw patch/path/env/argv from frontend. Frontend approve button enabled when proposal approvable. Request revision remains available. Reject remains disabled. graphify-out remains unstaged. |
-| 2026-06-30 | PR-F | Implementing | `prf/attempt-history` | `0049_v2_repair_proposals_prf_fields.sql`, `v2_repair_repository.py`, `v2_repair_projection.py`, `app.py`, `contracts.ts`, `RepairAttemptTimeline.tsx`, `test_v2_repair_attempt_history.py`, `reviewedDiffProposal.test.tsx`, `docs/ReviewedDiffProposal_PRD.md` | Backend attempt history tests, frontend PR-F timeline tests | PR-F adds attempt projection fields, DB migration for PR-F columns, repository method for PR-F updates, approve endpoint persistence of validation results, and frontend timeline enrichment for exhausted/rollback/remaining states. |
+| 2026-06-30 | PR-F | Done | `prf/attempt-history` / `036d28da6aa39bdbd88ef88bfac5902dca4be089` | `0049_v2_repair_proposals_prf_fields.sql`, `v2_repair_repository.py`, `v2_repair_projection.py`, `app.py`, `contracts.ts`, `RepairAttemptTimeline.tsx`, `test_v2_repair_attempt_history.py`, `reviewedDiffProposal.test.tsx`, `docs/ReviewedDiffProposal_PRD.md` | 16/16 backend attempt history tests passed; 24/24 approve tests passed; 340/341 regression tests (1 pre-existing safe_diff_preview PATH test failure); 175/175 frontend tests passed; typecheck/build passed; git diff --check passed | PR-F committed. Adds attempt projection fields, DB migration 0049, update_proposal_prf_fields with allowlist. Approve endpoint persists PR-F fields using transition-derived values (fixed: order moved transition before persistence, no hardcoded retry budget). Frontend timeline renders apply/rerun/rollback status, next gate, remaining attempts, exhausted state. Terminal summary artifacts deferred (artifact writer too broad). `validation_result_ref` deferred (no ref from validation runner yet). `next-env.d.ts` remains unstaged (build artifact). |
 
 Template for next update:
 
