@@ -40,7 +40,11 @@ from migration_factory.repair_loop.ledger import (
     write_ledger,
     write_patch_attempt_result,
 )
-from migration_factory.repair_loop.patch_apply import apply_patch_to_sandbox, rollback_patch
+from migration_factory.repair_loop.patch_apply import (
+    apply_patch_to_sandbox,
+    rollback_patch,
+    validate_patch_artifact,
+)
 from migration_factory.repair_loop.patch_gate import evaluate_patch_proposal
 from migration_factory.repair_loop.validation_runner import (
     ValidationResult,
@@ -1623,24 +1627,20 @@ class V2RepairFlowService:
             if after_text == before_text:
                 blockers.append(f"no concrete patch generated for target: {rel_path}")
             else:
-                diff = "".join(
-                    difflib.unified_diff(
-                        before_text.splitlines(keepends=True),
-                        after_text.splitlines(keepends=True),
-                        fromfile=f"a/{rel_path}",
-                        tofile=f"b/{rel_path}",
-                    )
-                )
-                unified_diffs.append(f"diff --git a/{rel_path} b/{rel_path}\n{diff}")
+                unified_diffs.append(self._build_unified_diff(rel_path, before_text, after_text))
             targets.append(target)
 
-        unified_diff = "\n".join(part.rstrip() for part in unified_diffs if part.strip()).rstrip() + ("\n" if unified_diffs else "")
+        unified_diff = "".join(unified_diffs)
         patch_checksum = self._sha256_text(unified_diff) if unified_diff else ""
         repairs_dir = run_dir / "repairs" / "proposals"
         repairs_dir.mkdir(parents=True, exist_ok=True)
-        patch_path = repairs_dir / f"patch-{patch_checksum[:12] or 'missing'}.diff"
+        patch_slug = (patch_checksum.split(":", 1)[-1] if ":" in patch_checksum else patch_checksum)[:12] or "missing"
+        patch_path = repairs_dir / f"patch-{patch_slug}.diff"
         if unified_diff:
             patch_path.write_text(unified_diff, encoding="utf-8")
+            patch_valid, patch_error = validate_patch_artifact(patch_path=patch_path, cwd=sandbox_path)
+            if not patch_valid:
+                raise ValueError(f"REPAIR_PATCH_INVALID: {patch_error}")
 
         failure_evidence = {
             "verification_command": list(verification_command),
@@ -1691,6 +1691,17 @@ class V2RepairFlowService:
     @staticmethod
     def _sha256_text(text: str) -> str:
         return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _build_unified_diff(rel_path: str, before_text: str, after_text: str) -> str:
+        diff = difflib.unified_diff(
+            before_text.splitlines(),
+            after_text.splitlines(),
+            fromfile=f"a/{rel_path}",
+            tofile=f"b/{rel_path}",
+            lineterm="",
+        )
+        return "\n".join([f"diff --git a/{rel_path} b/{rel_path}", *diff]) + "\n"
 
     @staticmethod
     def _diagnostic_line(text: str) -> str:

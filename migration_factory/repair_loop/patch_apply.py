@@ -106,6 +106,23 @@ def apply_patch_to_sandbox(
     )
 
 
+def validate_patch_artifact(
+    *,
+    patch_path: str | Path,
+    cwd: str | Path,
+    run: RunCallable = subprocess.run,
+) -> tuple[bool, str]:
+    patch_file = Path(patch_path)
+    workdir = Path(cwd).resolve()
+    git_cmd, git_error = _resolve_git_executable(run=run)
+    if git_cmd is None:
+        return False, git_error
+    check = _git_apply([git_cmd, "apply", "--check", str(patch_file)], cwd=workdir, run=run)
+    if check.returncode != 0:
+        return False, _stderr_reason(check, "git apply --check failed")
+    return True, ""
+
+
 def rollback_patch(
     *,
     sandbox_path: str | Path,

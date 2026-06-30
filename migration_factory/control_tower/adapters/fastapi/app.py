@@ -2836,11 +2836,18 @@ def create_app(
                 "patch_summary": str(model_output.value["patch_summary"]),
                 "affected_paths": tuple(str(path) for path in model_output.value["affected_paths"]),
             }
-            proposal = (
-                service.create_patch_backed_proposal(**create_kwargs)
-                if command is not None
-                else service.create_proposal(**create_kwargs)
-            )
+            try:
+                proposal = (
+                    service.create_patch_backed_proposal(**create_kwargs)
+                    if command is not None
+                    else service.create_proposal(**create_kwargs)
+                )
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "REPAIR_PATCH_INVALID",
+                    str(exc),
+                ) from exc
         if proposer_model_result is not None:
             proposer_model_invocation_id = _record_model_invocation(
                 provider_kind=attempted_provider,

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import sqlite3
 from pathlib import Path
 
@@ -33,6 +35,10 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository 
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_reviewer_repository import (
     SqliteV2ReviewerRepository,
+)
+from migration_factory.repair_loop.patch_apply import (
+    GIT_NOT_AVAILABLE,
+    validate_patch_artifact,
 )
 
 
@@ -135,6 +141,120 @@ def test_create_import_package_patch_backed_proposal_is_gate_compatible(tmp_path
         unified_diff=diff,
     )
     assert decision.allowed is True
+
+
+def test_generated_import_package_patch_passes_git_apply_check_and_apply(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    git = _git_binary()
+    if git is None:
+        pytest.skip("git unavailable")
+    conn, service, sandbox = _bound_repair_repo_service(tmp_path, redacted_modernized_path=True)
+    target_rel = "src/main/java/App.java"
+    target = sandbox / target_rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    original = (
+        "package com.example;\n\n"
+        "import javax.validation.Valid;\n\n"
+        "class App {\n"
+        "  @Valid Object value;\n"
+        "}\n"
+    )
+    target.write_text(original, encoding="utf-8")
+    _init_git_repo(sandbox)
+
+    proposal = service.create_patch_backed_proposal(
+        command_id="cmd-1",
+        failure_summary="[ERROR] package javax.validation does not exist",
+        hypothesis="Controlled namespace mismatch",
+        patch_summary="Repair import namespace",
+        affected_paths=(target_rel,),
+    )
+    body = service.proposal_to_dict(proposal)
+    patch_text = body["repair_artifact"]["unified_diff"]
+    patch_path = Path(body["repair_artifact"]["patch_path"])
+
+    assert patch_text.startswith(f"diff --git a/{target_rel} b/{target_rel}\n")
+    assert f"--- a/{target_rel}" in patch_text
+    assert f"+++ b/{target_rel}" in patch_text
+    assert "-import javax.validation.Valid;" in patch_text
+    assert "+import jakarta.validation.Valid;" in patch_text
+    assert "@@" in patch_text
+    assert Path(body["repair_artifact"]["patch_path"]).is_file()
+    assert patch_path.is_relative_to(sandbox.parent / "repairs" / "proposals")
+
+    check = subprocess.run(
+        [git, "apply", "--check", str(patch_path)],
+        cwd=str(sandbox),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert check.returncode == 0, check.stderr
+
+    apply = subprocess.run(
+        [git, "apply", str(patch_path)],
+        cwd=str(sandbox),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert apply.returncode == 0, apply.stderr
+    assert target.read_text(encoding="utf-8") == original.replace("import javax.validation.Valid;", "import jakarta.validation.Valid;")
+    diff_lines = body["repair_artifact"]["unified_diff"].splitlines()
+    assert diff_lines[0] == f"diff --git a/{target_rel} b/{target_rel}"
+    assert f"--- a/{target_rel}" in diff_lines
+    assert f"+++ b/{target_rel}" in diff_lines
+    assert "@@ -1,6 +1,6 @@" in diff_lines
+    assert "-import javax.validation.Valid;" in diff_lines
+    assert "+import jakarta.validation.Valid;" in diff_lines
+    assert diff_lines.count("-import javax.validation.Valid;") == 1
+    assert diff_lines.count("+import jakarta.validation.Valid;") == 1
+    decision = evaluate_rule(
+        rule_id="JAKARTA_IMPORT_MECHANICAL_SOURCE",
+        sandbox_path=sandbox,
+        touched_paths=[target_rel],
+        unified_diff=patch_text,
+    )
+    assert decision.allowed is True
+
+
+def test_invalid_patch_artifact_is_rejected_before_actionable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn, service, sandbox = _bound_repair_repo_service(tmp_path, redacted_modernized_path=True)
+    target_rel = "src/main/java/App.java"
+    target = sandbox / target_rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    original = "import javax.validation.Valid;\n"
+    target.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(
+        v2_repair_flow,
+        "validate_patch_artifact",
+        lambda **kwargs: (False, "corrupt patch at line 12"),
+    )
+
+    with pytest.raises(ValueError, match="REPAIR_PATCH_INVALID: corrupt patch at line 12"):
+        service.create_patch_backed_proposal(
+            command_id="cmd-1",
+            failure_summary="[ERROR] package javax.validation does not exist",
+            hypothesis="Controlled namespace mismatch",
+            patch_summary="Repair import namespace",
+            affected_paths=(target_rel,),
+        )
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_validate_patch_artifact_returns_git_not_available_when_git_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_path = tmp_path / "patch.diff"
+    patch_path.write_text("diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-a\n+b\n", encoding="utf-8")
+    monkeypatch.setenv("AI_MIGRATION_GIT_CMD", "")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr("migration_factory.repair_loop.patch_apply._COMMON_WINDOWS_GIT_PATHS", ())
+
+    ok, reason = validate_patch_artifact(patch_path=patch_path, cwd=tmp_path)
+
+    assert ok is False
+    assert GIT_NOT_AVAILABLE in reason
 
 
 def test_jakarta_import_mechanical_rule_rejects_body_edits(tmp_path: Path) -> None:
@@ -1741,6 +1861,7 @@ def _bound_repair_repo_service(
     sandbox = output_root / ".migration" / "runs" / run_id / "sandbox"
     legacy.mkdir(parents=True)
     sandbox.mkdir(parents=True)
+    _init_git_repo(sandbox)
     setup_repo.save(
         V2MigrationSetupRecord(
             setup_id="setup-bound",
@@ -1825,6 +1946,7 @@ def _sandbox(tmp_path: Path) -> Path:
     java_dir = sandbox / "src" / "main" / "java"
     java_dir.mkdir(parents=True, exist_ok=True)
     (java_dir / "App.java").write_text("import javax.validation.Valid;\n", encoding="utf-8")
+    _init_git_repo(sandbox)
     return sandbox
 
 
@@ -1892,3 +2014,17 @@ def _validation(passed: bool, *, artifact_refs: dict[str, str] | None = None) ->
 
 def _ledger(run_dir: Path) -> dict:
     return json.loads((run_dir / "repairs" / "repair_ledger.json").read_text(encoding="utf-8"))
+
+
+def _git_binary() -> str | None:
+    configured = shutil.which("git")
+    return configured
+
+
+def _init_git_repo(root: Path) -> None:
+    git = _git_binary()
+    if git is None:
+        return
+    subprocess.run([git, "init"], cwd=str(root), capture_output=True, text=True, check=False)
+    subprocess.run([git, "config", "user.email", "test@example.com"], cwd=str(root), capture_output=True, text=True, check=False)
+    subprocess.run([git, "config", "user.name", "Test User"], cwd=str(root), capture_output=True, text=True, check=False)
