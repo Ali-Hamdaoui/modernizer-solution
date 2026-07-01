@@ -22,12 +22,17 @@ Non-goals (inherited from architecture):
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from migration_factory.control_tower.domain.checksums import utc_now_text
+from migration_factory.control_tower.application.redaction import (
+    redact_absolute_paths,
+    redact_model_summary,
+)
+from migration_factory.control_tower.domain.checksums import sha256_canonical_json, stream_sha256, utc_now_text
 from migration_factory.control_tower.application.v2_model_schemas import (
     ContextPack,
     ContextPackBuilder,
@@ -62,6 +67,8 @@ class FailureDiagnosisRecord:
     model_invocation_id: str | None
     redaction_status: str
     created_at: str
+    stage_evidence_pack: dict[str, Any] | None = None
+    classification_envelope: dict[str, Any] | None = None
 
 
 # ── Diagnosis service ─────────────────────────────────────────────
@@ -166,7 +173,19 @@ class V2FailureDiagnosisService:
             payload=payload_data,
         )
 
-        # 6. Collect failure evidence (if collector provided)
+        # 6. Collect failure evidence. Prefer injected collector; otherwise
+        # build a bounded backend-owned stage evidence envelope from payload.
+        stage_evidence_pack = self._build_stage_evidence_pack(
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            event_type=event_type,
+            payload=payload_data,
+            failure_summary=failure_summary,
+            build_status=build_status,
+            test_status=test_status,
+            transform_status=transform_status,
+        )
         classification_result = None
         if self._evidence_collector:
             classification_result = self._collect_and_classify(
@@ -176,12 +195,22 @@ class V2FailureDiagnosisService:
                 build_status=build_status,
                 test_status=test_status,
             )
+        elif stage_evidence_pack is not None:
+            classification_result = self._classification_from_stage_evidence(
+                event_type=event_type,
+                evidence_pack=stage_evidence_pack,
+            )
 
         # 7. Build ContextPack with enrichment metadata (F01)
         failure_type = (
             classification_result.get("failure_type", "UNKNOWN")
             if classification_result
             else "UNKNOWN"
+        )
+        classification_envelope = (
+            classification_result
+            if classification_result
+            else self._classification_unavailable(stage_index=stage_index)
         )
         # Collect artifact refs from payload for context pack enrichment
         evidence_artifact_refs: tuple[str, ...] = ()
@@ -198,7 +227,9 @@ class V2FailureDiagnosisService:
             failure_summary=failure_summary,
             classification=classification_result,
             redaction_status=(
-                "evidence_redacted"
+                str(stage_evidence_pack.get("redaction_status") or "stage_evidence_collected")
+                if stage_evidence_pack is not None
+                else "evidence_redacted"
                 if self._evidence_collector is not None
                 else "evidence_collector_unavailable"
             ),
@@ -267,11 +298,15 @@ class V2FailureDiagnosisService:
             repair_proposal_id=proposal.proposal_id,
             model_invocation_id=f"model-{model_request.request_id[:12]}",
             redaction_status=(
-                "evidence_redacted"
+                str(stage_evidence_pack.get("redaction_status") or "stage_evidence_collected")
+                if stage_evidence_pack is not None
+                else "evidence_redacted"
                 if self._evidence_collector is not None
                 else "evidence_collector_unavailable"
             ),
             created_at=utc_now_text(),
+            stage_evidence_pack=stage_evidence_pack,
+            classification_envelope=classification_envelope,
         )
 
         # 13. Store for idempotency
@@ -465,6 +500,19 @@ class V2FailureDiagnosisService:
             "model_invocation_id": diagnosis.model_invocation_id,
             "redaction_status": diagnosis.redaction_status,
         }
+        if diagnosis.stage_evidence_pack is not None:
+            event_payload["stage_evidence"] = diagnosis.stage_evidence_pack
+            event_payload["evidence_refs"] = [
+                str(diagnosis.stage_evidence_pack.get("evidence_pack_id") or ""),
+                str(diagnosis.stage_evidence_pack.get("evidence_pack_checksum") or ""),
+                *[
+                    str(item.get("ref") or "")
+                    for item in diagnosis.stage_evidence_pack.get("usable_artifacts", [])
+                    if isinstance(item, dict)
+                ],
+            ][:12]
+        if diagnosis.classification_envelope is not None:
+            event_payload["classification"] = diagnosis.classification_envelope
         self._event_sink(
             job_id=job_id,
             stage=stage_index,
@@ -506,6 +554,203 @@ class V2FailureDiagnosisService:
             "requires_human_review": False,
         }
 
+    @staticmethod
+    def _stage_metadata(stage_index: int, payload: dict[str, Any]) -> dict[str, Any]:
+        defaults: dict[int, dict[str, str]] = {
+            1: {
+                "stage_name": "Spring Boot 2.1 + Java 11 to Spring Boot 2.7 + Java 11",
+                "source_boot_version": "2.1",
+                "target_boot_version": "2.7",
+                "source_java_version": "11",
+                "target_java_version": "11",
+            },
+            2: {
+                "stage_name": "Spring Boot 2.7 + Java 11 to Spring Boot 3.5.16 + Java 17",
+                "source_boot_version": "2.7",
+                "target_boot_version": "3.5.16",
+                "source_java_version": "11",
+                "target_java_version": "17",
+            },
+            3: {
+                "stage_name": "Spring Boot 3.5.16 + Java 17 to Spring Boot 3.5.16 + Java 21",
+                "source_boot_version": "3.5.16",
+                "target_boot_version": "3.5.16",
+                "source_java_version": "17",
+                "target_java_version": "21",
+            },
+            4: {
+                "stage_name": "Spring Boot 3.5.16 + Java 21 to Spring Boot 4.0.7 + Java 21",
+                "source_boot_version": "3.5.16",
+                "target_boot_version": "4.0.7",
+                "source_java_version": "21",
+                "target_java_version": "21",
+            },
+        }
+        meta = dict(defaults.get(stage_index, {}))
+        for key in (
+            "stage_name",
+            "source_boot_version",
+            "target_boot_version",
+            "source_java_version",
+            "target_java_version",
+            "input_source_kind",
+            "input_artifact_ref",
+            "output_sandbox_ref",
+            "previous_stage_ref",
+        ):
+            if payload.get(key):
+                meta[key] = str(payload[key])
+        meta.setdefault("stage_name", f"Stage {stage_index}")
+        meta.setdefault("source_boot_version", "unknown")
+        meta.setdefault("target_boot_version", "unknown")
+        meta.setdefault("source_java_version", "unknown")
+        meta.setdefault("target_java_version", "unknown")
+        meta.setdefault("input_source_kind", "stage_output" if stage_index > 1 else "legacy_source")
+        meta.setdefault("input_artifact_ref", "")
+        meta.setdefault("output_sandbox_ref", str(payload.get("sandbox_path") or ""))
+        meta.setdefault("previous_stage_ref", f"stage:{stage_index - 1}" if stage_index > 1 else "")
+        return meta
+
+    def _build_stage_evidence_pack(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        failure_summary: str,
+        build_status: str,
+        test_status: str,
+        transform_status: str,
+    ) -> dict[str, Any] | None:
+        artifact_refs = payload.get("artifact_refs", {})
+        if not isinstance(artifact_refs, dict):
+            artifact_refs = {}
+        sandbox_ref = str(payload.get("sandbox_path") or "")
+        if not artifact_refs and not sandbox_ref and not any(payload.get(k) for k in ("stage_name", "input_artifact_ref", "output_sandbox_ref")):
+            return None
+
+        expected = (
+            "build_error_contract",
+            "test_agent_log",
+            "test_report",
+            "pom_xml",
+            "dependency_graph",
+            "runtime_contract",
+            "reference_delta",
+            "rewrite_patch",
+            "rewrite_preview",
+            "migration_ledger",
+            "transformation_execution_plan",
+            "target_dependency_plan",
+            "sandbox",
+        )
+        usable: list[dict[str, Any]] = []
+        missing: list[str] = []
+        for kind in expected:
+            ref = artifact_refs.get(kind)
+            if ref is None and kind == "sandbox" and sandbox_ref:
+                ref = sandbox_ref
+            if ref:
+                usable.append(self._artifact_summary(kind, str(ref)))
+            else:
+                missing.append(kind)
+
+        stage_meta = self._stage_metadata(stage_index, payload)
+        downstream = {
+            "next_stage_index": stage_index + 1,
+            "state": "pending_blocked_by_failed_stage",
+            "auto_started": False,
+        }
+        pack: dict[str, Any] = {
+            "job_id": job_id,
+            "stage_index": stage_index,
+            **stage_meta,
+            "downstream_stage_state": downstream,
+            "failed_command_id": command_id,
+            "event_type": event_type,
+            "build_status": build_status,
+            "test_status": test_status,
+            "transform_status": transform_status,
+            "failure_summary": redact_absolute_paths(redact_model_summary(failure_summary)),
+            "evidence_status": "collected" if usable else "partial",
+            "redaction_status": "stage_evidence_collected",
+            "usable_artifacts": usable,
+            "missing_artifacts": missing,
+            "repair_enabled": False,
+            "assistant_next_action": "classify_stage_failure",
+            "created_at": utc_now_text(),
+        }
+        pack_id = f"stage-evidence-{uuid4().hex[:12]}"
+        pack["evidence_pack_id"] = pack_id
+        pack["evidence_pack_checksum"] = f"sha256:{sha256_canonical_json(pack)}"
+        return pack
+
+    @staticmethod
+    def _artifact_summary(kind: str, ref: str) -> dict[str, Any]:
+        redacted_ref = redact_absolute_paths(redact_model_summary(ref))
+        summary: dict[str, Any] = {
+            "kind": kind,
+            "ref": redacted_ref,
+            "checksum": "",
+            "checksum_algorithm": "sha256",
+        }
+        try:
+            path = Path(ref)
+            if path.is_file():
+                checksum, size_bytes = stream_sha256(path)
+                summary["checksum"] = f"sha256:{checksum}"
+                summary["size_bytes"] = size_bytes
+            elif path.exists():
+                summary["note"] = "ref_exists_not_file"
+        except OSError:
+            summary["note"] = "checksum_unavailable"
+        return summary
+
+    @staticmethod
+    def _classification_unavailable(*, stage_index: int) -> dict[str, Any]:
+        return {
+            "stage_index": stage_index,
+            "failure_type": "UNKNOWN",
+            "classification_status": "unknown",
+            "repair_enabled": False,
+            "reason": "evidence_pack_unavailable",
+            "assistant_next_action": "collect_missing_stage_evidence",
+        }
+
+    @staticmethod
+    def _classification_from_stage_evidence(
+        *,
+        event_type: str,
+        evidence_pack: dict[str, Any],
+    ) -> dict[str, Any]:
+        summary = json.dumps(evidence_pack, sort_keys=True).lower()
+        envelope: dict[str, Any] = {
+            "stage_index": evidence_pack.get("stage_index"),
+            "failure_type": "blocked_pending_classification",
+            "classification_status": "blocked_pending_classification",
+            "repair_enabled": False,
+            "reason": "evidence_collected_classifier_not_ready",
+            "assistant_next_action": "classify_stage_failure",
+            "evidence_pack_id": evidence_pack.get("evidence_pack_id"),
+            "evidence_pack_checksum": evidence_pack.get("evidence_pack_checksum"),
+        }
+        if (
+            event_type == "build_failed"
+            and "package " in summary
+            and " does not exist" in summary
+            and ("jakarta." in summary or "javax." in summary)
+        ):
+            envelope.update({
+                "failure_type": "known_family_candidate",
+                "classification_status": "known_family_candidate",
+                "repair_family_candidate": "JAKARTA_IMPORT_MECHANICAL_SOURCE",
+                "reason": "classification_candidate_only_R7B_no_repair_apply",
+                "assistant_next_action": "prepare_evidence_bound_proposal_in_R7D",
+            })
+        return envelope
+
     # ── Serialization ──────────────────────────────────────────────
 
     @staticmethod
@@ -522,6 +767,8 @@ class V2FailureDiagnosisService:
             "model_invocation_id": diagnosis.model_invocation_id,
             "redaction_status": diagnosis.redaction_status,
             "created_at": diagnosis.created_at,
+            "stage_evidence_pack": diagnosis.stage_evidence_pack,
+            "classification_envelope": diagnosis.classification_envelope,
         }
 
     @staticmethod

@@ -996,7 +996,53 @@ export type V2AIDiagnosisResponse = {
   repair_proposal_id: string;
   model_invocation_id: string;
   redaction_status: string;
+  stage_evidence?: V2StageFailureEvidenceResponse | null;
+  classification?: V2StageFailureClassificationResponse | null;
   created_at: string;
+};
+
+export type V2StageFailureEvidenceResponse = {
+  stage_index: number | null;
+  stage_name: string;
+  source_boot_version: string;
+  target_boot_version: string;
+  source_java_version: string;
+  target_java_version: string;
+  input_source_kind: string;
+  input_artifact_ref: string;
+  output_sandbox_ref: string;
+  previous_stage_ref: string;
+  downstream_stage_state: {
+    next_stage_index: number | null;
+    state: string;
+    auto_started: boolean;
+  } | null;
+  evidence_status: string;
+  evidence_pack_id: string;
+  evidence_pack_checksum: string;
+  usable_artifacts: {
+    kind: string;
+    ref: string;
+    checksum: string;
+    size_bytes?: number | null;
+  }[];
+  missing_artifacts: string[];
+  repair_enabled: boolean;
+  assistant_next_action: string;
+  redaction_status: string;
+  failure_summary: string;
+};
+
+export type V2StageFailureClassificationResponse = {
+  stage_index: number | null;
+  failure_type: string;
+  classification_status: string;
+  repair_family_candidate: string;
+  repair_enabled: boolean;
+  reason: string;
+  assistant_next_action: string;
+  evidence_pack_id: string;
+  evidence_pack_checksum: string;
 };
 
 export type V2PomAnalysisResponse = {

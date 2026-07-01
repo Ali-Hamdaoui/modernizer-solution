@@ -591,6 +591,102 @@ class TestSerialization:
         assert d["redaction_status"] is not None
         assert d["created_at"] is not None
 
+
+class TestStageAwareEvidence:
+
+    def test_failed_stage_with_artifacts_creates_stage_evidence_pack(
+        self,
+        diagnosis_service: V2FailureDiagnosisService,
+        tmp_path: Path,
+    ) -> None:
+        build_error = tmp_path / "build-error.json"
+        build_error.write_text('{"message":"compilation failed"}', encoding="utf-8")
+        payload = {
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+            "test_status": "TEST_ERROR",
+            "sandbox_path": str(tmp_path / "sandbox"),
+            "artifact_refs": {"build_error_contract": str(build_error)},
+        }
+
+        diagnosis = diagnosis_service.diagnose(
+            job_id="job-stage",
+            stage_index=2,
+            command_id="cmd-stage",
+            event_type="build_failed",
+            payload=payload,
+        )
+
+        assert diagnosis.redaction_status == "stage_evidence_collected"
+        assert diagnosis.stage_evidence_pack is not None
+        evidence = diagnosis.stage_evidence_pack
+        assert evidence["stage_index"] == 2
+        assert evidence["target_boot_version"] == "3.5.16"
+        assert evidence["target_java_version"] == "17"
+        assert evidence["evidence_pack_id"].startswith("stage-evidence-")
+        assert evidence["evidence_pack_checksum"].startswith("sha256:")
+        assert evidence["usable_artifacts"][0]["kind"] == "build_error_contract"
+        assert evidence["usable_artifacts"][0]["checksum"].startswith("sha256:")
+        assert "dependency_graph" in evidence["missing_artifacts"]
+        assert evidence["repair_enabled"] is False
+
+    def test_stage_evidence_classification_blocks_repair_until_classifier_ready(
+        self,
+        diagnosis_service: V2FailureDiagnosisService,
+        tmp_path: Path,
+    ) -> None:
+        payload = {
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+            "sandbox_path": str(tmp_path / "sandbox"),
+            "artifact_refs": {"test_report": str(tmp_path / "missing-test-report.json")},
+        }
+
+        diagnosis = diagnosis_service.diagnose(
+            job_id="job-stage",
+            stage_index=1,
+            command_id="cmd-stage",
+            event_type="build_failed",
+            payload=payload,
+        )
+
+        assert diagnosis.classification_envelope is not None
+        classification = diagnosis.classification_envelope
+        assert classification["classification_status"] == "blocked_pending_classification"
+        assert classification["failure_type"] == "blocked_pending_classification"
+        assert classification["repair_enabled"] is False
+        assert classification["assistant_next_action"] == "classify_stage_failure"
+
+    def test_stage_evidence_can_mark_known_family_candidate_without_enabling_repair(
+        self,
+        diagnosis_service: V2FailureDiagnosisService,
+        tmp_path: Path,
+    ) -> None:
+        build_error = tmp_path / "build-error.json"
+        build_error.write_text(
+            '{"message":"[ERROR] package jakarta.servlet.http does not exist"}',
+            encoding="utf-8",
+        )
+        payload = {
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+            "sandbox_path": str(tmp_path / "sandbox"),
+            "artifact_refs": {"build_error_contract": str(build_error)},
+            "message": "[ERROR] package jakarta.servlet.http does not exist",
+        }
+
+        diagnosis = diagnosis_service.diagnose(
+            job_id="job-stage",
+            stage_index=1,
+            command_id="cmd-stage",
+            event_type="build_failed",
+            payload=payload,
+        )
+
+        assert diagnosis.classification_envelope is not None
+        classification = diagnosis.classification_envelope
+        assert classification["classification_status"] == "known_family_candidate"
+        assert classification["repair_family_candidate"] == "JAKARTA_IMPORT_MECHANICAL_SOURCE"
+        assert classification["repair_enabled"] is False
+        assert classification["reason"] == "classification_candidate_only_R7B_no_repair_apply"
+
     def test_list_diagnoses_empty_on_new_service(self) -> None:
         """New service returns empty tuple."""
         service = V2FailureDiagnosisService()

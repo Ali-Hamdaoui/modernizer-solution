@@ -7,6 +7,7 @@ import {
   ControlledR6RepairDemoPanel,
   GovernedRepairProposalCard,
   R6GovernedRepairPanel,
+  StageFailureEvidenceDetails,
   EMPTY_R6_REPAIR_UI_STATE,
   GatePanelContent,
   formatGateArtifactRefLabel,
@@ -1594,6 +1595,72 @@ describe("V2 Migration Cockpit contract", () => {
     expect(trace.repair_proposal?.allowed_scope).toBe("pom_only");
     expect(trace.reviewer_verdict?.decision).toBe("accept");
     expect(trace.validation_result?.ledger_ref).toBe("repair_ledger.json");
+  });
+
+  it("renders stage-aware evidence and blocked classification state", () => {
+    const diagnosis = {
+      diagnosis_id: "diag-stage",
+      command_id: "cmd-stage",
+      trigger_event_type: "build_failed",
+      failure_type: "blocked_pending_classification",
+      context_pack_id: "pack-stage",
+      context_pack_checksum: "sha256:ctx",
+      repair_proposal_id: "",
+      model_invocation_id: "model-stage",
+      redaction_status: "stage_evidence_collected",
+      created_at: "2026-07-01T00:00:00Z",
+      stage_evidence: {
+        stage_index: 2,
+        stage_name: "Spring Boot 2.7 + Java 11 to Spring Boot 3.5.16 + Java 17",
+        source_boot_version: "2.7",
+        target_boot_version: "3.5.16",
+        source_java_version: "11",
+        target_java_version: "17",
+        input_source_kind: "stage_output",
+        input_artifact_ref: "stage:1",
+        output_sandbox_ref: "sandbox",
+        previous_stage_ref: "stage:1",
+        downstream_stage_state: {
+          next_stage_index: 3,
+          state: "pending_blocked_by_failed_stage",
+          auto_started: false,
+        },
+        evidence_status: "collected",
+        evidence_pack_id: "stage-evidence-abc",
+        evidence_pack_checksum: "sha256:evidence",
+        usable_artifacts: [
+          { kind: "build_error_contract", ref: "build-error.json", checksum: "sha256:build" },
+          { kind: "sandbox", ref: "sandbox", checksum: "" },
+        ],
+        missing_artifacts: ["dependency_graph", "runtime_contract"],
+        repair_enabled: false,
+        assistant_next_action: "classify_stage_failure",
+        redaction_status: "stage_evidence_collected",
+        failure_summary: "Build failed",
+      },
+      classification: {
+        stage_index: 2,
+        failure_type: "blocked_pending_classification",
+        classification_status: "blocked_pending_classification",
+        repair_family_candidate: "",
+        repair_enabled: false,
+        reason: "evidence_collected_classifier_not_ready",
+        assistant_next_action: "classify_stage_failure",
+        evidence_pack_id: "stage-evidence-abc",
+        evidence_pack_checksum: "sha256:evidence",
+      },
+    };
+
+    const markup = renderToStaticMarkup(<StageFailureEvidenceDetails diagnosis={diagnosis} stage={2} />);
+
+    expect(markup).toContain("Stage Evidence");
+    expect(markup).toContain("Stage target: 2.7/Java 11 -&gt; 3.5.16/Java 17");
+    expect(markup).toContain("Evidence: collected");
+    expect(markup).toContain("Evidence pack: stage-evidence-abc");
+    expect(markup).toContain("build_error_contract");
+    expect(markup).toContain("Classification: blocked_pending_classification");
+    expect(markup).toContain("Repair: disabled");
+    expect(markup).toContain("pending_blocked_by_failed_stage");
   });
 
   // ── Stage status lifecycle reducer tests (V2 cockpit state model) ──

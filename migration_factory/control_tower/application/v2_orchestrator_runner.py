@@ -107,6 +107,32 @@ _NON_ACTIVE_REPAIR_STATUSES = {
     "NO_REPAIR",
 }
 
+_STAGE_EVIDENCE_KEYS = (
+    "artifact_refs",
+    "sandbox_path",
+    "stage_name",
+    "source_boot_version",
+    "target_boot_version",
+    "source_java_version",
+    "target_java_version",
+    "input_source_kind",
+    "input_artifact_ref",
+    "output_sandbox_ref",
+    "previous_stage_ref",
+)
+
+
+def _stage_failure_evidence_payload(result: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key in _STAGE_EVIDENCE_KEYS:
+        value = result.get(key)
+        if value in (None, "", [], {}):
+            continue
+        if key == "artifact_refs" and not isinstance(value, dict):
+            continue
+        payload[key] = value
+    return payload
+
 
 @dataclass(frozen=True)
 class V2OrchestratorStart:
@@ -1413,6 +1439,7 @@ class V2OrchestratorRunner:
             "required_minimum": _str_or_none(build_validation.get("required_minimum") or result.get("required_minimum")),
         }
         public_contract = {k: v for k, v in build_contract.items() if v is not None}
+        evidence_payload = _stage_failure_evidence_payload(result)
 
         if _is_failure_status(build_status):
             build_payload = {
@@ -1420,6 +1447,7 @@ class V2OrchestratorRunner:
                 "build_status": build_status,
                 "test_status": test_status,
                 **public_contract,
+                **evidence_payload,
             }
             self._event(
                 job_id=job_id,
@@ -1442,6 +1470,7 @@ class V2OrchestratorRunner:
                 "command_id": command_id,
                 "test_status": test_status,
                 **public_contract,
+                **evidence_payload,
             }
             self._event(
                 job_id=job_id,
@@ -1469,6 +1498,7 @@ class V2OrchestratorRunner:
                 "copilot_invocation_status": copilot_status,
                 "repair_fallback_generated": bool(fallback),
                 **public_contract,
+                **evidence_payload,
             }
             self._event(
                 job_id=job_id,

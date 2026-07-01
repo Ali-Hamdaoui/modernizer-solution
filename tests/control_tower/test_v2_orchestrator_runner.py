@@ -661,6 +661,42 @@ def test_v2_runner_does_not_auto_queue_next_stage_on_failure(tmp_path: Path) -> 
     assert "next_stage_queued" not in event_types
 
 
+def test_v2_runner_forwards_stage_failure_evidence_to_diagnosis(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    captured: list[dict[str, Any]] = []
+    result = {
+        "final_status": "BUILD_FAILED_IN_SANDBOX",
+        "build_status": "BUILD_FAILED_IN_SANDBOX",
+        "sandbox_path": str(tmp_path / "sandbox"),
+        "artifact_refs": {"build_error_contract": str(tmp_path / "build-error.json")},
+        "stage_name": "Spring Boot 2.7 + Java 11 to Spring Boot 3.5.16 + Java 17",
+        "source_boot_version": "2.7",
+        "target_boot_version": "3.5.16",
+        "source_java_version": "11",
+        "target_java_version": "17",
+    }
+
+    def diagnosis_callback(job_id: str, stage_index: int, command_id: str, event_type: str, payload: dict[str, Any]) -> None:
+        captured.append(payload)
+
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[json.dumps(result) + "\n"], stderr=[], exit_code=0),
+        cwd=tmp_path,
+        diagnosis_callback=diagnosis_callback,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "build_failed")
+
+    assert captured
+    payload = captured[0]
+    assert payload["sandbox_path"] == str(tmp_path / "sandbox")
+    assert payload["artifact_refs"]["build_error_contract"].endswith("build-error.json")
+    assert payload["target_boot_version"] == "3.5.16"
+
+
 def test_v2_runner_does_not_auto_queue_on_test_failure(tmp_path: Path) -> None:
     """Stage with TEST_FAILED must emit stage_failed, not stage_completed."""
     conn = _conn(tmp_path)

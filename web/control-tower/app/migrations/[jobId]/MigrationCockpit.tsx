@@ -950,6 +950,55 @@ export function AssistantPanelContent({
   );
 }
 
+export function StageFailureEvidenceDetails({
+  diagnosis,
+  stage,
+}: {
+  diagnosis: NonNullable<V2FailureSummaryResponse["failures"][number]["supervision_trace"]["ai_diagnosis"]>;
+  stage?: number | null;
+}) {
+  const stageEvidence = diagnosis.stage_evidence;
+  const classification = diagnosis.classification;
+  return (
+    <>
+      {stageEvidence && (
+        <div className="trace-section">
+          <strong>Stage Evidence</strong>
+          <p className="meta">Failed stage: Stage {stageEvidence.stage_index ?? stage ?? "?"}</p>
+          <p className="meta">
+            Stage target: {stageEvidence.source_boot_version || "unknown"}/Java {stageEvidence.source_java_version || "unknown"}
+            {" -> "}
+            {stageEvidence.target_boot_version || "unknown"}/Java {stageEvidence.target_java_version || "unknown"}
+          </p>
+          <p className="meta">Evidence: {stageEvidence.evidence_status || "unknown"}</p>
+          <p className="checksum">Evidence pack: {stageEvidence.evidence_pack_id || "n/a"} · {stageEvidence.evidence_pack_checksum || "n/a"}</p>
+          <p className="meta">
+            Usable artifacts: {summarizeList(stageEvidence.usable_artifacts.map((artifact) => artifact.kind))}
+          </p>
+          <p className="meta">Missing artifacts: {summarizeList(stageEvidence.missing_artifacts)}</p>
+          {stageEvidence.downstream_stage_state && (
+            <p className="meta">
+              Downstream stages: {stageEvidence.downstream_stage_state.state || "pending"}
+            </p>
+          )}
+        </div>
+      )}
+      {classification && (
+        <div className="trace-section">
+          <strong>Stage Classification</strong>
+          <p className="meta">Classification: {classification.classification_status || "unknown"}</p>
+          {classification.repair_family_candidate && (
+            <p className="meta">Candidate family: {classification.repair_family_candidate}</p>
+          )}
+          <p className="meta">Repair: {classification.repair_enabled ? "enabled" : "disabled"}</p>
+          <p className="meta">Reason: {classification.reason || "n/a"}</p>
+          <p className="meta">Next action: {classification.assistant_next_action || "n/a"}</p>
+        </div>
+      )}
+    </>
+  );
+}
+
 export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [data, setData] = useState<CockpitData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1630,6 +1679,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
                         <p className="meta">Proposal: {f.supervision_trace.ai_diagnosis.repair_proposal_id}</p>
                       )}
                       <p className="meta">Redaction: {f.supervision_trace.ai_diagnosis.redaction_status || "unknown"}</p>
+                      <StageFailureEvidenceDetails diagnosis={f.supervision_trace.ai_diagnosis} stage={f.stage} />
                     </div>
                   ) : (
                     <p className="meta">No backend AI diagnosis record.</p>

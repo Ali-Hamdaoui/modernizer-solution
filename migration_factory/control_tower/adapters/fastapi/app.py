@@ -12455,6 +12455,8 @@ def _v2_supervision_traces(events: tuple[Any, ...]) -> dict[int | None, dict[str
                 "repair_proposal_id": _safe_failure_str(payload.get("repair_proposal_id")),
                 "model_invocation_id": _safe_failure_str(payload.get("model_invocation_id")),
                 "redaction_status": _safe_failure_str(payload.get("redaction_status")),
+                "stage_evidence": _safe_stage_evidence(payload.get("stage_evidence")),
+                "classification": _safe_classification_envelope(payload.get("classification")),
                 "created_at": event.created_at,
             }
             trace["evidence_used"] = _unique_trace_values(trace["evidence_used"] + evidence_refs)
@@ -12606,6 +12608,75 @@ def _safe_failure_list(value: Any) -> list[str]:
         if txt:
             result.append(txt)
     return result[:6]  # cap at 6 entries
+
+
+def _safe_stage_evidence(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    result: dict[str, Any] = {}
+    string_fields = (
+        "evidence_pack_id",
+        "evidence_pack_checksum",
+        "stage_name",
+        "source_boot_version",
+        "target_boot_version",
+        "source_java_version",
+        "target_java_version",
+        "input_source_kind",
+        "input_artifact_ref",
+        "output_sandbox_ref",
+        "previous_stage_ref",
+        "evidence_status",
+        "redaction_status",
+        "failure_summary",
+        "assistant_next_action",
+    )
+    for field in string_fields:
+        result[field] = _safe_failure_str(value.get(field))
+    result["stage_index"] = value.get("stage_index")
+    result["repair_enabled"] = bool(value.get("repair_enabled"))
+    result["usable_artifacts"] = [
+        {
+            "kind": _safe_failure_str(item.get("kind")),
+            "ref": _safe_failure_str(item.get("ref")),
+            "checksum": _safe_failure_str(item.get("checksum")),
+            "size_bytes": item.get("size_bytes"),
+        }
+        for item in list(value.get("usable_artifacts") or [])[:8]
+        if isinstance(item, dict)
+    ]
+    result["missing_artifacts"] = _safe_failure_list(value.get("missing_artifacts")) or [
+        _safe_failure_str(item)
+        for item in list(value.get("missing_artifacts") or [])[:8]
+        if _safe_failure_str(item)
+    ]
+    downstream = value.get("downstream_stage_state")
+    result["downstream_stage_state"] = (
+        {
+            "next_stage_index": downstream.get("next_stage_index"),
+            "state": _safe_failure_str(downstream.get("state")),
+            "auto_started": bool(downstream.get("auto_started")),
+        }
+        if isinstance(downstream, dict)
+        else None
+    )
+    return result
+
+
+def _safe_classification_envelope(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    return {
+        "stage_index": value.get("stage_index"),
+        "failure_type": _safe_failure_str(value.get("failure_type")),
+        "classification_status": _safe_failure_str(value.get("classification_status")),
+        "repair_family_candidate": _safe_failure_str(value.get("repair_family_candidate")),
+        "repair_enabled": bool(value.get("repair_enabled")),
+        "reason": _safe_failure_str(value.get("reason")),
+        "assistant_next_action": _safe_failure_str(value.get("assistant_next_action")),
+        "evidence_pack_id": _safe_failure_str(value.get("evidence_pack_id")),
+        "evidence_pack_checksum": _safe_failure_str(value.get("evidence_pack_checksum")),
+    }
 
 
 def _next_operator_action(result_kind: str) -> str:
