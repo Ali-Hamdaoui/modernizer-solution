@@ -870,11 +870,82 @@ describe("V2 Migration Cockpit contract", () => {
 
     expect(markup).toContain("Patch gate: accepted by backend before apply");
     expect(markup).toContain("git apply --check: passed");
-    expect(markup).toContain("git apply result: applied");
+    expect(markup).toContain("Patch apply: applied");
     expect(markup).toContain("Maven verification: passed");
     expect(markup).toContain("Build: BUILD_PASSED_IN_SANDBOX");
     expect(markup).toContain("Legacy unchanged: true");
     expect(markup).toContain("repair_test_report: test_report.json");
+  });
+
+  it("separates git apply rollback controlled verification and unrelated Maven failure", () => {
+    const applyResult: ApplyRepairReviewContextResponse = {
+      context_id: "ctx-1",
+      approval_id: "approval-1",
+      repair_action: {
+        action_id: "action-1",
+        proposal_id: "proposal-9a-1",
+        target_path: "src/main/java/com/example/App.java",
+        patch_content: "diff --git",
+        status: "rolled_back",
+        result_summary: "Controlled repair verified, but full Maven verification failed due unrelated/pre-existing sandbox failures and patch was rolled back.",
+        created_at: "2026-07-01T00:00:00Z",
+        verification_status: "failed",
+        verification_build_status: "BUILD_FAILED_IN_SANDBOX",
+        verification_test_status: "TEST_ERROR",
+        verification_h2_status: "NOT_REQUIRED",
+        verification_artifact_refs: {
+          repair_build_error_contract: "C:/work/out/.migration/runs/run-9a/repairs/build-error.json",
+        },
+        verification_failure_classification_ref: "build-error.json",
+        human_approved: true,
+        sandbox_only: true,
+        source_mutated: false,
+        sandbox_mutated: false,
+        stage_resumed: false,
+        backend_runner_invoked: false,
+        llm_invoked: false,
+        approval_bypass: false,
+        apply_failure: {
+          failure_stage: "maven_verification",
+          failure_code: "MAVEN_VERIFICATION_FAILED",
+          human_readable_summary: "Controlled repair verified, but full Maven verification failed due unrelated/pre-existing sandbox failures and patch was rolled back.",
+          git_apply_check_status: "passed",
+          patch_apply_status: "applied_then_rolled_back",
+          controlled_verification_status: "passed",
+          controlled_verification_summary: "Controlled target checksum matches proposed checksum and injected namespace is absent.",
+          full_maven_verification_status: "failed",
+          full_maven_failure_classification: "unrelated_preexisting_failure",
+          rollback_attempted: true,
+          rollback_succeeded: true,
+          expected_sandbox_checksum: "sha256:before",
+          actual_sandbox_checksum: "sha256:after-rollback",
+          worktree_used: "C:/work/out/.migration/runs/run-9a/sandbox",
+          strip_level: 1,
+          recommended_next_action: "inspect_unrelated_maven_failures",
+        },
+      },
+    };
+    const markup = renderToStaticMarkup(
+      <R6GovernedRepairPanel
+        proposal={GOVERNED_REPAIR_PROPOSAL}
+        state={{ ...EMPTY_R6_REPAIR_UI_STATE, applyResult }}
+        onApprovalChecksumChange={() => undefined}
+        onRequestReviewer={() => undefined}
+        onPrepareContext={() => undefined}
+        onApproveRepair={() => undefined}
+        onOfficialApply={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("git apply --check: passed");
+    expect(markup).toContain("Patch apply: applied_then_rolled_back");
+    expect(markup).toContain("Controlled target verification: passed");
+    expect(markup).toContain("Full Maven verification: failed");
+    expect(markup).toContain("Maven failure classification: unrelated_preexisting_failure");
+    expect(markup).toContain("Controlled repair passed; full Maven remains blocked by unrelated pre-existing sandbox failures.");
+    expect(markup).toContain("Rollback: succeeded");
+    expect(markup).toContain("Sandbox-only: true");
+    expect(markup).toContain("Legacy unchanged: true");
   });
 
   it("displays assistant-readable apply failure details and recommended next action", () => {

@@ -702,6 +702,16 @@ export function R6GovernedRepairPanel({
   const action = state.applyResult?.repair_action ?? null;
   const applyFailure = action?.apply_failure ?? null;
   const controlledDemoEvidence = proposalControlledDemoEvidence(proposal);
+  const gitApplyCheckStatus = applyFailure?.git_apply_check_status
+    ?? (action ? (action.status === "applied" || action.status === "idempotent" ? "passed" : applyFailure?.failure_stage === "git_apply_check" ? "failed" : "not completed") : "not run");
+  const patchApplyStatus = applyFailure?.patch_apply_status ?? action?.status ?? "not run";
+  const rollbackStatus = applyFailure?.rollback_attempted
+    ? (applyFailure.rollback_succeeded ? "succeeded" : "failed")
+    : action?.status === "rolled_back"
+      ? "succeeded"
+      : "not attempted";
+  const controlledVerificationStatus = applyFailure?.controlled_verification_status ?? "not_applicable";
+  const fullMavenStatus = applyFailure?.full_maven_verification_status ?? action?.verification_status ?? "not run";
 
   return (
     <section className="panel stack r6-repair-panel" aria-label="Governed R6 repair flow">
@@ -782,14 +792,21 @@ export function R6GovernedRepairPanel({
           Run official apply
         </button>
         <p className="meta">Patch gate: {action ? "accepted by backend before apply" : "not run"}</p>
-        <p className="meta">git apply --check: {action ? (action.status === "applied" || action.status === "idempotent" ? "passed" : applyFailure?.failure_stage === "git_apply_check" ? "failed" : "not completed") : "not run"}</p>
-        <p className="meta">git apply result: {action?.status ?? "not run"}</p>
+        <p className="meta">git apply --check: {gitApplyCheckStatus}</p>
+        <p className="meta">Patch apply: {patchApplyStatus}</p>
         {applyFailure && (
           <div className="trace-subsection">
             <p className="meta">Failure stage: {applyFailure.failure_stage || "n/a"}</p>
             <p className="meta">Failure code: {applyFailure.failure_code || "n/a"}</p>
             <p className="meta">Failure detail: {applyFailure.human_readable_summary || action?.result_summary || "n/a"}</p>
             <p className="meta">git apply --check stderr: {applyFailure.git_apply_check_stderr || "n/a"}</p>
+            <p className="meta">Controlled target verification: {controlledVerificationStatus}</p>
+            <p className="meta">Controlled verification detail: {applyFailure.controlled_verification_summary || "n/a"}</p>
+            <p className="meta">Full Maven verification: {fullMavenStatus}</p>
+            <p className="meta">Maven failure classification: {applyFailure.full_maven_failure_classification || "n/a"}</p>
+            {applyFailure.full_maven_failure_classification === "unrelated_preexisting_failure" && (
+              <p className="meta">Controlled repair passed; full Maven remains blocked by unrelated pre-existing sandbox failures.</p>
+            )}
             <p className="checksum">Expected sandbox checksum: {applyFailure.expected_sandbox_checksum || "n/a"}</p>
             <p className="checksum">Actual sandbox checksum: {applyFailure.actual_sandbox_checksum || "n/a"}</p>
             <p className="meta">Worktree used: {formatGateArtifactRefLabel(applyFailure.worktree_used || "") || "n/a"}</p>
@@ -797,10 +814,10 @@ export function R6GovernedRepairPanel({
             <p className="meta">Recommended next action: {applyFailure.recommended_next_action || "n/a"}</p>
           </div>
         )}
-        <p className="meta">Maven verification: {action?.verification_status ?? "not run"}</p>
+        <p className="meta">Maven verification: {fullMavenStatus}</p>
         <p className="meta">Build: {action?.verification_build_status || "not run"}</p>
         <p className="meta">Test: {action?.verification_test_status || "not run"}</p>
-        <p className="meta">Rollback: {action?.status === "failed" ? "backend rollback/evidence expected" : "not needed"}</p>
+        <p className="meta">Rollback: {rollbackStatus}</p>
         <p className="meta">Sandbox-only: {action ? formatFlag(action.sandbox_only) : "unknown"}</p>
         <p className="meta">Legacy unchanged: {action ? formatFlag(!action.source_mutated) : "unknown"}</p>
         <p className="meta">Verification artifacts: {summarizeArtifactRefs(action?.verification_artifact_refs)}</p>

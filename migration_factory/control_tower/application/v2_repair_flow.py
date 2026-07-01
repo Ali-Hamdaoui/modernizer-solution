@@ -935,6 +935,11 @@ class V2RepairFlowService:
                 "ledger_ref": artifact_refs["repair_ledger"],
             },
         )
+        patch_package = _json_object_or_empty(proposal.patch_package_json)
+        controlled_verification = self._controlled_repair_verification(
+            sandbox_path=Path(sandbox_path),
+            patch_package=patch_package,
+        )
 
         validation: ValidationResult = validation_runner(
             run_id=resolved_run_id,
@@ -1022,6 +1027,12 @@ class V2RepairFlowService:
                 "reason": rollback_reason,
             },
         )
+        rollback_sandbox_checksum = self._path_tree_checksum(Path(sandbox_path))
+        maven_classification = self._classify_maven_failure_after_controlled_repair(
+            validation=validation,
+            patch_package=patch_package,
+            controlled_verification=controlled_verification,
+        )
         attempt["rollback"] = {
             "performed": True,
             "reason": "; ".join(validation.errors) or "validation failed",
@@ -1065,21 +1076,41 @@ class V2RepairFlowService:
             apply_failure=self._apply_failure_payload(
                 failure_stage="maven_verification",
                 failure_code="MAVEN_VERIFICATION_FAILED",
-                summary="Patch applied, but verification failed and sandbox was rolled back.",
+                summary=self._maven_failure_summary(maven_classification, rolled_back),
                 proposal=proposal,
                 context=apply_failure_context,
                 patch_artifact=str(apply_result.patch_path),
                 patch_checksum=self._sha256_file(apply_result.patch_path),
                 expected_sandbox_checksum=str((apply_failure_context or {}).get("expected_sandbox_checksum") or ""),
-                actual_sandbox_checksum=str((apply_failure_context or {}).get("actual_sandbox_checksum") or ""),
+                actual_sandbox_checksum=rollback_sandbox_checksum,
                 expected_legacy_checksum=str((apply_failure_context or {}).get("expected_legacy_checksum") or ""),
                 actual_legacy_checksum=str((apply_failure_context or {}).get("actual_legacy_checksum") or ""),
                 worktree_used=apply_result.worktree_used,
                 strip_level=apply_result.strip_level,
                 git_executable=apply_result.git_executable,
+                git_apply_check_stdout=apply_result.git_apply_check_stdout,
+                git_apply_check_stderr=apply_result.git_apply_check_stderr,
                 verification_artifacts=verification_artifact_refs,
                 recommended_next_action="inspect_unrelated_maven_failures",
                 assistant_followup_intent="inspect_unrelated_maven_failures",
+                extra={
+                    "git_apply_check_status": "passed",
+                    "patch_apply_status": "applied_then_rolled_back" if rolled_back else "applied_then_rollback_failed",
+                    "patch_apply_stdout": self._excerpt(apply_result.git_apply_stdout),
+                    "patch_apply_stderr": self._excerpt(apply_result.git_apply_stderr),
+                    "controlled_verification_status": controlled_verification["status"],
+                    "controlled_verification_code": controlled_verification["code"],
+                    "controlled_verification_summary": controlled_verification["summary"],
+                    "controlled_target_repaired": controlled_verification["target_repaired"],
+                    "controlled_failure_still_present": maven_classification["controlled_failure_still_present"],
+                    "pre_existing_failure_detected": maven_classification["pre_existing_failure_detected"],
+                    "full_maven_verification_status": "failed",
+                    "full_maven_failure_classification": maven_classification["classification"],
+                    "rollback_attempted": True,
+                    "rollback_succeeded": bool(rolled_back),
+                    "rollback_reason": rollback_reason,
+                    "rollback_sandbox_checksum": rollback_sandbox_checksum,
+                },
             ),
         )
 
@@ -1587,6 +1618,123 @@ class V2RepairFlowService:
         text = str(value or "").strip()
         return text[-limit:] if len(text) > limit else text
 
+    def _controlled_repair_verification(
+        self,
+        *,
+        sandbox_path: Path,
+        patch_package: dict[str, Any],
+    ) -> dict[str, Any]:
+        failure_evidence = patch_package.get("failure_evidence") if isinstance(patch_package.get("failure_evidence"), dict) else {}
+        controlled = failure_evidence.get("controlled_demo_evidence")
+        if not isinstance(controlled, dict) or controlled.get("controlled_demo") is not True:
+            return {
+                "status": "not_applicable",
+                "code": "not_controlled_r6_demo",
+                "summary": "Controlled target verification is not applicable.",
+                "target_repaired": False,
+            }
+        target_files = patch_package.get("target_files") if isinstance(patch_package.get("target_files"), list) else []
+        if not target_files:
+            return {
+                "status": "failed",
+                "code": "controlled_target_missing",
+                "summary": "Controlled target verification could not find target file metadata.",
+                "target_repaired": False,
+            }
+        target = target_files[0] if isinstance(target_files[0], dict) else {}
+        rel_path = str(target.get("relative_path") or controlled.get("target_file") or "").replace("\\", "/")
+        expected_checksum = str(target.get("proposed_checksum") or "")
+        proposed_namespace = str(controlled.get("proposed_import_namespace") or "")
+        injected_namespace = str(controlled.get("injected_import_namespace") or "")
+        target_path = (sandbox_path / rel_path).resolve()
+        try:
+            target_path.relative_to(sandbox_path.resolve())
+        except ValueError:
+            return {
+                "status": "failed",
+                "code": "controlled_target_escaped_sandbox",
+                "summary": "Controlled target verification rejected escaped target path.",
+                "target_repaired": False,
+            }
+        if not target_path.is_file():
+            return {
+                "status": "failed",
+                "code": "controlled_target_missing",
+                "summary": "Controlled target file is missing after patch apply.",
+                "target_repaired": False,
+            }
+        text = target_path.read_text(encoding="utf-8")
+        actual_checksum = self._sha256_text(text)
+        repaired = (
+            bool(expected_checksum)
+            and actual_checksum == expected_checksum
+            and bool(proposed_namespace)
+            and proposed_namespace in text
+            and (not injected_namespace or injected_namespace not in text)
+        )
+        return {
+            "status": "passed" if repaired else "failed",
+            "code": "controlled_target_repaired" if repaired else "controlled_target_not_repaired",
+            "summary": (
+                "Controlled target checksum matches proposed checksum and injected namespace is absent."
+                if repaired
+                else "Controlled target does not match proposed checksum or injected namespace remains."
+            ),
+            "target_repaired": repaired,
+            "target_file": rel_path,
+            "expected_checksum": expected_checksum,
+            "actual_checksum": actual_checksum,
+        }
+
+    def _classify_maven_failure_after_controlled_repair(
+        self,
+        *,
+        validation: ValidationResult,
+        patch_package: dict[str, Any],
+        controlled_verification: dict[str, Any],
+    ) -> dict[str, Any]:
+        failure_text = self._validation_failure_text(validation)
+        controlled_applies = controlled_verification.get("status") != "not_applicable"
+        controlled_failure_present = "package jakarta.servlet.http does not exist" in failure_text
+        controlled_repaired = controlled_verification.get("status") == "passed"
+        if controlled_applies and controlled_failure_present:
+            classification = "controlled_failure_still_present"
+        elif controlled_applies and controlled_repaired:
+            classification = "unrelated_preexisting_failure"
+        elif controlled_applies:
+            classification = "unknown_maven_failure"
+        else:
+            classification = "maven_verification_failed"
+        return {
+            "classification": classification,
+            "controlled_failure_still_present": controlled_failure_present,
+            "pre_existing_failure_detected": classification == "unrelated_preexisting_failure",
+        }
+
+    def _validation_failure_text(self, validation: ValidationResult) -> str:
+        chunks = list(validation.errors or []) + list(validation.warnings or [])
+        for ref in (validation.artifact_refs or {}).values():
+            path = Path(str(ref))
+            if not path.is_file():
+                continue
+            try:
+                chunks.append(path.read_text(encoding="utf-8", errors="ignore")[-12000:])
+            except OSError:
+                continue
+        return "\n".join(str(item) for item in chunks)
+
+    @staticmethod
+    def _maven_failure_summary(classification: dict[str, Any], rolled_back: bool) -> str:
+        rollback_text = "rolled back" if rolled_back else "rollback failed"
+        if classification.get("classification") == "unrelated_preexisting_failure":
+            return (
+                "Controlled repair verified, but full Maven verification failed due unrelated/pre-existing "
+                f"sandbox failures and patch was {rollback_text}."
+            )
+        if classification.get("classification") == "controlled_failure_still_present":
+            return f"Controlled repair did not remove the original Jakarta/javax failure and patch was {rollback_text}."
+        return f"Patch applied, but full Maven verification failed and patch was {rollback_text}."
+
     def _apply_failure_payload(
         self,
         *,
@@ -1609,9 +1757,10 @@ class V2RepairFlowService:
         verification_artifacts: dict[str, str] | None = None,
         recommended_next_action: str = "regenerate_proposal_against_current_sandbox",
         assistant_followup_intent: str = "regenerate_proposal_against_current_sandbox",
+        extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         ctx = dict(context or {})
-        return {
+        payload = {
             "failure_stage": failure_stage,
             "failure_code": failure_code,
             "human_readable_summary": summary,
@@ -1634,6 +1783,8 @@ class V2RepairFlowService:
             "recommended_next_action": recommended_next_action,
             "assistant_followup_intent": assistant_followup_intent,
         }
+        payload.update(dict(extra or {}))
+        return payload
 
     def get_apply_context(self, context_id: str) -> RepairApplyContext | None:
         if self._repo is None:
