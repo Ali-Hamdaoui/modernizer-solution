@@ -695,12 +695,6 @@ export type PrepareRepairApplyContextRequest = {
   reviewer_critique_id: string;
   proposer_invocation_id: string;
   reviewer_invocation_id: string;
-  patch_preview: string;
-  target_path: string;
-  sandbox_reference: string;
-  sandbox_checksum: string;
-  legacy_checksum: string;
-  evidence_refs: Record<string, string>;
   approval_scope: "sandbox_only";
 };
 
@@ -780,6 +774,29 @@ export type RepairActionResponse = {
   backend_runner_invoked: boolean;
   llm_invoked: boolean;
   approval_bypass: boolean;
+  apply_failure?: {
+    failure_stage?: string;
+    failure_code?: string;
+    human_readable_summary?: string;
+    failed_command_id?: string;
+    proposal_id?: string;
+    context_id?: string;
+    approval_id?: string;
+    patch_artifact?: string;
+    patch_checksum?: string;
+    expected_sandbox_checksum?: string;
+    actual_sandbox_checksum?: string;
+    expected_legacy_checksum?: string;
+    actual_legacy_checksum?: string;
+    worktree_used?: string;
+    strip_level?: number;
+    git_executable?: string;
+    git_apply_check_stdout?: string;
+    git_apply_check_stderr?: string;
+    verification_artifacts?: Record<string, string>;
+    recommended_next_action?: string;
+    assistant_followup_intent?: string;
+  };
 };
 
 export type ApplyRepairReviewContextResponse = {

@@ -1012,8 +1012,8 @@ def test_prepare_apply_context_consumes_patch_backed_proposal_artifacts(tmp_path
         patch_preview=package["repair_artifact"]["unified_diff"],
         target_path=target_rel,
         sandbox_reference=str(sandbox),
-        sandbox_checksum="sandbox-chk",
-        legacy_checksum="legacy-chk",
+        sandbox_checksum=package["sandbox_checksum"],
+        legacy_checksum=package["legacy_checksum"],
         evidence_refs={
             "patch_path": package["repair_artifact"]["patch_path"],
             "evidence_artifact": package["evidence_artifact_path"],
@@ -1026,6 +1026,197 @@ def test_prepare_apply_context_consumes_patch_backed_proposal_artifacts(tmp_path
     assert json.loads(context.evidence_refs_json)["patch_path"] == package["repair_artifact"]["patch_path"]
     assert json.loads(context.evidence_refs_json)["deterministic_rule_id"] == "JAKARTA_IMPORT_MECHANICAL_SOURCE"
     assert context.approval_eligible is True
+
+
+def test_patch_backed_prevalidation_and_official_apply_use_same_patch_and_worktree(tmp_path: Path) -> None:
+    if _git_binary() is None:
+        pytest.skip("git unavailable")
+    conn, service, sandbox = _bound_repair_repo_service(tmp_path, redacted_modernized_path=True)
+    legacy = tmp_path / "legacy"
+    target_rel = "src/main/java/App.java"
+    target = sandbox / target_rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        "package com.example;\n\n"
+        "import jakarta.servlet.http.HttpServletRequest;\n\n"
+        "class App { HttpServletRequest request; }\n",
+        encoding="utf-8",
+    )
+
+    proposal = service.create_patch_backed_proposal(
+        command_id="cmd-1",
+        failure_summary="[ERROR] package jakarta.servlet.http does not exist",
+        hypothesis="Controlled namespace mismatch",
+        patch_summary="Repair controlled sandbox import namespace",
+        affected_paths=(target_rel,),
+    )
+    package = service.proposal_to_dict(proposal)["patch_package"]
+    patch_path = Path(package["repair_artifact"]["patch_path"])
+    patch_text = package["repair_artifact"]["unified_diff"]
+    patch_valid, patch_error = validate_patch_artifact(patch_path=patch_path, cwd=sandbox)
+    assert patch_valid is True, patch_error
+
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum=proposal.proposal_checksum,
+        context_pack_checksum=package["package_checksum"],
+        decision="accept",
+        reasoning="Patch-backed package is sandbox-only.",
+    )
+    context = service.prepare_apply_context(
+        proposal_id=proposal.proposal_id,
+        command_id=proposal.command_id,
+        proposal_checksum=proposal.proposal_checksum,
+        context_pack_checksum=package["package_checksum"],
+        reviewer_critique_id=critique.critique_id,
+        proposer_invocation_id="proposer-1",
+        reviewer_invocation_id="reviewer-1",
+        patch_preview=patch_text,
+        target_path=target_rel,
+        sandbox_reference=str(sandbox),
+        sandbox_checksum=package["sandbox_checksum"],
+        legacy_checksum=package["legacy_checksum"],
+        evidence_refs={"patch_artifact": str(patch_path)},
+    )
+    approval = service.record_approval_only(
+        context_id=context.context_id,
+        approval_checksum=proposal.proposal_checksum,
+        approval_note="Human approves exact proposal checksum.",
+        approval_scope="sandbox_only",
+    )
+
+    action = service.apply_prepared_context(
+        context_id=context.context_id,
+        approval_id=approval.approval_id,
+        expected_approval_checksum=proposal.proposal_checksum,
+        expected_sandbox_checksum=package["sandbox_checksum"],
+        expected_legacy_checksum=package["legacy_checksum"],
+        validation_runner=lambda **kwargs: _validation(True),
+    )
+
+    assert action.status == "applied"
+    assert action.patch_content == patch_text
+    assert "import javax.servlet.http.HttpServletRequest;" in target.read_text(encoding="utf-8")
+    assert service._path_tree_checksum(legacy) == package["legacy_checksum"]
+
+
+def test_apply_prepared_context_rejects_stale_patch_with_assistant_readable_evidence(tmp_path: Path) -> None:
+    conn, service, sandbox = _bound_repair_repo_service(tmp_path, redacted_modernized_path=True)
+    target_rel = "src/main/java/App.java"
+    target = sandbox / target_rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("import jakarta.servlet.http.HttpServletRequest;\nclass App {}\n", encoding="utf-8")
+    proposal = service.create_patch_backed_proposal(
+        command_id="cmd-1",
+        failure_summary="[ERROR] package jakarta.servlet.http does not exist",
+        hypothesis="Controlled namespace mismatch",
+        patch_summary="Repair controlled sandbox import namespace",
+        affected_paths=(target_rel,),
+    )
+    package = service.proposal_to_dict(proposal)["patch_package"]
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum=proposal.proposal_checksum,
+        context_pack_checksum=package["package_checksum"],
+        decision="accept",
+        reasoning="Patch-backed package is sandbox-only.",
+    )
+    context = service.prepare_apply_context(
+        proposal_id=proposal.proposal_id,
+        command_id=proposal.command_id,
+        proposal_checksum=proposal.proposal_checksum,
+        context_pack_checksum=package["package_checksum"],
+        reviewer_critique_id=critique.critique_id,
+        proposer_invocation_id="proposer-1",
+        reviewer_invocation_id="reviewer-1",
+        patch_preview=package["repair_artifact"]["unified_diff"],
+        target_path=target_rel,
+        sandbox_reference=str(sandbox),
+        sandbox_checksum=package["sandbox_checksum"],
+        legacy_checksum=package["legacy_checksum"],
+        evidence_refs={"patch_artifact": package["repair_artifact"]["patch_path"]},
+    )
+    approval = service.record_approval_only(
+        context_id=context.context_id,
+        approval_checksum=proposal.proposal_checksum,
+        approval_note="Human approves exact proposal checksum.",
+        approval_scope="sandbox_only",
+    )
+    target.write_text("class App { int changed = 1; }\n", encoding="utf-8")
+
+    action = service.apply_prepared_context(
+        context_id=context.context_id,
+        approval_id=approval.approval_id,
+        expected_approval_checksum=proposal.proposal_checksum,
+        expected_sandbox_checksum=package["sandbox_checksum"],
+        expected_legacy_checksum=package["legacy_checksum"],
+        validation_runner=lambda **kwargs: _validation(True),
+    )
+    body = service.action_to_dict(action)
+
+    assert action.status == "failed"
+    assert body["apply_failure"]["failure_stage"] == "stale_patch"
+    assert body["apply_failure"]["failure_code"] == "SANDBOX_CHECKSUM_MISMATCH"
+    assert body["apply_failure"]["expected_sandbox_checksum"] == package["sandbox_checksum"]
+    assert body["apply_failure"]["actual_sandbox_checksum"] != package["sandbox_checksum"]
+    assert body["apply_failure"]["recommended_next_action"] == "regenerate_proposal_against_current_sandbox"
+
+
+def test_apply_prepared_context_does_not_fabricate_idempotent_without_prior_apply(tmp_path: Path) -> None:
+    conn, service, sandbox = _bound_repair_repo_service(tmp_path, redacted_modernized_path=True)
+    target_rel = "src/main/java/App.java"
+    target = sandbox / target_rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("import jakarta.servlet.http.HttpServletRequest;\nclass App {}\n", encoding="utf-8")
+    proposal = service.create_patch_backed_proposal(
+        command_id="cmd-1",
+        failure_summary="[ERROR] package jakarta.servlet.http does not exist",
+        hypothesis="Controlled namespace mismatch",
+        patch_summary="Repair controlled sandbox import namespace",
+        affected_paths=(target_rel,),
+    )
+    package = service.proposal_to_dict(proposal)["patch_package"]
+    critique = service._reviewer.record_critique(
+        proposal_id=proposal.proposal_id,
+        proposal_checksum=proposal.proposal_checksum,
+        context_pack_checksum=package["package_checksum"],
+        decision="accept",
+        reasoning="Patch-backed package is sandbox-only.",
+    )
+    context = service.prepare_apply_context(
+        proposal_id=proposal.proposal_id,
+        command_id=proposal.command_id,
+        proposal_checksum=proposal.proposal_checksum,
+        context_pack_checksum=package["package_checksum"],
+        reviewer_critique_id=critique.critique_id,
+        proposer_invocation_id="proposer-1",
+        reviewer_invocation_id="reviewer-1",
+        patch_preview=package["repair_artifact"]["unified_diff"],
+        target_path=target_rel,
+        sandbox_reference=str(sandbox),
+        sandbox_checksum=package["sandbox_checksum"],
+        legacy_checksum=package["legacy_checksum"],
+        evidence_refs={"patch_artifact": package["repair_artifact"]["patch_path"]},
+    )
+    approval = service.record_approval_only(
+        context_id=context.context_id,
+        approval_checksum=proposal.proposal_checksum,
+        approval_note="Human approves exact proposal checksum.",
+        approval_scope="sandbox_only",
+    )
+    target.write_text("import javax.servlet.http.HttpServletRequest;\nclass App {}\n", encoding="utf-8")
+
+    action = service.apply_prepared_context(
+        context_id=context.context_id,
+        approval_id=approval.approval_id,
+        expected_approval_checksum=proposal.proposal_checksum,
+        expected_sandbox_checksum=package["sandbox_checksum"],
+        expected_legacy_checksum=package["legacy_checksum"],
+        validation_runner=lambda **kwargs: _validation(True),
+    )
+
+    assert action.status == "failed"
+    assert service.action_to_dict(action)["apply_failure"]["failure_stage"] == "stale_patch"
 
 
 def test_prepare_apply_context_rejects_target_escape(tmp_path: Path) -> None:
@@ -1424,6 +1615,8 @@ def test_apply_prepared_context_applies_only_sandbox_and_records_verification(
         patch_summary="Add H2 dependency",
         affected_paths=("pom.xml",),
     )
+    sandbox_checksum = service._path_tree_checksum(sandbox)
+    legacy_checksum = service._path_tree_checksum(legacy)
     critique = service._reviewer.record_critique(
         proposal_id=proposal.proposal_id,
         proposal_checksum="pc-test",
@@ -1442,8 +1635,8 @@ def test_apply_prepared_context_applies_only_sandbox_and_records_verification(
         patch_preview=_h2_patch(),
         target_path="pom.xml",
         sandbox_reference=str(sandbox),
-        sandbox_checksum="sandbox-chk",
-        legacy_checksum="legacy-chk",
+        sandbox_checksum=sandbox_checksum,
+        legacy_checksum=legacy_checksum,
         evidence_refs={
             "build_error": "artifact://build-error.json",
             "deterministic_rule_id": "DEPENDENCY_ADD_H2_RUNTIME",
@@ -1473,8 +1666,8 @@ def test_apply_prepared_context_applies_only_sandbox_and_records_verification(
         context_id=context.context_id,
         approval_id=approval.approval_id,
         expected_approval_checksum="approval-chk",
-        expected_sandbox_checksum="sandbox-chk",
-        expected_legacy_checksum="legacy-chk",
+        expected_sandbox_checksum=sandbox_checksum,
+        expected_legacy_checksum=legacy_checksum,
         validation_runner=lambda **kwargs: _validation(True),
         event_recorder=lambda event_type, payload: events.append((event_type, payload)),
     )
@@ -1526,6 +1719,8 @@ def test_apply_prepared_context_audits_missing_git_without_mutating_sandbox(
         "-import jakarta.servlet.http.HttpServletRequest;\n"
         "+import javax.servlet.http.HttpServletRequest;\n"
     )
+    sandbox_checksum = service._path_tree_checksum(sandbox)
+    legacy_checksum = service._path_tree_checksum(legacy)
     context = service.prepare_apply_context(
         proposal_id=proposal.proposal_id,
         command_id=proposal.command_id,
@@ -1537,8 +1732,8 @@ def test_apply_prepared_context_audits_missing_git_without_mutating_sandbox(
         patch_preview=patch,
         target_path=target_rel,
         sandbox_reference=str(sandbox),
-        sandbox_checksum="sandbox-chk",
-        legacy_checksum="legacy-chk",
+        sandbox_checksum=sandbox_checksum,
+        legacy_checksum=legacy_checksum,
         evidence_refs={"deterministic_rule_id": "JAKARTA_IMPORT_MECHANICAL_SOURCE"},
     )
     approval = service.record_approval_only(
@@ -1566,8 +1761,8 @@ def test_apply_prepared_context_audits_missing_git_without_mutating_sandbox(
         context_id=context.context_id,
         approval_id=approval.approval_id,
         expected_approval_checksum="approval-chk",
-        expected_sandbox_checksum="sandbox-chk",
-        expected_legacy_checksum="legacy-chk",
+        expected_sandbox_checksum=sandbox_checksum,
+        expected_legacy_checksum=legacy_checksum,
         validation_runner=lambda **kwargs: _validation(True),
     )
 

@@ -268,6 +268,10 @@ export function missingReviewerRequestFields(proposal: GovernedRepairProposalRes
 }
 
 function r6ApplyButtonDisabled(state: R6RepairUiState): boolean {
+  const status = state.applyResult?.repair_action?.status ?? "";
+  if (["failed", "rolled_back"].includes(status)) {
+    return true;
+  }
   return !state.context
     || !state.approval
     || state.approval.approval_status !== "recorded"
@@ -690,6 +694,7 @@ export function R6GovernedRepairPanel({
     && state.busy !== "approval";
   const applyDisabled = r6ApplyButtonDisabled(state);
   const action = state.applyResult?.repair_action ?? null;
+  const applyFailure = action?.apply_failure ?? null;
 
   return (
     <section className="panel stack r6-repair-panel" aria-label="Governed R6 repair flow">
@@ -757,8 +762,21 @@ export function R6GovernedRepairPanel({
           Run official apply
         </button>
         <p className="meta">Patch gate: {action ? "accepted by backend before apply" : "not run"}</p>
-        <p className="meta">git apply --check: {action ? (action.status === "applied" || action.status === "idempotent" ? "passed" : "failed") : "not run"}</p>
+        <p className="meta">git apply --check: {action ? (action.status === "applied" || action.status === "idempotent" ? "passed" : applyFailure?.failure_stage === "git_apply_check" ? "failed" : "not completed") : "not run"}</p>
         <p className="meta">git apply result: {action?.status ?? "not run"}</p>
+        {applyFailure && (
+          <div className="trace-subsection">
+            <p className="meta">Failure stage: {applyFailure.failure_stage || "n/a"}</p>
+            <p className="meta">Failure code: {applyFailure.failure_code || "n/a"}</p>
+            <p className="meta">Failure detail: {applyFailure.human_readable_summary || action?.result_summary || "n/a"}</p>
+            <p className="meta">git apply --check stderr: {applyFailure.git_apply_check_stderr || "n/a"}</p>
+            <p className="checksum">Expected sandbox checksum: {applyFailure.expected_sandbox_checksum || "n/a"}</p>
+            <p className="checksum">Actual sandbox checksum: {applyFailure.actual_sandbox_checksum || "n/a"}</p>
+            <p className="meta">Worktree used: {formatGateArtifactRefLabel(applyFailure.worktree_used || "") || "n/a"}</p>
+            <p className="meta">Strip level: {applyFailure.strip_level ?? "n/a"}</p>
+            <p className="meta">Recommended next action: {applyFailure.recommended_next_action || "n/a"}</p>
+          </div>
+        )}
         <p className="meta">Maven verification: {action?.verification_status ?? "not run"}</p>
         <p className="meta">Build: {action?.verification_build_status || "not run"}</p>
         <p className="meta">Test: {action?.verification_test_status || "not run"}</p>
@@ -1239,7 +1257,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       setR6RepairState((current) => ({ ...current, error: "Apply context requires reviewer accept plus proposal patch, target, sandbox, legacy, and checksums from backend." }));
       return;
     }
-    const patchPreview = proposalUnifiedDiff(proposal);
     setR6RepairState((current) => ({ ...current, busy: "context", error: null }));
     try {
       const response = await prepareV2RepairApplyContext(proposal.command_id, proposal.proposal_id, {
@@ -1248,18 +1265,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         reviewer_critique_id: reviewer?.critique_id ?? proposal.reviewer_critique_id ?? "",
         proposer_invocation_id: proposerInvocationId(proposal),
         reviewer_invocation_id: reviewerInvocationId(reviewer),
-        patch_preview: patchPreview,
-        target_path: proposalTargetPath(proposal),
-        sandbox_reference: proposalSandboxReference(proposal),
-        sandbox_checksum: proposalSandboxChecksum(proposal),
-        legacy_checksum: proposalLegacyChecksum(proposal),
-        evidence_refs: {
-          deterministic_rule_id: proposalDeterministicRule(proposal),
-          repair_family: proposalRepairFamily(proposal),
-          patch_checksum: proposalPatchChecksum(proposal),
-          patch_artifact: proposalPatchArtifactRef(proposal),
-          expected_validation: "maven_compile",
-        },
         approval_scope: "sandbox_only",
       });
       setR6RepairState((current) => ({ ...current, context: response.repair_review_context, busy: null }));

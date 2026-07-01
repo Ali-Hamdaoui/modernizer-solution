@@ -7,7 +7,7 @@ import difflib
 import hashlib
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -63,6 +63,11 @@ def _json_or_text(value: str) -> object:
         return value
 
 
+def _json_object_or_empty(value: str) -> dict[str, Any]:
+    parsed = _json_or_text(value)
+    return parsed if isinstance(parsed, dict) else {}
+
+
 class RepairContextBindingError(ValueError):
     """Raised when a repair-review context is not bound to durable run state."""
 
@@ -103,6 +108,31 @@ class SandboxAction:
     verification_h2_status: str = ""
     verification_artifact_refs_json: str = "{}"
     verification_failure_classification_ref: str = ""
+
+
+@dataclass(frozen=True)
+class RepairApplyFailureEvidence:
+    failure_stage: str
+    failure_code: str
+    human_readable_summary: str
+    failed_command_id: str
+    proposal_id: str
+    context_id: str
+    approval_id: str
+    patch_artifact: str
+    patch_checksum: str
+    expected_sandbox_checksum: str
+    actual_sandbox_checksum: str
+    expected_legacy_checksum: str
+    actual_legacy_checksum: str
+    worktree_used: str
+    strip_level: int
+    git_executable: str
+    git_apply_check_stdout: str
+    git_apply_check_stderr: str
+    verification_artifacts: dict[str, str]
+    recommended_next_action: str
+    assistant_followup_intent: str
 
 
 @dataclass(frozen=True)
@@ -448,6 +478,36 @@ class V2RepairFlowService:
             raise ValueError("Repair apply context requires a legacy checksum")
         if not evidence_refs:
             raise ValueError("Repair apply context requires evidence references")
+        patch_package = _json_object_or_empty(proposal.patch_package_json)
+        if patch_package:
+            package_checksum = str(patch_package.get("package_checksum") or "").strip()
+            if package_checksum and context_pack_checksum != package_checksum:
+                raise ValueError("Repair apply context requires current patch package checksum")
+            repair_artifact = patch_package.get("repair_artifact") if isinstance(patch_package.get("repair_artifact"), dict) else {}
+            package_patch = str(repair_artifact.get("unified_diff") or "")
+            package_target = str((patch_package.get("target_files") or [{}])[0].get("relative_path") or "") if isinstance(patch_package.get("target_files"), list) else ""
+            package_sandbox = str(patch_package.get("sandbox_path") or "")
+            package_sandbox_checksum = str(patch_package.get("sandbox_checksum") or "")
+            package_legacy_checksum = str(patch_package.get("legacy_checksum") or "")
+            if not package_patch.strip():
+                raise ValueError("Repair apply context requires patch package bytes")
+            if patch_preview != package_patch:
+                raise ValueError("Repair apply context patch bytes do not match persisted patch package")
+            if package_target and target_path != package_target:
+                raise ValueError("Repair apply context target does not match persisted patch package")
+            if package_sandbox and sandbox_reference != package_sandbox:
+                raise ValueError("Repair apply context sandbox does not match persisted patch package")
+            if package_sandbox_checksum and sandbox_checksum != package_sandbox_checksum:
+                raise ValueError("Repair apply context sandbox checksum does not match persisted patch package")
+            if package_legacy_checksum and legacy_checksum != package_legacy_checksum:
+                raise ValueError("Repair apply context legacy checksum does not match persisted patch package")
+            evidence_refs = {
+                **evidence_refs,
+                "patch_artifact": str(repair_artifact.get("patch_path") or evidence_refs.get("patch_artifact") or ""),
+                "patch_checksum": str(repair_artifact.get("patch_checksum") or evidence_refs.get("patch_checksum") or ""),
+                "strip_level": "1",
+                "prevalidation_worktree": package_sandbox or sandbox_reference,
+            }
         self._validate_prepare_binding(
             command_id=command_id,
             sandbox_reference=sandbox_reference,
@@ -679,6 +739,7 @@ class V2RepairFlowService:
         h2_required: bool = False,
         run_id: str = "",
         binding_checksum: str | None = None,
+        apply_failure_context: dict[str, Any] | None = None,
         validation_runner: ValidationRunner = run_validation_after_patch,
         event_recorder: RepairEventRecorder | None = None,
     ) -> SandboxAction:
@@ -788,6 +849,23 @@ class V2RepairFlowService:
                 patch_content=patch_content,
                 status="failed",
                 result_summary=f"Patch gate blocked repair proposal: {gate.reason}",
+                apply_failure=self._apply_failure_payload(
+                    failure_stage="official_apply",
+                    failure_code="PATCH_GATE_BLOCKED",
+                    summary=f"Patch gate blocked repair proposal: {gate.reason}",
+                    proposal=proposal,
+                    context=apply_failure_context,
+                    patch_artifact=str(draft_path),
+                    patch_checksum="",
+                    expected_sandbox_checksum="",
+                    actual_sandbox_checksum="",
+                    expected_legacy_checksum="",
+                    actual_legacy_checksum="",
+                    worktree_used=str(sandbox_path),
+                    git_apply_check_stderr=gate.reason,
+                    recommended_next_action="regenerate_proposal_against_current_sandbox",
+                    assistant_followup_intent="regenerate_proposal_against_current_sandbox",
+                ),
             )
 
         apply_result = apply_patch_to_sandbox(
@@ -823,6 +901,26 @@ class V2RepairFlowService:
                 patch_content=patch_content,
                 status="failed",
                 result_summary=f"Repair patch was rejected in sandbox: {apply_result.reason}",
+                apply_failure=self._apply_failure_payload(
+                    failure_stage="git_apply_check" if apply_result.status == "REJECTED" else "official_apply",
+                    failure_code="GIT_APPLY_CHECK_FAILED" if apply_result.status == "REJECTED" else "GIT_APPLY_FAILED",
+                    summary=f"Repair patch was rejected in sandbox: {apply_result.reason}",
+                    proposal=proposal,
+                    context=apply_failure_context,
+                    patch_artifact=str(apply_result.patch_path),
+                    patch_checksum=self._sha256_file(apply_result.patch_path),
+                    expected_sandbox_checksum=str((apply_failure_context or {}).get("expected_sandbox_checksum") or ""),
+                    actual_sandbox_checksum=str((apply_failure_context or {}).get("actual_sandbox_checksum") or ""),
+                    expected_legacy_checksum=str((apply_failure_context or {}).get("expected_legacy_checksum") or ""),
+                    actual_legacy_checksum=str((apply_failure_context or {}).get("actual_legacy_checksum") or ""),
+                    worktree_used=apply_result.worktree_used,
+                    strip_level=apply_result.strip_level,
+                    git_executable=apply_result.git_executable,
+                    git_apply_check_stdout=apply_result.git_apply_check_stdout,
+                    git_apply_check_stderr=apply_result.git_apply_check_stderr or apply_result.reason,
+                    recommended_next_action="regenerate_proposal_against_current_sandbox",
+                    assistant_followup_intent="regenerate_proposal_against_current_sandbox",
+                ),
             )
         self._emit_repair_event(
             event_recorder,
@@ -962,6 +1060,25 @@ class V2RepairFlowService:
             verification_h2_status=validation.h2_status,
             verification_artifact_refs_json=json.dumps(verification_artifact_refs, separators=(",", ":"), sort_keys=True),
             verification_failure_classification_ref=build_error_ref,
+            apply_failure=self._apply_failure_payload(
+                failure_stage="maven_verification",
+                failure_code="MAVEN_VERIFICATION_FAILED",
+                summary="Patch applied, but verification failed and sandbox was rolled back.",
+                proposal=proposal,
+                context=apply_failure_context,
+                patch_artifact=str(apply_result.patch_path),
+                patch_checksum=self._sha256_file(apply_result.patch_path),
+                expected_sandbox_checksum=str((apply_failure_context or {}).get("expected_sandbox_checksum") or ""),
+                actual_sandbox_checksum=str((apply_failure_context or {}).get("actual_sandbox_checksum") or ""),
+                expected_legacy_checksum=str((apply_failure_context or {}).get("expected_legacy_checksum") or ""),
+                actual_legacy_checksum=str((apply_failure_context or {}).get("actual_legacy_checksum") or ""),
+                worktree_used=apply_result.worktree_used,
+                strip_level=apply_result.strip_level,
+                git_executable=apply_result.git_executable,
+                verification_artifacts=verification_artifact_refs,
+                recommended_next_action="inspect_unrelated_maven_failures",
+                assistant_followup_intent="inspect_unrelated_maven_failures",
+            ),
         )
 
     def _emit_repair_event(
@@ -987,14 +1104,26 @@ class V2RepairFlowService:
         verification_h2_status: str = "",
         verification_artifact_refs_json: str = "{}",
         verification_failure_classification_ref: str = "",
+        apply_failure: dict[str, Any] | None = None,
     ) -> SandboxAction:
+        stored_summary = result_summary
+        if apply_failure:
+            stored_summary = json.dumps(
+                {
+                    "kind": "repair_apply_result_v1",
+                    "human_readable_summary": result_summary,
+                    "apply_failure": apply_failure,
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
         action = SandboxAction(
             action_id=uuid4().hex,
             proposal_id=proposal_id,
             target_path=target_path,
             patch_content=patch_content,
             status=status,
-            result_summary=result_summary,
+            result_summary=stored_summary,
             created_at=utc_now_text(),
             verification_status=verification_status,
             verification_build_status=verification_build_status,
@@ -1231,6 +1360,95 @@ class V2RepairFlowService:
             if str(exc) == "Repair-review sandbox must not be inside legacy path":
                 raise
 
+        actual_sandbox_checksum = self._path_tree_checksum(sandbox_path)
+        actual_legacy_checksum = self._path_tree_checksum(legacy_path)
+        patch_package = _json_object_or_empty(proposal.patch_package_json)
+        repair_artifact = patch_package.get("repair_artifact") if isinstance(patch_package.get("repair_artifact"), dict) else {}
+        package_patch = str(repair_artifact.get("unified_diff") or "")
+        if package_patch and context.patch_preview != package_patch:
+            return self._record_action(
+                proposal_id=proposal.proposal_id,
+                target_path=context.target_path,
+                patch_content=context.patch_preview,
+                status="failed",
+                result_summary="Prepared patch bytes do not match persisted patch package.",
+                apply_failure=self._apply_failure_payload(
+                    failure_stage="official_apply",
+                    failure_code="PATCH_BYTES_MISMATCH",
+                    summary="Prepared patch bytes do not match persisted patch package.",
+                    proposal=proposal,
+                    context={"context_id": context_id, "approval_id": approval_id, "failed_command_id": context.command_id},
+                    patch_artifact=str(repair_artifact.get("patch_path") or ""),
+                    patch_checksum=str(repair_artifact.get("patch_checksum") or ""),
+                    expected_sandbox_checksum=context.sandbox_checksum,
+                    actual_sandbox_checksum=actual_sandbox_checksum,
+                    expected_legacy_checksum=context.legacy_checksum,
+                    actual_legacy_checksum=actual_legacy_checksum,
+                    worktree_used=str(sandbox_path),
+                    recommended_next_action="reject_stale_context",
+                    assistant_followup_intent="reject_stale_context",
+                ),
+            )
+        if actual_legacy_checksum != context.legacy_checksum:
+            return self._record_action(
+                proposal_id=proposal.proposal_id,
+                target_path=context.target_path,
+                patch_content=context.patch_preview,
+                status="failed",
+                result_summary="Legacy checksum changed before repair apply; backend refused to continue.",
+                apply_failure=self._apply_failure_payload(
+                    failure_stage="official_apply",
+                    failure_code="LEGACY_CHECKSUM_MISMATCH",
+                    summary="Legacy checksum changed before repair apply; backend refused to continue.",
+                    proposal=proposal,
+                    context={"context_id": context_id, "approval_id": approval_id, "failed_command_id": context.command_id},
+                    patch_artifact=str(repair_artifact.get("patch_path") or ""),
+                    patch_checksum=str(repair_artifact.get("patch_checksum") or ""),
+                    expected_sandbox_checksum=context.sandbox_checksum,
+                    actual_sandbox_checksum=actual_sandbox_checksum,
+                    expected_legacy_checksum=context.legacy_checksum,
+                    actual_legacy_checksum=actual_legacy_checksum,
+                    worktree_used=str(sandbox_path),
+                    recommended_next_action="escalate_to_human",
+                    assistant_followup_intent="escalate_to_human",
+                ),
+            )
+        if actual_sandbox_checksum != context.sandbox_checksum:
+            latest_action = self._latest_action_for_proposal(proposal.proposal_id)
+            if (
+                latest_action is not None
+                and latest_action.status in {"applied", "idempotent"}
+                and self._proposal_target_checksums_match(
+                    sandbox_path=sandbox_path,
+                    proposal=proposal,
+                    checksum_key="proposed_checksum",
+                )
+            ):
+                return self._idempotent_applied_action(proposal.proposal_id, proposal)
+            return self._record_action(
+                proposal_id=proposal.proposal_id,
+                target_path=context.target_path,
+                patch_content=context.patch_preview,
+                status="failed",
+                result_summary="Sandbox changed since proposal/context creation; patch is stale.",
+                apply_failure=self._apply_failure_payload(
+                    failure_stage="stale_patch",
+                    failure_code="SANDBOX_CHECKSUM_MISMATCH",
+                    summary="Sandbox changed since proposal/context creation; patch is stale.",
+                    proposal=proposal,
+                    context={"context_id": context_id, "approval_id": approval_id, "failed_command_id": context.command_id},
+                    patch_artifact=str(repair_artifact.get("patch_path") or ""),
+                    patch_checksum=str(repair_artifact.get("patch_checksum") or ""),
+                    expected_sandbox_checksum=context.sandbox_checksum,
+                    actual_sandbox_checksum=actual_sandbox_checksum,
+                    expected_legacy_checksum=context.legacy_checksum,
+                    actual_legacy_checksum=actual_legacy_checksum,
+                    worktree_used=str(sandbox_path),
+                    recommended_next_action="regenerate_proposal_against_current_sandbox",
+                    assistant_followup_intent="regenerate_proposal_against_current_sandbox",
+                ),
+            )
+
         evidence_refs = json.loads(context.evidence_refs_json or "{}")
         deterministic_rule_id = str(evidence_refs.get("deterministic_rule_id") or "").strip()
         if not deterministic_rule_id:
@@ -1286,6 +1504,15 @@ class V2RepairFlowService:
             failure_classification={},
             h2_required=h2_required,
             binding_checksum=context.context_pack_checksum,
+            apply_failure_context={
+                "context_id": context_id,
+                "approval_id": approval_id,
+                "failed_command_id": context.command_id,
+                "expected_sandbox_checksum": context.sandbox_checksum,
+                "actual_sandbox_checksum": actual_sandbox_checksum,
+                "expected_legacy_checksum": context.legacy_checksum,
+                "actual_legacy_checksum": actual_legacy_checksum,
+            },
             validation_runner=validation_runner,
             event_recorder=event_recorder,
         )
@@ -1318,6 +1545,93 @@ class V2RepairFlowService:
                     verification_failure_classification_ref=record.verification_failure_classification_ref,
                 )
         return None
+
+    @classmethod
+    def _proposal_target_checksums_match(
+        cls,
+        *,
+        sandbox_path: Path,
+        proposal: RepairProposal,
+        checksum_key: str,
+    ) -> bool:
+        package = _json_object_or_empty(proposal.patch_package_json)
+        targets = package.get("target_files")
+        if not isinstance(targets, list) or not targets:
+            return False
+        for target in targets:
+            if not isinstance(target, dict):
+                return False
+            rel_path = str(target.get("relative_path") or "").strip()
+            expected = str(target.get(checksum_key) or "").strip()
+            if not rel_path or not expected:
+                return False
+            path = sandbox_path / PurePosixPath(rel_path.replace("\\", "/"))
+            if not path.is_file() or cls._sha256_file(path) != expected:
+                return False
+        return True
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        if not path.is_file():
+            return ""
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                digest.update(chunk)
+        return "sha256:" + digest.hexdigest()
+
+    @staticmethod
+    def _excerpt(value: str, limit: int = 4000) -> str:
+        text = str(value or "").strip()
+        return text[-limit:] if len(text) > limit else text
+
+    def _apply_failure_payload(
+        self,
+        *,
+        failure_stage: str,
+        failure_code: str,
+        summary: str,
+        proposal: RepairProposal,
+        context: dict[str, Any] | None,
+        patch_artifact: str,
+        patch_checksum: str,
+        expected_sandbox_checksum: str,
+        actual_sandbox_checksum: str,
+        expected_legacy_checksum: str,
+        actual_legacy_checksum: str,
+        worktree_used: str,
+        strip_level: int = 1,
+        git_executable: str = "",
+        git_apply_check_stdout: str = "",
+        git_apply_check_stderr: str = "",
+        verification_artifacts: dict[str, str] | None = None,
+        recommended_next_action: str = "regenerate_proposal_against_current_sandbox",
+        assistant_followup_intent: str = "regenerate_proposal_against_current_sandbox",
+    ) -> dict[str, Any]:
+        ctx = dict(context or {})
+        return {
+            "failure_stage": failure_stage,
+            "failure_code": failure_code,
+            "human_readable_summary": summary,
+            "failed_command_id": str(ctx.get("failed_command_id") or proposal.command_id),
+            "proposal_id": proposal.proposal_id,
+            "context_id": str(ctx.get("context_id") or ""),
+            "approval_id": str(ctx.get("approval_id") or ""),
+            "patch_artifact": patch_artifact,
+            "patch_checksum": patch_checksum,
+            "expected_sandbox_checksum": expected_sandbox_checksum,
+            "actual_sandbox_checksum": actual_sandbox_checksum,
+            "expected_legacy_checksum": expected_legacy_checksum,
+            "actual_legacy_checksum": actual_legacy_checksum,
+            "worktree_used": worktree_used,
+            "strip_level": strip_level,
+            "git_executable": git_executable,
+            "git_apply_check_stdout": self._excerpt(git_apply_check_stdout),
+            "git_apply_check_stderr": self._excerpt(git_apply_check_stderr),
+            "verification_artifacts": dict(verification_artifacts or {}),
+            "recommended_next_action": recommended_next_action,
+            "assistant_followup_intent": assistant_followup_intent,
+        }
 
     def get_apply_context(self, context_id: str) -> RepairApplyContext | None:
         if self._repo is None:
@@ -1419,7 +1733,7 @@ class V2RepairFlowService:
         proposal: RepairProposal,
     ) -> SandboxAction:
         existing = self._latest_action_for_proposal(proposal_id)
-        if existing is not None:
+        if existing is not None and existing.status in {"applied", "idempotent"}:
             return SandboxAction(
                 action_id=existing.action_id,
                 proposal_id=existing.proposal_id,
@@ -1441,10 +1755,10 @@ class V2RepairFlowService:
             proposal_id=proposal.proposal_id,
             target_path=target_path,
             patch_content="",
-            status="idempotent",
-            result_summary="Proposal already applied; sandbox unchanged",
+            status="failed",
+            result_summary="Proposal appears applied but no prior applied action proves idempotency.",
             created_at=utc_now_text(),
-            verification_status="already_completed",
+            verification_status="not_available",
         )
 
     def _mark_proposal_applied(self, proposal: RepairProposal) -> None:
@@ -1966,13 +2280,20 @@ class V2RepairFlowService:
         return result
 
     def action_to_dict(self, action: SandboxAction) -> dict[str, Any]:
-        return {
+        summary = action.result_summary
+        apply_failure = None
+        parsed = _json_object_or_empty(action.result_summary)
+        if parsed.get("kind") == "repair_apply_result_v1":
+            summary = str(parsed.get("human_readable_summary") or "")
+            failure = parsed.get("apply_failure")
+            apply_failure = failure if isinstance(failure, dict) else None
+        result = {
             "action_id": action.action_id,
             "proposal_id": action.proposal_id,
             "target_path": action.target_path,
             "patch_content": action.patch_content[:100] if action.patch_content else "",
             "status": action.status,
-            "result_summary": action.result_summary,
+            "result_summary": summary,
             "created_at": action.created_at,
             "verification_status": action.verification_status,
             "verification_build_status": action.verification_build_status,
@@ -1989,6 +2310,9 @@ class V2RepairFlowService:
             "llm_invoked": False,
             "approval_bypass": False,
         }
+        if apply_failure is not None:
+            result["apply_failure"] = apply_failure
+        return result
 
     def apply_context_to_dict(self, context: RepairApplyContext) -> dict[str, Any]:
         return {

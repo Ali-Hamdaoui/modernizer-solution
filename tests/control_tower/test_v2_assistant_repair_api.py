@@ -1805,12 +1805,6 @@ class TestRepairAPI:
                 "reviewer_critique_id": critique_id,
                 "proposer_invocation_id": "proposer-invoke-1",
                 "reviewer_invocation_id": "reviewer-invoke-1",
-                "patch_preview": _h2_patch(),
-                "target_path": "pom.xml",
-                "sandbox_reference": str(run_dir / "sandbox"),
-                "sandbox_checksum": "sandbox-chk",
-                "legacy_checksum": "legacy-chk",
-                "evidence_refs": {"patch_draft": str(run_dir / "repairs" / "patch_draft_1.json")},
             },
             headers=_mutation_headers(),
         )
@@ -1844,9 +1838,11 @@ class TestRepairAPI:
         context_body = context_read.json()["repair_review_context"]
         assert context_body["context_id"] == context_id
         assert context_body["proposal_id"] == proposal_id
-        assert context_body["sandbox_checksum"] == "sandbox-chk"
-        assert context_body["legacy_checksum"] == "legacy-chk"
+        assert context_body["sandbox_checksum"].startswith("sha256:")
+        assert context_body["legacy_checksum"].startswith("sha256:")
         assert context_body["patch_preview_checksum"]
+        assert context_body["evidence_refs"]["patch_artifact"].endswith(".diff")
+        assert context_body["evidence_refs"]["patch_checksum"].startswith("sha256:")
         assert context_body["sandbox_only"] is True
         assert context_body["llm_invoked"] is False
 
@@ -1890,8 +1886,8 @@ class TestRepairAPI:
             json={
                 "approval_id": "missing-approval",
                 "expected_approval_checksum": "chk-abc",
-                "expected_sandbox_checksum": "sandbox-chk",
-                "expected_legacy_checksum": "legacy-chk",
+                "expected_sandbox_checksum": context_body["sandbox_checksum"],
+                "expected_legacy_checksum": context_body["legacy_checksum"],
             },
             headers=_mutation_headers(),
         )
@@ -1914,8 +1910,8 @@ class TestRepairAPI:
             json={
                 "approval_id": approval_id,
                 "expected_approval_checksum": "chk-abc",
-                "expected_sandbox_checksum": "sandbox-chk",
-                "expected_legacy_checksum": "legacy-chk",
+                "expected_sandbox_checksum": context_body["sandbox_checksum"],
+                "expected_legacy_checksum": context_body["legacy_checksum"],
             },
             headers=_mutation_headers(),
         )
@@ -2071,15 +2067,6 @@ class TestRepairAPI:
                 ).critique_id,
                 "proposer_invocation_id": "proposer-invoke-1",
                 "reviewer_invocation_id": "reviewer-invoke-1",
-                "patch_preview": _h2_patch(),
-                "target_path": "pom.xml",
-                "sandbox_reference": str(run_dir / "sandbox"),
-                "sandbox_checksum": "sandbox-chk",
-                "legacy_checksum": "legacy-chk",
-                "evidence_refs": {
-                    "verification_report": str(run_dir / "repairs" / "verification.json"),
-                    "test_log": str(run_dir / "repairs" / "test.log"),
-                },
             },
             headers=_mutation_headers(),
         )
@@ -2293,16 +2280,6 @@ class TestRepairAPI:
                 ).critique_id,
                 "proposer_invocation_id": "proposer-invoke-1",
                 "reviewer_invocation_id": "reviewer-invoke-1",
-                "patch_preview": _real_java_import_patch(legacy_file_before, rel_path=target_rel_path),
-                "target_path": target_rel_path,
-                "sandbox_reference": str(sandbox_root),
-                "sandbox_checksum": "sandbox-chk",
-                "legacy_checksum": "legacy-chk",
-                "evidence_refs": {
-                    "verification_report": str(run_dir / "repairs" / "verification.json"),
-                    "test_log": str(run_dir / "repairs" / "test.log"),
-                    "h2_log": str(run_dir / "repairs" / "h2.log"),
-                },
             },
             headers=_mutation_headers(),
         )
@@ -2402,12 +2379,6 @@ class TestRepairAPI:
                 "reviewer_critique_id": critique_id,
                 "proposer_invocation_id": "proposer-invoke-1",
                 "reviewer_invocation_id": "reviewer-invoke-1",
-                "patch_preview": _h2_patch(),
-                "target_path": "pom.xml",
-                "sandbox_reference": str(tmp_path / "sandbox"),
-                "sandbox_checksum": "sandbox-chk",
-                "legacy_checksum": "legacy-chk",
-                "evidence_refs": {"patch_draft": "artifact://patch_draft_1.json"},
             },
             headers=_mutation_headers(),
         )

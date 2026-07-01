@@ -612,12 +612,6 @@ class PrepareRepairApplyContextRequest(BaseModel):
     reviewer_critique_id: str
     proposer_invocation_id: str
     reviewer_invocation_id: str
-    patch_preview: str = Field(min_length=1)
-    target_path: str = Field(min_length=1)
-    sandbox_reference: str = Field(min_length=1)
-    sandbox_checksum: str = Field(min_length=1)
-    legacy_checksum: str = Field(min_length=1)
-    evidence_refs: dict[str, str]
     approval_scope: str = "sandbox_only"
 
 
@@ -2981,6 +2975,24 @@ def create_app(
             for command in commands:
                 if command.stage_index == 1:
                     stage1_status = command.status or stage1_status
+                if command.command_id.startswith("r6-demo-"):
+                    existing = uow.v2_repairs.list_proposals_by_command(command.command_id)
+                    def _has_terminal_failed_action(proposal_id: str) -> bool:
+                        return any(
+                            action.status in {"failed", "rolled_back"}
+                            for action in uow.v2_repairs.list_actions_by_proposal(proposal_id)
+                        )
+
+                    if any(
+                        record.status in {"draft", "approved"}
+                        and not _has_terminal_failed_action(record.proposal_id)
+                        for record in existing
+                    ):
+                        raise _error(
+                            status.HTTP_409_CONFLICT,
+                            "R6_DEMO_PROPOSAL_EXISTS",
+                            "Controlled R6 repair demo already has an active proposal. Generate a fresh proposal only after closing the current governed attempt.",
+                        )
 
             for command in reversed(commands):
                 payload = _payload(command.result_json)
@@ -3156,6 +3168,74 @@ def create_app(
                 command_repo=uow.v2_commands,
             )
             try:
+                proposal = uow.v2_repairs.get_proposal(proposal_id)
+                if proposal is None:
+                    raise ValueError(f"Repair proposal {proposal_id!r} not found")
+                package = json.loads(proposal.patch_package_json or "{}")
+                if not isinstance(package, dict):
+                    package = {}
+                if not package:
+                    command = uow.v2_commands.get(command_id)
+                    if command is None:
+                        raise RepairContextBindingError(f"Command {command_id!r} not found")
+                    job = uow.v2_jobs.get(command.job_id)
+                    if job is None:
+                        raise RepairContextBindingError(f"Job {command.job_id!r} not found for command {command_id!r}")
+                    setup = uow.v2_setups.get(job.setup_id)
+                    if setup is None:
+                        raise RepairContextBindingError(f"Setup {job.setup_id!r} not found for job {job.job_id!r}")
+                    result_data = json.loads(command.result_json or "{}")
+                    if not isinstance(result_data, dict):
+                        result_data = {}
+                    run_id = str(result_data.get("run_id") or command.command_id)
+                    sandbox_path = Path(str(result_data.get("sandbox_path") or ""))
+                    run_dir = service._resolve_bound_run_dir(
+                        result_data=result_data,
+                        setup_output_parent=setup.output_parent_path,
+                        sandbox_path=sandbox_path,
+                        run_id=run_id,
+                        error_cls=RepairContextBindingError,
+                        command_id=command_id,
+                    )
+                    draft_path = run_dir / "repairs" / "patch_draft_1.json"
+                    draft = json.loads(draft_path.read_text(encoding="utf-8"))
+                    if not isinstance(draft, dict) or draft.get("proposal_id") != proposal_id:
+                        raise ValueError("Repair proposal is missing persisted patch package")
+                    patch_text = str(draft.get("unified_diff") or "")
+                    patch_body = patch_text if patch_text.endswith("\n") else patch_text + "\n"
+                    patch_checksum = "sha256:" + hashlib.sha256(patch_body.encode("utf-8")).hexdigest()
+                    patch_slug = patch_checksum.split(":", 1)[1][:12]
+                    patch_path = run_dir / "repairs" / "proposals" / f"patch-{patch_slug}.diff"
+                    patch_path.parent.mkdir(parents=True, exist_ok=True)
+                    patch_path.write_text(patch_body, encoding="utf-8")
+                    package = {
+                        "sandbox_path": str(sandbox_path),
+                        "sandbox_checksum": service._path_tree_checksum(sandbox_path),
+                        "legacy_checksum": service._path_tree_checksum(Path(setup.legacy_app_path)),
+                        "repair_family": str(draft.get("deterministic_rule_id") or ""),
+                        "deterministic_rule_id": str(draft.get("deterministic_rule_id") or ""),
+                        "target_files": [{"relative_path": str(draft.get("target_path") or "pom.xml")}],
+                        "repair_artifact": {
+                            "unified_diff": patch_body,
+                            "patch_path": str(patch_path),
+                            "patch_checksum": patch_checksum,
+                        },
+                    }
+                repair_artifact = package.get("repair_artifact") if isinstance(package.get("repair_artifact"), dict) else {}
+                targets = package.get("target_files") if isinstance(package.get("target_files"), list) else []
+                target = targets[0] if targets and isinstance(targets[0], dict) else {}
+                patch_preview = str(repair_artifact.get("unified_diff") or "")
+                target_path = str(target.get("relative_path") or "")
+                sandbox_reference = str(package.get("sandbox_path") or "")
+                sandbox_checksum = str(package.get("sandbox_checksum") or "")
+                legacy_checksum = str(package.get("legacy_checksum") or "")
+                evidence_refs = {
+                    "patch_artifact": str(repair_artifact.get("patch_path") or ""),
+                    "patch_checksum": str(repair_artifact.get("patch_checksum") or ""),
+                    "deterministic_rule_id": str(package.get("deterministic_rule_id") or ""),
+                    "repair_family": str(package.get("repair_family") or ""),
+                    "expected_validation": "maven_compile",
+                }
                 context = service.prepare_apply_context(
                     proposal_id=proposal_id,
                     command_id=command_id,
@@ -3164,12 +3244,12 @@ def create_app(
                     reviewer_critique_id=payload.reviewer_critique_id,
                     proposer_invocation_id=payload.proposer_invocation_id,
                     reviewer_invocation_id=payload.reviewer_invocation_id,
-                    patch_preview=payload.patch_preview,
-                    target_path=payload.target_path,
-                    sandbox_reference=payload.sandbox_reference,
-                    sandbox_checksum=payload.sandbox_checksum,
-                    legacy_checksum=payload.legacy_checksum,
-                    evidence_refs=payload.evidence_refs,
+                    patch_preview=patch_preview,
+                    target_path=target_path,
+                    sandbox_reference=sandbox_reference,
+                    sandbox_checksum=sandbox_checksum,
+                    legacy_checksum=legacy_checksum,
+                    evidence_refs=evidence_refs,
                     approval_scope=payload.approval_scope,
                 )
             except RepairContextBindingError as exc:

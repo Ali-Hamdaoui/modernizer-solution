@@ -29,6 +29,13 @@ class PatchApplyResult:
     snapshot_dir: Path
     created_paths: list[str]
     errors: list[str]
+    worktree_used: str = ""
+    strip_level: int = 1
+    git_executable: str = ""
+    git_apply_check_stdout: str = ""
+    git_apply_check_stderr: str = ""
+    git_apply_stdout: str = ""
+    git_apply_stderr: str = ""
 
 
 def apply_patch_to_sandbox(
@@ -64,6 +71,8 @@ def apply_patch_to_sandbox(
             snapshot_dir=snapshot_dir,
             created_paths=created_paths,
             errors=[git_error],
+            worktree_used=str(sandbox),
+            git_executable="",
         )
 
     check = _git_apply([git_cmd, "apply", "--check", str(patch_path)], cwd=sandbox, run=run)
@@ -78,6 +87,10 @@ def apply_patch_to_sandbox(
             snapshot_dir=snapshot_dir,
             created_paths=created_paths,
             errors=[_stderr_reason(check, "git apply --check failed")],
+            worktree_used=str(sandbox),
+            git_executable=git_cmd,
+            git_apply_check_stdout=check.stdout or "",
+            git_apply_check_stderr=check.stderr or "",
         )
 
     applied = _git_apply([git_cmd, "apply", str(patch_path)], cwd=sandbox, run=run)
@@ -92,6 +105,12 @@ def apply_patch_to_sandbox(
             snapshot_dir=snapshot_dir,
             created_paths=created_paths,
             errors=[_stderr_reason(applied, "git apply failed")],
+            worktree_used=str(sandbox),
+            git_executable=git_cmd,
+            git_apply_check_stdout=check.stdout or "",
+            git_apply_check_stderr=check.stderr or "",
+            git_apply_stdout=applied.stdout or "",
+            git_apply_stderr=applied.stderr or "",
         )
 
     return PatchApplyResult(
@@ -104,6 +123,12 @@ def apply_patch_to_sandbox(
         snapshot_dir=snapshot_dir,
         created_paths=created_paths,
         errors=[],
+        worktree_used=str(sandbox),
+        git_executable=git_cmd,
+        git_apply_check_stdout=check.stdout or "",
+        git_apply_check_stderr=check.stderr or "",
+        git_apply_stdout=applied.stdout or "",
+        git_apply_stderr=applied.stderr or "",
     )
 
 

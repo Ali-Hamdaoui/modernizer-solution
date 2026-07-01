@@ -796,6 +796,64 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("repair_test_report: test_report.json");
   });
 
+  it("displays assistant-readable apply failure details and recommended next action", () => {
+    const applyResult: ApplyRepairReviewContextResponse = {
+      context_id: "ctx-1",
+      approval_id: "approval-1",
+      repair_action: {
+        action_id: "action-1",
+        proposal_id: "proposal-9a-1",
+        target_path: "src/main/java/com/example/App.java",
+        patch_content: "diff --git",
+        status: "failed",
+        result_summary: "Sandbox changed since proposal/context creation; patch is stale.",
+        created_at: "2026-07-01T00:00:00Z",
+        verification_status: "not_available",
+        verification_build_status: "",
+        verification_test_status: "",
+        verification_h2_status: "",
+        verification_artifact_refs: {},
+        verification_failure_classification_ref: "",
+        human_approved: true,
+        sandbox_only: true,
+        source_mutated: false,
+        sandbox_mutated: false,
+        stage_resumed: false,
+        backend_runner_invoked: false,
+        llm_invoked: false,
+        approval_bypass: false,
+        apply_failure: {
+          failure_stage: "stale_patch",
+          failure_code: "SANDBOX_CHECKSUM_MISMATCH",
+          human_readable_summary: "Sandbox changed since proposal/context creation; patch is stale.",
+          expected_sandbox_checksum: "sha256:before",
+          actual_sandbox_checksum: "sha256:after",
+          git_apply_check_stderr: "patch does not apply",
+          worktree_used: "C:/work/out/.migration/runs/run-9a/sandbox",
+          strip_level: 1,
+          recommended_next_action: "regenerate_proposal_against_current_sandbox",
+        },
+      },
+    };
+    const markup = renderToStaticMarkup(
+      <R6GovernedRepairPanel
+        proposal={GOVERNED_REPAIR_PROPOSAL}
+        state={{ ...EMPTY_R6_REPAIR_UI_STATE, applyResult }}
+        onApprovalChecksumChange={() => undefined}
+        onRequestReviewer={() => undefined}
+        onPrepareContext={() => undefined}
+        onApproveRepair={() => undefined}
+        onOfficialApply={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("Failure stage: stale_patch");
+    expect(markup).toContain("Failure code: SANDBOX_CHECKSUM_MISMATCH");
+    expect(markup).toContain("git apply --check stderr: patch does not apply");
+    expect(markup).toContain("Recommended next action: regenerate_proposal_against_current_sandbox");
+    expect(markup).toContain("disabled");
+  });
+
   it("redacts absolute Windows artifact refs down to short labels", () => {
     const absoluteRef = "C:\\Users\\abdelilah.mortaki\\Desktop\\modernizer-solution\\SecurityConfig.java";
     expect(formatGateArtifactRefLabel(absoluteRef)).toBe("SecurityConfig.java");
@@ -971,7 +1029,7 @@ describe("V2 Migration Cockpit contract", () => {
     }
   });
 
-  it("prepare repair apply context sends backend proposal patch exactly and no raw commands", async () => {
+  it("prepare repair apply context sends only IDs/checksums and no patch path command or env", async () => {
     const originalFetch = global.fetch;
     const calls: { url: string; body: Record<string, unknown> }[] = [];
     const patchText = GOVERNED_REPAIR_PROPOSAL.repair_artifact?.unified_diff ?? "";
@@ -1014,18 +1072,16 @@ describe("V2 Migration Cockpit contract", () => {
         reviewer_critique_id: "crit-1",
         proposer_invocation_id: "model-proposer-1",
         reviewer_invocation_id: "model-reviewer-1",
-        patch_preview: patchText,
-        target_path: "src/main/java/com/example/App.java",
-        sandbox_reference: "C:/work/out/.migration/runs/run-9a/sandbox",
-        sandbox_checksum: "sha256:sandbox-checksum",
-        legacy_checksum: "sha256:legacy-checksum",
-        evidence_refs: { patch_checksum: "sha256:patch-checksum" },
         approval_scope: "sandbox_only",
       });
 
       expect(calls[0].url).toBe(`${CONTROL_TOWER_API_BASE_URL}/v1/v2/commands/cmd-repair-1/repair/proposal/proposal-9a-1/prepare-apply-context`);
-      expect(calls[0].body.patch_preview).toBe(patchText);
-      expect(calls[0].body.patch_preview).not.toContain("browser edit");
+      expect(calls[0].body).not.toHaveProperty("patch_preview");
+      expect(calls[0].body).not.toHaveProperty("target_path");
+      expect(calls[0].body).not.toHaveProperty("sandbox_reference");
+      expect(calls[0].body).not.toHaveProperty("sandbox_checksum");
+      expect(calls[0].body).not.toHaveProperty("legacy_checksum");
+      expect(calls[0].body).not.toHaveProperty("evidence_refs");
       expect(calls[0].body).not.toHaveProperty("argv");
       expect(calls[0].body).not.toHaveProperty("env");
       expect(calls[0].body).not.toHaveProperty("command");
