@@ -188,9 +188,313 @@ h2 {
   word-break: break-word;
 }
 
+.repair-proposal-panel {
+  border-color: #91b8b2;
+}
+
+.repair-proposal-layout {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+}
+
+.repair-proposal-main,
+.repair-proposal-side,
+.model-role-activity,
+.validation-progress-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.repair-panel-kicker {
+  color: var(--accent-dark);
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.failure-summary,
+.main-diagnosis-summary,
+.model-role-activity,
+.validation-progress-panel,
+.reviewer-verdict-card,
+.attempt-entry {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.failure-summary {
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+
+.main-diagnosis-summary,
+.model-role-activity {
+  background: var(--soft);
+}
+
+.repair-metadata-grid .table-row {
+  grid-template-columns: minmax(150px, 0.8fr) minmax(0, 2fr);
+}
+
+.reviewed-diff-tabs,
+.tab-content,
+.safe-diff-preview,
+.safe-diff-file,
+.safe-diff-hunks,
+.attempt-timeline {
+  display: grid;
+  gap: 12px;
+}
+
+.tab-bar {
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tab-bar button {
+  background: transparent;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: 800;
+  padding: 10px 8px;
+}
+
+.tab-bar button.tab-active {
+  border-bottom-color: var(--accent);
+  color: var(--ink);
+}
+
+.safe-diff-file {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.safe-diff-file-header,
+.safe-diff-hunk-header {
+  align-items: center;
+  background: #eef4f2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.safe-diff-hunk-header {
+  background: #10231f;
+  color: #d9fff8;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 0.82rem;
+}
+
+.safe-diff-lines {
+  background: #fbfdfc;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 0.82rem;
+  overflow-x: auto;
+}
+
+.safe-diff-line {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 72px 16px minmax(0, 1fr);
+  min-width: 0;
+  padding: 3px 10px;
+}
+
+.safe-diff-line-addition {
+  background: #ecfdf3;
+}
+
+.safe-diff-line-deletion {
+  background: #fff1f2;
+}
+
+.safe-diff-line-text,
+.checksum {
+  overflow-wrap: anywhere;
+}
+
+.repair-actions-bar {
+  align-items: start;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, auto);
+  padding-top: 14px;
+}
+
+.repair-actions-readonly,
+.repair-actions-mutation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.repair-actions-bar button,
+.dialog-actions button {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  min-height: 36px;
+  padding: 7px 10px;
+}
+
+.repair-actions-mutation button[data-testid="action-approve-sandbox-apply"],
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+  font-weight: 800;
+}
+
+.repair-actions-bar button:disabled,
+.dialog-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.repair-side-header,
+.model-activity-title,
+.validation-phase-row,
+.stage-header,
+.reviewer-verdict-header {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.model-activity-list,
+.validation-phase-list {
+  display: grid;
+  gap: 10px;
+}
+
+.model-activity-row {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 12px minmax(0, 1fr);
+}
+
+.activity-dot {
+  border-radius: 999px;
+  height: 10px;
+  margin-top: 6px;
+  width: 10px;
+}
+
+.activity-dot.pending {
+  background: #94a3b8;
+}
+
+.activity-dot.running {
+  background: #d97706;
+}
+
+.activity-dot.completed {
+  background: var(--accent);
+}
+
+.activity-dot.failed {
+  background: var(--danger);
+}
+
+.activity-dot.blocked {
+  background: #7c3aed;
+}
+
+.status-badge {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 4px 8px;
+  text-transform: uppercase;
+}
+
+.status-badge.pending {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.status-badge.running {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-badge.completed,
+.status-badge.status-pass {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.status-badge.failed,
+.status-badge.status-fail {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.status-badge.blocked {
+  background: #ede9fe;
+  color: #5b21b6;
+}
+
+.warning-text {
+  color: #92400e;
+}
+
+.dialog-overlay {
+  align-items: center;
+  background: rgba(17, 24, 22, 0.42);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 20px;
+  position: fixed;
+  z-index: 50;
+}
+
+.dialog {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  max-width: 560px;
+  padding: 18px;
+  width: 100%;
+}
+
+.revision-instruction-input {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+  min-height: 120px;
+  padding: 10px;
+  resize: vertical;
+}
+
+.dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: end;
+}
+
 @media (max-width: 720px) {
   .event-row,
-  .table-row {
+  .table-row,
+  .repair-proposal-layout,
+  .repair-actions-bar {
     grid-template-columns: 1fr;
   }
 }

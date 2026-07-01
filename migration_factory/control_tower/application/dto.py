@@ -514,11 +514,14 @@ class LlmInvocationDto:
     proposal_id: str | None = None
     gate_id: str | None = None
     provider_alias: str | None = None
+    model_display_name: str | None = None
     deployment_alias_hash: str | None = None
     context_checksum: str | None = None
+    input_checksum: str | None = None
     output_checksum: str | None = None
     schema_name: str | None = None
     fallback_used: bool = False
+    redacted_error: str | None = None
     redacted_summary: str | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None

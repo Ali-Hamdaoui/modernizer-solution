@@ -5,6 +5,8 @@ import { SafeDiffPreview } from "../app/migrations/[jobId]/SafeDiffPreview";
 import { ReviewerVerdictCard } from "../app/migrations/[jobId]/ReviewerVerdictCard";
 import { RepairAttemptTimeline } from "../app/migrations/[jobId]/RepairAttemptTimeline";
 import { RepairActionsBar } from "../app/migrations/[jobId]/RepairActionsBar";
+import { ModelRoleActivity } from "../app/migrations/[jobId]/ModelRoleActivity";
+import { ValidationProgressPanel } from "../app/migrations/[jobId]/ValidationProgressPanel";
 import type {
   SafeDiffPreview as SafeDiffPreviewType,
   SafeDiffFile,
@@ -12,6 +14,7 @@ import type {
   ReviewerVerdictProjection,
   RepairAttemptSummary,
   ReviewedDiffProposal,
+  V2LlmInvocationEntry,
 } from "../lib/contracts";
 
 describe("PR-C SafeDiffPreview component", () => {
@@ -671,6 +674,127 @@ describe("PR-E approve button behavior", () => {
     expect(body).not.toContain("command");
     expect(body).not.toContain("argv");
     expect(body).not.toContain("env");
+  });
+
+  it("request revision can be disabled by backend allowed actions", () => {
+    const markup = renderToStaticMarkup(
+      <RepairActionsBar
+        onViewDiff={() => undefined}
+        onViewReviewerOpinion={() => undefined}
+        onViewFilesChanged={() => undefined}
+        onViewAttemptHistory={() => undefined}
+        onRequestRevision={mockOnRequestRevision}
+        onApproveSandboxApply={() => undefined}
+        revisionPending={false}
+        revisionEnabled={false}
+        approveEnabled={false}
+        approvePending={false}
+        checksumMismatch={false}
+        rejectDisabled={true}
+      />,
+    );
+    expect(markup).toContain("Revision is not allowed by the current backend gate");
+  });
+});
+
+describe("F5 model activity and validation panels", () => {
+  const baseInvocation: V2LlmInvocationEntry = {
+    invocation_id: "inv-main",
+    job_id: "job-1",
+    proposal_id: "proposal-1",
+    gate_id: "gate-1",
+    role: "main",
+    responsibility: "repair_proposal",
+    provider_alias: "azure_openai",
+    model_display_name: "Product safe proposer",
+    deployment_alias_hash: "abc123",
+    context_checksum: "sha256:context",
+    input_checksum: "sha256:input",
+    output_checksum: "sha256:output",
+    schema_name: "RepairPrimaryOutput",
+    status: "completed",
+    fallback_used: false,
+    redacted_error: null,
+    redacted_summary: "Diagnosed missing validation dependency.",
+    prompt_tokens: 12,
+    completion_tokens: 8,
+    total_tokens: 20,
+    latency_ms: 1200,
+    created_at: "2026-06-30T00:00:00Z",
+    completed_at: "2026-06-30T00:00:01Z",
+  };
+
+  it("renders backend-provided safe model labels and summaries", () => {
+    const markup = renderToStaticMarkup(
+      <ModelRoleActivity
+        invocations={[
+          baseInvocation,
+          {
+            ...baseInvocation,
+            invocation_id: "inv-reviewer",
+            role: "reviewer",
+            responsibility: "repair_review",
+            model_display_name: "Product safe reviewer",
+            redacted_summary: "Reviewer accepted the checksum-bound diff.",
+            created_at: "2026-06-30T00:00:02Z",
+          },
+        ]}
+        loading={false}
+        error={null}
+      />,
+    );
+    expect(markup).toContain("Product safe proposer");
+    expect(markup).toContain("Product safe reviewer");
+    expect(markup).toContain("Diagnosed missing validation dependency");
+    expect(markup).toContain("Reviewer accepted");
+    expect(markup).not.toContain("AZURE_OPENAI_PROPOSER_DEPLOYMENT");
+    expect(markup).not.toContain("raw deployment");
+  });
+
+  it("falls back to role labels without hardcoded sample model names", () => {
+    const markup = renderToStaticMarkup(
+      <ModelRoleActivity
+        invocations={[{ ...baseInvocation, model_display_name: null }]}
+        loading={false}
+        error={null}
+      />,
+    );
+    expect(markup).toContain("Main Model");
+    expect(markup).not.toContain("gpt");
+    expect(markup).not.toContain("sample");
+  });
+
+  it("renders apply, rebuild, test, and continue progress from attempts", () => {
+    const attempts: RepairAttemptSummary[] = [
+      {
+        proposal_id: "p-1",
+        command_id: null,
+        job_id: "job-1",
+        gate_id: "g-1",
+        attempt_number: 1,
+        revision_number: null,
+        status: "approved_applied",
+        apply_status: "APPLIED",
+        rerun_status: "validation_passed",
+        rollback_status: null,
+        reviewer_decision: "accept",
+        diff_checksum: "sha256:diff",
+        policy_validation_checksum: "sha256:policy",
+        validation_result_ref: null,
+        next_gate_id: null,
+        next_gate_status: "resolved",
+        remaining_attempts: 2,
+        status_reason: null,
+        created_at: "2026-06-30T00:00:00Z",
+        completed_at: "2026-06-30T00:00:02Z",
+      },
+    ];
+    const markup = renderToStaticMarkup(<ValidationProgressPanel attempts={attempts} />);
+    expect(markup).toContain("Applying reviewed diff to sandbox");
+    expect(markup).toContain("Rebuilding");
+    expect(markup).toContain("Running tests");
+    expect(markup).toContain("Migration continuing");
+    expect(markup).toContain("validation passed");
   });
 });
 

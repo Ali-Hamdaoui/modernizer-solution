@@ -1204,6 +1204,36 @@ export type ReviewedDiffProposal = {
   redactions: string[];
 };
 
+export type V2LlmInvocationEntry = {
+  invocation_id: string;
+  job_id: string;
+  proposal_id: string | null;
+  gate_id: string | null;
+  role: string;
+  responsibility: string;
+  provider_alias: string | null;
+  model_display_name?: string | null;
+  deployment_alias_hash: string | null;
+  context_checksum: string | null;
+  input_checksum: string | null;
+  output_checksum: string | null;
+  schema_name: string | null;
+  status: string;
+  fallback_used: boolean;
+  redacted_error: string | null;
+  redacted_summary: string | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  total_tokens: number | null;
+  latency_ms: number | null;
+  created_at: string;
+  completed_at: string | null;
+};
+
+export type V2LlmActivityResponse = {
+  invocations: V2LlmInvocationEntry[];
+};
+
 export type RepairProposalCurrentResponse = {
   proposal: ReviewedDiffProposal | null;
   job_id: string;

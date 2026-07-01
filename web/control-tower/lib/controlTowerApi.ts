@@ -58,6 +58,7 @@ import type {
   RepairProposalDetailResponse,
   RepairProposalDiffResponse,
   RepairAttemptsResponse,
+  V2LlmActivityResponse,
   // PR-D types
   RepairProposalRevisionRequest,
   RepairProposalRevisionResponse,
@@ -760,6 +761,15 @@ export async function getRepairAttempts(
   const safeJobId = requireJobId(jobId);
   return getJson<RepairAttemptsResponse>(
     `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/attempts`,
+  );
+}
+
+export async function getV2LlmActivity(
+  jobId: string,
+): Promise<V2LlmActivityResponse> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<V2LlmActivityResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/llm/activity`,
   );
 }
 

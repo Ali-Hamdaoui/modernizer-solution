@@ -7,6 +7,7 @@ function formatVerdictLabel(decision: string): string {
     case "accept":
       return "Accepted";
     case "revise":
+    case "request_revision":
       return "Revision Requested";
     case "reject":
       return "Rejected";
@@ -20,6 +21,7 @@ function formatVerdictBadgeClass(decision: string): string {
     case "accept":
       return "status-badge completed";
     case "revise":
+    case "request_revision":
       return "status-badge blocked";
     case "reject":
       return "status-badge failed";

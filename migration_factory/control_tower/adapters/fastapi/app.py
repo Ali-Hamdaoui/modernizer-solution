@@ -4334,6 +4334,16 @@ def create_app(
     # V2 LLM invocation ledger activity endpoint (PR-G)
     # ------------------------------------------------------------------
 
+    def _safe_llm_role_display_name(role: str) -> str:
+        normalized = str(role or "").strip().lower()
+        if normalized in {"main", "proposer", "primary"}:
+            return "Main Model"
+        if normalized == "reviewer":
+            return "Reviewer Model"
+        if normalized == "fallback":
+            return "Fallback Model"
+        return "Model"
+
     @app.get("/v1/v2/jobs/{job_id}/llm/activity")
     def list_v2_llm_activity(job_id: str) -> dict[str, Any]:
         with unit_of_work_factory() as uow:
@@ -4348,11 +4358,14 @@ def create_app(
                     "proposal_id": r.proposal_id,
                     "gate_id": r.gate_id,
                     "provider_alias": r.provider_alias,
+                    "model_display_name": _safe_llm_role_display_name(r.role),
                     "deployment_alias_hash": r.deployment_alias_hash,
                     "context_checksum": r.context_checksum,
+                    "input_checksum": r.input_checksum,
                     "output_checksum": r.output_checksum,
                     "schema_name": r.schema_name,
                     "fallback_used": bool(r.fallback_used),
+                    "redacted_error": r.redacted_error,
                     "redacted_summary": r.redacted_summary,
                     "prompt_tokens": r.prompt_tokens,
                     "completion_tokens": r.completion_tokens,

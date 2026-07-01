@@ -48,6 +48,18 @@ def safe_deployment_label() -> str:
     return "configured"
 
 
+def safe_model_display_name(role: str) -> str:
+    """Return a product-safe display label for a model role."""
+    normalized = str(role or "").strip().lower()
+    if normalized in {"main", "proposer", "primary"}:
+        return "Main Model"
+    if normalized == "reviewer":
+        return "Reviewer Model"
+    if normalized == "fallback":
+        return "Fallback Model"
+    return "Model"
+
+
 class V2LLMInvocationLedger:
     """Capture-point service for the governed LLM invocation ledger.
 
@@ -175,11 +187,14 @@ class V2LLMInvocationLedger:
             proposal_id=record.proposal_id,
             gate_id=record.gate_id,
             provider_alias=record.provider_alias,
+            model_display_name=safe_model_display_name(record.role),
             deployment_alias_hash=record.deployment_alias_hash,
             context_checksum=record.context_checksum,
+            input_checksum=record.input_checksum,
             output_checksum=record.output_checksum,
             schema_name=record.schema_name,
             fallback_used=bool(record.fallback_used),
+            redacted_error=record.redacted_error,
             redacted_summary=record.redacted_summary,
             prompt_tokens=record.prompt_tokens,
             completion_tokens=record.completion_tokens,
@@ -196,11 +211,14 @@ class V2LLMInvocationLedger:
             "proposal_id": dto.proposal_id,
             "gate_id": dto.gate_id,
             "provider_alias": dto.provider_alias,
+            "model_display_name": dto.model_display_name,
             "deployment_alias_hash": dto.deployment_alias_hash,
             "context_checksum": dto.context_checksum,
+            "input_checksum": dto.input_checksum,
             "output_checksum": dto.output_checksum,
             "schema_name": dto.schema_name,
             "fallback_used": dto.fallback_used,
+            "redacted_error": dto.redacted_error,
             "redacted_summary": dto.redacted_summary,
             "prompt_tokens": dto.prompt_tokens,
             "completion_tokens": dto.completion_tokens,

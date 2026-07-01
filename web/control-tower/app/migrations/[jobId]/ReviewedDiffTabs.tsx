@@ -5,14 +5,13 @@ import type { ReviewedDiffProposal, SafeDiffPreview as SafeDiffPreviewType } fro
 import { SafeDiffPreview } from "./SafeDiffPreview";
 import { ReviewerVerdictCard } from "./ReviewerVerdictCard";
 
-type TabId = "diff" | "static-analysis" | "files-changed" | "reviewer-opinion" | "chat";
+type TabId = "diff" | "validation" | "files-changed" | "reviewer-opinion";
 
 const TABS: { id: TabId; label: string }[] = [
-  { id: "diff", label: "Diff" },
-  { id: "static-analysis", label: "Static Analysis" },
+  { id: "diff", label: "Reviewed Diff" },
+  { id: "validation", label: "Validation" },
   { id: "files-changed", label: "Files Changed" },
-  { id: "reviewer-opinion", label: "Reviewer Opinion" },
-  { id: "chat", label: "Chat" },
+  { id: "reviewer-opinion", label: "Reviewer Verdict" },
 ];
 
 export function ReviewedDiffTabs({
@@ -60,9 +59,9 @@ export function ReviewedDiffTabs({
             )}
           </div>
         )}
-        {activeTab === "static-analysis" && (
-          <div data-testid="tabpanel-static-analysis">
-            <p className="meta">Static analysis summary:</p>
+        {activeTab === "validation" && (
+          <div data-testid="tabpanel-validation">
+            <p className="meta">Backend policy and validation requirements:</p>
             <div className="table-list">
               {proposal.risk && (
                 <div className="table-row">
@@ -105,16 +104,6 @@ export function ReviewedDiffTabs({
         {activeTab === "reviewer-opinion" && (
           <div data-testid="tabpanel-reviewer-opinion">
             <ReviewerVerdictCard verdict={proposal.reviewer_verdict} />
-          </div>
-        )}
-        {activeTab === "chat" && (
-          <div data-testid="tabpanel-chat">
-            <p className="meta">
-              Chat is read-only in the current view. Use the assistant panel to ask questions about this proposal.
-            </p>
-            <p className="meta">
-              Use the "Request revision" button in the actions bar to request changes.
-            </p>
           </div>
         )}
       </div>

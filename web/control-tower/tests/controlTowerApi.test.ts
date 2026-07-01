@@ -955,6 +955,22 @@ describe("PR-C Reviewed Diff Proposal API client", () => {
     expect(init?.method ?? "GET").toBe("GET");
   });
 
+  it("getV2LlmActivity calls GET V2 activity endpoint", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({ invocations: [] }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getV2LlmActivity } = await import("../lib/controlTowerApi");
+    await getV2LlmActivity("job-1");
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain("/v1/v2/jobs/job-1/llm/activity");
+    const init = fetchMock.mock.calls[0][1] as RequestInit | undefined;
+    expect(init?.method ?? "GET").toBe("GET");
+  });
+
   it("no POST method is introduced by PR-C", async () => {
     const {
       getCurrentRepairProposal,

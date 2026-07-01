@@ -370,6 +370,9 @@ class TestNoSecretsLeaked:
         record = ledger.get_invocation(inv_id)
         assert record is not None
         dto = ledger.record_to_dto(record)
+        assert dto["model_display_name"] == "Main Model"
+        assert "input_checksum" in dto
+        assert "redacted_error" in dto
         text = json.dumps(dto).lower()
         for secret_word in ("api_key", "api-key", "apikey", "endpoint", "secret", "bearer"):
             assert secret_word not in text, f"forbidden word {secret_word} found in dto"
@@ -395,6 +398,10 @@ class TestNoSecretsLeaked:
         text = json.dumps(data).lower()
         for secret_word in ("api_key", "api-key", "apikey", "endpoint", "secret", "bearer", "password"):
             assert secret_word not in text, f"forbidden word {secret_word} in API response"
+        first = data["invocations"][0]
+        assert "model_display_name" in first
+        assert "input_checksum" in first
+        assert "redacted_error" in first
         conn.close()
 
 
@@ -711,6 +718,15 @@ def _build_test_app_with_connection(api_connection: sqlite3.Connection):
 
     @app.get("/v1/v2/jobs/{job_id}/llm/activity")
     def list_activity(job_id: str):
+        def display_name(role: str) -> str:
+            if role in {"main", "proposer", "primary"}:
+                return "Main Model"
+            if role == "reviewer":
+                return "Reviewer Model"
+            if role == "fallback":
+                return "Fallback Model"
+            return "Model"
+
         with uow_factory() as uow:
             records = uow.v2_llm_invocations.list_by_job(job_id)
             invocations = [
@@ -723,11 +739,14 @@ def _build_test_app_with_connection(api_connection: sqlite3.Connection):
                     "proposal_id": r.proposal_id,
                     "gate_id": r.gate_id,
                     "provider_alias": r.provider_alias,
+                    "model_display_name": display_name(r.role),
                     "deployment_alias_hash": r.deployment_alias_hash,
                     "context_checksum": r.context_checksum,
+                    "input_checksum": r.input_checksum,
                     "output_checksum": r.output_checksum,
                     "schema_name": r.schema_name,
                     "fallback_used": bool(r.fallback_used),
+                    "redacted_error": r.redacted_error,
                     "redacted_summary": r.redacted_summary,
                     "prompt_tokens": r.prompt_tokens,
                     "completion_tokens": r.completion_tokens,

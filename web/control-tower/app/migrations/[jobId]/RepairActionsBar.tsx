@@ -13,6 +13,7 @@ export function RepairActionsBar({
   revisionPending,
   approvePending,
   approveEnabled,
+  revisionEnabled = true,
   checksumMismatch,
   rejectDisabled,
 }: {
@@ -25,6 +26,7 @@ export function RepairActionsBar({
   revisionPending: boolean;
   approvePending?: boolean;
   approveEnabled?: boolean;
+  revisionEnabled?: boolean;
   checksumMismatch?: boolean;
   rejectDisabled?: boolean;
 }) {
@@ -57,10 +59,11 @@ export function RepairActionsBar({
         <button
           type="button"
           onClick={() => setShowDialog(true)}
-          disabled={revisionPending}
+          disabled={revisionPending || !revisionEnabled}
+          title={revisionEnabled ? "Request another reviewed repair proposal" : "Revision is not allowed by the current backend gate"}
           data-testid="action-request-revision"
         >
-          Request revision
+          {revisionPending ? "Requesting revision..." : "Request revision"}
         </button>
         <button
           type="button"
@@ -80,10 +83,10 @@ export function RepairActionsBar({
         <button
           type="button"
           disabled={rejectDisabled !== false}
-          title="Not yet implemented"
+          title="Reject endpoint is not available for this repair gate"
           data-testid="action-reject-repair"
         >
-          Reject
+          Reject unavailable
         </button>
       </div>
       <RepairRevisionDialog
