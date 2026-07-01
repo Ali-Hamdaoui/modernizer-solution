@@ -840,6 +840,48 @@ class _RecordingReviewerClient:
         )
 
 
+class _UnavailableReviewerClient:
+    provider = "fake-unavailable"
+
+    def __init__(self) -> None:
+        self.roles: list[str] = []
+        self.prompts: list[str] = []
+
+    def answer_with_role(
+        self,
+        *,
+        role,
+        prompt: str,
+        fallback: str,
+        conversation_history=None,
+        output_schema_name=None,
+        require_schema: bool = False,
+    ):
+        self.roles.append(role.value)
+        self.prompts.append(prompt)
+        return type("Result", (), {
+            "content": fallback,
+            "source": "deterministic",
+            "model_status": "fallback",
+            "provider": "deterministic",
+            "role": role.value,
+            "success": False,
+            "redacted_summary": "Reviewer model unavailable.",
+            "failure_reason": "missing_endpoint",
+            "primary_failure_reason": "missing_endpoint",
+            "fallback_used": False,
+            "schema_validated": False,
+        })()
+
+    def answer(self, *, prompt: str, fallback: str, conversation_history=None):
+        return self.answer_with_role(
+            role=V2ModelRole.REVIEWER,
+            prompt=prompt,
+            fallback=fallback,
+            conversation_history=conversation_history,
+        )
+
+
 class _ControlledFailureProposerClient(_RecordingProposerClient):
     def __init__(self, target_rel_path: str) -> None:
         super().__init__()
@@ -1145,6 +1187,10 @@ class TestRepairAPI:
         review_body = review_response.json()
         assert review_body["decision"] == "accept"
         assert review_body["context_pack_checksum"] == proposal["context_pack_checksum"]
+        assert review_body["reviewer_model"]["provider"] == "fake"
+        assert review_body["reviewer_model"]["source"] == "fake"
+        assert review_body["reviewer_model"]["status"] == "live_ok"
+        assert review_body["reviewer_model"]["fallback_used"] is False
         assert reviewer_client.roles == ["reviewer"]
         assert reviewer_client.prompts
         assert "controlled_demo_evidence" in reviewer_client.prompts[0]
@@ -1166,6 +1212,65 @@ class TestRepairAPI:
             headers=_mutation_headers(),
         )
         assert browser_model_payload.status_code == 422
+
+        browser_decision_payload = client.post(
+            f"/v1/v2/commands/{proposal['command_id']}/repair/proposal/{proposal['proposal_id']}/reviewer-critique",
+            json={
+                "proposal_id": proposal["proposal_id"],
+                "proposal_type": "repair_proposal",
+                "proposal_checksum": proposal["proposal_checksum"],
+                "context_pack_checksum": proposal["context_pack_checksum"],
+                "decision": "accept",
+                "reasoning": "browser says yes",
+            },
+            headers=_mutation_headers(),
+        )
+        assert browser_decision_payload.status_code == 422
+
+    def test_controlled_r6_reviewer_uses_local_dev_fallback_when_model_unavailable(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, conn = _api_client(tmp_path)
+        _seed_v2_command_for_model_audit(conn, tmp_path, "cmd-r6-local-reviewer")
+        monkeypatch.setenv("CONTROL_TOWER_R6_DEMO_ENABLED", "true")
+
+        response = client.post(
+            "/v1/v2/jobs/job-cmd-r6-local-reviewer/repair/demo/r6-controlled",
+            json={},
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 200, response.text
+        proposal = response.json()["repair_proposal"]
+
+        reviewer_client = _UnavailableReviewerClient()
+        client.app.state.v2_assistant_model_client = reviewer_client
+        review_response = client.post(
+            f"/v1/v2/commands/{proposal['command_id']}/repair/proposal/{proposal['proposal_id']}/reviewer-critique",
+            json={
+                "proposal_id": proposal["proposal_id"],
+                "proposal_type": "repair_proposal",
+                "proposal_checksum": proposal["proposal_checksum"],
+                "context_pack_checksum": proposal["context_pack_checksum"],
+            },
+            headers=_mutation_headers(),
+        )
+
+        assert review_response.status_code == 200, review_response.text
+        body = review_response.json()
+        assert body["decision"] == "accept"
+        assert "Controlled local/dev R6 smoke reviewer accepted" in body["reasoning"]
+        assert body["missing_evidence"] == []
+        assert body["reviewer_model"]["provider"] == "local_dev_fake"
+        assert body["reviewer_model"]["source"] == "controlled_r6_smoke"
+        assert body["reviewer_model"]["status"] == "local_dev_fallback"
+        assert body["reviewer_model"]["fallback_used"] is True
+        assert body["reviewer_model"]["model_invocation_id"]
+        assert reviewer_client.roles == ["reviewer"]
+        persisted = SqliteUnitOfWork(conn).v2_reviewer.list_critiques_by_proposal(proposal["proposal_id"])
+        assert len(persisted) == 1
+        assert persisted[0].decision == "accept"
 
     def test_controlled_r6_reviewer_revises_when_namespace_evidence_missing(
         self,
@@ -1613,6 +1718,53 @@ class TestRepairAPI:
         assert len(invocations) == 2
         assert {inv.model_name for inv in invocations} == {"proposer", "reviewer"}
         assert {inv.provider_kind for inv in invocations} == {"fake"}
+
+    def test_non_demo_reviewer_model_unavailable_fails_closed_with_revise(self, tmp_path: Path) -> None:
+        target_rel_path = "src/main/java/App.java"
+        proposer_client = _ControlledFailureProposerClient(target_rel_path)
+        client, conn = _api_client(tmp_path, fake_model_client=proposer_client)
+        _seed_v2_command_for_model_audit(
+            conn,
+            tmp_path,
+            "cmd-review-unavailable",
+            target_rel_path=target_rel_path,
+        )
+
+        create_resp = client.post(
+            "/v1/v2/commands/cmd-review-unavailable/repair/flow-proposal",
+            json={
+                "command_id": "cmd-review-unavailable",
+                "failure_summary": "cannot find symbol variable doesNotCompile",
+                "hypothesis": "Undefined controlled symbol",
+                "patch_summary": "Remove controlled undefined symbol",
+                "affected_paths": [target_rel_path],
+            },
+            headers=_mutation_headers(),
+        )
+        assert create_resp.status_code == 200, create_resp.text
+        proposal_body = create_resp.json()
+
+        reviewer_client = _UnavailableReviewerClient()
+        client.app.state.v2_assistant_model_client = reviewer_client
+        response = client.post(
+            f"/v1/v2/commands/cmd-review-unavailable/repair/proposal/{proposal_body['proposal_id']}/reviewer-critique",
+            json={
+                "proposal_id": proposal_body["proposal_id"],
+                "proposal_type": "repair",
+                "proposal_checksum": proposal_body["proposal_checksum"],
+                "context_pack_checksum": "cp-review-unavailable",
+            },
+            headers=_mutation_headers(),
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["decision"] == "revise"
+        assert body["reviewer_model"]["provider"] == "deterministic"
+        assert body["reviewer_model"]["source"] == "deterministic"
+        assert body["reviewer_model"]["status"] == "fallback"
+        assert body["reviewer_model"]["failure_reason"] == "missing_endpoint"
+        assert reviewer_client.roles == ["reviewer"]
 
     def test_repair_model_invocations_bind_to_v2_command_without_v1_fk(self, tmp_path: Path) -> None:
         command_id = "cmd-v2-audit"

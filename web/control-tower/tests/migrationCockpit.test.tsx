@@ -714,7 +714,12 @@ describe("V2 Migration Cockpit contract", () => {
       unsafe_assumptions: [],
       model_invocation_id: null,
       created_at: "2026-06-30T00:00:00Z",
-      reviewer_model: { model_invocation_id: "model-reviewer-1" },
+      reviewer_model: {
+        model_invocation_id: "model-reviewer-1",
+        provider: "fake",
+        source: "fake",
+        status: "live_ok",
+      },
     };
     const context: RepairApplyContextResponse = {
       context_id: "ctx-1",
@@ -778,9 +783,47 @@ describe("V2 Migration Cockpit contract", () => {
     );
 
     expect(markup).toContain("Decision: accept");
+    expect(markup).toContain("Reviewer source: fake / fake / live_ok");
     expect(markup).toContain("Context: ctx-1");
     expect(markup).toContain("Approval: approval-1");
     expect(markup).toContain(">Run official apply</button>");
+  });
+
+  it("renders local/dev reviewer metadata distinctly", () => {
+    const reviewer: V2ReviewerCritiqueResponse = {
+      critique_id: "crit-local",
+      proposal_id: "proposal-9a-1",
+      proposal_type: "repair_proposal",
+      proposal_checksum: "sha256:proposal-checksum",
+      context_pack_checksum: "sha256:context-checksum",
+      decision: "accept",
+      reasoning: "Controlled local/dev R6 smoke reviewer accepted evidence-complete demo proposal.",
+      missing_evidence: [],
+      unsafe_assumptions: [],
+      model_invocation_id: null,
+      created_at: "2026-06-30T00:00:00Z",
+      reviewer_model: {
+        model_invocation_id: "model-local-1",
+        provider: "local_dev_fake",
+        source: "controlled_r6_smoke",
+        status: "local_dev_fallback",
+        fallback_used: true,
+      },
+    };
+    const markup = renderToStaticMarkup(
+      <R6GovernedRepairPanel
+        proposal={GOVERNED_REPAIR_PROPOSAL}
+        state={{ ...EMPTY_R6_REPAIR_UI_STATE, reviewer }}
+        onApprovalChecksumChange={() => undefined}
+        onRequestReviewer={() => undefined}
+        onPrepareContext={() => undefined}
+        onApproveRepair={() => undefined}
+        onOfficialApply={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("Reviewer source: local_dev_fake / controlled_r6_smoke / local_dev_fallback");
+    expect(markup).toContain("Controlled local/dev R6 smoke reviewer accepted");
   });
 
   it("displays git apply check Maven verification and sandbox-only proof after apply", () => {

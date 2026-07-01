@@ -736,6 +736,9 @@ export function R6GovernedRepairPanel({
         <p className="meta">Decision: {reviewerDecision || "not requested"}</p>
         <p className="meta">Critique: {state.reviewer?.critique_id ?? proposal.reviewer_critique_id ?? "n/a"}</p>
         <p className="meta">Model invocation: {reviewerInvocationId(state.reviewer) || "n/a"}</p>
+        <p className="meta">
+          Reviewer source: {state.reviewer?.reviewer_model?.provider ?? "n/a"} / {state.reviewer?.reviewer_model?.source ?? "n/a"} / {state.reviewer?.reviewer_model?.status ?? "n/a"}
+        </p>
         {state.reviewer?.reasoning && <p className="meta">{state.reviewer.reasoning}</p>}
         {missingReviewerFields.length > 0 && (
           <p className="meta">Reviewer request disabled: missing {missingReviewerFields.join(", ")}.</p>

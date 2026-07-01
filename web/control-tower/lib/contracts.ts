@@ -698,6 +698,11 @@ export type V2ReviewerCritiqueResponse = {
     source?: string;
     provider?: string;
     role?: string;
+    failure_reason?: string;
+    primary_failure_reason?: string;
+    redacted_error_summary?: string;
+    fallback_used?: boolean;
+    schema_validated?: boolean;
   };
 };
 
