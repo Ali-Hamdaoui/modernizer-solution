@@ -365,6 +365,25 @@ describe("M2-01 frontend diagnostic contracts", () => {
     expect(body.repair_family).toBe("JAKARTA_IMPORT_MECHANICAL_SOURCE");
   });
 
+  it("surfaces controlled R6 demo backend 409 code and message", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 409,
+      statusText: "Conflict",
+      json: async () => ({
+        error: {
+          code: "R6_DEMO_SANDBOX_MISSING",
+          message: "Controlled R6 repair demo requires an existing Stage1 sandbox.",
+        },
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(runControlledR6RepairDemo("job-123")).rejects.toThrow(
+      /R6_DEMO_SANDBOX_MISSING: Controlled R6 repair demo requires an existing Stage1 sandbox/
+    );
+  });
+
   // ── V1-18D model activity normalization ────────────────────────────
 
   it("normalizes backend { model_invocations } into { invocations }", async () => {

@@ -2926,6 +2926,26 @@ def create_app(
                 return {}
             return parsed if isinstance(parsed, dict) else {}
 
+        def _run_id_from_relative_path(relative_path: str) -> str:
+            match = re.search(r"(?:^|[\\/])\.migration[\\/]runs[\\/]([^\\/]+)[\\/]", relative_path)
+            return match.group(1) if match else ""
+
+        def _safe_workspace_candidate(
+            *,
+            output_parent: Path,
+            relative_path: str,
+        ) -> Path | None:
+            if not relative_path:
+                return None
+            raw = Path(relative_path)
+            candidate = raw if raw.is_absolute() else output_parent / raw
+            try:
+                resolved = candidate.resolve()
+                resolved.relative_to(output_parent.resolve())
+            except (OSError, ValueError):
+                return None
+            return resolved
+
         with unit_of_work_factory() as uow:
             job = uow.v2_jobs.get(job_id)
             if job is None:
@@ -2934,31 +2954,91 @@ def create_app(
             if setup is None:
                 raise _error(status.HTTP_404_NOT_FOUND, "SETUP_NOT_FOUND", f"Setup {job.setup_id!r} not found")
 
+            stage2_started = any(
+                event.stage == 2
+                and (
+                    event.status in {"running", "completed", "failed"}
+                    or "started" in event.type
+                    or event.type in {"command_created", "stage_started", "sandbox_transform_started"}
+                )
+                for event in uow.v2_events.list_by_job(job_id)
+            )
+            if stage2_started:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "R6_DEMO_STAGE2_STARTED",
+                    "Controlled R6 repair demo is disabled after Stage2 has started.",
+                )
+
+            output_parent = Path(setup.output_parent_path)
             run_id = ""
-            sandbox_path = Path()
-            for command in reversed(uow.v2_commands.list_by_job(job_id)):
+            sandbox_path: Path | None = None
+            candidates: list[tuple[str, Path]] = []
+            expected_relative_path = ""
+            stage1_status = "unknown"
+            events = tuple(uow.v2_events.list_by_job(job_id))
+            commands = tuple(uow.v2_commands.list_by_job(job_id))
+            for command in commands:
+                if command.stage_index == 1:
+                    stage1_status = command.status or stage1_status
+
+            for command in reversed(commands):
                 payload = _payload(command.result_json)
                 candidate_run = str(payload.get("run_id") or "").strip()
                 candidate_sandbox = str(payload.get("sandbox_path") or "").strip()
-                if candidate_run and candidate_sandbox:
+                if candidate_run and not run_id:
                     run_id = candidate_run
-                    sandbox_path = Path(candidate_sandbox)
-                    break
-            if not run_id or not str(sandbox_path):
-                for event in reversed(uow.v2_events.list_by_job(job_id)):
-                    payload = _payload(event.payload_json)
-                    candidate_run = str(payload.get("run_id") or "").strip()
-                    candidate_sandbox = str(payload.get("sandbox_path") or "").strip()
-                    if candidate_run and candidate_sandbox:
-                        run_id = candidate_run
-                        sandbox_path = Path(candidate_sandbox)
-                        break
+                if candidate_run and candidate_sandbox:
+                    candidate = Path(candidate_sandbox)
+                    if candidate.is_absolute():
+                        candidates.append(("command_result.sandbox_path", candidate))
+            for event in reversed(events):
+                payload = _payload(event.payload_json)
+                candidate_run = str(payload.get("run_id") or "").strip()
+                candidate_sandbox = str(payload.get("sandbox_path") or "").strip()
+                relative_path = str(payload.get("relative_path") or "").strip()
+                if candidate_run and not run_id:
+                    run_id = candidate_run
+                if not run_id and relative_path:
+                    run_id = _run_id_from_relative_path(relative_path)
+                if candidate_sandbox:
+                    candidate = Path(candidate_sandbox)
+                    if candidate.is_absolute():
+                        candidates.append(("event_payload.sandbox_path", candidate))
+                if payload.get("artifact_kind") == "sandbox" and relative_path:
+                    expected_relative_path = relative_path
+                    candidate = _safe_workspace_candidate(
+                        output_parent=output_parent,
+                        relative_path=relative_path,
+                    )
+                    if candidate is not None:
+                        candidates.append(("artifact:sandbox", candidate))
+            if run_id:
+                expected_relative_path = expected_relative_path or f".migration/runs/{run_id}/workspaces/sandbox"
+                candidate = _safe_workspace_candidate(
+                    output_parent=output_parent,
+                    relative_path=expected_relative_path,
+                )
+                if candidate is not None:
+                    candidates.append(("derived_workspace", candidate))
 
-            if not run_id or not sandbox_path.is_absolute() or not sandbox_path.exists():
+            for _, candidate in candidates:
+                if candidate.is_absolute() and candidate.exists() and candidate.is_dir():
+                    sandbox_path = candidate
+                    break
+
+            if not run_id or sandbox_path is None:
+                detail = (
+                    "Controlled R6 repair demo requires an existing Stage1 sandbox. "
+                    f"looked_run_id={run_id or 'unknown'}; "
+                    "expected_sandbox_artifact_key=sandbox; "
+                    f"expected_workspace={expected_relative_path or '.migration/runs/<run_id>/workspaces/sandbox'}; "
+                    f"stage1_status={stage1_status}."
+                )
                 raise _error(
                     status.HTTP_409_CONFLICT,
                     "R6_DEMO_SANDBOX_MISSING",
-                    "Controlled R6 repair demo requires an existing Stage1 sandbox.",
+                    detail,
                 )
 
             legacy_path = Path(setup.legacy_app_path)

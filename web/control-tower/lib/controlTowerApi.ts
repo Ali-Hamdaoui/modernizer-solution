@@ -710,8 +710,18 @@ export async function postJson<TResponse>(
     }
   });
   if (!response.ok) {
+    let backendMessage = "";
+    try {
+      const payload = await response.json();
+      const detail = payload?.error ?? payload?.detail;
+      const code = typeof detail?.code === "string" ? detail.code : "";
+      const message = typeof detail?.message === "string" ? detail.message : "";
+      backendMessage = code || message ? ` ${code}${code && message ? ": " : ""}${message}` : "";
+    } catch {
+      backendMessage = "";
+    }
     throw new Error(
-      `Control Tower mutation failed for ${path}: ${response.status} ${response.statusText || "HTTP error"}.`
+      `Control Tower mutation failed for ${path}: ${response.status} ${response.statusText || "HTTP error"}.${backendMessage}`
     );
   }
   return (await response.json()) as TResponse;

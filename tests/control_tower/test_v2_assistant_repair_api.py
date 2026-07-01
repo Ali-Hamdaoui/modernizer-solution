@@ -83,6 +83,7 @@ def _seed_v2_command_for_model_audit(
     command_id: str,
     *,
     target_rel_path: str | None = None,
+    include_sandbox_path: bool = True,
 ) -> None:
     setup_repo = SqliteV2SetupRepository(conn)
     job_repo = SqliteV2JobRepository(conn)
@@ -135,6 +136,12 @@ def _seed_v2_command_for_model_audit(
             correlation_id=None,
         )
     )
+    result: dict[str, str] = {
+        "run_id": "run-audit",
+        "modernized_app_path": "[redacted-windows-path]",
+    }
+    if include_sandbox_path:
+        result["sandbox_path"] = str(sandbox)
     command_repo.save(
         V2StageCommandRecord(
             command_id=command_id,
@@ -147,11 +154,7 @@ def _seed_v2_command_for_model_audit(
             created_at="2026-06-18T00:00:00Z",
             updated_at="2026-06-18T00:00:00Z",
             result_json=json.dumps(
-                {
-                    "run_id": "run-audit",
-                    "sandbox_path": str(sandbox),
-                    "modernized_app_path": "[redacted-windows-path]",
-                }
+                result
             ),
             gate_id=None,
             decision_id=None,
@@ -1090,6 +1093,91 @@ class TestRepairAPI:
         records = SqliteV2RepairRepository(conn).list_proposals_by_command(proposal["command_id"])
         assert len(records) == 1
         assert records[0].proposal_id == proposal["proposal_id"]
+
+    def test_controlled_r6_demo_returns_409_before_sandbox_exists(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, conn = _api_client(tmp_path)
+        _seed_v2_command_for_model_audit(conn, tmp_path, "cmd-no-sandbox")
+        shutil.rmtree(tmp_path / "out-cmd-no-sandbox")
+        monkeypatch.setenv("CONTROL_TOWER_R6_DEMO_ENABLED", "true")
+
+        response = client.post(
+            "/v1/v2/jobs/job-cmd-no-sandbox/repair/demo/r6-controlled",
+            json={},
+            headers=_mutation_headers(),
+        )
+
+        assert response.status_code == 409
+        body = response.json()
+        assert body["error"]["code"] == "R6_DEMO_SANDBOX_MISSING"
+        assert "looked_run_id=run-audit" in body["error"]["message"]
+        assert "expected_sandbox_artifact_key=sandbox" in body["error"]["message"]
+
+    def test_controlled_r6_demo_resolves_failed_stage1_sandbox_from_artifact_event_after_restart(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, conn = _api_client(tmp_path)
+        _seed_v2_command_for_model_audit(
+            conn,
+            tmp_path,
+            "cmd-artifact-sandbox",
+            include_sandbox_path=False,
+        )
+        SqliteUnitOfWork(conn).v2_events.save(
+            job_id="job-cmd-artifact-sandbox",
+            stage=1,
+            event_type="artifact_written",
+            status="completed",
+            message="Artifact written: sandbox",
+            payload={
+                "artifact_kind": "sandbox",
+                "command_id": "cmd-artifact-sandbox",
+                "relative_path": ".migration/runs/run-audit/workspaces/sandbox",
+            },
+        )
+        monkeypatch.setenv("CONTROL_TOWER_R6_DEMO_ENABLED", "true")
+
+        response = client.post(
+            "/v1/v2/jobs/job-cmd-artifact-sandbox/repair/demo/r6-controlled",
+            json={},
+            headers=_mutation_headers(),
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["run_id"] == "run-audit"
+        assert body["repair_proposal"]["patch_package"]["repair_family"] == "JAKARTA_IMPORT_MECHANICAL_SOURCE"
+
+    def test_controlled_r6_demo_rejects_after_stage2_started(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, conn = _api_client(tmp_path)
+        _seed_v2_command_for_model_audit(conn, tmp_path, "cmd-stage2-started")
+        SqliteUnitOfWork(conn).v2_events.save(
+            job_id="job-cmd-stage2-started",
+            stage=2,
+            event_type="sandbox_transform_started",
+            status="running",
+            message="Stage2 started",
+            payload={"command_id": "stage2-cmd"},
+        )
+        monkeypatch.setenv("CONTROL_TOWER_R6_DEMO_ENABLED", "true")
+
+        response = client.post(
+            "/v1/v2/jobs/job-cmd-stage2-started/repair/demo/r6-controlled",
+            json={},
+            headers=_mutation_headers(),
+        )
+
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "R6_DEMO_STAGE2_STARTED"
 
     def test_create_proposal_surfaces_schema_validation_failure_reason(
         self,
