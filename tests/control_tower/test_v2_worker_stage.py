@@ -746,6 +746,13 @@ def test_stage1_manifest_uses_route_aware_profile_for_boot35_java21_target(tmp_p
     profile_idx = result.argv.index("--profile") + 1
     assert result.argv[profile_idx] == "springboot-3.5-java17-to-java21"
     assert "springboot-2.1.6-to-2.7-java11" not in " ".join(result.argv)
+    record = SqliteV2CommandRepository(conn).get(result.command_id)
+    assert record is not None
+    env = json.loads(record.env_json)
+    assert env.get("ROUTE_STEP_INDEX") == "1"
+    assert env.get("ROUTE_STEP_RUNTIME_PROFILE") == "springboot-3.5-java17-to-java21"
+    assert env.get("ROUTE_STEP_CATALOG") == "springboot-3.5-java17-to-java21"
+    assert env.get("ROUTE_STEP_EXECUTION_JDK") == "java21"
 
 
 def test_missing_runtime_profile_fails_closed_without_legacy_default(tmp_path: Path) -> None:

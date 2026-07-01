@@ -145,6 +145,10 @@ class V2WorkerStageService:
                 "JAVA21_HOME": setup.java21_home,
                 "MAVEN_CMD": setup.maven_cmd,
                 "PATH_PREPEND": path_prepend,
+                "ROUTE_STEP_INDEX": "1",
+                "ROUTE_STEP_RUNTIME_PROFILE": runtime_profile,
+                "ROUTE_STEP_CATALOG": catalog,
+                "ROUTE_STEP_EXECUTION_JDK": execution_jdk,
             }
             record = V2StageCommandRecord(
                 command_id=command_id,

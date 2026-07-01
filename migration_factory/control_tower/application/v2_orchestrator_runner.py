@@ -1288,6 +1288,9 @@ class V2OrchestratorRunner:
                 job = uow.v2_jobs.get(job_id)
                 if job is None:
                     return
+                command = uow.v2_commands.get(command_id)
+                if command is None:
+                    return
 
                 # Load stage continuation policy from run configuration
                 raw_policy = StageContinuationPolicy.AUTO_ON_GREEN
@@ -1335,6 +1338,11 @@ class V2OrchestratorRunner:
                 route = service.compute_route_for_job(job_id, run_config)
                 source_profile = route.source_profile
                 target_profile = route.target_profile
+                current_route_step_index = _resolve_route_step_index_for_command(
+                    command=command,
+                    result=result,
+                    route=route,
+                )
                 queued = service.queue_next_stage(
                     job_id=job_id,
                     setup_id=job.setup_id,
@@ -1343,6 +1351,7 @@ class V2OrchestratorRunner:
                     stage_continuation_policy=effective_policy,
                     current_stage_result=result,
                     profile_route=route,
+                    current_route_step_index=current_route_step_index,
                 )
                 queued_target_stage = queued.to_stage
 
@@ -1882,6 +1891,64 @@ def _load_env_manifest_for_stage(uow: Any, job_id: str, stage_index: int) -> dic
             except json.JSONDecodeError:
                 return {}
     return {}
+
+
+def _resolve_route_step_index_for_command(
+    *,
+    command: Any,
+    result: dict[str, Any] | None,
+    route: Any,
+) -> int | None:
+    env_manifest = _load_json_dict(getattr(command, "env_json", "{}"))
+    argv: list[str] = []
+    try:
+        argv = _load_json_list(getattr(command, "argv_json", "[]"))
+    except (json.JSONDecodeError, ValueError, TypeError):
+        argv = []
+
+    candidate_values: list[Any] = [
+        env_manifest.get("ROUTE_STEP_INDEX"),
+        env_manifest.get("ROUTE_STEP_RUNTIME_PROFILE"),
+        _argv_option_value(argv, "--profile"),
+    ]
+    if isinstance(result, dict):
+        candidate_values.extend([
+            result.get("route_step_index"),
+            result.get("profile_id"),
+            result.get("runtime_profile"),
+            result.get("route_step_runtime_profile"),
+        ])
+
+    for candidate in candidate_values:
+        try:
+            route_step_index = int(str(candidate).strip())
+        except (TypeError, ValueError):
+            route_step_index = None
+        if route_step_index is not None and route_step_index >= 1:
+            return route_step_index
+        runtime_profile = str(candidate or "").strip()
+        if runtime_profile:
+            resolved = _route_step_index_for_runtime_profile(route, runtime_profile)
+            if resolved is not None:
+                return resolved
+
+    return None
+
+
+def _route_step_index_for_runtime_profile(route: Any, runtime_profile: str) -> int | None:
+    for index, step in enumerate(getattr(route, "route_steps", ()), start=1):
+        if str(getattr(step, "runtime_profile", "")).strip() == runtime_profile:
+            return index
+    return None
+
+
+def _argv_option_value(argv: list[str], option_name: str) -> str:
+    for index, value in enumerate(argv):
+        if value == option_name and index + 1 < len(argv):
+            return argv[index + 1]
+        if value.startswith(f"{option_name}="):
+            return value.split("=", 1)[1]
+    return ""
 
 
 def _validate_resume_checkpoint(

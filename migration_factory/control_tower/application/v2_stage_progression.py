@@ -703,6 +703,7 @@ class V2StageProgressionService:
         decision_id: str | None = None,
         current_stage_result: dict[str, Any] | None = None,
         profile_route: ProfileRoute | None = None,
+        current_route_step_index: int | None = None,
     ) -> StageContinuationResult:
         """Queue the next stage from the current stage sandbox.
 
@@ -765,12 +766,30 @@ class V2StageProgressionService:
                     command_id=None,
                 )
 
-            next_stage = next_required_stage(route, current_stage)
-            if next_stage is None:
-                if current_stage_result is not None and self._result_has_successful_stage_output(
-                    current_stage_result,
-                    expected_sandbox_path=sandbox_path,
-                ):
+            resolved_route_step_index = _coerce_route_step_index(current_route_step_index)
+            if resolved_route_step_index is not None:
+                if resolved_route_step_index > len(route.route_steps):
+                    raise ValueError(
+                        f"Cannot progress from route step {resolved_route_step_index}: "
+                        "route step is out of range for the selected route"
+                    )
+                next_route_step_index = resolved_route_step_index + 1
+                if next_route_step_index > len(route.route_steps):
+                    if current_stage_result is not None and self._result_has_successful_stage_output(
+                        current_stage_result,
+                        expected_sandbox_path=sandbox_path,
+                    ):
+                        return StageContinuationResult(
+                            continuation_id=uuid4().hex,
+                            job_id=job_id,
+                            from_stage=current_stage,
+                            to_stage=current_stage,
+                            sandbox_path=sandbox_path,
+                            argv=(),
+                            status="completed",
+                            reason="migration_completed",
+                            command_id=None,
+                        )
                     return StageContinuationResult(
                         continuation_id=uuid4().hex,
                         job_id=job_id,
@@ -778,36 +797,61 @@ class V2StageProgressionService:
                         to_stage=current_stage,
                         sandbox_path=sandbox_path,
                         argv=(),
-                        status="completed",
-                        reason="migration_completed",
+                        status="blocked",
+                        reason="target_reached",
                         command_id=None,
                     )
-                return StageContinuationResult(
-                    continuation_id=uuid4().hex,
-                    job_id=job_id,
-                    from_stage=current_stage,
-                    to_stage=current_stage,
-                    sandbox_path=sandbox_path,
-                    argv=(),
-                    status="blocked",
-                    reason="target_reached",
-                    command_id=None,
-                )
+                next_route_step = route.route_steps[next_route_step_index - 1]
+                next_stage = route.included_stages[next_route_step_index - 1]
+            else:
+                next_stage = next_required_stage(route, current_stage)
+                if next_stage is None:
+                    if current_stage_result is not None and self._result_has_successful_stage_output(
+                        current_stage_result,
+                        expected_sandbox_path=sandbox_path,
+                    ):
+                        return StageContinuationResult(
+                            continuation_id=uuid4().hex,
+                            job_id=job_id,
+                            from_stage=current_stage,
+                            to_stage=current_stage,
+                            sandbox_path=sandbox_path,
+                            argv=(),
+                            status="completed",
+                            reason="migration_completed",
+                            command_id=None,
+                        )
+                    return StageContinuationResult(
+                        continuation_id=uuid4().hex,
+                        job_id=job_id,
+                        from_stage=current_stage,
+                        to_stage=current_stage,
+                        sandbox_path=sandbox_path,
+                        argv=(),
+                        status="blocked",
+                        reason="target_reached",
+                        command_id=None,
+                    )
 
-            next_route_step = _route_step_for_stage(route, next_stage)
-            if next_route_step is None:
-                raise ValueError(
-                    f"Cannot progress from stage {current_stage}: "
-                    f"no route step exists for stage {next_stage}"
-                )
+                next_route_step = _route_step_for_stage(route, next_stage)
+                if next_route_step is None:
+                    raise ValueError(
+                        f"Cannot progress from stage {current_stage}: "
+                        f"no route step exists for stage {next_stage}"
+                    )
             setup = self._setup_repo.get(setup_id)
             if setup is None:
                 raise ValueError(f"Setup {setup_id!r} not found")
 
+            validation_stage = (
+                route.included_stages[resolved_route_step_index - 1]
+                if resolved_route_step_index is not None
+                else current_stage
+            )
             if next_stage == TERMINAL_STAGE_INDEX and 3 in route.included_stages:
                 self._validate_stage4_input(
                     job_id,
-                    current_stage,
+                    validation_stage,
                     sandbox_path=sandbox_path,
                     current_stage_result=current_stage_result,
                 )
@@ -822,7 +866,7 @@ class V2StageProgressionService:
                     continuation_id=uuid4().hex,
                     job_id=job_id,
                     from_stage=current_stage,
-                    to_stage=next_step_index,
+                    to_stage=next_stage,
                     sandbox_path=sandbox_path,
                     argv=(),
                     status="blocked",
@@ -1050,6 +1094,7 @@ class V2StageProgressionService:
         stage_continuation_policy: StageContinuationPolicy | str = StageContinuationPolicy.AUTO_ON_GREEN,
         current_stage_result: dict[str, Any] | None = None,
         profile_route: ProfileRoute | None = None,
+        current_route_step_index: int | None = None,
     ) -> StageContinuationResult:
         """Queue next stage tracking the gate decision that triggered it.
 
@@ -1069,6 +1114,7 @@ class V2StageProgressionService:
             decision_id=decision_id,
             current_stage_result=current_stage_result,
             profile_route=profile_route,
+            current_route_step_index=current_route_step_index,
         )
 
     def validate_stage_chain(
@@ -1191,6 +1237,7 @@ class V2StageProgressionService:
         stage_continuation_policy: StageContinuationPolicy | str = StageContinuationPolicy.AUTO_ON_GREEN,
         current_stage_result: dict[str, Any] | None = None,
         profile_route: ProfileRoute | None = None,
+        current_route_step_index: int | None = None,
     ) -> StageContinuationResult:
         """Queue next stage using persisted output from the prior stage.
 
@@ -1233,6 +1280,7 @@ class V2StageProgressionService:
             stage_continuation_policy=stage_continuation_policy,
             current_stage_result=current_stage_result,
             profile_route=profile_route,
+            current_route_step_index=current_route_step_index,
         )
 
     def _validate_stage4_input(
@@ -1364,6 +1412,16 @@ def _coerce_stage_continuation_policy(
     if isinstance(value, StageContinuationPolicy):
         return value
     return StageContinuationPolicy(value)
+
+
+def _coerce_route_step_index(value: int | str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        route_step_index = int(value)
+    except (TypeError, ValueError):
+        return None
+    return route_step_index if route_step_index >= 1 else None
 
 
 def _result_sandbox_path(result: dict[str, Any]) -> str | None:

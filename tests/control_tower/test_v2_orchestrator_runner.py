@@ -1835,6 +1835,96 @@ def test_auto_queue_next_stage_continues_to_4_when_target_is_boot4(tmp_path: Pat
     assert len(stage4_commands) >= 1
 
 
+def test_auto_queue_next_stage_uses_route_step_metadata_for_skipped_stage_route(
+    tmp_path: Path,
+) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn, seed_run_configuration=False)
+    _insert_run_config(
+        conn,
+        job_id="job-1",
+        rc_id="rc-route-step",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-4.0-java21",
+        policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}),
+    )
+    now = utc_now_text()
+    command_id = "cmd-route-step-1"
+    current_result = _success_result(
+        sandbox_path="/tmp/stage-1",
+        profile_id="springboot-3.5-java17-to-java21",
+        route_step_index=1,
+    )
+    SqliteUnitOfWork(conn).v2_commands.save(
+        V2StageCommandRecord(
+            command_id=command_id,
+            job_id="job-1",
+            stage_index=1,
+            manifest_checksum="checksum-route-step-1",
+            argv_json=json.dumps([
+                "python",
+                "-m",
+                "migration_factory.orchestrator.runner",
+                "--run-id",
+                "v2-job-1-s1",
+                "--profile",
+                "springboot-3.5-java17-to-java21",
+            ]),
+            env_json=json.dumps(
+                {
+                    "JAVA_HOME": "C:/jdk21",
+                    "JAVA11_HOME": "C:/jdk11",
+                    "JAVA17_HOME": "C:/jdk17",
+                    "JAVA21_HOME": "C:/jdk21",
+                    "MAVEN_CMD": "C:/maven/bin/mvn.cmd",
+                    "PATH_PREPEND": "C:/jdk21/bin",
+                    "ROUTE_STEP_INDEX": "1",
+                    "ROUTE_STEP_RUNTIME_PROFILE": "springboot-3.5-java17-to-java21",
+                    "ROUTE_STEP_CATALOG": "springboot-3.5-java17-to-java21",
+                    "ROUTE_STEP_EXECUTION_JDK": "java21",
+                }
+            ),
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result_json=json.dumps(current_result),
+        )
+    )
+    popen = _FakePopen(
+        stdout=[json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"],
+        stderr=[],
+        exit_code=0,
+    )
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=1,
+        command_id=command_id,
+        exit_code=0,
+        result=current_result,
+        stderr="",
+        command_phase=None,
+    )
+
+    _wait_for_stage4_command(conn)
+    _wait_for_popen_call_containing(popen, "springboot-3.5-java21-to-4.0-java21")
+
+    commands = SqliteUnitOfWork(conn).v2_commands.list_by_job("job-1")
+    stage3_commands = [command for command in commands if command.stage_index == 3]
+    stage4_commands = [command for command in commands if command.stage_index == 4]
+    assert len(stage3_commands) == 0
+    assert len(stage4_commands) == 1
+    assert "springboot-3.5-java21-to-4.0-java21" in stage4_commands[0].argv_json
+    env = json.loads(stage4_commands[0].env_json)
+    assert env.get("ROUTE_STEP_INDEX") == "2"
+    assert env.get("ROUTE_STEP_RUNTIME_PROFILE") == "springboot-3.5-java21-to-4.0-java21"
+
+
 def test_target_reached_stop_condition_emitted(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _seed_stage_pipeline(conn, seed_run_configuration=False)

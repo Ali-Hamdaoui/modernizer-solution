@@ -814,6 +814,54 @@ def test_already_modernized_java21_source_queues_stage4_without_stage3_evidence(
     assert len(command_repo.list_by_job_and_stage("job-java21-source", 4)) == 1
 
 
+def test_queue_stage4_from_boot35_java17_route_step_queues_boot35_java21_to_boot40_java21(
+    tmp_path: Path,
+) -> None:
+    conn = sqlite3.connect(
+        str(tmp_path / "test_route_step_progression.sqlite3"),
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    command_repo = SqliteV2CommandRepository(conn)
+    setup_id = _create_setup(repo)
+    route = compute_profile_route("springboot-3.5-java17", "springboot-4.0-java21")
+    current_result = {
+        "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+        "orchestration_status": "PASS",
+        "transform_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+        "build_status": "BUILD_PASSED_IN_SANDBOX",
+        "test_status": "PASS",
+        "sandbox_path": "/tmp/sandbox/stage-1",
+        "profile_id": "springboot-3.5-java17-to-java21",
+        "route_step_index": 1,
+    }
+
+    result = V2StageProgressionService(repo, command_repo).queue_next_stage(
+        job_id="job-route-step",
+        setup_id=setup_id,
+        current_stage=1,
+        sandbox_path="/tmp/sandbox/stage-1",
+        current_stage_result=current_result,
+        profile_route=route,
+        current_route_step_index=1,
+    )
+
+    assert result.status == "queued"
+    assert result.to_stage == 4
+    assert "springboot-3.5-java21-to-4.0-java21" in " ".join(result.argv)
+    assert "springboot-3.5-java17-to-java21" not in " ".join(result.argv)
+
+    queued_commands = command_repo.list_by_job_and_stage("job-route-step", 4)
+    assert len(queued_commands) == 1
+    env = json.loads(queued_commands[0].env_json)
+    assert env.get("ROUTE_STEP_INDEX") == "2"
+    assert env.get("ROUTE_STEP_RUNTIME_PROFILE") == "springboot-3.5-java21-to-4.0-java21"
+
+
 def test_next_required_stage_returns_none_after_later_target_reached() -> None:
     route = compute_profile_route("springboot-3.5-java17", "springboot-3.5-java21")
 
