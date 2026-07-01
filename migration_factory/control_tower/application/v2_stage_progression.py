@@ -208,13 +208,34 @@ def next_required_stage(route: ProfileRoute, current_stage: int) -> int | None:
 def _route_step_for_stage(route: ProfileRoute, stage_index: int) -> RouteStep | None:
     if not route.valid or not route.route_steps:
         return None
+    for route_step in route.route_steps:
+        if route_step.stage_index == stage_index:
+            return route_step
+    return None
+
+
+def _command_matches_expected_route(
+    command: V2StageCommandRecord,
+    *,
+    expected_profile: str,
+    expected_legacy_path: str,
+) -> bool:
     try:
-        route_step_index = route.included_stages.index(stage_index)
-    except ValueError:
-        return None
-    if route_step_index < 0 or route_step_index >= len(route.route_steps):
-        return None
-    return route.route_steps[route_step_index]
+        argv = json.loads(command.argv_json)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    if not isinstance(argv, list):
+        return False
+
+    profile_value = ""
+    legacy_value = ""
+    for index, token in enumerate(argv):
+        if token == "--profile" and index + 1 < len(argv):
+            profile_value = str(argv[index + 1])
+        if token == "--legacy" and index + 1 < len(argv):
+            legacy_value = str(argv[index + 1])
+
+    return profile_value == expected_profile and legacy_value == expected_legacy_path
 
 
 def build_route_steps(source_profile: str, target_profile: str) -> tuple[RouteStep, ...]:
@@ -233,7 +254,7 @@ def build_route_steps(source_profile: str, target_profile: str) -> tuple[RouteSt
         route_steps.append(
             RouteStep(
                 route_step_index=route_step_index,
-                stage_index=route_step_index,
+                stage_index=_PROFILE_TO_STAGE_INDEX[step_target],
                 source_profile=step_source,
                 target_profile=step_target,
                 runtime_profile=runtime_profile,
@@ -851,8 +872,20 @@ class V2StageProgressionService:
             existing_command_id: str | None = None
             if self._command_repo is not None:
                 existing = self._command_repo.list_by_job_and_stage(job_id, next_stage)
-                if existing:
-                    existing_command_id = existing[0].command_id
+                reusable = next(
+                    (
+                        record
+                        for record in existing
+                        if _command_matches_expected_route(
+                            record,
+                            expected_profile=next_route_step.runtime_profile,
+                            expected_legacy_path=sandbox_path,
+                        )
+                    ),
+                    None,
+                )
+                if reusable is not None:
+                    existing_command_id = reusable.command_id
                     return StageContinuationResult(
                         continuation_id=uuid4().hex,
                         job_id=job_id,
@@ -983,8 +1016,20 @@ class V2StageProgressionService:
         existing_command_id: str | None = None
         if self._command_repo is not None:
             existing = self._command_repo.list_by_job_and_stage(job_id, next_stage)
-            if existing:
-                existing_command_id = existing[0].command_id
+            reusable = next(
+                (
+                    record
+                    for record in existing
+                    if _command_matches_expected_route(
+                        record,
+                        expected_profile=config["profile"],
+                        expected_legacy_path=sandbox_path,
+                    )
+                ),
+                None,
+            )
+            if reusable is not None:
+                existing_command_id = reusable.command_id
                 return StageContinuationResult(
                     continuation_id=uuid4().hex,
                     job_id=job_id,

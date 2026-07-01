@@ -612,7 +612,10 @@ class V2OrchestratorRunner:
                 result=result,
             )
             orchestration_status = str(result.get("orchestration_status", ""))
-            if orchestration_status == "PASS" and sandbox_path:
+            # Planning is a reviewed checkpoint phase, not a transform phase.
+            # It must produce accepted reviewed artifacts, but it does not
+            # need to emit a sandbox output path.
+            if orchestration_status == "PASS":
                 self._handle_reviewed_phase_completed(
                     job_id=job_id,
                     stage_index=stage_index,
@@ -636,13 +639,11 @@ class V2OrchestratorRunner:
                     status="failed",
                     message=(
                         f"Planning phase did not produce valid proof: "
-                        f"orchestration_status={orchestration_status}, "
-                        f"sandbox_path={'present' if sandbox_path else 'missing'}"
+                        f"orchestration_status={orchestration_status}"
                     ),
                     payload={
                         "command_id": command_id,
                         "orchestration_status": orchestration_status,
-                        "sandbox_path": sandbox_path,
                     },
                 )
             return
@@ -1806,7 +1807,16 @@ def _build_phase_argv(
                 "ROUTE_RUNTIME_PROFILE_UNAVAILABLE: persisted run configuration not found for job "
                 f"{job_id!r}"
             )
-        runtime_profile = resolve_runtime_profile_for_run_configuration(run_configuration)
+        route = _current_route_for_job(uow, job_id)
+        runtime_profile = ""
+        if route is not None and getattr(route, "route_steps", None):
+            for route_step in route.route_steps:
+                if int(getattr(route_step, "stage_index", -1)) == stage_index:
+                    runtime_profile = str(getattr(route_step, "runtime_profile", "") or "").strip()
+                    if runtime_profile:
+                        break
+        if not runtime_profile:
+            runtime_profile = resolve_runtime_profile_for_run_configuration(run_configuration)
         ensure_runtime_profile_available(setup.ai_hub_path, runtime_profile)
 
         effective_run_id = f"v2-{job_id[:8]}-s{stage_index}-{command_phase}"

@@ -35,6 +35,9 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository
     SqliteV2CommandRepository,
     V2StageCommandRecord,
 )
+from migration_factory.control_tower.infrastructure.sqlite.repositories import (
+    SqliteRunConfigurationRepository,
+)
 
 
 def _create_setup(repo):
@@ -828,3 +831,91 @@ def test_next_required_stage_returns_none_for_incompatible_source_target_pair() 
     assert route.valid is False
     assert route.reason == "target profile must be higher than source profile"
     assert next_required_stage(route, current_stage=1) is None
+
+
+def test_queue_next_stage_ignores_stale_stage2_command_with_wrong_profile(tmp_path: Path) -> None:
+    conn = sqlite3.connect(str(tmp_path / "stale_stage2.sqlite3"), check_same_thread=False, isolation_level=None, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+    repo = SqliteV2SetupRepository(conn)
+    command_repo = SqliteV2CommandRepository(conn)
+    run_config_repo = SqliteRunConfigurationRepository(conn)
+    setup_id = _create_setup(repo)
+
+    payload_json = json.dumps(
+        {"source_profile": "springboot-2.1-java11", "target_profile": "springboot-4.0-java21"},
+        separators=(",", ":"),
+    )
+    conn.execute(
+        """INSERT INTO run_configurations (
+            run_configuration_id, job_id, schema_version, runner_profile_id, runner_profile_version,
+            pipeline_id, pipeline_version, target_proof_level, enabled_gates_json, policy_json,
+            payload_json, payload_checksum, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "rc-stale-stage2",
+            "job-stale-stage2",
+            "1.0.0",
+            "runner",
+            "1",
+            "pipeline",
+            "1",
+            "BUILD_TEST_VERIFIED",
+            "[]",
+            "{}",
+            payload_json,
+            "checksum-stale-stage2",
+            utc_now_text(),
+        ),
+    )
+
+    now = utc_now_text()
+    command_repo.save(
+        V2StageCommandRecord(
+            command_id="stale-stage2",
+            job_id="job-stale-stage2",
+            stage_index=2,
+            manifest_checksum="v2-stage2",
+            argv_json=json.dumps(
+                [
+                    "python",
+                    "-m",
+                    RUNNER_MODULE,
+                    "--run-id",
+                    "v2-job-stal-s2",
+                    "--legacy",
+                    "/tmp/stage1-sandbox",
+                    "--modernized",
+                    "/tmp/output",
+                    "--ai-hub",
+                    "/tmp/ai-hub",
+                    "--profile",
+                    "springboot-2.1.6-to-2.7-java11",
+                    "--mode",
+                    "full_sandbox_migration",
+                ]
+            ),
+            env_json="{}",
+            status="manifest_ready",
+            created_at=now,
+            updated_at=now,
+            result_json=None,
+        )
+    )
+
+    service = V2StageProgressionService(repo, command_repo, run_config_repo=run_config_repo)
+    result = service.queue_next_stage(
+        job_id="job-stale-stage2",
+        setup_id=setup_id,
+        current_stage=1,
+        sandbox_path="/tmp/stage1-sandbox",
+    )
+
+    assert result.status == "queued"
+    assert result.command_id != "stale-stage2"
+    assert "springboot-2.7-to-3.5-java17" in " ".join(result.argv)
+
+    stage2_commands = command_repo.list_by_job_and_stage("job-stale-stage2", 2)
+    assert len(stage2_commands) == 2
+    assert stage2_commands[0].command_id == result.command_id
+    assert "springboot-2.7-to-3.5-java17" in stage2_commands[0].argv_json
