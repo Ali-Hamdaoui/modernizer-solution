@@ -959,6 +959,7 @@ export function StageFailureEvidenceDetails({
 }) {
   const stageEvidence = diagnosis.stage_evidence;
   const classification = diagnosis.classification;
+  const classificationHelp = classification ? stageClassificationHelp(classification.classification_status) : "";
   return (
     <>
       {stageEvidence && (
@@ -990,13 +991,34 @@ export function StageFailureEvidenceDetails({
           {classification.repair_family_candidate && (
             <p className="meta">Candidate family: {classification.repair_family_candidate}</p>
           )}
+          <p className="meta">Confidence: {classification.confidence || "unknown"}</p>
+          <p className="meta">Confidence reason: {classification.confidence_reason || "n/a"}</p>
+          <p className="meta">Matched signals: {summarizeList(classification.matched_signals)}</p>
+          <p className="meta">Missing required evidence: {summarizeList(classification.missing_required_evidence)}</p>
           <p className="meta">Repair: {classification.repair_enabled ? "enabled" : "disabled"}</p>
-          <p className="meta">Reason: {classification.reason || "n/a"}</p>
+          <p className="meta">Repair blocked reason: {classification.repair_blocked_reason || classification.reason || "n/a"}</p>
           <p className="meta">Next action: {classification.assistant_next_action || "n/a"}</p>
+          {classificationHelp && <p className="meta">{classificationHelp}</p>}
         </div>
       )}
     </>
   );
+}
+
+function stageClassificationHelp(status: string): string {
+  if (status === "known_family_candidate") {
+    return "Candidate repair family detected, but real repair proposal/apply is not enabled in R7C.";
+  }
+  if (status === "blocked_pending_evidence") {
+    return "Evidence collected, but classifier needs additional artifacts before a repair family can be selected.";
+  }
+  if (status === "unsupported_known_failure") {
+    return "Failure recognized, but no supported repair family exists yet.";
+  }
+  if (status === "unknown") {
+    return "Failure remains unknown after evidence review.";
+  }
+  return "";
 }
 
 export function MigrationCockpit({ jobId }: { jobId?: string }) {

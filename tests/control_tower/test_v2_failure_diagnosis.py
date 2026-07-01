@@ -629,7 +629,7 @@ class TestStageAwareEvidence:
         assert "dependency_graph" in evidence["missing_artifacts"]
         assert evidence["repair_enabled"] is False
 
-    def test_stage_evidence_classification_blocks_repair_until_classifier_ready(
+    def test_stage_evidence_classification_blocks_on_missing_core_evidence(
         self,
         diagnosis_service: V2FailureDiagnosisService,
         tmp_path: Path,
@@ -650,10 +650,10 @@ class TestStageAwareEvidence:
 
         assert diagnosis.classification_envelope is not None
         classification = diagnosis.classification_envelope
-        assert classification["classification_status"] == "blocked_pending_classification"
-        assert classification["failure_type"] == "blocked_pending_classification"
+        assert classification["classification_status"] == "blocked_pending_evidence"
+        assert classification["failure_type"] == "blocked_pending_evidence"
         assert classification["repair_enabled"] is False
-        assert classification["assistant_next_action"] == "classify_stage_failure"
+        assert classification["assistant_next_action"] == "collect_missing_stage_evidence"
 
     def test_stage_evidence_can_mark_known_family_candidate_without_enabling_repair(
         self,
@@ -685,7 +685,7 @@ class TestStageAwareEvidence:
         assert classification["classification_status"] == "known_family_candidate"
         assert classification["repair_family_candidate"] == "JAKARTA_IMPORT_MECHANICAL_SOURCE"
         assert classification["repair_enabled"] is False
-        assert classification["reason"] == "classification_candidate_only_R7B_no_repair_apply"
+        assert classification["repair_blocked_reason"] == "R7C_classification_only_no_real_repair_apply"
 
     def test_list_diagnoses_empty_on_new_service(self) -> None:
         """New service returns empty tuple."""

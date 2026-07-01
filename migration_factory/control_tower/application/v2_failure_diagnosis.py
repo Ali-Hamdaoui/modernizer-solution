@@ -22,7 +22,6 @@ Non-goals (inherited from architecture):
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -44,6 +43,9 @@ from migration_factory.control_tower.application.v2_prompt_router import (
 )
 from migration_factory.control_tower.application.v2_repair_flow import (
     V2RepairFlowService,
+)
+from migration_factory.control_tower.application.v2_stage_failure_classifier import (
+    classify_stage_failure,
 )
 
 
@@ -702,6 +704,9 @@ class V2FailureDiagnosisService:
                 checksum, size_bytes = stream_sha256(path)
                 summary["checksum"] = f"sha256:{checksum}"
                 summary["size_bytes"] = size_bytes
+                summary["excerpt"] = redact_absolute_paths(
+                    redact_model_summary(path.read_text(encoding="utf-8", errors="replace")[:2000])
+                )
             elif path.exists():
                 summary["note"] = "ref_exists_not_file"
         except OSError:
@@ -725,31 +730,8 @@ class V2FailureDiagnosisService:
         event_type: str,
         evidence_pack: dict[str, Any],
     ) -> dict[str, Any]:
-        summary = json.dumps(evidence_pack, sort_keys=True).lower()
-        envelope: dict[str, Any] = {
-            "stage_index": evidence_pack.get("stage_index"),
-            "failure_type": "blocked_pending_classification",
-            "classification_status": "blocked_pending_classification",
-            "repair_enabled": False,
-            "reason": "evidence_collected_classifier_not_ready",
-            "assistant_next_action": "classify_stage_failure",
-            "evidence_pack_id": evidence_pack.get("evidence_pack_id"),
-            "evidence_pack_checksum": evidence_pack.get("evidence_pack_checksum"),
-        }
-        if (
-            event_type == "build_failed"
-            and "package " in summary
-            and " does not exist" in summary
-            and ("jakarta." in summary or "javax." in summary)
-        ):
-            envelope.update({
-                "failure_type": "known_family_candidate",
-                "classification_status": "known_family_candidate",
-                "repair_family_candidate": "JAKARTA_IMPORT_MECHANICAL_SOURCE",
-                "reason": "classification_candidate_only_R7B_no_repair_apply",
-                "assistant_next_action": "prepare_evidence_bound_proposal_in_R7D",
-            })
-        return envelope
+        _ = event_type
+        return classify_stage_failure(evidence_pack)
 
     # ── Serialization ──────────────────────────────────────────────
 

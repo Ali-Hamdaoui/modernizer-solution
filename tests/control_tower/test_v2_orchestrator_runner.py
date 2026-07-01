@@ -653,7 +653,7 @@ def test_v2_runner_does_not_auto_queue_next_stage_on_failure(tmp_path: Path) -> 
     )
 
     runner.start(job_id="job-1", command_id="cmd-1")
-    _wait_for_event(conn, "job-1", "build_failed")
+    _wait_for_event(conn, "job-1", "stage_failed")
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     event_types = [event.type for event in events]

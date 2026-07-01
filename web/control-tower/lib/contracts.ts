@@ -1035,14 +1035,30 @@ export type V2StageFailureEvidenceResponse = {
 
 export type V2StageFailureClassificationResponse = {
   stage_index: number | null;
+  stage_name: string;
+  source_boot_version: string;
+  target_boot_version: string;
+  source_java_version: string;
+  target_java_version: string;
   failure_type: string;
   classification_status: string;
   repair_family_candidate: string;
+  confidence: string;
+  confidence_reason: string;
+  matched_signals: string[];
+  missing_required_evidence: string[];
+  usable_artifacts: string[];
   repair_enabled: boolean;
+  repair_blocked_reason: string;
   reason: string;
   assistant_next_action: string;
   evidence_pack_id: string;
   evidence_pack_checksum: string;
+  downstream_stage_state: {
+    next_stage_index: number | null;
+    state: string;
+    auto_started: boolean;
+  } | null;
 };
 
 export type V2PomAnalysisResponse = {

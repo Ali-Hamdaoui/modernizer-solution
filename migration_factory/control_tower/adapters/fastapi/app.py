@@ -12668,14 +12668,38 @@ def _safe_classification_envelope(value: Any) -> dict[str, Any] | None:
         return None
     return {
         "stage_index": value.get("stage_index"),
+        "stage_name": _safe_failure_str(value.get("stage_name")),
+        "source_boot_version": _safe_failure_str(value.get("source_boot_version")),
+        "target_boot_version": _safe_failure_str(value.get("target_boot_version")),
+        "source_java_version": _safe_failure_str(value.get("source_java_version")),
+        "target_java_version": _safe_failure_str(value.get("target_java_version")),
         "failure_type": _safe_failure_str(value.get("failure_type")),
         "classification_status": _safe_failure_str(value.get("classification_status")),
         "repair_family_candidate": _safe_failure_str(value.get("repair_family_candidate")),
+        "confidence": _safe_failure_str(value.get("confidence")),
+        "confidence_reason": _safe_failure_str(value.get("confidence_reason")),
+        "matched_signals": _safe_failure_list(value.get("matched_signals")) or [
+            _safe_failure_str(item)
+            for item in list(value.get("matched_signals") or [])[:8]
+            if _safe_failure_str(item)
+        ],
+        "missing_required_evidence": _safe_failure_list(value.get("missing_required_evidence")) or [
+            _safe_failure_str(item)
+            for item in list(value.get("missing_required_evidence") or [])[:8]
+            if _safe_failure_str(item)
+        ],
+        "usable_artifacts": _safe_failure_list(value.get("usable_artifacts")) or [
+            _safe_failure_str(item)
+            for item in list(value.get("usable_artifacts") or [])[:12]
+            if _safe_failure_str(item)
+        ],
         "repair_enabled": bool(value.get("repair_enabled")),
+        "repair_blocked_reason": _safe_failure_str(value.get("repair_blocked_reason")),
         "reason": _safe_failure_str(value.get("reason")),
         "assistant_next_action": _safe_failure_str(value.get("assistant_next_action")),
         "evidence_pack_id": _safe_failure_str(value.get("evidence_pack_id")),
         "evidence_pack_checksum": _safe_failure_str(value.get("evidence_pack_checksum")),
+        "downstream_stage_state": _safe_stage_evidence({"downstream_stage_state": value.get("downstream_stage_state")}).get("downstream_stage_state") if isinstance(value.get("downstream_stage_state"), dict) else None,
     }
 
 

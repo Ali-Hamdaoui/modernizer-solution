@@ -1643,11 +1643,27 @@ describe("V2 Migration Cockpit contract", () => {
         failure_type: "blocked_pending_classification",
         classification_status: "blocked_pending_classification",
         repair_family_candidate: "",
+        confidence: "low",
+        confidence_reason: "Needs build contract.",
+        matched_signals: [],
+        missing_required_evidence: ["build_error_contract"],
+        usable_artifacts: ["build_error_contract"],
         repair_enabled: false,
+        repair_blocked_reason: "missing_required_failure_evidence",
         reason: "evidence_collected_classifier_not_ready",
         assistant_next_action: "classify_stage_failure",
         evidence_pack_id: "stage-evidence-abc",
         evidence_pack_checksum: "sha256:evidence",
+        stage_name: "Spring Boot 2.7 + Java 11 to Spring Boot 3.5.16 + Java 17",
+        source_boot_version: "2.7",
+        target_boot_version: "3.5.16",
+        source_java_version: "11",
+        target_java_version: "17",
+        downstream_stage_state: {
+          next_stage_index: 3,
+          state: "pending_blocked_by_failed_stage",
+          auto_started: false,
+        },
       },
     };
 
@@ -1659,8 +1675,71 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Evidence pack: stage-evidence-abc");
     expect(markup).toContain("build_error_contract");
     expect(markup).toContain("Classification: blocked_pending_classification");
+    expect(markup).toContain("Confidence: low");
+    expect(markup).toContain("Missing required evidence: build_error_contract");
     expect(markup).toContain("Repair: disabled");
     expect(markup).toContain("pending_blocked_by_failed_stage");
+  });
+
+  it("renders R7C classification statuses with repair disabled explanation", () => {
+    const baseDiagnosis = {
+      diagnosis_id: "diag-stage",
+      command_id: "cmd-stage",
+      trigger_event_type: "build_failed",
+      failure_type: "known_family_candidate",
+      context_pack_id: "pack-stage",
+      context_pack_checksum: "sha256:ctx",
+      repair_proposal_id: "",
+      model_invocation_id: "model-stage",
+      redaction_status: "stage_evidence_collected",
+      created_at: "2026-07-01T00:00:00Z",
+      stage_evidence: null,
+      classification: {
+        stage_index: 2,
+        stage_name: "Stage 2",
+        source_boot_version: "2.7",
+        target_boot_version: "3.5.16",
+        source_java_version: "11",
+        target_java_version: "17",
+        failure_type: "known_family_candidate",
+        classification_status: "known_family_candidate",
+        repair_family_candidate: "DEPENDENCY_REPLACE_JAVAX_SERVLET_API_WITH_JAKARTA",
+        confidence: "high",
+        confidence_reason: "Boot 3 target with javax servlet dependency signal.",
+        matched_signals: ["dependency:javax_servlet_api_on_boot3_plus"],
+        missing_required_evidence: [],
+        usable_artifacts: ["pom_xml", "dependency_graph"],
+        repair_enabled: false,
+        repair_blocked_reason: "R7C_classification_only_no_real_repair_apply",
+        reason: "R7C_classification_only_no_real_repair_apply",
+        assistant_next_action: "prepare_evidence_bound_proposal_in_R7D",
+        evidence_pack_id: "stage-evidence-abc",
+        evidence_pack_checksum: "sha256:evidence",
+        downstream_stage_state: null,
+      },
+    };
+    const known = renderToStaticMarkup(<StageFailureEvidenceDetails diagnosis={baseDiagnosis} stage={2} />);
+    expect(known).toContain("known_family_candidate");
+    expect(known).toContain("Candidate repair family detected, but real repair proposal/apply is not enabled in R7C.");
+    expect(known).not.toContain("Apply repair");
+
+    const blocked = renderToStaticMarkup(<StageFailureEvidenceDetails diagnosis={{
+      ...baseDiagnosis,
+      classification: { ...baseDiagnosis.classification, classification_status: "blocked_pending_evidence", repair_family_candidate: "" },
+    }} stage={2} />);
+    expect(blocked).toContain("Evidence collected, but classifier needs additional artifacts");
+
+    const unsupported = renderToStaticMarkup(<StageFailureEvidenceDetails diagnosis={{
+      ...baseDiagnosis,
+      classification: { ...baseDiagnosis.classification, classification_status: "unsupported_known_failure", repair_family_candidate: "" },
+    }} stage={2} />);
+    expect(unsupported).toContain("Failure recognized, but no supported repair family exists yet.");
+
+    const unknown = renderToStaticMarkup(<StageFailureEvidenceDetails diagnosis={{
+      ...baseDiagnosis,
+      classification: { ...baseDiagnosis.classification, classification_status: "unknown", repair_family_candidate: "" },
+    }} stage={2} />);
+    expect(unknown).toContain("Failure remains unknown after evidence review.");
   });
 
   // ── Stage status lifecycle reducer tests (V2 cockpit state model) ──
