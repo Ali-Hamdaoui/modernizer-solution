@@ -1925,6 +1925,171 @@ def test_auto_queue_next_stage_uses_route_step_metadata_for_skipped_stage_route(
     assert env.get("ROUTE_STEP_RUNTIME_PROFILE") == "springboot-3.5-java21-to-4.0-java21"
 
 
+def test_auto_queue_next_stage_resolves_resume_command_to_original_route_metadata(
+    tmp_path: Path,
+) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn, seed_run_configuration=False)
+    _insert_run_config(
+        conn,
+        job_id="job-1",
+        rc_id="rc-resume-route-step",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-4.0-java21",
+        policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}),
+    )
+    now = utc_now_text()
+    original_command_id = "cmd-route-step-before-resume"
+    resume_id = "resume-route-step-1"
+    previous_output = "/tmp/stage-1-java21-output"
+    current_result = _success_result(
+        sandbox_path=previous_output,
+        profile_id="springboot-3.5-java17-to-java21",
+        route_step_index=1,
+    )
+    uow = SqliteUnitOfWork(conn)
+    uow.v2_commands.save(
+        V2StageCommandRecord(
+            command_id=original_command_id,
+            job_id="job-1",
+            stage_index=1,
+            manifest_checksum="checksum-route-step-before-resume",
+            argv_json=json.dumps([
+                "python",
+                "-m",
+                "migration_factory.orchestrator.runner",
+                "--run-id",
+                "v2-job-1-s1",
+                "--profile",
+                "springboot-3.5-java17-to-java21",
+            ]),
+            env_json=json.dumps(
+                {
+                    "JAVA_HOME": "C:/jdk21",
+                    "JAVA11_HOME": "C:/jdk11",
+                    "JAVA17_HOME": "C:/jdk17",
+                    "JAVA21_HOME": "C:/jdk21",
+                    "MAVEN_CMD": "C:/maven/bin/mvn.cmd",
+                    "PATH_PREPEND": "C:/jdk21/bin",
+                    "ROUTE_STEP_INDEX": "1",
+                    "ROUTE_STEP_RUNTIME_PROFILE": "springboot-3.5-java17-to-java21",
+                    "ROUTE_STEP_CATALOG": "springboot-3.5-java17-to-java21",
+                    "ROUTE_STEP_EXECUTION_JDK": "java21",
+                }
+            ),
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result_json=json.dumps(current_result),
+        )
+    )
+    uow.v2_approvals.save_resume(
+        V2ResumeCommandRecord(
+            resume_id=resume_id,
+            card_id="card-route-step-1",
+            decision="approve",
+            job_id="job-1",
+            stage_index=1,
+            command_json=json.dumps(["python", "-m", "migration_factory.orchestrator.resume"]),
+            created_at=now,
+        )
+    )
+    popen = _FakePopen(
+        stdout=[json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"],
+        stderr=[],
+        exit_code=0,
+    )
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=1,
+        command_id=resume_id,
+        exit_code=0,
+        result=current_result,
+        stderr="",
+        resume=True,
+        command_phase=None,
+    )
+
+    _wait_for_stage4_command(conn)
+    _wait_for_popen_call_containing(popen, "springboot-3.5-java21-to-4.0-java21")
+    commands = SqliteUnitOfWork(conn).v2_commands.list_by_job("job-1")
+    stage4_commands = [command for command in commands if command.stage_index == 4]
+    assert len(stage4_commands) == 1
+    queued_argv = json.loads(stage4_commands[0].argv_json)
+    assert _argv_option_value_for_test(queued_argv, "--profile") == "springboot-3.5-java21-to-4.0-java21"
+    assert _argv_option_value_for_test(queued_argv, "--legacy") == previous_output
+    assert _argv_option_value_for_test(queued_argv, "--legacy") != "C:/legacy"
+    assert "springboot-3.5-java17-to-java21" not in queued_argv
+    env = json.loads(stage4_commands[0].env_json)
+    assert env.get("ROUTE_STEP_INDEX") == "2"
+    assert env.get("ROUTE_STEP_RUNTIME_PROFILE") == "springboot-3.5-java21-to-4.0-java21"
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    assert any(event.type == "next_stage_queued" for event in events)
+    assert not any(event.type == "stage_progression_blocked" for event in events)
+
+
+def test_auto_queue_next_stage_blocks_resume_when_original_command_metadata_missing(
+    tmp_path: Path,
+) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn, seed_run_configuration=False)
+    _insert_run_config(
+        conn,
+        job_id="job-1",
+        rc_id="rc-resume-missing-command",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-4.0-java21",
+        policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}),
+    )
+    now = utc_now_text()
+    resume_id = "resume-missing-original-command"
+    SqliteUnitOfWork(conn).v2_approvals.save_resume(
+        V2ResumeCommandRecord(
+            resume_id=resume_id,
+            card_id="card-route-step-1",
+            decision="approve",
+            job_id="job-1",
+            stage_index=1,
+            command_json=json.dumps(["python", "-m", "migration_factory.orchestrator.resume"]),
+            created_at=now,
+        )
+    )
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+
+    runner._auto_queue_next_stage(
+        job_id="job-1",
+        stage_index=1,
+        sandbox_path="/tmp/stage-1-java21-output",
+        command_id=resume_id,
+        result=_success_result(sandbox_path="/tmp/stage-1-java21-output"),
+    )
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    blocked = [event for event in events if event.type == "stage_progression_blocked"]
+    assert len(blocked) == 1
+    payload = json.loads(blocked[0].payload_json or "{}")
+    assert payload.get("reason") == "missing_route_step_index"
+    assert "stage-1-java21-output" not in blocked[0].payload_json
+    assert SqliteUnitOfWork(conn).v2_commands.list_by_job_and_stage("job-1", 4) == ()
+
+
+def _argv_option_value_for_test(argv: list[str], option_name: str) -> str:
+    for index, value in enumerate(argv):
+        if value == option_name and index + 1 < len(argv):
+            return argv[index + 1]
+    return ""
+
+
 def test_target_reached_stop_condition_emitted(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _seed_stage_pipeline(conn, seed_run_configuration=False)

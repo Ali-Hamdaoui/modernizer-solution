@@ -1290,7 +1290,44 @@ class V2OrchestratorRunner:
                 if job is None:
                     return
                 command = uow.v2_commands.get(command_id)
+                command_from_resume = False
                 if command is None:
+                    resume = uow.v2_approvals.get_resume(command_id)
+                    if resume is None:
+                        self._save_stage_progression_blocked(
+                            uow,
+                            job_id=job_id,
+                            stage_index=stage_index,
+                            next_stage=next_stage,
+                            reason="missing_command_metadata",
+                            command_id=command_id,
+                        )
+                        return
+                    command_from_resume = True
+                    if resume.job_id != job_id or int(resume.stage_index) != int(stage_index):
+                        self._save_stage_progression_blocked(
+                            uow,
+                            job_id=job_id,
+                            stage_index=stage_index,
+                            next_stage=next_stage,
+                            reason="resume_command_mismatch",
+                            command_id=command_id,
+                        )
+                        return
+                    command = _resolve_original_stage_command_for_resume(
+                        uow,
+                        job_id=job_id,
+                        stage_index=stage_index,
+                    )
+                if command is None:
+                    self._save_stage_progression_blocked(
+                        uow,
+                        job_id=job_id,
+                        stage_index=stage_index,
+                        next_stage=next_stage,
+                        reason="missing_original_stage_command_metadata",
+                        command_id=command_id,
+                    )
                     return
 
                 # Load stage continuation policy from run configuration
@@ -1344,6 +1381,16 @@ class V2OrchestratorRunner:
                     result=result,
                     route=route,
                 )
+                if command_from_resume and route.route_steps and current_route_step_index is None:
+                    self._save_stage_progression_blocked(
+                        uow,
+                        job_id=job_id,
+                        stage_index=stage_index,
+                        next_stage=next_stage,
+                        reason="missing_route_step_index",
+                        command_id=command_id,
+                    )
+                    return
                 queued = service.queue_next_stage(
                     job_id=job_id,
                     setup_id=job.setup_id,
@@ -1535,6 +1582,30 @@ class V2OrchestratorRunner:
 
         if next_command_id and not self._stage_has_started(job_id=job_id, stage_index=queued_target_stage):
             self.start(job_id=job_id, command_id=next_command_id)
+
+    def _save_stage_progression_blocked(
+        self,
+        uow: Any,
+        *,
+        job_id: str,
+        stage_index: int,
+        next_stage: int,
+        reason: str,
+        command_id: str,
+    ) -> None:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=stage_index,
+            event_type="stage_progression_blocked",
+            status="blocked",
+            message=f"Stage {next_stage} was not queued: {reason}",
+            payload={
+                "from_stage": stage_index,
+                "to_stage": next_stage,
+                "reason": reason,
+                "command_id": command_id,
+            },
+        )
 
     def _stage_has_started(self, *, job_id: str, stage_index: int) -> bool:
         with self._unit_of_work_factory() as uow:
@@ -1903,6 +1974,43 @@ def _load_env_manifest_for_stage(uow: Any, job_id: str, stage_index: int) -> dic
     return {}
 
 
+def _resolve_original_stage_command_for_resume(
+    uow: Any,
+    *,
+    job_id: str,
+    stage_index: int,
+) -> Any | None:
+    commands = uow.v2_commands.list_by_job_and_stage(job_id, stage_index)
+    if not commands:
+        return None
+
+    def _has_route_metadata(command: Any) -> bool:
+        try:
+            env_manifest = _load_json_dict(getattr(command, "env_json", "{}"))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            env_manifest = {}
+        return bool(
+            env_manifest.get("ROUTE_STEP_INDEX")
+            or env_manifest.get("ROUTE_STEP_RUNTIME_PROFILE")
+            or _argv_option_value(
+                _safe_argv_for_command(command),
+                "--profile",
+            )
+        )
+
+    for command in commands:
+        if _has_route_metadata(command):
+            return command
+    return commands[0]
+
+
+def _safe_argv_for_command(command: Any) -> list[str]:
+    try:
+        return _load_json_list(getattr(command, "argv_json", "[]"))
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return []
+
+
 def _resolve_route_step_index_for_command(
     *,
     command: Any,
@@ -1910,11 +2018,7 @@ def _resolve_route_step_index_for_command(
     route: Any,
 ) -> int | None:
     env_manifest = _load_json_dict(getattr(command, "env_json", "{}"))
-    argv: list[str] = []
-    try:
-        argv = _load_json_list(getattr(command, "argv_json", "[]"))
-    except (json.JSONDecodeError, ValueError, TypeError):
-        argv = []
+    argv = _safe_argv_for_command(command)
 
     candidate_values: list[Any] = [
         env_manifest.get("ROUTE_STEP_INDEX"),
