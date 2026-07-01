@@ -12,6 +12,7 @@ import {
   formatGateArtifactRefLabel,
   hasUnknownNonRepairableFailure,
   isControlledR6DemoUiEnabled,
+  missingReviewerRequestFields,
   mergeCockpitLiveRefreshResults,
   reduceStageStatus,
   shouldShowApprovalDecisionControls,
@@ -607,6 +608,59 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Record human repair approval");
     expect(markup).toContain("Run official apply");
     expect(markup).toContain("disabled=\"\"");
+  });
+
+  it("enables reviewer request for controlled patch-backed proposal using package checksum", () => {
+    const proposal: GovernedRepairProposalResponse = {
+      ...GOVERNED_REPAIR_PROPOSAL,
+      context_pack_checksum: undefined,
+      patch_package: {
+        ...GOVERNED_REPAIR_PROPOSAL.patch_package,
+        package_checksum: "sha256:package-context-checksum",
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      <R6GovernedRepairPanel
+        proposal={proposal}
+        state={EMPTY_R6_REPAIR_UI_STATE}
+        onApprovalChecksumChange={() => undefined}
+        onRequestReviewer={() => undefined}
+        onPrepareContext={() => undefined}
+        onApproveRepair={() => undefined}
+        onOfficialApply={() => undefined}
+      />
+    );
+
+    expect(missingReviewerRequestFields(proposal)).toEqual([]);
+    expect(markup).toContain(">Request reviewer critique</button>");
+    expect(markup).not.toContain("Reviewer request disabled");
+  });
+
+  it("shows exact missing reviewer request field when disabled", () => {
+    const proposal: GovernedRepairProposalResponse = {
+      ...GOVERNED_REPAIR_PROPOSAL,
+      context_pack_checksum: undefined,
+      patch_package: {
+        ...GOVERNED_REPAIR_PROPOSAL.patch_package,
+        package_checksum: "",
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      <R6GovernedRepairPanel
+        proposal={proposal}
+        state={EMPTY_R6_REPAIR_UI_STATE}
+        onApprovalChecksumChange={() => undefined}
+        onRequestReviewer={() => undefined}
+        onPrepareContext={() => undefined}
+        onApproveRepair={() => undefined}
+        onOfficialApply={() => undefined}
+      />
+    );
+
+    expect(missingReviewerRequestFields(proposal)).toEqual(["context pack checksum"]);
+    expect(markup).toContain("Reviewer request disabled: missing context pack checksum.");
   });
 
   it("enables official apply only after reviewer accept and recorded human approval", () => {

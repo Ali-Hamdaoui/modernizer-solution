@@ -1084,6 +1084,8 @@ class TestRepairAPI:
         assert body["stage2_started"] is False
         assert body["repair_family"] == "JAKARTA_IMPORT_MECHANICAL_SOURCE"
         assert proposal["command_id"].startswith("r6-demo-")
+        assert proposal["context_pack_checksum"] == package["package_checksum"]
+        assert proposal["context_pack_checksum"]
         assert package["repair_family"] == "JAKARTA_IMPORT_MECHANICAL_SOURCE"
         assert package["deterministic_rule_id"] == "JAKARTA_IMPORT_MECHANICAL_SOURCE"
         assert package["repair_artifact"]["patch_checksum"]
@@ -1093,6 +1095,30 @@ class TestRepairAPI:
         records = SqliteV2RepairRepository(conn).list_proposals_by_command(proposal["command_id"])
         assert len(records) == 1
         assert records[0].proposal_id == proposal["proposal_id"]
+        assert records[0].context_pack_checksum == package["package_checksum"]
+
+        reviewer_client = _RecordingReviewerClient()
+        client.app.state.v2_assistant_model_client = reviewer_client
+        review_response = client.post(
+            f"/v1/v2/commands/{proposal['command_id']}/repair/proposal/{proposal['proposal_id']}/reviewer-critique",
+            json={
+                "proposal_id": proposal["proposal_id"],
+                "proposal_type": "repair_proposal",
+                "proposal_checksum": proposal["proposal_checksum"],
+                "context_pack_checksum": proposal["context_pack_checksum"],
+                "model_invocation_id": None,
+            },
+            headers=_mutation_headers(),
+        )
+        assert review_response.status_code == 200, review_response.text
+        review_body = review_response.json()
+        assert review_body["decision"] == "accept"
+        assert review_body["context_pack_checksum"] == proposal["context_pack_checksum"]
+        assert reviewer_client.roles == ["reviewer"]
+        persisted = SqliteUnitOfWork(conn).v2_reviewer.list_critiques_by_proposal(proposal["proposal_id"])
+        assert len(persisted) == 1
+        assert persisted[0].context_pack_checksum == proposal["context_pack_checksum"]
+        assert persisted[0].decision == "accept"
 
     def test_controlled_r6_demo_returns_409_before_sandbox_exists(
         self,

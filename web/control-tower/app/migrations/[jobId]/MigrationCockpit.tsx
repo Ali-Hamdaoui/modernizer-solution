@@ -222,6 +222,10 @@ function proposalDeterministicRule(proposal: GovernedRepairProposalResponse): st
   return proposal.deterministic_rule_id ?? proposal.patch_package?.deterministic_rule_id ?? proposalRepairFamily(proposal);
 }
 
+function proposalContextChecksum(proposal: GovernedRepairProposalResponse): string {
+  return proposal.context_pack_checksum ?? proposal.patch_package?.package_checksum ?? "";
+}
+
 function proposerInvocationId(proposal: GovernedRepairProposalResponse): string {
   return proposal.proposal_model?.model_invocation_id ?? "";
 }
@@ -241,7 +245,7 @@ function canPrepareR6ApplyContext(
     proposal.proposal_id,
     proposal.command_id,
     proposal.proposal_checksum,
-    proposal.context_pack_checksum,
+    proposalContextChecksum(proposal),
     reviewer?.critique_id ?? proposal.reviewer_critique_id,
     proposalUnifiedDiff(proposal),
     proposalTargetPath(proposal),
@@ -249,6 +253,18 @@ function canPrepareR6ApplyContext(
     proposalSandboxChecksum(proposal),
     proposalLegacyChecksum(proposal),
   ].every((value) => String(value ?? "").trim().length > 0);
+}
+
+export function missingReviewerRequestFields(proposal: GovernedRepairProposalResponse | null): string[] {
+  if (!proposal) {
+    return ["proposal"];
+  }
+  const missing: string[] = [];
+  if (!proposal.command_id) missing.push("command id");
+  if (!proposal.proposal_id) missing.push("proposal id");
+  if (!proposal.proposal_checksum) missing.push("proposal checksum");
+  if (!proposalContextChecksum(proposal)) missing.push("context pack checksum");
+  return missing;
 }
 
 function r6ApplyButtonDisabled(state: R6RepairUiState): boolean {
@@ -659,7 +675,8 @@ export function R6GovernedRepairPanel({
   const commandId = proposal.command_id ?? "";
   const proposalId = proposal.proposal_id ?? "";
   const proposalChecksum = proposal.proposal_checksum ?? "";
-  const contextChecksum = proposal.context_pack_checksum ?? "";
+  const contextChecksum = proposalContextChecksum(proposal);
+  const missingReviewerFields = missingReviewerRequestFields(proposal);
   const reviewerDecision = latestReviewerDecision(proposal, state.reviewer);
   const patchArtifact = proposalPatchArtifactRef(proposal);
   const patchChecksum = proposalPatchChecksum(proposal);
@@ -698,9 +715,12 @@ export function R6GovernedRepairPanel({
         <p className="meta">Critique: {state.reviewer?.critique_id ?? proposal.reviewer_critique_id ?? "n/a"}</p>
         <p className="meta">Model invocation: {reviewerInvocationId(state.reviewer) || "n/a"}</p>
         {state.reviewer?.reasoning && <p className="meta">{state.reviewer.reasoning}</p>}
+        {missingReviewerFields.length > 0 && (
+          <p className="meta">Reviewer request disabled: missing {missingReviewerFields.join(", ")}.</p>
+        )}
         <button
           type="button"
-          disabled={!proposalId || !commandId || !proposalChecksum || !contextChecksum || state.busy === "reviewer"}
+          disabled={missingReviewerFields.length > 0 || state.busy === "reviewer"}
           onClick={onRequestReviewer}
         >
           Request reviewer critique
@@ -1185,16 +1205,21 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
 
   async function requestReviewerForCurrentProposal() {
     const proposal = data?.repairProposal ?? null;
-    if (!proposal?.command_id || !proposal.proposal_id || !proposal.proposal_checksum || !proposal.context_pack_checksum) {
-      setR6RepairState((current) => ({ ...current, error: "Reviewer requires proposal id, command id, proposal checksum, and context checksum." }));
+    const missing = missingReviewerRequestFields(proposal);
+    if (!proposal || missing.length > 0) {
+      setR6RepairState((current) => ({ ...current, error: `Reviewer request missing: ${missing.join(", ")}.` }));
       return;
     }
+    const contextChecksum = proposalContextChecksum(proposal);
+    const commandId = proposal.command_id ?? "";
+    const proposalId = proposal.proposal_id ?? "";
+    const proposalChecksum = proposal.proposal_checksum ?? "";
     setR6RepairState((current) => ({ ...current, busy: "reviewer", error: null }));
     try {
-      const critique = await requestV2ReviewerCritique(proposal.command_id, proposal.proposal_id, {
+      const critique = await requestV2ReviewerCritique(commandId, proposalId, {
         proposal_type: "repair_proposal",
-        proposal_checksum: proposal.proposal_checksum,
-        context_pack_checksum: proposal.context_pack_checksum,
+        proposal_checksum: proposalChecksum,
+        context_pack_checksum: contextChecksum,
         model_invocation_id: proposerInvocationId(proposal) || null,
       });
       setR6RepairState((current) => ({ ...current, reviewer: critique, busy: null }));
@@ -1219,7 +1244,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     try {
       const response = await prepareV2RepairApplyContext(proposal.command_id, proposal.proposal_id, {
         proposal_checksum: proposal.proposal_checksum ?? "",
-        context_pack_checksum: proposal.context_pack_checksum ?? "",
+        context_pack_checksum: proposalContextChecksum(proposal),
         reviewer_critique_id: reviewer?.critique_id ?? proposal.reviewer_critique_id ?? "",
         proposer_invocation_id: proposerInvocationId(proposal),
         reviewer_invocation_id: reviewerInvocationId(reviewer),

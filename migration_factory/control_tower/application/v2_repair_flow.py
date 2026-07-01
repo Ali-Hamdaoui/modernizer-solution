@@ -194,13 +194,16 @@ class V2RepairFlowService:
         patch_summary: str,
         affected_paths: tuple[str, ...],
         patch_package_json: str = "{}",
+        context_pack_checksum: str | None = None,
     ) -> RepairProposal:
+        effective_context_checksum = context_pack_checksum or self._patch_package_checksum(patch_package_json)
         proposal_checksum = self._proposal_checksum(
             command_id=command_id,
             failure_summary=failure_summary,
             hypothesis=hypothesis,
             patch_summary=patch_summary,
             affected_paths=affected_paths,
+            context_pack_checksum=effective_context_checksum,
             patch_package_json=patch_package_json,
         )
         proposal = RepairProposal(
@@ -214,6 +217,7 @@ class V2RepairFlowService:
             approval_checksum=None,
             created_at=utc_now_text(),
             proposal_checksum=proposal_checksum,
+            context_pack_checksum=effective_context_checksum,
             patch_package_json=patch_package_json,
         )
         self._proposals[proposal.proposal_id] = proposal
@@ -256,6 +260,7 @@ class V2RepairFlowService:
             affected_paths=affected_paths,
             verification_command=verification_command,
         )
+        context_pack_checksum = self._patch_package_checksum(patch_package_json)
         return self.create_proposal(
             command_id=command_id,
             failure_summary=failure_summary,
@@ -263,6 +268,7 @@ class V2RepairFlowService:
             patch_summary=patch_summary,
             affected_paths=affected_paths,
             patch_package_json=patch_package_json,
+            context_pack_checksum=context_pack_checksum,
         )
 
     def create_revision_proposal(
@@ -1941,8 +1947,10 @@ class V2RepairFlowService:
             result["revision_number"] = proposal.revision_number
         if proposal.allowed_scope is not None:
             result["allowed_scope"] = proposal.allowed_scope
+        context_pack_checksum = proposal.context_pack_checksum
         patch_package = _json_or_text(proposal.patch_package_json)
         if isinstance(patch_package, dict) and patch_package:
+            context_pack_checksum = context_pack_checksum or str(patch_package.get("package_checksum") or "")
             result["patch_package"] = patch_package
             result["target_files"] = patch_package.get("target_files", [])
             result["failure_evidence"] = patch_package.get("failure_evidence", {})
@@ -1953,6 +1961,8 @@ class V2RepairFlowService:
             result["legacy_checksum"] = patch_package.get("legacy_checksum", "")
             result["repair_family"] = patch_package.get("repair_family", "")
             result["deterministic_rule_id"] = patch_package.get("deterministic_rule_id", "")
+        if context_pack_checksum:
+            result["context_pack_checksum"] = context_pack_checksum
         return result
 
     def action_to_dict(self, action: SandboxAction) -> dict[str, Any]:
@@ -2107,3 +2117,11 @@ class V2RepairFlowService:
         if allowed_scope is not None:
             payload["allowed_scope"] = allowed_scope
         return sha256_canonical_json(payload)
+
+    @staticmethod
+    def _patch_package_checksum(patch_package_json: str) -> str | None:
+        patch_package = _json_or_text(patch_package_json)
+        if not isinstance(patch_package, dict):
+            return None
+        checksum = str(patch_package.get("package_checksum") or "").strip()
+        return checksum or None
