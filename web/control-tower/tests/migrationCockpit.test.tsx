@@ -1713,6 +1713,8 @@ describe("V2 Migration Cockpit contract", () => {
         repair_blocked_reason: "R7C_classification_only_no_real_repair_apply",
         reason: "R7C_classification_only_no_real_repair_apply",
         assistant_next_action: "prepare_evidence_bound_proposal_in_R7D",
+        governance_gate_type: "future_deterministic_candidate",
+        stage_relevance: "Stage 2 2.7/Java 11 -> 3.5.16/Java 17: deterministic candidate is stage-sensitive",
         evidence_pack_id: "stage-evidence-abc",
         evidence_pack_checksum: "sha256:evidence",
         downstream_stage_state: null,
@@ -1720,20 +1722,30 @@ describe("V2 Migration Cockpit contract", () => {
     };
     const known = renderToStaticMarkup(<StageFailureEvidenceDetails diagnosis={baseDiagnosis} stage={2} />);
     expect(known).toContain("known_family_candidate");
-    expect(known).toContain("Candidate repair family detected, but real repair proposal/apply is not enabled in R7C.");
+    expect(known).toContain("Governance gate: future_deterministic_candidate");
+    expect(known).toContain("Stage relevance: Stage 2 2.7/Java 11 -&gt; 3.5.16/Java 17");
+    expect(known).toContain("Candidate deterministic rule detected, but real repair proposal/apply is not enabled in R7C.2.");
     expect(known).not.toContain("Apply repair");
 
     const blocked = renderToStaticMarkup(<StageFailureEvidenceDetails diagnosis={{
       ...baseDiagnosis,
       classification: { ...baseDiagnosis.classification, classification_status: "blocked_pending_evidence", repair_family_candidate: "" },
     }} stage={2} />);
-    expect(blocked).toContain("Evidence collected, but classifier needs additional artifacts");
+    expect(blocked).toContain("Additional build/test artifacts are required before classifier can select a subtype.");
 
     const unsupported = renderToStaticMarkup(<StageFailureEvidenceDetails diagnosis={{
       ...baseDiagnosis,
-      classification: { ...baseDiagnosis.classification, classification_status: "unsupported_known_failure", repair_family_candidate: "" },
+      classification: {
+        ...baseDiagnosis.classification,
+        classification_status: "unsupported_known_failure",
+        failure_type: "POWERMOCK_LEGACY_TEST_STRATEGY",
+        repair_family_candidate: "",
+        governance_gate_type: "human_review_gate",
+      },
     }} stage={2} />);
-    expect(unsupported).toContain("Failure recognized, but no supported repair family exists yet.");
+    expect(unsupported).toContain("Failure: POWERMOCK_LEGACY_TEST_STRATEGY");
+    expect(unsupported).toContain("Governance gate: human_review_gate");
+    expect(unsupported).toContain("Failure signal recognized as a migration review gate. No automatic repair is enabled.");
 
     const unknown = renderToStaticMarkup(<StageFailureEvidenceDetails diagnosis={{
       ...baseDiagnosis,

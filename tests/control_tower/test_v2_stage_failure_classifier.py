@@ -81,7 +81,101 @@ def test_missing_core_artifacts_returns_blocked_pending_evidence() -> None:
 def test_unsupported_known_signal_returns_unsupported_known_failure() -> None:
     result = classify_stage_failure(_pack("springfox documentation plugin incompatible with path matching"))
     assert result["classification_status"] == "unsupported_known_failure"
+    assert result["failure_type"] == "LEGACY_API_DEPENDENCY_ALIGNMENT_REVIEW"
     assert result["repair_enabled"] is False
+    assert result["governance_gate_type"] == "human_review_gate"
+
+
+def test_powermock_dependency_signal_is_review_gate() -> None:
+    result = classify_stage_failure(
+        _pack("org.powermock:powermock-api-mockito2 org.powermock:powermock-module-junit4")
+    )
+    assert result["classification_status"] == "unsupported_known_failure"
+    assert result["failure_type"] == "POWERMOCK_LEGACY_TEST_STRATEGY"
+    assert result["repair_enabled"] is False
+    assert result["repair_blocked_reason"] == "human_review_gate_no_auto_repair"
+    assert result["assistant_next_action"] == "review_powermock_legacy_test_strategy"
+    assert "review_gate:powermock_legacy_test_strategy" in result["matched_signals"]
+
+
+def test_azure_old_sdk_signal_is_review_gate() -> None:
+    result = classify_stage_failure(_pack("com.microsoft.azure:azure-storage import com.microsoft.azure.storage"))
+    assert result["classification_status"] == "unsupported_known_failure"
+    assert result["failure_type"] == "AZURE_SDK_API_MIGRATION_REVIEW"
+    assert result["repair_enabled"] is False
+    assert result["governance_gate_type"] == "human_review_gate"
+
+
+def test_jjwt_legacy_signal_is_review_gate() -> None:
+    result = classify_stage_failure(_pack("io.jsonwebtoken jjwt-api jjwt-impl jjwt-jackson"))
+    assert result["classification_status"] == "unsupported_known_failure"
+    assert result["failure_type"] == "JJWT_VERSION_ALIGNMENT_REVIEW"
+    assert result["repair_enabled"] is False
+
+
+def test_juneau_legacy_signal_is_review_gate() -> None:
+    result = classify_stage_failure(_pack("org.apache.juneau juneau-rest-client"))
+    assert result["classification_status"] == "unsupported_known_failure"
+    assert result["failure_type"] == "JUNEAU_VERSION_ALIGNMENT_REVIEW"
+    assert result["repair_enabled"] is False
+
+
+def test_public_api_signature_signal_is_review_gate() -> None:
+    result = classify_stage_failure(_pack("reference_delta contains PUBLIC_API_SIGNATURE_CHANGE consumer compatibility"))
+    assert result["classification_status"] == "unsupported_known_failure"
+    assert result["failure_type"] == "PUBLIC_API_SIGNATURE_CHANGE_REVIEW"
+    assert result["repair_enabled"] is False
+
+
+def test_initmocks_source_signal_is_future_candidate_only() -> None:
+    result = classify_stage_failure(_pack("MockitoAnnotations.initMocks(this);", usable=["test_source", "test_report"]))
+    assert_candidate(result, "INITMOCKS_TO_OPENMOCKS_CANDIDATE")
+    assert result["governance_gate_type"] == "future_deterministic_candidate"
+
+
+def test_mockbean_is_stage_filtered_from_boot27_candidate() -> None:
+    result = classify_stage_failure(
+        _pack("@MockBean CustomerClient client;", stage_index=1, source_boot="2.1", target_boot="2.7", target_java="11")
+    )
+    assert result["classification_status"] == "unsupported_known_failure"
+    assert result["failure_type"] == "LEGACY_TEST_FRAMEWORK_MIGRATION"
+    assert result["repair_family_candidate"] == ""
+    assert result["repair_enabled"] is False
+
+
+def test_mockbean_boot3_signal_is_future_candidate_only() -> None:
+    result = classify_stage_failure(_pack("@MockBean CustomerClient client;", usable=["test_source", "test_report"]))
+    assert_candidate(result, "MOCKBEAN_TO_MOCKITOBEAN_CANDIDATE")
+    assert result["repair_enabled"] is False
+
+
+def test_mixed_javax_jakarta_signal_is_hybrid_review_gate() -> None:
+    result = classify_stage_failure(_pack("import javax.servlet.Filter; import jakarta.validation.Valid;"))
+    assert result["classification_status"] == "unsupported_known_failure"
+    assert result["failure_type"] == "JAKARTA_HYBRID_STRATEGY_REVIEW"
+    assert result["repair_enabled"] is False
+    assert "review_gate:jakarta_hybrid_strategy" in result["matched_signals"]
+
+
+def test_behavioral_test_log_signal_classifies_specific_category() -> None:
+    result = classify_stage_failure(
+        _pack(
+            "surefire test AssertionError expected:<400> but was:<500>",
+            usable=["test_report", "test_agent_log"],
+            missing=[],
+        )
+    )
+    assert result["classification_status"] == "unsupported_known_failure"
+    assert result["failure_type"] == "HTTP_STATUS_CONTRACT_DRIFT"
+    assert result["repair_enabled"] is False
+    assert result["governance_gate_type"] == "llm_rag_candidate"
+
+
+def test_mockito_dependency_without_source_blocks_for_test_source() -> None:
+    result = classify_stage_failure(_pack("org.mockito:mockito-core", usable=["dependency_graph"]))
+    assert result["classification_status"] == "blocked_pending_evidence"
+    assert result["repair_enabled"] is False
+    assert result["missing_required_evidence"] == ["test_source"]
 
 
 def test_no_signal_returns_unknown() -> None:

@@ -988,8 +988,15 @@ export function StageFailureEvidenceDetails({
         <div className="trace-section">
           <strong>Stage Classification</strong>
           <p className="meta">Classification: {classification.classification_status || "unknown"}</p>
+          <p className="meta">Failure: {classification.failure_type || "unknown"}</p>
           {classification.repair_family_candidate && (
             <p className="meta">Candidate family: {classification.repair_family_candidate}</p>
+          )}
+          {classification.governance_gate_type && (
+            <p className="meta">Governance gate: {classification.governance_gate_type}</p>
+          )}
+          {classification.stage_relevance && (
+            <p className="meta">Stage relevance: {classification.stage_relevance}</p>
           )}
           <p className="meta">Confidence: {classification.confidence || "unknown"}</p>
           <p className="meta">Confidence reason: {classification.confidence_reason || "n/a"}</p>
@@ -1007,13 +1014,13 @@ export function StageFailureEvidenceDetails({
 
 function stageClassificationHelp(status: string): string {
   if (status === "known_family_candidate") {
-    return "Candidate repair family detected, but real repair proposal/apply is not enabled in R7C.";
+    return "Candidate deterministic rule detected, but real repair proposal/apply is not enabled in R7C.2.";
   }
   if (status === "blocked_pending_evidence") {
-    return "Evidence collected, but classifier needs additional artifacts before a repair family can be selected.";
+    return "Additional build/test artifacts are required before classifier can select a subtype.";
   }
   if (status === "unsupported_known_failure") {
-    return "Failure recognized, but no supported repair family exists yet.";
+    return "Failure signal recognized as a migration review gate. No automatic repair is enabled.";
   }
   if (status === "unknown") {
     return "Failure remains unknown after evidence review.";

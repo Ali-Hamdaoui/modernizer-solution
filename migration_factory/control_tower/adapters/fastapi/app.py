@@ -12697,6 +12697,8 @@ def _safe_classification_envelope(value: Any) -> dict[str, Any] | None:
         "repair_blocked_reason": _safe_failure_str(value.get("repair_blocked_reason")),
         "reason": _safe_failure_str(value.get("reason")),
         "assistant_next_action": _safe_failure_str(value.get("assistant_next_action")),
+        "governance_gate_type": _safe_failure_str(value.get("governance_gate_type")),
+        "stage_relevance": _safe_failure_str(value.get("stage_relevance")),
         "evidence_pack_id": _safe_failure_str(value.get("evidence_pack_id")),
         "evidence_pack_checksum": _safe_failure_str(value.get("evidence_pack_checksum")),
         "downstream_stage_state": _safe_stage_evidence({"downstream_stage_state": value.get("downstream_stage_state")}).get("downstream_stage_state") if isinstance(value.get("downstream_stage_state"), dict) else None,

@@ -1052,6 +1052,8 @@ export type V2StageFailureClassificationResponse = {
   repair_blocked_reason: string;
   reason: string;
   assistant_next_action: string;
+  governance_gate_type?: string;
+  stage_relevance?: string;
   evidence_pack_id: string;
   evidence_pack_checksum: string;
   downstream_stage_state: {
