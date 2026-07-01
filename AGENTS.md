@@ -1,356 +1,583 @@
-# AGENTS.md - DEMO3 Implementation Work
+# AGENTS.md - Repository Agent Guidelines
 
-This file is the entrypoint for Codex and dev-agent work on DEMO3 / AMF Sprint DEMO 3.
+This file defines precise repository rules and best practices for AI coding agents working in this repository.
 
-## Hard Preflight
+The protected main working branch is:
 
-At the start of any new DEMO3 task or subtask, before creating the task branch and before changing files:
-
-```powershell
-git fetch origin
-git status --short
+```text
+demov3
 ```
 
-If the working tree is dirty, stop and report the dirty files. Do not switch branches or modify files until the user resolves or explicitly authorizes handling them.
+`demov3` must always stay safe, clean, and synchronized with `origin/demov3`.
 
-Then:
+Agents must **never implement directly on `demov3`**.  
+All new work must happen on a dedicated task branch created from the latest `demov3`.
 
-```powershell
+---
+
+## 1. Golden Rule
+
+For every new task:
+
+```text
+fetch origin -> switch to demov3 -> pull latest demov3 -> verify clean state -> create a new task branch -> work only on that task branch
+```
+
+No code, documentation, configuration, migration, test, or generated file change should be made directly on `demov3`.
+
+`demov3` is only used as the clean base branch.
+
+---
+
+## 2. Mandatory Preflight Before Any Work
+
+Before reading deeply, planning implementation, creating files, changing files, running tests, or creating a task branch, run:
+
+```bash
+git fetch origin
+git status --short
+git branch --show-current
+```
+
+If the working tree is dirty:
+
+- Stop before switching branches.
+- Report the dirty files.
+- Do not overwrite, delete, reset, stash, or modify the files.
+- Continue only if the user explicitly authorizes what to do.
+
+Do not assume dirty files are safe to ignore.
+
+---
+
+## 3. Synchronize `demov3`
+
+After confirming it is safe to switch branches, update `demov3`:
+
+```bash
 git switch demov3
 git pull --ff-only origin demov3
 git status --short
 git branch --show-current
 ```
 
-Proceed only when the current branch is `demov3` and the working tree is clean.
+Proceed only when all conditions are true:
 
-## Current Sprint Source Of Truth
+- Current branch is `demov3`.
+- `git pull --ff-only origin demov3` completed successfully.
+- Working tree is clean.
+- No unrelated local changes are present.
 
-Current sprint: DEMO3 / AMF Sprint DEMO 3
+If `git pull --ff-only origin demov3` fails:
 
-Base and merge target: `demov3`
+- Stop.
+- Report the error.
+- Do not merge.
+- Do not rebase.
+- Do not reset.
+- Do not force-update.
+- Wait for explicit user instruction.
 
-The DEMO3 product spine is:
+---
 
-- F0 - Pre-feature codebase cleanup
-- F1 - Agent checkpoints and user decisions
-- F2 - Deterministic artifact + primary LLM + reviewer LLM
-- F3 - Target profile control
-- F4 - Start from current app state
-- F5 - Build/Test Repair Agent review loop
+## 4. Mandatory Task Branch Rule
 
-The `docs/sprintdemo3/` feature folders are the implementation contract for DEMO3 work.
+Every new unit of work must start from a new branch created from updated `demov3`.
 
-## Branch Rules
+Use:
 
-Every task or subtask starts from latest `demov3`:
-
-```powershell
+```bash
 git switch demov3
 git pull --ff-only origin demov3
-git switch -c <feature-or-task-branch>
+git switch -c <task-branch-name>
 ```
 
-Work only on the assigned Jira task scope. Completed task branches merge back into `demov3` only after review.
+Only after the new task branch is created may the agent modify files.
 
-Before recommending merge into `demov3`, run `requesting-code-review` when applicable and include review evidence.
+The task branch must contain the new work.  
+`demov3` must remain unchanged locally except for the fast-forward pull from origin.
 
-Forbidden bases:
+Recommended branch naming:
 
-- `CSV-update`
-- `chatbot-optimization`
-- stale feature branches
-- old DEMO2 branches
-- any branch other than `demov3` for DEMO3 implementation kickoff
-
-## Task-Driven Reading Order
-
-Read enough of these files to orient:
-
-- `docs/DEMO3/PRD.md`
-- `docs/sprintdemo3/INDEX.md`
-- `docs/sprintdemo3/BACKLOG.md`
-- `docs/sprintdemo3/TASKS.md`
-- `docs/sprintdemo3/ROADMAP.md`
-- `docs/sprintdemo3/ARCHITECTURE.md`
-- `docs/sprintdemo3/RISKS.md`
-- `docs/sprintdemo3/F0-F5-MAPPING.md`
-
-Then locate the Jira issue in `BACKLOG.md` or `TASKS.md`.
-
-Fully read the assigned feature folder:
-
-- `README.md`
-- `STORY.md`
-- `TASKS.md`
-
-Do not reread the full sprint documentation set unless needed. Use global docs to orient, then fully read the assigned feature folder and directly relevant docs.
-
-Read stable integration docs only when relevant:
-
-- `docs/foundry-only-prd-codebase-findings.md`
-- `docs/STABLE_INTEGRATION_AUDIT_REPORT.md`
-- `docs/STABLE_INTEGRATION_IMPLEMENTATION_PLAYBOOK.md`
-- `docs/STABLE_INTEGRATION_RERUN_AUDIT_REPORT.md`
-
-## Jira And Feature Mapping
-
-- AMF-232 / F0 -> `docs/sprintdemo3/00-pre-feature-cleanup/`
-- AMF-233 / F1 -> `docs/sprintdemo3/01-agent-checkpoints/`
-- AMF-234 / F2 -> `docs/sprintdemo3/02-llm-review-chain/`
-- AMF-235 / F3 -> `docs/sprintdemo3/03-profile-targeting/`
-- AMF-236 / F4 -> `docs/sprintdemo3/04-source-profile-start/`
-- AMF-237 / F5 -> `docs/sprintdemo3/05-build-test-repair-agent-review-loop/`
-
-Every implementation task starts from a Jira issue key. Before changing files, identify:
-
-- Jira issue key
-- Parent story
-- Feature lane
-- Matching feature folder
-- `README.md`
-- `STORY.md`
-- `TASKS.md`
-- Task or subtask block inside `TASKS.md`
-
-Codex must not update Jira status, transition Jira issues, or post Jira comments unless the user explicitly asks. When a task is finished, prepare a recommended Jira update for a human to apply manually.
-
-Jira Done requires evidence, not just "code finished."
-
-## Verified Tech Stack And Commands
-
-Only use commands proven by repository files. If a command is not listed here, inspect repo config before using it.
-
-Install commands are documented for setup, but agents must ask before running install commands unless the user explicitly requested setup.
-
-Backend setup, verified from `pyproject.toml` and `requirements.txt`:
-
-```powershell
-python -m pip install -r requirements.txt
+```text
+feature/<short-task-name>
+fix/<short-task-name>
+docs/<short-task-name>
+test/<short-task-name>
+chore/<short-task-name>
 ```
 
-Backend focused tests, verified from `pyproject.toml` optional test dependencies:
+Examples:
 
-```powershell
-python -m pytest <focused-test-file-or-node>
+```bash
+git switch -c feature/add-checkpoint-validation
+git switch -c fix/repair-agent-error-handling
+git switch -c docs/update-agent-guidelines
 ```
 
-Frontend setup, verified from `web/control-tower/package.json`:
+Branch names should be:
 
-```powershell
-npm --prefix web/control-tower install
-```
+- Short.
+- Descriptive.
+- Lowercase.
+- Hyphen-separated.
+- Related to the task.
 
-Frontend focused tests, verified from `web/control-tower/package.json`:
+---
 
-```powershell
-npm --prefix web/control-tower test -- <focused-test-file>
-npm --prefix web/control-tower run typecheck
-npm --prefix web/control-tower run build
-```
+## 5. Forbidden Direct Work On `demov3`
 
-Docs-only checks:
+Never do these on `demov3`:
 
-```powershell
-git diff --check
+- Edit source code.
+- Edit documentation.
+- Add tests.
+- Modify configuration.
+- Add or change database migrations.
+- Generate artifacts.
+- Apply patches.
+- Run commands that modify repository files.
+- Stage files.
+- Commit files.
+- Push changes.
+
+Allowed on `demov3` only:
+
+```bash
+git fetch origin
+git switch demov3
+git pull --ff-only origin demov3
 git status --short
-```
-
-Git checks:
-
-```powershell
-git status --short
+git branch --show-current
 git diff --name-only
 git diff --check
 ```
 
-No root `package.json`, `package-lock.json`, `pnpm-lock.yaml`, `Dockerfile`, `docker-compose.yml`, `docker-compose.yaml`, `pytest.ini`, or `.github/workflows/` was present when this file was written. Verify before using package managers, Docker commands, workflow assumptions, or pytest config assumptions not listed above.
+If a command may modify files, do not run it on `demov3`.
 
-## Repository Map
+---
 
-- `migration_factory/control_tower/adapters/fastapi/` - FastAPI control surface.
-- `migration_factory/control_tower/application/` - Control Tower application services and orchestration policy.
-- `migration_factory/control_tower/schemas/` - API and domain schemas.
-- `migration_factory/control_tower/infrastructure/sqlite/` - SQLite persistence and migrations.
-- `migration_factory/agents/` - deterministic migration agents.
-- `web/control-tower/` - frontend application.
-- `docs/DEMO3/` - DEMO3 product requirements.
-- `docs/sprintdemo3/` - sprint backlog, architecture, risks, roadmap, and feature folders.
+## 6. Branch Safety Rules
 
-## Core Architecture
+Do not create task branches from:
 
-```text
-FastAPI backend
--> deterministic agents
--> primary LLM
--> reviewer LLM
--> final Markdown artifact
--> stored artifact/checkpoint
--> user decision
--> next pipeline step
-```
+- Stale local branches.
+- Old feature branches.
+- Experimental branches.
+- Deprecated sprint branches.
+- Any branch other than synchronized `demov3`.
 
-## Core Rule
+Do not switch away from a dirty branch unless the user explicitly authorizes how to handle the local changes.
 
-A model reviews another model.
+Do not reuse an old task branch for new unrelated work.
 
-The Reviewer LLM is mandatory for supported model-required outputs. Deterministic artifacts ground model work, but deterministic fallback alone does not satisfy reviewed-output requirements.
+One task branch should represent one clear unit of work.
 
-## Three-Tier Permission Model
+---
+
+## 7. Git Commands Permission Model
 
 Allowed without asking:
 
-- read, list, and search files
-- inspect docs and config
-- run focused tests for changed files
-- run `git status`, `git diff`, and `git diff --check`
-- create docs/proposal files when the task asks
+```bash
+git fetch origin
+git status --short
+git branch --show-current
+git diff --name-only
+git diff --check
+```
 
-Ask first:
+Allowed after confirming the working tree is clean:
 
-- install dependencies
-- add dependencies
-- run full test suites
-- delete or move files
-- create or modify DB migrations
-- change public API contracts
-- touch files outside assigned scope
-- make network calls outside normal repo, Jira, or web research tasks
+```bash
+git switch demov3
+git pull --ff-only origin demov3
+git switch -c <task-branch-name>
+```
 
-Never without explicit user instruction:
+Ask before:
 
-- push
-- commit
-- merge branches
-- transition or comment Jira issues
-- use `CSV-update` as a base
-- cherry-pick `CSV-update` runtime code
-- expose `sandbox_path`, argv, env, raw commands, provider, endpoint, deployment, or env refs
+- Creating a branch if the task name or branch name is unclear.
+- Switching away from a task branch with local changes.
+- Stashing changes.
+- Deleting files.
+- Moving or renaming large sets of files.
+- Running commands that rewrite history.
 
-## Task Scope Lock
+Never do these unless the user explicitly asks:
 
-If implementation requires touching files not listed in the task docs, stop and explain why before changing them.
+- Commit changes.
+- Push changes.
+- Merge branches.
+- Rebase branches.
+- Force-push.
+- Reset branches.
+- Delete branches.
+- Transition issue-tracker tickets.
+- Comment on issue-tracker tickets.
 
-Do not touch files outside the assigned task without explaining why.
+---
 
-## Completion Gate
+## 8. Core Engineering Principles
 
-Recommend Jira status `Done` only if:
+Agents must:
 
-- assigned task and subtasks are complete
-- acceptance criteria are checked
-- focused tests pass, or N/A is explained
-- `git diff --check` passes
-- diff is confined to assigned scope, or the exception is explained
-- final report includes evidence
+- Work from the current user request and current repository state.
+- Always start from updated `demov3`.
+- Always create a new task branch before changing files.
+- Prefer small, focused, reviewable changes.
+- Read relevant code and configuration before modifying files.
+- Preserve existing architecture, naming conventions, and style unless the task explicitly asks for a change.
+- Avoid assumptions based on old sprint notes, stale branches, or previous project phases.
+- Keep user-facing behavior, API contracts, and data migrations stable unless explicitly asked to change them.
+- Provide evidence for completed work.
 
-If these are not true, recommend `Keep In Progress`, `Needs Review`, or `Blocked`.
+When instructions conflict, follow this priority:
 
-## Completion Report
+1. Explicit user instruction in the current task.
+2. Protected `demov3` and mandatory task branch rules in this file.
+3. Directly relevant project documentation.
+4. Existing code patterns.
+5. General best practices.
 
-At the end of every task or subtask, Codex must output:
+Do not follow outdated sprint rules unless the user explicitly reactivates them.
+
+---
+
+## 9. Scope Control
+
+Work only on files directly relevant to the task.
+
+Before modifying files, identify:
+
+- The goal of the task.
+- The affected feature, module, package, or folder.
+- Existing patterns used by nearby code.
+- Tests or validation commands related to the change.
+
+If the implementation requires touching files outside the expected scope:
+
+- Stop briefly.
+- Explain why the extra files are necessary.
+- Continue only when the reason is clear or the user approves.
+
+Avoid drive-by refactoring.  
+Do not reformat unrelated files.
+
+---
+
+## 10. Reading And Context Strategy
+
+Read enough context to make a safe change, but avoid unnecessary full-repository scanning.
+
+Recommended order:
+
+1. Current user request.
+2. Relevant source files.
+3. Nearby tests.
+4. Build/config files.
+5. Relevant documentation.
+6. Existing issue or task description, if provided.
+
+Do not treat old sprint folders, archived docs, or stale implementation plans as active requirements unless the current task explicitly references them.
+
+When documentation and code disagree, prefer the code as the source of truth, then mention the documentation mismatch.
+
+---
+
+## 11. Command Discipline
+
+Use commands that are supported by repository configuration.
+
+Before running project-specific commands, inspect the relevant config files, for example:
+
+- `package.json`
+- `pyproject.toml`
+- `requirements.txt`
+- `pom.xml`
+- `build.gradle`
+- `Makefile`
+- `docker-compose.yml`
+- CI workflow files
+
+Do not assume package managers, test runners, Docker usage, or CI workflows exist.
+
+Prefer focused commands over broad commands.
+
+Examples:
+
+```bash
+pytest path/to/test_file.py
+npm test -- path/to/test-file
+npm run typecheck
+mvn -pl module-name test
+git diff --check
+git status --short
+```
+
+Ask before running:
+
+- Dependency installation.
+- Full test suites.
+- Long-running builds.
+- Database migrations.
+- Docker commands.
+- Network calls.
+- Commands that modify global or user-level configuration.
+
+---
+
+## 12. Dependency And Environment Rules
+
+Do not add, upgrade, or remove dependencies unless required by the task.
+
+Before changing dependencies:
+
+- Inspect the existing dependency file.
+- Check whether the dependency is already available.
+- Prefer built-in or existing project libraries.
+- Explain why the dependency is needed.
+- Update lock files only when appropriate for the repository.
+
+Never expose secrets, tokens, API keys, environment values, private endpoints, deployment names, or local machine paths in logs, reports, commits, or public product fields.
+
+Do not print raw environment variables unless the user explicitly asks and it is safe.
+
+---
+
+## 13. Implementation Standards
+
+When changing code:
+
+- Keep changes minimal and intentional.
+- Match existing style and architecture.
+- Prefer readable code over clever code.
+- Preserve backward compatibility unless the task says otherwise.
+- Handle errors explicitly.
+- Avoid swallowing exceptions silently.
+- Keep business logic out of UI/controller layers when the existing architecture separates them.
+- Do not introduce hidden side effects.
+- Do not hardcode local paths, credentials, provider names, deployment names, or machine-specific configuration.
+
+When adding behavior:
+
+- Add or update tests when practical.
+- Cover negative/error cases for security-sensitive or data-sensitive behavior.
+- Update documentation when behavior, setup, or commands change.
+
+---
+
+## 14. API And Product Boundaries
+
+Do not change public API contracts without explicit instruction.
+
+Public contracts may include:
+
+- REST endpoints.
+- Request/response schemas.
+- Database schema.
+- CLI arguments.
+- Configuration keys.
+- Frontend routes.
+- User-visible labels or workflows.
+- Exported functions/classes used by other modules.
+
+If a contract change is necessary:
+
+- Explain the reason.
+- Update callers.
+- Update tests.
+- Update documentation or migration notes.
+
+Do not expose backend runtime internals as product fields unless explicitly required. This includes:
+
+- Raw command lines.
+- `argv`
+- Environment variable names or values.
+- Provider endpoints.
+- Deployment names.
+- Sandbox paths.
+- Local filesystem details.
+- Internal orchestration traces that are not meant for users.
+
+---
+
+## 15. Database And Migration Rules
+
+Before adding or changing a database migration:
+
+- Inspect existing migrations on updated `demov3`.
+- Create the task branch before adding or editing migration files.
+- Use the next correct migration number or naming convention.
+- Do not reuse migration numbers from stale branches or old examples.
+- Keep migrations deterministic and reversible when the project expects reversibility.
+- Add or update migration tests when possible.
+- Verify schema assumptions against existing models and queries.
+
+Never modify production data or run destructive database commands unless the user explicitly asks and the risk is clear.
+
+---
+
+## 16. Testing And Validation
+
+Prefer focused validation related to changed files.
+
+Minimum completion checks should usually include:
+
+```bash
+git diff --check
+git status --short
+```
+
+For code changes, also run the most relevant focused tests available.
+
+Examples:
+
+```bash
+pytest path/to/test_file.py
+npm test -- path/to/test-file
+npm run typecheck
+mvn -pl module-name test
+```
+
+Do not claim tests passed unless they were actually run.
+
+If tests cannot be run:
+
+- Say they were not run.
+- Explain why.
+- Suggest the exact command the user can run.
+
+For docs-only changes, `git diff --check` may be enough.
+
+---
+
+## 17. Security And Privacy
+
+Agents must protect sensitive information.
+
+Never expose:
+
+- API keys.
+- Access tokens.
+- Passwords.
+- Private certificates.
+- Internal endpoints.
+- Personal data.
+- `.env` contents.
+- Raw environment variable values.
+- Local absolute paths, unless necessary for local debugging and already provided by the user.
+
+Do not commit generated logs, caches, local database files, screenshots, runtime outputs, or temporary artifacts unless explicitly requested.
+
+Security-sensitive code should include negative tests when possible.
+
+---
+
+## 18. Generated Artifacts
+
+Do not commit generated artifacts unless the task explicitly asks for them.
+
+Usually exclude:
+
+- Build outputs.
+- Runtime JSON outputs.
+- Generated reports.
+- Local audit files.
+- Logs.
+- Cache folders.
+- Temporary files.
+- Local SQLite/database files.
+- Coverage output.
+- PDFs or screenshots generated during local testing.
+
+If generated artifacts are required, document why they are needed.
+
+---
+
+## 19. Documentation Rules
+
+Update documentation when the task changes:
+
+- Setup steps.
+- Commands.
+- Architecture.
+- API behavior.
+- Configuration.
+- User workflows.
+- Migration behavior.
+- Testing strategy.
+
+Documentation should describe the current state, not old sprint intent.
+
+Avoid adding temporary sprint plans or personal notes to repository-level documentation.
+
+---
+
+## 20. Issue Tracker Rules
+
+If the task references an issue tracker item, use it to understand scope.
+
+Do not update issue status, transition tickets, assign people, or post comments unless the user explicitly asks.
+
+At completion, prepare a human-readable status update instead of applying it automatically.
+
+Recommended format:
 
 ```text
-Jira issue:
-Parent story:
-Feature folder:
+Issue:
+Summary:
 Branch:
-Commit:
 Files changed:
-Tests run:
-Acceptance criteria covered:
-Subtasks completed:
-Remaining risks:
-Recommended Jira status: Done / Needs Review / Keep In Progress / Blocked
-Manual Jira comment:
+Validation:
+Risks:
+Recommended status:
+Suggested comment:
 ```
 
-Manual Jira comment template:
+---
+
+## 21. Completion Report
+
+At the end of a task, report:
 
 ```text
-Completed <issue key> - <task title>.
+Summary:
+- What changed.
 
-Evidence:
-- Branch:
-- Commit:
-- Files changed:
-- Tests run:
-- Acceptance criteria covered:
-- Subtasks completed:
+Branch:
+- Base branch: demov3.
+- Task branch: <branch-name>.
+- Confirm work was done on the task branch, not directly on demov3.
 
-Result:
-- Recommended status:
-- Remaining risks:
-- Follow-up issues:
+Files changed:
+- List key files.
+
+Validation:
+- Commands run and results.
+- Or explain why validation was not run.
+
+Risks / notes:
+- Remaining concerns, follow-ups, or assumptions.
 ```
 
-## Generated Artifact Rule
+Be honest.  
+Do not say work is complete if acceptance criteria, tests, or validation are missing.
 
-Do not commit generated migration reports, PDFs, runtime JSON outputs, sandbox outputs, DB files, local audit artifacts, caches, logs, or build outputs unless the task explicitly asks for documentation artifacts.
+---
 
-## SQLite Migration Rule
+## 22. What Not To Put In This File
 
-Before adding a DB migration:
+Do not add:
 
-- inspect existing migration numbers on `demov3`
-- use the next available number
-- never copy migration numbers from stale branches
-- add or adjust migration tests if migration behavior changes
+- Temporary sprint names.
+- Demo-specific feature mappings.
+- One-time Jira issue mappings.
+- Deprecated workflow descriptions.
+- Old branch restrictions that are no longer relevant.
+- Short-lived roadmap constraints.
+- Temporary delivery checklists.
+- Personal machine setup details.
+- Secrets or environment-specific values.
 
-## Runtime And Product Boundaries
-
-DEMO3 product workflow is backend/API-governed:
-
-- chatbot interprets
-- human decides
-- backend validates, persists, executes, and proves with artifacts
-
-The frontend and chatbot must not execute commands, choose paths, provide argv/env, apply patches, mutate source, skip proof, or expose backend runtime internals as product fields.
-
-## Feature Dependency Rules
-
-- F0 runtime can start first.
-- F1/F2 runtime waits for F0 cleanup and model boundary safety.
-- F3 can proceed if isolated.
-- F4 depends on F3.
-- F5 runtime is blocked until F0, F1, F2, and F3/F4 foundations are merged.
-- F5 work before those foundations is design, schema, and test-plan only.
-
-## Forbidden Actions
-
-- Do not use `CSV-update` as a base.
-- Do not merge `CSV-update`.
-- Do not cherry-pick `CSV-update` runtime code.
-- Do not use `chatbot-optimization` as sprint base.
-- Do not reintroduce old DEMO2 / Stage 4-first / Copilot / TUI product workflow language.
-- Do not expose `sandbox_path`, argv, env, raw commands, provider, endpoint, deployment, or env refs as public product fields.
-- Do not implement F5 runtime before F0/F1/F2/F3/F4 foundations are ready.
-- Do not update Jira status unless the user explicitly asks.
-- Do not transition Jira issues unless the user explicitly asks.
-- Do not push unless the user explicitly asks.
-- Do not commit unless the user explicitly asks.
-
-## Testing Rule
-
-- Run focused tests only.
-- Prefer tests related to changed files.
-- Run `git diff --check`.
-- Do not run broad or full suites unless the task requires it.
-
-For docs-only tasks, focused verification may be limited to `git diff --check` and `git status --short`.
-
-## Local Agent Skills
-
-No `.agent/` folder is present in this repository checkout.
-
-Discovered `.agents/skills/` skills:
-
-- `graphify` - Use for codebase, architecture, file relationship, or project-content questions.
-- `requesting-code-review` - Use when completing implementation work, major features, or before merging.
-- `setup-matt-pocock-skills` - Use only when setting up or repairing the repository agent-skill context.
-- `subagent-driven-development` - Use when executing implementation plans with independent tasks in the current session.
-- `test-discipline` - Use when adding, changing, reviewing, or verifying tests and final evidence.
-- `to-issues` - Use when converting plans/specs/PRDs into issue-tracker tasks.
-- `triage` - Use when triaging issues or preparing issue workflow.
-
-Agents must read the skill instruction file before using a skill. Use skills only when the trigger matches. Do not invoke skills just because they exist. Do not invent skill names.
+This file should remain precise, stable, and reusable while keeping `demov3` protected and requiring all new work to happen on task branches.
