@@ -546,6 +546,22 @@ export type GovernedRepairArtifact = {
   patch_checksum?: string;
 };
 
+export type GovernedRepairControlledDemoEvidence = {
+  controlled_demo?: boolean;
+  controlled_demo_id?: string;
+  injected_failure?: boolean;
+  sandbox_only?: boolean;
+  legacy_unchanged?: boolean;
+  target_file?: string;
+  original_import_namespace?: string;
+  injected_import_namespace?: string;
+  proposed_import_namespace?: string;
+  injection_before_checksum?: string;
+  injection_after_checksum?: string;
+  evidence_summary?: string;
+  dependency_alignment?: Record<string, unknown>;
+};
+
 export type GovernedRepairFailureEvidence = {
   verification_command?: string[];
   cwd?: string;
@@ -553,6 +569,8 @@ export type GovernedRepairFailureEvidence = {
   stdout_stderr_tail?: string;
   diagnostic_line?: string;
   failing_file?: string;
+  controlled_demo_evidence?: GovernedRepairControlledDemoEvidence;
+  dependency_alignment?: Record<string, unknown>;
 };
 
 export type GovernedRepairPatchPackage = {

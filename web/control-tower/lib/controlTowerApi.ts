@@ -544,7 +544,6 @@ export async function requestV2ReviewerCritique(
     proposal_type: string;
     proposal_checksum: string;
     context_pack_checksum: string;
-    model_invocation_id?: string | null;
   }
 ): Promise<V2ReviewerCritiqueResponse> {
   // F07: NEVER sends decision/reasoning from client.

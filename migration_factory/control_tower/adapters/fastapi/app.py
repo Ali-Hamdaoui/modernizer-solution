@@ -545,8 +545,6 @@ class CreateReviewerCritiqueRequest(BaseModel):
     proposal_type: str = "repair"  # repair, pom_patch
     proposal_checksum: str
     context_pack_checksum: str
-    # Internal: model_invocation_id for audit (set by orchestrator, not client)
-    model_invocation_id: str | None = None
     # F07: decision, reasoning, missing_evidence, unsafe_assumptions are
     # NEVER accepted from client body — the model generates them.
 
@@ -2903,12 +2901,16 @@ def create_app(
 
         target_rel = "src/main/java/com/example/R6ControlledRepairDemo.java"
         failure_summary = "[ERROR] package jakarta.servlet.http does not exist"
-        source_text = (
+        pre_injection_source_text = (
             "package com.example;\n\n"
-            "import jakarta.servlet.http.HttpServletRequest;\n\n"
+            "import javax.servlet.http.HttpServletRequest;\n\n"
             "final class R6ControlledRepairDemo {\n"
             "  private HttpServletRequest request;\n"
             "}\n"
+        )
+        source_text = pre_injection_source_text.replace(
+            "import javax.servlet.http.HttpServletRequest;",
+            "import jakarta.servlet.http.HttpServletRequest;",
         )
 
         def _payload(record_payload_json: str | None) -> dict[str, Any]:
@@ -2948,6 +2950,8 @@ def create_app(
             if setup is None:
                 raise _error(status.HTTP_404_NOT_FOUND, "SETUP_NOT_FOUND", f"Setup {job.setup_id!r} not found")
 
+            events = tuple(uow.v2_events.list_by_job(job_id))
+            commands = tuple(uow.v2_commands.list_by_job(job_id))
             stage2_started = any(
                 event.stage == 2
                 and (
@@ -2955,7 +2959,10 @@ def create_app(
                     or "started" in event.type
                     or event.type in {"command_created", "stage_started", "sandbox_transform_started"}
                 )
-                for event in uow.v2_events.list_by_job(job_id)
+                for event in events
+            ) or any(
+                command.stage_index == 2 and command.status in {"queued", "running", "completed", "failed"}
+                for command in commands
             )
             if stage2_started:
                 raise _error(
@@ -2970,8 +2977,6 @@ def create_app(
             candidates: list[tuple[str, Path]] = []
             expected_relative_path = ""
             stage1_status = "unknown"
-            events = tuple(uow.v2_events.list_by_job(job_id))
-            commands = tuple(uow.v2_commands.list_by_job(job_id))
             for command in commands:
                 if command.stage_index == 1:
                     stage1_status = command.status or stage1_status
@@ -3077,6 +3082,31 @@ def create_app(
                 ) from exc
             target_path.parent.mkdir(parents=True, exist_ok=True)
             target_path.write_text(source_text, encoding="utf-8")
+            injection_before_checksum = V2RepairFlowService._sha256_text(pre_injection_source_text)
+            injection_after_checksum = V2RepairFlowService._sha256_text(source_text)
+            controlled_demo_evidence = {
+                "controlled_demo": True,
+                "controlled_demo_id": "r6_jakarta_javax_namespace_restore",
+                "injected_failure": True,
+                "sandbox_only": True,
+                "legacy_unchanged": True,
+                "target_file": target_rel,
+                "original_import_namespace": "javax.servlet.http",
+                "injected_import_namespace": "jakarta.servlet.http",
+                "proposed_import_namespace": "javax.servlet.http",
+                "injection_before_checksum": injection_before_checksum,
+                "injection_after_checksum": injection_after_checksum,
+                "evidence_summary": (
+                    "Controlled local/dev R6 smoke seeded a sandbox-only demo file with javax.servlet.http, "
+                    "then injected jakarta.servlet.http to create the known failure. The proposal restores "
+                    "the pre-injection namespace."
+                ),
+                "dependency_alignment": {
+                    "source": "controlled_demo_pre_injection_source",
+                    "supports_namespace": "javax.servlet.http",
+                    "proof": "pre-injection controlled demo source used javax.servlet.http and compiled intent is namespace restoration",
+                },
+            }
 
             now = utc_now_text()
             command_id = f"r6-demo-{uuid4().hex}"
@@ -3119,6 +3149,7 @@ def create_app(
                 hypothesis="Controlled R6 demo Jakarta/javax namespace mismatch",
                 patch_summary="Repair controlled sandbox import namespace",
                 affected_paths=(target_rel,),
+                controlled_demo_evidence=controlled_demo_evidence,
             )
             proposal_dict = service.proposal_to_dict(proposal)
             _append_v2_event(
@@ -3135,6 +3166,7 @@ def create_app(
                     "repair_family": "JAKARTA_IMPORT_MECHANICAL_SOURCE",
                     "sandbox_only": True,
                     "stage2_started": False,
+                    "controlled_demo_evidence": controlled_demo_evidence,
                 },
             )
 
@@ -3454,6 +3486,8 @@ def create_app(
                     "No legacy source mutation. Only sandbox changes. Human approval required. "
                     "Accept only if unified diff exists, target files are sandbox-contained, "
                     "checksums exist, failure evidence matches the patch, and verification plan exists. "
+                    "For a jakarta-to-javax controlled R6 repair, accept only when controlled_demo_evidence "
+                    "or dependency_alignment proves javax is intended or restored from known-good pre-injection source. "
                     f"Backend preflight blockers: {review_blockers or 'none'}."
                 ),
                 "proposal_checksum": payload.proposal_checksum,
@@ -3545,7 +3579,7 @@ def create_app(
                     reasoning=reviewer_output.value["reasoning"],
                     missing_evidence=tuple(reviewer_output.value.get("missing_evidence", [])),
                     unsafe_assumptions=tuple(reviewer_output.value.get("unsafe_assumptions", [])),
-                    model_invocation_id=payload.model_invocation_id,
+                    model_invocation_id=None,
                 )
             except ValueError as exc:
                 raise _error(
@@ -13126,6 +13160,49 @@ def _safe_json_dict(raw: object) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _jakarta_to_javax_namespace_proof_missing(package: dict[str, Any]) -> bool:
+    repair_family = str(package.get("repair_family") or package.get("deterministic_rule_id") or "")
+    if repair_family != "JAKARTA_IMPORT_MECHANICAL_SOURCE":
+        return False
+    repair_artifact = package.get("repair_artifact") if isinstance(package.get("repair_artifact"), dict) else {}
+    unified_diff = str(repair_artifact.get("unified_diff") or "")
+    failure_evidence = package.get("failure_evidence") if isinstance(package.get("failure_evidence"), dict) else {}
+    diagnostic_line = str(failure_evidence.get("diagnostic_line") or failure_evidence.get("stdout_stderr_tail") or "")
+    flips_jakarta_to_javax = (
+        "package jakarta.servlet.http does not exist" in diagnostic_line
+        and "-import jakarta.servlet.http.HttpServletRequest;" in unified_diff
+        and "+import javax.servlet.http.HttpServletRequest;" in unified_diff
+    )
+    if not flips_jakarta_to_javax:
+        return False
+    controlled = failure_evidence.get("controlled_demo_evidence")
+    if isinstance(controlled, dict):
+        return not (
+            controlled.get("injected_failure") is True
+            and str(controlled.get("original_import_namespace") or "") == "javax.servlet.http"
+            and str(controlled.get("injected_import_namespace") or "") == "jakarta.servlet.http"
+            and str(controlled.get("proposed_import_namespace") or "") == "javax.servlet.http"
+            and str(controlled.get("injection_before_checksum") or "").startswith("sha256:")
+            and str(controlled.get("injection_after_checksum") or "").startswith("sha256:")
+        )
+    dependency_alignment = failure_evidence.get("dependency_alignment")
+    if isinstance(dependency_alignment, dict):
+        supported = str(
+            dependency_alignment.get("supports_namespace")
+            or dependency_alignment.get("namespace")
+            or ""
+        )
+        source = str(dependency_alignment.get("source") or "")
+        proof = str(dependency_alignment.get("proof") or dependency_alignment.get("artifact_ref") or "")
+        allowed_sources = {"pom_dependency_detection", "runtime_contract", "reference_delta"}
+        return not (
+            supported == "javax.servlet.http"
+            and source in allowed_sources
+            and bool(proof.strip())
+        )
+    return True
+
+
 def _repair_patch_package_review_blockers(package: dict[str, Any]) -> list[str]:
     blockers = [str(item) for item in package.get("blockers", []) if str(item).strip()]
     if not package:
@@ -13166,6 +13243,10 @@ def _repair_patch_package_review_blockers(package: dict[str, Any]) -> list[str]:
         blockers.append("proposal contains legacy write target")
     if containment.get("sandbox_outside_legacy") is not True:
         blockers.append("proposal sandbox is not proven outside legacy")
+    if _jakarta_to_javax_namespace_proof_missing(package):
+        blockers.append(
+            "proposal is missing controlled demo or dependency evidence proving javax.servlet.http is intended"
+        )
     if package.get("approval_apply_separate") is not True:
         blockers.append("proposal must keep approval and apply separate")
     return list(dict.fromkeys(blockers))

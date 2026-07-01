@@ -25,6 +25,7 @@ import {
   getV2ArtifactPreview,
   prepareV2RepairApplyContext,
   requireJobId,
+  requestV2ReviewerCritique,
   v2EventStreamUrl,
 } from "../lib/controlTowerApi";
 import type {
@@ -146,6 +147,23 @@ const GOVERNED_REPAIR_PROPOSAL: GovernedRepairProposalResponse = {
   failure_evidence: {
     diagnostic_line: "package jakarta.servlet.http does not exist",
     failing_file: "src/main/java/com/example/App.java",
+    controlled_demo_evidence: {
+      controlled_demo: true,
+      controlled_demo_id: "r6_jakarta_javax_namespace_restore",
+      injected_failure: true,
+      sandbox_only: true,
+      legacy_unchanged: true,
+      target_file: "src/main/java/com/example/App.java",
+      original_import_namespace: "javax.servlet.http",
+      injected_import_namespace: "jakarta.servlet.http",
+      proposed_import_namespace: "javax.servlet.http",
+      injection_before_checksum: "sha256:inject-before",
+      injection_after_checksum: "sha256:inject-after",
+      dependency_alignment: {
+        source: "controlled_demo_pre_injection_source",
+        supports_namespace: "javax.servlet.http",
+      },
+    },
   },
   patch_package: {
     sandbox_path: "C:/work/out/.migration/runs/run-9a/sandbox",
@@ -163,6 +181,23 @@ const GOVERNED_REPAIR_PROPOSAL: GovernedRepairProposalResponse = {
     failure_evidence: {
       diagnostic_line: "package jakarta.servlet.http does not exist",
       failing_file: "src/main/java/com/example/App.java",
+      controlled_demo_evidence: {
+        controlled_demo: true,
+        controlled_demo_id: "r6_jakarta_javax_namespace_restore",
+        injected_failure: true,
+        sandbox_only: true,
+        legacy_unchanged: true,
+        target_file: "src/main/java/com/example/App.java",
+        original_import_namespace: "javax.servlet.http",
+        injected_import_namespace: "jakarta.servlet.http",
+        proposed_import_namespace: "javax.servlet.http",
+        injection_before_checksum: "sha256:inject-before",
+        injection_after_checksum: "sha256:inject-after",
+        dependency_alignment: {
+          source: "controlled_demo_pre_injection_source",
+          supports_namespace: "javax.servlet.http",
+        },
+      },
     },
   },
   migration_intelligence_warnings: ["runtime_contract: warn", "reference_delta: warn"],
@@ -603,6 +638,9 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Repair family: JAKARTA_IMPORT_MECHANICAL_SOURCE");
     expect(markup).toContain("patch-abc.diff");
     expect(markup).toContain("Pre-validation: passed before proposal became actionable");
+    expect(markup).toContain("Controlled demo: injected local/dev failure; not the real Stage1 UNKNOWN failure.");
+    expect(markup).toContain("Namespace proof: jakarta.servlet.http was injected and proposal restores javax.servlet.http");
+    expect(markup).toContain("Injection before checksum: sha256:inject-before");
     expect(markup).toContain("Request reviewer critique");
     expect(markup).toContain("Prepare apply context");
     expect(markup).toContain("Record human repair approval");
@@ -1087,6 +1125,46 @@ describe("V2 Migration Cockpit contract", () => {
       expect(calls[0].body).not.toHaveProperty("command");
       expect(calls[0].body).not.toHaveProperty("maven_goal");
       expect(calls[0].body).not.toHaveProperty("model_deployment");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("reviewer critique request sends no browser model payload", async () => {
+    const originalFetch = global.fetch;
+    const calls: { url: string; body: Record<string, unknown> }[] = [];
+    global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> });
+      return new Response(JSON.stringify({
+        critique_id: "crit-1",
+        proposal_id: "proposal-9a-1",
+        proposal_type: "repair_proposal",
+        proposal_checksum: "sha256:proposal-checksum",
+        context_pack_checksum: "sha256:context-checksum",
+        decision: "accept",
+        reasoning: "Evidence complete.",
+        missing_evidence: [],
+        unsafe_assumptions: [],
+        model_invocation_id: null,
+        created_at: "2026-06-30T00:00:00Z",
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    try {
+      await requestV2ReviewerCritique("cmd-repair-1", "proposal-9a-1", {
+        proposal_type: "repair_proposal",
+        proposal_checksum: "sha256:proposal-checksum",
+        context_pack_checksum: "sha256:context-checksum",
+      });
+
+      expect(calls[0].url).toBe(`${CONTROL_TOWER_API_BASE_URL}/v1/v2/commands/cmd-repair-1/repair/proposal/proposal-9a-1/reviewer-critique`);
+      expect(calls[0].body).toEqual({
+        proposal_id: "proposal-9a-1",
+        proposal_type: "repair_proposal",
+        proposal_checksum: "sha256:proposal-checksum",
+        context_pack_checksum: "sha256:context-checksum",
+      });
+      expect(calls[0].body).not.toHaveProperty("model_invocation_id");
+      expect(calls[0].body).not.toHaveProperty("model");
     } finally {
       global.fetch = originalFetch;
     }

@@ -753,6 +753,7 @@ class _RecordingProposerClient:
 
     def __init__(self) -> None:
         self.roles: list[str] = []
+        self.prompts: list[str] = []
 
     def answer_with_role(
         self,
@@ -765,6 +766,7 @@ class _RecordingProposerClient:
         require_schema: bool = False,
     ):
         self.roles.append(role.value)
+        self.prompts.append(prompt)
         import json as _json
 
         return type("Result", (), {
@@ -797,6 +799,7 @@ class _RecordingReviewerClient:
 
     def __init__(self) -> None:
         self.roles: list[str] = []
+        self.prompts: list[str] = []
 
     def answer_with_role(
         self,
@@ -809,6 +812,7 @@ class _RecordingReviewerClient:
         require_schema: bool = False,
     ):
         self.roles.append(role.value)
+        self.prompts.append(prompt)
         import json as _json
 
         return type("Result", (), {
@@ -1018,6 +1022,23 @@ class TestRepairAPI:
         legacy["containment"]["legacy_target_present"] = True
         assert "proposal contains legacy write target" in _repair_patch_package_review_blockers(legacy)
 
+        missing_namespace_proof = _safe_patch_package()
+        missing_namespace_proof["failure_evidence"] = {
+            "diagnostic_line": "package jakarta.servlet.http does not exist"
+        }
+        missing_namespace_proof["repair_artifact"]["unified_diff"] = (
+            "diff --git a/src/App.java b/src/App.java\n"
+            "--- a/src/App.java\n"
+            "+++ b/src/App.java\n"
+            "@@\n"
+            "-import jakarta.servlet.http.HttpServletRequest;\n"
+            "+import javax.servlet.http.HttpServletRequest;\n"
+        )
+        assert (
+            "proposal is missing controlled demo or dependency evidence proving javax.servlet.http is intended"
+            in _repair_patch_package_review_blockers(missing_namespace_proof)
+        )
+
     def test_create_proposal(self, tmp_path: Path) -> None:
         fake_client = _RecordingProposerClient()
         client, conn = _api_client(tmp_path, fake_model_client=fake_client)
@@ -1091,6 +1112,17 @@ class TestRepairAPI:
         assert package["repair_artifact"]["patch_checksum"]
         assert Path(package["repair_artifact"]["patch_path"]).is_file()
         assert "import javax.servlet.http.HttpServletRequest;" in package["repair_artifact"]["unified_diff"]
+        evidence = package["failure_evidence"]["controlled_demo_evidence"]
+        assert evidence["controlled_demo"] is True
+        assert evidence["injected_failure"] is True
+        assert evidence["sandbox_only"] is True
+        assert evidence["legacy_unchanged"] is True
+        assert evidence["original_import_namespace"] == "javax.servlet.http"
+        assert evidence["injected_import_namespace"] == "jakarta.servlet.http"
+        assert evidence["proposed_import_namespace"] == "javax.servlet.http"
+        assert evidence["injection_before_checksum"].startswith("sha256:")
+        assert evidence["injection_after_checksum"].startswith("sha256:")
+        assert package["failure_evidence"]["dependency_alignment"]["supports_namespace"] == "javax.servlet.http"
 
         records = SqliteV2RepairRepository(conn).list_proposals_by_command(proposal["command_id"])
         assert len(records) == 1
@@ -1106,7 +1138,6 @@ class TestRepairAPI:
                 "proposal_type": "repair_proposal",
                 "proposal_checksum": proposal["proposal_checksum"],
                 "context_pack_checksum": proposal["context_pack_checksum"],
-                "model_invocation_id": None,
             },
             headers=_mutation_headers(),
         )
@@ -1115,10 +1146,72 @@ class TestRepairAPI:
         assert review_body["decision"] == "accept"
         assert review_body["context_pack_checksum"] == proposal["context_pack_checksum"]
         assert reviewer_client.roles == ["reviewer"]
+        assert reviewer_client.prompts
+        assert "controlled_demo_evidence" in reviewer_client.prompts[0]
+        assert "controlled_demo_pre_injection_source" in reviewer_client.prompts[0]
         persisted = SqliteUnitOfWork(conn).v2_reviewer.list_critiques_by_proposal(proposal["proposal_id"])
         assert len(persisted) == 1
         assert persisted[0].context_pack_checksum == proposal["context_pack_checksum"]
         assert persisted[0].decision == "accept"
+
+        browser_model_payload = client.post(
+            f"/v1/v2/commands/{proposal['command_id']}/repair/proposal/{proposal['proposal_id']}/reviewer-critique",
+            json={
+                "proposal_id": proposal["proposal_id"],
+                "proposal_type": "repair_proposal",
+                "proposal_checksum": proposal["proposal_checksum"],
+                "context_pack_checksum": proposal["context_pack_checksum"],
+                "model_invocation_id": "browser-supplied-model-id",
+            },
+            headers=_mutation_headers(),
+        )
+        assert browser_model_payload.status_code == 422
+
+    def test_controlled_r6_reviewer_revises_when_namespace_evidence_missing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, conn = _api_client(tmp_path)
+        _seed_v2_command_for_model_audit(conn, tmp_path, "cmd-r6-missing-evidence")
+        monkeypatch.setenv("CONTROL_TOWER_R6_DEMO_ENABLED", "true")
+
+        response = client.post(
+            "/v1/v2/jobs/job-cmd-r6-missing-evidence/repair/demo/r6-controlled",
+            json={},
+            headers=_mutation_headers(),
+        )
+        assert response.status_code == 200, response.text
+        proposal = response.json()["repair_proposal"]
+        package = proposal["patch_package"]
+        package["failure_evidence"].pop("controlled_demo_evidence", None)
+        package["failure_evidence"].pop("dependency_alignment", None)
+        conn.execute(
+            "UPDATE v2_repair_proposals SET patch_package_json = ? WHERE proposal_id = ?",
+            (json.dumps(package, separators=(",", ":"), sort_keys=True), proposal["proposal_id"]),
+        )
+
+        reviewer_client = _RecordingReviewerClient()
+        client.app.state.v2_assistant_model_client = reviewer_client
+        review_response = client.post(
+            f"/v1/v2/commands/{proposal['command_id']}/repair/proposal/{proposal['proposal_id']}/reviewer-critique",
+            json={
+                "proposal_id": proposal["proposal_id"],
+                "proposal_type": "repair_proposal",
+                "proposal_checksum": proposal["proposal_checksum"],
+                "context_pack_checksum": proposal["context_pack_checksum"],
+            },
+            headers=_mutation_headers(),
+        )
+
+        assert review_response.status_code == 200, review_response.text
+        body = review_response.json()
+        assert body["decision"] == "revise"
+        assert any(
+            "proposal is missing controlled demo or dependency evidence" in item
+            for item in body["missing_evidence"]
+        )
+        assert reviewer_client.roles == []
 
     def test_controlled_r6_demo_returns_409_before_sandbox_exists(
         self,
@@ -1198,6 +1291,41 @@ class TestRepairAPI:
 
         response = client.post(
             "/v1/v2/jobs/job-cmd-stage2-started/repair/demo/r6-controlled",
+            json={},
+            headers=_mutation_headers(),
+        )
+
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "R6_DEMO_STAGE2_STARTED"
+
+    def test_controlled_r6_demo_rejects_after_stage2_command_exists(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, conn = _api_client(tmp_path)
+        _seed_v2_command_for_model_audit(conn, tmp_path, "cmd-stage2-command")
+        now = utc_now_text()
+        SqliteUnitOfWork(conn).v2_commands.save(
+            V2StageCommandRecord(
+                command_id="stage2-command",
+                job_id="job-cmd-stage2-command",
+                stage_index=2,
+                manifest_checksum="stage2-manifest",
+                argv_json="[]",
+                env_json="{}",
+                status="queued",
+                created_at=now,
+                updated_at=now,
+                result_json="{}",
+                gate_id=None,
+                decision_id=None,
+            )
+        )
+        monkeypatch.setenv("CONTROL_TOWER_R6_DEMO_ENABLED", "true")
+
+        response = client.post(
+            "/v1/v2/jobs/job-cmd-stage2-command/repair/demo/r6-controlled",
             json={},
             headers=_mutation_headers(),
         )
@@ -1465,7 +1593,6 @@ class TestRepairAPI:
                 "proposal_type": "repair",
                 "proposal_checksum": proposal_checksum,
                 "context_pack_checksum": "cp-review",
-                "model_invocation_id": "inv-review",
             },
             headers=_mutation_headers(),
         )
@@ -1658,7 +1785,6 @@ class TestRepairAPI:
                 "proposal_type": "repair",
                 "proposal_checksum": proposal_checksum,
                 "context_pack_checksum": "cp-review-fenced",
-                "model_invocation_id": "inv-review-fenced",
             },
             headers=_mutation_headers(),
         )

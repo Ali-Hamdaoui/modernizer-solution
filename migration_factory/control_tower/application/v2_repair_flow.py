@@ -283,12 +283,14 @@ class V2RepairFlowService:
         patch_summary: str,
         affected_paths: tuple[str, ...],
         verification_command: tuple[str, ...] = ("mvn", "-q", "-DskipTests", "compile"),
+        controlled_demo_evidence: dict[str, Any] | None = None,
     ) -> RepairProposal:
         patch_package_json = self._build_patch_package_json(
             command_id=command_id,
             failure_summary=failure_summary,
             affected_paths=affected_paths,
             verification_command=verification_command,
+            controlled_demo_evidence=controlled_demo_evidence,
         )
         context_pack_checksum = self._patch_package_checksum(patch_package_json)
         return self.create_proposal(
@@ -1869,6 +1871,7 @@ class V2RepairFlowService:
         failure_summary: str,
         affected_paths: tuple[str, ...],
         verification_command: tuple[str, ...],
+        controlled_demo_evidence: dict[str, Any] | None = None,
     ) -> str:
         if self._job_repo is None or self._setup_repo is None or self._command_repo is None:
             return "{}"
@@ -1970,6 +1973,11 @@ class V2RepairFlowService:
             "diagnostic_line": self._diagnostic_line(failure_summary),
             "failing_file": targets[0]["relative_path"] if targets else "",
         }
+        if controlled_demo_evidence:
+            evidence = dict(controlled_demo_evidence)
+            failure_evidence["controlled_demo_evidence"] = evidence
+            if isinstance(evidence.get("dependency_alignment"), dict):
+                failure_evidence["dependency_alignment"] = evidence["dependency_alignment"]
         package: dict[str, Any] = {
             "schema_version": "1.0",
             "command_id": command_id,

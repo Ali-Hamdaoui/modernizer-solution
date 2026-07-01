@@ -218,6 +218,12 @@ function proposalRepairFamily(proposal: GovernedRepairProposalResponse): string 
   return proposal.repair_family ?? proposal.patch_package?.repair_family ?? "";
 }
 
+function proposalControlledDemoEvidence(proposal: GovernedRepairProposalResponse) {
+  return proposal.failure_evidence?.controlled_demo_evidence
+    ?? proposal.patch_package?.failure_evidence?.controlled_demo_evidence
+    ?? null;
+}
+
 function proposalDeterministicRule(proposal: GovernedRepairProposalResponse): string {
   return proposal.deterministic_rule_id ?? proposal.patch_package?.deterministic_rule_id ?? proposalRepairFamily(proposal);
 }
@@ -695,6 +701,7 @@ export function R6GovernedRepairPanel({
   const applyDisabled = r6ApplyButtonDisabled(state);
   const action = state.applyResult?.repair_action ?? null;
   const applyFailure = action?.apply_failure ?? null;
+  const controlledDemoEvidence = proposalControlledDemoEvidence(proposal);
 
   return (
     <section className="panel stack r6-repair-panel" aria-label="Governed R6 repair flow">
@@ -712,6 +719,16 @@ export function R6GovernedRepairPanel({
         <p className="meta">Patch artifact: {patchArtifact ? formatGateArtifactRefLabel(patchArtifact) : "n/a"}</p>
         <p className="checksum">Patch checksum: {patchChecksum || "n/a"}</p>
         <p className="meta">Pre-validation: {patchArtifact && patchChecksum ? "passed before proposal became actionable" : "not available"}</p>
+        {controlledDemoEvidence?.injected_failure && (
+          <div className="trace-subsection">
+            <p className="meta">Controlled demo: injected local/dev failure; not the real Stage1 UNKNOWN failure.</p>
+            <p className="meta">
+              Namespace proof: {controlledDemoEvidence.injected_import_namespace || "n/a"} was injected and proposal restores {controlledDemoEvidence.proposed_import_namespace || "n/a"} from pre-injection evidence.
+            </p>
+            <p className="checksum">Injection before checksum: {controlledDemoEvidence.injection_before_checksum || "n/a"}</p>
+            <p className="checksum">Injection after checksum: {controlledDemoEvidence.injection_after_checksum || "n/a"}</p>
+          </div>
+        )}
       </div>
 
       <div className="trace-section">
@@ -1238,7 +1255,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         proposal_type: "repair_proposal",
         proposal_checksum: proposalChecksum,
         context_pack_checksum: contextChecksum,
-        model_invocation_id: proposerInvocationId(proposal) || null,
       });
       setR6RepairState((current) => ({ ...current, reviewer: critique, busy: null }));
     } catch (e) {
