@@ -1,0 +1,93 @@
+{
+  "schema_version": "1.0.0",
+  "audit_id": "10I-R7C.1",
+  "merge_policy": "do_not_merge_branch_directly",
+  "branch_comparison": {
+    "current_branch": "integration/fusion-chatbot-csv-msa",
+    "current_head": "4c037e2",
+    "msa_utils_branch": "origin/msa-utils",
+    "msa_utils_commit": "b866df082fac5a90c157bbba081edfbe09c38e0e",
+    "merge_base": "1b9e9fe458fb48d47c398dfa7659eb74d4ec8267",
+    "unique_commits_current": 438,
+    "unique_commits_msa_utils": 28,
+    "scoped_diff_summary": "787 files changed; large Control Tower deletions plus migration intelligence additions."
+  },
+  "current_governance_supersedes": [
+    "migration_factory/control_tower",
+    "web/control-tower",
+    "migration_factory/repair_loop",
+    "tests/control_tower",
+    "R6 governed repair apply and verification spine",
+    "R7B stage-aware evidence pack",
+    "R7C stage-aware classifier envelope"
+  ],
+  "msa_utils_reusable_knowledge": [
+    "golden reference summaries and gap reports",
+    "golden rule extractor labels",
+    "build/test behavioral classifier categories",
+    "review gate detection logic for PowerMock, Jakarta hybrid, Azure SDK, JJWT",
+    "test context and MockitoBean placement analysis",
+    "legacy equivalence analysis",
+    "strategy router state machine ideas",
+    "runtime/reference delta analyzer ideas"
+  ],
+  "risky_to_import_as_runtime": [
+    "approved_patch_apply.py",
+    "remediation executor",
+    "direct file patching flow",
+    "old branch Control Tower state",
+    "any old API shape that accepts patch/path/command/model authority outside backend gates"
+  ],
+  "current_failure_mapping": {
+    "current_failure_type": "unsupported_legacy_test_or_api_dependency",
+    "current_matched_signal": "unsupported:legacy_dependency_or_test_framework",
+    "stage_target": "Spring Boot 2.1 / Java 11 -> Spring Boot 2.7 / Java 11",
+    "msa_utils_matching_knowledge": [
+      "POWERMOCK_LEGACY_TEST_STRATEGY",
+      "LEGACY_TEST_FRAMEWORK_MIGRATION",
+      "MOCKITO_FINAL_CLASS_MOCKING_LIMITATION",
+      "SPRING_MVC_EXCEPTION_HANDLER_BEHAVIOR_DRIFT",
+      "HTTP_STATUS_CONTRACT_DRIFT",
+      "APPLICATION_BEHAVIOR_REGRESSION"
+    ],
+    "recommended_behavior": "Keep repair disabled; refine classification only when build/test artifacts exist or dependency/reference evidence proves a specific human-review subtype.",
+    "should_enable_real_repair": false
+  },
+  "roadmap": [
+    {
+      "ticket": "R7C.2",
+      "objective": "Refine classifier labels and stage filters from msa-utils; repair remains disabled.",
+      "acceptance": "Known legacy test/API signals become precise classifier subtypes without proposal/apply."
+    },
+    {
+      "ticket": "R7C.3",
+      "objective": "Add read-only migration memory seed store and retrieval contract.",
+      "acceptance": "Assistant/proposer can see memory refs, but backend gates remain authoritative."
+    },
+    {
+      "ticket": "R7D",
+      "objective": "Add evidence-bound proposer for one narrow supported family.",
+      "acceptance": "Proposal is non-actionable until reviewer and human approval."
+    },
+    {
+      "ticket": "R7E",
+      "objective": "Use memory in reviewer, fallback, and chatbot explanations.",
+      "acceptance": "Memory improves explanation and critique, never bypasses gates."
+    },
+    {
+      "ticket": "R7F",
+      "objective": "Run first real seeded governed repair smoke.",
+      "acceptance": "Sandbox-only apply, verification, rollback, and legacy proof recorded."
+    },
+    {
+      "ticket": "R8",
+      "objective": "Selective code import from remediation modules as backend-owned proposal generators.",
+      "acceptance": "No direct old apply/executor path imported."
+    },
+    {
+      "ticket": "R9",
+      "objective": "Reconcile governed intelligence with the 4-stage branch.",
+      "acceptance": "Shared stage/evidence contracts support stages 1 through 4."
+    }
+  ]
+}

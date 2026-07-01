@@ -1,0 +1,150 @@
+{
+  "schema_version": "1.0.0",
+  "audit_id": "10I-R7C.1",
+  "source_branch": "origin/msa-utils",
+  "source_commit": "b866df082fac5a90c157bbba081edfbe09c38e0e",
+  "current_branch": "integration/fusion-chatbot-csv-msa",
+  "merge_base": "1b9e9fe458fb48d47c398dfa7659eb74d4ec8267",
+  "capabilities": [
+    {
+      "capability": "JAVA_VERSION_ALIGNMENT",
+      "source_path": ".migration/golden-references/msa-utils/golden_reference_summary.md",
+      "category": "deterministic_rule",
+      "stage_relevance": ["stage_2", "stage_3", "stage_4"],
+      "evidence_required": ["stage_metadata", "pom_xml", "compiler_config"],
+      "mode": "deterministic_later",
+      "current_branch_coverage": "partial",
+      "recommended_action": "Map to compiler/toolchain classifier and backend-owned proposal generator."
+    },
+    {
+      "capability": "SPRING_BOOT_VERSION_ALIGNMENT",
+      "source_path": ".migration/golden-references/msa-utils/golden_reference_summary.md",
+      "category": "stage_profile_metadata",
+      "stage_relevance": ["stage_1", "stage_2", "stage_3", "stage_4"],
+      "evidence_required": ["stage_metadata", "pom_xml", "dependency_graph"],
+      "mode": "deterministic_later",
+      "current_branch_coverage": "partial",
+      "recommended_action": "Use as stage profile alignment evidence, not direct apply."
+    },
+    {
+      "capability": "JJWT_VERSION_ALIGNMENT",
+      "source_path": "migration_factory/agents/transformation_agent/maven_pom_patcher.py",
+      "category": "dependency_alignment",
+      "stage_relevance": ["stage_2", "stage_4"],
+      "evidence_required": ["pom_xml", "dependency_graph", "source_usage"],
+      "mode": "human_review_then_deterministic_candidate",
+      "current_branch_coverage": "missing",
+      "recommended_action": "Add classifier and review gate before any proposal generator."
+    },
+    {
+      "capability": "JAKARTA_VALIDATION_DEPENDENCY_ALIGNMENT",
+      "source_path": "migration_factory/golden_reference/rule_extractor.py",
+      "category": "dependency_alignment",
+      "stage_relevance": ["stage_2", "stage_4"],
+      "evidence_required": ["pom_xml", "dependency_graph", "validation_usage"],
+      "mode": "deterministic_later",
+      "current_branch_coverage": "partial",
+      "recommended_action": "Merge with current validation dependency families."
+    },
+    {
+      "capability": "IMPORT_JAVAX_VALIDATION_TO_JAKARTA",
+      "source_path": "migration_factory/golden_reference/analyzer.py",
+      "category": "source_transformation",
+      "stage_relevance": ["stage_2", "stage_4"],
+      "evidence_required": ["source_ref", "compiler_error", "stage_metadata"],
+      "mode": "deterministic_later",
+      "current_branch_coverage": "partial",
+      "recommended_action": "Extend stage-aware classifier and later bounded source proposal."
+    },
+    {
+      "capability": "IMPORT_JAVAX_SERVLET_TO_JAKARTA",
+      "source_path": "migration_factory/golden_reference/analyzer.py",
+      "category": "source_transformation",
+      "stage_relevance": ["stage_2", "stage_4"],
+      "evidence_required": ["source_ref", "compiler_error", "dependency_graph", "stage_metadata"],
+      "mode": "deterministic_later",
+      "current_branch_coverage": "partial",
+      "recommended_action": "Reconcile with controlled R6 inverse javax repair and real Boot 3/4 target logic."
+    },
+    {
+      "capability": "MOCKBEAN_TO_MOCKITOBEAN",
+      "source_path": "migration_factory/remediation/mockito_bean_placement.py",
+      "category": "test_modernization",
+      "stage_relevance": ["stage_2", "stage_4"],
+      "evidence_required": ["test_source", "spring_test_version", "test_failure", "placement_analysis"],
+      "mode": "narrow_deterministic_or_llm_candidate",
+      "current_branch_coverage": "missing",
+      "recommended_action": "Seed memory now; add deterministic proposal only for unambiguous placement cases later."
+    },
+    {
+      "capability": "INITMOCKS_TO_OPENMOCKS",
+      "source_path": "migration_factory/golden_reference/analyzer.py",
+      "category": "test_modernization",
+      "stage_relevance": ["stage_1", "stage_2", "stage_3", "stage_4"],
+      "evidence_required": ["test_source", "mockito_dependency"],
+      "mode": "deterministic_later",
+      "current_branch_coverage": "missing",
+      "recommended_action": "Good candidate for bounded test-source proposal after tests."
+    },
+    {
+      "capability": "POWERMOCK_LEGACY_TEST_STRATEGY",
+      "source_path": "migration_factory/agents/transformation_agent/review_gates.py",
+      "category": "human_review_gate",
+      "stage_relevance": ["stage_2", "stage_3", "stage_4"],
+      "evidence_required": ["pom_xml", "test_source_markers"],
+      "mode": "human_review",
+      "current_branch_coverage": "unsupported_signal_only",
+      "recommended_action": "Refine current unsupported classification into explicit review gate."
+    },
+    {
+      "capability": "AZURE_SDK_API_MIGRATION",
+      "source_path": "migration_factory/agents/transformation_agent/review_gates.py",
+      "category": "human_review_llm_candidate",
+      "stage_relevance": ["stage_1", "stage_2", "stage_3", "stage_4"],
+      "evidence_required": ["pom_xml", "source_imports", "reference_delta"],
+      "mode": "human_review_and_llm",
+      "current_branch_coverage": "missing",
+      "recommended_action": "Seed memory and add review gate; do not make deterministic."
+    },
+    {
+      "capability": "PUBLIC_API_SIGNATURE_CHANGE",
+      "source_path": "migration_factory/golden_reference/analyzer.py",
+      "category": "consumer_compatibility_gate",
+      "stage_relevance": ["stage_1", "stage_2", "stage_3", "stage_4"],
+      "evidence_required": ["public_api_diff", "consumer_contracts"],
+      "mode": "human_review",
+      "current_branch_coverage": "missing",
+      "recommended_action": "Map to consumer compatibility gate and memory."
+    },
+    {
+      "capability": "SPRING_MVC_EXCEPTION_HANDLER_BEHAVIOR_DRIFT",
+      "source_path": "migration_factory/agents/build_agent/failure_classifier.py",
+      "category": "behavioral_test_failure_classifier",
+      "stage_relevance": ["stage_2", "stage_4"],
+      "evidence_required": ["test_report", "surefire_xml", "source_context"],
+      "mode": "llm_or_human_after_evidence",
+      "current_branch_coverage": "missing",
+      "recommended_action": "Add classifier subtype; no repair apply until proposer/reviewer path exists."
+    },
+    {
+      "capability": "HTTP_STATUS_CONTRACT_DRIFT",
+      "source_path": "migration_factory/agents/build_agent/failure_classifier.py",
+      "category": "behavioral_test_failure_classifier",
+      "stage_relevance": ["stage_1", "stage_2", "stage_3", "stage_4"],
+      "evidence_required": ["test_report", "stack_trace", "api_contract"],
+      "mode": "human_review_or_llm",
+      "current_branch_coverage": "missing",
+      "recommended_action": "Classify as human-review/LLM candidate, not deterministic."
+    },
+    {
+      "capability": "UNMAPPED_SOURCE_TRANSFORMATION",
+      "source_path": ".migration/golden-references/msa-utils/golden_reference_summary.md",
+      "category": "llm_candidate",
+      "stage_relevance": ["stage_1", "stage_2", "stage_3", "stage_4"],
+      "evidence_required": ["reference_delta", "source_diff", "stage_metadata"],
+      "mode": "llm",
+      "current_branch_coverage": "missing",
+      "recommended_action": "Use as RAG seed and proposer input only after evidence gates."
+    }
+  ]
+}
