@@ -2094,6 +2094,231 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).not.toContain("Apply repair");
   });
 
+  it("renders controlled synthetic initMocks proposer UI smoke from failure summary", () => {
+    const failureSummary: V2FailureSummaryResponse = {
+      job_id: "job-synthetic-initmocks",
+      has_failures: true,
+      failures: [
+        {
+          type: "build_failed",
+          stage: 2,
+          title: "Stage 2 build failed",
+          message: "Synthetic initMocks proposer smoke.",
+          build_status: "BUILD_FAILED_IN_SANDBOX",
+          test_status: "TEST_FAILED",
+          final_status: "FAILED",
+          final_proof_level: "not_verified",
+          repair_loop_status: "NOT_STARTED",
+          copilot_status: "NOT_INVOKED",
+          repair_fallback: "False",
+          matched_line: "MockitoAnnotations.initMocks(this);",
+          command: [],
+          requested_command: [],
+          build_tool: "maven",
+          module: "",
+          main_class: "",
+          unit_id: "stage-2",
+          result_kind: "test_source_marker",
+          java_home: "",
+          detected_version: "",
+          required_minimum: "",
+          event_types: ["build_failed", "ai_diagnosis_created"],
+          repair_events: [],
+          next_operator_action: "review_evidence_bound_draft_later",
+          supervision_trace: {
+            ai_diagnosis: {
+              diagnosis_id: "diag-synthetic-initmocks",
+              command_id: "cmd-synthetic-initmocks",
+              trigger_event_type: "build_failed",
+              failure_type: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+              context_pack_id: "pack-synthetic-initmocks",
+              context_pack_checksum: "sha256:ctx-synthetic",
+              repair_proposal_id: "",
+              model_invocation_id: "",
+              redaction_status: "stage_evidence_collected",
+              created_at: "2026-07-02T00:00:00Z",
+              stage_evidence: {
+                stage_index: 2,
+                stage_name: "Spring Boot 2.7 + Java 11 to Spring Boot 3.5.16 + Java 17",
+                source_boot_version: "2.7",
+                target_boot_version: "3.5.16",
+                source_java_version: "11",
+                target_java_version: "17",
+                input_source_kind: "stage_output",
+                input_artifact_ref: "stage:1",
+                output_sandbox_ref: "sandbox:stage-2",
+                previous_stage_ref: "stage:1",
+                downstream_stage_state: {
+                  next_stage_index: 3,
+                  state: "pending_blocked_by_failed_stage",
+                  auto_started: false,
+                },
+                evidence_status: "collected",
+                evidence_pack_id: "stage-evidence-synthetic",
+                evidence_pack_checksum: "sha256:evidence-synthetic",
+                usable_artifacts: [
+                  {
+                    kind: "test_source",
+                    ref: "src/test/java/com/example/ExampleTest.java",
+                    checksum: "sha256:file-before",
+                  },
+                ],
+                missing_artifacts: [],
+                repair_enabled: false,
+                assistant_next_action: "prepare_evidence_bound_proposal_in_R7D",
+                redaction_status: "stage_evidence_collected",
+                failure_summary: "Synthetic test source evidence includes MockitoAnnotations.initMocks.",
+              },
+              classification: {
+                stage_index: 2,
+                stage_name: "Stage 2",
+                source_boot_version: "2.7",
+                target_boot_version: "3.5.16",
+                source_java_version: "11",
+                target_java_version: "17",
+                failure_type: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+                classification_status: "known_family_candidate",
+                repair_family_candidate: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+                confidence: "medium",
+                confidence_reason: "Mockito initMocks source signal found.",
+                matched_signals: ["candidate:initmocks_to_openmocks"],
+                missing_required_evidence: [],
+                usable_artifacts: ["test_source"],
+                repair_enabled: false,
+                repair_blocked_reason: "R7D_non_actionable_draft_only",
+                reason: "R7D_non_actionable_draft_only",
+                assistant_next_action: "send_draft_to_future_reviewer_gate",
+                governance_gate_type: "future_deterministic_candidate",
+                stage_relevance: "Stage 2 compatible",
+                migration_memory: {
+                  retrieval_status: "available",
+                  query_signature: "sha256:memory-synthetic",
+                  memory_matches: [
+                    {
+                      memory_case_id: "msa-utils-initmocks-to-openmocks",
+                      title: "msa-utils initMocks to openMocks",
+                      summary: "MockitoAnnotations.initMocks marker can seed future bounded draft context.",
+                      trust_level: "golden_reference_verified",
+                      authority_level: "advisory_only",
+                      matched_signals: ["candidate:initmocks_to_openmocks"],
+                      required_evidence: ["test_source"],
+                      suggested_next_actions: ["future_reviewer_gate"],
+                      stage_applicability: ["2"],
+                      promotion_status: "seed_only",
+                      redaction_status: "redacted",
+                    },
+                  ],
+                  top_match: {
+                    memory_case_id: "msa-utils-initmocks-to-openmocks",
+                    title: "msa-utils initMocks to openMocks",
+                    summary: "MockitoAnnotations.initMocks marker can seed future bounded draft context.",
+                    trust_level: "golden_reference_verified",
+                    authority_level: "advisory_only",
+                    matched_signals: ["candidate:initmocks_to_openmocks"],
+                    required_evidence: ["test_source"],
+                    suggested_next_actions: ["future_reviewer_gate"],
+                    stage_applicability: ["2"],
+                    promotion_status: "seed_only",
+                    redaction_status: "redacted",
+                  },
+                  trust_summary: "golden_reference_verified",
+                  advisory_summary: "Memory advisory only.",
+                  missing_evidence_suggestions: [],
+                  retrieved_case_ids: ["msa-utils-initmocks-to-openmocks"],
+                  authority_level: "advisory_only",
+                  repair_enabled: false,
+                  memory_can_apply: false,
+                  memory_can_approve: false,
+                  memory_can_start_downstream: false,
+                  recommended_use: "future reviewer/RAG context only",
+                },
+                repair_proposal_draft: {
+                  proposal_status: "drafted_non_actionable",
+                  proposal_type: "evidence_bound_repair_draft",
+                  supported_family: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+                  failure_type: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+                  classification_status: "known_family_candidate",
+                  governance_gate_type: "future_deterministic_candidate",
+                  stage_index: 2,
+                  source_boot_version: "2.7",
+                  target_boot_version: "3.5.16",
+                  source_java_version: "11",
+                  target_java_version: "17",
+                  evidence_pack_id: "stage-evidence-synthetic",
+                  evidence_pack_checksum: "sha256:evidence-synthetic",
+                  memory_query_signature: "sha256:memory-synthetic",
+                  retrieved_memory_case_ids: ["msa-utils-initmocks-to-openmocks"],
+                  target_files: ["src/test/java/com/example/ExampleTest.java"],
+                  source_markers: ["MockitoAnnotations.initMocks"],
+                  target_file_checksums: {
+                    "src/test/java/com/example/ExampleTest.java": "sha256:file-before",
+                  },
+                  proposed_diff_preview: "-MockitoAnnotations.initMocks(this);\n+MockitoAnnotations.openMocks(this);",
+                  proposed_diff_checksum: "sha256:diff-synthetic",
+                  proposal_checksum: "sha256:proposal-synthetic",
+                  proposer_kind: "deterministic_local",
+                  proposer_origin: "backend_evidence_bound",
+                  llm_invoked: false,
+                  reviewer_required: true,
+                  human_approval_required: true,
+                  backend_apply_required: true,
+                  apply_enabled: false,
+                  approval_enabled: false,
+                  repair_enabled: false,
+                  sandbox_only: true,
+                  legacy_mutation_allowed: false,
+                  downstream_start_allowed: false,
+                  blocked_reason: "",
+                  assistant_next_action: "send_draft_to_future_reviewer_gate",
+                  safety_warnings: ["Draft is non-actionable in R7D."],
+                },
+                evidence_pack_id: "stage-evidence-synthetic",
+                evidence_pack_checksum: "sha256:evidence-synthetic",
+                downstream_stage_state: {
+                  next_stage_index: 3,
+                  state: "pending_blocked_by_failed_stage",
+                  auto_started: false,
+                },
+              },
+            },
+            evidence_used: ["stage-evidence-synthetic", "sha256:evidence-synthetic"],
+            pom_analysis: null,
+            repair_proposal: null,
+            reviewer_verdict: null,
+            validation_result: null,
+          },
+        },
+      ],
+      repair_loop_active: false,
+      repair_events: [],
+      artifact_kinds: ["test_source"],
+    };
+
+    const diagnosis = failureSummary.failures[0].supervision_trace.ai_diagnosis;
+    expect(diagnosis).not.toBeNull();
+    const markup = renderToStaticMarkup(
+      <StageFailureEvidenceDetails diagnosis={diagnosis!} stage={failureSummary.failures[0].stage} />
+    );
+
+    expect(markup).toContain("Stage Evidence");
+    expect(markup).toContain("Migration Memory");
+    expect(markup).toContain("Top match: msa-utils initMocks to openMocks");
+    expect(markup).toContain("Memory cannot approve/apply/start downstream");
+    expect(markup).toContain("Repair Draft");
+    expect(markup).toContain("Draft status: drafted_non_actionable");
+    expect(markup).toContain("Supported family: INITMOCKS_TO_OPENMOCKS_CANDIDATE");
+    expect(markup).toContain("Evidence pack checksum: sha256:evidence-synthetic");
+    expect(markup).toContain("Memory query signature: sha256:memory-synthetic");
+    expect(markup).toContain("Target file: src/test/java/com/example/ExampleTest.java");
+    expect(markup).toContain("Proposed diff checksum: sha256:diff-synthetic");
+    expect(markup).toContain("Apply: disabled");
+    expect(markup).toContain("Human approval: disabled");
+    expect(markup).toContain("Draft is non-actionable in R7D.");
+    expect(markup).not.toContain("Apply repair");
+    expect(markup).not.toContain("Approve draft");
+    expect(markup).not.toContain("Edit patch");
+  });
+
   it("renders Repair Draft no-draft state", () => {
     const diagnosis = {
       diagnosis_id: "diag-no-draft",
