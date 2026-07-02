@@ -851,7 +851,72 @@ describe("V2 Migration Cockpit contract", () => {
     expect(actual).toBe("failed");
   });
 
-  // ── Pipeline / stage consistency tests ──
+  // ── Route-step off-by-one regression (springboot-2.1 → 4.0 full route) ──
+
+  it("route step 2 start event marks Route step 2 RUNNING, not Route step 3", () => {
+    // Full route: springboot-2.1-java11 → springboot-4.0-java21
+    // route_step_index and stage_index are aligned 1:1 for this source.
+    const routeSteps: V2RouteStepEntry[] = [
+      {
+        route_step_index: 1, stage_index: 1,
+        source_profile: "springboot-2.1-java11", target_profile: "springboot-2.7-java11",
+        runtime_profile: "springboot-2.1.6-to-2.7-java11", catalog: "springboot-2.1.6-to-2.7-java11",
+        execution_jdk: "java11", status: "pending", approval_gate_id: "", artifact_refs: [], evidence_refs: [],
+      },
+      {
+        route_step_index: 2, stage_index: 2,
+        source_profile: "springboot-2.7-java11", target_profile: "springboot-3.5-java17",
+        runtime_profile: "springboot-2.7-to-3.5-java17", catalog: "springboot-3.5-java17",
+        execution_jdk: "java17", status: "pending", approval_gate_id: "", artifact_refs: [], evidence_refs: [],
+      },
+      {
+        route_step_index: 3, stage_index: 3,
+        source_profile: "springboot-3.5-java17", target_profile: "springboot-3.5-java21",
+        runtime_profile: "springboot-3.5-java17-to-java21", catalog: "springboot-3.5-java17-to-java21",
+        execution_jdk: "java21", status: "pending", approval_gate_id: "", artifact_refs: [], evidence_refs: [],
+      },
+      {
+        route_step_index: 4, stage_index: 4,
+        source_profile: "springboot-3.5-java21", target_profile: "springboot-4.0-java21",
+        runtime_profile: "springboot-3.5-java21-to-4.0-java21", catalog: "springboot-3.5-java21-to-4.0-java21",
+        execution_jdk: "java21", status: "pending", approval_gate_id: "", artifact_refs: [], evidence_refs: [],
+      },
+    ];
+
+    // Backend events: stage 1 completed, stage 2 started (running).
+    // The backend emits stage=2 for route step 2's execution (after the fix).
+    const allEvents: V2JobEvent[] = [
+      { stage: 1, type: "stage_started", status: "running", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 1, type: "stage_completed", status: "completed", sequence: 2 } as unknown as V2JobEvent,
+      { stage: 2, type: "stage_started", status: "running", sequence: 3 } as unknown as V2JobEvent,
+    ];
+
+    // Replicate eventAppliesToStage (event.stage === stageIndex) + reduceStageStatus
+    // for each stage, then build the timeline.
+    const stages = routeSteps.map((rs) => {
+      const stageEvents = allEvents
+        .filter((e) => e.stage === rs.stage_index)
+        .sort((a, b) => a.sequence - b.sequence);
+      return {
+        stage_index: rs.stage_index,
+        pipeline_stage: `Stage ${rs.stage_index}`,
+        chain_status: reduceStageStatus(stageEvents, rs.stage_index),
+        input_source_kind: "legacy_source",
+      };
+    });
+
+    const entries = buildStageTimelineEntries(routeSteps, stages);
+
+    // Route step 1 = COMPLETED
+    expect(entries[0]).toMatchObject({ route_step_index: 1, status: "completed" });
+    // Route step 2 = RUNNING (not Route step 3!)
+    expect(entries[1]).toMatchObject({ route_step_index: 2, status: "running" });
+    // Route step 3 = PENDING (must NOT be RUNNING)
+    expect(entries[2]).toMatchObject({ route_step_index: 3, status: "pending" });
+    expect(entries[2]).not.toMatchObject({ route_step_index: 3, status: "running" });
+    // Route step 4 = PENDING
+    expect(entries[3]).toMatchObject({ route_step_index: 4, status: "pending" });
+  });
 
   it("approved card has disabled buttons and no active blocked state implication", () => {
     // When approval card status is "approved", buttons are disabled

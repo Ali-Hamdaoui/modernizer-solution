@@ -169,6 +169,28 @@ def compute_profile_route(
     )
     route_steps = build_route_steps(source_profile, target_profile)
 
+    print(
+        "[route-built]",
+        {
+            "source_profile": source_profile,
+            "target_profile": target_profile,
+            "included_stages": list(included),
+            "route_steps": [
+                {
+                    "route_step_index": s.route_step_index,
+                    "stage_index": s.stage_index,
+                    "source_profile": s.source_profile,
+                    "target_profile": s.target_profile,
+                    "runtime_profile": s.runtime_profile,
+                    "catalog": s.catalog,
+                }
+                for s in route_steps
+            ],
+        },
+        file=sys.stderr,
+        flush=True,
+    )
+
     return ProfileRoute(
         source_profile=source_profile,
         target_profile=target_profile,
@@ -823,7 +845,21 @@ class V2StageProgressionService:
                         command_id=None,
                     )
                 next_route_step = route.route_steps[next_route_step_index - 1]
-                next_stage = route.included_stages[next_route_step_index - 1]
+                next_stage = next_route_step.stage_index
+                print(
+                    "[route-step-start]",
+                    {
+                        "job_id": job_id,
+                        "route_step_number": next_route_step.route_step_index,
+                        "stage_id": next_stage,
+                        "source_profile": next_route_step.source_profile,
+                        "target_profile": next_route_step.target_profile,
+                        "runtime_profile": next_route_step.runtime_profile,
+                        "catalog": next_route_step.catalog,
+                    },
+                    file=sys.stderr,
+                    flush=True,
+                )
             else:
                 next_stage = next_required_stage(route, current_stage)
                 if next_stage is None:
@@ -865,7 +901,7 @@ class V2StageProgressionService:
                 raise ValueError(f"Setup {setup_id!r} not found")
 
             validation_stage = (
-                route.included_stages[resolved_route_step_index - 1]
+                route.route_steps[resolved_route_step_index - 1].stage_index
                 if resolved_route_step_index is not None
                 else current_stage
             )
@@ -911,6 +947,19 @@ class V2StageProgressionService:
                 "--ai-hub", setup.ai_hub_path,
                 "--profile", next_route_step.runtime_profile,
                 "--mode", "full_sandbox_migration",
+            )
+            print(
+                "[sandbox-folder-selected]",
+                {
+                    "job_id": job_id,
+                    "route_step_number": next_route_step.route_step_index,
+                    "stage_id": next_stage,
+                    "runtime_profile": next_route_step.runtime_profile,
+                    "catalog": next_route_step.catalog,
+                    "sandbox_folder": f"v2-{job_id[:8]}-s{next_stage}",
+                },
+                file=sys.stderr,
+                flush=True,
             )
 
             existing_command_id: str | None = None
