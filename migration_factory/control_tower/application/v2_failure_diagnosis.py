@@ -53,6 +53,9 @@ from migration_factory.control_tower.application.v2_migration_memory import (
 from migration_factory.control_tower.application.v2_repair_proposer import (
     propose_stage_repair,
 )
+from migration_factory.control_tower.application.v2_repair_reviewer import (
+    review_stage_repair_draft,
+)
 
 
 # ── Diagnosis record ──────────────────────────────────────────────
@@ -755,6 +758,12 @@ class V2FailureDiagnosisService:
             classification,
             evidence_pack,
             classification["migration_memory"],
+        )
+        classification["repair_draft_review"] = review_stage_repair_draft(
+            classification,
+            evidence_pack,
+            classification["migration_memory"],
+            classification["repair_proposal_draft"],
         )
         classification["repair_enabled"] = False
         return classification

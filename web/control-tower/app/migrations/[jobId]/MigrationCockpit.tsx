@@ -44,6 +44,7 @@ import type {
   ApplyRepairReviewContextResponse,
   V2MigrationMemoryRetrievalResponse,
   V2EvidenceBoundRepairDraftResponse,
+  V2RepairDraftReviewResponse,
 } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
 
@@ -1010,6 +1011,7 @@ export function StageFailureEvidenceDetails({
           {classificationHelp && <p className="meta">{classificationHelp}</p>}
           <MigrationMemoryDetails memory={classification.migration_memory ?? null} />
           <RepairDraftDetails draft={classification.repair_proposal_draft ?? null} />
+          <RepairDraftReviewDetails review={classification.repair_draft_review ?? null} />
         </div>
       )}
     </>
@@ -1045,6 +1047,53 @@ function RepairDraftDetails({ draft }: { draft: V2EvidenceBoundRepairDraftRespon
           <p className="meta">Reviewer: required later, not active</p>
           <p className="meta">Backend apply required later: {draft.backend_apply_required ? "yes" : "no"}</p>
           <p className="meta">Draft is non-actionable in R7D. It can be reviewed later but cannot be applied.</p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function RepairDraftReviewDetails({ review }: { review: V2RepairDraftReviewResponse | null }) {
+  if (!review) {
+    return (
+      <div className="trace-section">
+        <strong>Repair Draft Review</strong>
+        <p className="meta">No repair draft review available.</p>
+      </div>
+    );
+  }
+  const firstTarget = review.target_files[0] ?? "";
+  const targetChecksum = firstTarget ? review.target_file_checksums[firstTarget] : "";
+  const notReviewable = review.review_status === "not_reviewable_blocked_human_gate";
+  return (
+    <div className="trace-section">
+      <strong>Repair Draft Review</strong>
+      {notReviewable ? (
+        <>
+          <p className="meta">Reviewer status: not_reviewable_blocked_human_gate</p>
+          <p className="meta">Reviewer verdict: {review.verdict || "blocked"}</p>
+          <p className="meta">Reason: {summarizeList(review.reasons) || "human review gate / no supported draft"}</p>
+          <p className="meta">Apply: disabled</p>
+          <p className="meta">Human approval: disabled</p>
+          <p className="meta">Reviewer verdict is non-actionable in R7E.</p>
+        </>
+      ) : (
+        <>
+          <p className="meta">Reviewer status: {review.review_status || "unavailable"}</p>
+          <p className="meta">Reviewer verdict: {review.verdict || "rejected"}</p>
+          <p className="meta">Reviewer kind: {review.reviewer_kind || "deterministic_local"}</p>
+          <p className="meta">Reviewed family: {review.reviewed_family || "none"}</p>
+          {review.evidence_pack_checksum && <p className="checksum">Evidence pack checksum: {review.evidence_pack_checksum}</p>}
+          {review.memory_query_signature && <p className="checksum">Memory query signature: {review.memory_query_signature}</p>}
+          {targetChecksum && <p className="checksum">Target file checksum: {firstTarget} · {targetChecksum}</p>}
+          {review.proposed_diff_checksum && <p className="checksum">Proposed diff checksum: {review.proposed_diff_checksum}</p>}
+          {review.proposal_checksum && <p className="checksum">Proposal checksum: {review.proposal_checksum}</p>}
+          {review.review_checksum && <p className="checksum">Review checksum: {review.review_checksum}</p>}
+          <p className="meta">Apply: {review.apply_enabled ? "enabled" : "disabled"}</p>
+          <p className="meta">Human approval: {review.approval_enabled ? "enabled" : "disabled"}</p>
+          <p className="meta">Future LLM reviewer compatible: {review.future_llm_reviewer_compatible ? "yes" : "no"}</p>
+          <p className="meta">Reviewer verdict is non-actionable in R7E.</p>
+          {review.reasons.length > 0 && <p className="meta">Reason: {summarizeList(review.reasons)}</p>}
         </>
       )}
     </div>

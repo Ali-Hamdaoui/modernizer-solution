@@ -12704,6 +12704,7 @@ def _safe_classification_envelope(value: Any) -> dict[str, Any] | None:
         "downstream_stage_state": _safe_stage_evidence({"downstream_stage_state": value.get("downstream_stage_state")}).get("downstream_stage_state") if isinstance(value.get("downstream_stage_state"), dict) else None,
         "migration_memory": _safe_migration_memory(value.get("migration_memory")),
         "repair_proposal_draft": _safe_repair_proposal_draft(value.get("repair_proposal_draft")),
+        "repair_draft_review": _safe_repair_draft_review(value.get("repair_draft_review")),
     }
 
 
@@ -12783,6 +12784,82 @@ def _is_safe_relative_ui_path(value: str) -> bool:
         and "[redacted" not in text.lower()
         and all(part not in ("", ".", "..") for part in text.split("/"))
     )
+
+
+def _safe_repair_draft_review(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    allowed_statuses = {
+        "reviewed_non_actionable",
+        "not_reviewable_blocked_human_gate",
+        "unavailable",
+    }
+    allowed_verdicts = {
+        "accepted_for_future_apply_gate",
+        "rejected",
+        "blocked",
+    }
+    review_status = _safe_failure_str(value.get("review_status"))
+    if review_status not in allowed_statuses:
+        review_status = "unavailable"
+    verdict = _safe_failure_str(value.get("verdict"))
+    if verdict not in allowed_verdicts:
+        verdict = "rejected"
+    trusted_origin = _safe_failure_str(value.get("reviewer_origin")) == "backend_evidence_bound"
+    reviewed_family = _safe_failure_str(value.get("reviewed_family"))
+    if reviewed_family != "INITMOCKS_TO_OPENMOCKS_CANDIDATE":
+        reviewed_family = ""
+        if verdict == "accepted_for_future_apply_gate":
+            verdict = "rejected"
+    target_checksums = value.get("target_file_checksums")
+    safe_checksums = {
+        _safe_failure_str(k): _safe_failure_str(v)
+        for k, v in (target_checksums.items() if isinstance(target_checksums, dict) else [])
+        if _is_safe_relative_ui_path(_safe_failure_str(k))
+    }
+    target_files = [
+        item for item in _safe_failure_list(value.get("target_files"))
+        if _is_safe_relative_ui_path(item)
+    ] if trusted_origin else []
+    return {
+        "review_status": review_status,
+        "verdict": verdict,
+        "reviewer_kind": "deterministic_local",
+        "reviewer_origin": "backend_evidence_bound" if trusted_origin else "",
+        "llm_invoked": False,
+        "future_llm_reviewer_compatible": bool(value.get("future_llm_reviewer_compatible")) if trusted_origin else True,
+        "reviewed_family": reviewed_family,
+        "failure_type": _safe_failure_str(value.get("failure_type")),
+        "classification_status": _safe_failure_str(value.get("classification_status")),
+        "governance_gate_type": _safe_failure_str(value.get("governance_gate_type")),
+        "stage_index": value.get("stage_index"),
+        "source_boot_version": _safe_failure_str(value.get("source_boot_version")),
+        "target_boot_version": _safe_failure_str(value.get("target_boot_version")),
+        "source_java_version": _safe_failure_str(value.get("source_java_version")),
+        "target_java_version": _safe_failure_str(value.get("target_java_version")),
+        "evidence_pack_id": _safe_failure_str(value.get("evidence_pack_id")),
+        "evidence_pack_checksum": _safe_failure_str(value.get("evidence_pack_checksum")),
+        "memory_query_signature": _safe_failure_str(value.get("memory_query_signature")),
+        "retrieved_memory_case_ids": _safe_failure_list(value.get("retrieved_memory_case_ids")),
+        "target_files": target_files,
+        "target_file_checksums": safe_checksums if trusted_origin else {},
+        "proposed_diff_checksum": _safe_failure_str(value.get("proposed_diff_checksum")) if trusted_origin else "",
+        "proposal_checksum": _safe_failure_str(value.get("proposal_checksum")) if trusted_origin else "",
+        "review_checksum": _safe_failure_str(value.get("review_checksum")) if trusted_origin else "",
+        "required_followup_gate": _safe_failure_str(value.get("required_followup_gate")),
+        "apply_enabled": False,
+        "approval_enabled": False,
+        "repair_enabled": False,
+        "sandbox_only": True,
+        "legacy_mutation_allowed": False,
+        "downstream_start_allowed": False,
+        "memory_authority": "advisory_only",
+        "memory_can_apply": False,
+        "memory_can_approve": False,
+        "memory_can_start_downstream": False,
+        "reasons": _safe_failure_list(value.get("reasons")),
+        "safety_warnings": _safe_failure_list(value.get("safety_warnings")),
+    }
 
 
 def _safe_memory_match(value: Any) -> dict[str, Any] | None:

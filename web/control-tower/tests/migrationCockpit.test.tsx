@@ -1986,6 +1986,45 @@ describe("V2 Migration Cockpit contract", () => {
           assistant_next_action: "review_powermock_legacy_test_strategy",
           safety_warnings: ["No repair draft is actionable in R7D."],
         },
+        repair_draft_review: {
+          review_status: "not_reviewable_blocked_human_gate",
+          verdict: "blocked",
+          reviewer_kind: "deterministic_local",
+          reviewer_origin: "backend_evidence_bound",
+          llm_invoked: false,
+          future_llm_reviewer_compatible: true,
+          reviewed_family: "",
+          failure_type: "POWERMOCK_LEGACY_TEST_STRATEGY",
+          classification_status: "unsupported_known_failure",
+          governance_gate_type: "human_review_gate",
+          stage_index: 1,
+          source_boot_version: "2.1",
+          target_boot_version: "2.7",
+          source_java_version: "11",
+          target_java_version: "11",
+          evidence_pack_id: "stage-evidence-draft",
+          evidence_pack_checksum: "sha256:evidence",
+          memory_query_signature: "sha256:memory",
+          retrieved_memory_case_ids: ["msa-utils-powermock-legacy-test-strategy"],
+          target_files: [],
+          target_file_checksums: {},
+          proposed_diff_checksum: "",
+          proposal_checksum: "",
+          review_checksum: "sha256:review-powermock",
+          required_followup_gate: "future_human_approval_and_backend_apply_gate",
+          apply_enabled: false,
+          approval_enabled: false,
+          repair_enabled: false,
+          sandbox_only: true,
+          legacy_mutation_allowed: false,
+          downstream_start_allowed: false,
+          memory_authority: "advisory_only",
+          memory_can_apply: false,
+          memory_can_approve: false,
+          memory_can_start_downstream: false,
+          reasons: ["human_review_gate_no_auto_repair"],
+          safety_warnings: ["Reviewer verdict is non-actionable in R7E."],
+        },
       },
     };
 
@@ -1997,6 +2036,10 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Apply: disabled");
     expect(markup).toContain("Human approval: disabled");
     expect(markup).toContain("Reviewer: required later, not active");
+    expect(markup).toContain("Repair Draft Review");
+    expect(markup).toContain("Reviewer status: not_reviewable_blocked_human_gate");
+    expect(markup).toContain("Reviewer verdict: blocked");
+    expect(markup).not.toContain("accepted_for_future_apply_gate");
     expect(markup).not.toContain("Apply repair");
     expect(markup).not.toContain("Approve draft");
     expect(markup).not.toContain("Edit patch");
@@ -2077,6 +2120,45 @@ describe("V2 Migration Cockpit contract", () => {
           assistant_next_action: "send_draft_to_future_reviewer_gate",
           safety_warnings: ["Draft is non-actionable in R7D."],
         },
+        repair_draft_review: {
+          review_status: "reviewed_non_actionable",
+          verdict: "accepted_for_future_apply_gate",
+          reviewer_kind: "deterministic_local",
+          reviewer_origin: "backend_evidence_bound",
+          llm_invoked: false,
+          future_llm_reviewer_compatible: true,
+          reviewed_family: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+          failure_type: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+          classification_status: "known_family_candidate",
+          governance_gate_type: "future_deterministic_candidate",
+          stage_index: 2,
+          source_boot_version: "2.7",
+          target_boot_version: "3.5.16",
+          source_java_version: "11",
+          target_java_version: "17",
+          evidence_pack_id: "stage-evidence-draft",
+          evidence_pack_checksum: "sha256:evidence",
+          memory_query_signature: "sha256:memory",
+          retrieved_memory_case_ids: ["msa-utils-initmocks-to-openmocks"],
+          target_files: ["src/test/java/ExampleTest.java"],
+          target_file_checksums: { "src/test/java/ExampleTest.java": "sha256:file" },
+          proposed_diff_checksum: "sha256:diff",
+          proposal_checksum: "sha256:proposal",
+          review_checksum: "sha256:review",
+          required_followup_gate: "future_human_approval_and_backend_apply_gate",
+          apply_enabled: false,
+          approval_enabled: false,
+          repair_enabled: false,
+          sandbox_only: true,
+          legacy_mutation_allowed: false,
+          downstream_start_allowed: false,
+          memory_authority: "advisory_only",
+          memory_can_apply: false,
+          memory_can_approve: false,
+          memory_can_start_downstream: false,
+          reasons: [],
+          safety_warnings: ["Reviewer verdict is non-actionable in R7E."],
+        },
       },
     };
 
@@ -2091,6 +2173,16 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Human approval: disabled");
     expect(markup).toContain("Backend apply required later: yes");
     expect(markup).toContain("Draft is non-actionable in R7D.");
+    expect(markup).toContain("Repair Draft Review");
+    expect(markup).toContain("Reviewer status: reviewed_non_actionable");
+    expect(markup).toContain("Reviewer verdict: accepted_for_future_apply_gate");
+    expect(markup).toContain("Reviewer kind: deterministic_local");
+    expect(markup).toContain("Reviewed family: INITMOCKS_TO_OPENMOCKS_CANDIDATE");
+    expect(markup).toContain("Target file checksum: src/test/java/ExampleTest.java");
+    expect(markup).toContain("Proposal checksum: sha256:proposal");
+    expect(markup).toContain("Review checksum: sha256:review");
+    expect(markup).toContain("Future LLM reviewer compatible: yes");
+    expect(markup).toContain("Reviewer verdict is non-actionable in R7E.");
     expect(markup).not.toContain("Apply repair");
   });
 
@@ -2272,6 +2364,47 @@ describe("V2 Migration Cockpit contract", () => {
                   assistant_next_action: "send_draft_to_future_reviewer_gate",
                   safety_warnings: ["Draft is non-actionable in R7D."],
                 },
+                repair_draft_review: {
+                  review_status: "reviewed_non_actionable",
+                  verdict: "accepted_for_future_apply_gate",
+                  reviewer_kind: "deterministic_local",
+                  reviewer_origin: "backend_evidence_bound",
+                  llm_invoked: false,
+                  future_llm_reviewer_compatible: true,
+                  reviewed_family: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+                  failure_type: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+                  classification_status: "known_family_candidate",
+                  governance_gate_type: "future_deterministic_candidate",
+                  stage_index: 2,
+                  source_boot_version: "2.7",
+                  target_boot_version: "3.5.16",
+                  source_java_version: "11",
+                  target_java_version: "17",
+                  evidence_pack_id: "stage-evidence-synthetic",
+                  evidence_pack_checksum: "sha256:evidence-synthetic",
+                  memory_query_signature: "sha256:memory-synthetic",
+                  retrieved_memory_case_ids: ["msa-utils-initmocks-to-openmocks"],
+                  target_files: ["src/test/java/com/example/ExampleTest.java"],
+                  target_file_checksums: {
+                    "src/test/java/com/example/ExampleTest.java": "sha256:file-before",
+                  },
+                  proposed_diff_checksum: "sha256:diff-synthetic",
+                  proposal_checksum: "sha256:proposal-synthetic",
+                  review_checksum: "sha256:review-synthetic",
+                  required_followup_gate: "future_human_approval_and_backend_apply_gate",
+                  apply_enabled: false,
+                  approval_enabled: false,
+                  repair_enabled: false,
+                  sandbox_only: true,
+                  legacy_mutation_allowed: false,
+                  downstream_start_allowed: false,
+                  memory_authority: "advisory_only",
+                  memory_can_apply: false,
+                  memory_can_approve: false,
+                  memory_can_start_downstream: false,
+                  reasons: [],
+                  safety_warnings: ["Reviewer verdict is non-actionable in R7E."],
+                },
                 evidence_pack_id: "stage-evidence-synthetic",
                 evidence_pack_checksum: "sha256:evidence-synthetic",
                 downstream_stage_state: {
@@ -2311,6 +2444,13 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Memory query signature: sha256:memory-synthetic");
     expect(markup).toContain("Target file: src/test/java/com/example/ExampleTest.java");
     expect(markup).toContain("Proposed diff checksum: sha256:diff-synthetic");
+    expect(markup).toContain("Repair Draft Review");
+    expect(markup).toContain("Reviewer status: reviewed_non_actionable");
+    expect(markup).toContain("Reviewer verdict: accepted_for_future_apply_gate");
+    expect(markup).toContain("Review checksum: sha256:review-synthetic");
+    expect(markup).toContain("Proposal checksum: sha256:proposal-synthetic");
+    expect(markup).toContain("Target file checksum: src/test/java/com/example/ExampleTest.java");
+    expect(markup).toContain("Future LLM reviewer compatible: yes");
     expect(markup).toContain("Apply: disabled");
     expect(markup).toContain("Human approval: disabled");
     expect(markup).toContain("Draft is non-actionable in R7D.");

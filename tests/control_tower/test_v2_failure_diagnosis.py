@@ -793,11 +793,19 @@ class TestStageAwareEvidence:
         classification = diagnosis.classification_envelope
         assert classification is not None
         draft = classification["repair_proposal_draft"]
+        review = classification["repair_draft_review"]
         assert draft["proposal_status"] == "blocked_human_review_gate"
         assert draft["proposed_diff_preview"] == ""
+        assert review["review_status"] == "not_reviewable_blocked_human_gate"
+        assert review["verdict"] == "blocked"
+        assert review["verdict"] != "accepted_for_future_apply_gate"
         assert draft["apply_enabled"] is False
         assert draft["approval_enabled"] is False
         assert draft["repair_enabled"] is False
+        assert review["apply_enabled"] is False
+        assert review["approval_enabled"] is False
+        assert review["repair_enabled"] is False
+        assert review["downstream_start_allowed"] is False
 
     def test_diagnosis_attaches_non_actionable_initmocks_draft(
         self,
@@ -829,17 +837,70 @@ class TestStageAwareEvidence:
         classification = diagnosis.classification_envelope
         assert classification is not None
         draft = classification["repair_proposal_draft"]
+        review = classification["repair_draft_review"]
         assert draft["proposal_status"] == "drafted_non_actionable"
         assert draft["supported_family"] == "INITMOCKS_TO_OPENMOCKS_CANDIDATE"
         assert draft["evidence_pack_checksum"].startswith("sha256:")
         assert draft["memory_query_signature"].startswith("sha256:")
         assert draft["target_files"] == ["src/test/java/ExampleTest.java"]
         assert draft["proposed_diff_checksum"].startswith("sha256:")
+        assert review["review_status"] == "reviewed_non_actionable"
+        assert review["verdict"] == "accepted_for_future_apply_gate"
+        assert review["reviewer_kind"] == "deterministic_local"
+        assert review["llm_invoked"] is False
+        assert review["evidence_pack_checksum"] == draft["evidence_pack_checksum"]
+        assert review["memory_query_signature"] == draft["memory_query_signature"]
+        assert review["target_file_checksums"] == draft["target_file_checksums"]
+        assert review["proposed_diff_checksum"] == draft["proposed_diff_checksum"]
+        assert review["proposal_checksum"] == draft["proposal_checksum"]
+        assert review["review_checksum"].startswith("sha256:")
         assert draft["apply_enabled"] is False
         assert draft["approval_enabled"] is False
         assert draft["repair_enabled"] is False
+        assert review["apply_enabled"] is False
+        assert review["approval_enabled"] is False
+        assert review["repair_enabled"] is False
+        assert review["downstream_start_allowed"] is False
+        assert review["legacy_mutation_allowed"] is False
+        assert classification["repair_enabled"] is False
+        assert classification["downstream_stage_state"]["auto_started"] is False
+        assert "apply_context" not in review
+        assert "approval_id" not in review
         assert diagnosis.stage_evidence_pack is not None
         assert "internal_ref" not in json.dumps(diagnosis.stage_evidence_pack)
+
+    def test_diagnosis_reviewer_uses_no_live_llm_or_api_calls(
+        self,
+        diagnosis_service: V2FailureDiagnosisService,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def fail(*args: Any, **kwargs: Any) -> None:  # pragma: no cover - must not run
+            raise AssertionError("network call attempted")
+
+        monkeypatch.setattr("urllib.request.urlopen", fail)
+        sandbox = tmp_path / "sandbox"
+        test_file = sandbox / "src" / "test" / "java" / "ExampleTest.java"
+        test_file.parent.mkdir(parents=True)
+        test_file.write_text("MockitoAnnotations.initMocks(this);\n", encoding="utf-8")
+        diagnosis = diagnosis_service.diagnose(
+            job_id="job-stage",
+            stage_index=2,
+            command_id="cmd-initmocks-review-no-llm",
+            event_type="build_failed",
+            payload={
+                "build_status": "BUILD_FAILED_IN_SANDBOX",
+                "sandbox_path": str(sandbox),
+                "message": "MockitoAnnotations.initMocks(this);",
+                "artifact_refs": {"sandbox": str(sandbox), "test_source": str(test_file)},
+            },
+        )
+        classification = diagnosis.classification_envelope
+        assert classification is not None
+        review = classification["repair_draft_review"]
+        assert review["reviewer_kind"] == "deterministic_local"
+        assert review["llm_invoked"] is False
+        assert review["verdict"] == "accepted_for_future_apply_gate"
 
     def test_list_diagnoses_empty_on_new_service(self) -> None:
         """New service returns empty tuple."""

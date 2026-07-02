@@ -1056,6 +1056,7 @@ export type V2StageFailureClassificationResponse = {
   stage_relevance?: string;
   migration_memory?: V2MigrationMemoryRetrievalResponse | null;
   repair_proposal_draft?: V2EvidenceBoundRepairDraftResponse | null;
+  repair_draft_review?: V2RepairDraftReviewResponse | null;
   evidence_pack_id: string;
   evidence_pack_checksum: string;
   downstream_stage_state: {
@@ -1133,6 +1134,46 @@ export type V2EvidenceBoundRepairDraftResponse = {
   downstream_start_allowed: boolean;
   blocked_reason: string;
   assistant_next_action: string;
+  safety_warnings: string[];
+};
+
+export type V2RepairDraftReviewResponse = {
+  review_status: string;
+  verdict: string;
+  reviewer_kind: string;
+  reviewer_origin: string;
+  llm_invoked: boolean;
+  future_llm_reviewer_compatible: boolean;
+  reviewed_family: string;
+  failure_type: string;
+  classification_status: string;
+  governance_gate_type: string;
+  stage_index: number | null;
+  source_boot_version: string;
+  target_boot_version: string;
+  source_java_version: string;
+  target_java_version: string;
+  evidence_pack_id: string;
+  evidence_pack_checksum: string;
+  memory_query_signature: string;
+  retrieved_memory_case_ids: string[];
+  target_files: string[];
+  target_file_checksums: Record<string, string>;
+  proposed_diff_checksum: string;
+  proposal_checksum: string;
+  review_checksum: string;
+  required_followup_gate: string;
+  apply_enabled: boolean;
+  approval_enabled: boolean;
+  repair_enabled: boolean;
+  sandbox_only: boolean;
+  legacy_mutation_allowed: boolean;
+  downstream_start_allowed: boolean;
+  memory_authority: string;
+  memory_can_apply: boolean;
+  memory_can_approve: boolean;
+  memory_can_start_downstream: boolean;
+  reasons: string[];
   safety_warnings: string[];
 };
 
