@@ -1054,6 +1054,7 @@ export type V2StageFailureClassificationResponse = {
   assistant_next_action: string;
   governance_gate_type?: string;
   stage_relevance?: string;
+  migration_memory?: V2MigrationMemoryRetrievalResponse | null;
   evidence_pack_id: string;
   evidence_pack_checksum: string;
   downstream_stage_state: {
@@ -1061,6 +1062,38 @@ export type V2StageFailureClassificationResponse = {
     state: string;
     auto_started: boolean;
   } | null;
+};
+
+export type V2MigrationMemoryMatchResponse = {
+  memory_case_id: string;
+  title: string;
+  summary: string;
+  trust_level: string;
+  authority_level: string;
+  matched_signals: string[];
+  required_evidence: string[];
+  suggested_next_actions: string[];
+  stage_applicability: string[];
+  promotion_status: string;
+  redaction_status: string;
+  weak_stage_match?: boolean;
+};
+
+export type V2MigrationMemoryRetrievalResponse = {
+  retrieval_status: "available" | "no_matches" | "unavailable" | string;
+  query_signature: string;
+  memory_matches: V2MigrationMemoryMatchResponse[];
+  top_match: V2MigrationMemoryMatchResponse | null;
+  trust_summary: string;
+  advisory_summary: string;
+  missing_evidence_suggestions: string[];
+  retrieved_case_ids: string[];
+  authority_level: string;
+  repair_enabled: boolean;
+  memory_can_apply: boolean;
+  memory_can_approve: boolean;
+  memory_can_start_downstream: boolean;
+  recommended_use: string;
 };
 
 export type V2PomAnalysisResponse = {

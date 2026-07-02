@@ -42,6 +42,7 @@ import type {
   RepairApplyContextResponse,
   RepairApprovalResponse,
   ApplyRepairReviewContextResponse,
+  V2MigrationMemoryRetrievalResponse,
 } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
 
@@ -1006,9 +1007,46 @@ export function StageFailureEvidenceDetails({
           <p className="meta">Repair blocked reason: {classification.repair_blocked_reason || classification.reason || "n/a"}</p>
           <p className="meta">Next action: {classification.assistant_next_action || "n/a"}</p>
           {classificationHelp && <p className="meta">{classificationHelp}</p>}
+          <MigrationMemoryDetails memory={classification.migration_memory ?? null} />
         </div>
       )}
     </>
+  );
+}
+
+function MigrationMemoryDetails({
+  memory,
+}: {
+  memory: V2MigrationMemoryRetrievalResponse | null;
+}) {
+  if (!memory) {
+    return null;
+  }
+  const top = memory.top_match;
+  return (
+    <div className="trace-section">
+      <strong>Migration Memory</strong>
+      <p className="meta">Retrieval status: {memory.retrieval_status || "unavailable"}</p>
+      {memory.retrieval_status === "available" && top ? (
+        <>
+          <p className="meta">Top match: {top.title || "n/a"}</p>
+          <p className="meta">Memory case: {top.memory_case_id || "n/a"}</p>
+          <p className="meta">Trust level: {top.trust_level || "unknown"}</p>
+          <p className="meta">Authority level: {memory.authority_level || top.authority_level || "advisory_only"}</p>
+          <p className="meta">Matched memory signals: {summarizeList(top.matched_signals)}</p>
+          <p className="meta">Advisory summary: {memory.advisory_summary || top.summary || "n/a"}</p>
+          <p className="meta">Missing evidence suggestions: {summarizeList(memory.missing_evidence_suggestions)}</p>
+          <p className="meta">Repair authority: none</p>
+          <p className="meta">Memory cannot approve/apply/start downstream</p>
+          <p className="meta">Recommended use: {memory.recommended_use || "human review gate / future RAG seed"}</p>
+        </>
+      ) : memory.retrieval_status === "no_matches" ? (
+        <p className="meta">No relevant memory cases found.</p>
+      ) : (
+        <p className="meta">Migration memory unavailable.</p>
+      )}
+      <p className="meta">Memory match is advisory only. It can inform future proposer/reviewer prompts, but it cannot approve, apply, or override backend gates.</p>
+    </div>
   );
 }
 

@@ -47,6 +47,9 @@ from migration_factory.control_tower.application.v2_repair_flow import (
 from migration_factory.control_tower.application.v2_stage_failure_classifier import (
     classify_stage_failure,
 )
+from migration_factory.control_tower.application.v2_migration_memory import (
+    retrieve_migration_memory,
+)
 
 
 # ── Diagnosis record ──────────────────────────────────────────────
@@ -652,6 +655,8 @@ class V2FailureDiagnosisService:
         missing: list[str] = []
         for kind in expected:
             ref = artifact_refs.get(kind)
+            if ref is None and kind == "build_error_contract" and payload.get(kind):
+                ref = payload.get(kind)
             if ref is None and kind == "sandbox" and sandbox_ref:
                 ref = sandbox_ref
             if ref:
@@ -731,7 +736,15 @@ class V2FailureDiagnosisService:
         evidence_pack: dict[str, Any],
     ) -> dict[str, Any]:
         _ = event_type
-        return classify_stage_failure(evidence_pack)
+        classification = classify_stage_failure(evidence_pack)
+        memory_context = {
+            **classification,
+            "failure_summary": evidence_pack.get("failure_summary", ""),
+            "evidence_artifacts": evidence_pack.get("usable_artifacts", []),
+        }
+        classification["migration_memory"] = retrieve_migration_memory(memory_context)
+        classification["repair_enabled"] = False
+        return classification
 
     # ── Serialization ──────────────────────────────────────────────
 

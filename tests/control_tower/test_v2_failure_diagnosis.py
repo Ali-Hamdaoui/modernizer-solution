@@ -655,6 +655,89 @@ class TestStageAwareEvidence:
         assert classification["repair_enabled"] is False
         assert classification["assistant_next_action"] == "collect_missing_stage_evidence"
 
+    def test_diagnosis_includes_sanitized_migration_memory_for_powermock(
+        self,
+        diagnosis_service: V2FailureDiagnosisService,
+        tmp_path: Path,
+    ) -> None:
+        payload = {
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+            "sandbox_path": str(tmp_path / "sandbox"),
+            "artifact_refs": {"pom_xml": str(tmp_path / "pom.xml")},
+            "message": "org.powermock:powermock-api-mockito2 requires review",
+        }
+
+        diagnosis = diagnosis_service.diagnose(
+            job_id="job-stage",
+            stage_index=1,
+            command_id="cmd-memory",
+            event_type="build_failed",
+            payload=payload,
+        )
+
+        classification = diagnosis.classification_envelope
+        assert classification is not None
+        memory = classification["migration_memory"]
+        assert memory["retrieval_status"] == "available"
+        assert memory["top_match"]["memory_case_id"] == "msa-utils-powermock-legacy-test-strategy"
+        assert memory["repair_enabled"] is False
+        assert memory["memory_can_apply"] is False
+        assert "pom_xml" not in memory["missing_evidence_suggestions"]
+        assert "C:\\Users" not in json.dumps(memory)
+
+    def test_payload_build_error_contract_alias_links_stage_evidence(
+        self,
+        diagnosis_service: V2FailureDiagnosisService,
+        tmp_path: Path,
+    ) -> None:
+        build_error = tmp_path / "build-error.json"
+        build_error.write_text('{"message":"compilation failed"}', encoding="utf-8")
+        payload = {
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+            "sandbox_path": str(tmp_path / "sandbox"),
+            "build_error_contract": str(build_error),
+        }
+
+        diagnosis = diagnosis_service.diagnose(
+            job_id="job-stage",
+            stage_index=1,
+            command_id="cmd-alias",
+            event_type="build_failed",
+            payload=payload,
+        )
+
+        evidence = diagnosis.stage_evidence_pack
+        assert evidence is not None
+        assert "build_error_contract" not in evidence["missing_artifacts"]
+        usable = {item["kind"]: item for item in evidence["usable_artifacts"]}
+        assert usable["build_error_contract"]["checksum"].startswith("sha256:")
+
+    def test_payload_artifact_alias_does_not_accept_unowned_patch_path(
+        self,
+        diagnosis_service: V2FailureDiagnosisService,
+        tmp_path: Path,
+    ) -> None:
+        patch_file = tmp_path / "rewrite.patch"
+        patch_file.write_text("diff --git a/pom.xml b/pom.xml", encoding="utf-8")
+        payload = {
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+            "sandbox_path": str(tmp_path / "sandbox"),
+            "rewrite_patch": str(patch_file),
+        }
+
+        diagnosis = diagnosis_service.diagnose(
+            job_id="job-stage",
+            stage_index=1,
+            command_id="cmd-rejected-alias",
+            event_type="build_failed",
+            payload=payload,
+        )
+
+        evidence = diagnosis.stage_evidence_pack
+        assert evidence is not None
+        assert "rewrite_patch" in evidence["missing_artifacts"]
+        assert all(item["kind"] != "rewrite_patch" for item in evidence["usable_artifacts"])
+
     def test_stage_evidence_can_mark_known_family_candidate_without_enabling_repair(
         self,
         diagnosis_service: V2FailureDiagnosisService,

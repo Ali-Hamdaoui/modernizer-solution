@@ -1754,6 +1754,163 @@ describe("V2 Migration Cockpit contract", () => {
     expect(unknown).toContain("Failure remains unknown after evidence review.");
   });
 
+  it("renders Migration Memory matches as advisory only without repair controls", () => {
+    const diagnosis = {
+      diagnosis_id: "diag-memory",
+      command_id: "cmd-memory",
+      trigger_event_type: "build_failed",
+      failure_type: "POWERMOCK_LEGACY_TEST_STRATEGY",
+      context_pack_id: "pack-memory",
+      context_pack_checksum: "sha256:ctx",
+      repair_proposal_id: "",
+      model_invocation_id: "model-memory",
+      redaction_status: "stage_evidence_collected",
+      created_at: "2026-07-01T00:00:00Z",
+      stage_evidence: null,
+      classification: {
+        stage_index: 1,
+        stage_name: "Stage 1",
+        source_boot_version: "2.1",
+        target_boot_version: "2.7",
+        source_java_version: "11",
+        target_java_version: "11",
+        failure_type: "POWERMOCK_LEGACY_TEST_STRATEGY",
+        classification_status: "unsupported_known_failure",
+        repair_family_candidate: "",
+        confidence: "medium",
+        confidence_reason: "PowerMock legacy test strategy signal found.",
+        matched_signals: ["review_gate:powermock_legacy_test_strategy"],
+        missing_required_evidence: ["test_report"],
+        usable_artifacts: ["pom_xml"],
+        repair_enabled: false,
+        repair_blocked_reason: "human_review_gate_no_auto_repair",
+        reason: "human_review_gate_no_auto_repair",
+        assistant_next_action: "review_powermock_legacy_test_strategy",
+        governance_gate_type: "human_review_gate",
+        stage_relevance: "Stage 1 advisory",
+        evidence_pack_id: "stage-evidence-memory",
+        evidence_pack_checksum: "sha256:evidence",
+        downstream_stage_state: null,
+        migration_memory: {
+          retrieval_status: "available",
+          query_signature: "sha256:query",
+          memory_matches: [],
+          top_match: {
+            memory_case_id: "msa-utils-powermock-legacy-test-strategy",
+            title: "msa-utils PowerMock legacy test strategy",
+            summary: "PowerMock requires human review.",
+            trust_level: "untrusted_import",
+            authority_level: "advisory_only",
+            matched_signals: ["review_gate:powermock_legacy_test_strategy"],
+            required_evidence: ["test_report"],
+            suggested_next_actions: ["review_powermock_legacy_test_strategy"],
+            stage_applicability: ["stage_2", "stage_3", "stage_4"],
+            promotion_status: "seed_only",
+            redaction_status: "path_redacted",
+            weak_stage_match: true,
+          },
+          trust_summary: "untrusted_import:1",
+          advisory_summary: "Memory match is advisory only.",
+          missing_evidence_suggestions: ["test_report"],
+          retrieved_case_ids: ["msa-utils-powermock-legacy-test-strategy"],
+          authority_level: "advisory_only",
+          repair_enabled: false,
+          memory_can_apply: false,
+          memory_can_approve: false,
+          memory_can_start_downstream: false,
+          recommended_use: "human review gate / future RAG seed",
+        },
+      },
+    };
+
+    const markup = renderToStaticMarkup(<StageFailureEvidenceDetails diagnosis={diagnosis} stage={1} />);
+
+    expect(markup).toContain("Migration Memory");
+    expect(markup).toContain("Retrieval status: available");
+    expect(markup).toContain("msa-utils PowerMock legacy test strategy");
+    expect(markup).toContain("Memory case: msa-utils-powermock-legacy-test-strategy");
+    expect(markup).toContain("Trust level: untrusted_import");
+    expect(markup).toContain("Authority level: advisory_only");
+    expect(markup).toContain("Matched memory signals: review_gate:powermock_legacy_test_strategy");
+    expect(markup).toContain("Missing evidence suggestions: test_report");
+    expect(markup).toContain("Repair authority: none");
+    expect(markup).toContain("Memory cannot approve/apply/start downstream");
+    expect(markup).not.toContain("Apply repair");
+  });
+
+  it("renders Migration Memory no-match and unavailable states", () => {
+    const baseDiagnosis = {
+      diagnosis_id: "diag-memory",
+      command_id: "cmd-memory",
+      trigger_event_type: "build_failed",
+      failure_type: "unknown",
+      context_pack_id: "pack-memory",
+      context_pack_checksum: "sha256:ctx",
+      repair_proposal_id: "",
+      model_invocation_id: "model-memory",
+      redaction_status: "stage_evidence_collected",
+      created_at: "2026-07-01T00:00:00Z",
+      stage_evidence: null,
+      classification: {
+        stage_index: 2,
+        stage_name: "Stage 2",
+        source_boot_version: "2.7",
+        target_boot_version: "3.5.16",
+        source_java_version: "11",
+        target_java_version: "17",
+        failure_type: "unknown",
+        classification_status: "unknown",
+        repair_family_candidate: "",
+        confidence: "low",
+        confidence_reason: "No match.",
+        matched_signals: [],
+        missing_required_evidence: [],
+        usable_artifacts: [],
+        repair_enabled: false,
+        repair_blocked_reason: "no_known_family_match",
+        reason: "no_known_family_match",
+        assistant_next_action: "escalate_unknown_stage_failure",
+        governance_gate_type: "unknown",
+        stage_relevance: "",
+        evidence_pack_id: "stage-evidence-memory",
+        evidence_pack_checksum: "sha256:evidence",
+        downstream_stage_state: null,
+        migration_memory: {
+          retrieval_status: "no_matches",
+          query_signature: "sha256:query",
+          memory_matches: [],
+          top_match: null,
+          trust_summary: "",
+          advisory_summary: "No relevant memory cases found.",
+          missing_evidence_suggestions: [],
+          retrieved_case_ids: [],
+          authority_level: "advisory_only",
+          repair_enabled: false,
+          memory_can_apply: false,
+          memory_can_approve: false,
+          memory_can_start_downstream: false,
+          recommended_use: "human review gate / future RAG seed",
+        },
+      },
+    };
+
+    const noMatch = renderToStaticMarkup(<StageFailureEvidenceDetails diagnosis={baseDiagnosis} stage={2} />);
+    expect(noMatch).toContain("No relevant memory cases found.");
+
+    const unavailable = renderToStaticMarkup(<StageFailureEvidenceDetails diagnosis={{
+      ...baseDiagnosis,
+      classification: {
+        ...baseDiagnosis.classification,
+        migration_memory: {
+          ...baseDiagnosis.classification.migration_memory,
+          retrieval_status: "unavailable",
+          advisory_summary: "Migration memory unavailable.",
+        },
+      },
+    }} stage={2} />);
+    expect(unavailable).toContain("Migration memory unavailable.");
+  });
+
   // ── Stage status lifecycle reducer tests (V2 cockpit state model) ──
 
   it("reduceStageStatus: blocked while approval pending", () => {

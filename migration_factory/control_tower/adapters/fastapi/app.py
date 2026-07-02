@@ -12702,6 +12702,55 @@ def _safe_classification_envelope(value: Any) -> dict[str, Any] | None:
         "evidence_pack_id": _safe_failure_str(value.get("evidence_pack_id")),
         "evidence_pack_checksum": _safe_failure_str(value.get("evidence_pack_checksum")),
         "downstream_stage_state": _safe_stage_evidence({"downstream_stage_state": value.get("downstream_stage_state")}).get("downstream_stage_state") if isinstance(value.get("downstream_stage_state"), dict) else None,
+        "migration_memory": _safe_migration_memory(value.get("migration_memory")),
+    }
+
+
+def _safe_memory_match(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    return {
+        "memory_case_id": _safe_failure_str(value.get("memory_case_id")),
+        "title": _safe_failure_str(value.get("title")),
+        "summary": _safe_failure_str(value.get("summary")),
+        "trust_level": _safe_failure_str(value.get("trust_level")),
+        "authority_level": "advisory_only",
+        "matched_signals": _safe_failure_list(value.get("matched_signals")),
+        "required_evidence": _safe_failure_list(value.get("required_evidence")),
+        "suggested_next_actions": _safe_failure_list(value.get("suggested_next_actions")),
+        "stage_applicability": _safe_failure_list(value.get("stage_applicability")),
+        "promotion_status": _safe_failure_str(value.get("promotion_status")),
+        "redaction_status": _safe_failure_str(value.get("redaction_status")),
+        "weak_stage_match": bool(value.get("weak_stage_match")),
+    }
+
+
+def _safe_migration_memory(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    matches = [
+        match
+        for match in (_safe_memory_match(item) for item in list(value.get("memory_matches") or [])[:5])
+        if match is not None
+    ]
+    top_match = _safe_memory_match(value.get("top_match"))
+    if top_match is None and matches:
+        top_match = matches[0]
+    return {
+        "retrieval_status": _safe_failure_str(value.get("retrieval_status")),
+        "query_signature": _safe_failure_str(value.get("query_signature")),
+        "memory_matches": matches,
+        "top_match": top_match,
+        "trust_summary": _safe_failure_str(value.get("trust_summary")),
+        "advisory_summary": _safe_failure_str(value.get("advisory_summary")),
+        "missing_evidence_suggestions": _safe_failure_list(value.get("missing_evidence_suggestions")),
+        "retrieved_case_ids": _safe_failure_list(value.get("retrieved_case_ids")),
+        "authority_level": "advisory_only",
+        "repair_enabled": False,
+        "memory_can_apply": False,
+        "memory_can_approve": False,
+        "memory_can_start_downstream": False,
+        "recommended_use": _safe_failure_str(value.get("recommended_use")) or "human review gate / future RAG seed",
     }
 
 
