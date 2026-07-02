@@ -770,6 +770,77 @@ class TestStageAwareEvidence:
         assert classification["repair_enabled"] is False
         assert classification["repair_blocked_reason"] == "R7C_classification_only_no_real_repair_apply"
 
+    def test_diagnosis_attaches_blocked_repair_draft_for_powermock(
+        self,
+        diagnosis_service: V2FailureDiagnosisService,
+        tmp_path: Path,
+    ) -> None:
+        payload = {
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+            "sandbox_path": str(tmp_path / "sandbox"),
+            "message": "org.powermock:powermock-api-mockito2 requires review",
+            "artifact_refs": {"pom_xml": str(tmp_path / "pom.xml")},
+        }
+
+        diagnosis = diagnosis_service.diagnose(
+            job_id="job-stage",
+            stage_index=1,
+            command_id="cmd-powermock-draft",
+            event_type="build_failed",
+            payload=payload,
+        )
+
+        classification = diagnosis.classification_envelope
+        assert classification is not None
+        draft = classification["repair_proposal_draft"]
+        assert draft["proposal_status"] == "blocked_human_review_gate"
+        assert draft["proposed_diff_preview"] == ""
+        assert draft["apply_enabled"] is False
+        assert draft["approval_enabled"] is False
+        assert draft["repair_enabled"] is False
+
+    def test_diagnosis_attaches_non_actionable_initmocks_draft(
+        self,
+        diagnosis_service: V2FailureDiagnosisService,
+        tmp_path: Path,
+    ) -> None:
+        sandbox = tmp_path / "sandbox"
+        test_file = sandbox / "src" / "test" / "java" / "ExampleTest.java"
+        test_file.parent.mkdir(parents=True)
+        test_file.write_text("MockitoAnnotations.initMocks(this);\n", encoding="utf-8")
+        payload = {
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+            "sandbox_path": str(sandbox),
+            "message": "MockitoAnnotations.initMocks(this);",
+            "artifact_refs": {
+                "sandbox": str(sandbox),
+                "test_source": str(test_file),
+            },
+        }
+
+        diagnosis = diagnosis_service.diagnose(
+            job_id="job-stage",
+            stage_index=2,
+            command_id="cmd-initmocks-draft",
+            event_type="build_failed",
+            payload=payload,
+        )
+
+        classification = diagnosis.classification_envelope
+        assert classification is not None
+        draft = classification["repair_proposal_draft"]
+        assert draft["proposal_status"] == "drafted_non_actionable"
+        assert draft["supported_family"] == "INITMOCKS_TO_OPENMOCKS_CANDIDATE"
+        assert draft["evidence_pack_checksum"].startswith("sha256:")
+        assert draft["memory_query_signature"].startswith("sha256:")
+        assert draft["target_files"] == ["src/test/java/ExampleTest.java"]
+        assert draft["proposed_diff_checksum"].startswith("sha256:")
+        assert draft["apply_enabled"] is False
+        assert draft["approval_enabled"] is False
+        assert draft["repair_enabled"] is False
+        assert diagnosis.stage_evidence_pack is not None
+        assert "internal_ref" not in json.dumps(diagnosis.stage_evidence_pack)
+
     def test_list_diagnoses_empty_on_new_service(self) -> None:
         """New service returns empty tuple."""
         service = V2FailureDiagnosisService()

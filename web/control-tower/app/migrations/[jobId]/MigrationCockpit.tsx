@@ -43,6 +43,7 @@ import type {
   RepairApprovalResponse,
   ApplyRepairReviewContextResponse,
   V2MigrationMemoryRetrievalResponse,
+  V2EvidenceBoundRepairDraftResponse,
 } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
 
@@ -1008,9 +1009,45 @@ export function StageFailureEvidenceDetails({
           <p className="meta">Next action: {classification.assistant_next_action || "n/a"}</p>
           {classificationHelp && <p className="meta">{classificationHelp}</p>}
           <MigrationMemoryDetails memory={classification.migration_memory ?? null} />
+          <RepairDraftDetails draft={classification.repair_proposal_draft ?? null} />
         </div>
       )}
     </>
+  );
+}
+
+function RepairDraftDetails({ draft }: { draft: V2EvidenceBoundRepairDraftResponse | null }) {
+  if (!draft) {
+    return (
+      <div className="trace-section">
+        <strong>Repair Draft</strong>
+        <p className="meta">No repair draft available.</p>
+      </div>
+    );
+  }
+  const noDraft = draft.proposal_status === "unavailable" || !draft.proposal_status;
+  return (
+    <div className="trace-section">
+      <strong>Repair Draft</strong>
+      {noDraft ? (
+        <p className="meta">No repair draft available.</p>
+      ) : (
+        <>
+          <p className="meta">Draft status: {draft.proposal_status}</p>
+          <p className="meta">Supported family: {draft.supported_family || "none"}</p>
+          {draft.blocked_reason && <p className="meta">Reason: {draft.blocked_reason}</p>}
+          {draft.evidence_pack_checksum && <p className="checksum">Evidence pack checksum: {draft.evidence_pack_checksum}</p>}
+          {draft.memory_query_signature && <p className="checksum">Memory query signature: {draft.memory_query_signature}</p>}
+          <p className="meta">Target file: {summarizeList(draft.target_files)}</p>
+          {draft.proposed_diff_checksum && <p className="checksum">Proposed diff checksum: {draft.proposed_diff_checksum}</p>}
+          <p className="meta">Apply: {draft.apply_enabled ? "enabled" : "disabled"}</p>
+          <p className="meta">Human approval: {draft.approval_enabled ? "enabled" : "disabled"}</p>
+          <p className="meta">Reviewer: required later, not active</p>
+          <p className="meta">Backend apply required later: {draft.backend_apply_required ? "yes" : "no"}</p>
+          <p className="meta">Draft is non-actionable in R7D. It can be reviewed later but cannot be applied.</p>
+        </>
+      )}
+    </div>
   );
 }
 

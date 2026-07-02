@@ -12703,7 +12703,86 @@ def _safe_classification_envelope(value: Any) -> dict[str, Any] | None:
         "evidence_pack_checksum": _safe_failure_str(value.get("evidence_pack_checksum")),
         "downstream_stage_state": _safe_stage_evidence({"downstream_stage_state": value.get("downstream_stage_state")}).get("downstream_stage_state") if isinstance(value.get("downstream_stage_state"), dict) else None,
         "migration_memory": _safe_migration_memory(value.get("migration_memory")),
+        "repair_proposal_draft": _safe_repair_proposal_draft(value.get("repair_proposal_draft")),
     }
+
+
+def _safe_repair_proposal_draft(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    allowed_statuses = {
+        "drafted_non_actionable",
+        "blocked_human_review_gate",
+        "blocked_pending_evidence",
+        "blocked_unsupported_family",
+        "unavailable",
+    }
+    proposal_status = _safe_failure_str(value.get("proposal_status"))
+    if proposal_status not in allowed_statuses:
+        proposal_status = "unavailable"
+    supported_family = _safe_failure_str(value.get("supported_family"))
+    if supported_family != "INITMOCKS_TO_OPENMOCKS_CANDIDATE":
+        supported_family = ""
+    trusted_origin = _safe_failure_str(value.get("proposer_origin")) == "backend_evidence_bound"
+    can_show_diff = trusted_origin and proposal_status == "drafted_non_actionable" and supported_family == "INITMOCKS_TO_OPENMOCKS_CANDIDATE"
+    target_checksums = value.get("target_file_checksums")
+    safe_checksums = {
+        _safe_failure_str(k): _safe_failure_str(v)
+        for k, v in (target_checksums.items() if isinstance(target_checksums, dict) else [])
+        if _is_safe_relative_ui_path(_safe_failure_str(k))
+    }
+    return {
+        "proposal_status": proposal_status,
+        "proposal_type": _safe_failure_str(value.get("proposal_type")),
+        "supported_family": supported_family,
+        "failure_type": _safe_failure_str(value.get("failure_type")),
+        "classification_status": _safe_failure_str(value.get("classification_status")),
+        "governance_gate_type": _safe_failure_str(value.get("governance_gate_type")),
+        "stage_index": value.get("stage_index"),
+        "source_boot_version": _safe_failure_str(value.get("source_boot_version")),
+        "target_boot_version": _safe_failure_str(value.get("target_boot_version")),
+        "source_java_version": _safe_failure_str(value.get("source_java_version")),
+        "target_java_version": _safe_failure_str(value.get("target_java_version")),
+        "evidence_pack_id": _safe_failure_str(value.get("evidence_pack_id")),
+        "evidence_pack_checksum": _safe_failure_str(value.get("evidence_pack_checksum")),
+        "memory_query_signature": _safe_failure_str(value.get("memory_query_signature")),
+        "retrieved_memory_case_ids": _safe_failure_list(value.get("retrieved_memory_case_ids")),
+        "target_files": [
+            item for item in _safe_failure_list(value.get("target_files"))
+            if _is_safe_relative_ui_path(item)
+        ] if trusted_origin else [],
+        "source_markers": _safe_failure_list(value.get("source_markers")) if trusted_origin else [],
+        "target_file_checksums": safe_checksums if trusted_origin else {},
+        "proposed_diff_preview": _safe_failure_str(value.get("proposed_diff_preview")) if can_show_diff else "",
+        "proposed_diff_checksum": _safe_failure_str(value.get("proposed_diff_checksum")) if can_show_diff else "",
+        "proposal_checksum": _safe_failure_str(value.get("proposal_checksum")),
+        "proposer_kind": "deterministic_local",
+        "proposer_origin": "backend_evidence_bound" if trusted_origin else "",
+        "llm_invoked": False,
+        "reviewer_required": True,
+        "human_approval_required": True,
+        "backend_apply_required": True,
+        "apply_enabled": False,
+        "approval_enabled": False,
+        "repair_enabled": False,
+        "sandbox_only": True,
+        "legacy_mutation_allowed": False,
+        "downstream_start_allowed": False,
+        "blocked_reason": _safe_failure_str(value.get("blocked_reason")),
+        "assistant_next_action": _safe_failure_str(value.get("assistant_next_action")),
+        "safety_warnings": _safe_failure_list(value.get("safety_warnings")),
+    }
+
+
+def _is_safe_relative_ui_path(value: str) -> bool:
+    text = value.replace("\\", "/").strip()
+    return bool(
+        text
+        and not text.startswith("/")
+        and ":" not in text
+        and "[redacted" not in text.lower()
+        and all(part not in ("", ".", "..") for part in text.split("/"))
+    )
 
 
 def _safe_memory_match(value: Any) -> dict[str, Any] | None:

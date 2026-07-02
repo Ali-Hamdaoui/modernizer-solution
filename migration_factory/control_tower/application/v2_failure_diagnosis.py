@@ -50,6 +50,9 @@ from migration_factory.control_tower.application.v2_stage_failure_classifier imp
 from migration_factory.control_tower.application.v2_migration_memory import (
     retrieve_migration_memory,
 )
+from migration_factory.control_tower.application.v2_repair_proposer import (
+    propose_stage_repair,
+)
 
 
 # ── Diagnosis record ──────────────────────────────────────────────
@@ -217,6 +220,8 @@ class V2FailureDiagnosisService:
             if classification_result
             else self._classification_unavailable(stage_index=stage_index)
         )
+        if stage_evidence_pack is not None:
+            stage_evidence_pack = self._strip_internal_artifact_refs(stage_evidence_pack)
         # Collect artifact refs from payload for context pack enrichment
         evidence_artifact_refs: tuple[str, ...] = ()
         raw_refs = payload_data.get("artifact_refs", {})
@@ -640,6 +645,7 @@ class V2FailureDiagnosisService:
             "build_error_contract",
             "test_agent_log",
             "test_report",
+            "test_source",
             "pom_xml",
             "dependency_graph",
             "runtime_contract",
@@ -703,6 +709,8 @@ class V2FailureDiagnosisService:
             "checksum": "",
             "checksum_algorithm": "sha256",
         }
+        if ref:
+            summary["internal_ref"] = ref
         try:
             path = Path(ref)
             if path.is_file():
@@ -743,8 +751,24 @@ class V2FailureDiagnosisService:
             "evidence_artifacts": evidence_pack.get("usable_artifacts", []),
         }
         classification["migration_memory"] = retrieve_migration_memory(memory_context)
+        classification["repair_proposal_draft"] = propose_stage_repair(
+            classification,
+            evidence_pack,
+            classification["migration_memory"],
+        )
         classification["repair_enabled"] = False
         return classification
+
+    @staticmethod
+    def _strip_internal_artifact_refs(evidence_pack: dict[str, Any]) -> dict[str, Any]:
+        clean = dict(evidence_pack)
+        clean["usable_artifacts"] = [
+            {key: value for key, value in item.items() if key != "internal_ref"}
+            if isinstance(item, dict)
+            else item
+            for item in evidence_pack.get("usable_artifacts", [])
+        ]
+        return clean
 
     # ── Serialization ──────────────────────────────────────────────
 

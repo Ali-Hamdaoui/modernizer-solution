@@ -1911,6 +1911,235 @@ describe("V2 Migration Cockpit contract", () => {
     expect(unavailable).toContain("Migration memory unavailable.");
   });
 
+  it("renders Repair Draft blocked PowerMock state without controls", () => {
+    const diagnosis = {
+      diagnosis_id: "diag-draft",
+      command_id: "cmd-draft",
+      trigger_event_type: "build_failed",
+      failure_type: "POWERMOCK_LEGACY_TEST_STRATEGY",
+      context_pack_id: "pack-draft",
+      context_pack_checksum: "sha256:ctx",
+      repair_proposal_id: "",
+      model_invocation_id: "model-draft",
+      redaction_status: "stage_evidence_collected",
+      created_at: "2026-07-01T00:00:00Z",
+      stage_evidence: null,
+      classification: {
+        stage_index: 1,
+        stage_name: "Stage 1",
+        source_boot_version: "2.1",
+        target_boot_version: "2.7",
+        source_java_version: "11",
+        target_java_version: "11",
+        failure_type: "POWERMOCK_LEGACY_TEST_STRATEGY",
+        classification_status: "unsupported_known_failure",
+        repair_family_candidate: "",
+        confidence: "medium",
+        confidence_reason: "PowerMock legacy test strategy signal found.",
+        matched_signals: ["review_gate:powermock_legacy_test_strategy"],
+        missing_required_evidence: [],
+        usable_artifacts: ["pom_xml"],
+        repair_enabled: false,
+        repair_blocked_reason: "human_review_gate_no_auto_repair",
+        reason: "human_review_gate_no_auto_repair",
+        assistant_next_action: "review_powermock_legacy_test_strategy",
+        governance_gate_type: "human_review_gate",
+        stage_relevance: "Stage 1 advisory",
+        evidence_pack_id: "stage-evidence-draft",
+        evidence_pack_checksum: "sha256:evidence",
+        downstream_stage_state: null,
+        migration_memory: null,
+        repair_proposal_draft: {
+          proposal_status: "blocked_human_review_gate",
+          proposal_type: "evidence_bound_repair_draft",
+          supported_family: "",
+          failure_type: "POWERMOCK_LEGACY_TEST_STRATEGY",
+          classification_status: "unsupported_known_failure",
+          governance_gate_type: "human_review_gate",
+          stage_index: 1,
+          source_boot_version: "2.1",
+          target_boot_version: "2.7",
+          source_java_version: "11",
+          target_java_version: "11",
+          evidence_pack_id: "stage-evidence-draft",
+          evidence_pack_checksum: "sha256:evidence",
+          memory_query_signature: "sha256:memory",
+          retrieved_memory_case_ids: ["msa-utils-powermock-legacy-test-strategy"],
+          target_files: [],
+          source_markers: [],
+          target_file_checksums: {},
+          proposed_diff_preview: "",
+          proposed_diff_checksum: "",
+          proposal_checksum: "",
+          proposer_kind: "deterministic_local",
+          llm_invoked: false,
+          reviewer_required: true,
+          human_approval_required: true,
+          backend_apply_required: true,
+          apply_enabled: false,
+          approval_enabled: false,
+          repair_enabled: false,
+          sandbox_only: true,
+          legacy_mutation_allowed: false,
+          downstream_start_allowed: false,
+          blocked_reason: "human_review_gate_no_auto_repair",
+          assistant_next_action: "review_powermock_legacy_test_strategy",
+          safety_warnings: ["No repair draft is actionable in R7D."],
+        },
+      },
+    };
+
+    const markup = renderToStaticMarkup(<StageFailureEvidenceDetails diagnosis={diagnosis} stage={1} />);
+    expect(markup).toContain("Repair Draft");
+    expect(markup).toContain("Draft status: blocked_human_review_gate");
+    expect(markup).toContain("Reason: human_review_gate_no_auto_repair");
+    expect(markup).toContain("Supported family: none");
+    expect(markup).toContain("Apply: disabled");
+    expect(markup).toContain("Human approval: disabled");
+    expect(markup).toContain("Reviewer: required later, not active");
+    expect(markup).not.toContain("Apply repair");
+    expect(markup).not.toContain("Approve draft");
+    expect(markup).not.toContain("Edit patch");
+  });
+
+  it("renders Repair Draft drafted_non_actionable initMocks state", () => {
+    const diagnosis = {
+      diagnosis_id: "diag-draft",
+      command_id: "cmd-draft",
+      trigger_event_type: "build_failed",
+      failure_type: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+      context_pack_id: "pack-draft",
+      context_pack_checksum: "sha256:ctx",
+      repair_proposal_id: "",
+      model_invocation_id: "model-draft",
+      redaction_status: "stage_evidence_collected",
+      created_at: "2026-07-01T00:00:00Z",
+      stage_evidence: null,
+      classification: {
+        stage_index: 2,
+        stage_name: "Stage 2",
+        source_boot_version: "2.7",
+        target_boot_version: "3.5.16",
+        source_java_version: "11",
+        target_java_version: "17",
+        failure_type: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+        classification_status: "known_family_candidate",
+        repair_family_candidate: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+        confidence: "medium",
+        confidence_reason: "Mockito initMocks source signal found.",
+        matched_signals: ["candidate:initmocks_to_openmocks"],
+        missing_required_evidence: [],
+        usable_artifacts: ["test_source"],
+        repair_enabled: false,
+        repair_blocked_reason: "R7C_classification_only_no_real_repair_apply",
+        reason: "R7C_classification_only_no_real_repair_apply",
+        assistant_next_action: "prepare_evidence_bound_proposal_in_R7D",
+        governance_gate_type: "future_deterministic_candidate",
+        stage_relevance: "All stages",
+        evidence_pack_id: "stage-evidence-draft",
+        evidence_pack_checksum: "sha256:evidence",
+        downstream_stage_state: null,
+        migration_memory: null,
+        repair_proposal_draft: {
+          proposal_status: "drafted_non_actionable",
+          proposal_type: "evidence_bound_repair_draft",
+          supported_family: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+          failure_type: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+          classification_status: "known_family_candidate",
+          governance_gate_type: "future_deterministic_candidate",
+          stage_index: 2,
+          source_boot_version: "2.7",
+          target_boot_version: "3.5.16",
+          source_java_version: "11",
+          target_java_version: "17",
+          evidence_pack_id: "stage-evidence-draft",
+          evidence_pack_checksum: "sha256:evidence",
+          memory_query_signature: "sha256:memory",
+          retrieved_memory_case_ids: ["msa-utils-initmocks-to-openmocks"],
+          target_files: ["src/test/java/ExampleTest.java"],
+          source_markers: ["MockitoAnnotations.initMocks"],
+          target_file_checksums: { "src/test/java/ExampleTest.java": "sha256:file" },
+          proposed_diff_preview: "-MockitoAnnotations.initMocks(this);\n+MockitoAnnotations.openMocks(this);",
+          proposed_diff_checksum: "sha256:diff",
+          proposal_checksum: "sha256:proposal",
+          proposer_kind: "deterministic_local",
+          llm_invoked: false,
+          reviewer_required: true,
+          human_approval_required: true,
+          backend_apply_required: true,
+          apply_enabled: false,
+          approval_enabled: false,
+          repair_enabled: false,
+          sandbox_only: true,
+          legacy_mutation_allowed: false,
+          downstream_start_allowed: false,
+          blocked_reason: "",
+          assistant_next_action: "send_draft_to_future_reviewer_gate",
+          safety_warnings: ["Draft is non-actionable in R7D."],
+        },
+      },
+    };
+
+    const markup = renderToStaticMarkup(<StageFailureEvidenceDetails diagnosis={diagnosis} stage={2} />);
+    expect(markup).toContain("Draft status: drafted_non_actionable");
+    expect(markup).toContain("Supported family: INITMOCKS_TO_OPENMOCKS_CANDIDATE");
+    expect(markup).toContain("Evidence pack checksum: sha256:evidence");
+    expect(markup).toContain("Memory query signature: sha256:memory");
+    expect(markup).toContain("Target file: src/test/java/ExampleTest.java");
+    expect(markup).toContain("Proposed diff checksum: sha256:diff");
+    expect(markup).toContain("Apply: disabled");
+    expect(markup).toContain("Human approval: disabled");
+    expect(markup).toContain("Backend apply required later: yes");
+    expect(markup).toContain("Draft is non-actionable in R7D.");
+    expect(markup).not.toContain("Apply repair");
+  });
+
+  it("renders Repair Draft no-draft state", () => {
+    const diagnosis = {
+      diagnosis_id: "diag-no-draft",
+      command_id: "cmd-no-draft",
+      trigger_event_type: "build_failed",
+      failure_type: "unknown",
+      context_pack_id: "pack",
+      context_pack_checksum: "sha256:ctx",
+      repair_proposal_id: "",
+      model_invocation_id: "model",
+      redaction_status: "stage_evidence_collected",
+      created_at: "2026-07-01T00:00:00Z",
+      stage_evidence: null,
+      classification: {
+        stage_index: 2,
+        stage_name: "Stage 2",
+        source_boot_version: "2.7",
+        target_boot_version: "3.5.16",
+        source_java_version: "11",
+        target_java_version: "17",
+        failure_type: "unknown",
+        classification_status: "unknown",
+        repair_family_candidate: "",
+        confidence: "low",
+        confidence_reason: "Unknown.",
+        matched_signals: [],
+        missing_required_evidence: [],
+        usable_artifacts: [],
+        repair_enabled: false,
+        repair_blocked_reason: "no_known_family_match",
+        reason: "no_known_family_match",
+        assistant_next_action: "escalate_unknown_stage_failure",
+        governance_gate_type: "unknown",
+        stage_relevance: "",
+        evidence_pack_id: "stage-evidence",
+        evidence_pack_checksum: "sha256:evidence",
+        downstream_stage_state: null,
+        migration_memory: null,
+        repair_proposal_draft: null,
+      },
+    };
+    const markup = renderToStaticMarkup(<StageFailureEvidenceDetails diagnosis={diagnosis} stage={2} />);
+    expect(markup).toContain("Repair Draft");
+    expect(markup).toContain("No repair draft available.");
+  });
+
   // ── Stage status lifecycle reducer tests (V2 cockpit state model) ──
 
   it("reduceStageStatus: blocked while approval pending", () => {
