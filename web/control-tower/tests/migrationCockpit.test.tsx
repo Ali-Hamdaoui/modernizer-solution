@@ -4,6 +4,7 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 import MigrationCockpitPage from "../app/migrations/[jobId]/page";
 import {
   MigrationCockpit,
+  ApprovalDecisionsPanel,
   AssistantPanelContent,
   GatePanelContent,
   MigrationRoutePanel,
@@ -18,8 +19,8 @@ import {
   reduceStageStatus,
   type CockpitData,
 } from "../app/migrations/[jobId]/MigrationCockpit";
-import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, postV2GateAction, requireJobId, resolveReportDownloadUrl, v2EventStreamUrl } from "../lib/controlTowerApi";
-import type { GateDetailResponse, GateRepresentation, GateEvidencePack, V2FailureSummaryItem, V2JobEvent, V2MigrationJobResponse, V2RouteStepEntry } from "../lib/contracts";
+import { approveV2Card, askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, postV2GateAction, requireJobId, resolveReportDownloadUrl, v2EventStreamUrl } from "../lib/controlTowerApi";
+import type { GateDetailResponse, GateRepresentation, GateEvidencePack, V2ApprovalResponse, V2FailureSummaryItem, V2JobEvent, V2MigrationJobResponse, V2RouteStepEntry } from "../lib/contracts";
 
 describe("V2 Migration Cockpit contract", () => {
   it("passes the awaited route job id into MigrationCockpit", async () => {
@@ -413,15 +414,36 @@ describe("V2 Migration Cockpit contract", () => {
     }
   });
 
-  it("approval review jobs route approval through chatbot copy", () => {
-    const approvalReviewOpen = true;
-    const labels = approvalReviewOpen
-      ? ["Review in chatbot", "Legacy Approve/Reject controls are disabled here.", "checksum-123"]
-      : ["Approve", "Reject", "checksum-123"];
-    expect(labels).toContain("Review in chatbot");
-    expect(labels).toContain("checksum-123");
-    expect(labels).not.toContain("Approve");
-    expect(labels).not.toContain("Reject");
+  it("pending approval card renders Approve/Reject buttons even when approvalReviewOpen is true", () => {
+    // Regression: the global approvalReviewOpen flag used to swap ALL cards'
+    // buttons for "Review in chatbot" copy. Pending gates must always show
+    // active Approve/Reject buttons, regardless of the open-gate flag.
+    const pending: V2ApprovalResponse = {
+      card_id: "card-3",
+      job_id: "job-123",
+      interrupt_id: "run-3",
+      request_checksum: "checksum-3",
+      stage_index: 3,
+      summary: "Pre-transform review required before sandbox transform.",
+      status: "pending",
+      created_at: "2026-07-02T00:00:00Z",
+    };
+    const markup = renderToStaticMarkup(
+      <ApprovalDecisionsPanel
+        approvals={[pending]}
+        approvalReviewOpen={true}
+        approvalBusy={null}
+        onApprove={() => {}}
+        onReject={() => {}}
+      />,
+    );
+    expect(markup).toContain("Stage 3");
+    expect(markup).toContain("checksum-3");
+    expect(markup).toContain("Approve");
+    expect(markup).toContain("Reject");
+    // The pending card's Approve button must NOT be disabled.
+    const approveButtonStart = markup.indexOf("Approve");
+    expect(markup.slice(markup.lastIndexOf("<button", approveButtonStart), approveButtonStart)).not.toContain("disabled");
   });
 
   it("pipeline projection shows agent phases before raw logs", () => {
@@ -1977,6 +1999,126 @@ describe("PR-C Repair Proposal Panel integration", () => {
     for (const f of forbidden) {
       expect(source).not.toContain(f);
     }
+  });
+});
+
+// ── Multi-stage approval flow regression ──────────────────────────────
+
+function approvalCard(
+  cardId: string,
+  stageIndex: number,
+  checksum: string,
+  status: "pending" | "approved" | "rejected",
+): V2ApprovalResponse {
+  return {
+    card_id: cardId,
+    job_id: "job-123",
+    interrupt_id: `run-${stageIndex}`,
+    request_checksum: checksum,
+    stage_index: stageIndex,
+    summary: "Pre-transform review required before sandbox transform.",
+    status,
+    created_at: "2026-07-02T00:00:00Z",
+  };
+}
+
+describe("V2 multi-stage approval flow", () => {
+  it("mergeCockpitLiveRefreshResults adds a new pending stage-3 approval while keeping stage-2 approved", () => {
+    const stage2Approved = approvalCard("gate-stage-2", 2, "checksum-stage-2", "approved");
+    const stage3Pending = approvalCard("gate-stage-3", 3, "checksum-stage-3", "pending");
+    const current: CockpitData = { ...makeCockpitData(), approvals: [stage2Approved] };
+    const merged = mergeCockpitLiveRefreshResults(current, [
+      { status: "fulfilled", value: { approvals: [stage2Approved, stage3Pending] } },
+      { status: "rejected", reason: new Error("stages fetch skipped") },
+      { status: "rejected", reason: new Error("events fetch skipped") },
+      { status: "rejected", reason: new Error("pipeline fetch skipped") },
+      { status: "rejected", reason: new Error("failure summary fetch skipped") },
+    ]);
+    expect(merged.data.approvals).toHaveLength(2);
+    const byCard = Object.fromEntries(merged.data.approvals.map((a) => [a.card_id, a.status]));
+    expect(byCard["gate-stage-2"]).toBe("approved");
+    expect(byCard["gate-stage-3"]).toBe("pending");
+  });
+
+  it("approved old gate does not hide pending new gate Approve/Reject buttons", () => {
+    const stage2Approved = approvalCard("gate-stage-2", 2, "checksum-stage-2", "approved");
+    const stage3Pending = approvalCard("gate-stage-3", 3, "checksum-stage-3", "pending");
+    const markup = renderToStaticMarkup(
+      <ApprovalDecisionsPanel
+        approvals={[stage2Approved, stage3Pending]}
+        approvalReviewOpen={true}
+        approvalBusy={null}
+        onApprove={() => {}}
+        onReject={() => {}}
+      />,
+    );
+    // Stage 2 shows approved status.
+    expect(markup).toContain("Stage 2");
+    expect(markup).toContain("APPROVED");
+    // Stage 3 pending gate renders its own active Approve/Reject buttons.
+    expect(markup).toContain("Stage 3");
+    expect(markup).toContain("checksum-stage-3");
+    expect(markup).toContain("Approve");
+    expect(markup).toContain("Reject");
+    // The stage-3 Approve button (second one) must not be disabled.
+    const lastApprove = markup.lastIndexOf("Approve");
+    expect(markup.slice(markup.lastIndexOf("<button", lastApprove), lastApprove)).not.toContain("disabled");
+  });
+
+  it("approveV2Card submits the exact stage-3 card id and checksum, not an earlier stage's", async () => {
+    const originalFetch = global.fetch;
+    const calls: { url: string; body: string | null }[] = [];
+    global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: typeof init?.body === "string" ? init.body : null });
+      return new Response(
+        JSON.stringify({
+          resume_id: "res-3",
+          card_id: "gate-stage-3",
+          decision: "approved",
+          job_id: "job-123",
+          stage_index: 3,
+          command: [],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+    try {
+      await approveV2Card("job-123", "gate-stage-3", "checksum-stage-3");
+      expect(calls[0].url).toBe(
+        `${CONTROL_TOWER_API_BASE_URL}/v1/v2/jobs/job-123/approvals/gate-stage-3/approve`,
+      );
+      const body = JSON.parse(calls[0].body ?? "{}");
+      expect(body).toEqual({ expected_checksum: "checksum-stage-3" });
+      // Must not send an earlier stage's identity or checksum.
+      expect(body.expected_checksum).not.toBe("checksum-stage-2");
+      expect(calls[0].url).not.toContain("gate-stage-2");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("after stages 2 and 3 are approved, stage 4 pending still renders Approve/Reject", () => {
+    const stage2Approved = approvalCard("gate-stage-2", 2, "checksum-stage-2", "approved");
+    const stage3Approved = approvalCard("gate-stage-3", 3, "checksum-stage-3", "approved");
+    const stage4Pending = approvalCard("gate-stage-4", 4, "checksum-stage-4", "pending");
+    const markup = renderToStaticMarkup(
+      <ApprovalDecisionsPanel
+        approvals={[stage4Pending, stage3Approved, stage2Approved]}
+        approvalReviewOpen={true}
+        approvalBusy={null}
+        onApprove={() => {}}
+        onReject={() => {}}
+      />,
+    );
+    expect(markup).toContain("Stage 4");
+    expect(markup).toContain("checksum-stage-4");
+    expect(markup).toContain("Approve");
+    expect(markup).toContain("Reject");
+    // Earlier approved stages remain visible as approved.
+    expect(markup).toContain("APPROVED");
+    // The stage-4 Approve button (first one) must not be disabled.
+    const firstApprove = markup.indexOf("Approve");
+    expect(markup.slice(markup.lastIndexOf("<button", firstApprove), firstApprove)).not.toContain("disabled");
   });
 });
 

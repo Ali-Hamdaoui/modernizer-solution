@@ -892,6 +892,119 @@ def test_approval_acceptance_persists_profile_metadata_for_resume_checkpoint(tmp
     assert profile_metadata["run_id"] == "run-approval"
 
 
+def test_button_approve_resolves_approval_review_gate(tmp_path: Path) -> None:
+    """The HTTP Approve button must resolve the approval_review phase gate.
+
+    Regression: approve_decision_card approved the card and queued the resume
+    but never resolved the phase gate (unlike the assistant `confirm checksum`
+    path). The unresolved earlier-stage gate then permanently shadowed later
+    pending stages in GET /gates/open, so the frontend stopped showing Approve
+    buttons for later stages.
+    """
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    _seed_approval_resume_command(conn, job_id=job_id, stage_index=2, run_id="run-1")
+    gate_id = _create_gate(conn, job_id)
+    checksum = client.get(f"/v1/v2/jobs/{job_id}/gates/{gate_id}").json()["checksum"]
+    card_id = _seed_approval_card(conn, job_id=job_id, checksum=checksum, stage_index=2)
+
+    class _StartedResumeRunner:
+        def __init__(self) -> None:
+            self.started: list[str] = []
+
+        def start_resume(self, *, job_id: str, resume_id: str) -> V2OrchestratorStart:
+            self.started.append(resume_id)
+            return V2OrchestratorStart(
+                command_id=resume_id,
+                job_id=job_id,
+                stage_index=2,
+                pid=None,
+                status="started",
+                message="",
+            )
+
+        def start(self, *, job_id: str, command_id: str) -> V2OrchestratorStart:
+            raise AssertionError("transform launch is not expected here")
+
+    runner = _StartedResumeRunner()
+    client.app.state.v2_orchestrator_runner = runner
+
+    response = client.post(
+        f"/v1/v2/jobs/{job_id}/approvals/{card_id}/approve",
+        json={"expected_checksum": checksum},
+        headers=_mutation_headers(),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["launch_status"] == "started"
+    assert runner.started, "resume command should have been launched"
+
+    # KEY REGRESSION ASSERTION: the approval_review gate is now resolved.
+    gate = SqliteUnitOfWork(conn).phase_gates.get(gate_id)
+    assert gate is not None
+    assert gate.gate_status == "resolved"
+    assert gate.gate_decision == "approve"
+
+    # GET /gates/open must no longer surface this resolved earlier-stage gate.
+    open_resp = client.get(f"/v1/v2/jobs/{job_id}/gates/open")
+    assert open_resp.status_code == 200
+    open_gate = open_resp.json().get("gate")
+    assert open_gate is None or open_gate["gate_id"] != gate_id
+
+
+def test_open_gate_endpoint_advances_past_resolved_stage_to_later_stage(tmp_path: Path) -> None:
+    """GET /gates/open must surface a later pending stage once earlier stages are resolved.
+
+    An approved old gate must not shadow a newer pending gate. This is the
+    backend contract the frontend relies on to render later-stage Approve
+    buttons.
+    """
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    now = utc_now_text()
+    gate2 = PhaseGateRecord(
+        gate_id=uuid4().hex,
+        job_id=job_id,
+        gate_phase="approval_review",
+        stage_index=2,
+        gate_status="resolved",
+        gate_decision="approve",
+        source_artifact_checksum="sha256:gate-2",
+        resolved_artifact_checksum=None,
+        source_artifact_refs_json=json.dumps(["analysis:1", "plan:1"]),
+        created_at=now,
+        resolved_at=now,
+        resolved_by="human",
+    )
+    gate3 = PhaseGateRecord(
+        gate_id=uuid4().hex,
+        job_id=job_id,
+        gate_phase="approval_review",
+        stage_index=3,
+        gate_status="open",
+        gate_decision="pending",
+        source_artifact_checksum="sha256:gate-3",
+        resolved_artifact_checksum=None,
+        source_artifact_refs_json=json.dumps(["analysis:1", "plan:1"]),
+        created_at=now,
+        resolved_at=None,
+        resolved_by=None,
+    )
+    with SqliteUnitOfWork(conn) as uow:
+        uow.phase_gates.save(gate2)
+        uow.phase_gates.save(gate3)
+
+    open_resp = client.get(f"/v1/v2/jobs/{job_id}/gates/open")
+    assert open_resp.status_code == 200
+    open_gate = open_resp.json()["gate"]
+    assert open_gate is not None
+    assert open_gate["gate_id"] == gate3.gate_id
+    assert open_gate["stage_index"] == 3
+
+
 def test_stage3_java21_route_assistant_confirm_starts_transform(tmp_path: Path) -> None:
     client, conn = _api_client(tmp_path)
     setup_id = _ready_setup(conn)

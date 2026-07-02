@@ -26,6 +26,13 @@ import {
   v2RootPomDownloadUrl,
   createIdempotencyKey,
 } from "../../../lib/controlTowerApi";
+import {
+  logApprovalEvent,
+  logApprovalDecisionsBefore,
+  logApprovalDecisionsAfter,
+  logOpenGates,
+  logApproveClickPayload,
+} from "../../../lib/approvalDebug";
 import type {
   V2ApprovalResponse,
   V2ArtifactPreviewResponse,
@@ -867,6 +874,73 @@ export function SourceProfileOverrideForm({
   );
 }
 
+export function ApprovalDecisionsPanel({
+  approvals,
+  approvalReviewOpen,
+  approvalBusy,
+  onApprove,
+  onReject,
+}: {
+  approvals: V2ApprovalResponse[];
+  approvalReviewOpen: boolean;
+  approvalBusy: string | null;
+  onApprove: (card: V2ApprovalResponse) => void;
+  onReject: (card: V2ApprovalResponse) => void;
+}) {
+  // Approval rendering is driven entirely by backend-owned approval decisions.
+  // Every pending gate renders its own active Approve/Reject buttons.
+  // An approved/rejected gate only disables its own buttons; it must never
+  // hide buttons for a different pending gate (later stages included).
+  return (
+    <section className="panel">
+      <h2>Approval Decisions</h2>
+      {approvalReviewOpen && (
+        <p className="meta">
+          A pre-transform review gate is open. Approve/Reject buttons are enabled below for each pending gate; the chatbot can also confirm the exact checksum.
+        </p>
+      )}
+      {approvals.length === 0 ? (
+        <p className="meta">No pending decisions.</p>
+      ) : (
+        approvals.map((a) => (
+          <div key={a.card_id} className="approval-card">
+            <div className="stage-header">
+              <strong>Stage {a.stage_index}</strong>
+              <span className={`status-badge ${a.status}`}>{a.status.toUpperCase()}</span>
+            </div>
+            <p>{a.summary}</p>
+            <p className="checksum">Checksum: {a.request_checksum}</p>
+            {a.reviewer_decision && (
+              <p className="meta">
+                Reviewer: {a.reviewer_decision}
+                {a.reviewer_critique_id ? ` (${a.reviewer_critique_id})` : ""}
+              </p>
+            )}
+            {a.reviewed_checksum && <p className="checksum">Reviewed checksum: {a.reviewed_checksum}</p>}
+            <div className="approval-actions">
+              <button
+                type="button"
+                disabled={a.status !== "pending" || approvalBusy === a.card_id}
+                onClick={() => onApprove(a)}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                disabled={a.status !== "pending" || approvalBusy === a.card_id}
+                onClick={() => onReject(a)}
+              >
+                Reject
+              </button>
+            </div>
+          </div>
+        ))
+      )}
+      <p className="meta">LLM cannot approve; exact checksum required.</p>
+    </section>
+  );
+}
+
 export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [data, setData] = useState<CockpitData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1066,6 +1140,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   function appendEventFromSse(dataText: string) {
     try {
       const event = JSON.parse(dataText) as V2JobEvent;
+      logApprovalEvent(event);
       console.log("[migration-event]", {
         type: event.type,
         stage: event.stage,
@@ -1087,10 +1162,15 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           // Backend refresh on important events is authoritative.
         };
       });
-      // On important events, refresh from backend (async, non-blocking)
+      // On important events, refresh from backend (async, non-blocking).
+      // Gate state is refreshed too so the open-gate slot and approvalReviewOpen
+      // stay current as later-stage gates open/resolve (not just on mount).
       if (IMPORTANT_SSE_TYPES.has(event.type)) {
         void refreshLiveState().catch(() => {
           setLiveRefreshWarning("Live refresh temporarily failed. Retrying...");
+        });
+        void refreshGateState().catch(() => {
+          // keep existing gate state on refresh failure
         });
       }
     } catch {
@@ -1140,6 +1220,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     setLiveRefreshWarning(failed ? "Live refresh temporarily failed. Retrying..." : null);
     setData((current) => {
       if (!current) return current;
+      logApprovalDecisionsBefore(current.approvals);
       const merged = mergeCockpitLiveRefreshResults(current, [
         approvalsResult,
         stagesResult,
@@ -1147,16 +1228,54 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         pipelineResult,
         failureSummaryResult,
       ]);
+      logApprovalDecisionsAfter(merged.data.approvals);
       return merged.data;
     });
+  }
+
+  // Best-effort refresh of the gate panel state. Called on important SSE
+  // events so that a newly opened later-stage approval_review gate is
+  // reflected (and a resolved earlier-stage gate no longer occupies the
+  // open-gate slot). Silent on failure: keeps the existing gate state.
+  async function refreshGateState() {
+    if (!normalizedJobId) return;
+    const safeJobId = requireJobId(normalizedJobId);
+    try {
+      const [gateList, openGateResponse] = await Promise.all([
+        getV2JobGates(safeJobId),
+        getV2OpenGate(safeJobId),
+      ]);
+      const openGate = openGateResponse.gate ?? null;
+      const openGateDetail = openGate
+        ? await getV2GateDetail(safeJobId, openGate.gate_id).catch(() => null)
+        : null;
+      setGateState({
+        status: gateList.gates.length === 0 ? "empty" : "success",
+        gates: gateList.gates,
+        openGate,
+        openGateDetail,
+      });
+      logOpenGates({ openGate, gateCount: gateList.gates.length });
+    } catch {
+      // keep existing gate state on refresh failure
+    }
   }
 
   async function approveCard(card: V2ApprovalResponse) {
     if (!normalizedJobId) return;
     setApprovalBusy(card.card_id);
+    const payload = {
+      jobId: normalizedJobId,
+      cardId: card.card_id,
+      stageId: card.stage_index,
+      checksum: card.request_checksum,
+      decision: "approve",
+    };
+    logApproveClickPayload(payload);
     try {
       await approveV2Card(normalizedJobId, card.card_id, card.request_checksum);
       await refreshLiveState();
+      await refreshGateState();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Approval failed");
     } finally {
@@ -1320,27 +1439,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           jobId={normalizedJobId}
           job={data?.job}
           onGateRefresh={() => {
-            void (async () => {
-              try {
-                const safeJobId = requireJobId(normalizedJobId);
-                const [gateList, openGateResponse] = await Promise.all([
-                  getV2JobGates(safeJobId),
-                  getV2OpenGate(safeJobId),
-                ]);
-                const openGate = openGateResponse.gate ?? null;
-                const openGateDetail = openGate
-                  ? await getV2GateDetail(safeJobId, openGate.gate_id).catch(() => null)
-                  : null;
-                setGateState({
-                  status: gateList.gates.length === 0 ? "empty" : "success",
-                  gates: gateList.gates,
-                  openGate,
-                  openGateDetail,
-                });
-              } catch {
-                // keep existing gate state on refresh failure
-              }
-            })();
+            void refreshGateState();
           }}
         />
       ) : null}
@@ -1392,50 +1491,13 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       </section>
 
       {/* Decisions Panel */}
-      <section className="panel">
-        <h2>Approval Decisions</h2>
-        {approvalReviewOpen && (
-          <p className="meta">
-            Pre-transform review is open in the chatbot. Legacy Approve/Reject controls are disabled here; use the assistant to review evidence, request changes, and confirm the exact checksum.
-          </p>
-        )}
-        {data.approvals.length === 0 ? (
-          <p className="meta">No pending decisions.</p>
-        ) : (
-          data.approvals.map((a) => (
-            <div key={a.card_id} className="approval-card">
-              <div className="stage-header">
-                <strong>Stage {a.stage_index}</strong>
-                <span className={`status-badge ${a.status}`}>{a.status.toUpperCase()}</span>
-              </div>
-              <p>{a.summary}</p>
-              <p className="checksum">Checksum: {a.request_checksum}</p>
-              {a.reviewer_decision && (
-                <p className="meta">
-                  Reviewer: {a.reviewer_decision}
-                  {a.reviewer_critique_id ? ` (${a.reviewer_critique_id})` : ""}
-                </p>
-              )}
-              {a.reviewed_checksum && <p className="checksum">Reviewed checksum: {a.reviewed_checksum}</p>}
-              {approvalReviewOpen ? (
-                <p className="meta">
-                  Review in chatbot. Exact checksum confirmation is required before transform resumes.
-                </p>
-              ) : (
-                <div className="approval-actions">
-                  <button type="button" disabled={a.status !== "pending" || approvalBusy === a.card_id} onClick={() => void approveCard(a)}>
-                    Approve
-                  </button>
-                  <button type="button" disabled={a.status !== "pending" || approvalBusy === a.card_id} onClick={() => void rejectCard(a)}>
-                    Reject
-                  </button>
-                </div>
-              )}
-            </div>
-          ))
-        )}
-        <p className="meta">LLM cannot approve; exact checksum required.</p>
-      </section>
+      <ApprovalDecisionsPanel
+        approvals={data.approvals}
+        approvalReviewOpen={approvalReviewOpen}
+        approvalBusy={approvalBusy}
+        onApprove={(card) => void approveCard(card)}
+        onReject={(card) => void rejectCard(card)}
+      />
 
       {/* Failure Summary Panel */}
       {data.failureSummary?.has_failures && (
