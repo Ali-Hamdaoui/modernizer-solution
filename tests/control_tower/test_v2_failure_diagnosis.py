@@ -32,6 +32,52 @@ from migration_factory.control_tower.application.v2_repair_flow import (
 )
 
 
+class _FakeShadowClient:
+    provider = "fake"
+    deployment = "shadow-deployment"
+    endpoint_metadata = "endpoint_host=[redacted-endpoint]"
+
+    def answer_with_role(self, *, role: Any, prompt: str, fallback: str, **_: Any) -> Any:
+        role_value = getattr(role, "value", str(role))
+        content = (
+            {
+                "status": "available",
+                "role": "repair_reviewer",
+                "verdict": "advisory_accept",
+                "critique": "Advisory accept only.",
+                "risks": [],
+                "missing_evidence": [],
+                "unsafe_assumptions": [],
+                "recommended_next_action": "keep_non_actionable",
+                "confidence": "medium",
+            }
+            if role_value == "reviewer"
+            else {
+                "status": "available",
+                "role": "repair_proposer",
+                "summary": "Synthetic proposer trace.",
+                "root_cause": "initMocks marker.",
+                "repair_intent": "openMocks candidate.",
+                "expected_change": "test-local replacement.",
+                "affected_files": ["src/test/java/ExampleTest.java"],
+                "risk_notes": [],
+                "missing_evidence": [],
+                "confidence": "medium",
+            }
+        )
+        return type("FakeShadowResult", (), {
+            "content": json.dumps(content),
+            "provider": "fake",
+            "source": "fake",
+            "model_status": "live_ok",
+            "success": True,
+            "failure_reason": "",
+            "fallback_used": False,
+            "deployment": "shadow-deployment",
+            "endpoint_metadata": "endpoint_host=[redacted-endpoint]",
+        })()
+
+
 # ── Fixtures ───────────────────────────────────────────────────────
 
 
@@ -861,6 +907,12 @@ class TestStageAwareEvidence:
         assert review["recomputed_proposal_checksum"] == draft["proposal_checksum"]
         assert review["proposal_checksum_match"] is True
         assert review["review_checksum"].startswith("sha256:")
+        shadow = classification["llm_repair_shadow_trace"]
+        assert shadow["runtime_mode"] == "fallback_only_mode"
+        assert shadow["proposer_trace"]["fallback_used"] is True
+        assert shadow["reviewer_trace"]["fallback_used"] is True
+        assert shadow["fallback_trace"]["deterministic_gate_authority"] is True
+        assert shadow["fallback_trace"]["apply_enabled"] is False
         assert draft["apply_enabled"] is False
         assert draft["approval_enabled"] is False
         assert draft["repair_enabled"] is False
@@ -875,6 +927,43 @@ class TestStageAwareEvidence:
         assert "approval_id" not in review
         assert diagnosis.stage_evidence_pack is not None
         assert "internal_ref" not in json.dumps(diagnosis.stage_evidence_pack)
+
+    def test_diagnosis_attaches_configured_fake_llm_shadow_trace(
+        self,
+        repair_flow: V2RepairFlowService,
+        tmp_path: Path,
+    ) -> None:
+        service = V2FailureDiagnosisService(
+            repair_flow=repair_flow,
+            llm_repair_shadow_client=_FakeShadowClient(),
+            llm_repair_shadow_enabled=True,
+        )
+        sandbox = tmp_path / "sandbox"
+        test_file = sandbox / "src" / "test" / "java" / "ExampleTest.java"
+        test_file.parent.mkdir(parents=True)
+        test_file.write_text("MockitoAnnotations.initMocks(this);\n", encoding="utf-8")
+        diagnosis = service.diagnose(
+            job_id="job-stage",
+            stage_index=2,
+            command_id="cmd-initmocks-shadow",
+            event_type="build_failed",
+            payload={
+                "build_status": "BUILD_FAILED_IN_SANDBOX",
+                "sandbox_path": str(sandbox),
+                "message": "MockitoAnnotations.initMocks(this);",
+                "artifact_refs": {"sandbox": str(sandbox), "test_source": str(test_file)},
+            },
+        )
+        classification = diagnosis.classification_envelope
+        assert classification is not None
+        shadow = classification["llm_repair_shadow_trace"]
+        assert shadow["runtime_mode"] == "configured_llm_shadow_mode"
+        assert shadow["proposer_trace"]["llm_invoked"] is True
+        assert shadow["reviewer_trace"]["llm_invoked"] is True
+        assert shadow["proposer_trace"]["model_metadata"]["provider"] == "fake"
+        assert shadow["reviewer_trace"]["input_checksum"].startswith("sha256:")
+        assert shadow["llm_can_apply"] is False
+        assert shadow["fallback_trace"]["deterministic_gate_authority"] is True
 
     def test_diagnosis_reviewer_uses_no_live_llm_or_api_calls(
         self,

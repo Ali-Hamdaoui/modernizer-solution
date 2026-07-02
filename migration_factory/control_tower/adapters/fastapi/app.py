@@ -12705,6 +12705,7 @@ def _safe_classification_envelope(value: Any) -> dict[str, Any] | None:
         "migration_memory": _safe_migration_memory(value.get("migration_memory")),
         "repair_proposal_draft": _safe_repair_proposal_draft(value.get("repair_proposal_draft")),
         "repair_draft_review": _safe_repair_draft_review(value.get("repair_draft_review")),
+        "llm_repair_shadow_trace": _safe_llm_repair_shadow_trace(value.get("llm_repair_shadow_trace")),
     }
 
 
@@ -12872,6 +12873,158 @@ def _safe_repair_draft_review(value: Any) -> dict[str, Any] | None:
         "reasons": _safe_failure_list(value.get("reasons")),
         "safety_warnings": _safe_failure_list(value.get("safety_warnings")),
     }
+
+
+def _safe_llm_repair_shadow_trace(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    trusted = _safe_failure_str(value.get("trace_origin")) == "backend_llm_shadow"
+    runtime_mode = _safe_failure_str(value.get("runtime_mode")) if trusted else "fallback_only_mode"
+    if runtime_mode not in {"configured_llm_shadow_mode", "fallback_only_mode"}:
+        runtime_mode = "fallback_only_mode"
+    return {
+        "trace_origin": "backend_llm_shadow" if trusted else "",
+        "trace_status": _safe_shadow_status(value.get("trace_status")) if trusted else "fallback_used",
+        "runtime_mode": runtime_mode,
+        "proposer_trace": _safe_llm_shadow_role_trace(value.get("proposer_trace"), expected_role="repair_proposer", trusted=trusted),
+        "reviewer_trace": _safe_llm_shadow_role_trace(value.get("reviewer_trace"), expected_role="repair_reviewer", trusted=trusted),
+        "fallback_trace": _safe_llm_shadow_fallback(value.get("fallback_trace") if trusted else None),
+        "combined_llm_shadow_trace_checksum": _safe_failure_str(value.get("combined_llm_shadow_trace_checksum")) if trusted else "",
+        "llm_can_apply": False,
+        "llm_can_approve": False,
+        "llm_can_start_downstream": False,
+        "llm_can_override_backend_gate": False,
+        "deterministic_gate_authority": True,
+    }
+
+
+def _safe_llm_shadow_role_trace(value: Any, *, expected_role: str, trusted: bool) -> dict[str, Any]:
+    if not isinstance(value, dict) or not trusted:
+        return _empty_llm_shadow_role(expected_role)
+    output = _safe_llm_shadow_output(value.get("output"), expected_role=expected_role)
+    return {
+        "role": expected_role,
+        "model_metadata": _safe_llm_model_metadata(value.get("model_metadata"), expected_role=expected_role),
+        "status": _safe_shadow_status(value.get("status")),
+        "llm_invoked": bool(value.get("llm_invoked")),
+        "fallback_used": bool(value.get("fallback_used")),
+        "failure_reason": _safe_failure_str(value.get("failure_reason")),
+        "input_preview": _safe_failure_str(value.get("input_preview"))[:4000],
+        "input_checksum": _safe_failure_str(value.get("input_checksum")),
+        "output": output,
+        "output_checksum": _safe_failure_str(value.get("output_checksum")),
+        "schema_validation_status": _safe_failure_str(value.get("schema_validation_status")),
+        "non_actionable": True,
+        "apply_allowed": False,
+        "approval_allowed": False,
+        "downstream_start_allowed": False,
+    }
+
+
+def _safe_llm_shadow_output(value: Any, *, expected_role: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        value = {}
+    status = _safe_shadow_status(value.get("status"))
+    confidence = _safe_failure_str(value.get("confidence"))
+    if confidence not in {"low", "medium", "high"}:
+        confidence = "low"
+    if expected_role == "repair_reviewer":
+        verdict = _safe_failure_str(value.get("verdict"))
+        if verdict not in {"advisory_accept", "advisory_reject", "advisory_needs_changes"}:
+            verdict = "advisory_needs_changes"
+        return {
+            "status": status,
+            "role": "repair_reviewer",
+            "verdict": verdict,
+            "critique": _safe_failure_str(value.get("critique")),
+            "risks": _safe_failure_list(value.get("risks")),
+            "missing_evidence": _safe_failure_list(value.get("missing_evidence")),
+            "unsafe_assumptions": _safe_failure_list(value.get("unsafe_assumptions")),
+            "recommended_next_action": _safe_failure_str(value.get("recommended_next_action")),
+            "confidence": confidence,
+            "non_actionable": True,
+            "apply_allowed": False,
+            "approval_allowed": False,
+            "downstream_start_allowed": False,
+        }
+    return {
+        "status": status,
+        "role": "repair_proposer",
+        "summary": _safe_failure_str(value.get("summary")),
+        "root_cause": _safe_failure_str(value.get("root_cause")),
+        "repair_intent": _safe_failure_str(value.get("repair_intent")),
+        "expected_change": _safe_failure_str(value.get("expected_change")),
+        "affected_files": [
+            item for item in _safe_failure_list(value.get("affected_files"))
+            if _is_safe_relative_ui_path(item)
+        ],
+        "risk_notes": _safe_failure_list(value.get("risk_notes")),
+        "missing_evidence": _safe_failure_list(value.get("missing_evidence")),
+        "confidence": confidence,
+        "non_actionable": True,
+        "apply_allowed": False,
+        "approval_allowed": False,
+        "downstream_start_allowed": False,
+    }
+
+
+def _safe_llm_model_metadata(value: Any, *, expected_role: str) -> dict[str, Any]:
+    value = value if isinstance(value, dict) else {}
+    provider = _safe_failure_str(value.get("provider"))
+    if provider not in {"azure_openai", "openai", "deterministic", "fake"}:
+        provider = "deterministic"
+    return {
+        "role": expected_role.replace("repair_", ""),
+        "provider": provider,
+        "deployment": _safe_failure_str(value.get("deployment")),
+        "configuration_source": _safe_failure_str(value.get("configuration_source")) or "existing_v2_model_role_router",
+        "endpoint_metadata": _safe_failure_str(value.get("endpoint_metadata")),
+        "status": _safe_failure_str(value.get("status")),
+    }
+
+
+def _safe_llm_shadow_fallback(value: Any) -> dict[str, Any]:
+    value = value if isinstance(value, dict) else {}
+    return {
+        "fallback_kind": _safe_failure_str(value.get("fallback_kind")) or "deterministic_repair_draft_reviewer",
+        "deterministic_reviewer_verdict": _safe_failure_str(value.get("deterministic_reviewer_verdict")),
+        "checksum_verification_status": _safe_failure_str(value.get("checksum_verification_status")),
+        "deterministic_gate_authority": True,
+        "llm_can_apply": False,
+        "llm_can_approve": False,
+        "llm_can_start_downstream": False,
+        "llm_can_override_backend_gate": False,
+        "apply_enabled": False,
+        "approval_enabled": False,
+        "repair_enabled": False,
+        "downstream_start_allowed": False,
+        "memory_authority": "advisory_only",
+    }
+
+
+def _empty_llm_shadow_role(role: str) -> dict[str, Any]:
+    return {
+        "role": role,
+        "model_metadata": _safe_llm_model_metadata({}, expected_role=role),
+        "status": "fallback_used",
+        "llm_invoked": False,
+        "fallback_used": True,
+        "failure_reason": "untrusted_or_unavailable_shadow_trace",
+        "input_preview": "",
+        "input_checksum": "",
+        "output": _safe_llm_shadow_output({}, expected_role=role),
+        "output_checksum": "",
+        "schema_validation_status": "fallback_validated",
+        "non_actionable": True,
+        "apply_allowed": False,
+        "approval_allowed": False,
+        "downstream_start_allowed": False,
+    }
+
+
+def _safe_shadow_status(value: Any) -> str:
+    status = _safe_failure_str(value)
+    return status if status in {"available", "unavailable", "failed", "fallback_used"} else "fallback_used"
 
 
 def _safe_memory_match(value: Any) -> dict[str, Any] | None:

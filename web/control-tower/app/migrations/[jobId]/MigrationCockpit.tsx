@@ -45,6 +45,8 @@ import type {
   V2MigrationMemoryRetrievalResponse,
   V2EvidenceBoundRepairDraftResponse,
   V2RepairDraftReviewResponse,
+  V2LlmRepairShadowTraceResponse,
+  V2LlmShadowRoleTraceResponse,
 } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
 
@@ -1012,9 +1014,75 @@ export function StageFailureEvidenceDetails({
           <MigrationMemoryDetails memory={classification.migration_memory ?? null} />
           <RepairDraftDetails draft={classification.repair_proposal_draft ?? null} />
           <RepairDraftReviewDetails review={classification.repair_draft_review ?? null} />
+          <LlmRepairShadowDetails trace={classification.llm_repair_shadow_trace ?? null} />
         </div>
       )}
     </>
+  );
+}
+
+function LlmRepairShadowDetails({ trace }: { trace: V2LlmRepairShadowTraceResponse | null }) {
+  if (!trace) {
+    return (
+      <div className="trace-section">
+        <strong>LLM Repair Supervision</strong>
+        <p className="meta">LLM repair shadow trace unavailable.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="trace-section">
+      <strong>LLM Repair Supervision</strong>
+      <p className="meta">Runtime mode: {trace.runtime_mode || "fallback_only_mode"}</p>
+      <p className="checksum">Trace checksum: {trace.combined_llm_shadow_trace_checksum || "n/a"}</p>
+      <LlmShadowRolePanel title="Proposer" trace={trace.proposer_trace} />
+      <LlmShadowRolePanel title="Reviewer" trace={trace.reviewer_trace} reviewer />
+      <div className="trace-section">
+        <strong>Fallback / Backend Gate</strong>
+        <p className="meta">Deterministic reviewer verdict: {trace.fallback_trace.deterministic_reviewer_verdict || "n/a"}</p>
+        <p className="meta">Checksum verification status: {trace.fallback_trace.checksum_verification_status || "n/a"}</p>
+        <p className="meta">Backend gate authority: {trace.fallback_trace.deterministic_gate_authority ? "yes" : "no"}</p>
+        <p className="meta">LLM can override backend gate: {trace.fallback_trace.llm_can_override_backend_gate ? "yes" : "no"}</p>
+        <p className="meta">Apply: {trace.fallback_trace.apply_enabled ? "enabled" : "disabled"}</p>
+        <p className="meta">Human approval: {trace.fallback_trace.approval_enabled ? "enabled" : "disabled"}</p>
+        <p className="meta">Downstream start: {trace.fallback_trace.downstream_start_allowed ? "enabled" : "disabled"}</p>
+        <p className="meta">Memory authority: {trace.fallback_trace.memory_authority || "advisory_only"}</p>
+      </div>
+    </div>
+  );
+}
+
+function LlmShadowRolePanel({
+  title,
+  trace,
+  reviewer = false,
+}: {
+  title: string;
+  trace: V2LlmShadowRoleTraceResponse;
+  reviewer?: boolean;
+}) {
+  const output = JSON.stringify(trace.output ?? {}, null, 2);
+  return (
+    <div className="trace-section">
+      <strong>{title}</strong>
+      <p className="meta">Model/provider/deployment/status: {trace.model_metadata.provider || "n/a"} / {trace.model_metadata.deployment || "n/a"} / {trace.model_metadata.status || "n/a"}</p>
+      <p className="meta">Endpoint metadata: {trace.model_metadata.endpoint_metadata || "redacted/not configured"}</p>
+      <p className="meta">Configuration source: {trace.model_metadata.configuration_source || "existing_v2_model_role_router"}</p>
+      <p className="meta">LLM invoked: {trace.llm_invoked ? "yes" : "no"}</p>
+      <p className="meta">Fallback used: {trace.fallback_used ? "yes" : "no"}</p>
+      {trace.failure_reason && <p className="meta">Failure reason: {trace.failure_reason}</p>}
+      <p className="checksum">Input checksum: {trace.input_checksum || "n/a"}</p>
+      <pre className="diff-preview"><code>{trace.input_preview || "No input preview available."}</code></pre>
+      <p className="checksum">Output checksum: {trace.output_checksum || "n/a"}</p>
+      <pre className="diff-preview"><code>{output}</code></pre>
+      {reviewer && (
+        <p className="meta">Reviewer input includes proposer input + proposer output + evidence/checksum context.</p>
+      )}
+      {reviewer && <p className="meta">Verdict: {String(trace.output?.verdict ?? "n/a")}</p>}
+      <p className="meta">Schema validation status: {trace.schema_validation_status || "n/a"}</p>
+      <p className="meta">Non-actionable: {trace.non_actionable ? "yes" : "no"}</p>
+      <p className="meta">Apply allowed: {trace.apply_allowed ? "yes" : "no"}</p>
+    </div>
   );
 }
 

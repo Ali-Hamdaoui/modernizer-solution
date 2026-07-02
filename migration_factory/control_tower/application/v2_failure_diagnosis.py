@@ -56,6 +56,9 @@ from migration_factory.control_tower.application.v2_repair_proposer import (
 from migration_factory.control_tower.application.v2_repair_reviewer import (
     review_stage_repair_draft,
 )
+from migration_factory.control_tower.application.v2_llm_repair_shadow import (
+    run_llm_repair_shadow_trace,
+)
 
 
 # ── Diagnosis record ──────────────────────────────────────────────
@@ -112,11 +115,15 @@ class V2FailureDiagnosisService:
         event_sink: Callable[[str, int | None, str, str, str, dict[str, Any] | None], None] | None = None,
         evidence_collector: Callable[..., tuple[dict[str, Any], Path, dict[str, Any]]] | None = None,
         run_dir_resolver: Callable[[str, str], str | None] | None = None,
+        llm_repair_shadow_client: Any | None = None,
+        llm_repair_shadow_enabled: bool = False,
     ) -> None:
         self._repair_flow = repair_flow or V2RepairFlowService()
         self._event_sink = event_sink
         self._evidence_collector = evidence_collector
         self._run_dir_resolver = run_dir_resolver
+        self._llm_repair_shadow_client = llm_repair_shadow_client
+        self._llm_repair_shadow_enabled = llm_repair_shadow_enabled
 
         # In-memory idempotency store: {(command_id, event_type): diagnosis_id}
         self._diagnoses: dict[tuple[str, str], FailureDiagnosisRecord] = {}
@@ -208,6 +215,7 @@ class V2FailureDiagnosisService:
             )
         elif stage_evidence_pack is not None:
             classification_result = self._classification_from_stage_evidence(
+                job_id=job_id,
                 event_type=event_type,
                 evidence_pack=stage_evidence_pack,
             )
@@ -740,9 +748,10 @@ class V2FailureDiagnosisService:
             "assistant_next_action": "collect_missing_stage_evidence",
         }
 
-    @staticmethod
     def _classification_from_stage_evidence(
+        self,
         *,
+        job_id: str,
         event_type: str,
         evidence_pack: dict[str, Any],
     ) -> dict[str, Any]:
@@ -764,6 +773,17 @@ class V2FailureDiagnosisService:
             evidence_pack,
             classification["migration_memory"],
             classification["repair_proposal_draft"],
+        )
+        classification["llm_repair_shadow_trace"] = run_llm_repair_shadow_trace(
+            job_id=job_id or str(evidence_pack.get("job_id") or ""),
+            stage_index=evidence_pack.get("stage_index"),
+            classification=classification,
+            stage_evidence=evidence_pack,
+            migration_memory=classification["migration_memory"],
+            repair_proposal_draft=classification["repair_proposal_draft"],
+            repair_draft_review=classification["repair_draft_review"],
+            llm_client=self._llm_repair_shadow_client,
+            llm_shadow_enabled=self._llm_repair_shadow_enabled,
         )
         classification["repair_enabled"] = False
         return classification

@@ -1057,6 +1057,7 @@ export type V2StageFailureClassificationResponse = {
   migration_memory?: V2MigrationMemoryRetrievalResponse | null;
   repair_proposal_draft?: V2EvidenceBoundRepairDraftResponse | null;
   repair_draft_review?: V2RepairDraftReviewResponse | null;
+  llm_repair_shadow_trace?: V2LlmRepairShadowTraceResponse | null;
   evidence_pack_id: string;
   evidence_pack_checksum: string;
   downstream_stage_state: {
@@ -1182,6 +1183,64 @@ export type V2RepairDraftReviewResponse = {
   memory_can_start_downstream: boolean;
   reasons: string[];
   safety_warnings: string[];
+};
+
+export type V2LlmShadowModelMetadataResponse = {
+  role: string;
+  provider: string;
+  deployment: string;
+  configuration_source: string;
+  endpoint_metadata: string;
+  status: string;
+};
+
+export type V2LlmShadowRoleTraceResponse = {
+  role: string;
+  model_metadata: V2LlmShadowModelMetadataResponse;
+  status: string;
+  llm_invoked: boolean;
+  fallback_used: boolean;
+  failure_reason: string;
+  input_preview: string;
+  input_checksum: string;
+  output: Record<string, unknown>;
+  output_checksum: string;
+  schema_validation_status: string;
+  non_actionable: boolean;
+  apply_allowed: boolean;
+  approval_allowed: boolean;
+  downstream_start_allowed: boolean;
+};
+
+export type V2LlmShadowFallbackTraceResponse = {
+  fallback_kind: string;
+  deterministic_reviewer_verdict: string;
+  checksum_verification_status: string;
+  deterministic_gate_authority: boolean;
+  llm_can_apply: boolean;
+  llm_can_approve: boolean;
+  llm_can_start_downstream: boolean;
+  llm_can_override_backend_gate: boolean;
+  apply_enabled: boolean;
+  approval_enabled: boolean;
+  repair_enabled: boolean;
+  downstream_start_allowed: boolean;
+  memory_authority: string;
+};
+
+export type V2LlmRepairShadowTraceResponse = {
+  trace_origin: string;
+  trace_status: string;
+  runtime_mode: string;
+  proposer_trace: V2LlmShadowRoleTraceResponse;
+  reviewer_trace: V2LlmShadowRoleTraceResponse;
+  fallback_trace: V2LlmShadowFallbackTraceResponse;
+  combined_llm_shadow_trace_checksum: string;
+  llm_can_apply: boolean;
+  llm_can_approve: boolean;
+  llm_can_start_downstream: boolean;
+  llm_can_override_backend_gate: boolean;
+  deterministic_gate_authority: boolean;
 };
 
 export type V2PomAnalysisResponse = {

@@ -2032,6 +2032,109 @@ describe("V2 Migration Cockpit contract", () => {
           reasons: ["human_review_gate_no_auto_repair"],
           safety_warnings: ["Reviewer verdict is non-actionable in R7E."],
         },
+        llm_repair_shadow_trace: {
+          trace_origin: "backend_llm_shadow",
+          trace_status: "available",
+          runtime_mode: "configured_llm_shadow_mode",
+          proposer_trace: {
+            role: "repair_proposer",
+            model_metadata: {
+              role: "proposer",
+              provider: "fake",
+              deployment: "shadow-deployment",
+              configuration_source: "existing_v2_model_role_router",
+              endpoint_metadata: "endpoint_host=[redacted-endpoint]",
+              status: "live_ok",
+            },
+            status: "available",
+            llm_invoked: true,
+            fallback_used: false,
+            failure_reason: "",
+            input_preview: "{\"evidence_pack_checksum\":\"sha256:evidence\",\"memory_query_signature\":\"sha256:memory\"}",
+            input_checksum: "sha256:proposer-input",
+            output: {
+              status: "available",
+              role: "repair_proposer",
+              summary: "initMocks can be modernized.",
+              root_cause: "Legacy Mockito setup.",
+              repair_intent: "Use openMocks.",
+              expected_change: "One test-local replacement.",
+              affected_files: ["src/test/java/ExampleTest.java"],
+              risk_notes: ["non-actionable"],
+              missing_evidence: [],
+              confidence: "medium",
+              non_actionable: true,
+              apply_allowed: false,
+              approval_allowed: false,
+              downstream_start_allowed: false,
+            },
+            output_checksum: "sha256:proposer-output",
+            schema_validation_status: "validated",
+            non_actionable: true,
+            apply_allowed: false,
+            approval_allowed: false,
+            downstream_start_allowed: false,
+          },
+          reviewer_trace: {
+            role: "repair_reviewer",
+            model_metadata: {
+              role: "reviewer",
+              provider: "fake",
+              deployment: "shadow-deployment",
+              configuration_source: "existing_v2_model_role_router",
+              endpoint_metadata: "endpoint_host=[redacted-endpoint]",
+              status: "live_ok",
+            },
+            status: "available",
+            llm_invoked: true,
+            fallback_used: false,
+            failure_reason: "",
+            input_preview: "{\"proposer_output\":{\"summary\":\"initMocks can be modernized.\"},\"checksum_verification_status\":\"verified\"}",
+            input_checksum: "sha256:reviewer-input",
+            output: {
+              status: "available",
+              role: "repair_reviewer",
+              verdict: "advisory_reject",
+              critique: "PowerMock remains human-gated as advisory only.",
+              risks: ["future backend gate required"],
+              missing_evidence: [],
+              unsafe_assumptions: [],
+              recommended_next_action: "keep_non_actionable",
+              confidence: "medium",
+              non_actionable: true,
+              apply_allowed: false,
+              approval_allowed: false,
+              downstream_start_allowed: false,
+            },
+            output_checksum: "sha256:reviewer-output",
+            schema_validation_status: "validated",
+            non_actionable: true,
+            apply_allowed: false,
+            approval_allowed: false,
+            downstream_start_allowed: false,
+          },
+          fallback_trace: {
+            fallback_kind: "deterministic_repair_draft_reviewer",
+            deterministic_reviewer_verdict: "blocked",
+            checksum_verification_status: "not_applicable",
+            deterministic_gate_authority: true,
+            llm_can_apply: false,
+            llm_can_approve: false,
+            llm_can_start_downstream: false,
+            llm_can_override_backend_gate: false,
+            apply_enabled: false,
+            approval_enabled: false,
+            repair_enabled: false,
+            downstream_start_allowed: false,
+            memory_authority: "advisory_only",
+          },
+          combined_llm_shadow_trace_checksum: "sha256:shadow",
+          llm_can_apply: false,
+          llm_can_approve: false,
+          llm_can_start_downstream: false,
+          llm_can_override_backend_gate: false,
+          deterministic_gate_authority: true,
+        },
       },
     };
 
@@ -2048,6 +2151,20 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Reviewer verdict: blocked");
     expect(markup).toContain("Checksum verification: not_applicable");
     expect(markup).not.toContain("accepted_for_future_apply_gate");
+    expect(markup).toContain("LLM Repair Supervision");
+    expect(markup).toContain("Proposer");
+    expect(markup).toContain("Model/provider/deployment/status: fake / shadow-deployment / live_ok");
+    expect(markup).toContain("endpoint_host=[redacted-endpoint]");
+    expect(markup).toContain("Input checksum: sha256:proposer-input");
+    expect(markup).toContain("Output checksum: sha256:proposer-output");
+    expect(markup).toContain("Reviewer");
+    expect(markup).toContain("Input checksum: sha256:reviewer-input");
+    expect(markup).toContain("Output checksum: sha256:reviewer-output");
+    expect(markup).toContain("Verdict: advisory_reject");
+    expect(markup).toContain("Reviewer input includes proposer input + proposer output + evidence/checksum context.");
+    expect(markup).toContain("Fallback / Backend Gate");
+    expect(markup).toContain("Backend gate authority: yes");
+    expect(markup).toContain("LLM can override backend gate: no");
     expect(markup).not.toContain("Apply repair");
     expect(markup).not.toContain("Approve draft");
     expect(markup).not.toContain("Edit patch");
@@ -2211,6 +2328,9 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).not.toContain("Apply repair");
     expect(markup).not.toContain("Upload patch");
     expect(markup).not.toContain("Override checksum");
+    expect(markup).not.toContain("Edit LLM output");
+    expect(markup).not.toContain("Choose model");
+    expect(markup).not.toContain("Choose endpoint");
   });
 
   it("renders controlled synthetic initMocks proposer UI smoke from failure summary", () => {
