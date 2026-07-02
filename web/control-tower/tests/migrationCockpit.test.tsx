@@ -2039,9 +2039,10 @@ describe("V2 Migration Cockpit contract", () => {
           proposer_trace: {
             role: "repair_proposer",
             model_metadata: {
-              role: "proposer",
+              role: "repair_proposer_model",
               provider: "fake",
-              deployment: "shadow-deployment",
+              deployment: "gpt5-mini",
+              expected_model: "gpt5-mini",
               configuration_source: "existing_v2_model_role_router",
               endpoint_metadata: "endpoint_host=[redacted-endpoint]",
               status: "live_ok",
@@ -2078,9 +2079,10 @@ describe("V2 Migration Cockpit contract", () => {
           reviewer_trace: {
             role: "repair_reviewer",
             model_metadata: {
-              role: "reviewer",
+              role: "repair_reviewer_model",
               provider: "fake",
-              deployment: "shadow-deployment",
+              deployment: "Llama-3.3-70B-Instruct",
+              expected_model: "Llama-3.3-70B-Instruct",
               configuration_source: "existing_v2_model_role_router",
               endpoint_metadata: "endpoint_host=[redacted-endpoint]",
               status: "live_ok",
@@ -2107,6 +2109,45 @@ describe("V2 Migration Cockpit contract", () => {
               downstream_start_allowed: false,
             },
             output_checksum: "sha256:reviewer-output",
+            schema_validation_status: "validated",
+            non_actionable: true,
+            apply_allowed: false,
+            approval_allowed: false,
+            downstream_start_allowed: false,
+          },
+          llm_fallback_trace: {
+            role: "repair_fallback",
+            model_metadata: {
+              role: "repair_fallback_model",
+              provider: "fake",
+              deployment: "Mistral-Large-3",
+              expected_model: "Mistral-Large-3",
+              configuration_source: "existing_v2_model_role_router",
+              endpoint_metadata: "endpoint_host=[redacted-endpoint]",
+              status: "live_ok",
+            },
+            status: "available",
+            llm_invoked: true,
+            fallback_used: false,
+            failure_reason: "reviewer_shadow_failed",
+            input_preview: "{\"failed_role\":\"repair_reviewer\",\"failure_reason\":\"reviewer_shadow_failed\"}",
+            input_checksum: "sha256:fallback-input",
+            output: {
+              status: "available",
+              role: "repair_fallback",
+              verdict: "advisory_needs_changes",
+              critique: "Fallback critique remains advisory.",
+              risks: ["backend gate required"],
+              missing_evidence: [],
+              unsafe_assumptions: [],
+              recommended_next_action: "use_deterministic_backend_gate",
+              confidence: "low",
+              non_actionable: true,
+              apply_allowed: false,
+              approval_allowed: false,
+              downstream_start_allowed: false,
+            },
+            output_checksum: "sha256:fallback-output",
             schema_validation_status: "validated",
             non_actionable: true,
             apply_allowed: false,
@@ -2153,16 +2194,24 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).not.toContain("accepted_for_future_apply_gate");
     expect(markup).toContain("LLM Repair Supervision");
     expect(markup).toContain("Proposer");
-    expect(markup).toContain("Model/provider/deployment/status: fake / shadow-deployment / live_ok");
+    expect(markup).toContain("Role: repair_proposer_model");
+    expect(markup).toContain("Expected model/deployment: gpt5-mini");
+    expect(markup).toContain("Model/provider/deployment/status: fake / gpt5-mini / live_ok");
     expect(markup).toContain("endpoint_host=[redacted-endpoint]");
     expect(markup).toContain("Input checksum: sha256:proposer-input");
     expect(markup).toContain("Output checksum: sha256:proposer-output");
     expect(markup).toContain("Reviewer");
+    expect(markup).toContain("Role: repair_reviewer_model");
+    expect(markup).toContain("Expected model/deployment: Llama-3.3-70B-Instruct");
     expect(markup).toContain("Input checksum: sha256:reviewer-input");
     expect(markup).toContain("Output checksum: sha256:reviewer-output");
     expect(markup).toContain("Verdict: advisory_reject");
     expect(markup).toContain("Reviewer input includes proposer input + proposer output + evidence/checksum context.");
-    expect(markup).toContain("Fallback / Backend Gate");
+    expect(markup).toContain("LLM Fallback");
+    expect(markup).toContain("Role: repair_fallback_model");
+    expect(markup).toContain("Expected model/deployment: Mistral-Large-3");
+    expect(markup).toContain("Fallback reason: reviewer_shadow_failed");
+    expect(markup).toContain("Deterministic Backend Gate");
     expect(markup).toContain("Backend gate authority: yes");
     expect(markup).toContain("LLM can override backend gate: no");
     expect(markup).not.toContain("Apply repair");

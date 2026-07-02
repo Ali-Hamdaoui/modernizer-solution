@@ -77,6 +77,7 @@ class ControlTowerSettings(BaseSettings):
     azure_foundry_assistant_deployment_env: str = "AZURE_OPENAI_ASSISTANT_DEPLOYMENT"
     azure_foundry_fallback_deployment_env: str = "AZURE_OPENAI_FALLBACK_DEPLOYMENT"
     azure_foundry_fallback_enabled: bool = False
+    llm_repair_shadow_enabled: bool = False
 
 
 # ── Env ref helpers ──────────────────────────────────────────────────

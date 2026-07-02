@@ -36,6 +36,8 @@ class V2AssistantModelResult:
     primary_failure_reason: str = ""
     fallback_used: bool = False
     schema_validated: bool = False
+    deployment: str = ""
+    endpoint_metadata: str = ""
 
 
 @dataclass(frozen=True)
@@ -339,6 +341,8 @@ class V2AssistantModelClient:
             primary_failure_reason="",
             fallback_used=False,
             schema_validated=False,
+            deployment=_public_deployment_label(deployment),
+            endpoint_metadata=_safe_endpoint_metadata(endpoint),
         )
 
     def _to_assistant_result(self, routed: V2RoleModelResult) -> V2AssistantModelResult:
@@ -355,6 +359,8 @@ class V2AssistantModelClient:
             primary_failure_reason=routed.primary_failure_reason,
             fallback_used=routed.fallback_used,
             schema_validated=routed.schema_validated,
+            deployment=routed.deployment,
+            endpoint_metadata=routed.endpoint_metadata,
         )
 
     @staticmethod
@@ -1027,6 +1033,8 @@ def _fallback_result(fallback: str, summary: str, failure_reason: str = "") -> V
         primary_failure_reason=failure_reason,
         fallback_used=False,
         schema_validated=False,
+        deployment="",
+        endpoint_metadata="",
     )
 
 
@@ -1105,6 +1113,13 @@ def _summary_with_snippet(summary: str, snippet: str) -> str:
 
 def _public_deployment_label(deployment: str) -> str:
     return "configured" if str(deployment or "").strip() else ""
+
+
+def _safe_endpoint_metadata(endpoint: str) -> str:
+    endpoint = str(endpoint or "").strip()
+    if not endpoint:
+        return ""
+    return "endpoint_host=[redacted-endpoint]"
 
 
 def _log_empty_azure_result_summary(*, endpoint: str, deployment: str) -> None:

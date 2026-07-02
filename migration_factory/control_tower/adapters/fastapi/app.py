@@ -684,6 +684,13 @@ def _LOG_RECONCILIATION(results: list[dict[str, Any]]) -> None:
         )
 
 
+def _llm_repair_shadow_enabled(settings: ControlTowerSettings) -> bool:
+    if bool(getattr(settings, "llm_repair_shadow_enabled", False)):
+        return True
+    raw = os.environ.get("V2_LLM_REPAIR_SHADOW_ENABLED", "")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def create_app(
     unit_of_work_factory: UnitOfWorkFactory,
     *,
@@ -770,10 +777,14 @@ def create_app(
             asyncio.run(app.state.public_event_notifier.notify())
 
     _repair_flow = V2RepairFlowService()
+    llm_repair_shadow_enabled = _llm_repair_shadow_enabled(app.state.v2_settings)
     _diagnosis_service = V2FailureDiagnosisService(
         repair_flow=_repair_flow,
         event_sink=_diagnosis_event_sink,
+        llm_repair_shadow_client=app.state.v2_assistant_model_client,
+        llm_repair_shadow_enabled=llm_repair_shadow_enabled,
     )
+    app.state.v2_failure_diagnosis_service = _diagnosis_service
     _orchestrator_diagnosis_callback = create_orchestrator_diagnosis_callback(
         service=_diagnosis_service,
     )
@@ -12888,6 +12899,7 @@ def _safe_llm_repair_shadow_trace(value: Any) -> dict[str, Any] | None:
         "runtime_mode": runtime_mode,
         "proposer_trace": _safe_llm_shadow_role_trace(value.get("proposer_trace"), expected_role="repair_proposer", trusted=trusted),
         "reviewer_trace": _safe_llm_shadow_role_trace(value.get("reviewer_trace"), expected_role="repair_reviewer", trusted=trusted),
+        "llm_fallback_trace": _safe_llm_shadow_role_trace(value.get("llm_fallback_trace"), expected_role="repair_fallback", trusted=trusted),
         "fallback_trace": _safe_llm_shadow_fallback(value.get("fallback_trace") if trusted else None),
         "combined_llm_shadow_trace_checksum": _safe_failure_str(value.get("combined_llm_shadow_trace_checksum")) if trusted else "",
         "llm_can_apply": False,
@@ -12928,13 +12940,13 @@ def _safe_llm_shadow_output(value: Any, *, expected_role: str) -> dict[str, Any]
     confidence = _safe_failure_str(value.get("confidence"))
     if confidence not in {"low", "medium", "high"}:
         confidence = "low"
-    if expected_role == "repair_reviewer":
+    if expected_role in {"repair_reviewer", "repair_fallback"}:
         verdict = _safe_failure_str(value.get("verdict"))
         if verdict not in {"advisory_accept", "advisory_reject", "advisory_needs_changes"}:
             verdict = "advisory_needs_changes"
         return {
             "status": status,
-            "role": "repair_reviewer",
+            "role": expected_role,
             "verdict": verdict,
             "critique": _safe_failure_str(value.get("critique")),
             "risks": _safe_failure_list(value.get("risks")),
@@ -12974,9 +12986,10 @@ def _safe_llm_model_metadata(value: Any, *, expected_role: str) -> dict[str, Any
     if provider not in {"azure_openai", "openai", "deterministic", "fake"}:
         provider = "deterministic"
     return {
-        "role": expected_role.replace("repair_", ""),
+        "role": _safe_llm_model_role_name(expected_role),
         "provider": provider,
         "deployment": _safe_failure_str(value.get("deployment")),
+        "expected_model": _safe_expected_llm_model(value.get("expected_model"), expected_role=expected_role),
         "configuration_source": _safe_failure_str(value.get("configuration_source")) or "existing_v2_model_role_router",
         "endpoint_metadata": _safe_failure_str(value.get("endpoint_metadata")),
         "status": _safe_failure_str(value.get("status")),
@@ -13025,6 +13038,26 @@ def _empty_llm_shadow_role(role: str) -> dict[str, Any]:
 def _safe_shadow_status(value: Any) -> str:
     status = _safe_failure_str(value)
     return status if status in {"available", "unavailable", "failed", "fallback_used"} else "fallback_used"
+
+
+def _safe_llm_model_role_name(expected_role: str) -> str:
+    if expected_role == "repair_proposer":
+        return "repair_proposer_model"
+    if expected_role == "repair_reviewer":
+        return "repair_reviewer_model"
+    if expected_role == "repair_fallback":
+        return "repair_fallback_model"
+    return ""
+
+
+def _safe_expected_llm_model(value: Any, *, expected_role: str) -> str:
+    default = {
+        "repair_proposer": "gpt5-mini",
+        "repair_reviewer": "Llama-3.3-70B-Instruct",
+        "repair_fallback": "Mistral-Large-3",
+    }.get(expected_role, "")
+    text = _safe_failure_str(value)
+    return text or default
 
 
 def _safe_memory_match(value: Any) -> dict[str, Any] | None:

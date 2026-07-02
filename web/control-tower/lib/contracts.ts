@@ -1189,6 +1189,7 @@ export type V2LlmShadowModelMetadataResponse = {
   role: string;
   provider: string;
   deployment: string;
+  expected_model: string;
   configuration_source: string;
   endpoint_metadata: string;
   status: string;
@@ -1234,6 +1235,7 @@ export type V2LlmRepairShadowTraceResponse = {
   runtime_mode: string;
   proposer_trace: V2LlmShadowRoleTraceResponse;
   reviewer_trace: V2LlmShadowRoleTraceResponse;
+  llm_fallback_trace: V2LlmShadowRoleTraceResponse;
   fallback_trace: V2LlmShadowFallbackTraceResponse;
   combined_llm_shadow_trace_checksum: string;
   llm_can_apply: boolean;

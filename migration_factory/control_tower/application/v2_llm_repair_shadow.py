@@ -1,4 +1,4 @@
-"""LLM repair proposer/reviewer shadow trace for R7E.2.
+"""LLM repair proposer/reviewer/fallback shadow trace for R7E.3.
 
 Shadow traces are advisory only. They never apply, approve, or override the
 deterministic repair draft reviewer.
@@ -17,8 +17,14 @@ from migration_factory.control_tower.domain.checksums import sha256_canonical_js
 TRACE_ORIGIN = "backend_llm_shadow"
 PROPOSER_ROLE = "repair_proposer"
 REVIEWER_ROLE = "repair_reviewer"
+FALLBACK_ROLE = "repair_fallback"
 ALLOWED_CONFIDENCE = {"low", "medium", "high"}
 ALLOWED_REVIEWER_VERDICTS = {"advisory_accept", "advisory_reject", "advisory_needs_changes"}
+EXPECTED_MODEL_BY_ROLE = {
+    V2ModelRole.PROPOSER: "gpt5-mini",
+    V2ModelRole.REVIEWER: "Llama-3.3-70B-Instruct",
+    V2ModelRole.FALLBACK: "Mistral-Large-3",
+}
 
 
 def run_llm_repair_shadow_trace(
@@ -85,6 +91,22 @@ def run_llm_repair_shadow_trace(
         fallback_output=_fallback_reviewer_output(review),
         output_kind="reviewer",
     )
+    llm_fallback_input = _llm_fallback_input(
+        failed_role=_fallback_failed_role(proposer_trace, reviewer_trace),
+        failure_reason=_fallback_failure_reason(proposer_trace, reviewer_trace),
+        proposer_input=proposer_input,
+        proposer_output=proposer_trace["output"],
+        reviewer_input=reviewer_input,
+        reviewer_output=reviewer_trace["output"],
+        draft=draft,
+        review=review,
+    )
+    llm_fallback_trace = _run_llm_fallback_trace(
+        runtime_mode=runtime_mode,
+        llm_client=llm_client if runtime_mode == "configured_llm_shadow_mode" else None,
+        structured_input=llm_fallback_input,
+        should_invoke=_should_invoke_llm_fallback(proposer_trace, reviewer_trace),
+    )
 
     fallback_trace = _fallback_trace(review)
     trace = _clamp_trace({
@@ -93,6 +115,7 @@ def run_llm_repair_shadow_trace(
         "runtime_mode": runtime_mode,
         "proposer_trace": proposer_trace,
         "reviewer_trace": reviewer_trace,
+        "llm_fallback_trace": llm_fallback_trace,
         "fallback_trace": fallback_trace,
         "combined_llm_shadow_trace_checksum": "",
         "llm_can_apply": False,
@@ -173,6 +196,34 @@ def _reviewer_input(
     })
 
 
+def _llm_fallback_input(
+    *,
+    failed_role: str,
+    failure_reason: str,
+    proposer_input: dict[str, Any],
+    proposer_output: dict[str, Any],
+    reviewer_input: dict[str, Any],
+    reviewer_output: dict[str, Any],
+    draft: dict[str, Any],
+    review: dict[str, Any],
+) -> dict[str, Any]:
+    return _redact_obj({
+        "failed_role": failed_role,
+        "failure_reason": failure_reason,
+        "original_role_metadata": {
+            "proposer_input_checksum": f"sha256:{sha256_canonical_json(proposer_input)}",
+            "reviewer_input_checksum": f"sha256:{sha256_canonical_json(reviewer_input)}",
+        },
+        "proposer_input_preview": _bounded_json(proposer_input, limit=1200),
+        "proposer_output": proposer_output,
+        "reviewer_input_preview": _bounded_json(reviewer_input, limit=1200),
+        "reviewer_output": reviewer_output,
+        "repair_draft": _draft_summary(draft),
+        "deterministic_reviewer": _review_checksum_summary(review),
+        "non_authority_instructions": _fallback_instructions(),
+    })
+
+
 def _run_role_trace(
     *,
     role: str,
@@ -211,6 +262,42 @@ def _run_role_trace(
     except Exception as exc:
         output = _clamp_output(fallback_output, output_kind)
         return _trace(role, model_metadata, "failed", False, True, redact_model_summary(f"{type(exc).__name__}: {exc}"), input_preview, input_checksum, output, "fallback_validated")
+
+
+def _run_llm_fallback_trace(
+    *,
+    runtime_mode: str,
+    llm_client: object | None,
+    structured_input: dict[str, Any],
+    should_invoke: bool,
+) -> dict[str, Any]:
+    fallback_output = _fallback_model_output(structured_input)
+    if not should_invoke:
+        input_preview = _bounded_json(structured_input)
+        input_checksum = f"sha256:{sha256_canonical_json(structured_input)}"
+        output = _clamp_output(fallback_output, "fallback")
+        return _trace(
+            FALLBACK_ROLE,
+            _model_metadata(None, V2ModelRole.FALLBACK, runtime_mode),
+            "unavailable",
+            False,
+            False,
+            "fallback_model_not_needed",
+            input_preview,
+            input_checksum,
+            output,
+            "not_applicable",
+        )
+    return _run_role_trace(
+        role=FALLBACK_ROLE,
+        model_role=V2ModelRole.FALLBACK,
+        runtime_mode=runtime_mode,
+        llm_client=llm_client,
+        prompt=_prompt("repair fallback reviewer", structured_input, _fallback_instructions()),
+        structured_input=structured_input,
+        fallback_output=fallback_output,
+        output_kind="fallback",
+    )
 
 
 def _invoke_client(llm_client: object, model_role: V2ModelRole, prompt: str, fallback_output: dict[str, Any], output_kind: str) -> Any:
@@ -277,13 +364,13 @@ def _parse_and_clamp(content: str, fallback_output: dict[str, Any], output_kind:
 
 
 def _clamp_output(value: dict[str, Any], output_kind: str) -> dict[str, Any]:
-    if output_kind == "reviewer":
+    if output_kind in {"reviewer", "fallback"}:
         verdict = str(value.get("verdict") or "advisory_needs_changes")
         if verdict not in ALLOWED_REVIEWER_VERDICTS:
             verdict = "advisory_needs_changes"
         return {
             "status": _status(value.get("status")),
-            "role": REVIEWER_ROLE,
+            "role": FALLBACK_ROLE if output_kind == "fallback" else REVIEWER_ROLE,
             "verdict": verdict,
             "critique": _safe_text(value.get("critique")),
             "risks": _safe_list(value.get("risks")),
@@ -317,7 +404,7 @@ def _clamp_output(value: dict[str, Any], output_kind: str) -> dict[str, Any]:
 def _missing_output_fields(output: dict[str, Any], output_kind: str) -> list[str]:
     required = (
         ("status", "role", "verdict", "critique", "risks", "missing_evidence", "unsafe_assumptions", "recommended_next_action", "confidence")
-        if output_kind == "reviewer"
+        if output_kind in {"reviewer", "fallback"}
         else ("status", "role", "summary", "root_cause", "repair_intent", "expected_change", "affected_files", "risk_notes", "missing_evidence", "confidence")
     )
     return [field for field in required if field not in output or output.get(field) in (None, "")]
@@ -352,6 +439,20 @@ def _fallback_reviewer_output(review: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _fallback_model_output(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": "fallback_used",
+        "role": FALLBACK_ROLE,
+        "verdict": "advisory_needs_changes",
+        "critique": "LLM fallback model used because primary shadow role was unavailable or invalid.",
+        "risks": ["Fallback output remains advisory and cannot override deterministic backend gate."],
+        "missing_evidence": [],
+        "unsafe_assumptions": [str(context.get("failure_reason") or "primary_shadow_failure")],
+        "recommended_next_action": "use_deterministic_backend_gate",
+        "confidence": "low",
+    }
+
+
 def _fallback_trace(review: dict[str, Any]) -> dict[str, Any]:
     return _clamp_authority({
         "fallback_kind": "deterministic_repair_draft_reviewer",
@@ -374,10 +475,12 @@ def _model_metadata(source: object | None, role: V2ModelRole, runtime_mode: str)
     provider = str(getattr(source, "provider", "") or ("azure_openai" if runtime_mode == "configured_llm_shadow_mode" else "deterministic"))
     deployment = str(getattr(source, "deployment", "") or getattr(source, "deployment_label", "") or "")
     endpoint = str(getattr(source, "endpoint_metadata", "") or getattr(source, "endpoint_host", "") or "")
+    expected = EXPECTED_MODEL_BY_ROLE.get(role, role.value)
     return {
-        "role": role.value,
+        "role": _public_role_name(role),
         "provider": redact_model_summary(provider),
         "deployment": redact_model_summary(deployment)[:120],
+        "expected_model": expected,
         "configuration_source": "existing_v2_model_role_router",
         "endpoint_metadata": redact_model_summary(endpoint)[:160],
         "status": str(getattr(source, "model_status", "") or ("configured" if runtime_mode == "configured_llm_shadow_mode" else "fallback")),
@@ -435,6 +538,51 @@ def _reviewer_instructions() -> str:
         "Do not approve apply. Do not claim authority. Do not override backend deterministic gates. "
         "List risks, missing evidence, unsafe assumptions, and advisory critique only."
     )
+
+
+def _fallback_instructions() -> str:
+    return (
+        "You are a repair fallback reviewer. Explain why primary LLM shadow role failed. "
+        "Do not approve apply. Do not claim authority. Do not override backend gates. "
+        "Output is advisory only in R7E.3."
+    )
+
+
+def _should_invoke_llm_fallback(proposer_trace: dict[str, Any], reviewer_trace: dict[str, Any]) -> bool:
+    return _trace_needs_fallback(proposer_trace) or _trace_needs_fallback(reviewer_trace)
+
+
+def _trace_needs_fallback(trace: dict[str, Any]) -> bool:
+    return (
+        str(trace.get("status") or "") in {"failed", "unavailable"}
+        or bool(trace.get("fallback_used"))
+        or str(trace.get("schema_validation_status") or "") not in {"validated", "not_applicable"}
+    )
+
+
+def _fallback_failed_role(proposer_trace: dict[str, Any], reviewer_trace: dict[str, Any]) -> str:
+    if _trace_needs_fallback(proposer_trace):
+        return str(proposer_trace.get("role") or PROPOSER_ROLE)
+    if _trace_needs_fallback(reviewer_trace):
+        return str(reviewer_trace.get("role") or REVIEWER_ROLE)
+    return ""
+
+
+def _fallback_failure_reason(proposer_trace: dict[str, Any], reviewer_trace: dict[str, Any]) -> str:
+    for trace in (proposer_trace, reviewer_trace):
+        if _trace_needs_fallback(trace):
+            return str(trace.get("failure_reason") or trace.get("schema_validation_status") or "shadow_role_failed")
+    return ""
+
+
+def _public_role_name(role: V2ModelRole) -> str:
+    if role == V2ModelRole.PROPOSER:
+        return "repair_proposer_model"
+    if role == V2ModelRole.REVIEWER:
+        return "repair_reviewer_model"
+    if role == V2ModelRole.FALLBACK:
+        return "repair_fallback_model"
+    return role.value
 
 
 def _prompt(title: str, payload: dict[str, Any], instructions: str) -> str:

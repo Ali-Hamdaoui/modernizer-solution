@@ -1037,8 +1037,9 @@ function LlmRepairShadowDetails({ trace }: { trace: V2LlmRepairShadowTraceRespon
       <p className="checksum">Trace checksum: {trace.combined_llm_shadow_trace_checksum || "n/a"}</p>
       <LlmShadowRolePanel title="Proposer" trace={trace.proposer_trace} />
       <LlmShadowRolePanel title="Reviewer" trace={trace.reviewer_trace} reviewer />
+      <LlmShadowRolePanel title="LLM Fallback" trace={trace.llm_fallback_trace} fallback />
       <div className="trace-section">
-        <strong>Fallback / Backend Gate</strong>
+        <strong>Deterministic Backend Gate</strong>
         <p className="meta">Deterministic reviewer verdict: {trace.fallback_trace.deterministic_reviewer_verdict || "n/a"}</p>
         <p className="meta">Checksum verification status: {trace.fallback_trace.checksum_verification_status || "n/a"}</p>
         <p className="meta">Backend gate authority: {trace.fallback_trace.deterministic_gate_authority ? "yes" : "no"}</p>
@@ -1056,20 +1057,25 @@ function LlmShadowRolePanel({
   title,
   trace,
   reviewer = false,
+  fallback = false,
 }: {
   title: string;
   trace: V2LlmShadowRoleTraceResponse;
   reviewer?: boolean;
+  fallback?: boolean;
 }) {
   const output = JSON.stringify(trace.output ?? {}, null, 2);
   return (
     <div className="trace-section">
       <strong>{title}</strong>
+      <p className="meta">Role: {trace.model_metadata.role || trace.role || "n/a"}</p>
+      <p className="meta">Expected model/deployment: {trace.model_metadata.expected_model || trace.model_metadata.deployment || "n/a"}</p>
       <p className="meta">Model/provider/deployment/status: {trace.model_metadata.provider || "n/a"} / {trace.model_metadata.deployment || "n/a"} / {trace.model_metadata.status || "n/a"}</p>
       <p className="meta">Endpoint metadata: {trace.model_metadata.endpoint_metadata || "redacted/not configured"}</p>
       <p className="meta">Configuration source: {trace.model_metadata.configuration_source || "existing_v2_model_role_router"}</p>
       <p className="meta">LLM invoked: {trace.llm_invoked ? "yes" : "no"}</p>
       <p className="meta">Fallback used: {trace.fallback_used ? "yes" : "no"}</p>
+      {fallback && <p className="meta">Fallback reason: {trace.failure_reason || "not needed"}</p>}
       {trace.failure_reason && <p className="meta">Failure reason: {trace.failure_reason}</p>}
       <p className="checksum">Input checksum: {trace.input_checksum || "n/a"}</p>
       <pre className="diff-preview"><code>{trace.input_preview || "No input preview available."}</code></pre>

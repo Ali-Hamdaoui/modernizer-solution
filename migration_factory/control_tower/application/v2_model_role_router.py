@@ -51,6 +51,8 @@ class V2RoleModelResult:
     primary_failure_reason: str = ""
     fallback_used: bool = False
     schema_validated: bool = False
+    deployment: str = ""
+    endpoint_metadata: str = ""
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,8 @@ class V2ModelRoleRouter:
                     primary_failure_reason="",
                     fallback_used=False,
                     schema_validated=True,
+                    deployment=result.deployment,
+                    endpoint_metadata=result.endpoint_metadata,
                 )
             schema_failure = self._schema_failure_reason(request, result.content) if request.require_schema else ""
             primary_failure = (
@@ -145,6 +149,8 @@ class V2ModelRoleRouter:
                         primary_failure_reason=primary_failure,
                         fallback_used=True,
                         schema_validated=True,
+                        deployment=result.deployment,
+                        endpoint_metadata=result.endpoint_metadata,
                     )
                 fallback_failure = (
                     result.failure_reason
@@ -190,6 +196,8 @@ class V2ModelRoleRouter:
             primary_failure_reason=str(getattr(result, "primary_failure_reason", "") or ""),
             fallback_used=bool(getattr(result, "fallback_used", False)),
             schema_validated=bool(getattr(result, "schema_validated", False)),
+            deployment=str(getattr(result, "deployment", "") or ""),
+            endpoint_metadata=str(getattr(result, "endpoint_metadata", "") or ""),
         )
 
     def _coerce_fallback_result(
@@ -211,6 +219,8 @@ class V2ModelRoleRouter:
             primary_failure_reason=primary_failure_reason,
             fallback_used=True,
             schema_validated=coerced.schema_validated,
+            deployment=coerced.deployment,
+            endpoint_metadata=coerced.endpoint_metadata,
         )
 
     def _schema_ok(self, request: V2RoleModelRequest, content: str) -> bool:
@@ -248,6 +258,8 @@ class V2ModelRoleRouter:
             primary_failure_reason=primary_failure_reason,
             fallback_used=True,
             schema_validated=schema_validated,
+            deployment="",
+            endpoint_metadata="",
         )
 
     def _deterministic_content(
