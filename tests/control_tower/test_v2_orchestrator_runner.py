@@ -465,6 +465,56 @@ def test_v2_runner_launches_manifest_with_shell_false_and_safe_env(tmp_path: Pat
     assert "stage_completed" in event_types
 
 
+def test_v2_runner_enriches_command_events_with_route_identity(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    now = utc_now_text()
+    command_id = "cmd-route-event"
+    SqliteUnitOfWork(conn).v2_commands.save(
+        V2StageCommandRecord(
+            command_id=command_id,
+            job_id="job-1",
+            stage_index=4,
+            manifest_checksum="checksum-route-event",
+            argv_json="[]",
+            env_json=json.dumps({
+                "JAVA_HOME": "C:/jdk21",
+                "MAVEN_CMD": "C:/maven/bin/mvn.cmd",
+                "ROUTE_STEP_INDEX": "2",
+                "ROUTE_STEP_RUNTIME_PROFILE": "springboot-3.5-java21-to-4.0-java21",
+                "ROUTE_STEP_CATALOG": "springboot-3.5-java21-to-4.0-java21",
+                "ROUTE_STEP_EXECUTION_JDK": "java21",
+            }),
+            status="manifest_ready",
+            created_at=now,
+            updated_at=now,
+            result_json=None,
+        )
+    )
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+
+    runner._event(
+        job_id="job-1",
+        stage=4,
+        event_type="analysis_started",
+        status="running",
+        message="analysis phase started",
+        payload={"command_id": command_id},
+    )
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    payload = json.loads(events[-1].payload_json or "{}")
+    assert payload["command_id"] == command_id
+    assert payload["route_step_index"] == 2
+    assert payload["route_step_runtime_profile"] == "springboot-3.5-java21-to-4.0-java21"
+    assert payload["runtime_profile"] == "springboot-3.5-java21-to-4.0-java21"
+    assert payload["route_step_catalog"] == "springboot-3.5-java21-to-4.0-java21"
+    assert payload["catalog"] == "springboot-3.5-java21-to-4.0-java21"
+
+
 def test_v2_runner_maps_failure_to_stage_failed(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _save_command(conn)

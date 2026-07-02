@@ -112,19 +112,225 @@ type LiveRefreshResults = [
   PromiseSettledResult<V2FailureSummaryResponse>,
 ];
 
+type StageTimelineProgress = {
+  events?: V2JobEvent[];
+  pipeline?: V2PipelineResponse | null;
+};
+
+const ROUTE_TIMELINE_DEBUG = process.env.NODE_ENV === "development";
+
 export function buildStageTimelineEntries(
   routeSteps: V2RouteStepEntry[] | undefined,
   stages: Stage[],
+  progress: StageTimelineProgress = {},
 ): Array<V2RouteStepEntry | Stage> {
   if (!routeSteps?.length) {
     return stages;
   }
 
+  // Route cards are displayed route steps, not zero-based stage slots.
+  // Partial migrations skip global stages, so card index must never be used as backend identity.
   const stageStatusByIndex = new Map(stages.map((stage) => [stage.stage_index, stage.chain_status]));
-  return routeSteps.map((routeStep) => ({
-    ...routeStep,
-    status: stageStatusByIndex.get(routeStep.stage_index) ?? routeStep.status,
+  const eventStatusByStageIndex = buildStageStatusByIndex(progress.events ?? []);
+  const routeStatusByIdentity = buildRouteStepStatusByIdentity(progress.events ?? []);
+  const activePipelineStatus = getActivePipelineRouteStatus(progress.pipeline ?? null);
+
+  return routeSteps.map((routeStep) => {
+    const identityStatus = routeStepIdentityKeys(routeStep)
+      .map((key) => routeStatusByIdentity.get(key))
+      .find((status): status is string => Boolean(status));
+    const indexedStatus = stageStatusByIndex.get(routeStep.stage_index);
+    const eventStageStatus = eventStatusByStageIndex.get(routeStep.stage_index);
+    const activeStageStatus = progress.pipeline?.active_stage_index === routeStep.stage_index
+      ? activePipelineStatus
+      : undefined;
+
+    return {
+      ...routeStep,
+      status:
+        terminalRouteStatus(indexedStatus)
+        ?? terminalRouteStatus(eventStageStatus)
+        ?? terminalRouteStatus(identityStatus)
+        ?? identityStatus
+        ?? activeStageStatus
+        ?? eventStageStatus
+        ?? indexedStatus
+        ?? routeStep.status,
+    };
+  });
+}
+
+function terminalRouteStatus(status: string | undefined): string | undefined {
+  return status === "completed" || status === "failed" ? status : undefined;
+}
+
+function buildRouteStepStatusByIdentity(events: V2JobEvent[]): Map<string, string> {
+  const statuses = new Map<string, string>();
+  for (const event of [...events].sort((a, b) => a.sequence - b.sequence)) {
+    const mappedStatus = stageStatusFromEvent(event);
+    if (mappedStatus === "pending") continue;
+    for (const key of eventRouteIdentityKeys(event)) {
+      statuses.set(key, transitionStageStatus(statuses.get(key) ?? "pending", mappedStatus));
+    }
+  }
+  return statuses;
+}
+
+function buildStageStatusByIndex(events: V2JobEvent[]): Map<number, string> {
+  const eventsByStage = new Map<number, V2JobEvent[]>();
+  for (const event of events) {
+    if (event.stage == null) continue;
+    const stageEvents = eventsByStage.get(event.stage) ?? [];
+    stageEvents.push(event);
+    eventsByStage.set(event.stage, stageEvents);
+  }
+
+  const statuses = new Map<number, string>();
+  for (const [stageIndex, stageEvents] of eventsByStage.entries()) {
+    statuses.set(
+      stageIndex,
+      reduceStageStatus(
+        stageEvents.sort((a, b) => a.sequence - b.sequence),
+        stageIndex,
+      ),
+    );
+  }
+  return statuses;
+}
+
+function getActivePipelineRouteStatus(pipeline: V2PipelineResponse | null): string | undefined {
+  if (!pipeline) return undefined;
+  if (pipeline.rows.some((row) => row.status === "failed")) return "failed";
+  if (pipeline.rows.some((row) => row.status === "running")) return "running";
+  if (pipeline.rows.some((row) => row.status === "blocked")) return "blocked";
+  return undefined;
+}
+
+function routeStepIdentityKeys(routeStep: V2RouteStepEntry): string[] {
+  return [
+    routeStep.runtime_profile ? `runtime:${routeStep.runtime_profile}` : "",
+    routeStep.catalog ? `catalog:${routeStep.catalog}` : "",
+    routeStep.source_profile && routeStep.target_profile
+      ? `pair:${routeStep.source_profile}->${routeStep.target_profile}`
+      : "",
+  ].filter(Boolean);
+}
+
+function eventRouteIdentityKeys(event: V2JobEvent): string[] {
+  const payload = event.payload ?? {};
+  const runtimeProfile = stringPayloadValue(payload, [
+    "runtime_profile",
+    "route_step_runtime_profile",
+    "ROUTE_STEP_RUNTIME_PROFILE",
+  ]);
+  const catalog = stringPayloadValue(payload, [
+    "catalog",
+    "catalog_id",
+    "route_step_catalog",
+    "ROUTE_STEP_CATALOG",
+  ]);
+  const sourceProfile = stringPayloadValue(payload, ["source_profile", "route_step_source_profile"]);
+  const targetProfile = stringPayloadValue(payload, ["target_profile", "route_step_target_profile"]);
+
+  return [
+    runtimeProfile ? `runtime:${runtimeProfile}` : "",
+    catalog ? `catalog:${catalog}` : "",
+    sourceProfile && targetProfile ? `pair:${sourceProfile}->${targetProfile}` : "",
+  ].filter(Boolean);
+}
+
+function stringPayloadValue(payload: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number") return String(value);
+  }
+  return "";
+}
+
+export function syncCockpitRouteStepStatuses(data: CockpitData): CockpitData {
+  if (!data.job.route_steps?.length) {
+    return data;
+  }
+
+  const routeSteps = buildStageTimelineEntries(data.job.route_steps, data.stages, {
+    events: data.events,
+    pipeline: data.pipeline,
+  }).filter(isRouteStepEntry);
+
+  return {
+    ...data,
+    job: {
+      ...data.job,
+      route_steps: routeSteps,
+    },
+  };
+}
+
+function isRouteStepEntry(entry: V2RouteStepEntry | Stage): entry is V2RouteStepEntry {
+  return "route_step_index" in entry;
+}
+
+function logRouteTimelineState(
+  label: string,
+  before: V2RouteStepEntry[] | undefined,
+  after: V2RouteStepEntry[] | undefined,
+  pipeline: V2PipelineResponse | null,
+  event?: V2JobEvent,
+): void {
+  if (!ROUTE_TIMELINE_DEBUG) {
+    return;
+  }
+
+  const summarizedAfter = summarizeRouteSteps(after);
+  const activeRouteStep = summarizedAfter.find((step) => step.status === "running")
+    ?? summarizedAfter.find((step) => step.stage_index === pipeline?.active_stage_index)
+    ?? null;
+
+  console.log("[migration-event]", label, event ? summarizeRouteEvent(event) : null);
+  console.log("[route-steps-before]", summarizeRouteSteps(before));
+  console.log("[route-steps-after]", summarizedAfter);
+  console.log("[active-route-step]", activeRouteStep);
+  console.log("[pipeline-status]", {
+    active_stage_index: pipeline?.active_stage_index ?? null,
+    rows: pipeline?.rows.map((row) => ({
+      key: row.key,
+      label: row.label,
+      status: row.status,
+    })) ?? [],
+  });
+}
+
+function summarizeRouteSteps(routeSteps: V2RouteStepEntry[] | undefined): Array<Record<string, unknown>> {
+  return (routeSteps ?? []).map((routeStep) => ({
+    route_step_index: routeStep.route_step_index,
+    stage_index: routeStep.stage_index,
+    source_profile: routeStep.source_profile,
+    target_profile: routeStep.target_profile,
+    catalog: routeStep.catalog,
+    runtime_profile: routeStep.runtime_profile,
+    status: routeStep.status,
   }));
+}
+
+function summarizeRouteEvent(event: V2JobEvent): Record<string, unknown> {
+  const payload = event.payload ?? {};
+  return {
+    sequence: event.sequence,
+    type: event.type,
+    status: event.status,
+    stage: event.stage,
+    payload: {
+      command_id: payload.command_id,
+      route_step_index: payload.route_step_index ?? payload.ROUTE_STEP_INDEX,
+      route_step_runtime_profile: payload.route_step_runtime_profile ?? payload.ROUTE_STEP_RUNTIME_PROFILE,
+      runtime_profile: payload.runtime_profile,
+      route_step_catalog: payload.route_step_catalog ?? payload.ROUTE_STEP_CATALOG,
+      catalog: payload.catalog,
+      source_profile: payload.source_profile,
+      target_profile: payload.target_profile,
+    },
+  };
 }
 
 export function mergeCockpitLiveRefreshResults(
@@ -133,18 +339,22 @@ export function mergeCockpitLiveRefreshResults(
 ): { data: CockpitData; failed: boolean } {
   const [approvalsResult, stagesResult, eventsResult, pipelineResult, failureSummaryResult] = results;
   const failed = results.some((result) => result.status === "rejected");
+  const merged = {
+    ...current,
+    approvals: approvalsResult.status === "fulfilled" ? approvalsResult.value.approvals : current.approvals,
+    stages: stagesResult.status === "fulfilled" ? stagesResult.value.stages : current.stages,
+    events: eventsResult.status === "fulfilled" ? eventsResult.value.events : current.events,
+    pipeline: pipelineResult.status === "fulfilled" ? pipelineResult.value : current.pipeline,
+    failureSummary: failureSummaryResult.status === "fulfilled"
+      ? failureSummaryResult.value
+      : current.failureSummary,
+  };
+  const data = syncCockpitRouteStepStatuses(merged);
+  logRouteTimelineState("live-refresh", current.job.route_steps, data.job.route_steps, data.pipeline);
+
   return {
     failed,
-    data: {
-      ...current,
-      approvals: approvalsResult.status === "fulfilled" ? approvalsResult.value.approvals : current.approvals,
-      stages: stagesResult.status === "fulfilled" ? stagesResult.value.stages : current.stages,
-      events: eventsResult.status === "fulfilled" ? eventsResult.value.events : current.events,
-      pipeline: pipelineResult.status === "fulfilled" ? pipelineResult.value : current.pipeline,
-      failureSummary: failureSummaryResult.status === "fulfilled"
-        ? failureSummaryResult.value
-        : current.failureSummary,
-    },
+    data,
   };
 }
 
@@ -904,7 +1114,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
 
         if (cancelled) return;
 
-        setData({
+        const initialData = syncCockpitRouteStepStatuses({
           job,
           stages: stagesResponse.stages,
           approvals: approvalsResponse.approvals,
@@ -914,6 +1124,8 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           failureSummary: failureSummary as V2FailureSummaryResponse | null,
           assistantModel: null,
         });
+        logRouteTimelineState("initial-load", job.route_steps, initialData.job.route_steps, initialData.pipeline);
+        setData(initialData);
         setError(null);
         void refreshReport();
       } catch (e) {
@@ -1069,13 +1281,15 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         }
         const updatedEvents = [...current.events, event].sort((a, b) => a.sequence - b.sequence);
         const updatedStages = reduceAllStageStatuses(current.stages, updatedEvents);
-        return {
+        const updatedData = syncCockpitRouteStepStatuses({
           ...current,
           events: updatedEvents,
           stages: updatedStages,
           // Do NOT locally derive pipeline on every SSE event.
           // Backend refresh on important events is authoritative.
-        };
+        });
+        logRouteTimelineState("sse", current.job.route_steps, updatedData.job.route_steps, updatedData.pipeline, event);
+        return updatedData;
       });
       // On important events, refresh from backend (async, non-blocking)
       if (IMPORTANT_SSE_TYPES.has(event.type)) {
@@ -1216,7 +1430,10 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   if (error) return <div className="error-box">{error}</div>;
   if (!data) return <div className="info-box">Loading cockpit...</div>;
 
-  const stageTimelineEntries = buildStageTimelineEntries(data.job.route_steps, data.stages);
+  const stageTimelineEntries = buildStageTimelineEntries(data.job.route_steps, data.stages, {
+    events: data.events,
+    pipeline: data.pipeline,
+  });
 
   return (
     <div className="cockpit-layout">
@@ -1229,7 +1446,13 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
             if ("route_step_index" in entry) {
               const routeStep = entry as V2RouteStepEntry;
               return (
-                <div key={routeStep.route_step_index} className={`stage-card ${routeStep.status}`}>
+                <div
+                  key={routeStep.route_step_index}
+                  className={`stage-card ${routeStep.status}`}
+                  data-route-step-id={routeStep.route_step_index}
+                  data-catalog-id={routeStep.catalog}
+                  data-runtime-profile={routeStep.runtime_profile}
+                >
                   <div className="stage-header">
                     <strong>
                       Route step {routeStep.route_step_index}: {routeStep.source_profile} → {routeStep.target_profile}
@@ -1842,7 +2065,7 @@ function eventAppliesToStage(event: V2JobEvent, stageIndex: number): boolean {
  *  NOT determine the final stage status (see reduceStageStatus). */
 export function stageStatusFromEvent(event: V2JobEvent): string {
   if (event.type === "stage_failed" || event.status === "failed") return "failed";
-  if (event.type === "stage_completed") return "completed";
+  if (event.type === "stage_completed" || event.type === "migration_completed") return "completed";
   if (["stage_started", "command_started", "sandbox_transform_started",
        "sandbox_transform_completed", "resume_started", "approval_resume_queued",
        "approval_completed", "build_started", "test_started"].includes(event.type) || event.status === "running") {
@@ -1864,7 +2087,10 @@ export function stageStatusFromEvent(event: V2JobEvent): string {
 export function transitionStageStatus(current: string, mapped: string): string {
   if (mapped === "failed") return "failed";
   if (mapped === "completed") return "completed";
-  if (mapped === "running") return "running";
+  if (mapped === "running") {
+    if (current === "completed" || current === "failed") return current;
+    return "running";
+  }
   if (mapped === "blocked") {
     if (current === "running" || current === "completed" || current === "failed") return current;
     return "blocked";

@@ -16,6 +16,7 @@ import {
   formatGateArtifactRefLabel,
   mergeCockpitLiveRefreshResults,
   reduceStageStatus,
+  syncCockpitRouteStepStatuses,
   type CockpitData,
 } from "../app/migrations/[jobId]/MigrationCockpit";
 import { askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, postV2GateAction, requireJobId, resolveReportDownloadUrl, v2EventStreamUrl } from "../lib/controlTowerApi";
@@ -725,46 +726,161 @@ describe("V2 Migration Cockpit contract", () => {
 
   // ── Stage status lifecycle reducer tests (V2 cockpit state model) ──
 
-  it("buildStageTimelineEntries overlays route-step status from refreshed stages", () => {
+  it("buildStageTimelineEntries marks the second full-route card running from backend active stage", () => {
     const routeSteps: V2RouteStepEntry[] = [
-      {
-        route_step_index: 1,
-        stage_index: 1,
-        source_profile: "springboot-2.7-java11",
-        target_profile: "springboot-3.5-java17",
-        runtime_profile: "springboot-2.7-to-3.5-java17",
-        catalog: "springboot-3.5-java17",
-        execution_jdk: "java17",
-        status: "pending",
-        approval_gate_id: "",
-        artifact_refs: [],
-        evidence_refs: [],
-      },
-      {
-        route_step_index: 2,
-        stage_index: 2,
-        source_profile: "springboot-3.5-java17",
-        target_profile: "springboot-4.0-java21",
-        runtime_profile: "springboot-3.5-java17-to-java21",
-        catalog: "springboot-4.0-java21",
-        execution_jdk: "java21",
-        status: "pending",
-        approval_gate_id: "",
-        artifact_refs: [],
-        evidence_refs: [],
-      },
+      makeRouteStep(1, 1, "springboot-2.1-java11", "springboot-2.7-java11", "springboot-2.1.6-to-2.7-java11"),
+      makeRouteStep(2, 2, "springboot-2.7-java11", "springboot-3.5-java17", "springboot-2.7-to-3.5-java17"),
+      makeRouteStep(3, 3, "springboot-3.5-java17", "springboot-3.5-java21", "springboot-3.5-java17-to-java21"),
+      makeRouteStep(4, 4, "springboot-3.5-java21", "springboot-4.0-java21", "springboot-3.5-java21-to-4.0-java21"),
     ];
     const stages = [
       { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "completed", input_source_kind: "legacy_source" },
-      { stage_index: 2, pipeline_stage: "Stage 2", chain_status: "running", input_source_kind: "stage_1_sandbox" },
+      { stage_index: 2, pipeline_stage: "Stage 2", chain_status: "pending", input_source_kind: "stage_1_sandbox" },
+      { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "pending", input_source_kind: "stage_2_sandbox" },
+      { stage_index: 4, pipeline_stage: "Stage 4", chain_status: "pending", input_source_kind: "stage_3_sandbox" },
     ];
 
-    const entries = buildStageTimelineEntries(routeSteps, stages);
+    const entries = buildStageTimelineEntries(routeSteps, stages, {
+      pipeline: makePipeline(2, "running"),
+    });
 
-    expect(entries[0]).toMatchObject({ route_step_index: 1, status: "completed" });
-    expect(entries[1]).toMatchObject({ route_step_index: 2, status: "running" });
+    expect(entries).toHaveLength(4);
+    expect(entries[1]).toMatchObject({ route_step_index: 2, stage_index: 2, status: "running" });
   });
 
+  it("buildStageTimelineEntries maps partial route status by runtime profile identity", () => {
+    const routeSteps: V2RouteStepEntry[] = [
+      makeRouteStep(1, 3, "springboot-3.5-java17", "springboot-3.5-java21", "springboot-3.5-java17-to-java21"),
+      makeRouteStep(2, 4, "springboot-3.5-java21", "springboot-4.0-java21", "springboot-3.5-java21-to-4.0-java21"),
+    ];
+    const stages = [
+      { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "completed", input_source_kind: "stage_2_sandbox" },
+      { stage_index: 4, pipeline_stage: "Stage 4", chain_status: "pending", input_source_kind: "stage_3_sandbox" },
+    ];
+
+    const entries = buildStageTimelineEntries(routeSteps, stages, {
+      events: [makeRouteEvent(4, "analysis_started", "running", 10, "springboot-3.5-java21-to-4.0-java21")],
+    });
+
+    expect(entries[0]).toMatchObject({ route_step_index: 1, stage_index: 3, status: "completed" });
+    expect(entries[1]).toMatchObject({ route_step_index: 2, stage_index: 4, status: "running" });
+  });
+
+  it("syncCockpitRouteStepStatuses writes partial route running status into the frontend state object", () => {
+    const routeSteps: V2RouteStepEntry[] = [
+      makeRouteStep(1, 3, "springboot-3.5-java17", "springboot-3.5-java21", "springboot-3.5-java17-to-java21"),
+      makeRouteStep(2, 4, "springboot-3.5-java21", "springboot-4.0-java21", "springboot-3.5-java21-to-4.0-java21"),
+    ];
+    const state = syncCockpitRouteStepStatuses({
+      ...makeCockpitData(),
+      job: {
+        ...makeCockpitData().job,
+        route_steps: routeSteps,
+      } as V2MigrationJobResponse,
+      stages: [
+        { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "completed", input_source_kind: "stage_2_sandbox" },
+        { stage_index: 4, pipeline_stage: "Stage 4", chain_status: "pending", input_source_kind: "stage_3_sandbox" },
+      ],
+      events: [
+        makeRouteEvent(4, "analysis_started", "running", 10, "springboot-3.5-java21-to-4.0-java21"),
+      ],
+      pipeline: makePipeline(4, "running"),
+    });
+
+    expect(state.job.route_steps).toHaveLength(2);
+    expect(state.job.route_steps?.[1]).toMatchObject({
+      route_step_index: 2,
+      stage_index: 4,
+      runtime_profile: "springboot-3.5-java21-to-4.0-java21",
+      status: "running",
+    });
+  });
+
+  it("syncCockpitRouteStepStatuses keeps route completed after a late running event", () => {
+    const routeSteps: V2RouteStepEntry[] = [
+      makeRouteStep(1, 3, "springboot-3.5-java17", "springboot-3.5-java21", "springboot-3.5-java17-to-java21"),
+      makeRouteStep(2, 4, "springboot-3.5-java21", "springboot-4.0-java21", "springboot-3.5-java21-to-4.0-java21"),
+    ];
+    const state = syncCockpitRouteStepStatuses({
+      ...makeCockpitData(),
+      job: {
+        ...makeCockpitData().job,
+        route_steps: routeSteps,
+      } as V2MigrationJobResponse,
+      stages: [
+        { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "completed", input_source_kind: "stage_2_sandbox" },
+        { stage_index: 4, pipeline_stage: "Stage 4", chain_status: "pending", input_source_kind: "stage_3_sandbox" },
+      ],
+      events: [
+        makeRouteEvent(4, "analysis_started", "running", 10, "springboot-3.5-java21-to-4.0-java21"),
+        makeRouteEvent(4, "stage_completed", "completed", 11, "springboot-3.5-java21-to-4.0-java21"),
+        makeRouteEvent(4, "model_invocation_started", "running", 12, "springboot-3.5-java21-to-4.0-java21"),
+      ],
+      pipeline: makePipeline(4, "running"),
+    });
+
+    expect(state.job.route_steps?.[1]).toMatchObject({
+      route_step_index: 2,
+      stage_index: 4,
+      status: "completed",
+    });
+  });
+  it("syncCockpitRouteStepStatuses lets terminal stage events override a stale running pipeline", () => {
+    const routeSteps: V2RouteStepEntry[] = [
+      makeRouteStep(1, 3, "springboot-3.5-java17", "springboot-3.5-java21", "springboot-3.5-java17-to-java21"),
+      makeRouteStep(2, 4, "springboot-3.5-java21", "springboot-4.0-java21", "springboot-3.5-java21-to-4.0-java21"),
+    ];
+    const state = syncCockpitRouteStepStatuses({
+      ...makeCockpitData(),
+      job: {
+        ...makeCockpitData().job,
+        route_steps: routeSteps,
+      } as V2MigrationJobResponse,
+      stages: [
+        { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "completed", input_source_kind: "stage_2_sandbox" },
+        { stage_index: 4, pipeline_stage: "Stage 4", chain_status: "pending", input_source_kind: "stage_3_sandbox" },
+      ],
+      events: [
+        {
+          event_id: "event-20",
+          job_id: "job-123",
+          stage: 4,
+          type: "stage_completed",
+          status: "completed",
+          message: "Stage 4 completed.",
+          payload: {},
+          created_at: "2026-06-16T00:00:00Z",
+          sequence: 20,
+        },
+      ],
+      pipeline: makePipeline(4, "running"),
+    });
+
+    expect(state.job.route_steps?.[1]).toMatchObject({
+      route_step_index: 2,
+      stage_index: 4,
+      status: "completed",
+    });
+  });
+  it("buildStageTimelineEntries does not let skipped global stages shift route-card status", () => {
+    const routeSteps: V2RouteStepEntry[] = [
+      makeRouteStep(1, 3, "springboot-3.5-java17", "springboot-3.5-java21", "springboot-3.5-java17-to-java21"),
+      makeRouteStep(2, 4, "springboot-3.5-java21", "springboot-4.0-java21", "springboot-3.5-java21-to-4.0-java21"),
+    ];
+    const stages = [
+      { stage_index: 2, pipeline_stage: "Skipped Stage 2", chain_status: "running", input_source_kind: "stage_1_sandbox" },
+      { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "completed", input_source_kind: "stage_2_sandbox" },
+      { stage_index: 4, pipeline_stage: "Stage 4", chain_status: "pending", input_source_kind: "stage_3_sandbox" },
+    ];
+
+    const entries = buildStageTimelineEntries(routeSteps, stages, {
+      events: [makeRouteEvent(4, "analysis_started", "running", 11, "springboot-3.5-java21-to-4.0-java21")],
+    });
+
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({ route_step_index: 1, stage_index: 3, status: "completed" });
+    expect(entries[1]).toMatchObject({ route_step_index: 2, stage_index: 4, status: "running" });
+  });
   it("reduceStageStatus: blocked while approval pending", () => {
     // Only approval_required/blocked events → blocked
     const events: V2JobEvent[] = [
@@ -821,6 +937,15 @@ describe("V2 Migration Cockpit contract", () => {
 
     expect(reduceStageStatus(priorStageEvents, 1)).toBe("completed");
     expect(reduceStageStatus(nextStageEvents, 2)).toBe("running");
+  });
+  it("reduceStageStatus: completed after stage_completed does not regress to late running", () => {
+    const events: V2JobEvent[] = [
+      { stage: 4, type: "stage_started", status: "running", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 4, type: "stage_completed", status: "completed", sequence: 2 } as unknown as V2JobEvent,
+      { stage: 4, type: "model_invocation_started", status: "running", sequence: 3 } as unknown as V2JobEvent,
+    ];
+
+    expect(reduceStageStatus(events, 4)).toBe("completed");
   });
   it("reduceStageStatus: completed after stage_completed, blocked does not regress", () => {
     const events: V2JobEvent[] = [
@@ -1767,7 +1892,7 @@ describe("F15 Final Report and Stage 4 cockpit", () => {
     const source = cockpitFunc.toString();
     // All expected panel headings must appear in the component's rendering logic
     expect(source).toContain("Stage Timeline");
-    expect(source).toContain("buildStageTimelineEntries(data.job.route_steps, data.stages)");
+    expect(source).toContain("buildStageTimelineEntries(data.job.route_steps, data.stages, {");
     expect(source).toContain("Pipeline Status");
     expect(source).toContain("Evidence");
     expect(source).toContain("Assistant");
@@ -1914,6 +2039,73 @@ describe("PR-C Repair Proposal Panel integration", () => {
     }
   });
 });
+
+function makeRouteStep(
+  routeStepIndex: number,
+  stageIndex: number,
+  sourceProfile: V2RouteStepEntry["source_profile"],
+  targetProfile: V2RouteStepEntry["target_profile"],
+  runtimeProfile: string,
+  status = "pending",
+): V2RouteStepEntry {
+  return {
+    route_step_index: routeStepIndex,
+    stage_index: stageIndex,
+    source_profile: sourceProfile,
+    target_profile: targetProfile,
+    runtime_profile: runtimeProfile,
+    catalog: runtimeProfile,
+    execution_jdk: runtimeProfile.includes("java17") ? "java17" : "java21",
+    status,
+    approval_gate_id: "",
+    artifact_refs: [],
+    evidence_refs: [],
+  };
+}
+
+function makeRouteEvent(
+  stage: number,
+  type: string,
+  status: string,
+  sequence: number,
+  runtimeProfile: string,
+): V2JobEvent {
+  return {
+    event_id: `event-${sequence}`,
+    job_id: "job-123",
+    stage,
+    type,
+    status,
+    message: `${type} ${runtimeProfile}`,
+    payload: {
+      runtime_profile: runtimeProfile,
+      route_step_runtime_profile: runtimeProfile,
+      catalog: runtimeProfile,
+      route_step_catalog: runtimeProfile,
+    },
+    created_at: "2026-06-16T00:00:00Z",
+    sequence,
+  };
+}
+
+function makePipeline(activeStageIndex: number, rowStatus: string): CockpitData["pipeline"] {
+  return {
+    job_id: "job-123",
+    active_stage_index: activeStageIndex,
+    rows: [
+      {
+        key: "analysis",
+        label: "Analysis Agent",
+        status: rowStatus,
+        latest_message: "Analysis Agent running",
+        artifact_count: 0,
+        last_updated: "2026-06-16T00:00:00Z",
+      },
+    ],
+    evidence: [],
+    raw_logs: [],
+  };
+}
 
 function makeCockpitData(): CockpitData {
   return {

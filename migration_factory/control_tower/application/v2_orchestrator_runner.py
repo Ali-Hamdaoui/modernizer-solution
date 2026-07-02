@@ -1666,7 +1666,10 @@ class V2OrchestratorRunner:
     ) -> None:
         with self._event_lock:
             with self._unit_of_work_factory() as uow:
-                redacted_payload = redact_public_value(payload or {})
+                raw_payload = dict(payload or {})
+                route_metadata = _route_event_metadata_for_command(uow, raw_payload.get("command_id"))
+                enriched_payload = {**route_metadata, **raw_payload}
+                redacted_payload = redact_public_value(enriched_payload)
                 uow.v2_events.save(
                     job_id=job_id,
                     stage=stage,
@@ -1954,6 +1957,45 @@ def _load_json_list(text: str) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError("Persisted argv_json must be a string array")
     return value
+
+
+def _route_event_metadata_for_command(uow: Any, command_id: Any) -> dict[str, Any]:
+    command_key = str(command_id or "").strip()
+    if not command_key:
+        return {}
+
+    try:
+        command = uow.v2_commands.get(command_key)
+    except Exception:
+        return {}
+    if command is None:
+        return {}
+
+    try:
+        env_manifest = _load_json_dict(getattr(command, "env_json", "{}"))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+
+    metadata: dict[str, Any] = {}
+    route_step_index = str(env_manifest.get("ROUTE_STEP_INDEX") or "").strip()
+    runtime_profile = str(env_manifest.get("ROUTE_STEP_RUNTIME_PROFILE") or "").strip()
+    catalog = str(env_manifest.get("ROUTE_STEP_CATALOG") or "").strip()
+    execution_jdk = str(env_manifest.get("ROUTE_STEP_EXECUTION_JDK") or "").strip()
+
+    if route_step_index:
+        try:
+            metadata["route_step_index"] = int(route_step_index)
+        except ValueError:
+            metadata["route_step_index"] = route_step_index
+    if runtime_profile:
+        metadata["route_step_runtime_profile"] = runtime_profile
+        metadata["runtime_profile"] = runtime_profile
+    if catalog:
+        metadata["route_step_catalog"] = catalog
+        metadata["catalog"] = catalog
+    if execution_jdk:
+        metadata["route_step_execution_jdk"] = execution_jdk
+    return metadata
 
 
 def _load_json_dict(text: str) -> dict[str, Any]:
