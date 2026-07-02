@@ -124,6 +124,29 @@ class SqliteV2LLMInvocationRepository:
             params,
         )
 
+    def update_bindings(
+        self,
+        invocation_id: str,
+        *,
+        proposal_id: str | None = None,
+        gate_id: str | None = None,
+    ) -> None:
+        parts: list[str] = []
+        params: list[Any] = []
+        if proposal_id is not None:
+            parts.append("proposal_id = ?")
+            params.append(proposal_id)
+        if gate_id is not None:
+            parts.append("gate_id = ?")
+            params.append(gate_id)
+        if not parts:
+            return
+        params.append(invocation_id)
+        self._connection.execute(
+            f"UPDATE v2_llm_invocations SET {', '.join(parts)} WHERE invocation_id = ?",
+            params,
+        )
+
     def get(self, invocation_id: str) -> V2LLMInvocationRecord | None:
         row = self._connection.execute(
             "SELECT * FROM v2_llm_invocations WHERE invocation_id = ?",

@@ -7,6 +7,7 @@ import { RepairAttemptTimeline } from "../app/migrations/[jobId]/RepairAttemptTi
 import { RepairActionsBar } from "../app/migrations/[jobId]/RepairActionsBar";
 import { ModelRoleActivity } from "../app/migrations/[jobId]/ModelRoleActivity";
 import { ValidationProgressPanel } from "../app/migrations/[jobId]/ValidationProgressPanel";
+import { ReviewedRepairUnavailable, ReviewedRepairMaterializationFailed } from "../app/migrations/[jobId]/RepairProposalPanel";
 import type {
   SafeDiffPreview as SafeDiffPreviewType,
   SafeDiffFile,
@@ -795,6 +796,156 @@ describe("F5 model activity and validation panels", () => {
     expect(markup).toContain("Running tests");
     expect(markup).toContain("Migration continuing");
     expect(markup).toContain("validation passed");
+  });
+
+  it("renders fail-closed unavailable state for main completed and reviewer fallback", () => {
+    const invocations: V2LlmInvocationEntry[] = [
+      {
+        ...baseInvocation,
+        proposal_id: null,
+        gate_id: null,
+        redacted_summary: "Root cause is missing JsonNode import in ProposalExternalFacade.",
+      },
+      {
+        ...baseInvocation,
+        invocation_id: "inv-reviewer",
+        proposal_id: null,
+        gate_id: null,
+        role: "reviewer",
+        responsibility: "repair_review",
+        model_display_name: "Reviewer Model",
+        status: "fallback",
+        fallback_used: true,
+        redacted_error: "reviewer_model_unavailable",
+        redacted_summary: "Reviewer model unavailable; fail-closed review requires revision or manual evidence review. Reviewer model output unavailable.",
+        output_checksum: null,
+        created_at: "2026-06-30T00:00:02Z",
+      },
+    ];
+
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairUnavailable invocations={invocations} loading={false} error={null} />,
+    );
+
+    expect(markup).toContain("Reviewed Repair Unavailable");
+    expect(markup).toContain("Main Model output failed schema validation, so Reviewer was not run and no reviewed diff was materialized.");
+    expect(markup).toContain("Reviewed Repair Gate");
+    expect(markup).not.toContain("Approve sandbox apply");
+    expect(markup).not.toContain("safe-diff-file");
+    for (const forbidden of ["endpoint", "api_key", "raw deployment", "AZURE_OPENAI", "prompt", "completion", "sandbox_path"]) {
+      expect(markup).not.toContain(forbidden);
+    }
+  });
+
+  it("renders proposer_schema_invalid state correctly", () => {
+    const invocations: V2LlmInvocationEntry[] = [
+      {
+        ...baseInvocation,
+        proposal_id: null,
+        gate_id: null,
+        status: "fallback",
+        fallback_used: true,
+        redacted_error: "proposer_schema_invalid",
+        redacted_summary: "Main model returned JSON with schema errors: missing required fields: ['changed_files', 'proposed_diff']",
+        output_checksum: null,
+      },
+    ];
+
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairUnavailable invocations={invocations} loading={false} error={null} />,
+    );
+
+    expect(markup).toContain("Reviewed Repair Unavailable");
+    expect(markup).toContain("schema invalid");
+    expect(markup).toContain("not run");
+    expect(markup).toContain("Not available");
+    expect(markup).toContain("schema errors");
+    expect(markup).not.toContain("Approve sandbox apply");
+    expect(markup).not.toContain("safe-diff-file");
+    for (const forbidden of ["endpoint", "api_key", "raw deployment", "AZURE_OPENAI", "sandbox_path"]) {
+      expect(markup).not.toContain(forbidden);
+    }
+  });
+
+  it("renders materialization failed state when reviewer completed but no proposal", () => {
+    const invocations: V2LlmInvocationEntry[] = [
+      {
+        ...baseInvocation,
+        proposal_id: null,
+        gate_id: null,
+        output_checksum: "sha256:main-output",
+      },
+      {
+        ...baseInvocation,
+        invocation_id: "inv-reviewer",
+        proposal_id: null,
+        gate_id: null,
+        role: "reviewer",
+        responsibility: "repair_review",
+        model_display_name: "Reviewer Model",
+        status: "completed",
+        fallback_used: false,
+        redacted_error: null,
+        redacted_summary: "Reviewer accepted the repair proposal.",
+        output_checksum: "sha256:reviewer-output",
+        created_at: "2026-06-30T00:00:02Z",
+      },
+    ];
+
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairMaterializationFailed invocations={invocations} loading={false} error={null} />,
+    );
+
+    expect(markup).toContain("Reviewed Repair Materialization Failed");
+    expect(markup).toContain("Reviewed diff rejected by backend policy.");
+    expect(markup).toContain("Reviewed Repair Gate");
+    expect(markup).toContain("completed");
+    expect(markup).not.toContain("schema invalid");
+    expect(markup).not.toContain("Approve sandbox apply");
+    expect(markup).not.toContain("safe-diff-file");
+    expect(markup).not.toContain("Fix model output or schema");
+    for (const forbidden of ["endpoint", "api_key", "raw deployment", "AZURE_OPENAI", "prompt", "completion", "sandbox_path"]) {
+      expect(markup).not.toContain(forbidden);
+    }
+  });
+
+  it("renders materialization failed when both main and reviewer completed", () => {
+    const invocations: V2LlmInvocationEntry[] = [
+      {
+        ...baseInvocation,
+        proposal_id: null,
+        gate_id: null,
+        output_checksum: "sha256:main-output",
+      },
+      {
+        ...baseInvocation,
+        invocation_id: "inv-reviewer",
+        proposal_id: null,
+        gate_id: null,
+        role: "reviewer",
+        responsibility: "repair_review",
+        model_display_name: "Reviewer Model",
+        status: "completed",
+        fallback_used: false,
+        redacted_error: null,
+        redacted_summary: "Diff is scoped to pom.xml and safe.",
+        output_checksum: "sha256:reviewer-output",
+        created_at: "2026-06-30T00:00:02Z",
+      },
+    ];
+
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairMaterializationFailed invocations={invocations} loading={false} error={null} />,
+    );
+
+    expect(markup).toContain("Reviewed Repair Materialization Failed");
+    expect(markup).toContain("Reviewed diff rejected by backend policy.");
+    expect(markup).toContain("completed");
+    expect(markup).not.toContain("Approve sandbox apply");
+    expect(markup).not.toContain("safe-diff-file");
+    for (const forbidden of ["endpoint", "api_key", "AZURE_OPENAI", "sandbox_path"]) {
+      expect(markup).not.toContain(forbidden);
+    }
   });
 });
 

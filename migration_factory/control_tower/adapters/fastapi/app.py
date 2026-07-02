@@ -848,16 +848,19 @@ def create_app(
         service=_diagnosis_service,
     )
 
-    def _repair_gate_enabled_for_job(job_id: str) -> bool:
+    def _repair_policy_for_job(job_id: str) -> RunPolicy | None:
         with unit_of_work_factory() as uow:
             run_config = uow.run_configurations.get_for_job(job_id)
         if run_config is None or not run_config.policy_json:
-            return False
+            return None
         try:
-            policy = RunPolicy(**json.loads(run_config.policy_json))
+            return RunPolicy(**json.loads(run_config.policy_json))
         except Exception:
-            return False
-        return policy.enable_build_repair
+            return None
+
+    def _repair_gate_enabled_for_job(job_id: str) -> bool:
+        policy = _repair_policy_for_job(job_id)
+        return bool(policy and policy.enable_build_repair)
 
     def _maybe_create_repair_gate(
         job_id: str,
@@ -868,10 +871,55 @@ def create_app(
     ) -> None:
         if not V2FailureDiagnosisService.is_diagnosable_event(event_type):
             return
-        if not _repair_gate_enabled_for_job(job_id):
+        policy = _repair_policy_for_job(job_id)
+        if policy is None or not policy.enable_build_repair:
+            return
+
+        if policy.enable_llm_repair_proposal:
+            legacy_path = ""
+            with _read_unit_of_work(unit_of_work_factory) as read_uow:
+                job = read_uow.v2_jobs.get(job_id)
+                if job is not None:
+                    setup = read_uow.v2_setups.get(job.setup_id)
+                    if setup is not None:
+                        legacy_path = setup.legacy_app_path
+            with unit_of_work_factory() as uow:
+                gate_service = V2PhaseGateService(uow.phase_gates)
+                decision_service = V2GateActionService(
+                    uow.phase_gates,
+                    uow.gate_decisions,
+                    gate_service,
+                    revision_repo=uow.artifact_revisions,
+                    repair_service=_repair_flow,
+                )
+                repair_gate_service = V2RepairGateService(
+                    gate_service=gate_service,
+                    gate_action_service=decision_service,
+                    repair_flow=_repair_flow,
+                    diagnosis_service=_diagnosis_service,
+                    revision_repo=uow.artifact_revisions,
+                    repair_repo=uow.v2_repairs,
+                    reviewer_repo=uow.v2_reviewer,
+                    llm_invocation_repo=uow.v2_llm_invocations,
+                    event_repo=uow.v2_events,
+                )
+                repair_gate_service.create_reviewed_repair_gate_on_failure(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    command_id=command_id,
+                    event_type=event_type,
+                    payload=payload,
+                    legacy_path=legacy_path,
+                )
             return
 
         with unit_of_work_factory() as uow:
+            legacy_path = ""
+            job = uow.v2_jobs.get(job_id)
+            if job is not None:
+                setup = uow.v2_setups.get(job.setup_id)
+                if setup is not None:
+                    legacy_path = setup.legacy_app_path
             gate_service = V2PhaseGateService(uow.phase_gates)
             decision_service = V2GateActionService(
                 uow.phase_gates,
@@ -885,6 +933,11 @@ def create_app(
                 gate_action_service=decision_service,
                 repair_flow=_repair_flow,
                 diagnosis_service=_diagnosis_service,
+                revision_repo=uow.artifact_revisions,
+                repair_repo=uow.v2_repairs,
+                reviewer_repo=uow.v2_reviewer,
+                llm_invocation_repo=uow.v2_llm_invocations,
+                event_repo=uow.v2_events,
             )
             create_repair_gate_diagnosis_callback(
                 repair_gate_service,
@@ -898,7 +951,12 @@ def create_app(
         event_type: str,
         payload: dict[str, Any],
     ) -> None:
-        _orchestrator_diagnosis_callback(job_id, stage, command_id, event_type, payload)
+        diagnosis_payload = {
+            key: value
+            for key, value in dict(payload or {}).items()
+            if not str(key).startswith("_repair_")
+        }
+        _orchestrator_diagnosis_callback(job_id, stage, command_id, event_type, diagnosis_payload)
         _maybe_create_repair_gate(job_id, stage, command_id, event_type, payload)
 
     app.state.v2_orchestrator_runner = v2_orchestrator_runner or V2OrchestratorRunner(
@@ -1001,6 +1059,22 @@ def create_app(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "INVALID_REQUEST",
             "Request body did not match the expected contract.",
+        )
+
+    @app.exception_handler(sqlite3.OperationalError)
+    async def handle_sqlite_operational_error(request: Request, exc: sqlite3.OperationalError) -> JSONResponse:
+        if _is_sqlite_locked_error(exc):
+            return _json_error(
+                request,
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "DATABASE_BUSY",
+                "Database is temporarily locked. Retry the request.",
+            )
+        return _json_error(
+            request,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "DATABASE_ERROR",
+            "Database operation failed.",
         )
 
     @app.exception_handler(Exception)
@@ -2469,7 +2543,7 @@ def create_app(
         job_id: str,
     ) -> dict[str, Any]:
         """List assistant messages for a job."""
-        with unit_of_work_factory() as uow:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             service = V2AssistantService(
                 assistant_repo=uow.v2_assistant,
             )
@@ -4346,7 +4420,7 @@ def create_app(
 
     @app.get("/v1/v2/jobs/{job_id}/llm/activity")
     def list_v2_llm_activity(job_id: str) -> dict[str, Any]:
-        with unit_of_work_factory() as uow:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             records = uow.v2_llm_invocations.list_by_job(job_id)
             invocations = [
                 {
@@ -4376,7 +4450,7 @@ def create_app(
                 }
                 for r in records
             ]
-        return {"invocations": invocations}
+        return {"invocations": invocations, "job_id": job_id}
 
     # ------------------------------------------------------------------
     # Context pack manifest endpoints (V1-11A)
@@ -11753,11 +11827,12 @@ def _resolve_reviewed_repair_runtime_context(
         return None
     sandbox_path, _ = sandbox_resolution
 
+    run_id = _run_id_for_command(commands, str(proposal.command_id)) or str(proposal.command_id)
     try:
         run_dir = _v2_resume_run_dir_from_commands(
             commands,
             int(getattr(gate, "stage_index", 0) or 0),
-            str(proposal.command_id),
+            run_id,
         )
     except HTTPException:
         return None
@@ -11799,6 +11874,10 @@ def _resolve_reviewed_repair_runtime_context(
         artifact_refs,
         "deterministic_repair_artifact.json",
     )
+    primary_output_ref = _first_artifact_ref(
+        artifact_refs,
+        "primary_repair_llm_output.json",
+    )
     deterministic_rule_id = ""
     if deterministic_artifact_ref:
         try:
@@ -11810,13 +11889,19 @@ def _resolve_reviewed_repair_runtime_context(
         deterministic_rule_id = str(
             deterministic_payload.get("deterministic_rule_id") or ""
         )
+    if not deterministic_rule_id and primary_output_ref:
+        try:
+            primary_payload = json.loads(
+                Path(primary_output_ref).read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError, TypeError):
+            primary_payload = {}
+        deterministic_rule_id = str(
+            primary_payload.get("deterministic_rule_id") or ""
+        )
     if not deterministic_rule_id:
         return None
 
-    primary_output_ref = _first_artifact_ref(
-        artifact_refs,
-        "primary_repair_llm_output.json",
-    )
     final_artifact_ref = _first_artifact_ref(
         artifact_refs,
         "final_reviewed_repair_artifact.json",
@@ -11899,6 +11984,20 @@ def _parse_reviewed_repair_gate_refs(source_artifact_refs_json: str) -> tuple[di
                 continue
         artifact_refs.append(item)
     return checksum_refs, tuple(artifact_refs)
+
+
+def _run_id_for_command(commands: tuple[Any, ...], command_id: str) -> str:
+    for command in commands:
+        if str(getattr(command, "command_id", "") or "") != command_id:
+            continue
+        try:
+            argv = json.loads(getattr(command, "argv_json", "") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            return ""
+        if not isinstance(argv, list):
+            return ""
+        return _argv_value(argv, "--run-id")
+    return ""
 
 
 def _first_artifact_ref(artifact_refs: tuple[str, ...], filename: str) -> str:

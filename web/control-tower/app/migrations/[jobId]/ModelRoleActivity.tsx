@@ -38,9 +38,10 @@ function statusLabel(status: string): string {
 function statusClass(status: string): string {
   const normalized = status.trim().toLowerCase();
   if (normalized === "completed" || normalized === "fallback" || normalized === "accepted") return "completed";
-  if (normalized === "failed" || normalized === "rejected") return "failed";
+  if (normalized === "failed" || normalized === "rejected" || normalized === "schema invalid") return "failed";
   if (normalized === "request_revision" || normalized === "needs_revision") return "blocked";
   if (normalized === "started" || normalized === "running") return "running";
+  if (normalized === "not run") return "pending";
   return "pending";
 }
 
@@ -61,6 +62,12 @@ export function buildRepairModelActivity(invocations: V2LlmInvocationEntry[]): A
   const sorted = [...invocations].sort((a, b) => b.created_at.localeCompare(a.created_at));
   const proposer = newestFor(sorted, ["main", "proposer", "primary"], ["repair_proposal", "revision_proposal"]);
   const reviewer = newestFor(sorted, ["reviewer"], ["repair_review", "revision_review"]);
+
+  const isProposerSchemaInvalid = proposer?.redacted_error === "proposer_schema_invalid"
+    || (proposer?.redacted_summary ?? "").toLowerCase().includes("schema validation")
+    || (proposer?.redacted_summary ?? "").toLowerCase().includes("schema invalid");
+  const reviewerRun = !isProposerSchemaInvalid && reviewer;
+
   return [
     {
       key: "main-analyzing",
@@ -78,10 +85,14 @@ export function buildRepairModelActivity(invocations: V2LlmInvocationEntry[]): A
     },
     {
       key: "reviewer-reviewing",
-      label: `${modelLabel(reviewer, "reviewer")} reviewing proposal`,
-      status: reviewer ? statusLabel(reviewer.status) : "pending",
-      detail: reviewer?.redacted_summary || "Reviewer checks the proposal, risk, policy, and checksum binding.",
-      invocation: reviewer,
+      label: `${modelLabel(reviewerRun || null, "reviewer")} reviewing proposal`,
+      status: reviewerRun ? statusLabel(reviewerRun.status) : (isProposerSchemaInvalid ? "not run" : "pending"),
+      detail: reviewerRun
+        ? (reviewerRun.redacted_summary || "Reviewer checks the proposal, risk, policy, and checksum binding.")
+        : (isProposerSchemaInvalid
+          ? "Reviewer was not invoked because Main Model output failed schema validation."
+          : "Reviewer checks the proposal, risk, policy, and checksum binding."),
+      invocation: reviewerRun || null,
     },
   ];
 }

@@ -63,6 +63,7 @@ class PatchGateResult:
     risk: str = "BLOCKED"
     touched_paths: tuple[str, ...] = ()
     human_review_required: bool = False
+    reason_code: str = ""
 
 
 def evaluate_patch_proposal(
@@ -80,19 +81,21 @@ def evaluate_patch_proposal(
     diff = str(proposal.get("unified_diff") or "")
 
     if not rule_id:
-        return PatchGateResult("INVALID_PATCH", "patch proposal is missing deterministic_rule_id")
+        return PatchGateResult("INVALID_PATCH", "patch proposal is missing deterministic_rule_id", reason_code="missing_rule_id")
     if risk != "LOW":
         return PatchGateResult("HUMAN_REVIEW_REQUIRED", f"patch risk is not LOW: {risk}", rule_id, risk, human_review_required=True)
     if requires_human_review:
         return PatchGateResult("HUMAN_REVIEW_REQUIRED", "patch proposal requires human review", rule_id, risk, human_review_required=True)
     if not is_unified_diff(diff):
-        return PatchGateResult("INVALID_PATCH", "patch proposal is not a unified diff", rule_id, risk)
+        reason_code = classify_diff_failure(diff)
+        return PatchGateResult("INVALID_PATCH", "patch proposal is not a unified diff", rule_id, risk, reason_code=reason_code)
     if _claims_out_of_scope(proposal):
         return PatchGateResult("BLOCKED", "patch proposal claims out-of-scope validation", rule_id, risk)
 
     paths, path_errors = extract_touched_paths(diff)
     if path_errors:
-        return PatchGateResult("INVALID_PATCH", "; ".join(path_errors), rule_id, risk)
+        reason_code = classify_diff_failure(diff)
+        return PatchGateResult("INVALID_PATCH", "; ".join(path_errors), rule_id, risk, reason_code=reason_code)
     validation_errors = validate_patch_paths(
         paths,
         sandbox_path=sandbox_path,
@@ -100,7 +103,8 @@ def evaluate_patch_proposal(
         legacy_path=legacy_path,
     )
     if validation_errors:
-        return PatchGateResult("INVALID_PATCH", "; ".join(validation_errors), rule_id, risk, tuple(paths))
+        reason_code = classify_diff_failure(diff)
+        return PatchGateResult("INVALID_PATCH", "; ".join(validation_errors), rule_id, risk, tuple(paths), reason_code=reason_code)
 
     security_reason = security_patch_reason(paths, diff)
     if security_reason:
@@ -127,6 +131,81 @@ def is_unified_diff(diff: str) -> bool:
     if "GIT binary patch" in text or "Binary files " in text:
         return False
     return "diff --git " in text and "\n--- " in text and "\n+++ " in text and "\n@@" in text
+
+
+def classify_diff_failure(diff: str) -> str:
+    """Classify why a diff fails patch policy validation.
+
+    Returns a specific reason_code string:
+    - missing_diff_git_header
+    - missing_file_headers
+    - missing_hunk
+    - unsafe_path
+    - absolute_path
+    - path_traversal
+    - no_changes
+    - malformed_patch
+    - empty_diff
+    - binary_diff
+    - unknown
+    """
+    text = diff.strip()
+    if not text:
+        return "empty_diff"
+    if "GIT binary patch" in text or "Binary files " in text:
+        return "binary_diff"
+
+    if "diff --git " not in text:
+        return "missing_diff_git_header"
+
+    lines = text.splitlines()
+    has_old = any(line.startswith("--- ") for line in lines)
+    has_new = any(line.startswith("+++ ") for line in lines)
+    if not (has_old and has_new):
+        return "missing_file_headers"
+
+    has_hunk = any(line.startswith("@@") for line in lines)
+    if not has_hunk:
+        return "missing_hunk"
+
+    has_change = any(
+        (line.startswith("+") or line.startswith("-"))
+        and not line.startswith("--- ")
+        and not line.startswith("+++ ")
+        for line in lines
+    )
+    if not has_change:
+        return "no_changes"
+
+    paths, path_errors = extract_touched_paths(diff)
+    if path_errors:
+        for err in path_errors:
+            if "absolute" in err.lower():
+                return "absolute_path"
+            if "traversal" in err.lower():
+                return "path_traversal"
+            if "malformed" in err.lower():
+                return "malformed_patch"
+        return "unsafe_path"
+
+    for path in paths:
+        rel_errors = _relative_path_errors(path)
+        if rel_errors:
+            for err in rel_errors:
+                if "absolute" in err.lower():
+                    return "absolute_path"
+                if "traversal" in err.lower():
+                    return "path_traversal"
+                if "blocked" in err.lower():
+                    return "unsafe_path"
+                if "secret" in err.lower():
+                    return "unsafe_path"
+            return "unsafe_path"
+
+    if not paths:
+        return "no_changes"
+
+    return "unknown"
 
 
 def extract_touched_paths(diff: str) -> tuple[list[str], list[str]]:

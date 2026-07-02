@@ -1099,6 +1099,14 @@ class V2OrchestratorRunner:
             json.dumps(context_pack_to_dict(context_pack), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        result["_repair_failure_evidence_ref"] = str(evidence_path)
+        result["_repair_context_pack_ref"] = str(context_path)
+        result["_repair_run_dir"] = str(run_dir)
+        result["_repair_sandbox_path"] = _result_sandbox_path(result)
+        result["_repair_failure_evidence_checksum"] = evidence.content_checksum
+        result["_repair_context_pack_checksum"] = context_pack.context_pack_checksum
+        result["_repair_base_repo_state_checksum"] = context_pack.base_repo_state_checksum
+        result["_repair_h2_required"] = bool(result.get("h2_startup_required") or result.get("h2_startup_report_available"))
 
         self._event(
             job_id=job_id,
@@ -1182,7 +1190,7 @@ class V2OrchestratorRunner:
                 stage_index=stage_index,
                 command_id=command_id,
                 event_type="build_failed",
-                payload=build_payload,
+                payload={**build_payload, **_repair_callback_payload(result)},
             )
 
         if _is_failure_status(test_status):
@@ -1204,7 +1212,7 @@ class V2OrchestratorRunner:
                 stage_index=stage_index,
                 command_id=command_id,
                 event_type="test_failed",
-                payload=test_payload,
+                payload={**test_payload, **_repair_callback_payload(result)},
             )
 
         if _is_failure_status(final_status) or _is_failure_status(transform_status):
@@ -1230,7 +1238,7 @@ class V2OrchestratorRunner:
                 stage_index=stage_index,
                 command_id=command_id,
                 event_type="transform_failed",
-                payload=transform_payload,
+                payload={**transform_payload, **_repair_callback_payload(result)},
             )
 
     def _maybe_diagnose(
@@ -2384,6 +2392,20 @@ def _safe_artifact_ref(value: Any) -> str:
     if marker in text:
         return text[text.index(marker):]
     return _bounded(str(redact_public_value(text)))
+
+
+def _repair_callback_payload(result: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "_repair_failure_evidence_ref",
+        "_repair_context_pack_ref",
+        "_repair_run_dir",
+        "_repair_sandbox_path",
+        "_repair_failure_evidence_checksum",
+        "_repair_context_pack_checksum",
+        "_repair_base_repo_state_checksum",
+        "_repair_h2_required",
+    )
+    return {key: str(result.get(key) or "") for key in keys if result.get(key)}
 
 
 _APPROVAL_REVIEW_ARTIFACT_KEYS: tuple[str, ...] = (

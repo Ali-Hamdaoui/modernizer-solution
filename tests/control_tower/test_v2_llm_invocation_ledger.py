@@ -40,6 +40,7 @@ from migration_factory.control_tower.application.redaction import redact_model_s
 from migration_factory.control_tower.application.v2_llm_invocation_ledger import (
     V2LLMInvocationLedger,
     compute_content_checksum,
+    compute_deployment_alias_hash,
     safe_provider_alias,
 )
 from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
@@ -471,7 +472,7 @@ class TestRepairChainCapture:
             "root_cause": "test failure",
             "fix_strategy": "update dependency",
             "changed_files": ["pom.xml"],
-            "proposed_diff": "--- a/pom.xml\n+++ b/pom.xml\n@@ -1 +1 @@\n-test\n+fixed",
+            "proposed_diff": "diff --git a/pom.xml b/pom.xml\n--- a/pom.xml\n+++ b/pom.xml\n@@ -1 +1 @@\n-test\n+fixed",
             "risk": "LOW",
             "confidence": 0.9,
             "rationale": "test",
@@ -481,7 +482,7 @@ class TestRepairChainCapture:
             "root_cause": "test failure",
             "fix_strategy": "update dependency",
             "changed_files": ["pom.xml"],
-            "proposed_diff": "--- a/pom.xml\n+++ b/pom.xml\n@@ -1 +1 @@\n-test\n+fixed",
+            "proposed_diff": "diff --git a/pom.xml b/pom.xml\n--- a/pom.xml\n+++ b/pom.xml\n@@ -1 +1 @@\n-test\n+fixed",
             "deterministic_rule_id": "",
             "risk": "LOW",
             "confidence": 0.9,
@@ -489,7 +490,7 @@ class TestRepairChainCapture:
             "no_fix_reason": "",
         })
         expected_diff_checksum = _cs({
-            "unified_diff": "--- a/pom.xml\n+++ b/pom.xml\n@@ -1 +1 @@\n-test\n+fixed",
+            "unified_diff": "diff --git a/pom.xml b/pom.xml\n--- a/pom.xml\n+++ b/pom.xml\n@@ -1 +1 @@\n-test\n+fixed",
         })
 
         mock_client = MagicMock()
@@ -691,6 +692,23 @@ class TestTokenAndLatency:
         assert record.completion_tokens == 50
         assert record.total_tokens == 150
         assert record.latency_ms == 1234
+        conn.close()
+
+    def test_deployment_alias_hash_populated_for_configured_reviewer(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setenv("AZURE_OPENAI_REVIEWER_DEPLOYMENT", "private-reviewer-deployment")
+        conn = _apply_migration_only(tmp_path)
+        ledger = _make_ledger(conn)
+
+        inv_id = ledger.start_invocation(
+            job_id="j1",
+            role="reviewer",
+            responsibility="repair_review",
+        )
+
+        record = ledger.get_invocation(inv_id)
+        assert record is not None
+        assert record.deployment_alias_hash == compute_deployment_alias_hash("private-reviewer-deployment")
+        assert record.deployment_alias_hash != "private-reviewer-deployment"
         conn.close()
 
 

@@ -6,8 +6,10 @@ selection, and optionally fail-closes on structured-output schema checks.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
@@ -15,6 +17,10 @@ from typing import Any, Callable
 from migration_factory.control_tower.application.v2_model_schemas import validate_model_output
 from migration_factory.control_tower.application.v2_settings import ControlTowerSettings
 from migration_factory.control_tower.application.redaction import redact_model_summary
+
+# Public build marker: branch + version constant (no secrets, no paths).
+CODE_BRANCH = "amf-237-reviewed-repair-gate"
+CODE_VERSION = "amf-237-diagnostics-2026.07.02"
 
 
 class V2ModelRole(str, Enum):
@@ -46,6 +52,11 @@ class V2RoleModelResult:
     primary_failure_reason: str = ""
     fallback_used: bool = False
     schema_validated: bool = False
+    redacted_summary: str = ""
+    schema_diagnostics: dict[str, Any] | None = None
+    response_format_requested: bool = False
+    response_format_used: bool | None = None
+    deployment_alias_hash: str = ""
 
 
 @dataclass(frozen=True)
@@ -91,9 +102,17 @@ class V2ModelRoleRouter:
             request=request,
             role=request.role.value,
         )
+        schema_diag: dict[str, Any] = {}
+        schema_summary: str = ""
         if primary_result is not None:
             result = self._coerce_primary_result(primary_result, request)
-            if result.success and self._schema_ok(request, result.content):
+            schema_failure = self._schema_failure_reason(request, result.content)
+            if schema_failure:
+                schema_diag = self._schema_diagnostics(
+                    request, result.content, deployment=route.primary_deployment,
+                )
+                schema_summary = _build_schema_failure_summary(request, result.content)
+            if result.success and not schema_failure:
                 return V2RoleModelResult(
                     content=result.content,
                     role=result.role,
@@ -105,10 +124,20 @@ class V2ModelRoleRouter:
                     primary_failure_reason="",
                     fallback_used=False,
                     schema_validated=True,
+                    redacted_summary=schema_summary,
                 )
-            primary_failure = result.failure_reason or primary_failure or "primary_model_failed"
+            primary_failure = (
+                result.failure_reason
+                or schema_failure
+                or primary_failure
+                or f"{request.role.value}_model_failed"
+            )
+            if request.role == V2ModelRole.REVIEWER and primary_failure:
+                _reviewer_codes = {"reviewer_model_unavailable", "reviewer_schema_invalid", "reviewer_model_failed"}
+                if primary_failure not in _reviewer_codes:
+                    primary_failure = "reviewer_model_failed"
 
-        if route.fallback_enabled and route.fallback_deployment:
+        if request.role != V2ModelRole.REVIEWER and route.fallback_enabled and route.fallback_deployment:
             fallback_result, fallback_failure = self._try_invoke(
                 invoke,
                 deployment=route.fallback_deployment,
@@ -121,7 +150,9 @@ class V2ModelRoleRouter:
                     request,
                     primary_failure_reason=primary_failure,
                 )
-                if result.success and self._schema_ok(request, result.content):
+                schema_failure = self._schema_failure_reason(request, result.content)
+                if result.success and not schema_failure:
+                    redacted = self._build_schema_redacted_summary(primary_failure)
                     return V2RoleModelResult(
                         content=result.content,
                         role=result.role,
@@ -133,8 +164,10 @@ class V2ModelRoleRouter:
                         primary_failure_reason=primary_failure,
                         fallback_used=True,
                         schema_validated=True,
+                        redacted_summary=redacted or result.redacted_summary,
+                        schema_diagnostics=schema_diag or None,
                     )
-                fallback_failure = result.failure_reason or fallback_failure or "fallback_model_failed"
+                fallback_failure = result.failure_reason or schema_failure or fallback_failure or "fallback_model_failed"
             else:
                 fallback_failure = fallback_failure or "fallback_model_failed"
         else:
@@ -142,8 +175,9 @@ class V2ModelRoleRouter:
 
         return self._deterministic_result(
             request=request,
-            primary_failure_reason=primary_failure or "primary_model_unavailable",
+            primary_failure_reason=primary_failure or f"{request.role.value}_model_unavailable",
             fallback_failure_reason=fallback_failure,
+            schema_diagnostics=schema_diag or None,
         )
 
     def _try_invoke(
@@ -155,11 +189,15 @@ class V2ModelRoleRouter:
         role: str,
     ) -> tuple[Any | None, str]:
         if not deployment:
+            if role == V2ModelRole.REVIEWER.value:
+                return None, "reviewer_model_unavailable"
             return None, f"missing_{role}_deployment"
         try:
             return invoke(deployment), ""
-        except Exception as exc:
-            return None, redact_model_summary(f"{type(exc).__name__}: {exc}")
+        except Exception:
+            if role == V2ModelRole.REVIEWER.value:
+                return None, "reviewer_model_failed"
+            return None, f"{role}_model_failed"
 
     def _coerce_primary_result(self, result: Any, request: V2RoleModelRequest) -> V2RoleModelResult:
         return V2RoleModelResult(
@@ -170,6 +208,10 @@ class V2ModelRoleRouter:
             model_status=str(getattr(result, "model_status", "") or "live_ok"),
             success=bool(getattr(result, "success", False)),
             failure_reason=str(getattr(result, "failure_reason", "") or ""),
+            redacted_summary=str(getattr(result, "redacted_summary", "") or ""),
+            response_format_requested=bool(getattr(result, "response_format_requested", request.require_schema)),
+            response_format_used=getattr(result, "response_format_used", None),
+            deployment_alias_hash=str(getattr(result, "deployment_alias_hash", "") or ""),
         )
 
     def _coerce_fallback_result(
@@ -180,6 +222,7 @@ class V2ModelRoleRouter:
         primary_failure_reason: str,
     ) -> V2RoleModelResult:
         coerced = self._coerce_primary_result(result, request)
+        redacted = self._build_schema_redacted_summary(primary_failure_reason)
         return V2RoleModelResult(
             content=coerced.content,
             role=request.role.value,
@@ -191,22 +234,81 @@ class V2ModelRoleRouter:
             primary_failure_reason=primary_failure_reason,
             fallback_used=True,
             schema_validated=coerced.schema_validated,
+            redacted_summary=redacted,
         )
 
     def _schema_ok(self, request: V2RoleModelRequest, content: str) -> bool:
+        return self._schema_failure_reason(request, content) == ""
+
+    def _schema_failure_reason(self, request: V2RoleModelRequest, content: str) -> str:
         if not request.require_schema:
-            return True
+            return ""
         if not request.output_schema_name:
-            return False
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
-            return False
+            return f"{request.role.value}_schema_invalid"
+        parsed, category = _parse_model_json_safe(content)
+        if parsed is None:
+            return f"{request.role.value}_schema_invalid"
         try:
             validate_model_output(request.output_schema_name, parsed)
         except Exception:
-            return False
-        return True
+            return f"{request.role.value}_schema_invalid"
+        return ""
+
+    def _schema_diagnostics(
+        self,
+        request: V2RoleModelRequest,
+        content: str,
+        *,
+        deployment: str = "",
+    ) -> dict[str, Any]:
+        """Return safe schema diagnostics without leaking raw content."""
+        if not request.require_schema or not request.output_schema_name:
+            return {"schema_validated": False}
+        output_checksum = ""
+        if content.strip():
+            output_checksum = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+        parsed, category = _parse_model_json_safe(content)
+        base: dict[str, Any] = {
+            "output_checksum": output_checksum if content.strip() else "",
+            "response_format_requested": True,
+            "response_format_used": True,
+            "deployment_alias_hash": _deployment_alias_hash(deployment),
+        }
+        if parsed is None:
+            base.update({
+                "schema_validated": False,
+                "parse_failure_category": category or "unknown",
+                "reason_code": f"{request.role.value}_schema_invalid",
+            })
+            return base
+        try:
+            validate_model_output(request.output_schema_name, parsed)
+            return {"schema_validated": True, **base}
+        except Exception as exc:
+            missing, wrong_types, wrong_names = _categorize_schema_error(
+                request.output_schema_name, parsed, str(exc)
+            )
+            result: dict[str, Any] = {
+                "schema_validated": False,
+                "parse_failure_category": category,
+                "reason_code": f"{request.role.value}_schema_invalid",
+                **base,
+            }
+            if missing:
+                result["missing_fields"] = missing
+            if wrong_types:
+                result["wrong_field_types"] = wrong_types
+            if wrong_names:
+                result["wrong_field_names"] = wrong_names
+
+            # Check diff-specific failures for RepairPrimaryOutput
+            if request.output_schema_name == "RepairPrimaryOutput" and "proposed_diff" in parsed:
+                diff = str(parsed["proposed_diff"])
+                if diff.strip():
+                    diff_failure = _classify_diff_failure(diff)
+                    if diff_failure:
+                        result["parse_failure_category"] = diff_failure
+            return result
 
     def _deterministic_result(
         self,
@@ -214,9 +316,11 @@ class V2ModelRoleRouter:
         request: V2RoleModelRequest,
         primary_failure_reason: str,
         fallback_failure_reason: str,
+        schema_diagnostics: dict[str, Any] | None = None,
     ) -> V2RoleModelResult:
         content = self._deterministic_content(request, primary_failure_reason, fallback_failure_reason)
         schema_validated = self._schema_ok(request, content)
+        redacted = self._build_schema_redacted_summary(primary_failure_reason, schema_diagnostics)
         return V2RoleModelResult(
             content=content,
             role=request.role.value,
@@ -228,7 +332,24 @@ class V2ModelRoleRouter:
             primary_failure_reason=primary_failure_reason,
             fallback_used=bool(fallback_failure_reason),
             schema_validated=schema_validated,
+            redacted_summary=redacted,
+            schema_diagnostics=schema_diagnostics,
         )
+
+    def _build_schema_redacted_summary(
+        self,
+        primary_failure_reason: str,
+        schema_diagnostics: dict[str, Any] | None = None,
+    ) -> str:
+        if schema_diagnostics:
+            safe = _build_diagnostic_summary_from_diag(schema_diagnostics)
+            if safe:
+                return safe
+        if "schema_invalid" in primary_failure_reason:
+            return "Main model output failed schema validation, so Reviewer was not run and no reviewed diff was materialized."
+        if "model_unavailable" in primary_failure_reason or "model_failed" in primary_failure_reason:
+            return "Main model invocation failed; Reviewer was not run."
+        return ""
 
     def _deterministic_content(
         self,
@@ -279,3 +400,221 @@ class V2ModelRoleRouter:
         if role == V2ModelRole.FALLBACK:
             return settings.azure_foundry_fallback_deployment_env
         return settings.azure_foundry_assistant_deployment_env
+
+
+# ── Module-level helpers ────────────────────────────────────────────
+
+
+def _deployment_alias_hash(deployment: str) -> str:
+    """Hash a deployment name to a safe opaque identifier."""
+    if not deployment:
+        return ""
+    return hashlib.sha256(deployment.encode("utf-8")).hexdigest()[:16]
+
+
+def _build_diagnostic_summary_from_diag(diag: dict[str, Any]) -> str:
+    """Build a specific redacted summary from schema diagnostics dict."""
+    category = str(diag.get("parse_failure_category") or "")
+    missing = diag.get("missing_fields")
+    wrong_types = diag.get("wrong_field_types")
+    wrong_names = diag.get("wrong_field_names")
+    rfu = diag.get("response_format_used")
+
+    if rfu is False:
+        return "Azure rejected response_format=json_object; model returned plain text."
+
+    if category == "azure_response_format_rejected":
+        return "Azure rejected response_format=json_object."
+
+    if category == "truncated_output":
+        return "Main model response appears truncated."
+
+    if category == "unsupported_response_format":
+        return "Main model returned unsupported response format."
+
+    if category == "invalid_json":
+        return "Main model returned invalid JSON."
+
+    if category == "markdown_wrapped_json":
+        return "Main model returned markdown-wrapped JSON that could not be parsed."
+
+    if missing:
+        return f"Main model returned JSON missing required fields: {', '.join(missing)}"
+
+    if wrong_types:
+        return f"Main model returned JSON with wrong field types: {'; '.join(wrong_types)}"
+
+    if wrong_names:
+        return f"Main model returned JSON with unexpected fields: {', '.join(wrong_names)}"
+
+    return ""
+
+
+def _build_schema_failure_summary(request: V2RoleModelRequest, content: str) -> str:
+    """Build a safe human-readable summary for schema validation failures."""
+    if not request.require_schema or not request.output_schema_name:
+        return ""
+    parsed, category = _parse_model_json_safe(content)
+    if parsed is not None:
+        missing, wrong_types, wrong_names = _categorize_schema_error(
+            request.output_schema_name, parsed, ""
+        )
+        parts: list[str] = []
+        if missing:
+            parts.append(f"missing required fields: {missing}")
+        if wrong_types:
+            parts.append(f"wrong field types: {wrong_types}")
+        if wrong_names:
+            parts.append(f"unexpected fields: {wrong_names}")
+        if parts:
+            return f"Main model returned JSON with schema errors: {'; '.join(parts)}"
+
+        diff = str(parsed.get("proposed_diff", ""))
+        if diff.strip():
+            if "diff --git " not in diff:
+                return "Main model returned JSON with proposed_diff missing diff --git header"
+            if "@@" not in diff:
+                return "Main model returned JSON with proposed_diff missing @@ hunk"
+        return "Main model output failed schema validation."
+    if category == "markdown_wrapped_json":
+        return "Main model returned markdown-wrapped JSON that could not be parsed."
+    if category == "empty_output":
+        return "Main model returned empty output."
+    return "Main model returned non-JSON output that could not be parsed as structured repair data."
+
+
+def _parse_model_json_safe(content: str) -> tuple[dict[str, Any] | None, str]:
+    """Try to parse model output as JSON with resilient fallbacks.
+
+    Returns (parsed_dict, category) where category describes the parse method used.
+    """
+    raw = str(content).strip()
+    if not raw:
+        return None, "empty_output"
+
+    # Truncation detection: content that looks like it was cut off
+    braces_unequal = raw.count("{") != raw.count("}")
+    truncated_signals = (
+        raw.endswith("..."),
+        raw.endswith("```") and not raw.startswith("```"),
+        raw.rstrip().endswith(","),
+        raw.count("{") > raw.count("}"),
+        raw.count("[") > raw.count("]"),
+        # Object started but braces unbalanced — strong truncation signal
+        braces_unequal and raw.lstrip().startswith("{"),
+        # Odd number of double-quotes = unclosed string value
+        (raw.count('"') % 2 == 1) if raw.count('"') > 0 else False,
+    )
+    likely_truncated = sum(truncated_signals) >= 1
+
+    # Attempt 1: direct json.loads
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return parsed, "direct_parse"
+    except json.JSONDecodeError:
+        pass
+
+    # Attempt 2: strip markdown code fences
+    cleaned = raw
+    cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    cleaned = re.sub(r"\n?\s*```\s*$", "", cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    cleaned = cleaned.strip()
+    if cleaned != raw:
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                return parsed, "markdown_wrapped_json"
+        except json.JSONDecodeError:
+            pass
+
+    # Attempt 3: extract first complete JSON object
+    extracted = _extract_first_json_object(raw)
+    if extracted is not None:
+        return extracted, "extracted_json_object"
+
+    if likely_truncated:
+        return None, "truncated_output"
+
+    return None, "invalid_json"
+
+
+def _extract_first_json_object(text: str) -> dict[str, Any] | None:
+    """Extract the first complete JSON object from arbitrary text."""
+    decoder = json.JSONDecoder()
+    idx = 0
+    while idx < len(text):
+        if text[idx] == "{":
+            try:
+                obj, end = decoder.raw_decode(text, idx)
+                if isinstance(obj, dict):
+                    return obj
+            except (json.JSONDecodeError, ValueError):
+                idx += 1
+                continue
+        idx += 1
+    return None
+
+
+def _categorize_schema_error(
+    schema_name: str,
+    data: dict[str, Any],
+    error_text: str,
+) -> tuple[list[str], list[str], list[str]]:
+    """Categorize schema validation errors into missing fields, wrong types, wrong names.
+
+    Returns (missing_fields, wrong_types, wrong_names).
+    """
+    from migration_factory.control_tower.application.v2_model_schemas import SCHEMA_REGISTRY
+
+    schema = SCHEMA_REGISTRY.get(schema_name, {})
+    missing: list[str] = []
+    wrong_types: list[str] = []
+    wrong_names: list[str] = []
+
+    # Check missing required fields
+    required = schema.get("required", [])
+    for field in required:
+        if field not in data:
+            missing.append(field)
+
+    # Check field types
+    properties = schema.get("properties", {})
+    for field, field_schema in properties.items():
+        if field not in data:
+            continue
+        expected_type = field_schema.get("type")
+        value = data[field]
+        if expected_type == "string" and not isinstance(value, str):
+            wrong_types.append(f"{field} (expected string, got {type(value).__name__})")
+        elif expected_type == "array" and not isinstance(value, (list, tuple)):
+            wrong_types.append(f"{field} (expected array, got {type(value).__name__})")
+        elif expected_type == "number" and not isinstance(value, (int, float)):
+            wrong_types.append(f"{field} (expected number, got {type(value).__name__})")
+        elif expected_type in ("integer",) and not isinstance(value, int):
+            wrong_types.append(f"{field} (expected integer, got {type(value).__name__})")
+
+    # Check for unexpected field names (additionalProperties: false)
+    allowed = set(properties.keys())
+    for key in data:
+        if key not in allowed:
+            wrong_names.append(key)
+
+    return missing, wrong_types, wrong_names
+
+
+def _classify_diff_failure(diff: str) -> str:
+    """Classify a proposed_diff string failure mode.
+
+    Returns one of: missing_diff_git_header, missing_hunk, invalid_diff, or empty string.
+    """
+    text = diff.strip()
+    if not text:
+        return ""
+    if "diff --git " not in text:
+        return "missing_diff_git_header"
+    if "@@" not in text:
+        return "missing_hunk"
+    if "--- " not in text or "+++ " not in text:
+        return "invalid_diff"
+    return ""

@@ -91,6 +91,14 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
           }
         } else {
           setProposalState({ status: "no-proposal" });
+          setActivityState({ status: "loading" });
+          const activityResponse = await getV2LlmActivity(jobId).catch(() => null);
+          if (cancelled) return;
+          if (activityResponse?.invocations) {
+            setActivityState({ status: "available", invocations: activityResponse.invocations });
+          } else {
+            setActivityState({ status: "available", invocations: [] });
+          }
         }
       } catch (e) {
         if (!cancelled) {
@@ -136,6 +144,13 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
         }
       } else {
         setProposalState({ status: "no-proposal" });
+        setActivityState({ status: "loading" });
+        const activityResponse = await getV2LlmActivity(jobId).catch(() => null);
+        if (activityResponse?.invocations) {
+          setActivityState({ status: "available", invocations: activityResponse.invocations });
+        } else {
+          setActivityState({ status: "available", invocations: [] });
+        }
       }
     } catch {
       setProposalState({
@@ -199,6 +214,47 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
   }
 
   if (proposalState.status === "no-proposal") {
+    const unavailableInvocations = activityState.status === "available" || activityState.status === "error"
+      ? activityState.invocations
+      : [];
+    const hasReviewChainActivity = unavailableInvocations.some((invocation) => (
+      ["repair_proposal", "repair_review", "revision_proposal", "revision_review"].includes(
+        invocation.responsibility.toLowerCase(),
+      )
+    ));
+    if (hasReviewChainActivity) {
+      const sorted = [...unavailableInvocations].sort((a, b) => b.created_at.localeCompare(a.created_at));
+      const reviewerInvocation = sorted.find((invocation) => (
+        invocation.role.toLowerCase() === "reviewer" ||
+        invocation.responsibility.toLowerCase() === "repair_review"
+      ));
+      const mainCompleted = sorted.some((invocation) => (
+        ["main", "proposer", "primary"].includes(invocation.role.toLowerCase()) &&
+        invocation.status === "completed"
+      ));
+      const reviewerCompleted = reviewerInvocation?.status === "completed";
+      const latestMainSchemaInvalid = sorted.some((invocation) => (
+        ["main", "proposer", "primary"].includes(invocation.role.toLowerCase()) &&
+        invocation.status === "schema_invalid"
+      ));
+      if (reviewerCompleted && mainCompleted) {
+        return (
+          <ReviewedRepairMaterializationFailed
+            invocations={unavailableInvocations}
+            loading={activityState.status === "loading"}
+            error={activityState.status === "error" ? activityState.message : null}
+          />
+        );
+      }
+      return (
+        <ReviewedRepairUnavailable
+          invocations={unavailableInvocations}
+          loading={activityState.status === "loading"}
+          error={activityState.status === "error" ? activityState.message : null}
+          mainSchemaInvalid={latestMainSchemaInvalid && !mainCompleted}
+        />
+      );
+    }
     return (
       <section className="panel" data-testid="repair-proposal-panel">
         <h2>Repair Proposal</h2>
@@ -344,6 +400,231 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
             error={activityError}
           />
           <ValidationProgressPanel attempts={attempts} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export function ReviewedRepairUnavailable({
+  invocations,
+  loading,
+  error,
+  mainSchemaInvalid: mainSchemaInvalidProp,
+}: {
+  invocations: V2LlmInvocationEntry[];
+  loading: boolean;
+  error: string | null;
+  mainSchemaInvalid?: boolean;
+}) {
+  const sorted = [...invocations].sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const mainInvocation = sorted.find((invocation) => (
+    ["main", "proposer", "primary"].includes(invocation.role.toLowerCase()) ||
+    invocation.responsibility.toLowerCase() === "repair_proposal"
+  ));
+  const reviewerInvocation = sorted.find((invocation) => (
+    invocation.role.toLowerCase() === "reviewer" ||
+    invocation.responsibility.toLowerCase() === "repair_review"
+  ));
+
+  const isProposerSchemaInvalid = mainSchemaInvalidProp === true
+    || mainInvocation?.redacted_error === "proposer_schema_invalid"
+    || (mainInvocation?.redacted_summary ?? "").toLowerCase().includes("schema validation")
+    || (mainInvocation?.redacted_summary ?? "").toLowerCase().includes("schema invalid");
+
+  const mainModelStatus = isProposerSchemaInvalid
+    ? "schema invalid"
+    : mainInvocation
+      ? mainInvocation.status.replace(/_/g, " ")
+      : "pending";
+  const reviewerModelStatus = reviewerInvocation
+    ? reviewerInvocation.status.replace(/_/g, " ")
+    : isProposerSchemaInvalid
+      ? "not run"
+      : "pending";
+
+  const exactReason = isProposerSchemaInvalid && mainInvocation?.redacted_summary
+    && !mainInvocation.redacted_summary.toLowerCase().includes("schema validation")
+    && !mainInvocation.redacted_summary.toLowerCase().includes("schema invalid")
+    ? mainInvocation.redacted_summary
+    : null;
+
+  return (
+    <section className="panel repair-proposal-panel" data-testid="repair-proposal-panel">
+      <div className="repair-proposal-layout">
+        <div className="repair-proposal-main">
+          <div className="repair-panel-kicker">Reviewed Repair Gate</div>
+          <h2>Reviewed Repair Unavailable</h2>
+          <div className="failure-summary" data-testid="reviewed-repair-unavailable">
+            <strong>Failure Summary</strong>
+            {exactReason ? (
+              <p className="meta warning-text" data-testid="exact-failure-reason">{exactReason}</p>
+            ) : (
+              <p className="meta">Main Model output failed schema validation, so Reviewer was not run and no reviewed diff was materialized.</p>
+            )}
+          </div>
+          <div className="table-list repair-metadata-grid">
+            <div className="table-row">
+              <span className="meta">Main Model</span>
+              <strong className={isProposerSchemaInvalid ? "status-badge failed" : ""}>{mainModelStatus}</strong>
+            </div>
+            {mainInvocation?.redacted_summary && (
+              <div className="table-row">
+                <span className="meta">Failure reason</span>
+                <strong className="warning-text">{mainInvocation.redacted_summary}</strong>
+              </div>
+            )}
+            {mainInvocation?.provider_alias && (
+              <div className="table-row">
+                <span className="meta">Provider</span>
+                <strong>{mainInvocation.provider_alias}</strong>
+              </div>
+            )}
+            {mainInvocation?.deployment_alias_hash && (
+              <div className="table-row">
+                <span className="meta">Deployment hash</span>
+                <strong className="checksum">{mainInvocation.deployment_alias_hash}</strong>
+              </div>
+            )}
+            <div className="table-row">
+              <span className="meta">Reviewer Model</span>
+              <strong className={isProposerSchemaInvalid ? "status-badge pending" : ""}>{reviewerModelStatus}</strong>
+            </div>
+            <div className="table-row">
+              <span className="meta">Reviewed diff</span>
+              <strong>Not available</strong>
+            </div>
+            <div className="table-row">
+              <span className="meta">Next action</span>
+              {exactReason ? (
+                <strong>Review the specific error above. If the model output is valid, check the schema definition or retry the repair.</strong>
+              ) : (
+                <strong>Fix model output or schema, or retry reviewed repair if supported</strong>
+              )}
+            </div>
+          </div>
+          {!isProposerSchemaInvalid && mainInvocation?.redacted_error && (
+            <div className="main-diagnosis-summary" data-testid="main-model-error">
+              <strong>Main Model Error</strong>
+              <p className="warning-text">{mainInvocation.redacted_error}</p>
+            </div>
+          )}
+        </div>
+        <div className="repair-proposal-side">
+          <ModelRoleActivity invocations={invocations} loading={loading} error={error} />
+          <ValidationProgressPanel attempts={[]} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export function ReviewedRepairMaterializationFailed({
+  invocations,
+  loading,
+  error,
+  policyReasonCode,
+}: {
+  invocations: V2LlmInvocationEntry[];
+  loading: boolean;
+  error: string | null;
+  policyReasonCode?: string | null;
+}) {
+  const sorted = [...invocations].sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const mainInvocation = sorted.find((invocation) => (
+    ["main", "proposer", "primary"].includes(invocation.role.toLowerCase()) ||
+    invocation.responsibility.toLowerCase() === "repair_proposal"
+  ));
+  const reviewerInvocation = sorted.find((invocation) => (
+    invocation.role.toLowerCase() === "reviewer" ||
+    invocation.responsibility.toLowerCase() === "repair_review"
+  ));
+
+  const mainModelStatus = mainInvocation
+    ? mainInvocation.status.replace(/_/g, " ")
+    : "pending";
+  const reviewerModelStatus = reviewerInvocation
+    ? reviewerInvocation.status.replace(/_/g, " ")
+    : "pending";
+
+  const policyReasonDisplay = {
+    missing_diff_git_header: "missing Git diff header",
+    missing_file_headers: "missing file headers (---/+++)",
+    missing_hunk: "missing hunk (@@ ... @@)",
+    no_changes: "no added/removed lines",
+    unsafe_path: "unsafe file path",
+    absolute_path: "absolute file path rejected",
+    path_traversal: "path traversal rejected",
+    malformed_patch: "malformed patch",
+    empty_diff: "empty diff",
+    binary_diff: "binary diff not allowed",
+  } as const;
+
+  const displayReason = policyReasonCode
+    ? policyReasonDisplay[policyReasonCode as keyof typeof policyReasonDisplay] ?? policyReasonCode
+    : null;
+
+  return (
+    <section className="panel repair-proposal-panel" data-testid="repair-proposal-panel">
+      <div className="repair-proposal-layout">
+        <div className="repair-proposal-main">
+          <div className="repair-panel-kicker">Reviewed Repair Gate</div>
+          <h2>Reviewed Repair Materialization Failed</h2>
+          <div className="failure-summary" data-testid="reviewed-repair-materialization-failed">
+            <strong>Failure Summary</strong>
+            <p className="meta">Reviewed diff rejected by backend policy.</p>
+            {displayReason && (
+              <p className="meta policy-reason" data-testid="policy-reason">
+                Backend reason: {displayReason}
+              </p>
+            )}
+          </div>
+          <div className="table-list repair-metadata-grid">
+            <div className="table-row">
+              <span className="meta">Main Model</span>
+              <strong data-testid="main-model-status">{mainModelStatus}</strong>
+            </div>
+            {mainInvocation?.redacted_summary && (
+              <div className="table-row">
+                <span className="meta">Output summary</span>
+                <strong>{mainInvocation.redacted_summary}</strong>
+              </div>
+            )}
+            {mainInvocation?.provider_alias && (
+              <div className="table-row">
+                <span className="meta">Provider</span>
+                <strong>{mainInvocation.provider_alias}</strong>
+              </div>
+            )}
+            {mainInvocation?.deployment_alias_hash && (
+              <div className="table-row">
+                <span className="meta">Deployment hash</span>
+                <strong className="checksum">{mainInvocation.deployment_alias_hash}</strong>
+              </div>
+            )}
+            <div className="table-row">
+              <span className="meta">Reviewer Model</span>
+              <strong data-testid="reviewer-model-status">{reviewerModelStatus}</strong>
+            </div>
+            {reviewerInvocation?.redacted_summary && (
+              <div className="table-row">
+                <span className="meta">Reviewer output</span>
+                <strong>{reviewerInvocation.redacted_summary}</strong>
+              </div>
+            )}
+            <div className="table-row">
+              <span className="meta">Reviewed diff</span>
+              <strong>Not available</strong>
+            </div>
+            <div className="table-row">
+              <span className="meta">Next action</span>
+              <strong>Request backend retry or revision.</strong>
+            </div>
+          </div>
+        </div>
+        <div className="repair-proposal-side">
+          <ModelRoleActivity invocations={invocations} loading={loading} error={error} />
+          <ValidationProgressPanel attempts={[]} />
         </div>
       </div>
     </section>

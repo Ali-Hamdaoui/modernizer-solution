@@ -39,14 +39,33 @@ from migration_factory.control_tower.application.v2_repair_flow import (
 )
 from migration_factory.control_tower.domain.checksums import (
     sha256_canonical_json,
+    sha256_hex,
     utc_now_text,
 )
 from migration_factory.control_tower.domain.entities import ArtifactRevisionRecord
 from migration_factory.control_tower.infrastructure.sqlite.v2_artifact_revision_repository import (
     SqliteArtifactRevisionRepository,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_llm_invocation_repository import (
+    SqliteV2LLMInvocationRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
+    SqliteV2RepairRepository,
+    V2RepairProposalRecord,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_reviewer_repository import (
+    SqliteV2ReviewerRepository,
+    V2ReviewerCritiqueRecord,
+)
 from migration_factory.control_tower.schemas.phase_gate import GateDecision
+from migration_factory.repair_loop.failure_evidence import (
+    FailureEvidence,
+    FailureSource,
+    NormalizedCompilerError,
+    NormalizedTestFailure,
+)
 from migration_factory.repair_loop.patch_gate import evaluate_patch_proposal
+from migration_factory.repair_loop.repair_context import RepairContextPack
 
 
 # ── Constants ─────────────────────────────────────────────────────────
@@ -99,6 +118,10 @@ class V2RepairGateService:
         repair_flow: V2RepairFlowService | None = None,
         diagnosis_service: V2FailureDiagnosisService | None = None,
         revision_repo: SqliteArtifactRevisionRepository | None = None,
+        repair_repo: SqliteV2RepairRepository | None = None,
+        reviewer_repo: SqliteV2ReviewerRepository | None = None,
+        llm_invocation_repo: SqliteV2LLMInvocationRepository | None = None,
+        event_repo: Any | None = None,
         max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
     ) -> None:
         self._gate_service = gate_service
@@ -106,10 +129,469 @@ class V2RepairGateService:
         self._repair_flow = repair_flow
         self._diagnosis_service = diagnosis_service
         self._revision_repo = revision_repo
+        self._repair_repo = repair_repo
+        self._reviewer_repo = reviewer_repo
+        self._llm_invocation_repo = llm_invocation_repo
+        self._event_repo = event_repo
         self._max_repair_attempts = max_repair_attempts
 
         # In-memory attempt tracking: {(job_id, stage_index): attempt_count}
         self._attempt_counts: dict[tuple[str, int], int] = {}
+        # Idempotency guard: set of (job_id, stage_index, command_id) already attempted
+        self._chain_attempted: set[tuple[str, int, str]] = set()
+
+    def create_reviewed_repair_gate_on_failure(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        legacy_path: str,
+        model_client: Any | None = None,
+    ) -> RepairGateCreationResult:
+        """Run the Azure reviewed repair chain for the first build/test failure.
+
+        Idempotency guard: (job_id, stage_index, command_id) is tracked to prevent
+        duplicate chain attempts from multiple failure notifications (e.g., both
+        build_failed and test_failed for the same command).
+        """
+        chain_key = (job_id, stage_index, command_id)
+        if chain_key in self._chain_attempted:
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="skipped",
+                reason=f"duplicate repair chain attempt blocked for {command_id}",
+            )
+        self._chain_attempted.add(chain_key)
+
+        from migration_factory.control_tower.application.v2_llm_invocation_ledger import (
+            V2LLMInvocationLedger,
+        )
+        from migration_factory.orchestrator.repair_review_chain import (
+            RepairReviewChainProductionError,
+            produce_repair_review_chain,
+        )
+
+        required = (
+            "_repair_failure_evidence_ref",
+            "_repair_context_pack_ref",
+            "_repair_run_dir",
+            "_repair_sandbox_path",
+            "_repair_failure_evidence_checksum",
+            "_repair_context_pack_checksum",
+            "_repair_base_repo_state_checksum",
+        )
+        missing = [key for key in required if not str(payload.get(key) or "").strip()]
+        if missing:
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="skipped",
+                reason=f"missing reviewed repair context: {', '.join(missing)}",
+            )
+
+        try:
+            evidence = _failure_evidence_from_json(Path(str(payload["_repair_failure_evidence_ref"])))
+            context_pack = _repair_context_from_json(Path(str(payload["_repair_context_pack_ref"])))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="skipped",
+                reason=f"reviewed repair context could not be loaded: {type(exc).__name__}",
+            )
+
+        run_dir = str(payload["_repair_run_dir"])
+        output_dir = Path(run_dir) / "repair_chain"
+        invocation_ledger = (
+            V2LLMInvocationLedger(self._llm_invocation_repo)
+            if self._llm_invocation_repo is not None
+            else None
+        )
+        try:
+            chain_result = produce_repair_review_chain(
+                failure_evidence=evidence,
+                context_pack=context_pack,
+                output_dir=output_dir,
+                source_profile=context_pack.source_profile,
+                target_profile=context_pack.target_profile,
+                model_client=model_client,
+                invocation_ledger=invocation_ledger,
+            )
+        except Exception as exc:
+            schema_diagnostics: dict[str, Any] | None = None
+            if isinstance(exc, RepairReviewChainProductionError):
+                schema_diagnostics = exc.schema_diagnostics
+            self._emit_reviewed_repair_unavailable(
+                job_id=job_id,
+                stage_index=stage_index,
+                context_checksum=str(payload["_repair_context_pack_checksum"]),
+                reason_code=_reviewed_repair_unavailable_reason(exc),
+                schema_diagnostics=schema_diagnostics,
+            )
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="skipped",
+                reason=f"reviewed repair chain failed closed: {type(exc).__name__}",
+            )
+
+        primary = _read_json_ref(chain_result["review_chain"].get("primary_output_ref"))
+        deterministic_rule_id = str(primary.get("deterministic_rule_id") or "no_safe_rule")
+        gate_result = self.create_repair_gate_from_reviewed_chain(
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            review_chain_result=chain_result,
+            failure_evidence_checksum=str(payload["_repair_failure_evidence_checksum"]),
+            context_pack_checksum=str(payload["_repair_context_pack_checksum"]),
+            base_repo_state_checksum=str(payload["_repair_base_repo_state_checksum"]),
+            sandbox_path=str(payload["_repair_sandbox_path"]),
+            run_dir=run_dir,
+            legacy_path=legacy_path,
+            deterministic_rule_id=deterministic_rule_id,
+            h2_required=_truthy(payload.get("_repair_h2_required")),
+        )
+        if gate_result.status != "created":
+            self._emit_reviewed_repair_materialization_failed(
+                job_id=job_id,
+                stage_index=stage_index,
+                context_checksum=str(payload["_repair_context_pack_checksum"]),
+                reason_code=gate_result.reason or "gate_not_created",
+                chain=chain_result.get("review_chain"),
+            )
+            return gate_result
+        try:
+            proposal_id = self._persist_reviewed_repair_proposal(
+                job_id=job_id,
+                stage_index=stage_index,
+                command_id=command_id,
+                event_type=event_type,
+                failure_evidence=evidence,
+                context_pack=context_pack,
+                chain_result=chain_result,
+                gate_id=gate_result.gate_id,
+                policy_validation_checksum=gate_result.policy_validation_checksum,
+                failure_evidence_ref=str(payload["_repair_failure_evidence_ref"]),
+                repair_context_ref=str(payload["_repair_context_pack_ref"]),
+            )
+        except Exception as exc:
+            self._emit_reviewed_repair_materialization_failed(
+                job_id=job_id,
+                stage_index=stage_index,
+                context_checksum=str(payload["_repair_context_pack_checksum"]),
+                reason_code="proposal_persistence_failed",
+                chain=chain_result.get("review_chain"),
+                detail=str(type(exc).__name__),
+            )
+            return RepairGateCreationResult(
+                gate_id=gate_result.gate_id,
+                gate_checksum=gate_result.gate_checksum,
+                diagnosis=None,
+                status="skipped",
+                reason=f"reviewed repair proposal persistence failed: {type(exc).__name__}",
+                policy_validation_checksum=gate_result.policy_validation_checksum,
+            )
+        try:
+            self._bind_llm_invocations(
+                chain=chain_result["review_chain"],
+                proposal_id=proposal_id,
+                gate_id=gate_result.gate_id,
+            )
+        except Exception as exc:
+            self._emit_reviewed_repair_materialization_failed(
+                job_id=job_id,
+                stage_index=stage_index,
+                context_checksum=str(payload["_repair_context_pack_checksum"]),
+                reason_code="llm_binding_failed",
+                chain=chain_result.get("review_chain"),
+                detail=str(type(exc).__name__),
+            )
+            return RepairGateCreationResult(
+                gate_id=gate_result.gate_id,
+                gate_checksum=gate_result.gate_checksum,
+                diagnosis=None,
+                status="skipped",
+                reason=f"reviewed repair LLM binding failed: {type(exc).__name__}",
+                policy_validation_checksum=gate_result.policy_validation_checksum,
+            )
+        self._emit_reviewed_repair_materialized(
+            job_id=job_id,
+            stage_index=stage_index,
+            context_checksum=str(payload["_repair_context_pack_checksum"]),
+            gate_id=gate_result.gate_id,
+            proposal_id=proposal_id,
+            chain=chain_result.get("review_chain"),
+            policy_validation_checksum=gate_result.policy_validation_checksum,
+            diff_normalized=_normalized_flag(chain_result.get("review_chain")),
+        )
+        return gate_result
+
+    def _emit_reviewed_repair_unavailable(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        context_checksum: str,
+        reason_code: str,
+        invocation_id: str | None = None,
+        schema_diagnostics: dict[str, Any] | None = None,
+    ) -> None:
+        if self._event_repo is None:
+            return
+        main_invocation_id = invocation_id or ""
+        reviewer_invocation_id = ""
+        if self._llm_invocation_repo is not None:
+            for record in self._llm_invocation_repo.list_by_job(job_id):
+                responsibility = str(getattr(record, "responsibility", "") or "")
+                if not main_invocation_id and responsibility == "repair_proposal":
+                    main_invocation_id = str(record.invocation_id)
+                if not reviewer_invocation_id and responsibility == "repair_review":
+                    reviewer_invocation_id = str(record.invocation_id)
+
+        event_type = "reviewed_repair_unavailable"
+        if reason_code == "proposer_schema_invalid":
+            event_type = "repair_primary_schema_invalid"
+
+        payload: dict[str, Any] = {
+            "job_id": job_id,
+            "stage_index": stage_index,
+            "context_checksum": context_checksum,
+            "main_invocation_id": main_invocation_id,
+            "reviewer_invocation_id": reviewer_invocation_id,
+            "reason_code": reason_code,
+            "schema_name": "RepairPrimaryOutput",
+            "message": "No independent reviewer completed, so no reviewed diff was materialized.",
+        }
+        if schema_diagnostics:
+            safe_diag = {
+                k: v for k, v in schema_diagnostics.items()
+                if k in (
+                    "parse_failure_category", "missing_fields", "wrong_field_types",
+                    "wrong_field_names", "output_checksum", "response_format_requested",
+                    "response_format_used", "deployment_alias_hash",
+                )
+            }
+            payload["schema_diagnostics"] = safe_diag
+
+        self._event_repo.save(
+            job_id=job_id,
+            stage=stage_index,
+            event_type=event_type,
+            status="blocked",
+            message="No independent reviewer completed, so no reviewed diff was materialized.",
+            payload=payload,
+        )
+
+    def _emit_reviewed_repair_materialization_failed(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        context_checksum: str,
+        reason_code: str,
+        chain: dict[str, Any] | None = None,
+        detail: str = "",
+        policy_result: Any = None,
+    ) -> None:
+        if self._event_repo is None:
+            return
+        chain = chain or {}
+        main_invocation_id = str(chain.get("proposer_invocation_id") or "")
+        reviewer_invocation_id = str(chain.get("reviewer_invocation_id") or "")
+        if not main_invocation_id and self._llm_invocation_repo is not None:
+            for record in self._llm_invocation_repo.list_by_job(job_id):
+                responsibility = str(getattr(record, "responsibility", "") or "")
+                if not main_invocation_id and responsibility == "repair_proposal":
+                    main_invocation_id = str(record.invocation_id)
+                if not reviewer_invocation_id and responsibility == "repair_review":
+                    reviewer_invocation_id = str(record.invocation_id)
+
+        policy_reason_code = ""
+        changed_files: list[str] = []
+        diff_checksum = ""
+        if policy_result is not None:
+            policy_reason_code = str(getattr(policy_result, "reason_code", "") or "")
+            changed_files = list(getattr(policy_result, "touched_paths", ()))
+
+        payload: dict[str, Any] = {
+            "job_id": job_id,
+            "stage_index": stage_index,
+            "context_checksum": context_checksum,
+            "main_invocation_id": main_invocation_id,
+            "reviewer_invocation_id": reviewer_invocation_id,
+            "reason_code": reason_code,
+            "policy_reason_code": policy_reason_code,
+            "detail": detail,
+            "changed_files": changed_files,
+            "diff_checksum": diff_checksum,
+            "message": "Reviewer accepted, but backend patch policy rejected the reviewed diff.",
+        }
+        self._event_repo.save(
+            job_id=job_id,
+            stage=stage_index,
+            event_type="reviewed_repair_materialization_failed",
+            status="failed",
+            message="Reviewer accepted, but backend patch policy rejected the reviewed diff.",
+            payload=payload,
+        )
+
+    def _emit_reviewed_repair_materialized(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        context_checksum: str,
+        gate_id: str,
+        proposal_id: str,
+        chain: dict[str, Any] | None = None,
+        policy_validation_checksum: str = "",
+        diff_normalized: bool = False,
+    ) -> None:
+        if self._event_repo is None:
+            return
+        chain = chain or {}
+        main_invocation_id = str(chain.get("proposer_invocation_id") or "")
+        reviewer_invocation_id = str(chain.get("reviewer_invocation_id") or "")
+        payload: dict[str, Any] = {
+            "job_id": job_id,
+            "stage_index": stage_index,
+            "context_checksum": context_checksum,
+            "gate_id": gate_id,
+            "proposal_id": proposal_id,
+            "main_invocation_id": main_invocation_id,
+            "reviewer_invocation_id": reviewer_invocation_id,
+            "policy_validation_checksum": policy_validation_checksum,
+            "diff_normalized": diff_normalized,
+            "message": "Reviewed repair diff materialized successfully.",
+        }
+        self._event_repo.save(
+            job_id=job_id,
+            stage=stage_index,
+            event_type="repair_diff_materialized",
+            status="completed",
+            message="Reviewed repair diff materialized and passed backend patch policy.",
+            payload=payload,
+        )
+
+    def _persist_reviewed_repair_proposal(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        event_type: str,
+        failure_evidence: FailureEvidence,
+        context_pack: RepairContextPack,
+        chain_result: dict[str, Any],
+        gate_id: str,
+        policy_validation_checksum: str,
+        failure_evidence_ref: str,
+        repair_context_ref: str,
+    ) -> str:
+        chain = dict(chain_result.get("review_chain") or {})
+        primary = _read_json_ref(chain.get("primary_output_ref"))
+        reviewer = _read_json_ref(chain.get("reviewer_output_ref"))
+        final_artifact = _read_json_ref(chain.get("final_artifact_ref"))
+        final_diff_ref = str(chain.get("final_diff_ref") or "")
+        diff_bytes = Path(final_diff_ref).read_bytes()
+        public_diff_checksum = sha256_hex(diff_bytes)
+        changed_files = tuple(
+            str(item)
+            for item in primary.get("changed_files", failure_evidence.changed_files)
+            if str(item).strip()
+        )
+        proposal_id = uuid4().hex
+        critique_id = uuid4().hex
+        proposal_checksum = str(chain.get("final_artifact_checksum") or "")
+        reviewer_notes = reviewer.get("notes") if isinstance(reviewer.get("notes"), list) else []
+        reasoning = "\n".join(str(note) for note in reviewer_notes if str(note).strip())
+        if not reasoning:
+            reasoning = "Reviewer accepted the repair proposal."
+        policy_concerns = reviewer.get("policy_concerns") if isinstance(reviewer.get("policy_concerns"), list) else []
+        risks = reviewer.get("risks") if isinstance(reviewer.get("risks"), list) else []
+
+        if self._repair_repo is not None:
+            self._repair_repo.save_proposal(
+                V2RepairProposalRecord(
+                    proposal_id=proposal_id,
+                    command_id=command_id,
+                    failure_summary=failure_evidence.failure_summary,
+                    hypothesis=str(primary.get("root_cause") or final_artifact.get("root_cause") or ""),
+                    patch_summary=str(primary.get("fix_strategy") or final_artifact.get("fix_strategy") or ""),
+                    affected_paths_json=json.dumps(list(changed_files), separators=(",", ":")),
+                    status="user_review_required",
+                    approval_checksum=None,
+                    created_at=utc_now_text(),
+                    proposal_checksum=proposal_checksum,
+                    context_pack_checksum=context_pack.context_pack_checksum,
+                    job_id=job_id,
+                    route_step_index=stage_index,
+                    attempt_number=1,
+                    failure_evidence_ref=failure_evidence_ref,
+                    repair_context_ref=repair_context_ref,
+                    diagnosis_ref=f"{event_type}:{failure_evidence.failure_source.value}",
+                    repair_plan_ref=str(chain.get("final_artifact_ref") or ""),
+                    diff_ref=final_diff_ref,
+                    diff_checksum=public_diff_checksum,
+                    safe_diff_preview_ref=Path(final_diff_ref).name,
+                    reviewer_verdict_id=critique_id,
+                    reviewer_verdict_ref=str(chain.get("reviewer_output_ref") or ""),
+                    reviewer_output_checksum=str(chain.get("reviewer_output_checksum") or ""),
+                    policy_validation_checksum=policy_validation_checksum,
+                    gate_id=gate_id,
+                    status_reason="reviewed repair proposal ready for user approval",
+                    reviewer_decision=str(chain.get("reviewer_decision") or "accept"),
+                )
+            )
+        if self._reviewer_repo is not None:
+            self._reviewer_repo.save_critique(
+                V2ReviewerCritiqueRecord(
+                    critique_id=critique_id,
+                    proposal_id=proposal_id,
+                    proposal_type="repair",
+                    proposal_checksum=proposal_checksum,
+                    context_pack_checksum=context_pack.context_pack_checksum,
+                    decision=str(chain.get("reviewer_decision") or "accept"),
+                    reasoning=reasoning,
+                    missing_evidence_json=json.dumps(
+                        list(reviewer.get("missing_evidence") or ()),
+                        separators=(",", ":"),
+                    ),
+                    unsafe_assumptions_json=json.dumps(
+                        [str(item) for item in (*risks, *policy_concerns)],
+                        separators=(",", ":"),
+                    ),
+                    model_invocation_id=str(chain.get("reviewer_invocation_id") or "") or None,
+                    created_at=utc_now_text(),
+                )
+            )
+        return proposal_id
+
+    def _bind_llm_invocations(
+        self,
+        *,
+        chain: dict[str, Any],
+        proposal_id: str,
+        gate_id: str,
+    ) -> None:
+        if self._llm_invocation_repo is None:
+            return
+        for key in ("proposer_invocation_id", "reviewer_invocation_id"):
+            invocation_id = str(chain.get(key) or "")
+            if invocation_id:
+                self._llm_invocation_repo.update_bindings(
+                    invocation_id,
+                    proposal_id=proposal_id,
+                    gate_id=gate_id,
+                )
 
     def create_repair_gate_from_reviewed_chain(
         self,
@@ -179,6 +661,7 @@ class V2RepairGateService:
             "risk": policy_result.risk,
             "touched_paths": list(policy_result.touched_paths),
             "human_review_required": policy_result.human_review_required,
+            "reason_code": policy_result.reason_code,
         }
         policy_checksum = sha256_canonical_json(policy_payload)
         policy_path = Path(run_dir) / "repairs" / "repair_policy_validation.json"
@@ -188,6 +671,15 @@ class V2RepairGateService:
             encoding="utf-8",
         )
         if policy_result.status != "ALLOWED":
+            self._emit_reviewed_repair_materialization_failed(
+                job_id=job_id,
+                stage_index=stage_index,
+                context_checksum=context_pack_checksum,
+                reason_code=f"repair policy validation failed: {policy_result.status}",
+                chain=chain,
+                detail=policy_result.reason,
+                policy_result=policy_result,
+            )
             return RepairGateCreationResult(
                 gate_id="",
                 gate_checksum="",
@@ -1235,6 +1727,138 @@ def _build_failure_summary_from_payload(
     return " | ".join(parts) if parts else f"{event_type} with no details"
 
 
+def _read_json_ref(ref: Any) -> dict[str, Any]:
+    if not ref:
+        return {}
+    try:
+        payload = json.loads(Path(str(ref)).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _reviewed_repair_unavailable_reason(exc: Exception) -> str:
+    text = str(exc).lower()
+    if hasattr(exc, "reason_code") and exc.reason_code:
+        rc = str(exc.reason_code).lower()
+        if "schema_invalid" in rc:
+            return "proposer_schema_invalid"
+        return rc
+    if "proposer_schema_invalid" in text or "primary repair output" in text or "azure_response_format_rejected" in text:
+        return "proposer_schema_invalid"
+    if "reviewer_model_unavailable" in text or "missing_reviewer_deployment" in text:
+        return "reviewer_model_unavailable"
+    if "reviewer_schema_invalid" in text or "reviewer output must be valid json" in text:
+        return "reviewer_schema_invalid"
+    if "reviewer_model_failed" in text:
+        return "reviewer_model_failed"
+    if "reviewer decision failed closed" in text or "request_revision" in text or "reject" in text:
+        return "reviewer_rejected"
+    if "missing_endpoint" in text or "missing_key" in text or "azure_model_config_missing" in text:
+        return "azure_model_config_missing"
+    if "materializ" in text or "final_reviewed_repair" in text:
+        return "diff_materialization_failed"
+    if "primary repair model failed closed" in text:
+        return "proposer_model_failed"
+    return "reviewer_model_unavailable" if "reviewer repair model failed closed" in text else "diff_materialization_failed"
+
+
+def _truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _failure_evidence_from_json(path: Path) -> FailureEvidence:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("failure evidence artifact must be an object")
+    compiler_errors = tuple(
+        NormalizedCompilerError(
+            message=str(item.get("message") or ""),
+            file_path=str(item.get("file_path") or ""),
+            line=int(item.get("line") or 0),
+            column=int(item.get("column") or 0),
+            severity=str(item.get("severity") or "error"),
+        )
+        for item in payload.get("compiler_errors", ())
+        if isinstance(item, dict)
+    )
+    test_failures = tuple(
+        NormalizedTestFailure(
+            test_name=str(item.get("test_name") or ""),
+            test_class=str(item.get("test_class") or ""),
+            message=str(item.get("message") or ""),
+            file_path=str(item.get("file_path") or ""),
+        )
+        for item in payload.get("test_failures", ())
+        if isinstance(item, dict)
+    )
+    source = str(payload.get("failure_source") or "unknown")
+    try:
+        failure_source = FailureSource(source)
+    except ValueError:
+        failure_source = FailureSource.UNKNOWN
+    return FailureEvidence(
+        failure_source=failure_source,
+        stage_index=int(payload.get("stage_index") or 0),
+        job_id=str(payload.get("job_id") or ""),
+        command_id=str(payload.get("command_id") or ""),
+        failure_summary=str(payload.get("failure_summary") or ""),
+        compiler_errors=compiler_errors,
+        test_failures=test_failures,
+        changed_files=tuple(str(item) for item in payload.get("changed_files", ()) if str(item).strip()),
+        source_profile=str(payload.get("source_profile") or ""),
+        target_profile=str(payload.get("target_profile") or ""),
+        accepted_artifact_checksums=tuple(
+            str(item) for item in payload.get("accepted_artifact_checksums", ()) if str(item).strip()
+        ),
+        artifact_refs={
+            str(k): str(v)
+            for k, v in dict(payload.get("artifact_refs") or {}).items()
+            if str(k).strip() and str(v).strip()
+        },
+        stdout_tail=str(payload.get("stdout_tail") or ""),
+        stderr_tail=str(payload.get("stderr_tail") or ""),
+        safe_log_preview=str(payload.get("safe_log_preview") or ""),
+        content_checksum=str(payload.get("content_checksum") or ""),
+        artifact_checksum=str(payload.get("artifact_checksum") or ""),
+        created_at=str(payload.get("created_at") or ""),
+        schema_version=str(payload.get("schema_version") or "1.0.0"),
+    )
+
+
+def _repair_context_from_json(path: Path) -> RepairContextPack:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("repair context artifact must be an object")
+    return RepairContextPack(
+        job_id=str(payload.get("job_id") or ""),
+        stage_index=int(payload.get("stage_index") or 0),
+        command_id=str(payload.get("command_id") or ""),
+        failure_source=str(payload.get("failure_source") or ""),
+        failure_evidence_checksum=str(payload.get("failure_evidence_checksum") or ""),
+        source_profile=str(payload.get("source_profile") or ""),
+        target_profile=str(payload.get("target_profile") or ""),
+        accepted_analysis_checksum=str(payload.get("accepted_analysis_checksum") or ""),
+        accepted_planning_checksum=str(payload.get("accepted_planning_checksum") or ""),
+        prior_proposal_checksums=tuple(
+            str(item) for item in payload.get("prior_proposal_checksums", ()) if str(item).strip()
+        ),
+        prior_reviewer_notes=tuple(
+            str(item) for item in payload.get("prior_reviewer_notes", ()) if str(item).strip()
+        ),
+        user_comments=str(payload.get("user_comments") or ""),
+        changed_files=tuple(str(item) for item in payload.get("changed_files", ()) if str(item).strip()),
+        safe_log_preview=str(payload.get("safe_log_preview") or ""),
+        base_repo_state_checksum=str(payload.get("base_repo_state_checksum") or ""),
+        context_pack_checksum=str(payload.get("context_pack_checksum") or ""),
+        prior_revision_ids=tuple(str(item) for item in payload.get("prior_revision_ids", ()) if str(item).strip()),
+        cycle_number=int(payload.get("cycle_number") or 0),
+        max_cycles=int(payload.get("max_cycles") or DEFAULT_MAX_REPAIR_ATTEMPTS),
+        created_at=str(payload.get("created_at") or ""),
+        schema_version=str(payload.get("schema_version") or "1.0.0"),
+    )
+
+
 def _parse_gate_ref_checksums(source_artifact_refs_json: str) -> dict[str, str]:
     try:
         parsed = json.loads(source_artifact_refs_json)
@@ -1252,3 +1876,17 @@ def _parse_gate_ref_checksums(source_artifact_refs_json: str) -> dict[str, str]:
         if key.endswith("_checksum") or key == "checksum":
             refs[key] = value
     return refs
+
+
+def _normalized_flag(chain: Any) -> bool:
+    """Check if the primary_output has the _diff_normalized flag."""
+    if not isinstance(chain, dict):
+        return False
+    ref = chain.get("primary_output_ref")
+    if not ref:
+        return False
+    try:
+        primary = json.loads(Path(str(ref)).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return False
+    return bool(primary.get("_diff_normalized")) if isinstance(primary, dict) else False

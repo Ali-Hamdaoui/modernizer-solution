@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import sqlite3
 from dataclasses import dataclass
 
@@ -7,6 +8,7 @@ from migration_factory.control_tower.adapters.fastapi.app import (
     PublicEventNotifier,
     _read_unit_of_work,
     _v2_event_stream,
+    create_app,
 )
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import (
     SqliteControlTowerUnitOfWork,
@@ -129,3 +131,21 @@ def test_v2_event_stream_uses_short_lived_read_uow() -> None:
 
     assert entered_modes == ["read"]
     assert "event: stage_completed" in frame
+
+
+def test_target_read_endpoints_use_read_unit_of_work() -> None:
+    source = inspect.getsource(create_app)
+
+    for endpoint_name in (
+        "def list_assistant_messages(",
+        "def get_current_repair_proposal(",
+        "def get_repair_proposal(",
+        "def get_repair_proposal_diff(",
+        "def list_repair_attempts(",
+        "def list_v2_llm_activity(",
+    ):
+        start = source.index(endpoint_name)
+        next_endpoint = source.find("\n    @app.", start + 1)
+        block = source[start: next_endpoint if next_endpoint != -1 else len(source)]
+        assert "with _read_unit_of_work(unit_of_work_factory)" in block
+        assert "with unit_of_work_factory() as uow" not in block

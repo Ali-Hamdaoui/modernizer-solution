@@ -9,6 +9,7 @@ Core rule: A model reviews another model for repair. Reviewer is mandatory.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,16 @@ from migration_factory.repair_loop.repair_context import (
 
 
 class RepairReviewChainProductionError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        schema_diagnostics: dict[str, Any] | None = None,
+        reason_code: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.schema_diagnostics = schema_diagnostics
+        self.reason_code = reason_code or ""
 
 
 # ── F5-T3: Deterministic repair artifact ─────────────────────────────
@@ -97,7 +107,14 @@ def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checks
         "- Do NOT include commands, paths to execute, provider data, endpoint data, "
         "env data, deployment data, or approvals.\n"
         "- Do NOT include absolute sandbox paths.\n"
-        "- The proposed_diff must be a valid unified diff format.\n"
+        "- The proposed_diff MUST be a strict Git-style unified diff. It:\n"
+        "  * must start with 'diff --git a/<relative-path> b/<relative-path>'\n"
+        "  * must include '--- a/<relative-path>'\n"
+        "  * must include '+++ b/<relative-path>'\n"
+        "  * must include at least one '@@ ... @@' hunk\n"
+        "  * must use only relative repository paths\n"
+        "  * must NOT include absolute paths, sandbox_path, target_path, env, argv, or command\n"
+        "  * must NOT include markdown fences or prose outside the diff.\n"
         "- Do not skip or disable tests as a fix.\n"
         "- The fix must stay within the sandbox scope and declared changed files.\n\n"
         f"Deterministic repair artifact checksum: {deterministic_checksum}\n\n"
@@ -135,12 +152,53 @@ def _reviewer_repair_prompt(
     )
 
 
-def _coerce_primary_repair_output(content: str) -> dict[str, Any]:
+def _extract_json_safe(content: str) -> dict[str, Any] | None:
+    """Try to parse model output as JSON with resilient fallbacks."""
+    raw = str(content).strip()
+    if not raw:
+        return None
+
+    # Attempt 1: direct json.loads
     try:
-        parsed = json.loads(str(content))
-        if not isinstance(parsed, dict):
-            return _fallback_primary_repair_output(content)
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return parsed
     except json.JSONDecodeError:
+        pass
+
+    # Attempt 2: strip markdown code fences
+    cleaned = raw
+    cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    cleaned = re.sub(r"\n?\s*```\s*$", "", cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    cleaned = cleaned.strip()
+    if cleaned != raw:
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    # Attempt 3: extract first complete JSON object
+    decoder = json.JSONDecoder()
+    idx = 0
+    while idx < len(raw):
+        if raw[idx] == "{":
+            try:
+                obj, end = decoder.raw_decode(raw, idx)
+                if isinstance(obj, dict):
+                    return obj
+            except (json.JSONDecodeError, ValueError):
+                idx += 1
+                continue
+        idx += 1
+
+    return None
+
+
+def _coerce_primary_repair_output(content: str) -> dict[str, Any]:
+    parsed = _extract_json_safe(content)
+    if parsed is None:
         return _fallback_primary_repair_output(content)
 
     required = {"root_cause", "fix_strategy", "changed_files", "proposed_diff", "risk", "confidence"}
@@ -223,6 +281,93 @@ def _compute_reviewer_repair_checksum(output: dict[str, Any]) -> str:
     return sha256_canonical_json(payload)
 
 
+def _normalize_to_git_diff(diff: str) -> tuple[str, bool]:
+    """Normalize a plain unified diff to Git-style if safe and deterministic.
+
+    Returns (normalized_diff, was_normalized).
+    Only normalizes when:
+    - Diff has --- and +++ lines with safe relative paths (no a/b prefix)
+    - Diff has at least one @@ hunk
+    - Diff has at least one +/- change line
+    - All paths are safe relative paths (no absolute, no traversal)
+    - No diff --git header already present
+
+    Never invents changed files, hunks, or content.
+    """
+    text = diff.strip()
+    if not text:
+        return diff, False
+
+    if "diff --git " in text:
+        return diff, False
+
+    if "GIT binary patch" in text or "Binary files " in text:
+        return diff, False
+
+    lines = text.splitlines()
+    has_old = False
+    has_new = False
+    has_hunk = False
+    has_change = False
+    old_path = ""
+    new_path = ""
+
+    for line in lines:
+        if line.startswith("--- "):
+            has_old = True
+            raw = line[4:].split("\t", 1)[0].strip().strip('"')
+            if raw.startswith("a/") or raw.startswith("b/"):
+                old_path = raw[2:]
+            else:
+                old_path = raw
+        elif line.startswith("+++ "):
+            has_new = True
+            raw = line[4:].split("\t", 1)[0].strip().strip('"')
+            if raw.startswith("a/") or raw.startswith("b/"):
+                new_path = raw[2:]
+            else:
+                new_path = raw
+        elif line.startswith("@@"):
+            has_hunk = True
+        elif line.startswith("+") or line.startswith("-"):
+            has_change = True
+
+    if not (has_old and has_new and has_hunk and has_change):
+        return diff, False
+
+    path = old_path or new_path
+    if not path:
+        return diff, False
+
+    normalized = path.replace("\\", "/")
+    if (
+        normalized.startswith("/")
+        or ".." in normalized.split("/")
+        or normalized.startswith("//")
+    ):
+        return diff, False
+
+    git_header = f"diff --git a/{path} b/{path}"
+    result_lines = [git_header]
+    for line in lines:
+        if line.startswith("--- "):
+            raw = line[4:].split("\t", 1)[0].strip().strip('"')
+            if raw.startswith("a/") or raw.startswith("b/"):
+                result_lines.append(line)
+            else:
+                result_lines.append(f"--- a/{raw}")
+        elif line.startswith("+++ "):
+            raw = line[4:].split("\t", 1)[0].strip().strip('"')
+            if raw.startswith("a/") or raw.startswith("b/"):
+                result_lines.append(line)
+            else:
+                result_lines.append(f"+++ b/{raw}")
+        else:
+            result_lines.append(line)
+
+    return "\n".join(result_lines), True
+
+
 def _validate_primary_repair_output(output: dict[str, Any]) -> list[str]:
     failures: list[str] = []
 
@@ -259,11 +404,13 @@ def _validate_primary_repair_output(output: dict[str, Any]) -> list[str]:
 
 
 def _is_unified_diff(diff: str) -> bool:
-    lines = diff.strip().splitlines()
-    has_header = any(line.startswith("--- ") for line in lines)
-    has_changes = any(line.startswith("--- ") or line.startswith("+++ ") or line.startswith("@@") for line in lines)
-    has_diff = any(line.startswith("+") or line.startswith("-") for line in lines)
-    return (has_header or has_changes) and has_diff
+    """Require strict Git-style unified diff matching patch_gate.is_unified_diff()."""
+    text = diff.strip()
+    if not text:
+        return False
+    if "GIT binary patch" in text or "Binary files " in text:
+        return False
+    return "diff --git " in text and "\n--- " in text and "\n+++ " in text and "\n@@" in text
 
 
 def _check_forbidden_paths_in_diff(diff: str) -> list[str]:
@@ -430,10 +577,20 @@ def produce_repair_review_chain(
 
     if not primary_result.success:
         raise RepairReviewChainProductionError(
-            f"primary repair model failed closed: {primary_result.failure_reason or primary_result.model_status}"
+            f"primary repair model failed closed: {primary_result.failure_reason or primary_result.model_status}",
+            schema_diagnostics=getattr(primary_result, "schema_diagnostics", None),
+            reason_code=str(primary_result.failure_reason or ""),
         )
 
     primary_output = _coerce_primary_repair_output(primary_result.content)
+
+    # ── Normalize diff to Git-style before validation and reviewer ─────
+    raw_diff = str(primary_output.get("proposed_diff", ""))
+    normalized_diff, was_normalized = _normalize_to_git_diff(raw_diff)
+    if was_normalized:
+        primary_output["proposed_diff"] = normalized_diff
+        primary_output["_diff_normalized"] = True
+
     primary_failures = _validate_primary_repair_output(primary_output)
     if primary_failures:
         raise RepairReviewChainProductionError(
@@ -568,6 +725,8 @@ def produce_repair_review_chain(
             "reviewer": _safe_model_role_status(reviewer_result),
         },
     }
+    if was_normalized:
+        review_chain["diff_normalized"] = True
     if proposer_invocation_id is not None and reviewer_invocation_id is not None:
         review_chain["proposer_invocation_id"] = proposer_invocation_id
         review_chain["reviewer_invocation_id"] = reviewer_invocation_id

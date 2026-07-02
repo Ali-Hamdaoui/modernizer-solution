@@ -41,6 +41,7 @@ from migration_factory.repair_loop.repair_context import (
 # ── Helpers ───────────────────────────────────────────────────────────
 
 VALID_UNIFIED_DIFF = """\
+diff --git a/src/main/java/App.java b/src/main/java/App.java
 --- a/src/main/java/App.java
 +++ b/src/main/java/App.java
 @@ -1,3 +1,3 @@

@@ -513,7 +513,7 @@ def test_repair_review_is_unified_diff_plain_text():
 
 
 def test_repair_review_is_unified_diff_only_headers():
-    assert _is_unified_diff(DIFF_NO_PLUS_MINUS) is True  # headers + +/- in the +++/--- lines
+    assert _is_unified_diff(DIFF_NO_PLUS_MINUS) is True  # has diff --git, ---, +++, @@ but no +/- content lines
 
 
 def test_repair_review_is_unified_diff_empty():

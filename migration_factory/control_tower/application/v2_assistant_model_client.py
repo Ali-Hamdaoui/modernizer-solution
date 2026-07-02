@@ -31,6 +31,10 @@ class V2AssistantModelResult:
     success: bool
     redacted_summary: str
     failure_reason: str
+    schema_diagnostics: dict[str, Any] | None = None
+    response_format_requested: bool = False
+    response_format_used: bool | None = None
+    deployment_alias_hash: str = ""
 
 
 @dataclass(frozen=True)
@@ -226,6 +230,8 @@ class V2AssistantModelClient:
                 prompt=prompt,
                 fallback=fallback,
                 conversation_history=conversation_history,
+                output_schema_name=output_schema_name,
+                require_schema=require_schema,
             ),
         )
         return self._to_assistant_result(routed)
@@ -238,6 +244,8 @@ class V2AssistantModelClient:
         prompt: str,
         fallback: str,
         conversation_history: list[dict[str, str]] | None = None,
+        output_schema_name: str | None = None,
+        require_schema: bool = False,
     ) -> V2AssistantModelResult:
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip().rstrip("/")
         api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
@@ -270,6 +278,8 @@ class V2AssistantModelClient:
                 max_completion_tokens=700,
                 timeout=30,
                 conversation_history=conversation_history,
+                output_schema_name=output_schema_name,
+                require_schema=require_schema,
             )
         except urllib.error.HTTPError as exc:
             code = int(getattr(exc, "code", 0) or 0)
@@ -279,14 +289,18 @@ class V2AssistantModelClient:
                 deployment=deployment,
                 api_key=api_key,
             )
-            summary = _summary_with_snippet(
-                _http_error_summary(code),
-                snippet,
-            )
+            # Detect response_format rejection
+            if require_schema and code == 400 and ("response_format" in snippet.lower() or "json_object" in snippet.lower() or "json mode" in snippet.lower()):
+                summary = "Azure rejected response_format=json_object. The deployment does not support structured output."
+            else:
+                summary = _summary_with_snippet(
+                    _http_error_summary(code),
+                    snippet,
+                )
             return _fallback_result(
                 fallback,
                 summary,
-                _http_failure_reason(code),
+                "azure_response_format_rejected" if (require_schema and code == 400 and ("response_format" in snippet.lower() or "json_object" in snippet.lower())) else _http_failure_reason(code),
             )
         except urllib.error.URLError as exc:
             reason = str(exc.reason) if hasattr(exc, "reason") else str(exc)
@@ -326,10 +340,14 @@ class V2AssistantModelClient:
             success=True,
             redacted_summary="Azure OpenAI assistant invocation succeeded.",
             failure_reason="",
+            response_format_requested=require_schema,
+            response_format_used=require_schema,
         )
 
     def _to_assistant_result(self, routed: V2RoleModelResult) -> V2AssistantModelResult:
-        redacted_summary = str(redact_model_summary(routed.content)).strip()
+        redacted_summary = str(routed.redacted_summary or "").strip()
+        if not redacted_summary:
+            redacted_summary = str(redact_model_summary(routed.content)).strip()
         return V2AssistantModelResult(
             content=routed.content,
             source=routed.source,
@@ -339,6 +357,10 @@ class V2AssistantModelClient:
             success=routed.success,
             redacted_summary=redacted_summary,
             failure_reason=routed.failure_reason,
+            schema_diagnostics=routed.schema_diagnostics,
+            response_format_requested=routed.response_format_requested,
+            response_format_used=routed.response_format_used,
+            deployment_alias_hash=routed.deployment_alias_hash,
         )
 
     @staticmethod
@@ -363,63 +385,108 @@ class V2AssistantModelClient:
         max_completion_tokens: int = 700,
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
+        output_schema_name: str | None = None,
+        require_schema: bool = False,
     ) -> str:
-        if self._is_v1_endpoint(endpoint):
-            endpoint = self._normalize_v1_endpoint(endpoint)
+        # When require_schema is True, the Responses API does not support
+        # response_format=json_object. Go directly to chat/completions which does.
+        if require_schema or not self._is_v1_endpoint(endpoint):
+            target = endpoint if not self._is_v1_endpoint(endpoint) else self._normalize_v1_endpoint(endpoint)
             try:
-                return self._responses_completion_v1(
-                    endpoint=endpoint,
+                return self._chat_completion_v1(
+                    endpoint=target,
                     api_key=api_key,
                     deployment=deployment,
                     prompt=prompt,
                     max_completion_tokens=max_completion_tokens,
                     timeout=timeout,
                     conversation_history=conversation_history,
+                    output_schema_name=output_schema_name,
+                    require_schema=require_schema,
                 )
             except urllib.error.HTTPError as exc:
-                if _should_retry_with_chat_completions(exc):
-                    try:
-                        return self._chat_completion_v1(
-                            endpoint=endpoint,
-                            api_key=api_key,
-                            deployment=deployment,
-                            prompt=prompt,
-                            max_completion_tokens=max_completion_tokens,
-                            timeout=timeout,
-                            conversation_history=conversation_history,
-                        )
-                    except urllib.error.HTTPError as chat_exc:
-                        if _should_retry_with_legacy_endpoint(chat_exc):
-                            return self._chat_completion_legacy(
-                                endpoint=_legacy_endpoint_from_v1(endpoint),
-                                api_key=api_key,
-                                deployment=deployment,
-                                prompt=prompt,
-                                max_tokens=max_completion_tokens,
-                                timeout=timeout,
-                                conversation_history=conversation_history,
-                            )
-                        raise
+                snippet = _sanitize_body_snippet(exc).lower()
+                code = int(getattr(exc, "code", 0) or 0)
+                # Azure rejects json_object mode — do NOT silently retry
+                if require_schema and code == 400 and ("response_format" in snippet or "json_object" in snippet or "json mode" in snippet):
+                    raise
                 if _should_retry_with_legacy_endpoint(exc):
                     return self._chat_completion_legacy(
-                        endpoint=_legacy_endpoint_from_v1(endpoint),
+                        endpoint=_legacy_endpoint_from_v1(target),
                         api_key=api_key,
                         deployment=deployment,
                         prompt=prompt,
                         max_tokens=max_completion_tokens,
                         timeout=timeout,
                         conversation_history=conversation_history,
+                        output_schema_name=output_schema_name,
+                        require_schema=require_schema,
                     )
                 raise
-        return self._chat_completion_legacy(
-            endpoint=endpoint,
-            api_key=api_key,
-            deployment=deployment,
-            prompt=prompt,
-            max_tokens=max_completion_tokens,
-            timeout=timeout,
-            conversation_history=conversation_history,
-        )
+
+        # require_schema=False, non-chat endpoint path
+        # Try Responses API first, fall back to chat/completions
+        # Note: Responses API does not support response_format
+        endpoint = self._normalize_v1_endpoint(endpoint)
+        try:
+            return self._responses_completion_v1(
+                endpoint=endpoint,
+                api_key=api_key,
+                deployment=deployment,
+                prompt=prompt,
+                max_completion_tokens=max_completion_tokens,
+                timeout=timeout,
+                conversation_history=conversation_history,
+            )
+        except urllib.error.HTTPError as exc:
+            if _should_retry_with_chat_completions(exc):
+                try:
+                    return self._chat_completion_v1(
+                        endpoint=endpoint,
+                        api_key=api_key,
+                        deployment=deployment,
+                        prompt=prompt,
+                        max_completion_tokens=max_completion_tokens,
+                        timeout=timeout,
+                        conversation_history=conversation_history,
+                        output_schema_name=output_schema_name,
+                        require_schema=require_schema,
+                    )
+                except urllib.error.HTTPError as chat_exc:
+                    snippet = _sanitize_body_snippet(chat_exc).lower()
+                    code = int(getattr(chat_exc, "code", 0) or 0)
+                    if require_schema and code == 400 and ("response_format" in snippet or "json_object" in snippet or "json mode" in snippet):
+                        raise
+                    if _should_retry_with_legacy_endpoint(chat_exc):
+                        return self._chat_completion_legacy(
+                            endpoint=_legacy_endpoint_from_v1(endpoint),
+                            api_key=api_key,
+                            deployment=deployment,
+                            prompt=prompt,
+                            max_tokens=max_completion_tokens,
+                            timeout=timeout,
+                            conversation_history=conversation_history,
+                            output_schema_name=output_schema_name,
+                            require_schema=require_schema,
+                        )
+                    raise
+            snippet = _sanitize_body_snippet(exc).lower()
+            code = int(getattr(exc, "code", 0) or 0)
+            if require_schema and code == 400 and ("response_format" in snippet or "json_object" in snippet or "json mode" in snippet):
+                raise
+            if _should_retry_with_legacy_endpoint(exc):
+                return self._chat_completion_legacy(
+                    endpoint=_legacy_endpoint_from_v1(endpoint),
+                    api_key=api_key,
+                    deployment=deployment,
+                    prompt=prompt,
+                    max_tokens=max_completion_tokens,
+                    timeout=timeout,
+                    conversation_history=conversation_history,
+                    output_schema_name=output_schema_name,
+                    require_schema=require_schema,
+                )
+            raise
 
     def _chat_completion_v1(
         self,
@@ -431,6 +498,8 @@ class V2AssistantModelClient:
         max_completion_tokens: int = 700,
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
+        output_schema_name: str | None = None,
+        require_schema: bool = False,
     ) -> str:
         return self._post_chat_completion_v1(
             endpoint=endpoint,
@@ -439,6 +508,8 @@ class V2AssistantModelClient:
             messages=self._build_messages(prompt=prompt, conversation_history=conversation_history),
             max_completion_tokens=max_completion_tokens,
             timeout=timeout,
+            output_schema_name=output_schema_name,
+            require_schema=require_schema,
         )
 
     def _responses_completion_v1(
@@ -569,11 +640,22 @@ class V2AssistantModelClient:
         messages: list[dict[str, str]],
         max_completion_tokens: int,
         timeout: int,
+        output_schema_name: str | None = None,
+        require_schema: bool = False,
     ) -> str:
         # Allow max_completion_tokens override via environment variable
         env_max_tokens = os.environ.get("AZURE_OPENAI_ASSISTANT_MAX_COMPLETION_TOKENS", "").strip()
         if env_max_tokens and env_max_tokens.isdigit():
             max_completion_tokens = int(env_max_tokens)
+
+        # Safe log: response_format usage for diagnostics
+        _log_response_format_event(
+            endpoint=endpoint,
+            deployment=deployment,
+            require_schema=require_schema,
+            schema_name=output_schema_name or "",
+            role="assistant",
+        )
 
         url = f"{endpoint.rstrip('/')}/chat/completions"
         payload: dict[str, object] = {
@@ -581,6 +663,18 @@ class V2AssistantModelClient:
             "messages": messages,
             "max_completion_tokens": max_completion_tokens,
         }
+        # When require_schema is true, use JSON mode so the model returns valid JSON.
+        # JSON mode requires a system message indicating JSON output.
+        if require_schema:
+            payload["response_format"] = {"type": "json_object"}
+            # Ensure the system message instructs JSON-only output when using json_object mode.
+            if messages and messages[0].get("role") == "system":
+                existing = str(messages[0].get("content", ""))
+                if "json" not in existing.lower():
+                    messages[0]["content"] = (
+                        "You are a JSON-only assistant. Return only valid JSON. "
+                        "No markdown, no prose, no code fences. " + existing
+                    )
         # Only add one of temperature / reasoning_effort when explicitly configured.
         # Sending an unsupported parameter to a model that does not recognise it
         # causes a 400 "badly formed" rejection at the Azure infrastructure layer.
@@ -652,6 +746,8 @@ class V2AssistantModelClient:
         max_tokens: int = 700,
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
+        output_schema_name: str | None = None,
+        require_schema: bool = False,
     ) -> str:
         return self._post_chat_completion_legacy(
             endpoint=endpoint,
@@ -660,6 +756,8 @@ class V2AssistantModelClient:
             messages=self._build_messages(prompt=prompt, conversation_history=conversation_history),
             max_tokens=max_tokens,
             timeout=timeout,
+            output_schema_name=output_schema_name,
+            require_schema=require_schema,
         )
 
     def _post_chat_completion_legacy(
@@ -671,6 +769,8 @@ class V2AssistantModelClient:
         messages: list[dict[str, str]],
         max_tokens: int,
         timeout: int,
+        output_schema_name: str | None = None,
+        require_schema: bool = False,
     ) -> str:
         api_version = _azure_api_version()
         url = (
@@ -991,4 +1091,33 @@ def _log_empty_azure_result_summary(*, endpoint: str, deployment: str) -> None:
     logger.warning(
         "AZURE_EMPTY_RESULT: deployment=%s (empty response from Azure; using deterministic fallback)",
         safe_deployment or "unset",
+    )
+
+
+def _log_response_format_event(
+    *,
+    endpoint: str,
+    deployment: str,
+    require_schema: bool,
+    schema_name: str,
+    role: str,
+) -> None:
+    """Log a safe response_format event for schema-required Azure calls.
+
+    No raw endpoint, deployment, key, or prompt is exposed.
+    Only a deployment_alias_hash is included.
+    """
+    import logging
+    logger = logging.getLogger("v2_assistant_model_client")
+    safe_deployment = _public_deployment_label(deployment)
+    dep_hash = ""
+    if deployment:
+        import hashlib
+        dep_hash = hashlib.sha256(deployment.encode("utf-8")).hexdigest()[:16]
+    logger.info(
+        "RESPONSE_FORMAT_REQUESTED: require_schema=%s schema_name=%s role=%s deployment_alias_hash=%s",
+        require_schema,
+        schema_name,
+        role,
+        dep_hash or "unset",
     )

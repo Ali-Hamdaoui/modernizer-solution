@@ -37,6 +37,18 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_gate_decision_repo
 from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_repository import (
     SqlitePhaseGateRepository,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
+    SqliteV2RepairRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_reviewer_repository import (
+    SqliteV2ReviewerRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_llm_invocation_repository import (
+    SqliteV2LLMInvocationRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_event_repository import (
+    SqliteV2JobEventRepository,
+)
 from migration_factory.orchestrator.repair_review_chain import produce_repair_review_chain
 from migration_factory.repair_loop.failure_evidence import (
     FailureSource,
@@ -54,6 +66,62 @@ diff --git a/pom.xml b/pom.xml
 @@
 +<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>
 """
+
+
+def _write_repair_inputs(
+    tmp_path: Path,
+    *,
+    job_id: str = "job-f5",
+    command_id: str = "cmd-f5",
+) -> tuple[dict[str, str], FakeAzureRepairClient]:
+    run_dir = tmp_path / "run"
+    repair_dir = run_dir / "repairs"
+    sandbox = tmp_path / "sandbox"
+    legacy = tmp_path / "legacy"
+    repair_dir.mkdir(parents=True, exist_ok=True)
+    sandbox.mkdir(exist_ok=True)
+    legacy.mkdir(exist_ok=True)
+    (sandbox / "pom.xml").write_text("<project/>\n", encoding="utf-8")
+    evidence = build_failure_evidence(
+        failure_source=FailureSource.BUILD,
+        job_id=job_id,
+        stage_index=3,
+        command_id=command_id,
+        failure_summary="Build failed: missing H2",
+        source_profile="springboot-3.5-java21",
+        target_profile="springboot-4.0-java21",
+        changed_files=("pom.xml",),
+    )
+    context = build_repair_context_pack(
+        failure_evidence=evidence,
+        job_id=evidence.job_id,
+        stage_index=evidence.stage_index,
+        command_id=evidence.command_id,
+        source_profile=evidence.source_profile,
+        target_profile=evidence.target_profile,
+        changed_files=evidence.changed_files,
+    )
+    evidence_path = repair_dir / "repair_failure_evidence.json"
+    context_path = repair_dir / "repair_context_pack.json"
+    from migration_factory.repair_loop.failure_evidence import failure_evidence_to_dict
+    from migration_factory.repair_loop.repair_context import context_pack_to_dict
+
+    evidence_path.write_text(json.dumps(failure_evidence_to_dict(evidence), indent=2), encoding="utf-8")
+    context_path.write_text(json.dumps(context_pack_to_dict(context), indent=2), encoding="utf-8")
+    return (
+        {
+            "_repair_failure_evidence_ref": str(evidence_path),
+            "_repair_context_pack_ref": str(context_path),
+            "_repair_run_dir": str(run_dir),
+            "_repair_sandbox_path": str(sandbox),
+            "_repair_failure_evidence_checksum": evidence.content_checksum,
+            "_repair_context_pack_checksum": context.context_pack_checksum,
+            "_repair_base_repo_state_checksum": context.base_repo_state_checksum,
+            "_repair_h2_required": "true",
+            "legacy_path": str(legacy),
+        },
+        FakeAzureRepairClient(),
+    )
 
 
 class FakeAzureRepairClient:
@@ -102,6 +170,134 @@ class FakeAzureRepairClient:
             redacted_summary="user-selected Azure model available",
             failure_reason="",
         )
+
+
+class ReviewerUnavailableRepairClient(FakeAzureRepairClient):
+    def answer_with_role(
+        self, *, role: V2ModelRole, prompt: str, fallback: str, **kwargs: Any
+    ) -> V2AssistantModelResult:
+        if role == V2ModelRole.REVIEWER:
+            self.calls.append({"role": role, **kwargs})
+            return V2AssistantModelResult(
+                content='{"decision":"revise","reasoning":"Reviewer model output unavailable","missing_evidence":["Reviewer model output unavailable"],"unsafe_assumptions":["No independent model critique was completed"]}',
+                source="deterministic",
+                model_status="fallback",
+                provider="deterministic",
+                role=role.value,
+                success=False,
+                redacted_summary='{"decision":"revise","missing_evidence":["Reviewer model output unavailable"],"reasoning":"Reviewer model unavailable; fail-closed review requires revision or manual evidence review.","unsafe_assumptions":["No independent model critique was completed"]}',
+                failure_reason="reviewer_model_unavailable",
+            )
+        return super().answer_with_role(role=role, prompt=prompt, fallback=fallback, **kwargs)
+
+
+def test_initial_build_failure_creates_reviewed_repair_gate_and_persistence(tmp_path: Path) -> None:
+    conn = sqlite3.connect(
+        str(tmp_path / "initial-f5.sqlite3"),
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+
+    gate_repo = SqlitePhaseGateRepository(conn)
+    repair_gate_service = V2RepairGateService(
+        gate_service=V2PhaseGateService(gate_repo),
+        repair_repo=SqliteV2RepairRepository(conn),
+        reviewer_repo=SqliteV2ReviewerRepository(conn),
+        llm_invocation_repo=SqliteV2LLMInvocationRepository(conn),
+    )
+    payload, model_client = _write_repair_inputs(tmp_path)
+
+    result = repair_gate_service.create_reviewed_repair_gate_on_failure(
+        job_id="job-f5",
+        stage_index=3,
+        command_id="cmd-f5",
+        event_type="build_failed",
+        payload=payload,
+        legacy_path=payload["legacy_path"],
+        model_client=model_client,
+    )
+
+    assert result.status == "created"
+    assert [call["role"] for call in model_client.calls] == [
+        V2ModelRole.PROPOSER,
+        V2ModelRole.REVIEWER,
+    ]
+    run_dir = Path(payload["_repair_run_dir"])
+    assert (run_dir / "repair_chain" / "primary_repair_llm_output.json").is_file()
+    assert (run_dir / "repair_chain" / "reviewer_repair_llm_output.json").is_file()
+    assert (run_dir / "repair_chain" / "final_reviewed_repair.diff").is_file()
+    assert (run_dir / "repair_chain" / "review_chain.json").is_file()
+
+    repair_repo = SqliteV2RepairRepository(conn)
+    proposal = repair_repo.get_current_proposal_for_job("job-f5")
+    assert proposal is not None
+    assert proposal.gate_id == result.gate_id
+    assert proposal.diff_ref and proposal.diff_ref.endswith("final_reviewed_repair.diff")
+    assert proposal.diff_checksum
+    assert proposal.reviewer_verdict_id
+    assert proposal.reviewer_output_checksum
+    assert proposal.failure_evidence_ref == payload["_repair_failure_evidence_ref"]
+    assert proposal.repair_context_ref == payload["_repair_context_pack_ref"]
+
+    critiques = SqliteV2ReviewerRepository(conn).list_critiques_by_proposal(proposal.proposal_id)
+    assert len(critiques) == 1
+    assert critiques[0].decision == "accept"
+
+    invocations = SqliteV2LLMInvocationRepository(conn).list_by_job("job-f5")
+    assert {item.role for item in invocations} == {"main", "reviewer"}
+    assert {item.responsibility for item in invocations} == {"repair_proposal", "repair_review"}
+    assert len({item.invocation_id for item in invocations}) == 2
+    assert all(item.proposal_id == proposal.proposal_id for item in invocations)
+    assert all(item.gate_id == result.gate_id for item in invocations)
+
+
+def test_reviewer_fallback_emits_unavailable_event_and_no_proposal(tmp_path: Path) -> None:
+    conn = sqlite3.connect(
+        str(tmp_path / "reviewer-unavailable.sqlite3"),
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+
+    service = V2RepairGateService(
+        gate_service=V2PhaseGateService(SqlitePhaseGateRepository(conn)),
+        repair_repo=SqliteV2RepairRepository(conn),
+        reviewer_repo=SqliteV2ReviewerRepository(conn),
+        llm_invocation_repo=SqliteV2LLMInvocationRepository(conn),
+        event_repo=SqliteV2JobEventRepository(conn),
+    )
+    payload, _ = _write_repair_inputs(tmp_path, job_id="job-fallback", command_id="cmd-fallback")
+
+    result = service.create_reviewed_repair_gate_on_failure(
+        job_id="job-fallback",
+        stage_index=3,
+        command_id="cmd-fallback",
+        event_type="build_failed",
+        payload=payload,
+        legacy_path=payload["legacy_path"],
+        model_client=ReviewerUnavailableRepairClient(),
+    )
+
+    assert result.status == "skipped"
+    assert SqliteV2RepairRepository(conn).get_current_proposal_for_job("job-fallback") is None
+    invocations = SqliteV2LLMInvocationRepository(conn).list_by_job("job-fallback")
+    assert {item.responsibility for item in invocations} == {"repair_proposal", "repair_review"}
+    reviewer = next(item for item in invocations if item.responsibility == "repair_review")
+    assert reviewer.status == "fallback"
+    assert reviewer.redacted_error == "reviewer_model_unavailable"
+
+    events = SqliteV2JobEventRepository(conn).list_by_job("job-fallback")
+    unavailable = [event for event in events if event.type == "reviewed_repair_unavailable"]
+    assert len(unavailable) == 1
+    payload_json = unavailable[0].payload_json
+    assert "reviewer_model_unavailable" in payload_json
+    for forbidden in ("endpoint", "api_key", "deployment", "prompt", "completion", "sandbox_path", "_repair_sandbox_path"):
+        assert forbidden not in payload_json
 
 
 def test_f5_failure_to_reviewed_diff_apply_and_proof(
@@ -499,3 +695,154 @@ def test_f5_copilot_repair_loop_quarantined() -> None:
     assert result["repair_loop_status"] == "BLOCKED"
     assert result["repair_loop_quarantined"] is True
     assert "copilot_removed" in result["repair_blocker"]
+
+
+def test_earlier_chain_failure_does_not_block_later_success(tmp_path: Path) -> None:
+    """Earlier proposer_schema_invalid + later successful chain still creates proposal."""
+    conn = sqlite3.connect(
+        str(tmp_path / "idempotent-f5.sqlite3"),
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+
+    gate_repo = SqlitePhaseGateRepository(conn)
+    event_repo = SqliteV2JobEventRepository(conn)
+    llm_repo = SqliteV2LLMInvocationRepository(conn)
+    repair_gate_service = V2RepairGateService(
+        gate_service=V2PhaseGateService(gate_repo),
+        repair_repo=SqliteV2RepairRepository(conn),
+        reviewer_repo=SqliteV2ReviewerRepository(conn),
+        llm_invocation_repo=llm_repo,
+        event_repo=event_repo,
+    )
+
+    # ── Inject an earlier failure event (simulates first failed chain) ──
+    event_repo.save(
+        job_id="job-idempotent",
+        stage=3,
+        event_type="repair_primary_schema_invalid",
+        status="blocked",
+        message="Earlier failure event",
+        payload={"reason_code": "proposer_schema_invalid", "job_id": "job-idempotent"},
+    )
+    assert len(event_repo.list_by_job("job-idempotent")) == 1
+
+    # ── Run a successful chain with persistence ──
+    payload, model_client = _write_repair_inputs(tmp_path, job_id="job-idempotent", command_id="cmd-idempotent")
+    result = repair_gate_service.create_reviewed_repair_gate_on_failure(
+        job_id="job-idempotent",
+        stage_index=3,
+        command_id="cmd-idempotent",
+        event_type="build_failed",
+        payload=payload,
+        legacy_path=payload["legacy_path"],
+        model_client=model_client,
+    )
+
+    assert result.status == "created"
+    repair_repo = SqliteV2RepairRepository(conn)
+    proposal = repair_repo.get_current_proposal_for_job("job-idempotent")
+    assert proposal is not None, "Later successful chain must create proposal despite earlier failure event"
+    assert proposal.status == "user_review_required"
+
+    invocations = llm_repo.list_by_job("job-idempotent")
+    assert all(item.proposal_id == proposal.proposal_id for item in invocations)
+    assert all(item.gate_id == result.gate_id for item in invocations)
+
+
+def test_successful_chain_does_not_emit_materialization_failed(tmp_path: Path) -> None:
+    """A successful chain+persistence must NOT emit a materialization_failed event."""
+    conn = sqlite3.connect(
+        str(tmp_path / "matfail-f5.sqlite3"),
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+
+    gate_repo = SqlitePhaseGateRepository(conn)
+    event_repo = SqliteV2JobEventRepository(conn)
+    repair_repo = SqliteV2RepairRepository(conn)
+
+    repair_gate_service = V2RepairGateService(
+        gate_service=V2PhaseGateService(gate_repo),
+        repair_repo=repair_repo,
+        reviewer_repo=SqliteV2ReviewerRepository(conn),
+        llm_invocation_repo=SqliteV2LLMInvocationRepository(conn),
+        event_repo=event_repo,
+    )
+
+    payload, model_client = _write_repair_inputs(tmp_path, job_id="job-matfail", command_id="cmd-matfail")
+    result = repair_gate_service.create_reviewed_repair_gate_on_failure(
+        job_id="job-matfail",
+        stage_index=3,
+        command_id="cmd-matfail",
+        event_type="build_failed",
+        payload=payload,
+        legacy_path=payload["legacy_path"],
+        model_client=model_client,
+    )
+
+    assert result.status == "created"
+    proposal = repair_repo.get_current_proposal_for_job("job-matfail")
+    assert proposal is not None
+
+    events = event_repo.list_by_job("job-matfail")
+    matfail_events = [e for e in events if e.type == "reviewed_repair_materialization_failed"]
+    assert len(matfail_events) == 0
+
+
+def test_previous_unavailable_event_does_not_block_proposal(tmp_path: Path) -> None:
+    """An old repair_primary_schema_invalid event does not prevent a later successful proposal."""
+    conn = sqlite3.connect(
+        str(tmp_path / "prev-unavail-f5.sqlite3"),
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+
+    gate_repo = SqlitePhaseGateRepository(conn)
+    event_repo = SqliteV2JobEventRepository(conn)
+    repair_repo = SqliteV2RepairRepository(conn)
+    llm_repo = SqliteV2LLMInvocationRepository(conn)
+
+    repair_gate_service = V2RepairGateService(
+        gate_service=V2PhaseGateService(gate_repo),
+        repair_repo=repair_repo,
+        reviewer_repo=SqliteV2ReviewerRepository(conn),
+        llm_invocation_repo=llm_repo,
+        event_repo=event_repo,
+    )
+
+    # Simulate old unavailable event
+    event_repo.save(
+        job_id="job-prev-unavail",
+        stage=3,
+        event_type="reviewed_repair_unavailable",
+        status="blocked",
+        message="No independent reviewer completed",
+        payload={"reason_code": "proposer_schema_invalid", "job_id": "job-prev-unavail"},
+    )
+
+    # Now run a successful chain
+    payload, model_client = _write_repair_inputs(tmp_path, job_id="job-prev-unavail", command_id="cmd-prev-unavail")
+    result = repair_gate_service.create_reviewed_repair_gate_on_failure(
+        job_id="job-prev-unavail",
+        stage_index=3,
+        command_id="cmd-prev-unavail",
+        event_type="build_failed",
+        payload=payload,
+        legacy_path=payload["legacy_path"],
+        model_client=model_client,
+    )
+
+    assert result.status == "created"
+    proposal = repair_repo.get_current_proposal_for_job("job-prev-unavail")
+    assert proposal is not None, "Proposal must be created despite previous unavailable event"
+    assert proposal.status == "user_review_required"

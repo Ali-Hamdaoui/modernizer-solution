@@ -60,6 +60,20 @@ def safe_model_display_name(role: str) -> str:
     return "Model"
 
 
+def deployment_alias_hash_for_role(role: str) -> str:
+    """Resolve configured deployment for a role and return only its safe hash."""
+    normalized = str(role or "").strip().lower()
+    if normalized in {"main", "proposer", "primary"}:
+        env_name = "AZURE_OPENAI_PROPOSER_DEPLOYMENT"
+    elif normalized == "reviewer":
+        env_name = "AZURE_OPENAI_REVIEWER_DEPLOYMENT"
+    elif normalized == "fallback":
+        env_name = "AZURE_OPENAI_FALLBACK_DEPLOYMENT"
+    else:
+        env_name = "AZURE_OPENAI_ASSISTANT_DEPLOYMENT"
+    return compute_deployment_alias_hash(os.environ.get(env_name, "").strip())
+
+
 class V2LLMInvocationLedger:
     """Capture-point service for the governed LLM invocation ledger.
 
@@ -104,6 +118,7 @@ class V2LLMInvocationLedger:
             input_checksum=input_checksum,
             schema_name=schema_name,
             provider_alias=safe_provider_alias(),
+            deployment_alias_hash=deployment_alias_hash_for_role(role),
         )
         self._repository.save(record)
         return invocation_id

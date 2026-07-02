@@ -1231,6 +1231,7 @@ export type V2LlmInvocationEntry = {
 };
 
 export type V2LlmActivityResponse = {
+  job_id?: string;
   invocations: V2LlmInvocationEntry[];
 };
 
