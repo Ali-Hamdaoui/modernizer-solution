@@ -1162,6 +1162,13 @@ export type V2RepairDraftReviewResponse = {
   proposed_diff_checksum: string;
   proposal_checksum: string;
   review_checksum: string;
+  declared_diff_checksum: string;
+  recomputed_diff_checksum: string;
+  diff_checksum_match: boolean;
+  declared_proposal_checksum: string;
+  recomputed_proposal_checksum: string;
+  proposal_checksum_match: boolean;
+  checksum_verification_status: string;
   required_followup_gate: string;
   apply_enabled: boolean;
   approval_enabled: boolean;

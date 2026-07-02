@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from migration_factory.control_tower.adapters.fastapi.app import _safe_repair_draft_review
+from migration_factory.control_tower.domain.checksums import sha256_canonical_json
 from migration_factory.control_tower.application.v2_repair_reviewer import (
     FutureLlmRepairDraftReviewer,
     review_stage_repair_draft,
@@ -92,8 +93,8 @@ def _draft(**overrides: object) -> dict[str, object]:
             "-MockitoAnnotations.initMocks(this);\n"
             "+MockitoAnnotations.openMocks(this);\n"
         ),
-        "proposed_diff_checksum": "sha256:diff",
-        "proposal_checksum": "sha256:proposal",
+        "proposed_diff_checksum": "",
+        "proposal_checksum": "",
         "proposer_kind": "deterministic_local",
         "proposer_origin": "backend_evidence_bound",
         "llm_invoked": False,
@@ -111,7 +112,19 @@ def _draft(**overrides: object) -> dict[str, object]:
         "safety_warnings": ["Draft is non-actionable in R7D."],
     }
     value.update(overrides)
+    if "proposed_diff_checksum" not in overrides:
+        value["proposed_diff_checksum"] = _diff_checksum(str(value["proposed_diff_preview"]))
+    if "proposal_checksum" not in overrides:
+        value["proposal_checksum"] = _proposal_checksum(value)
     return value
+
+
+def _diff_checksum(diff: str) -> str:
+    return f"sha256:{sha256_canonical_json({'diff': diff})}"
+
+
+def _proposal_checksum(draft: dict[str, object]) -> str:
+    return f"sha256:{sha256_canonical_json({k: v for k, v in draft.items() if k != 'proposal_checksum'})}"
 
 
 def _review(
@@ -152,6 +165,7 @@ def test_powermock_blocked_draft_returns_not_reviewable_human_gate() -> None:
     )
     assert result["review_status"] == "not_reviewable_blocked_human_gate"
     assert result["verdict"] == "blocked"
+    assert result["checksum_verification_status"] == "not_applicable"
     assert result["apply_enabled"] is False
     assert result["approval_enabled"] is False
     assert result["repair_enabled"] is False
@@ -186,8 +200,13 @@ def test_complete_initmocks_draft_is_accepted_for_future_apply_gate() -> None:
     assert result["evidence_pack_checksum"] == "sha256:evidence"
     assert result["memory_query_signature"] == "sha256:memory-query"
     assert result["target_file_checksums"] == {"src/test/java/ExampleTest.java": "sha256:file-before"}
-    assert result["proposed_diff_checksum"] == "sha256:diff"
-    assert result["proposal_checksum"] == "sha256:proposal"
+    assert result["checksum_verification_status"] == "verified"
+    assert result["diff_checksum_match"] is True
+    assert result["proposal_checksum_match"] is True
+    assert result["declared_diff_checksum"] == result["recomputed_diff_checksum"]
+    assert result["declared_proposal_checksum"] == result["recomputed_proposal_checksum"]
+    assert result["proposed_diff_checksum"] == result["recomputed_diff_checksum"]
+    assert result["proposal_checksum"] == result["recomputed_proposal_checksum"]
     assert str(result["review_checksum"]).startswith("sha256:")
     assert result["required_followup_gate"] == "future_human_approval_and_backend_apply_gate"
     assert result["reasons"] == []
@@ -215,12 +234,32 @@ def test_missing_proposed_diff_checksum_rejects() -> None:
     result = _review(draft=_draft(proposed_diff_checksum=""))
     assert result["verdict"] == "rejected"
     assert "proposed_diff_checksum_missing" in result["reasons"]
+    assert result["checksum_verification_status"] == "failed"
 
 
 def test_missing_proposal_checksum_rejects() -> None:
     result = _review(draft=_draft(proposal_checksum=""))
     assert result["verdict"] == "rejected"
     assert "proposal_checksum_missing" in result["reasons"]
+    assert result["checksum_verification_status"] == "failed"
+
+
+def test_tampered_diff_with_old_declared_checksum_rejects() -> None:
+    original = _draft()
+    result = _review(draft={**original, "proposed_diff_preview": "-MockitoAnnotations.initMocks(that);\n+MockitoAnnotations.openMocks(that);\n"})
+    assert result["verdict"] == "rejected"
+    assert result["checksum_verification_status"] == "failed"
+    assert result["diff_checksum_match"] is False
+    assert "proposed_diff_checksum_mismatch" in result["reasons"]
+
+
+def test_tampered_proposal_field_with_old_proposal_checksum_rejects() -> None:
+    original = _draft()
+    result = _review(draft={**original, "memory_query_signature": "sha256:memory-query-tampered"})
+    assert result["verdict"] == "rejected"
+    assert result["checksum_verification_status"] == "failed"
+    assert result["proposal_checksum_match"] is False
+    assert "proposal_checksum_mismatch" in result["reasons"]
 
 
 def test_diff_that_changes_powermock_rejects() -> None:
@@ -322,6 +361,13 @@ def test_browser_cannot_inject_reviewer_acceptance_or_authority() -> None:
         "proposed_diff_checksum": "sha256:diff",
         "proposal_checksum": "sha256:proposal",
         "review_checksum": "sha256:review",
+        "declared_diff_checksum": "sha256:declared-diff",
+        "recomputed_diff_checksum": "sha256:fake-recomputed-diff",
+        "diff_checksum_match": True,
+        "declared_proposal_checksum": "sha256:declared-proposal",
+        "recomputed_proposal_checksum": "sha256:fake-recomputed-proposal",
+        "proposal_checksum_match": True,
+        "checksum_verification_status": "verified",
         "apply_enabled": True,
         "approval_enabled": True,
         "repair_enabled": True,
@@ -342,9 +388,40 @@ def test_browser_cannot_inject_reviewer_acceptance_or_authority() -> None:
     assert sanitized["proposed_diff_checksum"] == ""
     assert sanitized["proposal_checksum"] == ""
     assert sanitized["review_checksum"] == ""
+    assert sanitized["declared_diff_checksum"] == ""
+    assert sanitized["recomputed_diff_checksum"] == ""
+    assert sanitized["diff_checksum_match"] is False
+    assert sanitized["declared_proposal_checksum"] == ""
+    assert sanitized["recomputed_proposal_checksum"] == ""
+    assert sanitized["proposal_checksum_match"] is False
+    assert sanitized["checksum_verification_status"] == "failed"
     assert sanitized["apply_enabled"] is False
     assert sanitized["approval_enabled"] is False
     assert sanitized["repair_enabled"] is False
     assert sanitized["downstream_start_allowed"] is False
     assert sanitized["legacy_mutation_allowed"] is False
     assert sanitized["memory_authority"] == "advisory_only"
+
+
+def test_browser_injected_supported_family_verified_review_still_rejected() -> None:
+    sanitized = _safe_repair_draft_review({
+        "review_status": "reviewed_non_actionable",
+        "verdict": "accepted_for_future_apply_gate",
+        "reviewer_origin": "browser",
+        "reviewed_family": FAMILY,
+        "target_files": ["src/test/java/ExampleTest.java"],
+        "target_file_checksums": {"src/test/java/ExampleTest.java": "sha256:file"},
+        "declared_diff_checksum": "sha256:diff",
+        "recomputed_diff_checksum": "sha256:diff",
+        "diff_checksum_match": True,
+        "declared_proposal_checksum": "sha256:proposal",
+        "recomputed_proposal_checksum": "sha256:proposal",
+        "proposal_checksum_match": True,
+        "checksum_verification_status": "verified",
+    })
+    assert sanitized is not None
+    assert sanitized["verdict"] == "rejected"
+    assert sanitized["reviewer_origin"] == ""
+    assert sanitized["target_files"] == []
+    assert sanitized["declared_diff_checksum"] == ""
+    assert sanitized["checksum_verification_status"] == "failed"

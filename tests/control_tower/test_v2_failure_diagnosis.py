@@ -853,6 +853,13 @@ class TestStageAwareEvidence:
         assert review["target_file_checksums"] == draft["target_file_checksums"]
         assert review["proposed_diff_checksum"] == draft["proposed_diff_checksum"]
         assert review["proposal_checksum"] == draft["proposal_checksum"]
+        assert review["checksum_verification_status"] == "verified"
+        assert review["declared_diff_checksum"] == draft["proposed_diff_checksum"]
+        assert review["recomputed_diff_checksum"] == draft["proposed_diff_checksum"]
+        assert review["diff_checksum_match"] is True
+        assert review["declared_proposal_checksum"] == draft["proposal_checksum"]
+        assert review["recomputed_proposal_checksum"] == draft["proposal_checksum"]
+        assert review["proposal_checksum_match"] is True
         assert review["review_checksum"].startswith("sha256:")
         assert draft["apply_enabled"] is False
         assert draft["approval_enabled"] is False

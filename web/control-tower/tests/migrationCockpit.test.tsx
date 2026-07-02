@@ -2011,6 +2011,13 @@ describe("V2 Migration Cockpit contract", () => {
           proposed_diff_checksum: "",
           proposal_checksum: "",
           review_checksum: "sha256:review-powermock",
+          declared_diff_checksum: "",
+          recomputed_diff_checksum: "",
+          diff_checksum_match: false,
+          declared_proposal_checksum: "",
+          recomputed_proposal_checksum: "",
+          proposal_checksum_match: false,
+          checksum_verification_status: "not_applicable",
           required_followup_gate: "future_human_approval_and_backend_apply_gate",
           apply_enabled: false,
           approval_enabled: false,
@@ -2039,6 +2046,7 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Repair Draft Review");
     expect(markup).toContain("Reviewer status: not_reviewable_blocked_human_gate");
     expect(markup).toContain("Reviewer verdict: blocked");
+    expect(markup).toContain("Checksum verification: not_applicable");
     expect(markup).not.toContain("accepted_for_future_apply_gate");
     expect(markup).not.toContain("Apply repair");
     expect(markup).not.toContain("Approve draft");
@@ -2145,6 +2153,13 @@ describe("V2 Migration Cockpit contract", () => {
           proposed_diff_checksum: "sha256:diff",
           proposal_checksum: "sha256:proposal",
           review_checksum: "sha256:review",
+          declared_diff_checksum: "sha256:diff",
+          recomputed_diff_checksum: "sha256:diff",
+          diff_checksum_match: true,
+          declared_proposal_checksum: "sha256:proposal",
+          recomputed_proposal_checksum: "sha256:proposal",
+          proposal_checksum_match: true,
+          checksum_verification_status: "verified",
           required_followup_gate: "future_human_approval_and_backend_apply_gate",
           apply_enabled: false,
           approval_enabled: false,
@@ -2173,6 +2188,9 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Human approval: disabled");
     expect(markup).toContain("Backend apply required later: yes");
     expect(markup).toContain("Draft is non-actionable in R7D.");
+    expect(markup).toContain("Read-only backend-owned diff preview");
+    expect(markup).toContain("MockitoAnnotations.initMocks");
+    expect(markup).toContain("MockitoAnnotations.openMocks");
     expect(markup).toContain("Repair Draft Review");
     expect(markup).toContain("Reviewer status: reviewed_non_actionable");
     expect(markup).toContain("Reviewer verdict: accepted_for_future_apply_gate");
@@ -2181,9 +2199,18 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Target file checksum: src/test/java/ExampleTest.java");
     expect(markup).toContain("Proposal checksum: sha256:proposal");
     expect(markup).toContain("Review checksum: sha256:review");
+    expect(markup).toContain("Declared diff checksum: sha256:diff");
+    expect(markup).toContain("Recomputed diff checksum: sha256:diff");
+    expect(markup).toContain("Diff checksum match: yes");
+    expect(markup).toContain("Declared proposal checksum: sha256:proposal");
+    expect(markup).toContain("Recomputed proposal checksum: sha256:proposal");
+    expect(markup).toContain("Proposal checksum match: yes");
+    expect(markup).toContain("Checksum verification: verified");
     expect(markup).toContain("Future LLM reviewer compatible: yes");
     expect(markup).toContain("Reviewer verdict is non-actionable in R7E.");
     expect(markup).not.toContain("Apply repair");
+    expect(markup).not.toContain("Upload patch");
+    expect(markup).not.toContain("Override checksum");
   });
 
   it("renders controlled synthetic initMocks proposer UI smoke from failure summary", () => {
@@ -2391,6 +2418,13 @@ describe("V2 Migration Cockpit contract", () => {
                   proposed_diff_checksum: "sha256:diff-synthetic",
                   proposal_checksum: "sha256:proposal-synthetic",
                   review_checksum: "sha256:review-synthetic",
+                  declared_diff_checksum: "sha256:diff-synthetic",
+                  recomputed_diff_checksum: "sha256:diff-synthetic",
+                  diff_checksum_match: true,
+                  declared_proposal_checksum: "sha256:proposal-synthetic",
+                  recomputed_proposal_checksum: "sha256:proposal-synthetic",
+                  proposal_checksum_match: true,
+                  checksum_verification_status: "verified",
                   required_followup_gate: "future_human_approval_and_backend_apply_gate",
                   apply_enabled: false,
                   approval_enabled: false,
@@ -2449,6 +2483,13 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Reviewer verdict: accepted_for_future_apply_gate");
     expect(markup).toContain("Review checksum: sha256:review-synthetic");
     expect(markup).toContain("Proposal checksum: sha256:proposal-synthetic");
+    expect(markup).toContain("Declared diff checksum: sha256:diff-synthetic");
+    expect(markup).toContain("Recomputed diff checksum: sha256:diff-synthetic");
+    expect(markup).toContain("Diff checksum match: yes");
+    expect(markup).toContain("Declared proposal checksum: sha256:proposal-synthetic");
+    expect(markup).toContain("Recomputed proposal checksum: sha256:proposal-synthetic");
+    expect(markup).toContain("Proposal checksum match: yes");
+    expect(markup).toContain("Checksum verification: verified");
     expect(markup).toContain("Target file checksum: src/test/java/com/example/ExampleTest.java");
     expect(markup).toContain("Future LLM reviewer compatible: yes");
     expect(markup).toContain("Apply: disabled");
@@ -2457,6 +2498,8 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).not.toContain("Apply repair");
     expect(markup).not.toContain("Approve draft");
     expect(markup).not.toContain("Edit patch");
+    expect(markup).not.toContain("Upload patch");
+    expect(markup).not.toContain("Override checksum");
   });
 
   it("renders Repair Draft no-draft state", () => {

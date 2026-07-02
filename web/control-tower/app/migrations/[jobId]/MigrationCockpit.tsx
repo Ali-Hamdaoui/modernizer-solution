@@ -1042,6 +1042,17 @@ function RepairDraftDetails({ draft }: { draft: V2EvidenceBoundRepairDraftRespon
           {draft.memory_query_signature && <p className="checksum">Memory query signature: {draft.memory_query_signature}</p>}
           <p className="meta">Target file: {summarizeList(draft.target_files)}</p>
           {draft.proposed_diff_checksum && <p className="checksum">Proposed diff checksum: {draft.proposed_diff_checksum}</p>}
+          <div className="trace-section">
+            <strong>Proposed Diff Preview</strong>
+            <p className="meta">Read-only backend-owned diff preview. Non-actionable. Checksum-bound.</p>
+            {draft.proposed_diff_preview ? (
+              <pre className="diff-preview" aria-label="Read-only backend-owned diff preview">
+                <code>{draft.proposed_diff_preview}</code>
+              </pre>
+            ) : (
+              <p className="meta">No diff preview available.</p>
+            )}
+          </div>
           <p className="meta">Apply: {draft.apply_enabled ? "enabled" : "disabled"}</p>
           <p className="meta">Human approval: {draft.approval_enabled ? "enabled" : "disabled"}</p>
           <p className="meta">Reviewer: required later, not active</p>
@@ -1073,6 +1084,7 @@ function RepairDraftReviewDetails({ review }: { review: V2RepairDraftReviewRespo
           <p className="meta">Reviewer status: not_reviewable_blocked_human_gate</p>
           <p className="meta">Reviewer verdict: {review.verdict || "blocked"}</p>
           <p className="meta">Reason: {summarizeList(review.reasons) || "human review gate / no supported draft"}</p>
+          <p className="meta">Checksum verification: {review.checksum_verification_status || "not_applicable"}</p>
           <p className="meta">Apply: disabled</p>
           <p className="meta">Human approval: disabled</p>
           <p className="meta">Reviewer verdict is non-actionable in R7E.</p>
@@ -1089,6 +1101,13 @@ function RepairDraftReviewDetails({ review }: { review: V2RepairDraftReviewRespo
           {review.proposed_diff_checksum && <p className="checksum">Proposed diff checksum: {review.proposed_diff_checksum}</p>}
           {review.proposal_checksum && <p className="checksum">Proposal checksum: {review.proposal_checksum}</p>}
           {review.review_checksum && <p className="checksum">Review checksum: {review.review_checksum}</p>}
+          {review.declared_diff_checksum && <p className="checksum">Declared diff checksum: {review.declared_diff_checksum}</p>}
+          {review.recomputed_diff_checksum && <p className="checksum">Recomputed diff checksum: {review.recomputed_diff_checksum}</p>}
+          <p className="meta">Diff checksum match: {review.diff_checksum_match ? "yes" : "no"}</p>
+          {review.declared_proposal_checksum && <p className="checksum">Declared proposal checksum: {review.declared_proposal_checksum}</p>}
+          {review.recomputed_proposal_checksum && <p className="checksum">Recomputed proposal checksum: {review.recomputed_proposal_checksum}</p>}
+          <p className="meta">Proposal checksum match: {review.proposal_checksum_match ? "yes" : "no"}</p>
+          <p className="meta">Checksum verification: {review.checksum_verification_status || "failed"}</p>
           <p className="meta">Apply: {review.apply_enabled ? "enabled" : "disabled"}</p>
           <p className="meta">Human approval: {review.approval_enabled ? "enabled" : "disabled"}</p>
           <p className="meta">Future LLM reviewer compatible: {review.future_llm_reviewer_compatible ? "yes" : "no"}</p>
@@ -2092,6 +2111,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .supervision-trace h3 { margin: 0 0 0.5rem 0; font-size: 1rem; }
         .trace-section { border-left: 3px solid #6b7a90; padding-left: 0.6rem; margin-top: 0.6rem; }
         .trace-section ul { margin: 0.25rem 0 0 1rem; padding: 0; }
+        .diff-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; background: #fff; border: 1px solid #ccd3dc; padding: 0.55rem; font-size: 0.8rem; }
         .migration-intelligence { border-top: 1px solid #ddd; margin-top: 0.75rem; padding-top: 0.75rem; }
         .repair-card { border: 1px solid #ffcc66; background: #fffdf0; padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; }
         .file-alias-actions { display: flex; align-items: center; gap: 0.6rem; margin: 0.5rem 0; }

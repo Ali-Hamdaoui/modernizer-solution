@@ -12811,6 +12811,8 @@ def _safe_repair_draft_review(value: Any) -> dict[str, Any] | None:
         reviewed_family = ""
         if verdict == "accepted_for_future_apply_gate":
             verdict = "rejected"
+    if not trusted_origin and verdict == "accepted_for_future_apply_gate":
+        verdict = "rejected"
     target_checksums = value.get("target_file_checksums")
     safe_checksums = {
         _safe_failure_str(k): _safe_failure_str(v)
@@ -12821,6 +12823,9 @@ def _safe_repair_draft_review(value: Any) -> dict[str, Any] | None:
         item for item in _safe_failure_list(value.get("target_files"))
         if _is_safe_relative_ui_path(item)
     ] if trusted_origin else []
+    checksum_status = _safe_failure_str(value.get("checksum_verification_status")) if trusted_origin else "failed"
+    if checksum_status not in {"verified", "failed", "not_applicable"}:
+        checksum_status = "failed"
     return {
         "review_status": review_status,
         "verdict": verdict,
@@ -12846,6 +12851,13 @@ def _safe_repair_draft_review(value: Any) -> dict[str, Any] | None:
         "proposed_diff_checksum": _safe_failure_str(value.get("proposed_diff_checksum")) if trusted_origin else "",
         "proposal_checksum": _safe_failure_str(value.get("proposal_checksum")) if trusted_origin else "",
         "review_checksum": _safe_failure_str(value.get("review_checksum")) if trusted_origin else "",
+        "declared_diff_checksum": _safe_failure_str(value.get("declared_diff_checksum")) if trusted_origin else "",
+        "recomputed_diff_checksum": _safe_failure_str(value.get("recomputed_diff_checksum")) if trusted_origin else "",
+        "diff_checksum_match": bool(value.get("diff_checksum_match")) if trusted_origin else False,
+        "declared_proposal_checksum": _safe_failure_str(value.get("declared_proposal_checksum")) if trusted_origin else "",
+        "recomputed_proposal_checksum": _safe_failure_str(value.get("recomputed_proposal_checksum")) if trusted_origin else "",
+        "proposal_checksum_match": bool(value.get("proposal_checksum_match")) if trusted_origin else False,
+        "checksum_verification_status": checksum_status,
         "required_followup_gate": _safe_failure_str(value.get("required_followup_gate")),
         "apply_enabled": False,
         "approval_enabled": False,

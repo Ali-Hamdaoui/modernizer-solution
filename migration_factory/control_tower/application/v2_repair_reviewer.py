@@ -118,6 +118,7 @@ def _base_result(
         if isinstance(key, str)
     } if isinstance(draft.get("target_file_checksums"), dict) else {}
     memory_authority = str(migration_memory.get("authority_level") or "advisory_only")
+    checksum_fields = _checksum_fields(draft, applicable=status != "not_reviewable_blocked_human_gate")
     result = {
         "review_status": status,
         "verdict": verdict,
@@ -142,6 +143,7 @@ def _base_result(
         "target_file_checksums": target_file_checksums,
         "proposed_diff_checksum": str(draft.get("proposed_diff_checksum") or ""),
         "proposal_checksum": str(draft.get("proposal_checksum") or ""),
+        **checksum_fields,
         "review_checksum": "",
         "required_followup_gate": "future_human_approval_and_backend_apply_gate",
         "sandbox_only": True,
@@ -175,6 +177,11 @@ def _review_rejection_reasons(
     _require(bool(draft.get("memory_query_signature")), "memory_query_signature_missing", reasons)
     _require(bool(draft.get("proposal_checksum")), "proposal_checksum_missing", reasons)
     _require(bool(draft.get("proposed_diff_checksum")), "proposed_diff_checksum_missing", reasons)
+    checksum_fields = _checksum_fields(draft, applicable=True)
+    if checksum_fields["declared_diff_checksum"] and not checksum_fields["diff_checksum_match"]:
+        _reject(True, "proposed_diff_checksum_mismatch", reasons)
+    if checksum_fields["declared_proposal_checksum"] and not checksum_fields["proposal_checksum_match"]:
+        _reject(True, "proposal_checksum_mismatch", reasons)
     target_files = list(draft.get("target_files") or [])
     _require(len(target_files) == 1, "target_file_count_not_one", reasons)
     target = str(target_files[0]) if len(target_files) == 1 else ""
@@ -207,6 +214,37 @@ def _review_rejection_reasons(
         _require(migration_memory.get("memory_can_approve") is False, "memory_can_approve_not_disabled", reasons)
         _require(migration_memory.get("memory_can_start_downstream") is False, "memory_can_start_downstream_not_disabled", reasons)
     return reasons
+
+
+def _checksum_fields(draft: dict[str, Any], *, applicable: bool) -> dict[str, Any]:
+    declared_diff = str(draft.get("proposed_diff_checksum") or "")
+    declared_proposal = str(draft.get("proposal_checksum") or "")
+    if not applicable:
+        return {
+            "declared_diff_checksum": declared_diff,
+            "recomputed_diff_checksum": "",
+            "diff_checksum_match": False,
+            "declared_proposal_checksum": declared_proposal,
+            "recomputed_proposal_checksum": "",
+            "proposal_checksum_match": False,
+            "checksum_verification_status": "not_applicable",
+        }
+    diff = str(draft.get("proposed_diff_preview") or "")
+    recomputed_diff = f"sha256:{sha256_canonical_json({'diff': diff})}" if diff else ""
+    draft_without_checksum = {key: value for key, value in draft.items() if key != "proposal_checksum"}
+    recomputed_proposal = f"sha256:{sha256_canonical_json(draft_without_checksum)}" if draft else ""
+    diff_match = bool(declared_diff and recomputed_diff and declared_diff == recomputed_diff)
+    proposal_match = bool(declared_proposal and recomputed_proposal and declared_proposal == recomputed_proposal)
+    status = "verified" if diff_match and proposal_match else "failed"
+    return {
+        "declared_diff_checksum": declared_diff,
+        "recomputed_diff_checksum": recomputed_diff,
+        "diff_checksum_match": diff_match,
+        "declared_proposal_checksum": declared_proposal,
+        "recomputed_proposal_checksum": recomputed_proposal,
+        "proposal_checksum_match": proposal_match,
+        "checksum_verification_status": status,
+    }
 
 
 def _with_review_checksum(result: dict[str, Any]) -> dict[str, Any]:
