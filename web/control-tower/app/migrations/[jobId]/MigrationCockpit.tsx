@@ -121,10 +121,13 @@ export function buildStageTimelineEntries(
   }
 
   const stageStatusByIndex = new Map(stages.map((stage) => [stage.stage_index, stage.chain_status]));
-  return routeSteps.map((routeStep) => ({
+  console.log("[route-steps-before]", routeSteps?.map((s) => ({ route_step_index: s.route_step_index, stage_index: s.stage_index, status: s.status })));
+  const result = routeSteps.map((routeStep) => ({
     ...routeStep,
     status: stageStatusByIndex.get(routeStep.stage_index) ?? routeStep.status,
   }));
+  console.log("[route-steps-after]", result.map((s) => ({ route_step_index: s.route_step_index, stage_index: s.stage_index, status: s.status })));
+  return result;
 }
 
 export function mergeCockpitLiveRefreshResults(
@@ -1063,6 +1066,13 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   function appendEventFromSse(dataText: string) {
     try {
       const event = JSON.parse(dataText) as V2JobEvent;
+      console.log("[migration-event]", {
+        type: event.type,
+        stage: event.stage,
+        status: event.status,
+        sequence: event.sequence,
+        payload: event.payload,
+      });
       setData((current) => {
         if (!current || current.events.some((existing) => existing.sequence === event.sequence)) {
           return current;
