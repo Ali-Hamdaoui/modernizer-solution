@@ -2339,6 +2339,26 @@ def create_app(
                             decided_by="human",
                             profile_metadata=profile_metadata,
                         )
+                        # Resolve the approval_review phase gate so GET /gates/open
+                        # advances to the next pending stage. This mirrors the
+                        # assistant `confirm checksum` path (approve_from_gate).
+                        # Without it the gate stays open and permanently shadows
+                        # later pending stages in the open-gate slot, which is why
+                        # later-stage Approve buttons stopped appearing.
+                        action_service = V2GateActionService(
+                            uow.phase_gates,
+                            uow.gate_decisions,
+                            V2PhaseGateService(uow.phase_gates),
+                            revision_repo=uow.artifact_revisions,
+                            command_repo=uow.v2_commands,
+                        )
+                        action_service.approve_from_gate(
+                            gate_id=approval_gate.gate_id,
+                            job_id=job_id,
+                            decided_by="human",
+                            expected_gate_checksum=card.request_checksum,
+                            profile_metadata=profile_metadata,
+                        )
             except ValueError as exc:
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,
