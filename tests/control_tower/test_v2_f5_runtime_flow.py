@@ -128,6 +128,11 @@ class FakeAzureRepairClient:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
+    def _extract_checksum(self, prompt: str, field: str) -> str:
+        import re
+        m = re.search(rf'"{field}":\s*"([^"]+)"', prompt)
+        return m.group(1) if m else ""
+
     def answer_with_role(
         self, *, role: V2ModelRole, prompt: str, fallback: str, **kwargs: Any
     ) -> V2AssistantModelResult:
@@ -154,9 +159,11 @@ class FakeAzureRepairClient:
                     "confidence": 0.95,
                     "risks": [],
                     "policy_concerns": [],
-                    "reviewed_context_checksum": "",
-                    "reviewed_primary_output_checksum": "",
-                    "reviewed_diff_checksum": "",
+                    "changed_files_verified": True,
+                    "diff_parseable": True,
+                    "reviewed_context_checksum": self._extract_checksum(prompt, "reviewed_context_checksum"),
+                    "reviewed_primary_output_checksum": self._extract_checksum(prompt, "reviewed_primary_output_checksum"),
+                    "reviewed_diff_checksum": self._extract_checksum(prompt, "reviewed_diff_checksum"),
                 },
                 sort_keys=True,
             )
@@ -239,8 +246,8 @@ def test_initial_build_failure_creates_reviewed_repair_gate_and_persistence(tmp_
     assert proposal.diff_checksum
     assert proposal.reviewer_verdict_id
     assert proposal.reviewer_output_checksum
-    assert proposal.failure_evidence_ref == payload["_repair_failure_evidence_ref"]
-    assert proposal.repair_context_ref == payload["_repair_context_pack_ref"]
+    assert Path(proposal.failure_evidence_ref).name == Path(str(payload["_repair_failure_evidence_ref"])).name
+    assert Path(proposal.repair_context_ref).name == Path(str(payload["_repair_context_pack_ref"])).name
 
     critiques = SqliteV2ReviewerRepository(conn).list_critiques_by_proposal(proposal.proposal_id)
     assert len(critiques) == 1
@@ -794,6 +801,70 @@ def test_successful_chain_does_not_emit_materialization_failed(tmp_path: Path) -
     events = event_repo.list_by_job("job-matfail")
     matfail_events = [e for e in events if e.type == "reviewed_repair_materialization_failed"]
     assert len(matfail_events) == 0
+
+
+def test_duplicate_failure_callback_does_not_start_second_reviewed_chain(tmp_path: Path) -> None:
+    """A second failure callback for the same (job_id, command_id) must NOT start
+    a second repair chain or create a second proposal."""
+    conn = sqlite3.connect(
+        str(tmp_path / "duplicate-f5.sqlite3"),
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    apply_pending_migrations(conn)
+
+    gate_repo = SqlitePhaseGateRepository(conn)
+    repair_repo = SqliteV2RepairRepository(conn)
+    llm_repo = SqliteV2LLMInvocationRepository(conn)
+
+    repair_gate_service = V2RepairGateService(
+        gate_service=V2PhaseGateService(gate_repo),
+        repair_repo=repair_repo,
+        reviewer_repo=SqliteV2ReviewerRepository(conn),
+        llm_invocation_repo=llm_repo,
+    )
+
+    payload, model_client = _write_repair_inputs(tmp_path, job_id="job-dup", command_id="cmd-dup")
+
+    # First call — should succeed
+    r1 = repair_gate_service.create_reviewed_repair_gate_on_failure(
+        job_id="job-dup",
+        stage_index=3,
+        command_id="cmd-dup",
+        event_type="build_failed",
+        payload=payload,
+        legacy_path=payload["legacy_path"],
+        model_client=model_client,
+    )
+    assert r1.status == "created"
+
+    # Second call (simulates duplicate failure event) — must NOT create a
+    # second proposal or run the chain again.
+    r2 = repair_gate_service.create_reviewed_repair_gate_on_failure(
+        job_id="job-dup",
+        stage_index=3,
+        command_id="cmd-dup",
+        event_type="build_failed",
+        payload=payload,
+        legacy_path=payload["legacy_path"],
+        model_client=model_client,
+    )
+    assert r2.status == "skipped"
+    assert "proposal already exists" in r2.reason or "duplicate repair chain" in r2.reason
+
+    # Verify only one proposal and two invocations (proposer + reviewer) exist
+    proposals = repair_repo.list_proposals_by_job("job-dup")
+    assert len(proposals) == 1
+
+    invocations = llm_repo.list_by_job("job-dup")
+    # Only the first chain's invocations (no extra unbound fallback)
+    bound = [i for i in invocations if i.proposal_id == proposals[0].proposal_id]
+    assert len(bound) >= 2
+    # All invocations should be bound to the proposal
+    unbound = [i for i in invocations if i.proposal_id is None]
+    assert len(unbound) == 0, f"Found unbound invocations: {[i.invocation_id for i in unbound]}"
 
 
 def test_previous_unavailable_event_does_not_block_proposal(tmp_path: Path) -> None:

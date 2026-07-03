@@ -50,7 +50,7 @@ def test_router_uses_fallback_deployment_when_primary_missing(monkeypatch) -> No
     router = V2ModelRoleRouter(ControlTowerSettings(azure_foundry_fallback_enabled=True))
     calls: list[str] = []
 
-    def invoke(deployment: str) -> V2AssistantModelResult:
+    def invoke(deployment: str, provider: str = "") -> V2AssistantModelResult:
         calls.append(deployment)
         return V2AssistantModelResult(
             content="fallback response",
@@ -102,7 +102,7 @@ def test_router_uses_user_selected_reviewer_deployment(monkeypatch) -> None:
     router = V2ModelRoleRouter(ControlTowerSettings(azure_foundry_fallback_enabled=True))
     calls: list[str] = []
 
-    def invoke(deployment: str) -> V2AssistantModelResult:
+    def invoke(deployment: str, provider: str = "") -> V2AssistantModelResult:
         calls.append(deployment)
         return V2AssistantModelResult(
             content='{"decision":"accept","reasoning":"ok","missing_evidence":[],"unsafe_assumptions":[]}',
@@ -184,7 +184,7 @@ def test_router_reports_reviewer_schema_invalid(monkeypatch) -> None:
 
     router = V2ModelRoleRouter()
 
-    def invoke(_: str) -> V2AssistantModelResult:
+    def invoke(_deployment: str, _provider: str = "") -> V2AssistantModelResult:
         return V2AssistantModelResult(
             content='{"decision":"accept"}',
             source="azure_openai",
@@ -210,6 +210,13 @@ def test_router_reports_reviewer_schema_invalid(monkeypatch) -> None:
     assert result.success is False
     assert result.failure_reason == "reviewer_schema_invalid"
     assert result.primary_failure_reason == "reviewer_schema_invalid"
+    assert result.redacted_summary == "Reviewer model output failed schema validation."
+    assert result.schema_diagnostics is not None
+    assert result.schema_diagnostics["reason_code"] == "reviewer_schema_invalid"
+    assert result.schema_diagnostics["schema_name"] == "RepairReviewerOutput"
+    assert result.schema_diagnostics["role"] == "reviewer"
+    assert result.schema_diagnostics["stage"] == "reviewer"
+    assert "notes" in result.schema_diagnostics.get("missing_fields", [])
 
 
 def test_router_reports_reviewer_model_failed_on_call_exception(monkeypatch) -> None:
@@ -313,9 +320,9 @@ def test_client_answer_with_role_uses_requested_role_deployment(monkeypatch) -> 
 
     deployments: list[str] = []
 
-    def fake_chat_completion(*, deployment: str, **_: object) -> str:
+    def fake_chat_completion(*, deployment: str, **_: object) -> tuple[str, dict]:
         deployments.append(deployment)
-        return "proposer draft"
+        return "proposer draft", {}
 
     client = V2AssistantModelClient()
     monkeypatch.setattr(client, "_chat_completion", fake_chat_completion)
@@ -391,6 +398,7 @@ def test_schema_diagnostics_include_parse_failure_category() -> None:
     assert diag["schema_validated"] is False
     assert diag["parse_failure_category"] in ("invalid_json",)
     assert diag["reason_code"] == "proposer_schema_invalid"
+    assert diag["schema_name"] == "RepairPrimaryOutput"
 
 
 def test_schema_diagnostics_missing_required_fields() -> None:
@@ -432,11 +440,12 @@ def test_schema_diagnostics_include_response_format_requested() -> None:
     assert diag.get("response_format_requested") is True
 
 
-def test_route_returns_schema_diagnostics_on_schema_failure() -> None:
+def test_route_returns_schema_diagnostics_on_schema_failure(monkeypatch) -> None:
+    monkeypatch.setenv("AI_MIGRATION_MAIN_MODEL", "gpt-5-mini")
     router = V2ModelRoleRouter()
     request = V2RoleModelRequest(role=V2ModelRole.PROPOSER, prompt="test", fallback="fallback", output_schema_name="RepairPrimaryOutput", require_schema=True)
 
-    def invoke(deployment: str) -> V2AssistantModelResult:
+    def invoke(deployment: str, provider: str = "") -> V2AssistantModelResult:
         return V2AssistantModelResult(
             content='{"root_cause": "test"}',
             source="azure_openai", model_status="live_ok", provider="azure_openai",

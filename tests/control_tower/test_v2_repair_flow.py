@@ -397,7 +397,7 @@ def test_apply_reviewed_repair_diff_loads_exact_artifact(
         expected_reviewer_output_checksum="reviewer-ok",
         policy_validation_checksum="policy-ok",
         expected_policy_validation_checksum="policy-ok",
-        policy_status="allowed",
+        policy_status="human_review_required",
         expected_base_repo_state_checksum="repo-ok",
         current_base_repo_state_checksum="repo-ok",
         target_path="pom.xml",

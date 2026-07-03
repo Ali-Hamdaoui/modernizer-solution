@@ -230,7 +230,7 @@ def test_answer_uses_api_key_header_for_v1_endpoint(monkeypatch) -> None:
     assert headers["api-key"] == "test-api-key"
     assert "authorization" not in headers
     assert body["model"] == "gpt-5-mini"
-    assert body["max_output_tokens"] == 700
+    assert body["max_output_tokens"] == 20000
     assert body["store"] is False
     assert "messages" not in body
     assert "max_completion_tokens" not in body
@@ -267,7 +267,7 @@ def test_answer_retries_legacy_endpoint_after_generic_v1_http_400(monkeypatch) -
     second_url, _, second_body = _extract_request(recorder.calls[1][0])
     assert first_url == "https://example.openai.azure.com/openai/v1/responses"
     assert second_url == "https://example.openai.azure.com/openai/v1/chat/completions"
-    assert second_body["max_completion_tokens"] == 700
+    assert second_body["max_completion_tokens"] == 20000
 
 
 def test_answer_retries_legacy_endpoint_after_responses_and_chat_http_400(monkeypatch) -> None:
@@ -314,7 +314,7 @@ def test_answer_retries_legacy_endpoint_after_responses_and_chat_http_400(monkey
         "https://example.openai.azure.com/openai/deployments/"
         "gpt-5-mini/chat/completions?api-version=2024-10-21"
     )
-    assert third_body["max_tokens"] == 700
+    assert third_body["max_tokens"] == 20000
 
 
 def test_smoke_retries_legacy_endpoint_after_generic_v1_http_400(monkeypatch) -> None:

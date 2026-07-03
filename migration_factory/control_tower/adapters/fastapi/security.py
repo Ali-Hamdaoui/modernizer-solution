@@ -130,14 +130,15 @@ def redact_public_data(value: Any) -> Any:
     return value
 
 
-def public_error_payload(code: str, message: str, correlation_id: str) -> dict[str, Any]:
-    return {
-        "error": {
-            "code": code,
-            "message": redact_public_message(message),
-            "correlation_id": correlation_id,
-        }
+def public_error_payload(code: str, message: str, correlation_id: str, *, reason_code: str = "") -> dict[str, Any]:
+    error: dict[str, Any] = {
+        "code": code,
+        "message": redact_public_message(message),
+        "correlation_id": correlation_id,
     }
+    if reason_code:
+        error["reason_code"] = reason_code
+    return {"error": error}
 
 
 def dependency_versions() -> dict[str, str]:

@@ -1,2 +1,0 @@
-DB cleanup started: 2026-07-02T08:57:03.3460865+01:00
-DELETE untracked generated DB: .control-tower-dev\control_tower.sqlite3

@@ -1161,6 +1161,7 @@ export type SafeDiffPreview = {
   truncated: boolean;
   checksum_mismatch: boolean;
   redactions: string[];
+  parse_status: "parsed" | "unparseable" | "no_content";
 };
 
 export type ReviewerVerdictProjection = {
@@ -1191,6 +1192,8 @@ export type ReviewedDiffProposal = {
   attempt_number: number | null;
   revision_number: number | null;
   failure_summary: string;
+  hypothesis: string;
+  patch_summary: string;
   diagnosis_ref: string | null;
   repair_plan_ref: string | null;
   diff_ref: string | null;
@@ -1199,9 +1202,18 @@ export type ReviewedDiffProposal = {
   reviewer_verdict: ReviewerVerdictProjection | null;
   files_changed: FilesChangedSummary[];
   risk: string | null;
+  policy_status?: string | null;
+  policy_reason?: string | null;
+  policy_reason_code?: string | null;
+  policy_validation_checksum?: string | null;
   required_validation: string[];
   allowed_actions: string[];
   redactions: string[];
+  stale_reason?: string | null;
+  current_gate_id?: string | null;
+  gate_status?: string | null;
+  gate_decision?: string | null;
+  evidence_sources?: string[];
 };
 
 export type V2LlmInvocationEntry = {
@@ -1219,6 +1231,7 @@ export type V2LlmInvocationEntry = {
   output_checksum: string | null;
   schema_name: string | null;
   status: string;
+  reason_code?: string | null;
   fallback_used: boolean;
   redacted_error: string | null;
   redacted_summary: string | null;

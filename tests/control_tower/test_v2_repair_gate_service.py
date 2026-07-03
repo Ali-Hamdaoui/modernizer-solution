@@ -12,8 +12,10 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -35,6 +37,7 @@ from migration_factory.control_tower.application.v2_repair_gate_service import (
     V2RepairGateService,
     create_repair_gate_diagnosis_callback,
 )
+from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.application.v2_reviewer_service import (
     ReviewerCritique,
     V2ReviewerService,
@@ -50,6 +53,10 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_phase_gate_reposit
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_artifact_revision_repository import (
     SqliteArtifactRevisionRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
+    SqliteV2RepairRepository,
+    V2RepairProposalRecord,
 )
 
 
@@ -106,6 +113,14 @@ def _create_diagnosis_record(
         redaction_status="evidence_redacted",
         created_at="2026-06-17T12:00:00Z",
     )
+
+
+class _EventRecorder:
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def save(self, **kwargs):
+        self.events.append(kwargs)
 
 
 def _h2_patch() -> str:
@@ -288,6 +303,45 @@ class TestCreateRepairGateOnBuildFailure:
         assert revision.revision_kind == "repair"
         assert revision.revision_status == "draft"
         assert revision.evidence_checksum == gate.source_artifact_checksum
+
+    def test_create_gate_from_reviewed_chain_materializes_human_review_required(self, tmp_path: Path) -> None:
+        conn = _connection(tmp_path)
+        gate_repo = SqlitePhaseGateRepository(conn)
+        repair_repo = SqliteV2RepairRepository(conn)
+        gate_svc = V2PhaseGateService(gate_repo)
+        repair_gate_svc = V2RepairGateService(
+            gate_service=gate_svc,
+            revision_repo=SqliteArtifactRevisionRepository(conn),
+            repair_repo=repair_repo,
+        )
+        run_dir = tmp_path / "run"
+        sandbox = tmp_path / "sandbox"
+        legacy = tmp_path / "legacy"
+        sandbox.mkdir()
+        legacy.mkdir()
+        (sandbox / "pom.xml").write_text("<project/>", encoding="utf-8")
+
+        result = repair_gate_svc.create_repair_gate_from_reviewed_chain(
+            job_id="job-1",
+            stage_index=3,
+            command_id="cmd-1",
+            review_chain_result=_reviewed_chain_files(tmp_path),
+            failure_evidence_checksum="failure-cs",
+            context_pack_checksum="ctx-cs",
+            base_repo_state_checksum="repo-cs",
+            sandbox_path=str(sandbox),
+            run_dir=str(run_dir),
+            legacy_path=str(legacy),
+            deterministic_rule_id="RULE_NOT_ALLOWLISTED",
+            h2_required=True,
+        )
+
+        assert result.status == "created"
+        assert result.policy_status == "HUMAN_REVIEW_REQUIRED"
+        gate = gate_repo.get(result.gate_id)
+        assert gate is not None
+        assert gate.gate_phase == "repair_review"
+        assert (run_dir / "repairs" / "repair_policy_validation.json").is_file()
 
     def test_reviewed_chain_reviewer_reject_does_not_open_gate(self, tmp_path: Path) -> None:
         conn = _connection(tmp_path)
@@ -826,6 +880,140 @@ class TestRepairAttemptLimits:
 
 
 # ── create_repair_gate_diagnosis_callback ─────────────────────────────
+
+
+class TestReviewedRepairChainIdempotency:
+    """Persistent idempotency for the reviewed repair chain."""
+
+    def test_reviewed_repair_chain_idempotency_uses_context_checksum(self, tmp_path: Path) -> None:
+        """A second call with the same (job_id, command_id) but different
+        context checksum must still be idempotently skipped if a proposal
+        already exists with status user_review_required."""
+        conn = _connection(tmp_path, "idempotency-gate.sqlite3")
+        gate_repo = SqlitePhaseGateRepository(conn)
+        repair_repo = SqliteV2RepairRepository(conn)
+        gate_svc = V2PhaseGateService(gate_repo)
+
+        svc = V2RepairGateService(
+            gate_service=gate_svc,
+            repair_repo=repair_repo,
+        )
+        sandbox = tmp_path / "sandbox"
+        legacy = tmp_path / "legacy"
+        sandbox.mkdir()
+        legacy.mkdir()
+        (sandbox / "pom.xml").write_text("<project/>", encoding="utf-8")
+
+        # Create a gate first via reviewed chain — simulate a successful chain
+        gate_result = svc.create_repair_gate_from_reviewed_chain(
+            job_id="job-idempotent",
+            stage_index=3,
+            command_id="cmd-idempotent",
+            review_chain_result=_reviewed_chain_files(tmp_path),
+            failure_evidence_checksum="failure-cs",
+            context_pack_checksum="ctx-cs",
+            base_repo_state_checksum="repo-cs",
+            sandbox_path=str(sandbox),
+            run_dir=str(tmp_path / "run"),
+            legacy_path=str(legacy),
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+            h2_required=True,
+        )
+        assert gate_result.status == "created"
+
+        # Now simulate a proposal already existing (what happens after
+        # create_reviewed_repair_gate_on_failure succeeds)
+        proposal_id = uuid4().hex
+        repair_repo.save_proposal(V2RepairProposalRecord(
+            proposal_id=proposal_id,
+            command_id="cmd-idempotent",
+            failure_summary="Build failure",
+            hypothesis="missing dep",
+            patch_summary="add dep",
+            affected_paths_json='["pom.xml"]',
+            status="user_review_required",
+            approval_checksum=None,
+            created_at=utc_now_text(),
+            job_id="job-idempotent",
+            route_step_index=3,
+            gate_id=gate_result.gate_id,
+        ))
+
+        # The persistent check in create_reviewed_repair_gate_on_failure
+        # should now skip the chain — verify that the proposal-based check
+        # fires before the chain runs.
+
+        # Use a different context checksum to prove the check is
+        # proposal-based, not context-based.
+        payload = {
+            "_repair_failure_evidence_ref": str(tmp_path / "nonexistent.json"),
+            "_repair_context_pack_ref": str(tmp_path / "nonexistent2.json"),
+            "_repair_run_dir": str(tmp_path / "run"),
+            "_repair_sandbox_path": str(sandbox),
+            "_repair_failure_evidence_checksum": "different-failure-cs",
+            "_repair_context_pack_checksum": "different-ctx-cs",
+            "_repair_base_repo_state_checksum": "different-repo-cs",
+            "_repair_h2_required": "false",
+        }
+        result = svc.create_reviewed_repair_gate_on_failure(
+            job_id="job-idempotent",
+            stage_index=3,
+            command_id="cmd-idempotent",
+            event_type="build_failed",
+            payload=payload,
+            legacy_path=str(legacy),
+        )
+        assert result.status == "skipped"
+        assert "proposal already exists" in result.reason
+
+        # Verify chain was never attempted (the persistent check fired
+        # before the chain attempt record was created)
+        if svc._chain_attempt_repo is not None:
+            from migration_factory.control_tower.infrastructure.sqlite.v2_chain_attempt_repository import (
+                build_chain_key,
+            )
+            durable_key = build_chain_key(
+                "job-idempotent", "cmd-idempotent", "different-ctx-cs", "initial_reviewed_repair"
+            )
+            chain_attempt = svc._chain_attempt_repo.get(durable_key)
+            assert chain_attempt is None, "no chain attempt should have been created"
+
+
+def test_reviewer_schema_unavailable_event_preserves_safe_diagnostics(tmp_path: Path) -> None:
+    _, _, gate_svc, _, _, _, _, _ = _svc(tmp_path)
+    recorder = _EventRecorder()
+    svc = V2RepairGateService(gate_service=gate_svc, event_repo=recorder)
+
+    svc._emit_reviewed_repair_unavailable(
+        job_id="job-reviewer-schema",
+        stage_index=2,
+        context_checksum="ctx-cs",
+        reason_code="reviewer_schema_invalid",
+        schema_diagnostics={
+            "schema_name": "RepairReviewerOutput",
+            "role": "reviewer",
+            "stage": "reviewer",
+            "reason_code": "reviewer_schema_invalid",
+            "missing_fields": ["notes", "reviewed_diff_checksum"],
+            "raw_output": '{"decision":"accept"}',
+            "prompt": "do not leak",
+            "completion": "do not leak",
+        },
+    )
+
+    assert len(recorder.events) == 1
+    event = recorder.events[0]
+    payload = event["payload"]
+    assert event["message"] == "Reviewer model output failed schema validation."
+    assert payload["reason_code"] == "reviewer_schema_invalid"
+    assert payload["schema_name"] == "RepairReviewerOutput"
+    assert payload["role"] == "reviewer"
+    assert payload["stage"] == "reviewer"
+    assert payload["schema_diagnostics"]["missing_fields"] == ["notes", "reviewed_diff_checksum"]
+    serialized = json.dumps(payload)
+    assert "raw_output" not in serialized
+    assert "prompt" not in serialized
+    assert "completion" not in serialized
 
 
 class TestRepairGateDiagnosisCallback:

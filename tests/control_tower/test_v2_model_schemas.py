@@ -8,6 +8,7 @@ from migration_factory.control_tower.application.v2_model_schemas import (
     REQUIRED_SCHEMAS,
     TOKEN_BUDGETS,
     PLAN_PROPOSAL_SCHEMA,
+    REPAIR_REVIEWER_OUTPUT_SCHEMA,
     REPAIR_PROPOSAL_SCHEMA,
     REVIEWER_CRITIQUE_SCHEMA,
     ACTION_REQUEST_SCHEMA,
@@ -47,6 +48,23 @@ def test_reviewer_critique_schema() -> None:
     s = REVIEWER_CRITIQUE_SCHEMA
     assert s["properties"]["decision"]["enum"] == ["accept", "revise", "reject"]
     assert "reasoning" in s["required"]
+
+
+def test_reviewer_schema_required_fields_match_prompt() -> None:
+    s = REPAIR_REVIEWER_OUTPUT_SCHEMA
+    assert s["required"] == [
+        "decision",
+        "notes",
+        "risks",
+        "policy_concerns",
+        "changed_files_verified",
+        "diff_parseable",
+        "reviewed_context_checksum",
+        "reviewed_primary_output_checksum",
+        "reviewed_diff_checksum",
+    ]
+    assert s["properties"]["decision"]["enum"] == ["accept", "reject", "needs_revision"]
+    assert "checksum_bindings" not in s["properties"]
 
 
 def test_action_request_schema() -> None:

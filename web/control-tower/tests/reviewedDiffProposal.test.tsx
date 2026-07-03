@@ -7,7 +7,8 @@ import { RepairAttemptTimeline } from "../app/migrations/[jobId]/RepairAttemptTi
 import { RepairActionsBar } from "../app/migrations/[jobId]/RepairActionsBar";
 import { ModelRoleActivity } from "../app/migrations/[jobId]/ModelRoleActivity";
 import { ValidationProgressPanel } from "../app/migrations/[jobId]/ValidationProgressPanel";
-import { ReviewedRepairUnavailable, ReviewedRepairMaterializationFailed } from "../app/migrations/[jobId]/RepairProposalPanel";
+import { RepairProposalPanel, ReviewedRepairUnavailable, ReviewedRepairMaterializationFailed, PolicyBannerSection, RepairProposalMetadata } from "../app/migrations/[jobId]/RepairProposalPanel";
+import { MigrationCockpit } from "../app/migrations/[jobId]/MigrationCockpit";
 import type {
   SafeDiffPreview as SafeDiffPreviewType,
   SafeDiffFile,
@@ -43,6 +44,7 @@ describe("PR-C SafeDiffPreview component", () => {
       total_additions: 3,
       total_deletions: 1,
       truncated: false,
+      parse_status: "parsed",
       checksum_mismatch: false,
       redactions: [],
     };
@@ -84,6 +86,7 @@ describe("PR-C SafeDiffPreview component", () => {
       total_additions: 1,
       total_deletions: 0,
       truncated: false,
+      parse_status: "parsed",
       checksum_mismatch: false,
       redactions: [],
     };
@@ -105,6 +108,7 @@ describe("PR-C SafeDiffPreview component", () => {
       total_additions: 0,
       total_deletions: 0,
       truncated: true,
+      parse_status: "unparseable",
       checksum_mismatch: false,
       redactions: [],
     };
@@ -122,6 +126,7 @@ describe("PR-C SafeDiffPreview component", () => {
       total_additions: 0,
       total_deletions: 0,
       truncated: false,
+      parse_status: "no_content",
       checksum_mismatch: true,
       redactions: [],
     };
@@ -140,6 +145,7 @@ describe("PR-C SafeDiffPreview component", () => {
       total_additions: 0,
       total_deletions: 0,
       truncated: false,
+      parse_status: "no_content",
       checksum_mismatch: false,
       redactions: ["secret_token"],
     };
@@ -177,6 +183,7 @@ describe("PR-C SafeDiffPreview component", () => {
       total_additions: 1,
       total_deletions: 0,
       truncated: false,
+      parse_status: "parsed",
       checksum_mismatch: false,
       redactions: ["secret"],
     };
@@ -195,6 +202,7 @@ describe("PR-C SafeDiffPreview component", () => {
       total_additions: 0,
       total_deletions: 0,
       truncated: false,
+      parse_status: "no_content",
       checksum_mismatch: false,
       redactions: [],
     };
@@ -443,7 +451,6 @@ describe("PR-C/PR-D RepairActionsBar component", () => {
     );
     expect(markup).toContain('disabled=""');
     expect(markup).toContain("Approve sandbox apply");
-    expect(markup).toContain("Reject");
     expect(markup).not.toContain("PR-E");
   });
 
@@ -524,11 +531,8 @@ describe("PR-E approve button behavior", () => {
         revisionPending={false}
         approveEnabled={false}
         checksumMismatch={false}
-        rejectDisabled={true}
       />,
     );
-    // The approve button should have disabled="" in its rendered HTML
-    // Find it by checking the data-testid appears and no onClick can fire
     expect(markup).toContain('data-testid="action-approve-sandbox-apply"');
     expect(markup).toContain("Approve sandbox apply");
     // When approve is disabled, the action does not fire; verify the
@@ -548,7 +552,6 @@ describe("PR-E approve button behavior", () => {
         approveEnabled={true}
         approvePending={false}
         checksumMismatch={false}
-        rejectDisabled={true}
       />,
     );
     expect(markup).toContain('data-testid="action-approve-sandbox-apply"');
@@ -568,7 +571,6 @@ describe("PR-E approve button behavior", () => {
         approveEnabled={true}
         approvePending={true}
         checksumMismatch={false}
-        rejectDisabled={true}
       />,
     );
     expect(markup).toContain('data-testid="action-approve-sandbox-apply"');
@@ -588,7 +590,6 @@ describe("PR-E approve button behavior", () => {
         approveEnabled={true}
         approvePending={false}
         checksumMismatch={true}
-        rejectDisabled={true}
       />,
     );
     expect(markup).toContain('data-testid="action-approve-sandbox-apply"');
@@ -608,7 +609,6 @@ describe("PR-E approve button behavior", () => {
         approveEnabled={true}
         approvePending={false}
         checksumMismatch={true}
-        rejectDisabled={true}
       />,
     );
     expect(markup).toContain("Cannot approve");
@@ -627,7 +627,6 @@ describe("PR-E approve button behavior", () => {
         approveEnabled={true}
         approvePending={false}
         checksumMismatch={false}
-        rejectDisabled={true}
       />,
     );
     expect(markup).toContain("sandbox apply");
@@ -635,7 +634,7 @@ describe("PR-E approve button behavior", () => {
     expect(markup).not.toContain("original source");
   });
 
-  it("reject button remains disabled", () => {
+  it("reject button is removed from UI", () => {
     const markup = renderToStaticMarkup(
       <RepairActionsBar
         onViewDiff={() => undefined}
@@ -648,11 +647,10 @@ describe("PR-E approve button behavior", () => {
         approveEnabled={true}
         approvePending={false}
         checksumMismatch={false}
-        rejectDisabled={true}
       />,
     );
-    expect(markup).toContain('data-testid="action-reject-repair"');
-    expect(markup).toContain("Reject");
+    expect(markup).not.toContain('data-testid="action-reject-repair"');
+    expect(markup).not.toContain("Reject unavailable");
   });
 
   it("approve request body contains only allowed fields", () => {
@@ -691,7 +689,6 @@ describe("PR-E approve button behavior", () => {
         approveEnabled={false}
         approvePending={false}
         checksumMismatch={false}
-        rejectDisabled={true}
       />,
     );
     expect(markup).toContain("Revision is not allowed by the current backend gate");
@@ -828,13 +825,69 @@ describe("F5 model activity and validation panels", () => {
     );
 
     expect(markup).toContain("Reviewed Repair Unavailable");
-    expect(markup).toContain("Main Model output failed schema validation, so Reviewer was not run and no reviewed diff was materialized.");
+    expect(markup).toContain("Reviewer model did not produce a reviewed diff.");
+    expect(markup).not.toContain("Main Model output failed schema validation");
     expect(markup).toContain("Reviewed Repair Gate");
     expect(markup).not.toContain("Approve sandbox apply");
     expect(markup).not.toContain("safe-diff-file");
     for (const forbidden of ["endpoint", "api_key", "raw deployment", "AZURE_OPENAI", "prompt", "completion", "sandbox_path"]) {
       expect(markup).not.toContain(forbidden);
     }
+  });
+
+  it("renders reviewer schema invalid unavailable state when main completed", () => {
+    const invocations: V2LlmInvocationEntry[] = [
+      {
+        ...baseInvocation,
+        proposal_id: null,
+        gate_id: null,
+        status: "completed",
+        reason_code: null,
+        output_checksum: "sha256:main-output",
+        redacted_summary: "Main completed a repair draft.",
+      },
+      {
+        ...baseInvocation,
+        invocation_id: "inv-reviewer",
+        proposal_id: null,
+        gate_id: null,
+        role: "reviewer",
+        responsibility: "repair_review",
+        model_display_name: "Reviewer Model",
+        schema_name: "RepairReviewerOutput",
+        status: "fallback",
+        reason_code: "reviewer_schema_invalid",
+        fallback_used: true,
+        redacted_error: "reviewer_schema_invalid",
+        redacted_summary: "Reviewer schema validation failed.",
+        output_checksum: null,
+        created_at: "2026-06-30T00:00:02Z",
+      },
+    ];
+
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairUnavailable
+        invocations={invocations}
+        loading={false}
+        error={null}
+        reviewerSchemaInvalid
+      />,
+    );
+
+    expect(markup).toContain("Reviewed Repair Unavailable");
+    expect(markup).toContain("Reviewer model output failed schema validation, so no reviewed diff was produced.");
+    expect(markup).toContain("Product safe proposer");
+    expect(markup).toContain("completed");
+    expect(markup).toContain("Reviewer Model");
+    expect(markup).toContain("schema invalid");
+    expect(markup).toContain("completed with fallback");
+    expect(markup).toContain("Not available");
+    expect(markup).toContain("Retry after reviewer/schema contract fix");
+    expect(markup).not.toContain("Main Model output failed schema validation");
+    expect(markup).not.toContain("Approve sandbox apply");
+    expect(markup).not.toContain("Request revision");
+    expect(markup).not.toContain("Waiting for your approval");
+    expect(markup).not.toContain("Apply, Rebuild, Test");
   });
 
   it("renders proposer_schema_invalid state correctly", () => {
@@ -897,7 +950,7 @@ describe("F5 model activity and validation panels", () => {
     );
 
     expect(markup).toContain("Reviewed Repair Materialization Failed");
-    expect(markup).toContain("Reviewed diff rejected by backend policy.");
+    expect(markup).toContain("Backend could not materialize a reviewed diff for user approval.");
     expect(markup).toContain("Reviewed Repair Gate");
     expect(markup).toContain("completed");
     expect(markup).not.toContain("schema invalid");
@@ -939,7 +992,7 @@ describe("F5 model activity and validation panels", () => {
     );
 
     expect(markup).toContain("Reviewed Repair Materialization Failed");
-    expect(markup).toContain("Reviewed diff rejected by backend policy.");
+    expect(markup).toContain("Backend could not materialize a reviewed diff for user approval.");
     expect(markup).toContain("completed");
     expect(markup).not.toContain("Approve sandbox apply");
     expect(markup).not.toContain("safe-diff-file");
@@ -1001,6 +1054,7 @@ describe("PR-C forbidden-field tests", () => {
       total_additions: 1,
       total_deletions: 0,
       truncated: false,
+      parse_status: "parsed",
       checksum_mismatch: false,
       redactions: [],
     };
@@ -1209,5 +1263,432 @@ describe("PR-F RepairAttemptTimeline enrichments", () => {
     expect(markup).not.toContain("raw_command");
     expect(markup).not.toContain("C:\\");
     expect(markup).not.toContain("AZURE_OPENAI");
+  });
+});
+
+// ── PR-C Cockpit layout tests ──────────────────────────────────────────
+
+describe("PR-C cockpit full-width layout", () => {
+  it("renders_reviewed_repair_gate_as_primary_section", () => {
+    const markup = renderToStaticMarkup(<ReviewedRepairUnavailable invocations={[]} loading={false} error={null} />);
+    expect(markup).toContain("Reviewed Repair Gate");
+    expect(markup).toContain("repair-proposal-layout");
+    expect(markup).toContain("repair-proposal-main");
+    expect(markup).toContain("repair-proposal-side");
+  });
+
+  it("does_not_render_failure_and_repair_primary_panel_when_reviewed_proposal_exists", () => {
+    const source = MigrationCockpit.toString();
+    expect(source).toContain("failure-evidence-advanced");
+    expect(source).toContain("Failure Evidence");
+    expect(source).toContain("data.failureSummary?.has_failures");
+  });
+
+  it("renders_advanced_failure_evidence_collapsed", () => {
+    const source = MigrationCockpit.toString();
+    expect(source).toContain("failure-evidence-advanced");
+    expect(source).toContain("Failure Evidence");
+  });
+
+  it("model_trace_does_not_overlay_primary_decision_area", () => {
+    const markup = renderToStaticMarkup(
+      <ModelRoleActivity invocations={[]} loading={false} error={null} />
+    );
+    expect(markup).toContain("model-role-activity");
+    expect(markup).toContain("Repair Review Gate");
+    expect(markup).not.toContain("position:absolute");
+    expect(markup).not.toContain("position:fixed");
+    expect(markup).not.toContain("inset:");
+    expect(markup).not.toContain("overlay");
+  });
+
+  it("uses_full_width_cockpit_layout_class", () => {
+    const source = MigrationCockpit.toString();
+    expect(source).toContain("cockpit-page-wrapper");
+    expect(source).toContain("data-full-width");
+  });
+});
+
+describe("PR-D/PR-E polish: diagnosis, actions, validation, metadata", () => {
+  const baseProposal: ReviewedDiffProposal = {
+    proposal_id: "prop-1",
+    job_id: "job-1",
+    command_id: null,
+    gate_id: "gate-1",
+    route_step_index: 2,
+    stage_index: 1,
+    status: "user_review_required",
+    attempt_number: 1,
+    revision_number: null,
+    failure_summary: "Build failure in pom.xml",
+    hypothesis: "Missing spring-boot-starter dependency",
+    patch_summary: "Add spring-boot-starter-web to pom.xml",
+    diagnosis_ref: null,
+    repair_plan_ref: null,
+    diff_ref: null,
+    diff_checksum: "sha256:abc",
+    safe_diff_preview: null,
+    reviewer_verdict: null,
+    files_changed: [
+      { path: "pom.xml", change_type: "modified", additions: 3, deletions: 0 },
+    ],
+    risk: null,
+    policy_status: null,
+    policy_reason: null,
+    policy_reason_code: null,
+    policy_validation_checksum: null,
+    required_validation: [],
+    allowed_actions: ["approve_sandbox_apply", "request_revision"],
+    redactions: [],
+  };
+
+  it("renders_human_friendly_diagnosis_not_raw_json", () => {
+    const markup = renderToStaticMarkup(
+      <div className="main-diagnosis-summary">
+        <strong>Main Model Diagnosis</strong>
+        <div className="meta diagnosis-fields">
+          <div><span className="diagnosis-label">Root cause:</span> {baseProposal.hypothesis}</div>
+          <div><span className="diagnosis-label">Fix strategy:</span> {baseProposal.patch_summary}</div>
+          <div><span className="diagnosis-label">Changed files:</span> {baseProposal.files_changed.map((f) => f.path).join(", ")}</div>
+        </div>
+      </div>,
+    );
+    expect(markup).toContain("Root cause:");
+    expect(markup).toContain("Missing spring-boot-starter dependency");
+    expect(markup).toContain("Fix strategy:");
+    expect(markup).toContain("Add spring-boot-starter-web to pom.xml");
+    expect(markup).toContain("Changed files:");
+    expect(markup).toContain("pom.xml");
+    expect(markup).not.toContain('{"');
+    expect(markup).not.toContain('"}');
+  });
+
+  it("renders_reviewer_notes_as_bullets", () => {
+    const verdict: ReviewerVerdictProjection = {
+      reviewer_verdict_id: "v-1",
+      decision: "accept",
+      reasoning: "Evidence is sufficient.\nPatch scope is correct.",
+      missing_evidence: [],
+      unsafe_assumptions: ["assumes build tool is Maven"],
+      model_invocation_id: null,
+      output_checksum: null,
+    };
+    const markup = renderToStaticMarkup(<ReviewerVerdictCard verdict={verdict} />);
+    expect(markup).toContain("Notes");
+    expect(markup).toContain("Evidence is sufficient.");
+    expect(markup).toContain("Patch scope is correct.");
+    expect(markup).toContain("Risks / Policy Concerns");
+    expect(markup).toContain("assumes build tool is Maven");
+    expect(markup).toContain("data-testid=\"verdict-notes\"");
+    expect(markup).toContain("data-testid=\"verdict-risks\"");
+    expect(markup).not.toContain("Reasoning");
+  });
+
+  it("renders_policy_human_review_banner", () => {
+    const markup = renderToStaticMarkup(
+      <PolicyBannerSection
+        status="human_review_required"
+        reason="Rule not allowlisted"
+        reasonCode="BLOCKED_BY_POLICY"
+        validationChecksum="sha256:policy"
+        banner={{
+          tone: "review",
+          title: "Human review required",
+          copy: "Backend policy marked this repair for human review because the rule is not allowlisted. The diff is structurally valid and will not be applied unless you approve it.",
+        }}
+      />,
+    );
+    expect(markup).toContain('data-testid="reviewed-repair-policy-banner"');
+    expect(markup).toContain("Human review required");
+    expect(markup).toContain("not allowlisted");
+    expect(markup).toContain("structurally valid");
+    expect(markup).toContain("BLOCKED_BY_POLICY");
+    expect(markup).toContain("sha256:policy");
+  });
+
+  it("does_not_render_apply_button_without_allowed_action", () => {
+    const markup = renderToStaticMarkup(
+      <RepairActionsBar
+        onViewDiff={() => undefined}
+        onViewReviewerOpinion={() => undefined}
+        onViewFilesChanged={() => undefined}
+        onViewAttemptHistory={() => undefined}
+        onRequestRevision={async () => undefined}
+        revisionPending={false}
+        approveEnabled={false}
+        revisionEnabled={false}
+        checksumMismatch={false}
+      />,
+    );
+    expect(markup).toContain('data-testid="action-approve-sandbox-apply"');
+    expect(markup).toContain('disabled=""');
+    expect(markup).toContain("Approve sandbox apply");
+  });
+
+  it("does_not_render_request_revision_without_allowed_action", () => {
+    const markup = renderToStaticMarkup(
+      <RepairActionsBar
+        onViewDiff={() => undefined}
+        onViewReviewerOpinion={() => undefined}
+        onViewFilesChanged={() => undefined}
+        onViewAttemptHistory={() => undefined}
+        onRequestRevision={async () => undefined}
+        revisionPending={false}
+        revisionEnabled={false}
+        approveEnabled={false}
+        checksumMismatch={false}
+      />,
+    );
+    expect(markup).toContain('data-testid="action-request-revision"');
+    expect(markup).toContain('disabled=""');
+    expect(markup).toContain("Revision is not allowed by the current backend gate");
+  });
+
+  it("renders_approval_buttons_when_backend_allows_actions", () => {
+    const markup = renderToStaticMarkup(
+      <RepairActionsBar
+        onViewDiff={() => undefined}
+        onViewReviewerOpinion={() => undefined}
+        onViewFilesChanged={() => undefined}
+        onViewAttemptHistory={() => undefined}
+        onRequestRevision={async () => undefined}
+        onApproveSandboxApply={() => undefined}
+        revisionPending={false}
+        approveEnabled={true}
+        revisionEnabled={true}
+        approvePending={false}
+        checksumMismatch={false}
+      />,
+    );
+    expect(markup).toContain('data-testid="action-approve-sandbox-apply"');
+    expect(markup).toContain('data-testid="action-request-revision"');
+    expect(markup).not.toContain('disabled=""');
+  });
+
+  it("does_not_send_patch_text_on_approve", () => {
+    const request = {
+      proposal_id: "prop-1",
+      diff_checksum: "sha256:abc",
+      reviewer_verdict_id: "v-1",
+      gate_id: "g-1",
+      idempotency_key: "idem-123",
+    };
+    const body = JSON.stringify(request);
+    expect(body).not.toContain("patch_text");
+    expect(body).not.toContain("patch_content");
+    expect(body).not.toContain("target_path");
+    expect(body).not.toContain("sandbox_path");
+  });
+
+  it("does_not_send_patch_text_on_revision_request", () => {
+    const request = {
+      user_instruction: "please revise",
+      previous_diff_checksum: "sha256:abc",
+      previous_reviewer_verdict_id: "v-1",
+    };
+    const body = JSON.stringify(request);
+    expect(body).not.toContain("patch_text");
+    expect(body).not.toContain("patch_content");
+    expect(body).not.toContain("target_path");
+    expect(body).not.toContain("sandbox_path");
+  });
+
+  it("validation_path_waits_for_user_approval_before_apply", () => {
+    const markup = renderToStaticMarkup(
+      <ValidationProgressPanel
+        attempts={[]}
+        proposalStatus="user_review_required"
+      />,
+    );
+    expect(markup).toContain('data-testid="waiting-for-approval"');
+    expect(markup).toContain("Waiting for your approval");
+  });
+
+  it("shows_diff_preview_error_when_hunks_empty", () => {
+    const diff: SafeDiffPreviewType = {
+      proposal_id: "p-1",
+      diff_ref: null,
+      diff_checksum: "sha256:abc",
+      files: [
+        {
+          path: "pom.xml",
+          change_type: "modified",
+          additions: 0,
+          deletions: 0,
+          hunks: [],
+          truncated: false,
+        },
+      ],
+      total_additions: 0,
+      total_deletions: 0,
+      truncated: false,
+      parse_status: "parsed",
+      checksum_mismatch: false,
+      redactions: [],
+    };
+    const markup = renderToStaticMarkup(<SafeDiffPreview diff={diff} />);
+    expect(markup).toContain("pom.xml");
+    expect(markup).not.toContain("safe-diff-hunk");
+  });
+
+  it("technical_metadata_collapsed_by_default", () => {
+    const markup = renderToStaticMarkup(
+      <RepairProposalMetadata proposal={baseProposal} />,
+    );
+    expect(markup).toContain('data-testid="repair-metadata-details"');
+    expect(markup).toContain("Show advanced details");
+    expect(markup).toContain("Proposal state");
+    expect(markup).toContain("USER REVIEW REQUIRED");
+    expect(markup).toContain("Gate");
+    expect(markup).toContain("gate-1");
+    expect(markup).toContain("Proposal ID");
+    expect(markup).toContain("prop-1");
+    expect(markup).toContain("checksum");
+    expect(markup).toContain("sha256:abc");
+    expect(markup).not.toContain("raw JSON");
+  });
+
+  it("renders_approval_actions_not_enabled_message", () => {
+    const noActionsProposal: ReviewedDiffProposal = {
+      ...baseProposal,
+      allowed_actions: [],
+    };
+    const markup = renderToStaticMarkup(
+      <RepairProposalMetadata proposal={noActionsProposal} />,
+    );
+    expect(markup).toContain('data-testid="repair-metadata-details"');
+    expect(markup).not.toContain("approve_sandbox_apply");
+    expect(markup).not.toContain("request_revision");
+  });
+});
+
+describe("PR-F no-proposal UI states", () => {
+  const baseInvocationNoProp: V2LlmInvocationEntry = {
+    invocation_id: "inv-main",
+    job_id: "job-1",
+    proposal_id: null,
+    gate_id: null,
+    role: "main",
+    responsibility: "repair_proposal",
+    provider_alias: "azure_openai",
+    model_display_name: "Product safe proposer",
+    deployment_alias_hash: "abc123",
+    context_checksum: "sha256:context",
+    input_checksum: "sha256:input",
+    output_checksum: "sha256:output",
+    schema_name: "RepairPrimaryOutput",
+    status: "completed",
+    fallback_used: false,
+    redacted_error: null,
+    redacted_summary: "Diagnosed missing validation dependency.",
+    prompt_tokens: 12,
+    completion_tokens: 8,
+    total_tokens: 20,
+    latency_ms: 1200,
+    created_at: "2026-06-30T00:00:00Z",
+    completed_at: "2026-06-30T00:00:01Z",
+  };
+
+  it("does_not_show_validation_path_when_no_proposal", () => {
+    const markup = renderToStaticMarkup(<ValidationProgressPanel attempts={[]} />);
+    expect(markup).toContain("Reviewed Repair Unavailable");
+    expect(markup).not.toContain("Apply, Rebuild, Test");
+  });
+
+  it("does_not_show_waiting_for_approval_when_no_proposal", () => {
+    const markup = renderToStaticMarkup(<ValidationProgressPanel attempts={[]} />);
+    expect(markup).not.toContain("Waiting for your approval");
+    expect(markup).toContain("Not available");
+  });
+
+  it("shows_main_schema_invalid_unavailable_state", () => {
+    const invocations: V2LlmInvocationEntry[] = [
+      {
+        ...baseInvocationNoProp,
+        status: "schema_invalid",
+        redacted_error: "proposer_schema_invalid",
+        redacted_summary: "Schema validation failed: missing required field 'proposed_diff'",
+      },
+    ];
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairUnavailable invocations={invocations} loading={false} error={null} />,
+    );
+    expect(markup).toContain("Reviewed Repair Unavailable");
+    expect(markup).toContain("schema invalid");
+    expect(markup).toContain("not run");
+    expect(markup).not.toContain("Approve sandbox apply");
+    expect(markup).not.toContain("Apply, Rebuild, Test");
+  });
+
+  it("shows_reviewer_not_run_when_main_invalid", () => {
+    const invocations: V2LlmInvocationEntry[] = [
+      {
+        ...baseInvocationNoProp,
+        status: "schema_invalid",
+        redacted_error: "proposer_schema_invalid",
+        redacted_summary: "Schema validation failed",
+      },
+    ];
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairUnavailable invocations={invocations} loading={false} error={null} />,
+    );
+    expect(markup).toContain("not run");
+    expect(markup).toContain("schema invalid");
+    expect(markup).not.toContain("Reviewer Model completed");
+  });
+
+  it("does_not_render_approve_or_revision_without_proposal", () => {
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairUnavailable invocations={[]} loading={false} error={null} />,
+    );
+    expect(markup).not.toContain("Approve sandbox apply");
+    expect(markup).not.toContain("Request revision");
+    expect(markup).not.toContain("View diff");
+  });
+
+  it("shows_safe_model_display_names_from_backend", () => {
+    const invocations: V2LlmInvocationEntry[] = [
+      {
+        ...baseInvocationNoProp,
+        model_display_name: "Custom Main Model Name",
+      },
+      {
+        ...baseInvocationNoProp,
+        invocation_id: "inv-reviewer",
+        role: "reviewer",
+        responsibility: "repair_review",
+        model_display_name: "Custom Reviewer Model Name",
+        redacted_summary: null,
+        created_at: "2026-06-30T00:00:02Z",
+      },
+    ];
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairUnavailable invocations={invocations} loading={false} error={null} />,
+    );
+    expect(markup).toContain("Custom Main Model Name");
+    expect(markup).toContain("Custom Reviewer Model Name");
+    expect(markup).toContain("data-testid=\"reviewed-repair-unavailable\"");
+  });
+
+  it("technical_details_collapsed_by_default", () => {
+    const invocations: V2LlmInvocationEntry[] = [
+      { ...baseInvocationNoProp, provider_alias: "azure_openai" },
+    ];
+    const markup = renderToStaticMarkup(
+      <ModelRoleActivity invocations={invocations} loading={false} error={null} />,
+    );
+    expect(markup).toContain("data-testid=\"model-activity-details\"");
+    expect(markup).toContain("Show technical details");
+    expect(markup).toContain("<details");
+  });
+
+  it("apply_rebuild_test_visible_only_when_proposal_exists", () => {
+    const noProposalMarkup = renderToStaticMarkup(<ValidationProgressPanel attempts={[]} />);
+    expect(noProposalMarkup).not.toContain("Apply, Rebuild, Test");
+
+    const hasProposalMarkup = renderToStaticMarkup(
+      <ValidationProgressPanel attempts={[]} proposalStatus="user_review_required" />,
+    );
+    expect(hasProposalMarkup).toContain("Apply, Rebuild, Test");
   });
 });

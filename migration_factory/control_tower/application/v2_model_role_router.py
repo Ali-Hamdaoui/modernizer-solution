@@ -2,6 +2,8 @@
 
 This module resolves per-role deployment env refs, applies safe fallback
 selection, and optionally fail-closes on structured-output schema checks.
+Uses ModelRoleConfigLoader for primary config with backward compat for
+legacy AZURE_OPENAI_* env vars.
 """
 
 from __future__ import annotations
@@ -14,6 +16,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
 
+from migration_factory.control_tower.application.v2_model_role_config import (
+    ModelRoleConfigLoader,
+    ModelRoleConfigMissingError,
+)
 from migration_factory.control_tower.application.v2_model_schemas import validate_model_output
 from migration_factory.control_tower.application.v2_settings import ControlTowerSettings
 from migration_factory.control_tower.application.redaction import redact_model_summary
@@ -22,12 +28,63 @@ from migration_factory.control_tower.application.redaction import redact_model_s
 CODE_BRANCH = "amf-237-reviewed-repair-gate"
 CODE_VERSION = "amf-237-diagnostics-2026.07.02"
 
-
 class V2ModelRole(str, Enum):
     ASSISTANT = "assistant"
     PROPOSER = "proposer"
     REVIEWER = "reviewer"
     FALLBACK = "fallback"
+
+
+# ── Role mapping helpers ──────────────────────────────────────────────
+
+_OLD_ROLE_ENV: dict[V2ModelRole, str] = {
+    V2ModelRole.PROPOSER: "AZURE_OPENAI_PROPOSER_DEPLOYMENT",
+    V2ModelRole.REVIEWER: "AZURE_OPENAI_REVIEWER_DEPLOYMENT",
+    V2ModelRole.ASSISTANT: "AZURE_OPENAI_ASSISTANT_DEPLOYMENT",
+    V2ModelRole.FALLBACK: "AZURE_OPENAI_FALLBACK_DEPLOYMENT",
+}
+
+
+def _role_to_env_key(role: V2ModelRole) -> str:
+    """Map a V2ModelRole to the AI_MIGRATION_* role key (MAIN, REVIEWER, FALLBACK)."""
+    if role in (V2ModelRole.PROPOSER, V2ModelRole.ASSISTANT):
+        return "MAIN"
+    if role == V2ModelRole.REVIEWER:
+        return "REVIEWER"
+    if role == V2ModelRole.FALLBACK:
+        return "FALLBACK"
+    return "MAIN"
+
+
+def _role_to_config_role(role: V2ModelRole) -> str:
+    """Map a V2ModelRole to the config role name (main, reviewer, fallback)."""
+    if role in (V2ModelRole.PROPOSER, V2ModelRole.ASSISTANT):
+        return "main"
+    if role == V2ModelRole.REVIEWER:
+        return "reviewer"
+    if role == V2ModelRole.FALLBACK:
+        return "fallback"
+    return "main"
+
+
+def _resolve_deployment_for_role(role: V2ModelRole) -> str:
+    """Resolve deployment ID for a role via ModelRoleConfigLoader, with backward compat."""
+    config_role = _role_to_config_role(role)
+    config = ModelRoleConfigLoader.try_load_role(config_role)
+    if config is not None:
+        return config.deployment_or_model_id
+    old_env = _OLD_ROLE_ENV.get(role)
+    if old_env and os.environ.get(old_env, "").strip():
+        return os.environ[old_env].strip()
+    return ""
+
+
+def _resolve_deployment_for_fallback() -> str:
+    """Resolve fallback deployment via ModelRoleConfigLoader, with backward compat."""
+    config = ModelRoleConfigLoader.try_load_role("fallback")
+    if config is not None:
+        return config.deployment_or_model_id
+    return os.environ.get("AZURE_OPENAI_FALLBACK_DEPLOYMENT", "").strip()
 
 
 @dataclass(frozen=True)
@@ -57,6 +114,11 @@ class V2RoleModelResult:
     response_format_requested: bool = False
     response_format_used: bool | None = None
     deployment_alias_hash: str = ""
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    latency_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +129,7 @@ class V2RoleModelRoute:
     fallback_env_ref: str
     fallback_deployment: str
     fallback_enabled: bool
+    provider: str = "azure_openai"
 
 
 class V2ModelRoleRouter:
@@ -79,26 +142,36 @@ class V2ModelRoleRouter:
         active_settings = settings or self._settings
         primary_env_ref = self._role_env_ref(request.role, active_settings)
         fallback_env_ref = active_settings.azure_foundry_fallback_deployment_env or ""
+
+        role_config = ModelRoleConfigLoader.try_load_role(request.role.value)
+        provider_alias = (role_config.provider_alias if role_config else "azure_openai")
+
+        if provider_alias == "mistral":
+            model_env = f"AI_MIGRATION_{request.role.value.upper()}_MODEL"
+            primary_env_ref = model_env
+
         return V2RoleModelRoute(
             request=request,
             primary_env_ref=primary_env_ref,
-            primary_deployment=os.environ.get(primary_env_ref, "").strip(),
+            primary_deployment=_resolve_deployment_for_role(request.role),
             fallback_env_ref=fallback_env_ref,
-            fallback_deployment=os.environ.get(fallback_env_ref, "").strip(),
+            fallback_deployment=_resolve_deployment_for_fallback(),
             fallback_enabled=bool(active_settings.azure_foundry_fallback_enabled),
+            provider=provider_alias,
         )
 
     def route(
         self,
         request: V2RoleModelRequest,
         *,
-        invoke: Callable[[str], Any],
+        invoke: Callable[[str, str], Any],
         settings: ControlTowerSettings | None = None,
     ) -> V2RoleModelResult:
         route = self.plan(request, settings=settings)
         primary_result, primary_failure = self._try_invoke(
             invoke,
             deployment=route.primary_deployment,
+            provider=route.provider,
             request=request,
             role=request.role.value,
         )
@@ -125,6 +198,11 @@ class V2ModelRoleRouter:
                     fallback_used=False,
                     schema_validated=True,
                     redacted_summary=schema_summary,
+                    prompt_tokens=result.prompt_tokens,
+                    completion_tokens=result.completion_tokens,
+                    total_tokens=result.total_tokens,
+                    reasoning_tokens=result.reasoning_tokens,
+                    latency_ms=result.latency_ms,
                 )
             primary_failure = (
                 result.failure_reason
@@ -141,6 +219,7 @@ class V2ModelRoleRouter:
             fallback_result, fallback_failure = self._try_invoke(
                 invoke,
                 deployment=route.fallback_deployment,
+                provider=route.provider,
                 request=request,
                 role=V2ModelRole.FALLBACK.value,
             )
@@ -166,6 +245,11 @@ class V2ModelRoleRouter:
                         schema_validated=True,
                         redacted_summary=redacted or result.redacted_summary,
                         schema_diagnostics=schema_diag or None,
+                        prompt_tokens=result.prompt_tokens,
+                        completion_tokens=result.completion_tokens,
+                        total_tokens=result.total_tokens,
+                        reasoning_tokens=result.reasoning_tokens,
+                        latency_ms=result.latency_ms,
                     )
                 fallback_failure = result.failure_reason or schema_failure or fallback_failure or "fallback_model_failed"
             else:
@@ -182,9 +266,10 @@ class V2ModelRoleRouter:
 
     def _try_invoke(
         self,
-        invoke: Callable[[str], Any],
+        invoke: Callable[[str, str], Any],
         *,
         deployment: str,
+        provider: str = "azure_openai",
         request: V2RoleModelRequest,
         role: str,
     ) -> tuple[Any | None, str]:
@@ -193,7 +278,7 @@ class V2ModelRoleRouter:
                 return None, "reviewer_model_unavailable"
             return None, f"missing_{role}_deployment"
         try:
-            return invoke(deployment), ""
+            return invoke(deployment, provider), ""
         except Exception:
             if role == V2ModelRole.REVIEWER.value:
                 return None, "reviewer_model_failed"
@@ -212,6 +297,11 @@ class V2ModelRoleRouter:
             response_format_requested=bool(getattr(result, "response_format_requested", request.require_schema)),
             response_format_used=getattr(result, "response_format_used", None),
             deployment_alias_hash=str(getattr(result, "deployment_alias_hash", "") or ""),
+            prompt_tokens=getattr(result, "prompt_tokens", None),
+            completion_tokens=getattr(result, "completion_tokens", None),
+            total_tokens=getattr(result, "total_tokens", None),
+            reasoning_tokens=getattr(result, "reasoning_tokens", None),
+            latency_ms=getattr(result, "latency_ms", None),
         )
 
     def _coerce_fallback_result(
@@ -235,6 +325,11 @@ class V2ModelRoleRouter:
             fallback_used=True,
             schema_validated=coerced.schema_validated,
             redacted_summary=redacted,
+            prompt_tokens=coerced.prompt_tokens,
+            completion_tokens=coerced.completion_tokens,
+            total_tokens=coerced.total_tokens,
+            reasoning_tokens=coerced.reasoning_tokens,
+            latency_ms=coerced.latency_ms,
         )
 
     def _schema_ok(self, request: V2RoleModelRequest, content: str) -> bool:
@@ -247,10 +342,16 @@ class V2ModelRoleRouter:
             return f"{request.role.value}_schema_invalid"
         parsed, category = _parse_model_json_safe(content)
         if parsed is None:
+            if category == "empty_output":
+                return "main_empty_response"
+            if request.role == V2ModelRole.PROPOSER:
+                return "main_schema_invalid"
             return f"{request.role.value}_schema_invalid"
         try:
             validate_model_output(request.output_schema_name, parsed)
         except Exception:
+            if request.role == V2ModelRole.PROPOSER:
+                return "main_schema_invalid"
             return f"{request.role.value}_schema_invalid"
         return ""
 
@@ -269,6 +370,9 @@ class V2ModelRoleRouter:
             output_checksum = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
         parsed, category = _parse_model_json_safe(content)
         base: dict[str, Any] = {
+            "schema_name": request.output_schema_name,
+            "role": request.role.value,
+            "stage": "reviewer" if request.role == V2ModelRole.REVIEWER else "main",
             "output_checksum": output_checksum if content.strip() else "",
             "response_format_requested": True,
             "response_format_used": True,
@@ -298,16 +402,28 @@ class V2ModelRoleRouter:
                 result["missing_fields"] = missing
             if wrong_types:
                 result["wrong_field_types"] = wrong_types
+                result["invalid_fields"] = wrong_types
             if wrong_names:
                 result["wrong_field_names"] = wrong_names
+                result["extra_fields"] = wrong_names
 
             # Check diff-specific failures for RepairPrimaryOutput
-            if request.output_schema_name == "RepairPrimaryOutput" and "proposed_diff" in parsed:
-                diff = str(parsed["proposed_diff"])
-                if diff.strip():
-                    diff_failure = _classify_diff_failure(diff)
-                    if diff_failure:
-                        result["parse_failure_category"] = diff_failure
+            if request.output_schema_name == "RepairPrimaryOutput":
+                has_proposed_diff = isinstance(parsed.get("proposed_diff"), str) and bool(str(parsed.get("proposed_diff")).strip())
+                result["has_proposed_diff"] = has_proposed_diff
+                result["proposed_diff_parse_status"] = "missing"
+                if "proposed_diff" in parsed:
+                    if not isinstance(parsed.get("proposed_diff"), str):
+                        result["proposed_diff_parse_status"] = "invalid_type"
+                    else:
+                        diff = str(parsed["proposed_diff"])
+                        if not diff.strip():
+                            result["proposed_diff_parse_status"] = "empty"
+                        else:
+                            diff_failure = _classify_diff_failure(diff)
+                            result["proposed_diff_parse_status"] = diff_failure or "valid_shape"
+                            if diff_failure:
+                                result["parse_failure_category"] = diff_failure
             return result
 
     def _deterministic_result(
@@ -393,6 +509,12 @@ class V2ModelRoleRouter:
         )
 
     def _role_env_ref(self, role: V2ModelRole, settings: ControlTowerSettings) -> str:
+        new_env = f"AI_MIGRATION_{_role_to_env_key(role)}_MODEL"
+        if os.environ.get(new_env, "").strip():
+            return new_env
+        old_env = _OLD_ROLE_ENV.get(role)
+        if old_env and os.environ.get(old_env, "").strip():
+            return old_env
         if role == V2ModelRole.PROPOSER:
             return settings.azure_foundry_proposer_deployment_env
         if role == V2ModelRole.REVIEWER:
@@ -414,10 +536,17 @@ def _deployment_alias_hash(deployment: str) -> str:
 
 def _build_diagnostic_summary_from_diag(diag: dict[str, Any]) -> str:
     """Build a specific redacted summary from schema diagnostics dict."""
+    role = str(diag.get("role") or diag.get("stage") or "")
+    subject = "Reviewer" if role == "reviewer" else "Main"
+    if subject == "Reviewer" and str(diag.get("reason_code") or "") == "reviewer_schema_invalid":
+        return "Reviewer model output failed schema validation."
     category = str(diag.get("parse_failure_category") or "")
     missing = diag.get("missing_fields")
     wrong_types = diag.get("wrong_field_types")
     wrong_names = diag.get("wrong_field_names")
+    invalid_fields = diag.get("invalid_fields")
+    extra_fields = diag.get("extra_fields")
+    diff_status = str(diag.get("proposed_diff_parse_status") or "")
     rfu = diag.get("response_format_used")
 
     if rfu is False:
@@ -427,25 +556,34 @@ def _build_diagnostic_summary_from_diag(diag: dict[str, Any]) -> str:
         return "Azure rejected response_format=json_object."
 
     if category == "truncated_output":
-        return "Main model response appears truncated."
+        return f"{subject} model response appears truncated."
 
     if category == "unsupported_response_format":
-        return "Main model returned unsupported response format."
+        return f"{subject} model returned unsupported response format."
 
     if category == "invalid_json":
-        return "Main model returned invalid JSON."
+        return f"{subject} model returned invalid JSON."
 
     if category == "markdown_wrapped_json":
-        return "Main model returned markdown-wrapped JSON that could not be parsed."
+        return f"{subject} model returned markdown-wrapped JSON that could not be parsed."
 
     if missing:
-        return f"Main model returned JSON missing required fields: {', '.join(missing)}"
+        return f"{subject} model returned JSON missing required fields: {', '.join(missing)}"
 
     if wrong_types:
-        return f"Main model returned JSON with wrong field types: {'; '.join(wrong_types)}"
+        return f"{subject} model returned JSON with wrong field types: {'; '.join(wrong_types)}"
 
     if wrong_names:
-        return f"Main model returned JSON with unexpected fields: {', '.join(wrong_names)}"
+        return f"{subject} model returned JSON with unexpected fields: {', '.join(wrong_names)}"
+
+    if invalid_fields:
+        return f"{subject} model returned JSON with invalid fields: {'; '.join(invalid_fields)}"
+
+    if extra_fields:
+        return f"{subject} model returned JSON with unexpected fields: {', '.join(extra_fields)}"
+
+    if diff_status in {"missing", "empty", "invalid_type", "missing_diff_git_header", "missing_hunk", "invalid_diff"}:
+        return f"{subject} model returned invalid proposed_diff: {diff_status}"
 
     return ""
 
@@ -454,6 +592,8 @@ def _build_schema_failure_summary(request: V2RoleModelRequest, content: str) -> 
     """Build a safe human-readable summary for schema validation failures."""
     if not request.require_schema or not request.output_schema_name:
         return ""
+    if request.role == V2ModelRole.REVIEWER:
+        return "Reviewer model output failed schema validation."
     parsed, category = _parse_model_json_safe(content)
     if parsed is not None:
         missing, wrong_types, wrong_names = _categorize_schema_error(

@@ -1244,6 +1244,7 @@ class V2GateActionService:
             "primary_output_checksum": refs.get("primary_output_checksum", ""),
             "reviewer_output_checksum": binding.reviewer_output_checksum,
             "final_reviewed_diff_checksum": binding.final_reviewed_diff_checksum,
+            "final_reviewed_diff_sha256_hex": refs.get("final_reviewed_diff_sha256_hex", ""),
             "policy_validation_checksum": binding.policy_validation_checksum,
             "base_repo_state_checksum": binding.base_repo_state_checksum,
             "final_artifact_checksum": (
@@ -1275,7 +1276,7 @@ class V2GateActionService:
             if not isinstance(item, str) or ":" not in item:
                 continue
             key, value = item.split(":", 1)
-            if key.endswith("_checksum") or key == "checksum":
+            if key.endswith("_checksum") or key == "checksum" or key.endswith("_sha256_hex"):
                 refs[key] = value
         return refs
 

@@ -52,9 +52,13 @@ export function ReviewerVerdictCard({
         </span>
       </div>
       {verdict.reasoning && (
-        <div className="reviewer-verdict-section">
-          <strong>Reasoning</strong>
-          <p className="meta">{verdict.reasoning}</p>
+        <div className="reviewer-verdict-section" data-testid="verdict-notes">
+          <strong>Notes</strong>
+          <ul className="meta">
+            {verdict.reasoning.split("\n").filter(Boolean).map((note, i) => (
+              <li key={i}>{note}</li>
+            ))}
+          </ul>
         </div>
       )}
       {verdict.reviewer_verdict_id && (
@@ -71,8 +75,8 @@ export function ReviewerVerdictCard({
         </div>
       )}
       {verdict.unsafe_assumptions.length > 0 && (
-        <div className="reviewer-verdict-section">
-          <strong>Unsafe Assumptions</strong>
+        <div className="reviewer-verdict-section" data-testid="verdict-risks">
+          <strong>Risks / Policy Concerns</strong>
           <ul className="meta">
             {verdict.unsafe_assumptions.map((a, i) => (
               <li key={i}>{a}</li>

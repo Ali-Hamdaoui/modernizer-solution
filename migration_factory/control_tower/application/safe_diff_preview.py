@@ -69,6 +69,16 @@ class SafeDiffPreview:
     truncated: bool = False
     checksum_mismatch: bool = False
     redactions: list[str] = field(default_factory=list)
+    parse_status: str = "parsed"
+
+    @property
+    def can_approve(self) -> bool:
+        return (
+            self.parse_status == "parsed"
+            and not self.checksum_mismatch
+            and not self.truncated
+            and self.total_additions > 0 or self.total_deletions > 0
+        )
 
 
 def build_safe_diff_preview(
@@ -85,6 +95,7 @@ def build_safe_diff_preview(
     """
     raw_diff_bytes = _load_diff_bytes(diff_ref=diff_ref, diff_text=diff_text)
     diff_checksum = sha256_hex(raw_diff_bytes)
+    had_content = bool(raw_diff_bytes)
     checksum_mismatch = (
         stored_diff_checksum is not None
         and stored_diff_checksum != diff_checksum
@@ -93,6 +104,7 @@ def build_safe_diff_preview(
     preview_text = preview_bytes.decode("utf-8", errors="replace")
     parsed = _SafeDiffParser(proposal_id=proposal_id, diff_ref=diff_ref, diff_checksum=diff_checksum)
     parsed._checksum_mismatch = checksum_mismatch
+    parsed._had_content = had_content
     parsed.parse(preview_text)
     if len(raw_diff_bytes) > MAX_TOTAL_BYTES:
         parsed.truncate("diff truncated to 200KB preview window")
@@ -110,6 +122,7 @@ def safe_diff_preview_to_dict(preview: SafeDiffPreview) -> dict[str, Any]:
         "truncated": preview.truncated,
         "checksum_mismatch": preview.checksum_mismatch,
         "redactions": list(preview.redactions),
+        "parse_status": preview.parse_status,
     }
 
 
@@ -159,6 +172,7 @@ class _SafeDiffParser:
         self._diff_ref = _safe_diff_ref(diff_ref)
         self._diff_checksum = diff_checksum
         self._checksum_mismatch = False
+        self._had_content = False
         self._files: list[SafeDiffFile] = []
         self._redactions: list[str] = []
         self._truncated = False
@@ -219,6 +233,21 @@ class _SafeDiffParser:
         self._finalize_current_file()
 
     def build(self) -> SafeDiffPreview:
+        has_content = self._had_content
+        has_any_file = bool(self._files)
+        has_any_hunk = any(len(f.hunks) > 0 for f in self._files)
+        parse_status: str = "unparseable"
+        if not has_content:
+            parse_status = "no_content"
+        elif has_any_hunk and (self._total_additions > 0 or self._total_deletions > 0):
+            parse_status = "parsed"
+        elif has_any_file and not has_any_hunk:
+            parse_status = "unparseable"
+            if has_content and not self._truncated:
+                self._add_redaction("diff content present but no parseable hunks found")
+        elif has_content and not has_any_file and not self._truncated:
+            parse_status = "unparseable"
+            self._add_redaction("diff content present but no parseable hunks found")
         return SafeDiffPreview(
             proposal_id=self._proposal_id,
             diff_ref=self._diff_ref,
@@ -229,6 +258,7 @@ class _SafeDiffParser:
             truncated=self._truncated or any(file.truncated for file in self._files),
             checksum_mismatch=self._checksum_mismatch,
             redactions=self._redactions,
+            parse_status=parse_status,
         )
 
     def truncate(self, reason: str) -> None:

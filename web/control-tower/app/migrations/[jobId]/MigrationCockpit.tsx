@@ -1219,6 +1219,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const stageTimelineEntries = buildStageTimelineEntries(data.job.route_steps, data.stages);
 
   return (
+    <div className="cockpit-page-wrapper" data-full-width="cockpit-page">
     <div className="cockpit-layout">
       {/* Stage Timeline */}
       <section className="panel">
@@ -1429,8 +1430,9 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
 
       {/* Failure Summary Panel */}
       {data.failureSummary?.has_failures && (
+        <details className="failure-evidence-advanced" data-testid="failure-evidence-advanced">
+        <summary>Failure Evidence</summary>
         <section className="panel failure-panel">
-          <h2>Failure & Repair</h2>
           {data.failureSummary.failures.map((f, i) => (
             <div key={i} className={`failure-card ${f.type === "result_contract_failed" ? "contract-failure-card" : ""}`}>
               <div className="stage-header">
@@ -1666,6 +1668,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
             </div>
           )}
         </section>
+        </details>
       )}
 
       {/* PR-C — Repair Proposal Panel */}
@@ -1741,7 +1744,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       )}
 
       <style>{`
-        .cockpit-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
         .panel { border: 1px solid #ccc; border-radius: 6px; padding: 1rem; }
         .panel h2 { margin-top: 0; font-size: 1.1rem; }
         .stage-list { display: flex; flex-direction: column; gap: 0.5rem; }
@@ -1803,7 +1805,9 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .artifact-preview-content { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 400px; overflow-y: auto; background: #fff; padding: 0.5rem; border: 1px solid #ddd; font-size: 0.8rem; }
         .report-artifact-row { display: flex; gap: 0.5rem; align-items: center; padding: 0.35rem 0; border-bottom: 1px solid #eee; }
         .report-artifact-row a { color: #0066cc; text-decoration: underline; font-size: 0.85rem; }
+        .shell:has([data-full-width="cockpit-page"]) { max-width: 100%; padding: 0; }
       `}</style>
+    </div>
     </div>
   );
 }

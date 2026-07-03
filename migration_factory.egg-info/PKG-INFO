@@ -5,11 +5,18 @@ Summary: Minimal migration factory orchestration scaffold
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
 Requires-Dist: jsonschema
+Requires-Dist: fastapi==0.136.3
 Requires-Dist: langgraph
+Requires-Dist: pydantic<3,>=2
 Requires-Dist: PyYAML
+Requires-Dist: sse-starlette==3.4.4
+Requires-Dist: uvicorn==0.38.0
 Provides-Extra: test
 Requires-Dist: jsonschema; extra == "test"
+Requires-Dist: fastapi==0.136.3; extra == "test"
+Requires-Dist: pydantic<3,>=2; extra == "test"
 Requires-Dist: pytest; extra == "test"
+Requires-Dist: sse-starlette==3.4.4; extra == "test"
 
 # AI Migration Factory
 

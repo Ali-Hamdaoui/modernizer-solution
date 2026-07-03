@@ -15,7 +15,6 @@ export function RepairActionsBar({
   approveEnabled,
   revisionEnabled = true,
   checksumMismatch,
-  rejectDisabled,
 }: {
   onViewDiff: () => void;
   onViewReviewerOpinion: () => void;
@@ -28,7 +27,6 @@ export function RepairActionsBar({
   approveEnabled?: boolean;
   revisionEnabled?: boolean;
   checksumMismatch?: boolean;
-  rejectDisabled?: boolean;
 }) {
   const [showDialog, setShowDialog] = useState(false);
 
@@ -79,14 +77,6 @@ export function RepairActionsBar({
           data-testid="action-approve-sandbox-apply"
         >
           {approvePending ? "Applying..." : "Approve sandbox apply"}
-        </button>
-        <button
-          type="button"
-          disabled={rejectDisabled !== false}
-          title="Reject endpoint is not available for this repair gate"
-          data-testid="action-reject-repair"
-        >
-          Reject unavailable
         </button>
       </div>
       <RepairRevisionDialog

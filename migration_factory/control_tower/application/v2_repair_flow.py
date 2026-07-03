@@ -335,6 +335,7 @@ class V2RepairFlowService:
         binding_checksum: str | None = None,
         validation_runner: ValidationRunner = run_validation_after_patch,
         event_recorder: RepairEventRecorder | None = None,
+        allow_human_review_required: bool = False,
     ) -> SandboxAction:
         proposal = self._proposals.get(proposal_id)
         if proposal is None and self._repo is not None:
@@ -457,7 +458,9 @@ class V2RepairFlowService:
             },
         )
 
-        if gate.status != "ALLOWED":
+        if gate.status != "ALLOWED" and not (
+            allow_human_review_required and gate.status == "HUMAN_REVIEW_REQUIRED"
+        ):
             attempt["status"] = "BLOCKED"
             append_attempt(ledger, attempt)
             ledger["artifact_refs"] = artifact_refs
@@ -958,7 +961,8 @@ class V2RepairFlowService:
             raise ValueError("Reviewed diff cannot be applied: reviewer checksum mismatch")
         if not expected_policy_validation_checksum or policy_validation_checksum != expected_policy_validation_checksum:
             raise ValueError("Reviewed diff cannot be applied: policy validation checksum mismatch")
-        if str(policy_status).lower() not in {"allowed", "allow"}:
+        policy_status_normalized = str(policy_status).strip().lower()
+        if policy_status_normalized not in {"allowed", "allow", "human_review_required"}:
             raise ValueError("Reviewed diff cannot be applied: policy validation is not allowed")
         if expected_base_repo_state_checksum != current_base_repo_state_checksum:
             raise ValueError("Reviewed diff cannot be applied: base repository state is stale")
@@ -996,6 +1000,7 @@ class V2RepairFlowService:
             binding_checksum=binding_checksum,
             validation_runner=validation_runner,
             event_recorder=event_recorder,
+            allow_human_review_required=True,
         )
 
     def _mark_proposal_applied(self, proposal: RepairProposal) -> None:

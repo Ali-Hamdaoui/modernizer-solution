@@ -168,6 +168,7 @@ from migration_factory.control_tower.application.v2_reviewer_service import (
     V2ReviewerService,
 )
 from migration_factory.control_tower.application.v2_repair_projection import (
+    READ_ONLY_REPAIR_ACTIONS,
     build_reviewed_diff_proposal_from_record,
     record_to_attempt_summary,
     reviewed_diff_proposal_to_safe_dict,
@@ -698,6 +699,250 @@ class RepairProposalApproveResponse(BaseModel):
 # ── F5 Reviewed repair approval (checksum-only, no raw diff/patch) ────
 
 
+@dataclass(frozen=True)
+class ReviewedRepairProjectionEvidence:
+    gate_status: str | None = None
+    gate_decision: str | None = None
+    reviewer_decision: str = "unknown"
+    reviewer_verdict_id: str | None = None
+    reviewer_output_checksum: str | None = None
+    policy_status: str | None = None
+    policy_validation_checksum: str | None = None
+    stale_reason: str | None = None
+    allowed_actions: tuple[str, ...] = READ_ONLY_REPAIR_ACTIONS
+    evidence_sources: tuple[str, ...] = ()
+
+
+def _safe_optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _safe_artifact_display_ref(value: Any) -> str | None:
+    text = _safe_optional_str(value)
+    if text is None:
+        return None
+    return Path(PureWindowsPath(text).name).name
+
+
+def _normalize_reviewer_decision(value: Any) -> str:
+    decision = str(value or "").strip().lower()
+    return decision if decision in {"accept", "reject", "revise"} else "unknown"
+
+
+def _reviewer_artifact_accept_is_valid(payload: dict[str, Any], diff_checksum: Any) -> bool:
+    decision = _normalize_reviewer_decision(payload.get("decision") or payload.get("reviewer_decision"))
+    if decision != "accept":
+        return decision in {"reject", "revise"}
+    for key in ("changed_files_verified", "diff_parseable"):
+        if key in payload and payload.get(key) is not True:
+            return False
+    expected = str(diff_checksum or "").strip()
+    for candidate in (
+        payload.get("diff_checksum"),
+        payload.get("reviewed_diff_checksum"),
+        payload.get("final_reviewed_diff_sha256_hex"),
+    ):
+        if candidate and expected and str(candidate).strip() != expected:
+            return False
+    return True
+
+
+def _load_reviewer_artifact_payload(*, record: Any, gate: Any | None) -> dict[str, Any] | None:
+    refs: list[str] = []
+    for value in (getattr(record, "reviewer_verdict_ref", None), getattr(record, "repair_plan_ref", None)):
+        if isinstance(value, str) and value.strip():
+            refs.append(value.strip())
+    if gate is not None:
+        _, artifact_refs = _parse_reviewed_repair_gate_refs(getattr(gate, "source_artifact_refs_json", ""))
+        refs.extend(artifact_refs)
+    diff_ref = getattr(record, "diff_ref", None)
+    if isinstance(diff_ref, str) and diff_ref.strip():
+        diff_dir = Path(diff_ref).parent
+        refs.extend(str(diff_dir / name) for name in ("final_reviewed_repair_artifact.json", "reviewer_repair_llm_output.json"))
+    for ref in refs:
+        path = Path(ref)
+        if path.name not in {"final_reviewed_repair_artifact.json", "reviewer_repair_llm_output.json"}:
+            continue
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(payload, dict):
+            payload = dict(payload)
+            payload["_source"] = path.name
+            return payload
+    return None
+
+
+def _load_policy_payload(*, record: Any, gate: Any | None) -> dict[str, Any] | None:
+    refs: list[str] = []
+    if gate is not None:
+        _, artifact_refs = _parse_reviewed_repair_gate_refs(getattr(gate, "source_artifact_refs_json", ""))
+        refs.extend(artifact_refs)
+    diff_ref = getattr(record, "diff_ref", None)
+    if isinstance(diff_ref, str) and diff_ref.strip():
+        refs.append(str(Path(diff_ref).parent / "repair_policy_validation.json"))
+    for ref in refs:
+        path = Path(ref)
+        if path.name != "repair_policy_validation.json" or not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def _resolve_reviewed_repair_policy(*, record: Any, gate: Any | None) -> tuple[str | None, str | None, str | None]:
+    checksum = _safe_optional_str(getattr(record, "policy_validation_checksum", None))
+    status_value: str | None = None
+    source: str | None = None
+    policy_payload = _load_policy_payload(record=record, gate=gate)
+    if policy_payload is not None:
+        status_value = _safe_optional_str(policy_payload.get("status") or policy_payload.get("policy_status"))
+        checksum = checksum or _safe_optional_str(policy_payload.get("policy_validation_checksum"))
+        source = "repair_policy_validation"
+    if not status_value and checksum:
+        status_value = "HUMAN_REVIEW_REQUIRED"
+        source = source or "proposal_record"
+    normalized = str(status_value or "").strip().upper()
+    if normalized in {"ALLOW", "ALLOWED"}:
+        normalized = "ALLOWED"
+    elif normalized in {"HUMAN_REVIEW_REQUIRED", "HUMAN-REVIEW-REQUIRED", "USER_REVIEW_REQUIRED"}:
+        normalized = "HUMAN_REVIEW_REQUIRED"
+    elif not normalized:
+        normalized = None
+    return normalized, checksum, source
+
+
+def _reviewed_repair_stale_reason(
+    *,
+    job_id: str,
+    record: Any,
+    gate: Any | None,
+    reviewer_decision: str,
+    policy_status: str | None,
+    policy_validation_checksum: str | None,
+    preview: Any | None,
+) -> str | None:
+    if str(getattr(record, "status", "") or "") != "user_review_required":
+        return "proposal_not_user_review_required"
+    if not getattr(record, "gate_id", None):
+        return "missing_gate_id"
+    if gate is None or str(getattr(gate, "job_id", "") or "") != job_id:
+        return "gate_not_found"
+    if str(getattr(gate, "gate_status", "") or "").lower() not in {"open", "current", "user-review"}:
+        return "gate_not_open"
+    gate_decision = str(getattr(gate, "gate_decision", "") or "").lower()
+    if gate_decision not in {"", "pending", "none", "null"}:
+        return "gate_already_decided"
+    if preview is None:
+        return "diff_preview_unavailable"
+    if getattr(preview, "parse_status", "") != "parsed":
+        return "diff_unparseable"
+    if bool(getattr(preview, "checksum_mismatch", False)):
+        return "diff_checksum_mismatch"
+    if reviewer_decision != "accept":
+        return "reviewer_not_accepted"
+    normalized_policy = str(policy_status or "").strip().upper()
+    if normalized_policy not in {"ALLOWED", "HUMAN_REVIEW_REQUIRED"}:
+        return "policy_not_allowed"
+    if not policy_validation_checksum:
+        return "missing_policy_validation_checksum"
+    if not getattr(record, "diff_checksum", None):
+        return "missing_diff_checksum"
+    return None
+
+
+def _reviewed_repair_projection_evidence(
+    *,
+    uow: Any,
+    job_id: str,
+    record: Any,
+    gate: Any | None,
+    preview: Any | None = None,
+) -> ReviewedRepairProjectionEvidence:
+    sources: list[str] = []
+    reviewer_decision = "unknown"
+    reviewer_verdict_id = _safe_optional_str(getattr(record, "reviewer_verdict_id", None))
+    reviewer_output_checksum = _safe_optional_str(getattr(record, "reviewer_output_checksum", None))
+
+    if reviewer_verdict_id:
+        try:
+            critique = uow.v2_reviewer.get_critique(reviewer_verdict_id)
+        except AttributeError:
+            critique = None
+        if critique is not None:
+            reviewer_decision = _normalize_reviewer_decision(getattr(critique, "decision", None))
+            sources.append("reviewer_critique")
+
+    if reviewer_decision == "unknown":
+        persisted_decision = _normalize_reviewer_decision(getattr(record, "reviewer_decision", None))
+        if persisted_decision != "unknown":
+            reviewer_decision = persisted_decision
+            sources.append("proposal_record")
+
+    artifact_payload = _load_reviewer_artifact_payload(record=record, gate=gate)
+    if reviewer_decision == "unknown" and artifact_payload is not None:
+        artifact_decision = _normalize_reviewer_decision(
+            artifact_payload.get("decision") or artifact_payload.get("reviewer_decision")
+        )
+        if _reviewer_artifact_accept_is_valid(artifact_payload, getattr(record, "diff_checksum", None)):
+            reviewer_decision = artifact_decision
+            sources.append(str(artifact_payload.get("_source") or "reviewer_artifact"))
+            reviewer_output_checksum = reviewer_output_checksum or _safe_optional_str(
+                artifact_payload.get("reviewer_output_checksum")
+                or artifact_payload.get("output_checksum")
+                or artifact_payload.get("artifact_checksum")
+            )
+
+    if reviewer_decision == "accept" and not reviewer_verdict_id:
+        reviewer_verdict_id = (
+            f"reviewer_output:{reviewer_output_checksum}"
+            if reviewer_output_checksum
+            else "reviewer_artifact:accept"
+        )
+
+    policy_status, policy_checksum, policy_source = _resolve_reviewed_repair_policy(record=record, gate=gate)
+    if policy_source:
+        sources.append(policy_source)
+    if gate is not None:
+        sources.append("phase_gate")
+
+    stale_reason = _reviewed_repair_stale_reason(
+        job_id=job_id,
+        record=record,
+        gate=gate,
+        reviewer_decision=reviewer_decision,
+        policy_status=policy_status,
+        policy_validation_checksum=policy_checksum,
+        preview=preview,
+    )
+    actions = READ_ONLY_REPAIR_ACTIONS
+    if stale_reason is None:
+        actions = tuple(dict.fromkeys((*READ_ONLY_REPAIR_ACTIONS, "approve_sandbox_apply", "request_revision")))
+
+    return ReviewedRepairProjectionEvidence(
+        gate_status=_safe_optional_str(getattr(gate, "gate_status", None)),
+        gate_decision=_safe_optional_str(getattr(gate, "gate_decision", None)),
+        reviewer_decision=reviewer_decision,
+        reviewer_verdict_id=reviewer_verdict_id,
+        reviewer_output_checksum=reviewer_output_checksum,
+        policy_status=policy_status,
+        policy_validation_checksum=policy_checksum,
+        stale_reason=stale_reason,
+        allowed_actions=actions,
+        evidence_sources=tuple(dict.fromkeys(sources)),
+    )
+
+
 class ReviewedRepairApprovalRequest(BaseModel):
     """F5 reviewed repair approval — accepts only checksums, never raw diff/patch."""
     model_config = ConfigDict(extra="forbid")
@@ -1049,7 +1294,8 @@ def create_app(
         detail = exc.detail if isinstance(exc.detail, dict) else {}
         code = str(detail.get("code", "HTTP_ERROR"))
         message = str(detail.get("message", "Request failed."))
-        return _json_error(request, exc.status_code, code, message)
+        reason_code = str(detail.get("reason_code", "") or "")
+        return _json_error(request, exc.status_code, code, message, reason_code=reason_code)
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -3313,6 +3559,22 @@ def create_app(
                 return {"proposal": None, "job_id": job_id}
             if getattr(record, "diff_ref", None) is not None:
                 try:
+                    gate = None
+                    gate_id = getattr(record, "gate_id", None)
+                    if gate_id:
+                        gate = uow.phase_gates.get(gate_id)
+                    preview = build_safe_diff_preview(
+                        proposal_id=record.proposal_id,
+                        diff_ref=getattr(record, "diff_ref", None),
+                        stored_diff_checksum=getattr(record, "diff_checksum", None),
+                    )
+                    evidence = _reviewed_repair_projection_evidence(
+                        uow=uow,
+                        job_id=job_id,
+                        record=record,
+                        gate=gate,
+                        preview=preview,
+                    )
                     projection = build_reviewed_diff_proposal_from_record(
                         proposal_id=record.proposal_id,
                         status=record.status,
@@ -3321,15 +3583,26 @@ def create_app(
                         command_id=record.command_id,
                         gate_id=getattr(record, "gate_id", None),
                         route_step_index=getattr(record, "route_step_index", None),
+                        stage_index=getattr(gate, "stage_index", None) if gate is not None else None,
                         attempt_number=getattr(record, "attempt_number", None),
                         revision_number=getattr(record, "revision_number", None),
                         diagnosis_ref=getattr(record, "diagnosis_ref", None),
-                        repair_plan_ref=getattr(record, "repair_plan_ref", None),
+                        repair_plan_ref=_safe_artifact_display_ref(getattr(record, "repair_plan_ref", None)),
                         diff_ref=getattr(record, "diff_ref", None),
                         diff_checksum=getattr(record, "diff_checksum", None),
-                        reviewer_verdict_id=getattr(record, "reviewer_verdict_id", None),
-                        reviewer_output_checksum=getattr(record, "reviewer_output_checksum", None),
-                        policy_validation_checksum=getattr(record, "policy_validation_checksum", None),
+                        reviewer_verdict_id=evidence.reviewer_verdict_id,
+                        reviewer_output_checksum=evidence.reviewer_output_checksum,
+                        policy_validation_checksum=evidence.policy_validation_checksum,
+                        policy_status=evidence.policy_status,
+                        status_reason=getattr(record, "status_reason", None),
+                        allowed_actions=evidence.allowed_actions,
+                        final_diff_text=None,
+                        reviewer_decision=evidence.reviewer_decision,
+                        stale_reason=evidence.stale_reason,
+                        current_gate_id=getattr(gate, "gate_id", None) if gate is not None else None,
+                        gate_status=evidence.gate_status,
+                        gate_decision=evidence.gate_decision,
+                        evidence_sources=evidence.evidence_sources,
                     )
                     return {
                         "proposal": reviewed_diff_proposal_to_safe_dict(projection),
@@ -3359,6 +3632,22 @@ def create_app(
                 )
             if getattr(record, "diff_ref", None) is not None:
                 try:
+                    gate = None
+                    gate_id = getattr(record, "gate_id", None)
+                    if gate_id:
+                        gate = uow.phase_gates.get(gate_id)
+                    preview = build_safe_diff_preview(
+                        proposal_id=record.proposal_id,
+                        diff_ref=getattr(record, "diff_ref", None),
+                        stored_diff_checksum=getattr(record, "diff_checksum", None),
+                    )
+                    evidence = _reviewed_repair_projection_evidence(
+                        uow=uow,
+                        job_id=job_id,
+                        record=record,
+                        gate=gate,
+                        preview=preview,
+                    )
                     projection = build_reviewed_diff_proposal_from_record(
                         proposal_id=record.proposal_id,
                         status=record.status,
@@ -3367,15 +3656,25 @@ def create_app(
                         command_id=record.command_id,
                         gate_id=getattr(record, "gate_id", None),
                         route_step_index=getattr(record, "route_step_index", None),
+                        stage_index=getattr(gate, "stage_index", None) if gate is not None else None,
                         attempt_number=getattr(record, "attempt_number", None),
                         revision_number=getattr(record, "revision_number", None),
                         diagnosis_ref=getattr(record, "diagnosis_ref", None),
-                        repair_plan_ref=getattr(record, "repair_plan_ref", None),
+                        repair_plan_ref=_safe_artifact_display_ref(getattr(record, "repair_plan_ref", None)),
                         diff_ref=getattr(record, "diff_ref", None),
                         diff_checksum=getattr(record, "diff_checksum", None),
-                        reviewer_verdict_id=getattr(record, "reviewer_verdict_id", None),
-                        reviewer_output_checksum=getattr(record, "reviewer_output_checksum", None),
-                        policy_validation_checksum=getattr(record, "policy_validation_checksum", None),
+                        reviewer_verdict_id=evidence.reviewer_verdict_id,
+                        reviewer_output_checksum=evidence.reviewer_output_checksum,
+                        policy_validation_checksum=evidence.policy_validation_checksum,
+                        policy_status=evidence.policy_status,
+                        status_reason=getattr(record, "status_reason", None),
+                        allowed_actions=evidence.allowed_actions,
+                        reviewer_decision=evidence.reviewer_decision,
+                        stale_reason=evidence.stale_reason,
+                        current_gate_id=getattr(gate, "gate_id", None) if gate is not None else None,
+                        gate_status=evidence.gate_status,
+                        gate_decision=evidence.gate_decision,
+                        evidence_sources=evidence.evidence_sources,
                     )
                     return {
                         "proposal": reviewed_diff_proposal_to_safe_dict(projection),
@@ -3637,7 +3936,7 @@ def create_app(
                             attempt_number=getattr(new_record, "attempt_number", None),
                             revision_number=getattr(new_record, "revision_number", None),
                             diagnosis_ref=getattr(new_record, "diagnosis_ref", None),
-                            repair_plan_ref=getattr(new_record, "repair_plan_ref", None),
+                            repair_plan_ref=_safe_artifact_display_ref(getattr(new_record, "repair_plan_ref", None)),
                             diff_ref=getattr(new_record, "diff_ref", None),
                             diff_checksum=getattr(new_record, "diff_checksum", None),
                             reviewer_verdict_id=getattr(new_record, "reviewer_verdict_id", None),
@@ -3771,33 +4070,16 @@ def create_app(
                     "Failed to build safe diff preview for checksum validation.",
                 )
 
-            # 6. Validate reviewer_verdict_id
+            # 6. Validate reviewer_verdict_id when durable row has one.
             stored_verdict_id = getattr(record, "reviewer_verdict_id", None)
-            if not stored_verdict_id or payload.reviewer_verdict_id != stored_verdict_id:
+            if stored_verdict_id and payload.reviewer_verdict_id != stored_verdict_id:
                 raise _error(
                     status.HTTP_409_CONFLICT,
                     "STALE_REVIEWER_VERDICT",
                     "reviewer_verdict_id does not match the current proposal.",
                 )
 
-            # 7. Validate reviewer verdict exists and is accepted
-            reviewer_service = V2ReviewerService(reviewer_repo=uow.v2_reviewer)
-            verdict = reviewer_service.get_critique(stored_verdict_id)
-            if verdict is None:
-                raise _error(
-                    status.HTTP_404_NOT_FOUND,
-                    "REVIEWER_VERDICT_NOT_FOUND",
-                    f"Reviewer verdict {stored_verdict_id!r} not found.",
-                )
-            verdict_decision = str(getattr(verdict, "decision", "") or "")
-            if verdict_decision != "accept":
-                raise _error(
-                    status.HTTP_409_CONFLICT,
-                    "REVIEWER_NOT_ACCEPTED",
-                    f"Reviewer decision is {verdict_decision!r}, not 'accept'.",
-                )
-
-            # 8. Validate gate_id matches persisted proposal gate_id
+            # 7. Validate gate_id matches persisted proposal gate_id
             stored_gate_id = getattr(record, "gate_id", None)
             if not stored_gate_id or payload.gate_id != stored_gate_id:
                 raise _error(
@@ -3806,13 +4088,48 @@ def create_app(
                     "Gate ID does not match the current proposal.",
                 )
 
-            # 9. Validate gate exists and belongs to job
+            # 8. Validate gate exists and belongs to job
             gate = uow.phase_gates.get(stored_gate_id)
             if gate is None or gate.job_id != job_id:
                 raise _error(
                     status.HTTP_404_NOT_FOUND,
                     "GATE_NOT_FOUND",
                     f"Gate {stored_gate_id!r} not found for job {job_id!r}.",
+                )
+
+            # 9. Resolve trusted reviewer evidence from critique/proposal/artifacts.
+            evidence = _reviewed_repair_projection_evidence(
+                uow=uow,
+                job_id=job_id,
+                record=record,
+                gate=gate,
+                preview=preview,
+            )
+            if evidence.reviewer_decision != "accept":
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "REVIEWER_NOT_ACCEPTED",
+                    f"Reviewer decision is {evidence.reviewer_decision!r}, not 'accept'.",
+                )
+            if payload.reviewer_verdict_id != evidence.reviewer_verdict_id:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "STALE_REVIEWER_VERDICT",
+                    "reviewer_verdict_id does not match the current proposal.",
+                )
+            status_for_evidence = str(getattr(record, "status", "") or "")
+            if (
+                evidence.stale_reason is not None
+                and not (
+                    evidence.stale_reason == "proposal_not_user_review_required"
+                    and (status_for_evidence in _finalized_statuses or status_for_evidence not in _approvable_statuses)
+                )
+            ):
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    evidence.stale_reason.upper(),
+                    "Proposal is not currently actionable.",
+                    reason_code=evidence.stale_reason,
                 )
 
             # 10. Validate gate is open/current/user-review
@@ -3855,17 +4172,21 @@ def create_app(
                 )
 
             # 13. Resolve runtime context (server-side only)
+            _reason_capture: list[str] = []
             apply_context = _resolve_reviewed_repair_runtime_context(
                 uow=uow,
                 job_id=job_id,
                 gate=gate,
                 proposal_id=proposal_id,
+                _reason=_reason_capture,
             )
             if apply_context is None:
+                reason_code = _reason_capture[0] if _reason_capture else "unknown"
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,
                     "RUNTIME_CONTEXT_RESOLUTION_FAILED",
                     "Could not resolve sandbox/runtime context for this proposal.",
+                    reason_code=reason_code,
                 )
 
             sandbox_path = apply_context["sandbox_path"]
@@ -3893,7 +4214,7 @@ def create_app(
                 legacy_path=legacy_path,
                 h2_required=apply_context.get("h2_required", False),
             )
-            if gate_result.status != "ALLOWED":
+            if gate_result.status not in {"ALLOWED", "HUMAN_REVIEW_REQUIRED"}:
                 raise _error(
                     status.HTTP_409_CONFLICT,
                     "PATCH_GATE_REJECTED",
@@ -9014,10 +9335,37 @@ def _resolve_stage_sandbox_root(
                 "event_id": str(getattr(event, "event_id", "")),
                 "source": "event_payload",
             }
+
+    modernized_root = _modernized_root_from_commands(stage_commands)
+    if modernized_root:
+        modernized_root_path = Path(modernized_root)
+        for event in sorted(events, key=lambda e: getattr(e, "sequence", 0), reverse=True):
+            if getattr(event, "stage", None) != stage_index:
+                continue
+            if getattr(event, "type", "") not in {
+                "sandbox_transform_completed", "stage_completed", "artifact_written",
+                "build_completed", "test_completed",
+            }:
+                continue
+            try:
+                payload = json.loads(getattr(event, "payload_json", "") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            relative_path = _sandbox_path_from_mapping(payload, strict=False)
+            if not relative_path:
+                continue
+            resolved = modernized_root_path / relative_path
+            if any(part == ".." for part in resolved.parts):
+                continue
+            if resolved.is_dir() or resolved.exists():
+                return Path(str(resolved)), {
+                    "event_id": str(getattr(event, "event_id", "")),
+                    "source": "event_payload_relative",
+                }
     return None
 
 
-def _sandbox_path_from_mapping(value: dict[str, Any]) -> str:
+def _sandbox_path_from_mapping(value: dict[str, Any], *, strict: bool = True) -> str:
     candidates: list[Any] = [
         value.get("sandbox_path"),
         value.get("sandbox"),
@@ -9031,8 +9379,13 @@ def _sandbox_path_from_mapping(value: dict[str, Any]) -> str:
         ])
     for candidate in candidates:
         text = str(candidate or "").strip()
-        if not text or _is_unsafe_sandbox_root(text):
+        if not text:
             continue
+        if strict and _is_unsafe_sandbox_root(text):
+            continue
+        if not strict:
+            if any(part == ".." for part in Path(text).parts):
+                continue
         return text
     return ""
 
@@ -9045,6 +9398,20 @@ def _is_unsafe_sandbox_root(value: str) -> bool:
     if not (path.is_absolute() or win_path.is_absolute() or win_path.drive):
         return True
     return any(part == ".." for part in path.parts)
+
+
+def _modernized_root_from_commands(stage_commands: list[Any]) -> str:
+    for command in sorted(stage_commands, key=lambda c: getattr(c, "updated_at", "") or getattr(c, "created_at", ""), reverse=True):
+        try:
+            argv = json.loads(getattr(command, "argv_json", "") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(argv, list):
+            continue
+        modernized = _argv_value(argv, "--modernized")
+        if modernized:
+            return modernized
+    return ""
 
 
 def _build_v2_assistant_answer(
@@ -11802,17 +12169,25 @@ def _resolve_reviewed_repair_runtime_context(
     job_id: str,
     gate: Any,
     proposal_id: str,
+    _reason: list[str] | None = None,
 ) -> dict[str, Any] | None:
+    def _fail(reason_code: str) -> None:
+        if _reason is not None:
+            _reason.append(reason_code)
+
     proposal = uow.v2_repairs.get_proposal(proposal_id)
     if proposal is None or not getattr(proposal, "command_id", ""):
+        _fail("missing_proposal_command")
         return None
 
     job = uow.v2_jobs.get(job_id)
     if job is None or not getattr(job, "setup_id", ""):
+        _fail("missing_job_setup")
         return None
 
     setup = uow.v2_setups.get(job.setup_id)
     if setup is None:
+        _fail("missing_setup")
         return None
 
     commands = tuple(uow.v2_commands.list_by_job(job_id))
@@ -11824,6 +12199,7 @@ def _resolve_reviewed_repair_runtime_context(
         commands=commands,
     )
     if sandbox_resolution is None:
+        _fail("missing_sandbox_artifact")
         return None
     sandbox_path, _ = sandbox_resolution
 
@@ -11835,12 +12211,14 @@ def _resolve_reviewed_repair_runtime_context(
             run_id,
         )
     except HTTPException:
+        _fail("missing_run_dir")
         return None
 
     checksum_refs, artifact_refs = _parse_reviewed_repair_gate_refs(
         getattr(gate, "source_artifact_refs_json", "")
     )
     if not checksum_refs:
+        _fail("missing_checksum_refs")
         return None
 
     required_checksums = (
@@ -11851,23 +12229,28 @@ def _resolve_reviewed_repair_runtime_context(
         checksum_refs.get("base_repo_state_checksum", ""),
     )
     if any(not value for value in required_checksums):
+        _fail("missing_required_checksums")
         return None
 
     final_diff_ref = _first_reviewed_diff_ref(artifact_refs)
     if not final_diff_ref:
+        _fail("missing_diff_ref")
         return None
 
     diff_path = Path(final_diff_ref)
     if not diff_path.is_file():
+        _fail("diff_file_missing")
         return None
 
     try:
         diff_content = diff_path.read_text(encoding="utf-8")
     except OSError:
+        _fail("diff_read_error")
         return None
 
     touched_paths, path_errors = extract_touched_paths(diff_content)
     if path_errors or not touched_paths:
+        _fail("no_touched_paths")
         return None
 
     deterministic_artifact_ref = _first_artifact_ref(
@@ -11900,6 +12283,7 @@ def _resolve_reviewed_repair_runtime_context(
             primary_payload.get("deterministic_rule_id") or ""
         )
     if not deterministic_rule_id:
+        _fail("missing_rule_id")
         return None
 
     final_artifact_ref = _first_artifact_ref(
@@ -13237,10 +13621,13 @@ def _resolve_job_id(command_id: str, uow_factory: UnitOfWorkFactory) -> str:
     return command.job_id
 
 
-def _error(status_code: int, code: str, message: str) -> HTTPException:
+def _error(status_code: int, code: str, message: str, *, reason_code: str = "") -> HTTPException:
+    detail: dict[str, str] = {"code": code, "message": message}
+    if reason_code:
+        detail["reason_code"] = reason_code
     return HTTPException(
         status_code=status_code,
-        detail={"code": code, "message": message},
+        detail=detail,
     )
 
 
@@ -13319,11 +13706,11 @@ def _parse_and_validate_model_output(
     )
 
 
-def _json_error(request: Request, status_code: int, code: str, message: str) -> JSONResponse:
+def _json_error(request: Request, status_code: int, code: str, message: str, *, reason_code: str = "") -> JSONResponse:
     correlation_id = getattr(request.state, "correlation_id", normalize_correlation_id(None))
     return JSONResponse(
         status_code=status_code,
-        content=public_error_payload(code, message, correlation_id),
+        content=public_error_payload(code, message, correlation_id, reason_code=reason_code),
         headers={"X-Correlation-ID": correlation_id},
     )
 

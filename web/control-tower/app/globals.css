@@ -189,13 +189,62 @@ h2 {
 }
 
 .repair-proposal-panel {
+  background:
+    radial-gradient(circle at top right, rgba(15, 118, 110, 0.08), transparent 34%),
+    linear-gradient(180deg, #ffffff 0%, #f7fbfa 100%);
   border-color: #91b8b2;
+}
+
+.cockpit-page-wrapper {
+  width: 100%;
+  max-width: 1920px;
+  margin: 0 auto;
+  padding: 24px 32px;
+}
+
+.cockpit-layout {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 24px;
 }
 
 .repair-proposal-layout {
   display: grid;
-  gap: 18px;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  gap: 24px;
+  grid-template-columns: minmax(0, 1.6fr) minmax(360px, 0.8fr);
+}
+
+.reviewed-repair-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(360px, 0.8fr);
+  gap: 24px;
+  width: 100%;
+}
+
+.failure-evidence-advanced {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.failure-evidence-advanced summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 700;
+  padding: 10px 14px;
+  user-select: none;
+  background: #fff8f0;
+  border-bottom: 1px solid var(--line);
+}
+
+.failure-evidence-advanced summary:hover {
+  background: #fff3e6;
+}
+
+.failure-evidence-advanced .panel {
+  border: 0;
+  border-radius: 0;
 }
 
 .repair-proposal-main,
@@ -212,6 +261,53 @@ h2 {
   font-weight: 800;
   letter-spacing: 0;
   text-transform: uppercase;
+}
+
+.reviewed-repair-banner {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.reviewed-repair-banner-top {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.reviewed-repair-banner-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reviewed-repair-chip {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(15, 118, 110, 0.16);
+  border-radius: 999px;
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 5px 10px;
+}
+
+.reviewed-repair-banner-allowed {
+  background: linear-gradient(180deg, #effdf8 0%, #f8fffd 100%);
+  border-color: rgba(15, 118, 110, 0.25);
+}
+
+.reviewed-repair-banner-review {
+  background: linear-gradient(180deg, #fff8e7 0%, #fffdf8 100%);
+  border-color: rgba(180, 83, 9, 0.28);
+}
+
+.reviewed-repair-banner-warning {
+  background: linear-gradient(180deg, #fff4f4 0%, #fffefe 100%);
+  border-color: rgba(180, 35, 24, 0.2);
 }
 
 .failure-summary,
@@ -490,10 +586,16 @@ h2 {
   justify-content: end;
 }
 
+@media (max-width: 960px) {
+  .repair-proposal-layout,
+  .reviewed-repair-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 720px) {
   .event-row,
   .table-row,
-  .repair-proposal-layout,
   .repair-actions-bar {
     grid-template-columns: 1fr;
   }

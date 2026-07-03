@@ -12,6 +12,12 @@ from migration_factory.control_tower.application.redaction import (
     redact_model_summary,
     redact_public_value,
 )
+from migration_factory.control_tower.application.v2_mistral_provider_client import (
+    MistralProviderClient,
+)
+from migration_factory.control_tower.application.v2_model_role_config import (
+    ModelRoleConfigLoader,
+)
 from migration_factory.control_tower.application.v2_model_role_router import (
     V2ModelRole,
     V2ModelRoleRouter,
@@ -35,6 +41,11 @@ class V2AssistantModelResult:
     response_format_requested: bool = False
     response_format_used: bool | None = None
     deployment_alias_hash: str = ""
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    latency_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -224,7 +235,7 @@ class V2AssistantModelClient:
         )
         routed = router.route(
             request,
-            invoke=lambda deployment: self._answer_with_deployment(
+            invoke=lambda deployment, provider="azure_openai": self._answer_with_deployment(
                 role=role,
                 deployment=deployment,
                 prompt=prompt,
@@ -247,6 +258,21 @@ class V2AssistantModelClient:
         output_schema_name: str | None = None,
         require_schema: bool = False,
     ) -> V2AssistantModelResult:
+        role_config = ModelRoleConfigLoader.try_load_role(role.value)
+        provider_alias = (role_config.provider_alias if role_config else "azure_openai")
+
+        if provider_alias == "mistral":
+            return self._answer_with_mistral(
+                role=role,
+                deployment=deployment,
+                prompt=prompt,
+                fallback=fallback,
+                role_config=role_config,
+                conversation_history=conversation_history,
+                output_schema_name=output_schema_name,
+                require_schema=require_schema,
+            )
+
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip().rstrip("/")
         api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
 
@@ -269,13 +295,15 @@ class V2AssistantModelClient:
                 "missing_deployment",
             )
 
+        import time as _time
+        t0 = _time.monotonic()
         try:
-            content = self._chat_completion(
+            content, usage_data = self._chat_completion(
                 endpoint=endpoint,
                 api_key=api_key,
                 deployment=deployment,
                 prompt=prompt,
-                max_completion_tokens=700,
+                role=role,
                 timeout=30,
                 conversation_history=conversation_history,
                 output_schema_name=output_schema_name,
@@ -322,6 +350,7 @@ class V2AssistantModelClient:
                 "invalid_response",
             )
 
+        latency_ms = int((_time.monotonic() - t0) * 1000)
         safe_content = str(redact_public_value(redact_model_summary(content))).strip()
         if not safe_content:
             _log_empty_azure_result_summary(endpoint=endpoint, deployment=deployment)
@@ -342,6 +371,125 @@ class V2AssistantModelClient:
             failure_reason="",
             response_format_requested=require_schema,
             response_format_used=require_schema,
+            prompt_tokens=usage_data.get("prompt_tokens"),
+            completion_tokens=usage_data.get("completion_tokens"),
+            total_tokens=usage_data.get("total_tokens"),
+            reasoning_tokens=usage_data.get("reasoning_tokens"),
+            latency_ms=latency_ms,
+        )
+
+    def _answer_with_mistral(
+        self,
+        *,
+        role: V2ModelRole,
+        deployment: str,
+        prompt: str,
+        fallback: str,
+        role_config: Any = None,
+        conversation_history: list[dict[str, str]] | None = None,
+        output_schema_name: str | None = None,
+        require_schema: bool = False,
+    ) -> V2AssistantModelResult:
+        _mistral_endpoint = os.environ.get("MISTRAL_ENDPOINT", "").strip().rstrip("/")
+        _mistral_api_key = os.environ.get("MISTRAL_API_KEY", "").strip()
+
+        if not _mistral_endpoint:
+            return _fallback_result(
+                fallback,
+                "Mistral endpoint not configured.",
+                "missing_endpoint",
+            )
+        if not _mistral_api_key:
+            return _fallback_result(
+                fallback,
+                "Mistral API key not configured.",
+                "missing_key",
+            )
+        if not deployment:
+            return _fallback_result(
+                fallback,
+                f"Mistral model not configured for role {role.value}.",
+                "missing_model",
+            )
+
+        messages = V2AssistantModelClient._build_messages(
+            prompt=prompt,
+            conversation_history=conversation_history,
+        )
+
+        response_format: dict | None = None
+        if require_schema:
+            response_format = {"type": "json_object"}
+            # Inject JSON-only instruction into the system message
+            if messages and messages[0].get("role") == "system":
+                existing = str(messages[0].get("content", ""))
+                json_instr = MistralProviderClient.build_json_mode_system_instruction()
+                if json_instr not in existing:
+                    messages[0]["content"] = f"{json_instr}\n\n{existing}"
+
+        max_tokens = _role_max_output_tokens(role)
+        temperature = float(role_config.temperature if role_config and hasattr(role_config, "temperature") else 0.2)
+
+        client = MistralProviderClient()
+        try:
+            response = client.chat_completion(
+                endpoint=_mistral_endpoint,
+                api_key=_mistral_api_key,
+                model=deployment,
+                messages=messages,
+                response_format=response_format,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                timeout=role_config.timeout_seconds if role_config else 30,
+            )
+            content = client.extract_content(response)
+        except urllib.error.HTTPError as exc:
+            code = int(getattr(exc, "code", 0) or 0)
+            snippet = _sanitize_body_snippet(exc)
+            return _fallback_result(
+                fallback,
+                f"Mistral API request failed (HTTP {code}). Detail: {snippet}" if snippet else f"Mistral API request failed (HTTP {code}).",
+                f"http_{code}" if code else "invalid_response",
+            )
+        except urllib.error.URLError as exc:
+            reason = str(exc.reason) if hasattr(exc, "reason") else str(exc)
+            if _looks_like_timeout(reason):
+                return _fallback_result(
+                    fallback,
+                    "Mistral request timed out.",
+                    "timeout",
+                )
+            return _fallback_result(
+                fallback,
+                f"Mistral request failed: {redact_model_summary(reason)}.",
+                "invalid_response",
+            )
+        except Exception as exc:
+            return _fallback_result(
+                fallback,
+                f"Mistral assistant unavailable ({type(exc).__name__}).",
+                "invalid_response",
+            )
+
+        safe_content = str(redact_public_value(redact_model_summary(content))).strip()
+        if not safe_content:
+            return _fallback_result(
+                fallback,
+                "Mistral returned an empty response.",
+                "empty_response",
+            )
+
+        return V2AssistantModelResult(
+            content=safe_content,
+            source="mistral",
+            model_status="live_ok",
+            provider=client.provider,
+            role=role.value,
+            success=True,
+            redacted_summary="Mistral invocation succeeded.",
+            failure_reason="",
+            response_format_requested=require_schema,
+            response_format_used=bool(response_format),
         )
 
     def _to_assistant_result(self, routed: V2RoleModelResult) -> V2AssistantModelResult:
@@ -361,6 +509,11 @@ class V2AssistantModelClient:
             response_format_requested=routed.response_format_requested,
             response_format_used=routed.response_format_used,
             deployment_alias_hash=routed.deployment_alias_hash,
+            prompt_tokens=routed.prompt_tokens,
+            completion_tokens=routed.completion_tokens,
+            total_tokens=routed.total_tokens,
+            reasoning_tokens=routed.reasoning_tokens,
+            latency_ms=routed.latency_ms,
         )
 
     @staticmethod
@@ -382,28 +535,33 @@ class V2AssistantModelClient:
         api_key: str,
         deployment: str,
         prompt: str,
-        max_completion_tokens: int = 700,
+        role: V2ModelRole = V2ModelRole.ASSISTANT,
+        max_completion_tokens: int | None = None,
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
         output_schema_name: str | None = None,
         require_schema: bool = False,
-    ) -> str:
+    ) -> tuple[str, dict[str, int | None]]:
+        if max_completion_tokens is None:
+            max_completion_tokens = _role_max_output_tokens(role)
         # When require_schema is True, the Responses API does not support
         # response_format=json_object. Go directly to chat/completions which does.
         if require_schema or not self._is_v1_endpoint(endpoint):
             target = endpoint if not self._is_v1_endpoint(endpoint) else self._normalize_v1_endpoint(endpoint)
             try:
-                return self._chat_completion_v1(
+                content, usage = self._chat_completion_v1(
                     endpoint=target,
                     api_key=api_key,
                     deployment=deployment,
                     prompt=prompt,
+                    role=role,
                     max_completion_tokens=max_completion_tokens,
                     timeout=timeout,
                     conversation_history=conversation_history,
                     output_schema_name=output_schema_name,
                     require_schema=require_schema,
                 )
+                return content, usage
             except urllib.error.HTTPError as exc:
                 snippet = _sanitize_body_snippet(exc).lower()
                 code = int(getattr(exc, "code", 0) or 0)
@@ -411,7 +569,7 @@ class V2AssistantModelClient:
                 if require_schema and code == 400 and ("response_format" in snippet or "json_object" in snippet or "json mode" in snippet):
                     raise
                 if _should_retry_with_legacy_endpoint(exc):
-                    return self._chat_completion_legacy(
+                    content = self._chat_completion_legacy(
                         endpoint=_legacy_endpoint_from_v1(target),
                         api_key=api_key,
                         deployment=deployment,
@@ -422,6 +580,7 @@ class V2AssistantModelClient:
                         output_schema_name=output_schema_name,
                         require_schema=require_schema,
                     )
+                    return content, {}
                 raise
 
         # require_schema=False, non-chat endpoint path
@@ -429,7 +588,7 @@ class V2AssistantModelClient:
         # Note: Responses API does not support response_format
         endpoint = self._normalize_v1_endpoint(endpoint)
         try:
-            return self._responses_completion_v1(
+            content = self._responses_completion_v1(
                 endpoint=endpoint,
                 api_key=api_key,
                 deployment=deployment,
@@ -438,27 +597,30 @@ class V2AssistantModelClient:
                 timeout=timeout,
                 conversation_history=conversation_history,
             )
+            return content, {}
         except urllib.error.HTTPError as exc:
             if _should_retry_with_chat_completions(exc):
                 try:
-                    return self._chat_completion_v1(
+                    content, usage = self._chat_completion_v1(
                         endpoint=endpoint,
                         api_key=api_key,
                         deployment=deployment,
                         prompt=prompt,
+                        role=role,
                         max_completion_tokens=max_completion_tokens,
                         timeout=timeout,
                         conversation_history=conversation_history,
                         output_schema_name=output_schema_name,
                         require_schema=require_schema,
                     )
+                    return content, usage
                 except urllib.error.HTTPError as chat_exc:
                     snippet = _sanitize_body_snippet(chat_exc).lower()
                     code = int(getattr(chat_exc, "code", 0) or 0)
                     if require_schema and code == 400 and ("response_format" in snippet or "json_object" in snippet or "json mode" in snippet):
                         raise
                     if _should_retry_with_legacy_endpoint(chat_exc):
-                        return self._chat_completion_legacy(
+                        content = self._chat_completion_legacy(
                             endpoint=_legacy_endpoint_from_v1(endpoint),
                             api_key=api_key,
                             deployment=deployment,
@@ -469,13 +631,14 @@ class V2AssistantModelClient:
                             output_schema_name=output_schema_name,
                             require_schema=require_schema,
                         )
+                        return content, {}
                     raise
             snippet = _sanitize_body_snippet(exc).lower()
             code = int(getattr(exc, "code", 0) or 0)
             if require_schema and code == 400 and ("response_format" in snippet or "json_object" in snippet or "json mode" in snippet):
                 raise
             if _should_retry_with_legacy_endpoint(exc):
-                return self._chat_completion_legacy(
+                content = self._chat_completion_legacy(
                     endpoint=_legacy_endpoint_from_v1(endpoint),
                     api_key=api_key,
                     deployment=deployment,
@@ -486,6 +649,7 @@ class V2AssistantModelClient:
                     output_schema_name=output_schema_name,
                     require_schema=require_schema,
                 )
+                return content, {}
             raise
 
     def _chat_completion_v1(
@@ -495,22 +659,24 @@ class V2AssistantModelClient:
         api_key: str,
         deployment: str,
         prompt: str,
-        max_completion_tokens: int = 700,
+        role: V2ModelRole = V2ModelRole.ASSISTANT,
+        max_completion_tokens: int = 20000,
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
         output_schema_name: str | None = None,
         require_schema: bool = False,
-    ) -> str:
-        return self._post_chat_completion_v1(
+    ) -> tuple[str, dict[str, int | None]]:
+        content, usage = self._post_chat_completion_v1(
             endpoint=endpoint,
             api_key=api_key,
             deployment=deployment,
             messages=self._build_messages(prompt=prompt, conversation_history=conversation_history),
-            max_completion_tokens=max_completion_tokens,
+            max_completion_tokens=_role_max_output_tokens(role, max_completion_tokens),
             timeout=timeout,
             output_schema_name=output_schema_name,
             require_schema=require_schema,
         )
+        return content, usage
 
     def _responses_completion_v1(
         self,
@@ -519,7 +685,7 @@ class V2AssistantModelClient:
         api_key: str,
         deployment: str,
         prompt: str,
-        max_completion_tokens: int = 700,
+        max_completion_tokens: int = 20000,
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
     ) -> str:
@@ -593,7 +759,7 @@ class V2AssistantModelClient:
             except urllib.error.HTTPError as exc:
                 if _should_retry_with_chat_completions(exc):
                     try:
-                        return self._post_chat_completion_v1(
+                        content, _usage = self._post_chat_completion_v1(
                             endpoint=endpoint,
                             api_key=api_key,
                             deployment=deployment,
@@ -601,6 +767,7 @@ class V2AssistantModelClient:
                             max_completion_tokens=100,
                             timeout=timeout,
                         )
+                        return content
                     except urllib.error.HTTPError as chat_exc:
                         if _should_retry_with_legacy_endpoint(chat_exc):
                             return self._post_chat_completion_legacy(
@@ -642,12 +809,7 @@ class V2AssistantModelClient:
         timeout: int,
         output_schema_name: str | None = None,
         require_schema: bool = False,
-    ) -> str:
-        # Allow max_completion_tokens override via environment variable
-        env_max_tokens = os.environ.get("AZURE_OPENAI_ASSISTANT_MAX_COMPLETION_TOKENS", "").strip()
-        if env_max_tokens and env_max_tokens.isdigit():
-            max_completion_tokens = int(env_max_tokens)
-
+    ) -> tuple[str, dict[str, int | None]]:
         # Safe log: response_format usage for diagnostics
         _log_response_format_event(
             endpoint=endpoint,
@@ -678,7 +840,9 @@ class V2AssistantModelClient:
         # Only add one of temperature / reasoning_effort when explicitly configured.
         # Sending an unsupported parameter to a model that does not recognise it
         # causes a 400 "badly formed" rejection at the Azure infrastructure layer.
-        reasoning_effort = os.environ.get("AZURE_OPENAI_REASONING_EFFORT", "").strip()
+        reasoning_effort = os.environ.get("AI_MIGRATION_MAIN_REASONING_EFFORT", "").strip()
+        if not reasoning_effort:
+            reasoning_effort = os.environ.get("AZURE_OPENAI_REASONING_EFFORT", "").strip()
         if reasoning_effort:
             payload["reasoning_effort"] = reasoning_effort
         else:
@@ -700,7 +864,8 @@ class V2AssistantModelClient:
         if not str(content).strip():
             # Empty response — log redacted diagnostics
             _log_empty_azure_response(data, deployment)
-        return content
+        usage = _extract_usage_data(data)
+        return content, usage
 
     def _post_responses_v1(
         self,
@@ -720,7 +885,9 @@ class V2AssistantModelClient:
         }
         if max_output_tokens > 0:
             payload["max_output_tokens"] = max_output_tokens
-        reasoning_effort = os.environ.get("AZURE_OPENAI_REASONING_EFFORT", "").strip()
+        reasoning_effort = os.environ.get("AI_MIGRATION_MAIN_REASONING_EFFORT", "").strip()
+        if not reasoning_effort:
+            reasoning_effort = os.environ.get("AZURE_OPENAI_REASONING_EFFORT", "").strip()
         if reasoning_effort:
             payload["reasoning"] = {"effort": reasoning_effort}
         request = urllib.request.Request(
@@ -743,7 +910,7 @@ class V2AssistantModelClient:
         api_key: str,
         deployment: str,
         prompt: str,
-        max_tokens: int = 700,
+        max_tokens: int = 20000,
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
         output_schema_name: str | None = None,
@@ -916,6 +1083,30 @@ def _extract_responses_output_text(data: Any) -> str:
     raise RuntimeError("missing responses output text")
 
 
+def _extract_usage_data(data: Any) -> dict[str, int | None]:
+    """Extract usage token counts from an Azure OpenAI response dict."""
+    if not isinstance(data, dict):
+        return {"prompt_tokens": None, "completion_tokens": None, "total_tokens": None, "reasoning_tokens": None}
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return {"prompt_tokens": None, "completion_tokens": None, "total_tokens": None, "reasoning_tokens": None}
+    prompt_tokens: int | None = int(usage["prompt_tokens"]) if usage.get("prompt_tokens") is not None else None
+    completion_tokens: int | None = int(usage["completion_tokens"]) if usage.get("completion_tokens") is not None else None
+    total_tokens: int | None = int(usage["total_tokens"]) if usage.get("total_tokens") is not None else None
+    reasoning_tokens: int | None = None
+    details = usage.get("completion_tokens_details")
+    if isinstance(details, dict):
+        rt = details.get("reasoning_tokens")
+        if rt is not None:
+            reasoning_tokens = int(rt)
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "reasoning_tokens": reasoning_tokens,
+    }
+
+
 def _log_empty_azure_response(data: dict[str, Any], deployment: str) -> None:
     """Log redacted diagnostic for empty Azure OpenAI responses.
 
@@ -1006,6 +1197,21 @@ def _fallback_result(fallback: str, summary: str, failure_reason: str = "") -> V
 def _looks_like_timeout(value: str) -> bool:
     lowered = str(value).lower()
     return "timeout" in lowered or "timed out" in lowered or "time out" in lowered
+
+
+def _role_max_output_tokens(role: V2ModelRole, default_tokens: int = 20000) -> int:
+    """Read role-specific max output tokens from env var or return default."""
+    role_env_map = {
+        V2ModelRole.PROPOSER: "AI_MIGRATION_MAIN_MAX_OUTPUT_TOKENS",
+        V2ModelRole.REVIEWER: "AI_MIGRATION_REVIEWER_MAX_OUTPUT_TOKENS",
+        V2ModelRole.ASSISTANT: "AZURE_OPENAI_ASSISTANT_MAX_COMPLETION_TOKENS",
+    }
+    env_name = role_env_map.get(role, "")
+    if env_name:
+        value = os.environ.get(env_name, "").strip()
+        if value and value.isdigit():
+            return int(value)
+    return default_tokens
 
 
 def _azure_api_version() -> str:

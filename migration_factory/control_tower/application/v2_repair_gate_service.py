@@ -88,6 +88,7 @@ class RepairGateCreationResult:
     reason: str = ""
     revision_id: str = ""
     policy_validation_checksum: str = ""
+    policy_status: str = ""
 
 
 @dataclass(frozen=True)
@@ -134,6 +135,7 @@ class V2RepairGateService:
         self._llm_invocation_repo = llm_invocation_repo
         self._event_repo = event_repo
         self._max_repair_attempts = max_repair_attempts
+        self._chain_attempt_repo = None
 
         # In-memory attempt tracking: {(job_id, stage_index): attempt_count}
         self._attempt_counts: dict[tuple[str, int], int] = {}
@@ -167,6 +169,16 @@ class V2RepairGateService:
                 reason=f"duplicate repair chain attempt blocked for {command_id}",
             )
         self._chain_attempted.add(chain_key)
+
+        existing_proposal = self._existing_open_repair_proposal(job_id=job_id, command_id=command_id)
+        if existing_proposal is not None:
+            return RepairGateCreationResult(
+                gate_id=str(existing_proposal.gate_id or ""),
+                gate_checksum="",
+                diagnosis=None,
+                status="skipped",
+                reason=f"repair proposal already exists for command {command_id}",
+            )
 
         from migration_factory.control_tower.application.v2_llm_invocation_ledger import (
             V2LLMInvocationLedger,
@@ -214,6 +226,7 @@ class V2RepairGateService:
             if self._llm_invocation_repo is not None
             else None
         )
+        sandbox_path_for_chain = str(payload.get("_repair_sandbox_path", "")).strip() or None
         try:
             chain_result = produce_repair_review_chain(
                 failure_evidence=evidence,
@@ -223,16 +236,23 @@ class V2RepairGateService:
                 target_profile=context_pack.target_profile,
                 model_client=model_client,
                 invocation_ledger=invocation_ledger,
+                sandbox_path=sandbox_path_for_chain,
             )
         except Exception as exc:
             schema_diagnostics: dict[str, Any] | None = None
             if isinstance(exc, RepairReviewChainProductionError):
                 schema_diagnostics = exc.schema_diagnostics
+            reason_code = _reviewed_repair_unavailable_reason(exc)
+            if reason_code == "duplicate_main_blocked":
+                reason_code = self._prior_main_schema_invalid_reason(
+                    job_id=job_id,
+                    context_checksum=str(payload["_repair_context_pack_checksum"]),
+                ) or reason_code
             self._emit_reviewed_repair_unavailable(
                 job_id=job_id,
                 stage_index=stage_index,
                 context_checksum=str(payload["_repair_context_pack_checksum"]),
-                reason_code=_reviewed_repair_unavailable_reason(exc),
+                reason_code=reason_code,
                 schema_diagnostics=schema_diagnostics,
             )
             return RepairGateCreationResult(
@@ -348,18 +368,29 @@ class V2RepairGateService:
             return
         main_invocation_id = invocation_id or ""
         reviewer_invocation_id = ""
+        main_schema_failure = reason_code in {"main_schema_invalid", "proposer_schema_invalid"}
         if self._llm_invocation_repo is not None:
             for record in self._llm_invocation_repo.list_by_job(job_id):
+                if context_checksum and str(getattr(record, "context_checksum", "") or "") != context_checksum:
+                    continue
                 responsibility = str(getattr(record, "responsibility", "") or "")
                 if not main_invocation_id and responsibility == "repair_proposal":
                     main_invocation_id = str(record.invocation_id)
-                if not reviewer_invocation_id and responsibility == "repair_review":
+                if not main_schema_failure and not reviewer_invocation_id and responsibility == "repair_review":
                     reviewer_invocation_id = str(record.invocation_id)
 
         event_type = "reviewed_repair_unavailable"
-        if reason_code == "proposer_schema_invalid":
+        if main_schema_failure:
             event_type = "repair_primary_schema_invalid"
 
+        message = (
+            "Reviewer model output failed schema validation."
+            if reason_code == "reviewer_schema_invalid"
+            else "No independent reviewer completed, so no reviewed diff was materialized."
+        )
+        schema_name = "RepairPrimaryOutput"
+        if schema_diagnostics and str(schema_diagnostics.get("schema_name") or "").strip():
+            schema_name = str(schema_diagnostics.get("schema_name") or "").strip()
         payload: dict[str, Any] = {
             "job_id": job_id,
             "stage_index": stage_index,
@@ -367,16 +398,24 @@ class V2RepairGateService:
             "main_invocation_id": main_invocation_id,
             "reviewer_invocation_id": reviewer_invocation_id,
             "reason_code": reason_code,
-            "schema_name": "RepairPrimaryOutput",
-            "message": "No independent reviewer completed, so no reviewed diff was materialized.",
+            "schema_name": schema_name,
+            "message": message,
         }
+        if schema_diagnostics:
+            for key in ("role", "stage"):
+                value = str(schema_diagnostics.get(key) or "").strip()
+                if value:
+                    payload[key] = value
         if schema_diagnostics:
             safe_diag = {
                 k: v for k, v in schema_diagnostics.items()
                 if k in (
                     "parse_failure_category", "missing_fields", "wrong_field_types",
-                    "wrong_field_names", "output_checksum", "response_format_requested",
-                    "response_format_used", "deployment_alias_hash",
+                    "wrong_field_names", "invalid_fields", "extra_fields",
+                    "has_proposed_diff", "proposed_diff_parse_status",
+                    "output_checksum", "response_format_requested",
+                    "response_format_used", "deployment_alias_hash", "reason_code",
+                    "schema_name",
                 )
             }
             payload["schema_diagnostics"] = safe_diag
@@ -386,9 +425,46 @@ class V2RepairGateService:
             stage=stage_index,
             event_type=event_type,
             status="blocked",
-            message="No independent reviewer completed, so no reviewed diff was materialized.",
+            message=message,
             payload=payload,
         )
+
+    def _prior_main_schema_invalid_reason(self, *, job_id: str, context_checksum: str) -> str | None:
+        if self._llm_invocation_repo is not None:
+            for record in self._llm_invocation_repo.list_by_job(job_id):
+                if context_checksum and str(getattr(record, "context_checksum", "") or "") != context_checksum:
+                    continue
+                responsibility = str(getattr(record, "responsibility", "") or "")
+                if responsibility != "repair_proposal":
+                    continue
+                combined = " ".join(
+                    str(value or "").lower()
+                    for value in (
+                        getattr(record, "status", ""),
+                        getattr(record, "redacted_error", ""),
+                        getattr(record, "redacted_summary", ""),
+                    )
+                )
+                if "schema_invalid" in combined or "schema validation" in combined:
+                    return "proposer_schema_invalid"
+
+        list_by_job = getattr(self._event_repo, "list_by_job", None)
+        if callable(list_by_job):
+            try:
+                events = list_by_job(job_id)
+            except Exception:
+                events = ()
+            for event in events:
+                event_type = str(getattr(event, "event_type", "") or "")
+                payload = getattr(event, "payload", {}) or {}
+                if not isinstance(payload, dict):
+                    continue
+                if context_checksum and str(payload.get("context_checksum") or "") != context_checksum:
+                    continue
+                reason = str(payload.get("reason_code") or "").lower()
+                if event_type == "repair_primary_schema_invalid" or reason in {"main_schema_invalid", "proposer_schema_invalid"}:
+                    return "proposer_schema_invalid"
+        return None
 
     def _emit_reviewed_repair_materialization_failed(
         self,
@@ -642,6 +718,8 @@ class V2RepairGateService:
 
         primary = json.loads(open(primary_ref, encoding="utf-8").read())
         reviewed_diff = open(final_diff_ref, encoding="utf-8").read()
+        final_diff_bytes = Path(final_diff_ref).read_bytes()
+        final_diff_sha256_hex = sha256_hex(final_diff_bytes)
         policy_result = evaluate_patch_proposal(
             proposal={
                 "deterministic_rule_id": deterministic_rule_id,
@@ -670,7 +748,7 @@ class V2RepairGateService:
             json.dumps({**policy_payload, "policy_validation_checksum": policy_checksum}, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        if policy_result.status != "ALLOWED":
+        if policy_result.status not in {"ALLOWED", "HUMAN_REVIEW_REQUIRED"}:
             self._emit_reviewed_repair_materialization_failed(
                 job_id=job_id,
                 stage_index=stage_index,
@@ -695,6 +773,7 @@ class V2RepairGateService:
             "primary_output_checksum": str(chain.get("primary_output_checksum") or ""),
             "reviewer_output_checksum": str(chain.get("reviewer_output_checksum") or ""),
             "final_reviewed_diff_checksum": str(chain.get("proposed_diff_checksum") or ""),
+            "final_reviewed_diff_sha256_hex": final_diff_sha256_hex,
             "policy_validation_checksum": policy_checksum,
             "base_repo_state_checksum": base_repo_state_checksum,
             "final_artifact_checksum": str(chain.get("final_artifact_checksum") or ""),
@@ -764,9 +843,24 @@ class V2RepairGateService:
             status="created",
             revision_id=revision_id,
             policy_validation_checksum=policy_checksum,
+            policy_status=policy_result.status,
         )
 
     # ── Job 101/102: Create repair_review gate on failure ───────────
+
+    def _existing_open_repair_proposal(self, *, job_id: str, command_id: str) -> Any | None:
+        if self._repair_repo is None:
+            return None
+        list_by_command = getattr(self._repair_repo, "list_proposals_by_command", None)
+        if not callable(list_by_command):
+            return None
+        for proposal in list_by_command(command_id):
+            if str(getattr(proposal, "job_id", "") or "") != job_id:
+                continue
+            status = str(getattr(proposal, "status", "") or "").strip().lower()
+            if status in {"user_review_required", "reviewer_accepted", "diff_materialized"}:
+                return proposal
+        return None
 
     def create_repair_gate_on_failure(
         self,
@@ -1873,7 +1967,7 @@ def _parse_gate_ref_checksums(source_artifact_refs_json: str) -> dict[str, str]:
         if ":" not in item:
             continue
         key, value = item.split(":", 1)
-        if key.endswith("_checksum") or key == "checksum":
+        if key.endswith("_checksum") or key == "checksum" or key.endswith("_sha256_hex"):
             refs[key] = value
     return refs
 

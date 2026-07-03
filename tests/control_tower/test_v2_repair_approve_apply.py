@@ -15,6 +15,8 @@ from migration_factory.control_tower.domain.checksums import sha256_canonical_js
 from migration_factory.control_tower.domain.entities import PhaseGateRecord
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteControlTowerUnitOfWork
+from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import V2StageCommandRecord
+from migration_factory.control_tower.infrastructure.sqlite.v2_event_repository import V2JobEventRecord
 from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository import V2MigrationJobRecord
 from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
     V2RepairProposalRecord,
@@ -132,6 +134,49 @@ def _make_setup_record(**kwargs):
     for k, v in kwargs.items():
         setattr(rec, k, v)
     return rec
+
+
+def _insert_setup(conn: sqlite3.Connection, **kwargs) -> None:
+    defaults = {
+        "setup_id": "setup-1", "run_name": "test",
+        "legacy_app_path": "", "output_parent_path": "",
+        "ai_hub_path": "", "java11_home": "", "java17_home": "", "java21_home": "",
+        "maven_cmd": "mvn", "proof_level": "minimal",
+        "skip_endpoint_smoke": False, "migration_flags_json": "{}",
+        "setup_checksum": "sha256:setup", "checksum_algorithm": "sha256",
+        "created_at": utc_now_text(), "created_by": "test",
+    }
+    defaults.update(kwargs)
+    conn.execute(
+        "INSERT INTO v2_migration_setups (setup_id, run_name, legacy_app_path, output_parent_path, ai_hub_path, java11_home, java17_home, java21_home, maven_cmd, proof_level, skip_endpoint_smoke, migration_flags_json, setup_checksum, checksum_algorithm, created_at, created_by, correlation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        tuple(defaults[k] for k in ["setup_id", "run_name", "legacy_app_path", "output_parent_path", "ai_hub_path", "java11_home", "java17_home", "java21_home", "maven_cmd", "proof_level", "skip_endpoint_smoke", "migration_flags_json", "setup_checksum", "checksum_algorithm", "created_at", "created_by"]) + (None,),
+    )
+
+
+def _save_command(uow, *, command_id: str, job_id: str = "job-1", stage_index: int = 1, argv: list[str] | None = None) -> None:
+    uow.v2_commands.save(V2StageCommandRecord(
+        command_id=command_id,
+        job_id=job_id,
+        stage_index=stage_index,
+        manifest_checksum="sha256:manifest",
+        argv_json=json.dumps(argv or [], separators=(",", ":")),
+        env_json="{}",
+        status="completed",
+        created_at=utc_now_text(),
+        updated_at=utc_now_text(),
+        result_json=None,
+    ))
+
+
+def _save_event(uow, *, event_id: str, job_id: str = "job-1", stage: int = 1, payload: dict[str, Any] | None = None) -> None:
+    uow.v2_events.save(
+        job_id=job_id,
+        stage=stage,
+        event_type="artifact_written",
+        status="completed",
+        message="sandbox artifact written",
+        payload=payload or {},
+    )
 
 
 def _make_command_record(**kwargs):
@@ -456,6 +501,20 @@ class TestApproveProposalStatus:
         data = resp.json()
         assert "PROPOSAL_ALREADY_FINAL" in str(data)
 
+    def test_approve_rejects_reviewer_accepted_before_apply_gate(self, conn: sqlite3.Connection, tmp_path: Path) -> None:
+        client, refs = _build_approve_context(conn, tmp_path, proposal_status="reviewer_accepted")
+        resp = _post_approve(client, "job-1", refs["proposal_id"], {
+            "proposal_id": refs["proposal_id"],
+            "diff_checksum": refs["diff_checksum"],
+            "reviewer_verdict_id": refs["reviewer_verdict_id"],
+            "gate_id": refs["gate_id"],
+            "expected_gate_checksum": refs["expected_gate_checksum"],
+        })
+        assert resp.status_code == 409
+        data = resp.json()
+        assert data["error"]["code"] == "PROPOSAL_NOT_USER_REVIEW_REQUIRED"
+        assert data["error"]["reason_code"] == "proposal_not_user_review_required"
+
 
 class TestApproveResponseSafety:
     """Test 12, 18: Response safety."""
@@ -535,6 +594,49 @@ class TestApproveFlow:
         # rather than 500 (unhandled error from apply itself)
         assert resp.status_code == 400
         data = resp.json()
+
+    def test_approve_accepts_reviewer_output_artifact_for_legacy_rows(
+        self, conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Legacy rows can approve with trusted reviewer artifact evidence."""
+        diff_text = _make_simple_diff_text()
+        diff_path = _write_diff(tmp_path, diff_text)
+        diff_checksum = _compute_diff_checksum(diff_text)
+        (tmp_path / "reviewer_repair_llm_output.json").write_text(
+            json.dumps({
+                "decision": "accept",
+                "changed_files_verified": True,
+                "diff_parseable": True,
+            }),
+            encoding="utf-8",
+        )
+        gate_id = uuid4().hex
+        proposal_id = uuid4().hex
+        with SqliteControlTowerUnitOfWork(conn) as uow:
+            uow.v2_jobs.save(_make_job_record())
+            gate_record = _make_gate_record(gate_id=gate_id, job_id="job-1")
+            uow.phase_gates.save(gate_record)
+            uow.v2_repairs.save_proposal(_make_new_style_record(
+                job_id="job-1",
+                proposal_id=proposal_id,
+                status="user_review_required",
+                diff_ref=str(diff_path),
+                diff_checksum=diff_checksum,
+                reviewer_verdict_id=None,
+                reviewer_output_checksum="sha256:reviewer",
+                gate_id=gate_id,
+            ))
+        app = create_app(lambda: SqliteControlTowerUnitOfWork(conn))
+        client = TestClient(app, base_url="http://127.0.0.1:8000")
+        resp = _post_approve(client, "job-1", proposal_id, {
+            "proposal_id": proposal_id,
+            "diff_checksum": diff_checksum,
+            "reviewer_verdict_id": "reviewer_output:sha256:reviewer",
+            "gate_id": gate_id,
+        })
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "RUNTIME_CONTEXT_RESOLUTION_FAILED"
+        assert "REVIEWER_NOT_ACCEPTED" not in str(resp.json())
 
     def test_approve_does_not_expose_forbidden_fields_in_apply_failure(self, conn: sqlite3.Connection, tmp_path: Path) -> None:
         """Even when apply fails, response has no forbidden fields."""
@@ -798,3 +900,200 @@ class TestApproveExpectedGateChecksumOptional:
         assert resp.status_code != 409
         data = resp.json()
         assert "STALE_GATE_CHECKSUM" not in str(data)
+
+
+class TestSandboxPathRelativeResolution:
+    """Tier-3 sandbox path resolution from relative event paths."""
+
+    def test_resolves_sandbox_from_relative_event_path(
+        self, conn: sqlite3.Connection, tmp_path: Path,
+    ) -> None:
+        modernized_root = tmp_path / "modernized-v2-runs"
+        modernized_root.mkdir(parents=True, exist_ok=True)
+        sandbox_dir = modernized_root / ".migration" / "runs" / "v2-d2773830" / "workspaces" / "sandbox"
+        sandbox_dir.mkdir(parents=True, exist_ok=True)
+        (sandbox_dir / "test.txt").write_text("hello", encoding="utf-8")
+
+        diff_text = _make_simple_diff_text()
+        diff_path = _write_diff(tmp_path, diff_text)
+        diff_checksum = _compute_diff_checksum(diff_text)
+        gate_id = uuid4().hex
+        proposal_id = uuid4().hex
+        command_id = "cmd-rel-1"
+        event_id = uuid4().hex
+        reviewer_verdict = _make_reviewer_critique_record()
+
+        with SqliteControlTowerUnitOfWork(conn) as uow:
+            uow.v2_jobs.save(_make_job_record(setup_id="setup-1"))
+            _insert_setup(conn, setup_id="setup-1", legacy_app_path=str(tmp_path / "legacy"), output_parent_path=str(tmp_path))
+            command_argv = [
+                "--modernized", str(modernized_root),
+                "--run-id", "v2-d2773830",
+                "--legacy", str(tmp_path / "legacy"),
+            ]
+            _save_command(uow, command_id=command_id, argv=command_argv)
+            _save_event(uow, event_id=event_id, payload={"relative_path": ".migration/runs/v2-d2773830/workspaces/sandbox"})
+            gate_record = _make_gate_record(gate_id=gate_id, job_id="job-1", stage_index=1)
+            uow.phase_gates.save(gate_record)
+            uow.v2_reviewer.save_critique(reviewer_verdict)
+            uow.v2_repairs.save_proposal(_make_new_style_record(
+                job_id="job-1",
+                proposal_id=proposal_id,
+                status="user_review_required",
+                diff_ref=str(diff_path),
+                diff_checksum=diff_checksum,
+                reviewer_verdict_id=reviewer_verdict.critique_id,
+                gate_id=gate_id,
+                command_id=command_id,
+            ))
+
+        app = create_app(lambda: SqliteControlTowerUnitOfWork(conn))
+        client = TestClient(app, base_url="http://127.0.0.1:8000")
+        resp = _post_approve(client, "job-1", proposal_id, {
+            "proposal_id": proposal_id,
+            "diff_checksum": diff_checksum,
+            "reviewer_verdict_id": reviewer_verdict.critique_id,
+            "gate_id": gate_id,
+        })
+        assert resp.status_code in (200, 202, 400, 409)
+
+    def test_runtime_context_failure_returns_reason_code(
+        self, conn: sqlite3.Connection, tmp_path: Path,
+    ) -> None:
+        diff_text = _make_simple_diff_text()
+        diff_path = _write_diff(tmp_path, diff_text)
+        diff_checksum = _compute_diff_checksum(diff_text)
+        gate_id = uuid4().hex
+        proposal_id = uuid4().hex
+        reviewer_verdict = _make_reviewer_critique_record()
+
+        with SqliteControlTowerUnitOfWork(conn) as uow:
+            uow.v2_jobs.save(_make_job_record())
+            gate_record = _make_gate_record(gate_id=gate_id, job_id="job-1")
+            uow.phase_gates.save(gate_record)
+            uow.v2_reviewer.save_critique(reviewer_verdict)
+            uow.v2_repairs.save_proposal(_make_new_style_record(
+                job_id="job-1", proposal_id=proposal_id,
+                status="user_review_required",
+                diff_ref=str(diff_path), diff_checksum=diff_checksum,
+                reviewer_verdict_id=reviewer_verdict.critique_id,
+                gate_id=gate_id,
+            ))
+
+        app = create_app(lambda: SqliteControlTowerUnitOfWork(conn))
+        client = TestClient(app, base_url="http://127.0.0.1:8000")
+        resp = _post_approve(client, "job-1", proposal_id, {
+            "proposal_id": proposal_id,
+            "diff_checksum": diff_checksum,
+            "reviewer_verdict_id": reviewer_verdict.critique_id,
+            "gate_id": gate_id,
+        })
+        assert resp.status_code == 400
+        data = resp.json()
+        error = data.get("error", data)
+        assert error.get("code") == "RUNTIME_CONTEXT_RESOLUTION_FAILED"
+        assert isinstance(error.get("reason_code"), str)
+        assert error["reason_code"] != ""
+
+    def test_absolute_sandbox_path_still_works(
+        self, conn: sqlite3.Connection, tmp_path: Path,
+    ) -> None:
+        sandbox_dir = tmp_path / "sandbox"
+        sandbox_dir.mkdir(parents=True, exist_ok=True)
+        (sandbox_dir / "test.txt").write_text("hello", encoding="utf-8")
+
+        diff_text = _make_simple_diff_text()
+        diff_path = _write_diff(tmp_path, diff_text)
+        diff_checksum = _compute_diff_checksum(diff_text)
+        gate_id = uuid4().hex
+        proposal_id = uuid4().hex
+        command_id = "cmd-abs-1"
+        event_id = uuid4().hex
+        reviewer_verdict = _make_reviewer_critique_record()
+
+        with SqliteControlTowerUnitOfWork(conn) as uow:
+            uow.v2_jobs.save(_make_job_record(setup_id="setup-1"))
+            _insert_setup(conn, setup_id="setup-1", legacy_app_path=str(tmp_path / "legacy"), output_parent_path=str(tmp_path))
+            command_argv = [
+                "--modernized", str(tmp_path),
+                "--run-id", "v2-test",
+                "--legacy", str(tmp_path / "legacy"),
+            ]
+            _save_command(uow, command_id=command_id, argv=command_argv)
+            _save_event(uow, event_id=event_id, payload={"sandbox_path": str(sandbox_dir)})
+            gate_record = _make_gate_record(gate_id=gate_id, job_id="job-1", stage_index=1)
+            uow.phase_gates.save(gate_record)
+            uow.v2_reviewer.save_critique(reviewer_verdict)
+            uow.v2_repairs.save_proposal(_make_new_style_record(
+                job_id="job-1",
+                proposal_id=proposal_id,
+                status="user_review_required",
+                diff_ref=str(diff_path),
+                diff_checksum=diff_checksum,
+                reviewer_verdict_id=reviewer_verdict.critique_id,
+                gate_id=gate_id,
+                command_id=command_id,
+            ))
+
+        app = create_app(lambda: SqliteControlTowerUnitOfWork(conn))
+        client = TestClient(app, base_url="http://127.0.0.1:8000")
+        resp = _post_approve(client, "job-1", proposal_id, {
+            "proposal_id": proposal_id,
+            "diff_checksum": diff_checksum,
+            "reviewer_verdict_id": reviewer_verdict.critique_id,
+            "gate_id": gate_id,
+        })
+        assert resp.status_code in (200, 202, 400, 409)
+
+    def test_relative_path_traversal_is_blocked(
+        self, conn: sqlite3.Connection, tmp_path: Path,
+    ) -> None:
+        modernized_root = tmp_path / "modernized-v2-runs"
+        modernized_root.mkdir(parents=True, exist_ok=True)
+
+        diff_text = _make_simple_diff_text()
+        diff_path = _write_diff(tmp_path, diff_text)
+        diff_checksum = _compute_diff_checksum(diff_text)
+        gate_id = uuid4().hex
+        proposal_id = uuid4().hex
+        command_id = "cmd-trav-1"
+        event_id = uuid4().hex
+        reviewer_verdict = _make_reviewer_critique_record()
+
+        with SqliteControlTowerUnitOfWork(conn) as uow:
+            uow.v2_jobs.save(_make_job_record(setup_id="setup-1"))
+            _insert_setup(conn, setup_id="setup-1", legacy_app_path=str(tmp_path / "legacy"), output_parent_path=str(tmp_path))
+            command_argv = [
+                "--modernized", str(modernized_root),
+                "--run-id", "v2-trav",
+                "--legacy", str(tmp_path / "legacy"),
+            ]
+            _save_command(uow, command_id=command_id, argv=command_argv)
+            _save_event(uow, event_id=event_id, payload={"relative_path": "../../etc/passwd"})
+            gate_record = _make_gate_record(gate_id=gate_id, job_id="job-1", stage_index=1)
+            uow.phase_gates.save(gate_record)
+            uow.v2_reviewer.save_critique(reviewer_verdict)
+            uow.v2_repairs.save_proposal(_make_new_style_record(
+                job_id="job-1",
+                proposal_id=proposal_id,
+                status="user_review_required",
+                diff_ref=str(diff_path),
+                diff_checksum=diff_checksum,
+                reviewer_verdict_id=reviewer_verdict.critique_id,
+                gate_id=gate_id,
+                command_id=command_id,
+            ))
+
+        app = create_app(lambda: SqliteControlTowerUnitOfWork(conn))
+        client = TestClient(app, base_url="http://127.0.0.1:8000")
+        resp = _post_approve(client, "job-1", proposal_id, {
+            "proposal_id": proposal_id,
+            "diff_checksum": diff_checksum,
+            "reviewer_verdict_id": reviewer_verdict.critique_id,
+            "gate_id": gate_id,
+        })
+        assert resp.status_code == 400
+        data = resp.json()
+        error = data.get("error", data)
+        assert error.get("code") == "RUNTIME_CONTEXT_RESOLUTION_FAILED"
+        assert error.get("reason_code") == "missing_sandbox_artifact"

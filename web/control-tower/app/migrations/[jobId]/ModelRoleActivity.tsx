@@ -30,6 +30,7 @@ function statusLabel(status: string): string {
   if (normalized === "started" || normalized === "running") return "running";
   if (normalized === "completed") return "completed";
   if (normalized === "fallback") return "completed with fallback";
+  if (normalized === "schema_invalid") return "schema invalid";
   if (normalized === "failed") return "failed";
   if (normalized === "request_revision") return "needs revision";
   return normalized || "pending";
@@ -37,11 +38,11 @@ function statusLabel(status: string): string {
 
 function statusClass(status: string): string {
   const normalized = status.trim().toLowerCase();
-  if (normalized === "completed" || normalized === "fallback" || normalized === "accepted") return "completed";
-  if (normalized === "failed" || normalized === "rejected" || normalized === "schema invalid") return "failed";
+  if (normalized === "completed" || normalized === "fallback" || normalized === "completed with fallback" || normalized === "accepted") return "completed";
+  if (normalized === "failed" || normalized === "rejected" || normalized === "schema invalid" || normalized === "schema_invalid") return "failed";
   if (normalized === "request_revision" || normalized === "needs_revision") return "blocked";
   if (normalized === "started" || normalized === "running") return "running";
-  if (normalized === "not run") return "pending";
+  if (normalized === "not run") return "blocked";
   return "pending";
 }
 
@@ -63,7 +64,9 @@ export function buildRepairModelActivity(invocations: V2LlmInvocationEntry[]): A
   const proposer = newestFor(sorted, ["main", "proposer", "primary"], ["repair_proposal", "revision_proposal"]);
   const reviewer = newestFor(sorted, ["reviewer"], ["repair_review", "revision_review"]);
 
-  const isProposerSchemaInvalid = proposer?.redacted_error === "proposer_schema_invalid"
+  const isProposerSchemaInvalid = proposer?.reason_code === "main_schema_invalid"
+    || proposer?.reason_code === "proposer_schema_invalid"
+    || proposer?.redacted_error === "proposer_schema_invalid"
     || (proposer?.redacted_summary ?? "").toLowerCase().includes("schema validation")
     || (proposer?.redacted_summary ?? "").toLowerCase().includes("schema invalid");
   const reviewerRun = !isProposerSchemaInvalid && reviewer;
@@ -136,10 +139,13 @@ export function ModelRoleActivity({
                 <p className="warning-text">{phase.invocation.redacted_error}</p>
               )}
               {phase.invocation?.provider_alias && (
-                <p className="checksum">
-                  Provider alias: {phase.invocation.provider_alias}
-                  {phase.invocation.deployment_alias_hash ? ` / deployment hash ${phase.invocation.deployment_alias_hash}` : ""}
-                </p>
+                <details className="model-activity-details" data-testid="model-activity-details">
+                  <summary data-testid="model-activity-summary">Show technical details</summary>
+                  <p className="checksum">
+                    Provider alias: {phase.invocation.provider_alias}
+                    {phase.invocation.deployment_alias_hash ? ` / deployment hash ${phase.invocation.deployment_alias_hash}` : ""}
+                  </p>
+                </details>
               )}
             </div>
           </div>

@@ -1,6 +1,7 @@
 "use client";
 
 import type { SafeDiffPreview as SafeDiffPreviewType } from "../../../lib/contracts";
+import { formatSafeRelativePath } from "../../../lib/safeDisplay";
 
 export function SafeDiffPreview({
   diff,
@@ -15,6 +16,8 @@ export function SafeDiffPreview({
     );
   }
 
+  const previewUnparseable = diff.parse_status === "unparseable";
+
   return (
     <div className="safe-diff-preview" data-testid="safe-diff-preview">
       <div className="safe-diff-summary">
@@ -22,6 +25,12 @@ export function SafeDiffPreview({
           {diff.files.length} file{diff.files.length !== 1 ? "s" : ""} changed
           — +{diff.total_additions} / -{diff.total_deletions}
         </p>
+        {previewUnparseable && (
+          <p className="warning-text" data-testid="preview-unparseable-warning">
+            Diff preview is unavailable because the reviewed diff has no parseable hunks.
+            Request a revision before applying.
+          </p>
+        )}
         {diff.truncated && (
           <p className="warning-text" data-testid="truncation-notice">
             Diff truncated. Some content is omitted.
@@ -41,7 +50,7 @@ export function SafeDiffPreview({
       {diff.files.map((file, fi) => (
         <div key={fi} className="safe-diff-file" data-testid="safe-diff-file">
           <div className="safe-diff-file-header">
-            <strong>{file.path}</strong>
+            <strong>{formatSafeRelativePath(file.path)}</strong>
             <span className="meta">
               {file.change_type} — +{file.additions} / -{file.deletions}
             </span>

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { ReviewedDiffProposal, SafeDiffPreview as SafeDiffPreviewType } from "../../../lib/contracts";
+import { formatSafeRelativePath } from "../../../lib/safeDisplay";
 import { SafeDiffPreview } from "./SafeDiffPreview";
 import { ReviewerVerdictCard } from "./ReviewerVerdictCard";
 
@@ -93,7 +94,7 @@ export function ReviewedDiffTabs({
                 {proposal.files_changed.map((fc, i) => (
                   <div key={i} className="table-row" data-testid="files-changed-row">
                     <span className="meta">{fc.change_type}</span>
-                    <strong>{fc.path}</strong>
+                    <strong>{formatSafeRelativePath(fc.path)}</strong>
                     <span className="meta">+{fc.additions} / -{fc.deletions}</span>
                   </div>
                 ))}

@@ -20,6 +20,10 @@ from uuid import uuid4
 
 from migration_factory.control_tower.application.ports import V2LLMInvocationRepository
 from migration_factory.control_tower.application.redaction import redact_model_summary
+from migration_factory.control_tower.application.v2_model_role_config import (
+    ModelRoleConfigLoader,
+    ModelRoleConfigMissingError,
+)
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json, utc_now_text
 from migration_factory.control_tower.infrastructure.sqlite.v2_llm_invocation_repository import (
     V2LLMInvocationRecord,
@@ -38,8 +42,28 @@ def compute_deployment_alias_hash(deployment: str) -> str:
     return hashlib.sha256(deployment.encode("utf-8")).hexdigest()[:16]
 
 
-def safe_provider_alias() -> str:
-    """Return a safe provider display label."""
+def _normalize_role_to_key(role: str) -> str:
+    """Map role strings to config keys (main, reviewer, fallback)."""
+    normalized = str(role or "").strip().lower()
+    if normalized in {"main", "proposer", "primary"}:
+        return "main"
+    if normalized == "reviewer":
+        return "reviewer"
+    if normalized == "fallback":
+        return "fallback"
+    return ""
+
+
+def safe_provider_alias(role: str = "") -> str:
+    """Return a safe provider display label from role config if available."""
+    from migration_factory.control_tower.application.v2_model_role_config import (
+        ModelRoleConfigLoader,
+    )
+    role_key = _normalize_role_to_key(role)
+    if role_key:
+        config = ModelRoleConfigLoader.try_load_role(role_key)
+        if config is not None:
+            return config.provider_alias
     return "azure_openai"
 
 
@@ -49,29 +73,38 @@ def safe_deployment_label() -> str:
 
 
 def safe_model_display_name(role: str) -> str:
-    """Return a product-safe display label for a model role."""
-    normalized = str(role or "").strip().lower()
-    if normalized in {"main", "proposer", "primary"}:
-        return "Main Model"
-    if normalized == "reviewer":
-        return "Reviewer Model"
-    if normalized == "fallback":
-        return "Fallback Model"
-    return "Model"
+    """Return model display name from role config.
+
+    Uses ModelRoleConfigLoader to resolve the display name from
+    AI_MIGRATION_{ROLE}_MODEL_DISPLAY_NAME. Falls back to "configured"
+    when no config is found.
+    """
+    from migration_factory.control_tower.application.v2_model_role_config import (
+        ModelRoleConfigLoader,
+    )
+    role_key = _normalize_role_to_key(role)
+    if role_key:
+        config = ModelRoleConfigLoader.try_load_role(role_key)
+        if config is not None:
+            return config.model_display_name
+    return "configured"
 
 
 def deployment_alias_hash_for_role(role: str) -> str:
-    """Resolve configured deployment for a role and return only its safe hash."""
-    normalized = str(role or "").strip().lower()
-    if normalized in {"main", "proposer", "primary"}:
-        env_name = "AZURE_OPENAI_PROPOSER_DEPLOYMENT"
-    elif normalized == "reviewer":
-        env_name = "AZURE_OPENAI_REVIEWER_DEPLOYMENT"
-    elif normalized == "fallback":
-        env_name = "AZURE_OPENAI_FALLBACK_DEPLOYMENT"
-    else:
-        env_name = "AZURE_OPENAI_ASSISTANT_DEPLOYMENT"
-    return compute_deployment_alias_hash(os.environ.get(env_name, "").strip())
+    """Resolve deployment/model ID for a role and return only its safe hash.
+
+    Uses ModelRoleConfigLoader to get the deployment_or_model_id from
+    AI_MIGRATION_{ROLE}_MODEL. Falls back to empty hash when no config found.
+    """
+    from migration_factory.control_tower.application.v2_model_role_config import (
+        ModelRoleConfigLoader,
+    )
+    role_key = _normalize_role_to_key(role)
+    if role_key:
+        config = ModelRoleConfigLoader.try_load_role(role_key)
+        if config is not None:
+            return config.deployment_alias_hash()
+    return compute_deployment_alias_hash("")
 
 
 class V2LLMInvocationLedger:
@@ -117,7 +150,7 @@ class V2LLMInvocationLedger:
             context_checksum=context_checksum,
             input_checksum=input_checksum,
             schema_name=schema_name,
-            provider_alias=safe_provider_alias(),
+            provider_alias=safe_provider_alias(role),
             deployment_alias_hash=deployment_alias_hash_for_role(role),
         )
         self._repository.save(record)
@@ -165,9 +198,13 @@ class V2LLMInvocationLedger:
         """Record failure of a model invocation."""
         safe_error = str(redact_model_summary(redacted_error or ""))[:500] if redacted_error else None
         safe_summary = str(redact_model_summary(redacted_summary or ""))[:500] if redacted_summary else None
+        failure_status = "failed"
+        combined = f"{safe_error or ''} {safe_summary or ''}".lower()
+        if "schema_invalid" in combined or "schema validation" in combined:
+            failure_status = "schema_invalid"
         self._repository.update_status(
             invocation_id=invocation_id,
-            status="fallback" if fallback_used else "failed",
+            status="fallback" if fallback_used else failure_status,
             redacted_error=safe_error,
             redacted_summary=safe_summary,
             latency_ms=latency_ms,
@@ -217,12 +254,17 @@ class V2LLMInvocationLedger:
             latency_ms=record.latency_ms,
             completed_at=record.completed_at,
         )
+        reason_code = _derive_invocation_reason_code(record)
+        status = dto.status
+        if status == "completed" and reason_code in {"main_schema_invalid", "proposer_schema_invalid", "reviewer_schema_invalid"}:
+            status = "schema_invalid"
         return {
             "invocation_id": dto.invocation_id,
             "job_id": dto.job_id,
             "role": dto.role,
             "responsibility": dto.responsibility,
-            "status": dto.status,
+            "status": status,
+            "reason_code": reason_code,
             "proposal_id": dto.proposal_id,
             "gate_id": dto.gate_id,
             "provider_alias": dto.provider_alias,
@@ -265,3 +307,30 @@ class V2LLMInvocationLedger:
         if dto_dict.get("deployment_alias_hash") and len(str(dto_dict["deployment_alias_hash"])) > 64:
             forbidden.append("deployment_alias_hash_too_long")
         return list(set(forbidden))
+
+
+def _derive_invocation_reason_code(record: V2LLMInvocationRecord) -> str | None:
+    combined = " ".join(
+        str(value or "").lower()
+        for value in (
+            record.status,
+            record.redacted_error,
+            record.redacted_summary,
+            record.schema_name,
+        )
+    )
+    role = str(record.role or "").strip().lower()
+    responsibility = str(record.responsibility or "").strip().lower()
+    is_main = role in {"main", "proposer", "primary"} or responsibility == "repair_proposal"
+    is_reviewer = role == "reviewer" or responsibility == "repair_review"
+    if "reviewer_schema_invalid" in combined:
+        return "reviewer_schema_invalid"
+    if "proposer_schema_invalid" in combined:
+        return "proposer_schema_invalid"
+    if "main_schema_invalid" in combined:
+        return "main_schema_invalid"
+    if ("schema_invalid" in combined or "schema validation" in combined) and is_main:
+        return "proposer_schema_invalid"
+    if ("schema_invalid" in combined or "schema validation" in combined) and is_reviewer:
+        return "reviewer_schema_invalid"
+    return None

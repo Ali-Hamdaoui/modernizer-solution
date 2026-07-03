@@ -43,14 +43,61 @@ function statusClass(status: string): string {
   return "pending";
 }
 
-export function ValidationProgressPanel({ attempts }: { attempts: RepairAttemptSummary[] }) {
+export function ValidationProgressPanel({
+  attempts,
+  proposalStatus,
+  unavailableSummary,
+}: {
+  attempts: RepairAttemptSummary[];
+  proposalStatus?: string;
+  unavailableSummary?: string;
+}) {
   const attempt = latestAttempt(attempts);
+  const waitingForApproval = proposalStatus === "user_review_required" && !attempt;
+  const noProposal = !proposalStatus && attempts.length === 0;
   const phases = [
     ["Applying reviewed diff to sandbox", phaseStatus("apply", attempt)],
     ["Rebuilding", phaseStatus("rebuild", attempt)],
     ["Running tests", phaseStatus("test", attempt)],
     ["Migration continuing", phaseStatus("continue", attempt)],
   ] as const;
+
+  if (noProposal) {
+    return (
+      <aside className="validation-progress-panel" data-testid="validation-progress-panel">
+        <span className="meta">Backend validation path</span>
+        <h3>Reviewed Repair Unavailable</h3>
+        <p className="meta" data-testid="no-proposal-message">
+          {unavailableSummary ?? "Reviewed diff is not available for backend validation."}
+        </p>
+        <div className="validation-phase-list">
+          <div className="validation-phase-row" data-testid="validation-phase-row">
+            <span className="activity-dot blocked" aria-hidden="true" />
+            <strong>Backend validation path</strong>
+            <span className="status-badge blocked">Not available</span>
+          </div>
+        </div>
+      </aside>
+    );
+  }
+
+  if (waitingForApproval) {
+    return (
+      <aside className="validation-progress-panel" data-testid="validation-progress-panel">
+        <span className="meta">Backend validation path</span>
+        <h3>Apply, Rebuild, Test</h3>
+        <div className="validation-phase-list">
+          {phases.map(([label]) => (
+            <div key={label} className="validation-phase-row" data-testid="validation-phase-row">
+              <span className="activity-dot pending" aria-hidden="true" />
+              <strong>{label}</strong>
+              <span className="status-badge pending" data-testid="waiting-for-approval">Waiting for your approval</span>
+            </div>
+          ))}
+        </div>
+      </aside>
+    );
+  }
 
   return (
     <aside className="validation-progress-panel" data-testid="validation-progress-panel">
@@ -61,7 +108,7 @@ export function ValidationProgressPanel({ attempts }: { attempts: RepairAttemptS
           <div key={label} className="validation-phase-row" data-testid="validation-phase-row">
             <span className={`activity-dot ${statusClass(status)}`} aria-hidden="true" />
             <strong>{label}</strong>
-            <span className={`status-badge ${statusClass(status)}`}>{status}</span>
+            <span className={`status-badge ${statusClass(status)}`}>{status === "pending" ? "Waiting for your approval" : status}</span>
           </div>
         ))}
       </div>

@@ -16,6 +16,7 @@ from migration_factory.control_tower.application.safe_diff_preview import (
 )
 from migration_factory.control_tower.application.v2_repair_projection import (
     READ_ONLY_REPAIR_ACTIONS,
+    ReviewerVerdictProjection,
     build_reviewed_diff_proposal_from_record,
     record_to_attempt_summary,
     reviewed_diff_proposal_to_safe_dict,
@@ -27,7 +28,11 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository 
     SqliteV2RepairRepository,
     V2RepairProposalRecord,
 )
-from migration_factory.control_tower.domain.checksums import utc_now_text
+from migration_factory.control_tower.infrastructure.sqlite.v2_reviewer_repository import (
+    V2ReviewerCritiqueRecord,
+)
+from migration_factory.control_tower.domain.checksums import sha256_hex, utc_now_text
+from migration_factory.control_tower.domain.entities import PhaseGateRecord
 from migration_factory.control_tower.adapters.fastapi.app import create_app
 from fastapi.testclient import TestClient
 
@@ -112,6 +117,7 @@ def _make_new_style_record(
     safe_diff_preview_ref: str | None = None,
     policy_validation_checksum: str | None = None,
     status_reason: str | None = None,
+    reviewer_decision: str | None = None,
 ) -> V2RepairProposalRecord:
     return V2RepairProposalRecord(
         proposal_id=uuid4().hex,
@@ -140,6 +146,7 @@ def _make_new_style_record(
         policy_validation_checksum=policy_validation_checksum,
         gate_id=gate_id,
         status_reason=status_reason,
+        reviewer_decision=reviewer_decision,
     )
 
 
@@ -406,6 +413,150 @@ class TestSafeDictProjection:
         assert isinstance(safe["redactions"], list)
 
 
+class TestImportDiffPreview:
+    def test_current_proposal_safe_diff_preview_contains_added_import(self, tmp_path: Path) -> None:
+        import_diff = (
+            "diff --git a/src/main/java/com/example/App.java b/src/main/java/com/example/App.java\n"
+            "--- a/src/main/java/com/example/App.java\n"
+            "+++ b/src/main/java/com/example/App.java\n"
+            "@@ -1,3 +1,4 @@\n"
+            "+ import com.fasterxml.jackson.databind.JsonNode;\n"
+            " public class App {\n"
+            "     public static void main(String[] args) {\n"
+        )
+        diff_path = _write_diff(tmp_path, import_diff)
+        preview = build_safe_diff_preview(
+            proposal_id="prop-import-test",
+            diff_ref=str(diff_path),
+        )
+        safe = safe_diff_preview_to_dict(preview)
+        assert safe["total_additions"] == 1
+        assert safe["total_deletions"] == 0
+        assert len(safe["files"]) == 1
+        assert safe["files"][0]["additions"] == 1
+        assert safe["files"][0]["deletions"] == 0
+        assert len(safe["files"][0]["hunks"]) == 1
+        hunk_lines = safe["files"][0]["hunks"][0]["lines"]
+        assert any(
+            line["kind"] == "addition" and "JsonNode" in line["text"]
+            for line in hunk_lines
+        )
+
+    def test_diff_endpoint_returns_hunks_and_line_counts(self, tmp_path: Path) -> None:
+        import_diff = (
+            "diff --git a/src/main/java/com/example/App.java b/src/main/java/com/example/App.java\n"
+            "--- a/src/main/java/com/example/App.java\n"
+            "+++ b/src/main/java/com/example/App.java\n"
+            "@@ -1,3 +1,4 @@\n"
+            "+ import com.fasterxml.jackson.databind.JsonNode;\n"
+            " public class App {\n"
+            "     public static void main(String[] args) {\n"
+        )
+        diff_path = _write_diff(tmp_path, import_diff)
+        preview = build_safe_diff_preview(
+            proposal_id="prop-hunk-test",
+            diff_ref=str(diff_path),
+        )
+        safe = safe_diff_preview_to_dict(preview)
+        assert safe["total_additions"] == 1
+        assert safe["total_deletions"] == 0
+        assert len(safe["files"]) == 1
+        assert safe["files"][0]["path"] == "src/main/java/com/example/App.java"
+        assert safe["files"][0]["hunks"][0]["new_start"] == 1
+        assert safe["files"][0]["hunks"][0]["new_lines"] == 4
+
+
+class TestNewContractFixes:
+    """PR-B contract fixes: policy metadata, reviewer verdict, actions, path safety."""
+
+    def test_current_proposal_projects_policy_metadata_for_human_review_required(
+        self, tmp_path: Path
+    ) -> None:
+        """policy_status, policy_reason, policy_reason_code are not None when resolved."""
+        diff_path = tmp_path / "final_reviewed_repair.diff"
+        diff_path.write_text("diff --git a/src/App.java b/src/App.java\n--- a/src/App.java\n+++ b/src/App.java\n@@ -1 +1 @@\n-foo\n+bar\n", encoding="utf-8")
+        projection = build_reviewed_diff_proposal_from_record(
+            proposal_id="prop-policy",
+            status="user_review_required",
+            failure_summary="Build failed",
+            diff_ref=str(diff_path),
+            policy_status="ALLOWED",
+            policy_reason="Safe diff",
+            policy_reason_code="ok",
+            policy_validation_checksum="sha256:abc",
+        )
+        safe = reviewed_diff_proposal_to_safe_dict(projection)
+        assert safe["policy_status"] == "ALLOWED"
+        assert safe["policy_reason"] == "Safe diff"
+        assert safe["policy_reason_code"] == "ok"
+        assert safe["policy_validation_checksum"] == "sha256:abc"
+
+    def test_current_proposal_projects_reviewer_accept_verdict(
+        self, tmp_path: Path
+    ) -> None:
+        """Verdict decision is 'accept' and model_invocation_id is present."""
+        diff_path = tmp_path / "final_reviewed_repair.diff"
+        diff_path.write_text("diff --git a/src/App.java b/src/App.java\n--- a/src/App.java\n+++ b/src/App.java\n@@ -1 +1 @@\n-foo\n+bar\n", encoding="utf-8")
+        projection = build_reviewed_diff_proposal_from_record(
+            proposal_id="prop-verdict",
+            status="user_review_required",
+            failure_summary="Build failed",
+            diff_ref=str(diff_path),
+            reviewer_verdict_id="verdict-abc",
+            reviewer_decision="accept",
+            reviewer_reasoning="LGTM",
+            model_invocation_id="invoc-xyz",
+            reviewer_output_checksum="sha256:checksum",
+        )
+        safe = reviewed_diff_proposal_to_safe_dict(projection)
+        assert safe["reviewer_verdict"] is not None
+        assert safe["reviewer_verdict"]["decision"] == "accept"
+        assert safe["reviewer_verdict"]["model_invocation_id"] == "invoc-xyz"
+        assert safe["reviewer_verdict"]["reviewer_verdict_id"] == "verdict-abc"
+        assert safe["reviewer_verdict"]["output_checksum"] == "sha256:checksum"
+
+    def test_current_proposal_includes_approve_and_revision_actions_when_gate_waiting(
+        self, tmp_path: Path
+    ) -> None:
+        """allowed_actions includes approve_sandbox_apply and request_revision."""
+        diff_path = tmp_path / "final_reviewed_repair.diff"
+        diff_path.write_text("diff --git a/src/App.java b/src/App.java\n--- a/src/App.java\n+++ b/src/App.java\n@@ -1 +1 @@\n-foo\n+bar\n", encoding="utf-8")
+        allowed = list(READ_ONLY_REPAIR_ACTIONS)
+        allowed.extend(("approve_sandbox_apply", "request_revision"))
+        projection = build_reviewed_diff_proposal_from_record(
+            proposal_id="prop-actions2",
+            status="user_review_required",
+            failure_summary="Build failed",
+            diff_ref=str(diff_path),
+            allowed_actions=tuple(allowed),
+        )
+        safe = reviewed_diff_proposal_to_safe_dict(projection)
+        for action in READ_ONLY_REPAIR_ACTIONS:
+            assert action in safe["allowed_actions"], f"Missing {action!r}"
+        assert "approve_sandbox_apply" in safe["allowed_actions"]
+        assert "request_revision" in safe["allowed_actions"]
+
+    def test_current_proposal_does_not_expose_absolute_repair_plan_path(
+        self, tmp_path: Path
+    ) -> None:
+        """repair_plan_ref is just a filename (sanitized at storage in v2_repair_gate_service.py)."""
+        diff_path = tmp_path / "final_reviewed_repair.diff"
+        diff_path.write_text("diff --git a/src/App.java b/src/App.java\n--- a/src/App.java\n+++ b/src/App.java\n@@ -1 +1 @@\n-foo\n+bar\n", encoding="utf-8")
+        projection = build_reviewed_diff_proposal_from_record(
+            proposal_id="prop-path",
+            status="user_review_required",
+            failure_summary="Build failed",
+            diff_ref=str(diff_path),
+            repair_plan_ref="final_reviewed_repair_artifact.json",
+            diagnosis_ref="build:build_failure",
+        )
+        safe = reviewed_diff_proposal_to_safe_dict(projection)
+        assert safe["repair_plan_ref"] is not None
+        assert safe["repair_plan_ref"] == "final_reviewed_repair_artifact.json"
+        assert "\\" not in safe["repair_plan_ref"]
+        assert "\\" not in json.dumps(safe)
+
+
 class TestDiffEndpoint:
     def test_diff_endpoint_returns_safe_diff_preview(self, tmp_path: Path) -> None:
         conn = _connection(tmp_path)
@@ -607,6 +758,119 @@ def _api_client_with_proposal(tmp_path: Path, diff_path: Path | None = None) -> 
     return client, conn, job_id, record
 
 
+def _make_phase_gate(
+    *,
+    job_id: str,
+    gate_id: str,
+    gate_status: str = "open",
+    gate_decision: str = "pending",
+) -> PhaseGateRecord:
+    return PhaseGateRecord(
+        gate_id=gate_id,
+        job_id=job_id,
+        gate_phase="repair_review",
+        stage_index=1,
+        gate_status=gate_status,
+        gate_decision=gate_decision,
+        source_artifact_checksum="sha256:gate",
+        resolved_artifact_checksum=None,
+        source_artifact_refs_json=json.dumps(
+            [
+                "policy_validation_checksum:sha256:policy",
+                "reviewer_output_checksum:sha256:reviewer",
+                "final_reviewed_diff_checksum:sha256:diff",
+            ],
+            separators=(",", ":"),
+        ),
+        created_at=utc_now_text(),
+        resolved_at=None,
+        resolved_by=None,
+    )
+
+
+def _make_reviewer_critique(
+    *,
+    proposal_id: str,
+    critique_id: str,
+    decision: str = "accept",
+) -> V2ReviewerCritiqueRecord:
+    return V2ReviewerCritiqueRecord(
+        critique_id=critique_id,
+        proposal_id=proposal_id,
+        proposal_type="repair",
+        proposal_checksum="sha256:proposal",
+        context_pack_checksum="sha256:ctx",
+        decision=decision,
+        reasoning="Reviewer result",
+        missing_evidence_json="[]",
+        unsafe_assumptions_json="[]",
+        model_invocation_id="reviewer-invocation",
+        created_at=utc_now_text(),
+    )
+
+
+def _api_client_with_actionable_proposal(
+    tmp_path: Path,
+    *,
+    reviewer_decision: str = "accept",
+    gate_status: str = "open",
+    diff_text: str | None = None,
+) -> tuple[TestClient, sqlite3.Connection, str, V2RepairProposalRecord]:
+    client, conn, job_id = _api_client_with_job(tmp_path)
+    text = diff_text if diff_text is not None else _make_simple_diff_text()
+    diff_path = _write_diff(tmp_path, text)
+    gate_id = uuid4().hex
+    critique_id = uuid4().hex
+    record = _make_new_style_record(
+        job_id=job_id,
+        diff_ref=str(diff_path),
+        diff_checksum=sha256_hex(text.encode("utf-8")),
+        gate_id=gate_id,
+        reviewer_verdict_id=critique_id,
+        reviewer_output_checksum="sha256:reviewer",
+        policy_validation_checksum="sha256:policy",
+        reviewer_decision=reviewer_decision,
+    )
+    with SqliteUnitOfWork(conn) as uow:
+        uow.phase_gates.save(_make_phase_gate(job_id=job_id, gate_id=gate_id, gate_status=gate_status))
+        uow.v2_reviewer.save_critique(
+            _make_reviewer_critique(
+                proposal_id=record.proposal_id,
+                critique_id=critique_id,
+                decision=reviewer_decision,
+            )
+        )
+        uow.v2_repairs.save_proposal(record)
+    return client, conn, job_id, record
+
+
+def _api_client_with_artifact_only_reviewer(
+    tmp_path: Path,
+    *,
+    artifact_name: str,
+    artifact_payload: dict,
+) -> tuple[TestClient, sqlite3.Connection, str, V2RepairProposalRecord]:
+    client, conn, job_id = _api_client_with_job(tmp_path)
+    text = _make_simple_diff_text()
+    diff_path = _write_diff(tmp_path, text)
+    artifact_path = tmp_path / artifact_name
+    artifact_path.write_text(json.dumps(artifact_payload), encoding="utf-8")
+    gate_id = uuid4().hex
+    record = _make_new_style_record(
+        job_id=job_id,
+        diff_ref=str(diff_path),
+        diff_checksum=sha256_hex(text.encode("utf-8")),
+        gate_id=gate_id,
+        repair_plan_ref=str(artifact_path) if artifact_name == "final_reviewed_repair_artifact.json" else None,
+        reviewer_output_checksum="sha256:reviewer",
+        policy_validation_checksum="sha256:policy",
+    )
+    with SqliteUnitOfWork(conn) as uow:
+        uow.phase_gates.save(_make_phase_gate(job_id=job_id, gate_id=gate_id))
+        uow.v2_repairs.save_proposal(record)
+    return client, conn, job_id, record
+
+
 class TestHttpEndpointCurrentProposal:
     def test_current_proposal_returns_stable_shape(self, tmp_path: Path) -> None:
         client, conn, job_id, _ = _api_client_with_proposal(tmp_path, diff_path=None)
@@ -632,6 +896,88 @@ class TestHttpEndpointCurrentProposal:
         data = response.json()
         _check_no_forbidden_keys(data)
         _check_no_forbidden_values(data)
+
+    def test_current_proposal_open_gate_reviewer_accept_is_actionable(self, tmp_path: Path) -> None:
+        client, conn, job_id, record = _api_client_with_actionable_proposal(tmp_path)
+        response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
+        assert response.status_code == 200
+        proposal = response.json()["proposal"]
+        assert proposal["reviewer_verdict"]["decision"] == "accept"
+        assert proposal["gate_status"] == "open"
+        assert proposal["stale_reason"] is None
+        assert proposal["safe_diff_preview"]["parse_status"] == "parsed"
+        assert proposal["safe_diff_preview"]["checksum_mismatch"] is False
+        assert proposal["policy_status"] == "HUMAN_REVIEW_REQUIRED"
+        assert proposal["policy_validation_checksum"] == "sha256:policy"
+        assert "approve_sandbox_apply" in proposal["allowed_actions"]
+        assert "request_revision" in proposal["allowed_actions"]
+        _check_no_forbidden_values(response.json())
+
+    def test_current_proposal_resolved_gate_stays_view_only(self, tmp_path: Path) -> None:
+        client, conn, job_id, record = _api_client_with_actionable_proposal(tmp_path, gate_status="resolved")
+        response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
+        proposal = response.json()["proposal"]
+        assert proposal["gate_status"] == "resolved"
+        assert proposal["stale_reason"] == "gate_not_open"
+        assert "approve_sandbox_apply" not in proposal["allowed_actions"]
+
+    def test_current_proposal_reviewer_unknown_stays_view_only(self, tmp_path: Path) -> None:
+        client, conn, job_id, record = _api_client_with_actionable_proposal(tmp_path, reviewer_decision="revise")
+        response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
+        proposal = response.json()["proposal"]
+        assert proposal["reviewer_verdict"]["decision"] == "revise"
+        assert proposal["stale_reason"] == "reviewer_not_accepted"
+        assert "approve_sandbox_apply" not in proposal["allowed_actions"]
+
+    def test_current_proposal_unparseable_diff_stays_view_only(self, tmp_path: Path) -> None:
+        client, conn, job_id, record = _api_client_with_actionable_proposal(tmp_path, diff_text="not a unified diff")
+        response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
+        proposal = response.json()["proposal"]
+        assert proposal["safe_diff_preview"]["parse_status"] == "unparseable"
+        assert proposal["stale_reason"] == "diff_unparseable"
+        assert "approve_sandbox_apply" not in proposal["allowed_actions"]
+
+    def test_current_proposal_checksum_mismatch_stays_view_only(self, tmp_path: Path) -> None:
+        client, conn, job_id, record = _api_client_with_actionable_proposal(tmp_path)
+        conn.execute("UPDATE v2_repair_proposals SET diff_checksum = ? WHERE proposal_id = ?", ("sha256:wrong", record.proposal_id))
+        response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
+        proposal = response.json()["proposal"]
+        assert proposal["safe_diff_preview"]["checksum_mismatch"] is True
+        assert proposal["stale_reason"] == "diff_checksum_mismatch"
+        assert "approve_sandbox_apply" not in proposal["allowed_actions"]
+
+    def test_current_proposal_recovers_reviewer_accept_from_reviewer_output_artifact(self, tmp_path: Path) -> None:
+        client, conn, job_id, record = _api_client_with_artifact_only_reviewer(
+            tmp_path,
+            artifact_name="reviewer_repair_llm_output.json",
+            artifact_payload={
+                "decision": "accept",
+                "changed_files_verified": True,
+                "diff_parseable": True,
+            },
+        )
+        response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
+        proposal = response.json()["proposal"]
+        assert proposal["reviewer_verdict"]["decision"] == "accept"
+        assert "reviewer_repair_llm_output.json" in proposal["evidence_sources"]
+        assert "approve_sandbox_apply" in proposal["allowed_actions"]
+
+    def test_current_proposal_recovers_reviewer_accept_from_final_artifact(self, tmp_path: Path) -> None:
+        client, conn, job_id, record = _api_client_with_artifact_only_reviewer(
+            tmp_path,
+            artifact_name="final_reviewed_repair_artifact.json",
+            artifact_payload={
+                "reviewer_decision": "accept",
+                "changed_files_verified": True,
+                "diff_parseable": True,
+            },
+        )
+        response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
+        proposal = response.json()["proposal"]
+        assert proposal["reviewer_verdict"]["decision"] == "accept"
+        assert proposal["repair_plan_ref"] == "final_reviewed_repair_artifact.json"
+        assert "final_reviewed_repair_artifact.json" in proposal["evidence_sources"]
+        assert "approve_sandbox_apply" in proposal["allowed_actions"]
 
     def test_current_proposal_none_for_nonexistent_job(self, tmp_path: Path) -> None:
         client, conn, _, _ = _api_client_with_proposal(tmp_path, diff_path=None)
@@ -690,6 +1036,19 @@ class TestHttpEndpointGetProposal:
         data = response.json()
         assert data["job_id"] == job_id
         assert isinstance(data["proposal"], dict)
+
+    def test_get_proposal_open_gate_reviewer_accept_is_actionable(self, tmp_path: Path) -> None:
+        client, conn, job_id, record = _api_client_with_actionable_proposal(tmp_path)
+        response = client.get(
+            f"/v1/v2/jobs/{job_id}/repair/proposals/{record.proposal_id}",
+            headers={"host": "127.0.0.1:8000"},
+        )
+        assert response.status_code == 200
+        proposal = response.json()["proposal"]
+        assert proposal["reviewer_verdict"]["decision"] == "accept"
+        assert proposal["gate_status"] == "open"
+        assert "approve_sandbox_apply" in proposal["allowed_actions"]
+        assert "request_revision" in proposal["allowed_actions"]
 
 
 class TestHttpEndpointDiff:

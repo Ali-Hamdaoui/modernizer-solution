@@ -243,9 +243,19 @@ class ReviewedDiffProposal:
     reviewer_verdict: ReviewerVerdictProjection | None = None
     files_changed: list[FilesChangedSummary] = field(default_factory=list)
     risk: str | None = None
+    policy_status: str | None = None
+    policy_reason: str | None = None
+    policy_reason_code: str | None = None
+    policy_validation_checksum: str | None = None
     required_validation: tuple[str, ...] = ()
     allowed_actions: tuple[str, ...] = READ_ONLY_REPAIR_ACTIONS
     redactions: tuple[str, ...] = ()
+    stale_reason: str | None = None
+    current_gate_id: str | None = None
+    gate_status: str | None = None
+    gate_decision: str | None = None
+    evidence_sources: tuple[str, ...] = ()
+
 
 
 def build_reviewed_diff_proposal_projection(
@@ -267,6 +277,10 @@ def build_reviewed_diff_proposal_projection(
     required_validation: tuple[str, ...] = (),
     allowed_actions: tuple[str, ...] = READ_ONLY_REPAIR_ACTIONS,
     risk: str | None = None,
+    policy_status: str | None = None,
+    policy_reason: str | None = None,
+    policy_reason_code: str | None = None,
+    policy_validation_checksum: str | None = None,
     final_diff_text: str | None = None,
 ) -> ReviewedDiffProposal:
     chain = review_chain or {}
@@ -314,6 +328,12 @@ def build_reviewed_diff_proposal_projection(
         reviewer_verdict=verdict,
         files_changed=files_changed,
         risk=_maybe_str(risk or chain.get("risk")),
+        policy_status=_maybe_str(policy_status or chain.get("policy_status")),
+        policy_reason=_maybe_str(policy_reason or chain.get("policy_reason")),
+        policy_reason_code=_maybe_str(policy_reason_code or chain.get("policy_reason_code")),
+        policy_validation_checksum=_maybe_str(
+            policy_validation_checksum or chain.get("policy_validation_checksum")
+        ),
         required_validation=required_validation,
         allowed_actions=allowed_actions,
         redactions=tuple(dict.fromkeys(redactions)),
@@ -340,9 +360,18 @@ def reviewed_diff_proposal_to_safe_dict(proposal: ReviewedDiffProposal) -> dict[
         "reviewer_verdict": reviewer_verdict_projection_to_safe_dict(proposal.reviewer_verdict) if proposal.reviewer_verdict is not None else None,
         "files_changed": [files_changed_summary_to_dict(file) for file in proposal.files_changed],
         "risk": proposal.risk,
+        "policy_status": proposal.policy_status,
+        "policy_reason": proposal.policy_reason,
+        "policy_reason_code": proposal.policy_reason_code,
+        "policy_validation_checksum": proposal.policy_validation_checksum,
         "required_validation": list(proposal.required_validation),
         "allowed_actions": list(proposal.allowed_actions),
         "redactions": list(proposal.redactions),
+        "stale_reason": proposal.stale_reason,
+        "current_gate_id": proposal.current_gate_id,
+        "gate_status": proposal.gate_status,
+        "gate_decision": proposal.gate_decision,
+        "evidence_sources": list(proposal.evidence_sources),
     }
 
 
@@ -407,6 +436,7 @@ def _build_reviewer_verdict_projection(
     model_invocation_id = _maybe_str(
         payload.get("model_invocation_id")
         or review_chain.get("model_invocation_id")
+        or review_chain.get("reviewer_invocation_id")
     )
     output_checksum = _maybe_str(
         payload.get("output_checksum")
@@ -480,6 +510,9 @@ def build_reviewed_diff_proposal_from_record(
     reviewer_verdict_id: str | None = None,
     reviewer_output_checksum: str | None = None,
     policy_validation_checksum: str | None = None,
+    policy_status: str | None = None,
+    policy_reason: str | None = None,
+    policy_reason_code: str | None = None,
     status_reason: str | None = None,
     required_validation: tuple[str, ...] = (),
     allowed_actions: tuple[str, ...] = READ_ONLY_REPAIR_ACTIONS,
@@ -487,6 +520,12 @@ def build_reviewed_diff_proposal_from_record(
     final_diff_text: str | None = None,
     reviewer_decision: str | None = None,
     reviewer_reasoning: str | None = None,
+    model_invocation_id: str | None = None,
+    stale_reason: str | None = None,
+    current_gate_id: str | None = None,
+    gate_status: str | None = None,
+    gate_decision: str | None = None,
+    evidence_sources: tuple[str, ...] = (),
 ) -> ReviewedDiffProposal:
     """Build a ReviewedDiffProposal from persisted V2RepairProposalRecord fields.
 
@@ -501,11 +540,13 @@ def build_reviewed_diff_proposal_from_record(
         proposal_id=proposal_id,
         diff_ref=diff_ref,
         diff_text=final_diff_text,
+        stored_diff_checksum=diff_checksum,
     )
     verdict = ReviewerVerdictProjection(
         reviewer_verdict_id=reviewer_verdict_id,
         decision=reviewer_decision or "unknown",
         reasoning=_bounded_redacted_text(reviewer_reasoning) if reviewer_reasoning else None,
+        model_invocation_id=_maybe_str(model_invocation_id),
         output_checksum=reviewer_output_checksum,
     )
     files_changed = [
@@ -518,6 +559,14 @@ def build_reviewed_diff_proposal_from_record(
         for file in safe_diff_preview.files
     ]
     redactions = list(safe_diff_preview.redactions)
+
+    # Safe fallback for policy_status: if not set and proposal is user-reviewable,
+    # default to HUMAN_REVIEW_REQUIRED so the UI never sees null when it needs a status.
+    effective_policy_status = policy_status
+    if effective_policy_status is None and status == "user_review_required":
+        effective_policy_status = "HUMAN_REVIEW_REQUIRED"
+        if "policy metadata missing" not in " ".join(redactions).lower():
+            redactions.append("policy metadata missing; human review required")
 
     return ReviewedDiffProposal(
         proposal_id=proposal_id,
@@ -538,9 +587,18 @@ def build_reviewed_diff_proposal_from_record(
         reviewer_verdict=verdict,
         files_changed=files_changed,
         risk=_maybe_str(risk),
+        policy_status=_maybe_str(effective_policy_status),
+        policy_reason=_maybe_str(policy_reason or ("policy metadata missing; human review required" if effective_policy_status != policy_status else None)),
+        policy_reason_code=_maybe_str(policy_reason_code),
+        policy_validation_checksum=_maybe_str(policy_validation_checksum),
         required_validation=required_validation,
         allowed_actions=allowed_actions,
         redactions=tuple(dict.fromkeys(redactions)),
+        stale_reason=stale_reason,
+        current_gate_id=current_gate_id,
+        gate_status=gate_status,
+        gate_decision=gate_decision,
+        evidence_sources=evidence_sources,
     )
 
 
