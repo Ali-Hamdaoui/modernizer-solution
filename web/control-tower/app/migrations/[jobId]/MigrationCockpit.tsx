@@ -961,15 +961,19 @@ export function AssistantPanelContent({
 export function StageFailureEvidenceDetails({
   diagnosis,
   stage,
+  jobId,
   busyKey,
-  onApprove,
-  onApply,
+  onRefresh,
+  onBusyChange,
+  onError,
 }: {
   diagnosis: NonNullable<V2FailureSummaryResponse["failures"][number]["supervision_trace"]["ai_diagnosis"]>;
   stage?: number | null;
+  jobId?: string | null;
   busyKey?: string | null;
-  onApprove?: (candidate: V2RepairApplyCandidateResponse) => void;
-  onApply?: (candidate: V2RepairApplyCandidateResponse) => void;
+  onRefresh?: () => Promise<void>;
+  onBusyChange?: (busyKey: string | null) => void;
+  onError?: (message: string) => void;
 }) {
   const stageEvidence = diagnosis.stage_evidence;
   const classification = diagnosis.classification;
@@ -1026,9 +1030,12 @@ export function StageFailureEvidenceDetails({
           <LlmRepairShadowDetails trace={classification.llm_repair_shadow_trace ?? null} />
           <RepairApplyCandidateDetails
             candidate={classification.repair_apply_candidate ?? null}
+            jobId={jobId}
+            stageIndex={stage ?? undefined}
             busyKey={busyKey}
-            onApprove={onApprove}
-            onApply={onApply}
+            onRefresh={onRefresh}
+            onBusyChange={onBusyChange}
+            onError={onError}
           />
         </div>
       )}
@@ -1122,14 +1129,20 @@ function LlmShadowRolePanel({
 
 export function RepairApplyCandidateDetails({
   candidate,
+  jobId,
+  stageIndex,
   busyKey,
-  onApprove,
-  onApply,
+  onRefresh,
+  onBusyChange,
+  onError,
 }: {
   candidate: V2RepairApplyCandidateResponse | null;
+  jobId?: string | null;
+  stageIndex?: number | null;
   busyKey?: string | null;
-  onApprove?: (candidate: V2RepairApplyCandidateResponse) => void;
-  onApply?: (candidate: V2RepairApplyCandidateResponse) => void;
+  onRefresh?: () => Promise<void>;
+  onBusyChange?: (busyKey: string | null) => void;
+  onError?: (message: string) => void;
 }) {
   if (!candidate) {
     return (
@@ -1140,10 +1153,38 @@ export function RepairApplyCandidateDetails({
       </div>
     );
   }
-  const approveBusy = busyKey === `approve:${candidate.repair_candidate_id}`;
-  const applyBusy = busyKey === `apply:${candidate.repair_candidate_id}`;
-  const pendingApproval = candidate.status === "pending_human_approval" && candidate.approval_enabled;
-  const approved = candidate.status === "approved" && candidate.apply_enabled;
+  const activeCandidate = candidate;
+  const approveBusy = busyKey === `approve:${activeCandidate.repair_candidate_id}`;
+  const applyBusy = busyKey === `apply:${activeCandidate.repair_candidate_id}`;
+  const pendingApproval = activeCandidate.status === "pending_human_approval" && activeCandidate.approval_enabled;
+  const approved = activeCandidate.status === "approved" || activeCandidate.apply_enabled;
+  const resolvedStageIndex = stageIndex ?? activeCandidate.stage_index ?? 1;
+
+  async function approveFromDetails() {
+    if (!jobId) return;
+    onBusyChange?.(`approve:${activeCandidate.repair_candidate_id}`);
+    try {
+      await approveV2RepairCandidate(jobId, resolvedStageIndex, activeCandidate);
+      await onRefresh?.();
+    } catch (e) {
+      onError?.(e instanceof Error ? e.message : "Repair candidate approval failed");
+    } finally {
+      onBusyChange?.(null);
+    }
+  }
+
+  async function applyFromDetails() {
+    if (!jobId) return;
+    onBusyChange?.(`apply:${activeCandidate.repair_candidate_id}`);
+    try {
+      await applyV2RepairCandidate(jobId, resolvedStageIndex, activeCandidate.repair_candidate_id);
+      await onRefresh?.();
+    } catch (e) {
+      onError?.(e instanceof Error ? e.message : "Repair candidate apply failed");
+    } finally {
+      onBusyChange?.(null);
+    }
+  }
   return (
     <div className="trace-section">
       <strong>Repair Apply Candidate</strong>
@@ -1168,13 +1209,13 @@ export function RepairApplyCandidateDetails({
       <p className="meta">Rollback: {candidate.rollback_status || "not_started"}</p>
       <p className="meta">Proof artifact: {candidate.proof_artifact || "pending"}</p>
       <p className="meta">Downstream start: {candidate.downstream_start_allowed ? "enabled" : "disabled"}</p>
-      {pendingApproval && onApprove && (
-        <button type="button" disabled={approveBusy} onClick={() => onApprove(candidate)}>
+      {pendingApproval && jobId && (
+        <button type="button" disabled={approveBusy} onClick={() => approveFromDetails()}>
           {approveBusy ? "Approving..." : "Approve repair candidate"}
         </button>
       )}
-      {approved && candidate.status !== "verified" && candidate.status !== "rolled_back" && onApply && (
-        <button type="button" disabled={applyBusy} onClick={() => onApply(candidate)}>
+      {approved && candidate.status !== "verified" && candidate.status !== "rolled_back" && jobId && (
+        <button type="button" disabled={applyBusy} onClick={() => applyFromDetails()}>
           {applyBusy ? "Applying..." : "Apply approved repair"}
         </button>
       )}
@@ -2047,9 +2088,11 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
                       <StageFailureEvidenceDetails
                         diagnosis={f.supervision_trace.ai_diagnosis}
                         stage={f.stage}
+                        jobId={normalizedJobId}
                         busyKey={repairCandidateBusy}
-                        onApprove={approveRepairCandidate}
-                        onApply={applyRepairCandidate}
+                        onRefresh={refreshLiveState}
+                        onBusyChange={setRepairCandidateBusy}
+                        onError={setError}
                       />
                     </div>
                   ) : (

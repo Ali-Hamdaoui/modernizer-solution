@@ -233,6 +233,40 @@ const GOVERNED_REPAIR_PROPOSAL: GovernedRepairProposalResponse = {
   warnings: ["Governed repair proposal is evidence-bound."],
 };
 
+type ButtonLike = {
+  props: {
+    children?: unknown;
+    onClick?: () => Promise<void> | void;
+  };
+};
+
+function nodeText(value: unknown): string {
+  if (Array.isArray(value)) return value.map(nodeText).join("");
+  if (value && typeof value === "object") {
+    const element = value as { props?: { children?: unknown } };
+    return nodeText(element.props?.children);
+  }
+  return value == null ? "" : String(value);
+}
+
+function findButtonByText(node: unknown, text: string): ButtonLike {
+  if (node && typeof node === "object") {
+    const element = node as { type?: unknown; props?: { children?: unknown; onClick?: () => Promise<void> | void } };
+    if (element.type === "button" && nodeText(element.props?.children).includes(text)) {
+      return { props: element.props ?? {} };
+    }
+    const children = element.props?.children;
+    for (const child of Array.isArray(children) ? children : [children]) {
+      try {
+        return findButtonByText(child, text);
+      } catch {
+        // Keep searching siblings.
+      }
+    }
+  }
+  throw new Error(`Button not found: ${text}`);
+}
+
 describe("V2 Migration Cockpit contract", () => {
   it("passes the awaited route job id into MigrationCockpit", async () => {
     const page = await MigrationCockpitPage({
@@ -1481,27 +1515,140 @@ describe("V2 Migration Cockpit contract", () => {
       created_at: "2026-07-03T00:00:00Z",
     };
     const approved = { ...pending, status: "approved", apply_enabled: true, approval_enabled: false };
-    const notApplyEnabled = { ...pending, status: "approved", apply_enabled: false, approval_enabled: false };
+    const applyFlagOnly = { ...pending, status: "pending_human_approval", apply_enabled: true, approval_enabled: false };
 
     const pendingMarkup = renderToStaticMarkup(
-      <RepairApplyCandidateDetails candidate={pending} busyKey={null} onApprove={() => undefined} onApply={() => undefined} />
+      <RepairApplyCandidateDetails candidate={pending} jobId="job-123" stageIndex={1} busyKey={null} />
     );
     const approvedMarkup = renderToStaticMarkup(
-      <RepairApplyCandidateDetails candidate={approved} busyKey={null} onApprove={() => undefined} onApply={() => undefined} />
+      <RepairApplyCandidateDetails candidate={approved} jobId="job-123" stageIndex={1} busyKey={null} />
     );
-    const notApplyEnabledMarkup = renderToStaticMarkup(
-      <RepairApplyCandidateDetails candidate={notApplyEnabled} busyKey={null} onApprove={() => undefined} onApply={() => undefined} />
+    const applyFlagOnlyMarkup = renderToStaticMarkup(
+      <RepairApplyCandidateDetails candidate={applyFlagOnly} jobId="job-123" stageIndex={1} busyKey={null} />
     );
 
     expect(pendingMarkup).toContain("Approve repair candidate");
     expect(pendingMarkup).not.toContain("Apply approved repair");
     expect(approvedMarkup).toContain("Apply approved repair");
     expect(approvedMarkup).not.toContain("Approve repair candidate");
-    expect(notApplyEnabledMarkup).not.toContain("Apply approved repair");
-    expect(pendingMarkup + approvedMarkup).not.toContain("Upload patch");
-    expect(pendingMarkup + approvedMarkup).not.toContain("Edit target");
-    expect(pendingMarkup + approvedMarkup).not.toContain("Override checksum");
-    expect(pendingMarkup + approvedMarkup).not.toContain("Model");
+    expect(applyFlagOnlyMarkup).toContain("Apply approved repair");
+    const combinedMarkup = pendingMarkup + approvedMarkup + applyFlagOnlyMarkup;
+    for (const forbiddenControl of [
+      "Edit patch",
+      "Upload patch",
+      "Override checksum",
+      "Choose target path",
+      "Choose command",
+      "Choose model",
+      "Choose endpoint",
+      "Force apply",
+      "Start Stage 2",
+    ]) {
+      expect(combinedMarkup).not.toContain(forbiddenControl);
+    }
+  });
+
+  it("repair candidate detail buttons call safe APIs and refresh after success", async () => {
+    const pending: V2RepairApplyCandidateResponse = {
+      job_id: "job-123",
+      stage_index: 1,
+      repair_candidate_id: "repair-candidate-r8",
+      status: "pending_human_approval",
+      family: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+      patch_source: "backend_deterministic_recipe",
+      llm_source: "advisory_only",
+      target_file: "src/test/java/ExampleTest.java",
+      pre_apply_checksum: "sha256:file",
+      target_file_checksum: "sha256:file",
+      patch_checksum: "sha256:patch",
+      review_checksum: "sha256:review",
+      proposal_checksum: "sha256:proposal",
+      candidate_checksum: "sha256:candidate",
+      approval_required: true,
+      apply_enabled: false,
+      approval_enabled: true,
+      sandbox_only: true,
+      legacy_mutation_allowed: false,
+      downstream_start_allowed: false,
+      llm_can_apply: false,
+      browser_can_supply_patch: false,
+      verification_status: "not_started",
+      rollback_status: "not_started",
+      proof_artifact: "",
+      created_at: "2026-07-03T00:00:00Z",
+    };
+    const approved: V2RepairApplyCandidateResponse = {
+      ...pending,
+      status: "approved",
+      apply_enabled: true,
+      approval_enabled: false,
+    };
+    const originalFetch = global.fetch;
+    const bodies: unknown[] = [];
+    let refreshCount = 0;
+    global.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body ?? "{}")));
+      return new Response(JSON.stringify({ candidate: approved, approval: {}, execution: {} }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+    try {
+      const approveButton = findButtonByText(
+        RepairApplyCandidateDetails({
+          candidate: pending,
+          jobId: "job-123",
+          stageIndex: 1,
+          onRefresh: async () => {
+            refreshCount += 1;
+          },
+        }),
+        "Approve repair candidate"
+      );
+      await approveButton.props.onClick?.();
+
+      const applyButton = findButtonByText(
+        RepairApplyCandidateDetails({
+          candidate: approved,
+          jobId: "job-123",
+          stageIndex: 1,
+          onRefresh: async () => {
+            refreshCount += 1;
+          },
+        }),
+        "Apply approved repair"
+      );
+      await applyButton.props.onClick?.();
+    } finally {
+      global.fetch = originalFetch;
+    }
+
+    expect(bodies).toEqual([
+      {
+        repair_candidate_id: "repair-candidate-r8",
+        patch_checksum: "sha256:patch",
+        target_file_checksum: "sha256:file",
+        review_checksum: "sha256:review",
+      },
+      { repair_candidate_id: "repair-candidate-r8" },
+    ]);
+    expect(refreshCount).toBe(2);
+    for (const body of bodies) {
+      const keys = Object.keys(body as Record<string, unknown>);
+      for (const forbidden of ["patch", "target_path", "command", "model", "endpoint", "override_checksum", "diff", "content"]) {
+        expect(keys).not.toContain(forbidden);
+      }
+    }
+  });
+
+  it("no-candidate repair detail state shows no approve or apply buttons", () => {
+    const markup = renderToStaticMarkup(
+      <RepairApplyCandidateDetails candidate={null} jobId="job-123" stageIndex={1} />
+    );
+    expect(markup).toContain("No backend apply candidate available.");
+    expect(markup).toContain("PowerMock and unsupported failures remain human-gated.");
+    expect(markup).not.toContain("Approve repair candidate");
+    expect(markup).not.toContain("Apply approved repair");
   });
 
   it("empty approvals render as no pending decisions copy", () => {
