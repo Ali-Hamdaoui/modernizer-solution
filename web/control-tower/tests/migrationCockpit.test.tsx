@@ -2635,6 +2635,32 @@ describe("V2 Migration Cockpit contract", () => {
           risk_notes: ["High-risk family can change test behavior."],
           missing_evidence: [],
           engineer_checklist: ["Review PrepareForTest scope."],
+          repair_subfamily_assessment: {
+            assessment_id: "repair-subfamily-power",
+            job_id: "job-r9",
+            stage_index: 2,
+            family: "POWERMOCK_LEGACY_TEST_STRATEGY",
+            subfamily: "POWERMOCK_CONSTRUCTOR_MOCKING",
+            risk_level: "high",
+            promotion_status: "human_refactor_required",
+            backend_recipe_available: false,
+            apply_candidate_allowed: false,
+            human_gate_required: true,
+            matched_patterns: ["PowerMockito.whenNew"],
+            forbidden_patterns_matched: ["constructor mocking"],
+            missing_evidence: [],
+            verification_requirements: ["engineer refactor plan", "targeted tests"],
+            recommended_engineer_action: "Refactor constructor mocking by injecting dependencies or redesigning the test.",
+            rollback_required: true,
+            proof_required: true,
+            assessment_checksum: "sha256:assessment",
+            backend_gate: {
+              backend_authority: true,
+              llm_can_apply: false,
+              llm_can_approve: false,
+              downstream_start_allowed: false,
+            },
+          },
           llm_proposer: {
             role: "repair_strategy_proposer",
             status: "available",
@@ -2712,6 +2738,11 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Detected patterns:");
     expect(markup).toContain("Migration options:");
     expect(markup).toContain("Engineer checklist:");
+    expect(markup).toContain("Repair Subfamily Assessment");
+    expect(markup).toContain("Subfamily: POWERMOCK_CONSTRUCTOR_MOCKING");
+    expect(markup).toContain("Promotion status: human_refactor_required");
+    expect(markup).toContain("Forbidden patterns matched: constructor mocking");
+    expect(markup).toContain("Assessment checksum: sha256:assessment");
     expect(markup).toContain("Review PrepareForTest scope.");
     expect(markup).toContain("Proposer output");
     expect(markup).toContain("Reviewer output");
@@ -2724,6 +2755,7 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("LLM can approve: no");
     expect(markup).toContain("Downstream start allowed: no");
     expect(markup).not.toContain("PowerMock Strategy");
+    expect(markup).not.toContain("PowerMock Subfamily");
     expect(markup).not.toContain("Apply approved repair");
     expect(markup).not.toContain("Approve repair candidate");
     expect(markup).not.toContain("Force apply");

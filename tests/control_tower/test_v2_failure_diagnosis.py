@@ -861,6 +861,10 @@ class TestStageAwareEvidence:
         assert strategy["backend_gate"]["backend_authority"] is True
         assert strategy["backend_gate"]["llm_can_apply"] is False
         assert strategy["engineer_checklist"]
+        assessment = classification["repair_subfamily_assessment"]
+        assert assessment["subfamily"] == "UNKNOWN_SUBFAMILY" or assessment["subfamily"].startswith("POWERMOCK_")
+        assert assessment["apply_candidate_allowed"] is False
+        assert strategy["repair_subfamily_assessment"]["assessment_id"] == assessment["assessment_id"]
         assert classification["repair_apply_candidate"] is None
 
     def test_strategy_packet_persisted_during_diagnosis_sink(
@@ -934,6 +938,10 @@ class TestStageAwareEvidence:
         review = classification["repair_draft_review"]
         assert draft["proposal_status"] == "drafted_non_actionable"
         assert draft["supported_family"] == "INITMOCKS_TO_OPENMOCKS_CANDIDATE"
+        assessment = classification["repair_subfamily_assessment"]
+        assert assessment["subfamily"] == "INITMOCKS_DIRECT_REPLACEMENT"
+        assert assessment["promotion_status"] == "safe_recipe_candidate"
+        assert assessment["apply_candidate_allowed"] is True
         assert draft["evidence_pack_checksum"].startswith("sha256:")
         assert draft["memory_query_signature"].startswith("sha256:")
         assert draft["target_files"] == ["src/test/java/ExampleTest.java"]

@@ -176,6 +176,12 @@ def test_browser_like_input_cannot_influence_strategy_risk_or_apply_flags() -> N
         "risk_level": "low",
         "apply_candidate_allowed": True,
         "backend_recipe_available": True,
+        "repair_subfamily_assessment": {
+            "subfamily": "INITMOCKS_DIRECT_REPLACEMENT",
+            "risk_level": "low",
+            "apply_candidate_allowed": True,
+            "backend_recipe_available": True,
+        },
     }
     packet = create_repair_strategy_packet(
         job_id="job-r9",
@@ -186,6 +192,10 @@ def test_browser_like_input_cannot_influence_strategy_risk_or_apply_flags() -> N
     assert packet["risk_level"] == "high"
     assert packet["apply_candidate_allowed"] is False
     assert packet["backend_recipe_available"] is False
+    assessment = packet["repair_subfamily_assessment"]
+    assert assessment["subfamily"] == "POWERMOCK_CONSTRUCTOR_MOCKING"
+    assert assessment["risk_level"] == "high"
+    assert assessment["apply_candidate_allowed"] is False
 
 
 def test_unknown_strategy_policy_is_safe() -> None:

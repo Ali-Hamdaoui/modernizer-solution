@@ -810,6 +810,8 @@ class V2FailureDiagnosisService:
             if isinstance(persisted, dict):
                 strategy_packet = persisted
         classification["repair_strategy_packet"] = strategy_packet
+        if isinstance(strategy_packet.get("repair_subfamily_assessment"), dict):
+            classification["repair_subfamily_assessment"] = strategy_packet["repair_subfamily_assessment"]
         internal_candidate = create_repair_apply_candidate(
             classification,
             evidence_pack,

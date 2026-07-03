@@ -13022,6 +13022,7 @@ def _safe_classification_envelope(value: Any) -> dict[str, Any] | None:
         "repair_proposal_draft": _safe_repair_proposal_draft(value.get("repair_proposal_draft")),
         "repair_draft_review": _safe_repair_draft_review(value.get("repair_draft_review")),
         "llm_repair_shadow_trace": _safe_llm_repair_shadow_trace(value.get("llm_repair_shadow_trace")),
+        "repair_subfamily_assessment": _safe_repair_subfamily_assessment(value.get("repair_subfamily_assessment")),
         "repair_strategy_packet": _safe_repair_strategy_packet(value.get("repair_strategy_packet")),
         "repair_apply_candidate": _safe_repair_apply_candidate(value.get("repair_apply_candidate")),
     }
@@ -13062,6 +13063,7 @@ def _safe_repair_strategy_packet(value: Any) -> dict[str, Any] | None:
         "risk_notes": _safe_failure_list(value.get("risk_notes")),
         "missing_evidence": _safe_failure_list(value.get("missing_evidence")),
         "engineer_checklist": _safe_failure_list(value.get("engineer_checklist")),
+        "repair_subfamily_assessment": _safe_repair_subfamily_assessment(value.get("repair_subfamily_assessment")),
         "llm_proposer": _safe_strategy_trace(value.get("llm_proposer")),
         "llm_reviewer": _safe_strategy_trace(value.get("llm_reviewer")),
         "llm_fallback": _safe_strategy_trace(value.get("llm_fallback")),
@@ -13072,6 +13074,38 @@ def _safe_repair_strategy_packet(value: Any) -> dict[str, Any] | None:
             "downstream_start_allowed": False,
         },
         "strategy_checksum": _safe_failure_str(value.get("strategy_checksum")),
+    }
+
+
+def _safe_repair_subfamily_assessment(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    backend_gate = value.get("backend_gate") if isinstance(value.get("backend_gate"), dict) else {}
+    return {
+        "assessment_id": _safe_failure_str(value.get("assessment_id")),
+        "job_id": _safe_failure_str(value.get("job_id")),
+        "stage_index": value.get("stage_index"),
+        "family": _safe_failure_str(value.get("family")),
+        "subfamily": _safe_failure_str(value.get("subfamily")),
+        "risk_level": _safe_failure_str(value.get("risk_level")),
+        "promotion_status": _safe_failure_str(value.get("promotion_status")),
+        "backend_recipe_available": bool(value.get("backend_recipe_available")),
+        "apply_candidate_allowed": bool(value.get("apply_candidate_allowed")),
+        "human_gate_required": bool(value.get("human_gate_required")),
+        "matched_patterns": _safe_failure_list(value.get("matched_patterns")),
+        "forbidden_patterns_matched": _safe_failure_list(value.get("forbidden_patterns_matched")),
+        "missing_evidence": _safe_failure_list(value.get("missing_evidence")),
+        "verification_requirements": _safe_failure_list(value.get("verification_requirements")),
+        "recommended_engineer_action": _safe_failure_str(value.get("recommended_engineer_action")),
+        "rollback_required": bool(value.get("rollback_required", True)),
+        "proof_required": bool(value.get("proof_required", True)),
+        "assessment_checksum": _safe_failure_str(value.get("assessment_checksum")),
+        "backend_gate": {
+            "backend_authority": bool(backend_gate.get("backend_authority", True)),
+            "llm_can_apply": False,
+            "llm_can_approve": False,
+            "downstream_start_allowed": False,
+        },
     }
 
 

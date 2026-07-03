@@ -51,6 +51,7 @@ import type {
   V2LlmRepairShadowTraceResponse,
   V2LlmShadowRoleTraceResponse,
   V2RepairStrategyPacketResponse,
+  V2RepairSubfamilyAssessmentResponse,
   V2RepairStrategyTraceResponse,
 } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
@@ -1258,6 +1259,7 @@ function RepairStrategyDetails({ packet }: { packet: V2RepairStrategyPacketRespo
       <p className="meta">Risk notes: {summarizeList(packet.risk_notes, 8)}</p>
       <p className="meta">Missing evidence: {summarizeList(packet.missing_evidence, 8)}</p>
       <p className="meta">Engineer checklist: {summarizeList(packet.engineer_checklist, 8)}</p>
+      <RepairSubfamilyAssessmentDetails assessment={packet.repair_subfamily_assessment ?? null} />
       <RepairStrategyTraceDetails title="Proposer output" trace={packet.llm_proposer ?? null} />
       <RepairStrategyTraceDetails title="Reviewer output" trace={packet.llm_reviewer ?? null} />
       <RepairStrategyTraceDetails title="Fallback output" trace={packet.llm_fallback ?? null} />
@@ -1277,6 +1279,39 @@ function RepairStrategyDetails({ packet }: { packet: V2RepairStrategyPacketRespo
       <p className="meta">LLM can approve: {packet.backend_gate?.llm_can_approve ? "yes" : "no"}</p>
       <p className="meta">Downstream start allowed: {packet.backend_gate?.downstream_start_allowed ? "yes" : "no"}</p>
     </div>
+  );
+}
+
+function RepairSubfamilyAssessmentDetails({ assessment }: { assessment: V2RepairSubfamilyAssessmentResponse | null }) {
+  if (!assessment) {
+    return (
+      <>
+        <strong>Repair Subfamily Assessment</strong>
+        <p className="meta">No subfamily assessment available.</p>
+      </>
+    );
+  }
+  return (
+    <>
+      <strong>Repair Subfamily Assessment</strong>
+      <p className="meta">Family: {assessment.family}</p>
+      <p className="meta">Subfamily: {assessment.subfamily}</p>
+      <p className="meta">Risk level: {assessment.risk_level}</p>
+      <p className="meta">Promotion status: {assessment.promotion_status}</p>
+      <p className="meta">Backend recipe available: {assessment.backend_recipe_available ? "yes" : "no"}</p>
+      <p className="meta">Apply candidate allowed: {assessment.apply_candidate_allowed ? "yes" : "no"}</p>
+      <p className="meta">Human gate required: {assessment.human_gate_required ? "yes" : "no"}</p>
+      <p className="meta">Matched patterns: {summarizeList(assessment.matched_patterns, 8)}</p>
+      <p className="meta">Forbidden patterns matched: {summarizeList(assessment.forbidden_patterns_matched, 8)}</p>
+      <p className="meta">Missing evidence: {summarizeList(assessment.missing_evidence, 8)}</p>
+      <p className="meta">Verification requirements: {summarizeList(assessment.verification_requirements, 8)}</p>
+      <p className="meta">Recommended engineer action: {assessment.recommended_engineer_action || "n/a"}</p>
+      <p className="meta">Assessment checksum: {assessment.assessment_checksum || "n/a"}</p>
+      <p className="meta">Backend authority: {assessment.backend_gate?.backend_authority ? "yes" : "no"}</p>
+      <p className="meta">LLM can apply: {assessment.backend_gate?.llm_can_apply ? "yes" : "no"}</p>
+      <p className="meta">LLM can approve: {assessment.backend_gate?.llm_can_approve ? "yes" : "no"}</p>
+      <p className="meta">Downstream start allowed: {assessment.backend_gate?.downstream_start_allowed ? "yes" : "no"}</p>
+    </>
   );
 }
 

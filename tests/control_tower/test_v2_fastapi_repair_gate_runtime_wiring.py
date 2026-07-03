@@ -361,6 +361,7 @@ def test_live_powermock_failure_persists_strategy_overlays_summary_and_chatbot(t
     top_strategy = body["repair_strategy_packet"]
     nested_classification = body["failures"][0]["supervision_trace"]["ai_diagnosis"]["classification"]
     nested_strategy = nested_classification["repair_strategy_packet"]
+    subfamily = nested_classification["repair_subfamily_assessment"]
     assert top_strategy["strategy_id"] == persisted["strategy_id"]
     assert nested_strategy["strategy_id"] == persisted["strategy_id"]
     assert nested_classification["failure_type"] == "POWERMOCK_LEGACY_TEST_STRATEGY"
@@ -370,6 +371,10 @@ def test_live_powermock_failure_persists_strategy_overlays_summary_and_chatbot(t
     assert nested_strategy["apply_candidate_allowed"] is False
     assert nested_strategy["backend_recipe_available"] is False
     assert nested_strategy["human_gate_required"] is True
+    assert subfamily["subfamily"] == "POWERMOCK_CONSTRUCTOR_MOCKING"
+    assert subfamily["promotion_status"] == "human_refactor_required"
+    assert subfamily["apply_candidate_allowed"] is False
+    assert nested_strategy["repair_subfamily_assessment"]["assessment_id"] == subfamily["assessment_id"]
     assert nested_classification["repair_apply_candidate"] is None
     assert nested_classification["downstream_stage_state"]["auto_started"] is False
 
@@ -385,6 +390,8 @@ def test_live_powermock_failure_persists_strategy_overlays_summary_and_chatbot(t
     assert ask_response.status_code == 200, ask_response.text
     answer = ask_response.json()["assistant_message"]["content"]
     assert "POWERMOCK_LEGACY_TEST_STRATEGY" in answer
+    assert "POWERMOCK_CONSTRUCTOR_MOCKING" in answer
+    assert "promotion=human_refactor_required" in answer
     assert "risk=high" in answer
     assert "version=" in answer or "id=repair-strategy" in answer
     assert "fallback model invoked=" in answer
@@ -525,6 +532,10 @@ def test_live_diagnosis_persists_repair_candidate_then_approve_and_apply(tmp_pat
     assert approved_nested["apply_enabled"] is True
     strategy = approved_summary["failures"][0]["supervision_trace"]["ai_diagnosis"]["classification"]["repair_strategy_packet"]
     assert strategy["backend_gate"]["downstream_start_allowed"] is False
+    assessment = approved_summary["failures"][0]["supervision_trace"]["ai_diagnosis"]["classification"]["repair_subfamily_assessment"]
+    assert assessment["subfamily"] == "INITMOCKS_DIRECT_REPLACEMENT"
+    assert assessment["promotion_status"] == "safe_recipe_candidate"
+    assert assessment["apply_candidate_allowed"] is True
 
     ask_response = client.post(
         f"/v1/v2/jobs/{job_id}/assistant/ask",

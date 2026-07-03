@@ -13,6 +13,9 @@ from migration_factory.control_tower.application.v2_repair_family_registry impor
     RepairFamilyPolicy,
     repair_family_policy,
 )
+from migration_factory.control_tower.application.v2_repair_subfamily_classifier import (
+    classify_repair_subfamily,
+)
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json
 
 
@@ -78,6 +81,17 @@ def create_repair_strategy_packet(
     output = proposer["output"]
     packet_job_id = str(job_id or stage_evidence.get("job_id") or "")
     packet_stage_index = stage_index if stage_index is not None else stage_evidence.get("stage_index")
+    subfamily_assessment = classify_repair_subfamily(
+        family_policy=policy,
+        repair_strategy_packet={
+            "job_id": packet_job_id,
+            "stage_index": packet_stage_index,
+            "family": policy.family,
+        },
+        stage_evidence=stage_evidence,
+        classification=classification,
+        migration_memory=migration_memory,
+    )
     base_hash = sha256_canonical_json({
         "job_id": packet_job_id,
         "stage_index": packet_stage_index,
@@ -107,6 +121,7 @@ def create_repair_strategy_packet(
         "risk_notes": output.get("risk_notes") or _risk_notes(policy),
         "missing_evidence": missing,
         "engineer_checklist": output.get("engineer_checklist") or _engineer_checklist(policy),
+        "repair_subfamily_assessment": subfamily_assessment,
         "llm_proposer": proposer,
         "llm_reviewer": reviewer,
         "llm_fallback": fallback,
@@ -131,6 +146,7 @@ def repair_strategy_narration(packet: dict[str, Any] | None, candidate: dict[str
     proposer = packet.get("llm_proposer") if isinstance(packet.get("llm_proposer"), dict) else {}
     reviewer = packet.get("llm_reviewer") if isinstance(packet.get("llm_reviewer"), dict) else {}
     fallback = packet.get("llm_fallback") if isinstance(packet.get("llm_fallback"), dict) else {}
+    subfamily = packet.get("repair_subfamily_assessment") if isinstance(packet.get("repair_subfamily_assessment"), dict) else {}
     candidate_text = "exists" if candidate else "none"
     version = packet.get("version") or "unknown"
     history_count = int(packet.get("history_count") or 0)
@@ -145,11 +161,13 @@ def repair_strategy_narration(packet: dict[str, Any] | None, candidate: dict[str
         f"family={packet.get('family')}, risk={packet.get('risk_level')}, status={packet.get('strategy_status')}. "
         f"Checksum={packet.get('strategy_checksum')}; evidence={packet.get('evidence_pack_checksum')}. "
         f"Root cause: {packet.get('root_cause')}. "
+        f"Subfamily: {subfamily.get('subfamily', 'unknown')}; promotion={subfamily.get('promotion_status', 'unknown')}; "
+        f"subfamily reason: matched {', '.join(subfamily.get('matched_patterns') or []) or 'no specific pattern'}. "
         f"Proposer: {_trace_summary(proposer)} Reviewer: {_trace_summary(reviewer)} "
         f"Fallback: {_trace_summary(fallback)}; fallback model invoked={bool(fallback.get('fallback_model_invoked'))}; "
         f"fallback output source={fallback_source}. Missing evidence: {', '.join(packet.get('missing_evidence') or []) or 'none'}. "
-        f"Engineer next: {'; '.join(packet.get('engineer_checklist') or []) or packet.get('recommended_strategy')}. "
-        f"Apply candidate: {candidate_text}. Apply allowed: {bool(packet.get('apply_candidate_allowed')) and bool(packet.get('backend_recipe_available'))}. "
+        f"Engineer next: {subfamily.get('recommended_engineer_action') or '; '.join(packet.get('engineer_checklist') or []) or packet.get('recommended_strategy')}. "
+        f"Apply candidate: {candidate_text}. Apply allowed: {bool(subfamily.get('apply_candidate_allowed')) and bool(subfamily.get('backend_recipe_available'))}. "
         + changed_text
         + " "
         "Assistant cannot approve, apply, execute, or start downstream; backend and human gates own state changes."

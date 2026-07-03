@@ -1058,6 +1058,7 @@ export type V2StageFailureClassificationResponse = {
   repair_proposal_draft?: V2EvidenceBoundRepairDraftResponse | null;
   repair_draft_review?: V2RepairDraftReviewResponse | null;
   llm_repair_shadow_trace?: V2LlmRepairShadowTraceResponse | null;
+  repair_subfamily_assessment?: V2RepairSubfamilyAssessmentResponse | null;
   repair_strategy_packet?: V2RepairStrategyPacketResponse | null;
   repair_apply_candidate?: V2RepairApplyCandidateResponse | null;
   evidence_pack_id: string;
@@ -1147,9 +1148,37 @@ export type V2RepairStrategyPacketResponse = {
   risk_notes: string[];
   missing_evidence: string[];
   engineer_checklist: string[];
+  repair_subfamily_assessment?: V2RepairSubfamilyAssessmentResponse | null;
   llm_proposer?: V2RepairStrategyTraceResponse | null;
   llm_reviewer?: V2RepairStrategyTraceResponse | null;
   llm_fallback?: V2RepairStrategyTraceResponse | null;
+  backend_gate: {
+    backend_authority: boolean;
+    llm_can_apply: boolean;
+    llm_can_approve: boolean;
+    downstream_start_allowed: boolean;
+  };
+};
+
+export type V2RepairSubfamilyAssessmentResponse = {
+  assessment_id: string;
+  job_id: string;
+  stage_index: number | null;
+  family: string;
+  subfamily: string;
+  risk_level: string;
+  promotion_status: string;
+  backend_recipe_available: boolean;
+  apply_candidate_allowed: boolean;
+  human_gate_required: boolean;
+  matched_patterns: string[];
+  forbidden_patterns_matched: string[];
+  missing_evidence: string[];
+  verification_requirements: string[];
+  recommended_engineer_action: string;
+  rollback_required: boolean;
+  proof_required: boolean;
+  assessment_checksum: string;
   backend_gate: {
     backend_authority: boolean;
     llm_can_apply: boolean;

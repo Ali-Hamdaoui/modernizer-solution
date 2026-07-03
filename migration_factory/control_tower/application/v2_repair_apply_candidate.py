@@ -9,6 +9,8 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from migration_factory.control_tower.application.redaction import redact_absolute_paths, redact_model_summary
+from migration_factory.control_tower.application.v2_repair_family_registry import repair_family_policy
+from migration_factory.control_tower.application.v2_repair_subfamily_classifier import classify_repair_subfamily
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json, stream_sha256, utc_now_text
 
 
@@ -160,9 +162,21 @@ def _create_candidate_from_r8_evidence(
     reviewer = trace.get("reviewer_trace") if isinstance(trace.get("reviewer_trace"), dict) else {}
     proposer_output = proposer.get("output") if isinstance(proposer.get("output"), dict) else {}
     reviewer_output = reviewer.get("output") if isinstance(reviewer.get("output"), dict) else {}
+    assessment = classification.get("repair_subfamily_assessment")
+    if not isinstance(assessment, dict):
+        assessment = classify_repair_subfamily(
+            family_policy=repair_family_policy(classification.get("failure_type")),
+            stage_evidence=stage_evidence,
+            classification=classification,
+            migration_memory=classification.get("migration_memory") if isinstance(classification.get("migration_memory"), dict) else None,
+        )
 
     reasons: list[str] = []
     _require(classification.get("failure_type") == SUPPORTED_FAMILY, "classification_not_supported_family", reasons)
+    _require(assessment.get("subfamily") == "INITMOCKS_DIRECT_REPLACEMENT", "subfamily_not_initmocks_direct_replacement", reasons)
+    _require(assessment.get("promotion_status") == "safe_recipe_candidate", "subfamily_not_safe_recipe_candidate", reasons)
+    _require(bool(assessment.get("backend_recipe_available")), "subfamily_backend_recipe_unavailable", reasons)
+    _require(bool(assessment.get("apply_candidate_allowed")), "subfamily_apply_candidate_not_allowed", reasons)
     _require(draft.get("proposal_status") == "drafted_non_actionable", "deterministic_draft_missing", reasons)
     _require(review.get("verdict") == "accepted_for_future_apply_gate", "deterministic_reviewer_not_accepted", reasons)
     _require(review.get("checksum_verification_status") == "verified", "deterministic_review_checksum_not_verified", reasons)
