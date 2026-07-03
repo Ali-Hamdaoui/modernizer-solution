@@ -1210,6 +1210,12 @@ export type V2LlmShadowRoleTraceResponse = {
   raw_output_redacted_preview: string;
   json_parse_error_kind: string;
   model_output_was_json: boolean;
+  validated_output_source: string;
+  provider_failure_kind: string;
+  provider_failure_stage: string;
+  provider_retry_path: string;
+  provider_http_status: string;
+  provider_error_redacted_preview: string;
   non_actionable: boolean;
   apply_allowed: boolean;
   approval_allowed: boolean;

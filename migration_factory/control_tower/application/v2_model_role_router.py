@@ -53,6 +53,11 @@ class V2RoleModelResult:
     schema_validated: bool = False
     deployment: str = ""
     endpoint_metadata: str = ""
+    provider_failure_kind: str = ""
+    provider_failure_stage: str = ""
+    provider_retry_path: str = ""
+    provider_http_status: str = ""
+    provider_error_redacted_preview: str = ""
 
 
 @dataclass(frozen=True)
@@ -114,6 +119,11 @@ class V2ModelRoleRouter:
                     schema_validated=True,
                     deployment=result.deployment,
                     endpoint_metadata=result.endpoint_metadata,
+                    provider_failure_kind=result.provider_failure_kind,
+                    provider_failure_stage=result.provider_failure_stage,
+                    provider_retry_path=result.provider_retry_path,
+                    provider_http_status=result.provider_http_status,
+                    provider_error_redacted_preview=result.provider_error_redacted_preview,
                 )
             schema_failure = self._schema_failure_reason(request, result.content) if request.require_schema else ""
             primary_failure = (
@@ -151,6 +161,11 @@ class V2ModelRoleRouter:
                         schema_validated=True,
                         deployment=result.deployment,
                         endpoint_metadata=result.endpoint_metadata,
+                        provider_failure_kind=result.provider_failure_kind,
+                        provider_failure_stage=result.provider_failure_stage,
+                        provider_retry_path=result.provider_retry_path,
+                        provider_http_status=result.provider_http_status,
+                        provider_error_redacted_preview=result.provider_error_redacted_preview,
                     )
                 fallback_failure = (
                     result.failure_reason
@@ -198,6 +213,11 @@ class V2ModelRoleRouter:
             schema_validated=bool(getattr(result, "schema_validated", False)),
             deployment=str(getattr(result, "deployment", "") or ""),
             endpoint_metadata=str(getattr(result, "endpoint_metadata", "") or ""),
+            provider_failure_kind=str(getattr(result, "provider_failure_kind", "") or ""),
+            provider_failure_stage=str(getattr(result, "provider_failure_stage", "") or ""),
+            provider_retry_path=str(getattr(result, "provider_retry_path", "") or ""),
+            provider_http_status=str(getattr(result, "provider_http_status", "") or ""),
+            provider_error_redacted_preview=str(getattr(result, "provider_error_redacted_preview", "") or ""),
         )
 
     def _coerce_fallback_result(
@@ -221,6 +241,11 @@ class V2ModelRoleRouter:
             schema_validated=coerced.schema_validated,
             deployment=coerced.deployment,
             endpoint_metadata=coerced.endpoint_metadata,
+            provider_failure_kind=coerced.provider_failure_kind,
+            provider_failure_stage=coerced.provider_failure_stage,
+            provider_retry_path=coerced.provider_retry_path,
+            provider_http_status=coerced.provider_http_status,
+            provider_error_redacted_preview=coerced.provider_error_redacted_preview,
         )
 
     def _schema_ok(self, request: V2RoleModelRequest, content: str) -> bool:
@@ -260,6 +285,13 @@ class V2ModelRoleRouter:
             schema_validated=schema_validated,
             deployment="",
             endpoint_metadata="",
+            provider_failure_kind="deterministic_fallback_used",
+            provider_failure_stage="router_deterministic_fallback",
+            provider_retry_path="deterministic_fallback",
+            provider_http_status="",
+            provider_error_redacted_preview=redact_model_summary(
+                fallback_failure_reason or primary_failure_reason or "model_unavailable"
+            )[:500],
         )
 
     def _deterministic_content(
@@ -271,6 +303,12 @@ class V2ModelRoleRouter:
         safe_reason = redact_model_summary(
             fallback_failure_reason or primary_failure_reason or "model_unavailable"
         )
+        if request.require_schema and request.output_schema_name in {
+            "RepairProposerShadowOutput",
+            "RepairReviewerShadowOutput",
+            "RepairFallbackShadowOutput",
+        }:
+            return request.fallback
         if request.require_schema and request.output_schema_name == "ReviewerCritique":
             return json.dumps(
                 {

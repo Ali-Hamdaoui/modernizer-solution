@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from dataclasses import dataclass
 from typing import Any
 
 from migration_factory.control_tower.adapters.fastapi.app import _safe_llm_repair_shadow_trace
+from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelClient
 from migration_factory.control_tower.application.v2_llm_repair_shadow import (
     run_llm_repair_shadow_trace,
+)
+from migration_factory.control_tower.application.v2_model_role_router import (
+    V2ModelRole,
+    V2ModelRoleRouter,
+    V2RoleModelRequest,
 )
 
 
@@ -297,6 +304,7 @@ def test_proposer_and_reviewer_outputs_are_clamped_non_actionable() -> None:
         assert output["approval_allowed"] is False
         assert output["downstream_start_allowed"] is False
         assert trace[role]["schema_validation_status"] == "validated"
+        assert trace[role]["validated_output_source"] == "azure_model"
 
 
 def test_fenced_json_is_extracted_and_validated() -> None:
@@ -323,6 +331,8 @@ def test_invalid_json_fails_closed_with_redacted_preview() -> None:
     assert proposer["failure_reason"] == "invalid_json_model_output"
     assert proposer["json_parse_error_kind"] == "invalid_json"
     assert proposer["model_output_was_json"] is False
+    assert proposer["validated_output_source"] == "deterministic_fallback"
+    assert proposer["provider_failure_kind"] == "model_returned_schema_invalid"
     assert "sk-abc123" not in json.dumps(trace)
     assert "redacted" in proposer["raw_output_redacted_preview"].lower()
 
@@ -355,6 +365,7 @@ def test_fallback_prompt_and_valid_json_are_used_when_forced() -> None:
     assert '"recommended_next_action": "use_deterministic_backend_gate"' in fallback_call["prompt"]
     assert trace["llm_fallback_trace"]["schema_validation_status"] == "validated"
     assert trace["llm_fallback_trace"]["output"]["role"] == "repair_fallback"
+    assert trace["llm_fallback_trace"]["validated_output_source"] == "azure_model"
 
 
 def test_dangerous_model_fields_are_clamped_after_valid_json() -> None:
@@ -490,3 +501,70 @@ def test_browser_injected_llm_trace_is_sanitized_and_clamped() -> None:
     assert sanitized["llm_can_override_backend_gate"] is False
     assert sanitized["proposer_trace"]["output"]["apply_allowed"] is False
     assert sanitized["reviewer_trace"]["output"]["apply_allowed"] is False
+    assert sanitized["proposer_trace"]["validated_output_source"] == "deterministic_fallback"
+
+
+def test_router_deterministic_shadow_fallbacks_use_repair_shadow_schemas() -> None:
+    router = V2ModelRoleRouter()
+    cases = [
+        (V2ModelRole.PROPOSER, "RepairProposerShadowOutput", _valid_proposer_json()),
+        (V2ModelRole.REVIEWER, "RepairReviewerShadowOutput", _valid_reviewer_json()),
+        (V2ModelRole.FALLBACK, "RepairFallbackShadowOutput", _valid_fallback_json()),
+    ]
+    for role, schema_name, fallback in cases:
+        result = router.route(
+            V2RoleModelRequest(
+                role=role,
+                prompt="shadow",
+                fallback=fallback,
+                output_schema_name=schema_name,
+                require_schema=True,
+            ),
+            invoke=lambda deployment: None,
+        )
+        payload = json.loads(result.content)
+        assert result.provider == "deterministic"
+        assert result.schema_validated is True
+        assert payload["role"].startswith("repair_")
+        assert "decision" not in payload
+        assert "reasoning" not in payload
+
+
+class _RetryClient(V2AssistantModelClient):
+    def __init__(self, retry_content: str) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.retry_content = retry_content
+
+    def _chat_completion(self, **kwargs: Any) -> str:  # type: ignore[override]
+        self.calls.append(kwargs)
+        if len(self.calls) == 1:
+            raise urllib.error.HTTPError(
+                url="https://example.test",
+                code=400,
+                msg="json_schema unsupported",
+                hdrs=None,
+                fp=None,
+            )
+        return self.retry_content
+
+
+def test_repair_shadow_schema_http_400_retries_with_json_object(monkeypatch) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "secret")
+    client = _RetryClient(_valid_proposer_json())
+
+    result = client._answer_with_deployment(
+        role=V2ModelRole.PROPOSER,
+        deployment="gpt5-mini",
+        prompt="shadow",
+        fallback=_valid_proposer_json(),
+        output_schema_name="RepairProposerShadowOutput",
+        require_schema=True,
+    )
+
+    assert result.provider == "azure_openai"
+    assert result.model_status == "live_ok"
+    assert result.provider_retry_path == "strict_json_schema_failed_then_json_object"
+    assert client.calls[0]["response_schema_name"] == "RepairProposerShadowOutput"
+    assert client.calls[1]["require_json_object"] is True
+    assert client.calls[1]["response_schema_name"] is None

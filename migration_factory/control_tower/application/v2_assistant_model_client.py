@@ -38,6 +38,11 @@ class V2AssistantModelResult:
     schema_validated: bool = False
     deployment: str = ""
     endpoint_metadata: str = ""
+    provider_failure_kind: str = ""
+    provider_failure_stage: str = ""
+    provider_retry_path: str = ""
+    provider_http_status: str = ""
+    provider_error_redacted_preview: str = ""
 
 
 @dataclass(frozen=True)
@@ -273,16 +278,34 @@ class V2AssistantModelClient:
             )
 
         try:
-            content = self._chat_completion(
-                endpoint=endpoint,
-                api_key=api_key,
-                deployment=deployment,
-                prompt=prompt,
-                max_completion_tokens=700,
-                timeout=30,
-                conversation_history=conversation_history,
-                response_schema_name=output_schema_name if require_schema else None,
-            )
+            try:
+                content = self._chat_completion(
+                    endpoint=endpoint,
+                    api_key=api_key,
+                    deployment=deployment,
+                    prompt=prompt,
+                    max_completion_tokens=700,
+                    timeout=30,
+                    conversation_history=conversation_history,
+                    response_schema_name=output_schema_name if require_schema else None,
+                )
+                provider_retry_path = "strict_json_schema" if require_schema and output_schema_name else ""
+            except urllib.error.HTTPError as schema_exc:
+                if require_schema and output_schema_name and _is_repair_shadow_schema(output_schema_name) and _should_retry_schema_with_json_object(schema_exc):
+                    content = self._chat_completion(
+                        endpoint=endpoint,
+                        api_key=api_key,
+                        deployment=deployment,
+                        prompt=prompt,
+                        max_completion_tokens=700,
+                        timeout=30,
+                        conversation_history=conversation_history,
+                        require_json_object=True,
+                        response_schema_name=None,
+                    )
+                    provider_retry_path = "strict_json_schema_failed_then_json_object"
+                else:
+                    raise
         except urllib.error.HTTPError as exc:
             code = int(getattr(exc, "code", 0) or 0)
             snippet = _redact_smoke_text(
@@ -299,6 +322,11 @@ class V2AssistantModelClient:
                 fallback,
                 summary,
                 _http_failure_reason(code),
+                provider_failure_kind=_provider_failure_kind_for_http(code, snippet),
+                provider_failure_stage="provider_http_request",
+                provider_retry_path="strict_json_schema_failed" if require_schema and output_schema_name else "",
+                provider_http_status=str(code) if code else "",
+                provider_error_redacted_preview=snippet,
             )
         except urllib.error.URLError as exc:
             reason = str(exc.reason) if hasattr(exc, "reason") else str(exc)
@@ -307,17 +335,29 @@ class V2AssistantModelClient:
                     fallback,
                     "Azure OpenAI request timed out.",
                     "timeout",
+                    provider_failure_kind="timeout",
+                    provider_failure_stage="provider_http_request",
+                    provider_retry_path="",
+                    provider_error_redacted_preview=redact_model_summary(reason)[:500],
                 )
             return _fallback_result(
                 fallback,
                 f"Azure OpenAI request failed: {redact_model_summary(reason)}.",
                 "invalid_response",
+                provider_failure_kind="transport_error",
+                provider_failure_stage="provider_http_request",
+                provider_retry_path="",
+                provider_error_redacted_preview=redact_model_summary(reason)[:500],
             )
         except Exception as exc:
             return _fallback_result(
                 fallback,
                 f"Azure OpenAI assistant unavailable ({type(exc).__name__}).",
                 "invalid_response",
+                provider_failure_kind="client_exception",
+                provider_failure_stage="client_invocation",
+                provider_retry_path="",
+                provider_error_redacted_preview=redact_model_summary(f"{type(exc).__name__}: {exc}")[:500],
             )
 
         safe_content = str(redact_public_value(redact_model_summary(content))).strip()
@@ -327,6 +367,9 @@ class V2AssistantModelClient:
                 fallback,
                 "Azure OpenAI returned an empty response.",
                 "empty_response",
+                provider_failure_kind="empty_response",
+                provider_failure_stage="model_output",
+                provider_retry_path=provider_retry_path,
             )
 
         return V2AssistantModelResult(
@@ -343,6 +386,7 @@ class V2AssistantModelClient:
             schema_validated=False,
             deployment=_public_deployment_label(deployment),
             endpoint_metadata=_safe_endpoint_metadata(endpoint),
+            provider_retry_path=provider_retry_path,
         )
 
     def _to_assistant_result(self, routed: V2RoleModelResult) -> V2AssistantModelResult:
@@ -361,6 +405,11 @@ class V2AssistantModelClient:
             schema_validated=routed.schema_validated,
             deployment=routed.deployment,
             endpoint_metadata=routed.endpoint_metadata,
+            provider_failure_kind=routed.provider_failure_kind,
+            provider_failure_stage=routed.provider_failure_stage,
+            provider_retry_path=routed.provider_retry_path,
+            provider_http_status=routed.provider_http_status,
+            provider_error_redacted_preview=routed.provider_error_redacted_preview,
         )
 
     @staticmethod
@@ -1019,7 +1068,17 @@ def _strip_optional_schema_properties(schema: Any) -> Any:
     return schema
 
 
-def _fallback_result(fallback: str, summary: str, failure_reason: str = "") -> V2AssistantModelResult:
+def _fallback_result(
+    fallback: str,
+    summary: str,
+    failure_reason: str = "",
+    *,
+    provider_failure_kind: str = "",
+    provider_failure_stage: str = "",
+    provider_retry_path: str = "",
+    provider_http_status: str = "",
+    provider_error_redacted_preview: str = "",
+) -> V2AssistantModelResult:
     safe_summary = str(redact_model_summary(summary))
     return V2AssistantModelResult(
         content=f"{fallback}\n\nModel: fallback\nSource: deterministic\nReason: {safe_summary}",
@@ -1035,6 +1094,11 @@ def _fallback_result(fallback: str, summary: str, failure_reason: str = "") -> V
         schema_validated=False,
         deployment="",
         endpoint_metadata="",
+        provider_failure_kind=redact_model_summary(provider_failure_kind or failure_reason)[:160],
+        provider_failure_stage=redact_model_summary(provider_failure_stage)[:160],
+        provider_retry_path=redact_model_summary(provider_retry_path)[:240],
+        provider_http_status=redact_model_summary(provider_http_status)[:32],
+        provider_error_redacted_preview=redact_model_summary(provider_error_redacted_preview)[:500],
     )
 
 
@@ -1080,6 +1144,46 @@ def _should_retry_with_chat_completions(http_error: urllib.error.HTTPError) -> b
         or "not supported" in snippet
         or "unknown parameter" in snippet
     )
+
+
+def _is_repair_shadow_schema(schema_name: str | None) -> bool:
+    return str(schema_name or "") in {
+        "RepairProposerShadowOutput",
+        "RepairReviewerShadowOutput",
+        "RepairFallbackShadowOutput",
+    }
+
+
+def _should_retry_schema_with_json_object(http_error: urllib.error.HTTPError) -> bool:
+    code = int(getattr(http_error, "code", 0) or 0)
+    if code != 400:
+        return False
+    snippet = _sanitize_body_snippet(http_error).lower()
+    if not snippet:
+        return True
+    return any(
+        token in snippet
+        for token in (
+            "json_schema",
+            "response_format",
+            "strict",
+            "schema",
+            "unsupported",
+            "not supported",
+            "invalid",
+            "unknown parameter",
+            "badly formed",
+        )
+    )
+
+
+def _provider_failure_kind_for_http(code: int, snippet: str) -> str:
+    lowered = str(snippet or "").lower()
+    if code == 400 and ("json_schema" in lowered or "response_format" in lowered or "schema" in lowered):
+        return "json_schema_unsupported"
+    if code:
+        return f"http_{code}"
+    return "invalid_response"
 
 
 

@@ -12929,6 +12929,12 @@ def _safe_llm_shadow_role_trace(value: Any, *, expected_role: str, trusted: bool
         "raw_output_redacted_preview": _safe_failure_str(value.get("raw_output_redacted_preview"))[:1200],
         "json_parse_error_kind": _safe_failure_str(value.get("json_parse_error_kind")),
         "model_output_was_json": bool(value.get("model_output_was_json")),
+        "validated_output_source": _safe_llm_output_source(value.get("validated_output_source")),
+        "provider_failure_kind": _safe_failure_str(value.get("provider_failure_kind")),
+        "provider_failure_stage": _safe_failure_str(value.get("provider_failure_stage")),
+        "provider_retry_path": _safe_failure_str(value.get("provider_retry_path")),
+        "provider_http_status": _safe_failure_str(value.get("provider_http_status")),
+        "provider_error_redacted_preview": _safe_failure_str(value.get("provider_error_redacted_preview"))[:500],
         "non_actionable": True,
         "apply_allowed": False,
         "approval_allowed": False,
@@ -13034,6 +13040,12 @@ def _empty_llm_shadow_role(role: str) -> dict[str, Any]:
         "raw_output_redacted_preview": "",
         "json_parse_error_kind": "",
         "model_output_was_json": False,
+        "validated_output_source": "deterministic_fallback",
+        "provider_failure_kind": "untrusted_or_unavailable_shadow_trace",
+        "provider_failure_stage": "api_sanitizer",
+        "provider_retry_path": "deterministic_fallback",
+        "provider_http_status": "",
+        "provider_error_redacted_preview": "",
         "non_actionable": True,
         "apply_allowed": False,
         "approval_allowed": False,
@@ -13044,6 +13056,11 @@ def _empty_llm_shadow_role(role: str) -> dict[str, Any]:
 def _safe_shadow_status(value: Any) -> str:
     status = _safe_failure_str(value)
     return status if status in {"available", "unavailable", "failed", "fallback_used"} else "fallback_used"
+
+
+def _safe_llm_output_source(value: Any) -> str:
+    source = _safe_failure_str(value)
+    return source if source in {"azure_model", "deterministic_fallback", "none"} else "deterministic_fallback"
 
 
 def _safe_llm_model_role_name(expected_role: str) -> str:

@@ -284,13 +284,34 @@ def _run_role_trace(
     model_metadata = _model_metadata(llm_client, model_role, runtime_mode)
     if llm_client is None:
         output = _clamp_output(fallback_output, output_kind)
-        return _trace(role, model_metadata, "fallback_used", False, True, "llm_shadow_disabled_or_unconfigured", input_preview, input_checksum, output, "fallback_validated")
+        return _trace(
+            role,
+            model_metadata,
+            "fallback_used",
+            False,
+            True,
+            "llm_shadow_disabled_or_unconfigured",
+            input_preview,
+            input_checksum,
+            output,
+            "fallback_validated",
+            validated_output_source="deterministic_fallback",
+            provider_failure_kind="llm_shadow_disabled_or_unconfigured",
+            provider_failure_stage="shadow_configuration",
+            provider_retry_path="fallback_only_mode",
+        )
 
     try:
         raw = _invoke_client(llm_client, model_role, prompt, fallback_output, output_kind)
         content = str(getattr(raw, "content", raw) or "")
         output, schema_status, failure_reason, parse_error_kind, model_output_was_json = _parse_and_clamp(content, fallback_output, output_kind)
         status = "available" if schema_status == "validated" else "failed"
+        raw_provider = str(getattr(raw, "provider", "") or "")
+        output_source = (
+            "azure_model"
+            if schema_status == "validated" and raw_provider != "deterministic"
+            else "deterministic_fallback"
+        )
         return _trace(
             role,
             _model_metadata(raw, model_role, runtime_mode),
@@ -305,6 +326,12 @@ def _run_role_trace(
             raw_output_redacted_preview=_safe_text(content, limit=1200),
             json_parse_error_kind=parse_error_kind,
             model_output_was_json=model_output_was_json,
+            validated_output_source=output_source,
+            provider_failure_kind=str(getattr(raw, "provider_failure_kind", "") or ("model_returned_schema_invalid" if schema_status != "validated" else "")),
+            provider_failure_stage=str(getattr(raw, "provider_failure_stage", "") or ("model_output" if schema_status != "validated" else "")),
+            provider_retry_path=str(getattr(raw, "provider_retry_path", "") or ""),
+            provider_http_status=str(getattr(raw, "provider_http_status", "") or ""),
+            provider_error_redacted_preview=str(getattr(raw, "provider_error_redacted_preview", "") or ""),
         )
     except Exception as exc:
         output = _clamp_output(fallback_output, output_kind)
@@ -322,6 +349,11 @@ def _run_role_trace(
             raw_output_redacted_preview="",
             json_parse_error_kind="client_exception",
             model_output_was_json=False,
+            validated_output_source="deterministic_fallback",
+            provider_failure_kind="client_exception",
+            provider_failure_stage="shadow_client",
+            provider_retry_path="deterministic_fallback",
+            provider_error_redacted_preview=redact_model_summary(f"{type(exc).__name__}: {exc}")[:500],
         )
 
 
@@ -348,6 +380,10 @@ def _run_llm_fallback_trace(
             input_checksum,
             output,
             "not_applicable",
+            validated_output_source="none",
+            provider_failure_kind="fallback_model_not_needed",
+            provider_failure_stage="shadow_fallback_routing",
+            provider_retry_path="not_needed",
         )
     return _run_role_trace(
         role=FALLBACK_ROLE,
@@ -393,6 +429,12 @@ def _trace(
     raw_output_redacted_preview: str = "",
     json_parse_error_kind: str = "",
     model_output_was_json: bool = False,
+    validated_output_source: str = "",
+    provider_failure_kind: str = "",
+    provider_failure_stage: str = "",
+    provider_retry_path: str = "",
+    provider_http_status: str = "",
+    provider_error_redacted_preview: str = "",
 ) -> dict[str, Any]:
     return {
         "role": role,
@@ -409,6 +451,12 @@ def _trace(
         "raw_output_redacted_preview": redact_model_summary(raw_output_redacted_preview)[:1200],
         "json_parse_error_kind": redact_model_summary(json_parse_error_kind)[:160],
         "model_output_was_json": bool(model_output_was_json),
+        "validated_output_source": _validated_output_source(validated_output_source),
+        "provider_failure_kind": redact_model_summary(provider_failure_kind)[:160],
+        "provider_failure_stage": redact_model_summary(provider_failure_stage)[:160],
+        "provider_retry_path": redact_model_summary(provider_retry_path)[:240],
+        "provider_http_status": redact_model_summary(provider_http_status)[:32],
+        "provider_error_redacted_preview": redact_model_summary(provider_error_redacted_preview)[:500],
         "non_actionable": True,
         "apply_allowed": False,
         "approval_allowed": False,
@@ -725,6 +773,13 @@ def _status(value: Any) -> str:
 def _confidence(value: Any) -> str:
     text = str(value or "low")
     return text if text in ALLOWED_CONFIDENCE else "low"
+
+
+def _validated_output_source(value: Any) -> str:
+    text = str(value or "")
+    if text in {"azure_model", "deterministic_fallback", "none"}:
+        return text
+    return "deterministic_fallback"
 
 
 def _clamp_trace(trace: dict[str, Any]) -> dict[str, Any]:

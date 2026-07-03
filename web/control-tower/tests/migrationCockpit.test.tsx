@@ -2074,6 +2074,12 @@ describe("V2 Migration Cockpit contract", () => {
             raw_output_redacted_preview: "{\"status\":\"available\"}",
             json_parse_error_kind: "",
             model_output_was_json: true,
+            validated_output_source: "azure_model",
+            provider_failure_kind: "",
+            provider_failure_stage: "",
+            provider_retry_path: "strict_json_schema",
+            provider_http_status: "",
+            provider_error_redacted_preview: "",
             non_actionable: true,
             apply_allowed: false,
             approval_allowed: false,
@@ -2116,6 +2122,12 @@ describe("V2 Migration Cockpit contract", () => {
             raw_output_redacted_preview: "{\"status\":\"available\"}",
             json_parse_error_kind: "",
             model_output_was_json: true,
+            validated_output_source: "azure_model",
+            provider_failure_kind: "",
+            provider_failure_stage: "",
+            provider_retry_path: "strict_json_schema",
+            provider_http_status: "",
+            provider_error_redacted_preview: "",
             non_actionable: true,
             apply_allowed: false,
             approval_allowed: false,
@@ -2158,6 +2170,12 @@ describe("V2 Migration Cockpit contract", () => {
             raw_output_redacted_preview: "{\"status\":\"available\"}",
             json_parse_error_kind: "",
             model_output_was_json: true,
+            validated_output_source: "azure_model",
+            provider_failure_kind: "reviewer_shadow_failed",
+            provider_failure_stage: "model_output",
+            provider_retry_path: "strict_json_schema_failed_then_json_object",
+            provider_http_status: "",
+            provider_error_redacted_preview: "",
             non_actionable: true,
             apply_allowed: false,
             approval_allowed: false,
@@ -2210,6 +2228,7 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Input checksum: sha256:proposer-input");
     expect(markup).toContain("Output checksum: sha256:proposer-output");
     expect(markup).toContain("Schema validation status: validated");
+    expect(markup).toContain("Validated output source: azure_model");
     expect(markup).toContain("Model output JSON: yes");
     expect(markup).toContain("Reviewer");
     expect(markup).toContain("Role: repair_reviewer_model");
@@ -2222,6 +2241,8 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Role: repair_fallback_model");
     expect(markup).toContain("Expected model/deployment: Mistral-Large-3");
     expect(markup).toContain("Fallback reason: reviewer_shadow_failed");
+    expect(markup).toContain("Provider failure kind: reviewer_shadow_failed");
+    expect(markup).toContain("Provider retry path: strict_json_schema_failed_then_json_object");
     expect(markup).toContain("Deterministic Backend Gate");
     expect(markup).toContain("Backend gate authority: yes");
     expect(markup).toContain("LLM can override backend gate: no");

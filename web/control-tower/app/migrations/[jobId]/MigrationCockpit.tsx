@@ -1086,8 +1086,16 @@ function LlmShadowRolePanel({
       )}
       {reviewer && <p className="meta">Verdict: {String(trace.output?.verdict ?? "n/a")}</p>}
       <p className="meta">Schema validation status: {trace.schema_validation_status || "n/a"}</p>
+      <p className="meta">Validated output source: {trace.validated_output_source || "n/a"}</p>
       <p className="meta">Model output JSON: {trace.model_output_was_json ? "yes" : "no"}</p>
+      {trace.provider_failure_kind && <p className="meta">Provider failure kind: {trace.provider_failure_kind}</p>}
+      {trace.provider_retry_path && <p className="meta">Provider retry path: {trace.provider_retry_path}</p>}
+      {trace.provider_failure_stage && <p className="meta">Provider failure stage: {trace.provider_failure_stage}</p>}
+      {trace.provider_http_status && <p className="meta">Provider HTTP status: {trace.provider_http_status}</p>}
       {trace.json_parse_error_kind && <p className="meta">JSON parse error: {trace.json_parse_error_kind}</p>}
+      {trace.provider_error_redacted_preview && (
+        <p className="meta">Provider error preview: {trace.provider_error_redacted_preview}</p>
+      )}
       {trace.raw_output_redacted_preview && (
         <pre className="diff-preview"><code>{trace.raw_output_redacted_preview}</code></pre>
       )}
