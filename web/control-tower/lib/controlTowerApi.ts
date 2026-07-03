@@ -12,6 +12,9 @@ import type {
   V2JobEventSnapshotResponse,
   V2PipelineResponse,
   V2FailureSummaryResponse,
+  V2RepairApplyCandidateResponse,
+  V2RepairCandidateApprovalResponse,
+  V2RepairCandidateApplyResponse,
   V2StageEntry,
   V2StageCommandResponse,
   V2ApprovalResponse,
@@ -340,6 +343,46 @@ export async function getV2FailureSummary(jobId: string): Promise<V2FailureSumma
   const safeJobId = requireJobId(jobId);
   return getJson<V2FailureSummaryResponse>(
     `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/failure-summary`
+  );
+}
+
+export async function getV2RepairCandidate(
+  jobId: string,
+  stageIndex: number,
+  repairCandidateId: string
+): Promise<{ candidate: V2RepairApplyCandidateResponse }> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<{ candidate: V2RepairApplyCandidateResponse }>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/stages/${stageIndex}/repair-candidates/${encodeURIComponent(repairCandidateId)}`
+  );
+}
+
+export async function approveV2RepairCandidate(
+  jobId: string,
+  stageIndex: number,
+  candidate: V2RepairApplyCandidateResponse
+): Promise<V2RepairCandidateApprovalResponse> {
+  const safeJobId = requireJobId(jobId);
+  return postJson<V2RepairCandidateApprovalResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/stages/${stageIndex}/repair-candidates/${encodeURIComponent(candidate.repair_candidate_id)}/approve`,
+    {
+      repair_candidate_id: candidate.repair_candidate_id,
+      patch_checksum: candidate.patch_checksum,
+      target_file_checksum: candidate.target_file_checksum,
+      review_checksum: candidate.review_checksum,
+    }
+  );
+}
+
+export async function applyV2RepairCandidate(
+  jobId: string,
+  stageIndex: number,
+  repairCandidateId: string
+): Promise<V2RepairCandidateApplyResponse> {
+  const safeJobId = requireJobId(jobId);
+  return postJson<V2RepairCandidateApplyResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/stages/${stageIndex}/repair-candidates/${encodeURIComponent(repairCandidateId)}/apply`,
+    { repair_candidate_id: repairCandidateId }
   );
 }
 

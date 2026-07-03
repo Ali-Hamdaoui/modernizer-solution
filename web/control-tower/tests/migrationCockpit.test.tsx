@@ -10,6 +10,7 @@ import {
   StageFailureEvidenceDetails,
   EMPTY_R6_REPAIR_UI_STATE,
   GatePanelContent,
+  RepairApplyCandidateCard,
   formatGateArtifactRefLabel,
   hasUnknownNonRepairableFailure,
   isControlledR6DemoUiEnabled,
@@ -20,8 +21,10 @@ import {
   type CockpitData,
 } from "../app/migrations/[jobId]/MigrationCockpit";
 import {
+  applyV2RepairCandidate,
   applyV2RepairReviewContext,
   askV2Assistant,
+  approveV2RepairCandidate,
   CONTROL_TOWER_API_BASE_URL,
   getV2ArtifactPreview,
   prepareV2RepairApplyContext,
@@ -39,6 +42,7 @@ import type {
   RepairApplyContextResponse,
   RepairApprovalResponse,
   ApplyRepairReviewContextResponse,
+  V2RepairApplyCandidateResponse,
 } from "../lib/contracts";
 
 const GOVERNED_REPAIR_PROPOSAL: GovernedRepairProposalResponse = {
@@ -1338,6 +1342,112 @@ describe("V2 Migration Cockpit contract", () => {
     } finally {
       global.fetch = originalFetch;
     }
+  });
+
+  it("repair candidate card renders approve/apply flow without edit/upload/override controls", () => {
+    const candidate: V2RepairApplyCandidateResponse = {
+      job_id: "job-123",
+      stage_index: 1,
+      repair_candidate_id: "repair-candidate-r8",
+      status: "pending_human_approval",
+      family: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+      patch_source: "backend_deterministic_recipe",
+      llm_source: "advisory_only",
+      target_file: "src/test/java/ExampleTest.java",
+      pre_apply_checksum: "sha256:file",
+      target_file_checksum: "sha256:file",
+      patch_checksum: "sha256:patch",
+      review_checksum: "sha256:review",
+      proposal_checksum: "sha256:proposal",
+      candidate_checksum: "sha256:candidate",
+      approval_required: true,
+      apply_enabled: false,
+      approval_enabled: true,
+      sandbox_only: true,
+      legacy_mutation_allowed: false,
+      downstream_start_allowed: false,
+      llm_can_apply: false,
+      browser_can_supply_patch: false,
+      verification_status: "not_started",
+      rollback_status: "not_started",
+      proof_artifact: "",
+      created_at: "2026-07-03T00:00:00Z",
+    };
+    const markup = renderToStaticMarkup(
+      <RepairApplyCandidateCard
+        candidate={candidate}
+        busyKey={null}
+        onApprove={() => undefined}
+        onApply={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("Repair Apply Candidate");
+    expect(markup).toContain("Approve checksum-bound repair");
+    expect(markup).toContain("Verification: not_started");
+    expect(markup).toContain("Rollback: not_started");
+    expect(markup).toContain("Proof artifact: pending");
+    expect(markup).not.toContain("Upload patch");
+    expect(markup).not.toContain("Override checksum");
+    expect(markup).not.toContain("Edit target");
+  });
+
+  it("repair candidate approve/apply clients send only checksum-bound bodies", async () => {
+    const candidate: V2RepairApplyCandidateResponse = {
+      job_id: "job-123",
+      stage_index: 1,
+      repair_candidate_id: "repair-candidate-r8",
+      status: "pending_human_approval",
+      family: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+      patch_source: "backend_deterministic_recipe",
+      llm_source: "advisory_only",
+      target_file: "src/test/java/ExampleTest.java",
+      pre_apply_checksum: "sha256:file",
+      target_file_checksum: "sha256:file",
+      patch_checksum: "sha256:patch",
+      review_checksum: "sha256:review",
+      proposal_checksum: "sha256:proposal",
+      candidate_checksum: "sha256:candidate",
+      approval_required: true,
+      apply_enabled: false,
+      approval_enabled: true,
+      sandbox_only: true,
+      legacy_mutation_allowed: false,
+      downstream_start_allowed: false,
+      llm_can_apply: false,
+      browser_can_supply_patch: false,
+      verification_status: "not_started",
+      rollback_status: "not_started",
+      proof_artifact: "",
+      created_at: "2026-07-03T00:00:00Z",
+    };
+    const originalFetch = global.fetch;
+    const bodies: unknown[] = [];
+    global.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body ?? "{}")));
+      return new Response(JSON.stringify({ candidate, approval: {}, execution: {} }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+    try {
+      await approveV2RepairCandidate("job-123", 1, candidate);
+      await applyV2RepairCandidate("job-123", 1, candidate.repair_candidate_id);
+    } finally {
+      global.fetch = originalFetch;
+    }
+
+    expect(bodies[0]).toEqual({
+      repair_candidate_id: "repair-candidate-r8",
+      patch_checksum: "sha256:patch",
+      target_file_checksum: "sha256:file",
+      review_checksum: "sha256:review",
+    });
+    expect(bodies[1]).toEqual({ repair_candidate_id: "repair-candidate-r8" });
+    expect(JSON.stringify(bodies)).not.toContain("patch_content");
+    expect(JSON.stringify(bodies)).not.toContain("target_path");
+    expect(JSON.stringify(bodies)).not.toContain("command");
+    expect(JSON.stringify(bodies)).not.toContain("model");
   });
 
   it("empty approvals render as no pending decisions copy", () => {

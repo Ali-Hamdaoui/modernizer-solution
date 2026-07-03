@@ -3,7 +3,9 @@
 import { useState, useEffect } from "react";
 import {
   askV2Assistant,
+  applyV2RepairCandidate,
   applyV2RepairReviewContext,
+  approveV2RepairCandidate,
   approveV2RepairReviewContext,
   approveV2Card,
   getV2ArtifactPreview,
@@ -35,6 +37,7 @@ import type {
   V2JobEvent,
   V2MigrationJobResponse,
   V2PipelineResponse,
+  V2RepairApplyCandidateResponse,
   GateDetailResponse,
   GateRepresentation,
   MigrationIntelligenceSummary,
@@ -47,7 +50,6 @@ import type {
   V2RepairDraftReviewResponse,
   V2LlmRepairShadowTraceResponse,
   V2LlmShadowRoleTraceResponse,
-  V2RepairApplyCandidateResponse,
 } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
 
@@ -1305,6 +1307,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [assistantError, setAssistantError] = useState<string | null>(null);
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
+  const [repairCandidateBusy, setRepairCandidateBusy] = useState<string | null>(null);
   const [artifactPreview, setArtifactPreview] = useState<V2ArtifactPreviewResponse | null>(null);
   const [artifactPreviewBusy, setArtifactPreviewBusy] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "connected" | "reconnecting">("connecting");
@@ -1716,6 +1719,34 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     }
   }
 
+  async function approveRepairCandidate(candidate: V2RepairApplyCandidateResponse) {
+    if (!normalizedJobId) return;
+    const stageIndex = candidate.stage_index ?? data?.pipeline.active_stage_index ?? 1;
+    setRepairCandidateBusy(`approve:${candidate.repair_candidate_id}`);
+    try {
+      await approveV2RepairCandidate(normalizedJobId, stageIndex, candidate);
+      await refreshLiveState();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Repair candidate approval failed");
+    } finally {
+      setRepairCandidateBusy(null);
+    }
+  }
+
+  async function applyRepairCandidate(candidate: V2RepairApplyCandidateResponse) {
+    if (!normalizedJobId) return;
+    const stageIndex = candidate.stage_index ?? data?.pipeline.active_stage_index ?? 1;
+    setRepairCandidateBusy(`apply:${candidate.repair_candidate_id}`);
+    try {
+      await applyV2RepairCandidate(normalizedJobId, stageIndex, candidate.repair_candidate_id);
+      await refreshLiveState();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Repair candidate apply failed");
+    } finally {
+      setRepairCandidateBusy(null);
+    }
+  }
+
   async function previewArtifact(artifactKind: string) {
     if (!normalizedJobId) return;
     setArtifactPreviewBusy(artifactKind);
@@ -2072,6 +2103,14 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
               ))}
             </div>
           )}
+          {data.failureSummary.repair_apply_candidate && (
+            <RepairApplyCandidateCard
+              candidate={data.failureSummary.repair_apply_candidate}
+              busyKey={repairCandidateBusy}
+              onApprove={approveRepairCandidate}
+              onApply={applyRepairCandidate}
+            />
+          )}
           {data.failureSummary.artifact_kinds.length > 0 && (
             <div className="artifact-kinds">
               <strong>Generated artifact kinds:</strong>
@@ -2259,6 +2298,49 @@ function artifactKindLabel(kind: string): string {
   if (kind === "rewrite_dry_run.patch") return "rewrite dry run diff/proposed changes";
   if (kind.endsWith(".patch")) return `${kind} diff/proposed changes`;
   return kind;
+}
+
+export function RepairApplyCandidateCard({
+  candidate,
+  busyKey,
+  onApprove,
+  onApply,
+}: {
+  candidate: V2RepairApplyCandidateResponse;
+  busyKey: string | null;
+  onApprove: (candidate: V2RepairApplyCandidateResponse) => void;
+  onApply: (candidate: V2RepairApplyCandidateResponse) => void;
+}) {
+  const approveBusy = busyKey === `approve:${candidate.repair_candidate_id}`;
+  const applyBusy = busyKey === `apply:${candidate.repair_candidate_id}`;
+  const pendingApproval = candidate.status === "pending_human_approval" && candidate.approval_enabled;
+  const approved = candidate.status === "approved" || candidate.apply_enabled;
+  return (
+    <div className="repair-card">
+      <strong>Repair Apply Candidate</strong>
+      <p className="meta">Status: {candidate.status}</p>
+      <p className="meta">Family: {candidate.family}</p>
+      <p className="meta">Target file: {candidate.target_file}</p>
+      <p className="checksum">Patch checksum: {candidate.patch_checksum}</p>
+      <p className="checksum">Target checksum: {candidate.target_file_checksum}</p>
+      <p className="checksum">Review checksum: {candidate.review_checksum}</p>
+      <p className="meta">Execution: {candidate.execution_status || candidate.status}</p>
+      <p className="meta">Verification: {candidate.verification_status || "not_started"}</p>
+      <p className="meta">Rollback: {candidate.rollback_status || "not_started"}</p>
+      <p className="checksum">Proof artifact: {candidate.proof_artifact || "pending"}</p>
+      <p className="meta">Downstream remains blocked until backend proof is reviewed.</p>
+      {pendingApproval && (
+        <button type="button" disabled={approveBusy} onClick={() => onApprove(candidate)}>
+          {approveBusy ? "Approving..." : "Approve checksum-bound repair"}
+        </button>
+      )}
+      {approved && candidate.status !== "verified" && candidate.status !== "rolled_back" && (
+        <button type="button" disabled={applyBusy} onClick={() => onApply(candidate)}>
+          {applyBusy ? "Applying..." : "Apply approved repair"}
+        </button>
+      )}
+    </div>
+  );
 }
 
 /** Recompute stage status for every stage using ALL events so far

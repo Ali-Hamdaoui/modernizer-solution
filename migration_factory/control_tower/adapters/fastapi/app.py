@@ -165,6 +165,11 @@ from migration_factory.control_tower.application.v2_repair_flow import (
     RepairContextBindingError,
     V2RepairFlowService,
 )
+from migration_factory.control_tower.application.v2_repair_apply_candidate import (
+    approve_repair_apply_candidate,
+    apply_approved_repair_candidate,
+    repair_state_narration,
+)
 from migration_factory.control_tower.application.v2_repair_gate_service import (
     V2RepairGateService,
     create_repair_gate_diagnosis_callback,
@@ -655,6 +660,19 @@ class PomRollbackRequestSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
     change_id: str
     idempotency_key: str | None = None
+
+
+class ApproveRepairCandidateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    repair_candidate_id: str
+    patch_checksum: str
+    target_file_checksum: str
+    review_checksum: str
+
+
+class ApplyRepairCandidateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    repair_candidate_id: str
 
 
 @asynccontextmanager
@@ -1441,7 +1459,66 @@ def create_app(
         with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
             events = uow.v2_events.list_by_job(job_id)
-        return redact_public_data(_v2_failure_summary(job_id, events))
+            summary = _v2_failure_summary(job_id, events)
+            candidate_repo = getattr(uow, "v2_repair_candidates", None)
+            candidate = candidate_repo.latest_public_for_job(job_id) if candidate_repo is not None else None
+            if candidate:
+                summary["repair_apply_candidate"] = candidate
+        return redact_public_data(summary)
+
+    @app.get("/v1/v2/jobs/{job_id}/stages/{stage_index}/repair-candidates/{repair_candidate_id}")
+    def get_repair_candidate(job_id: str, stage_index: int, repair_candidate_id: str) -> dict[str, Any]:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            candidate = uow.v2_repair_candidates.get_public(job_id, stage_index, repair_candidate_id)
+        if candidate is None:
+            raise _error(status.HTTP_404_NOT_FOUND, "REPAIR_CANDIDATE_NOT_FOUND", "Repair candidate not found.")
+        return {"candidate": redact_public_data(candidate)}
+
+    @app.post("/v1/v2/jobs/{job_id}/stages/{stage_index}/repair-candidates/{repair_candidate_id}/approve")
+    def approve_repair_candidate_endpoint(
+        job_id: str,
+        stage_index: int,
+        repair_candidate_id: str,
+        payload: ApproveRepairCandidateRequest,
+    ) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            candidate = uow.v2_repair_candidates.get_internal(job_id, stage_index, repair_candidate_id)
+            if candidate is None:
+                raise _error(status.HTTP_404_NOT_FOUND, "REPAIR_CANDIDATE_NOT_FOUND", "Repair candidate not found.")
+            try:
+                approval = approve_repair_apply_candidate(candidate, payload.model_dump())
+            except ValueError as exc:
+                raise _error(status.HTTP_409_CONFLICT, "REPAIR_CANDIDATE_CHECKSUM_MISMATCH", str(exc)) from exc
+            uow.v2_repair_candidates.save_approval(job_id, stage_index, repair_candidate_id, approval)
+            public = uow.v2_repair_candidates.get_public(job_id, stage_index, repair_candidate_id)
+        return {"approval": redact_public_data(approval), "candidate": redact_public_data(public or {})}
+
+    @app.post("/v1/v2/jobs/{job_id}/stages/{stage_index}/repair-candidates/{repair_candidate_id}/apply")
+    def apply_repair_candidate_endpoint(
+        job_id: str,
+        stage_index: int,
+        repair_candidate_id: str,
+        payload: ApplyRepairCandidateRequest,
+    ) -> dict[str, Any]:
+        if payload.repair_candidate_id != repair_candidate_id:
+            raise _error(status.HTTP_409_CONFLICT, "REPAIR_CANDIDATE_ID_MISMATCH", "Repair candidate id mismatch.")
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            candidate = uow.v2_repair_candidates.get_internal(job_id, stage_index, repair_candidate_id)
+            if candidate is None:
+                raise _error(status.HTTP_404_NOT_FOUND, "REPAIR_CANDIDATE_NOT_FOUND", "Repair candidate not found.")
+            approval = candidate.get("approval") if isinstance(candidate.get("approval"), dict) else None
+            if approval is None:
+                raise _error(status.HTTP_409_CONFLICT, "REPAIR_CANDIDATE_NOT_APPROVED", "Repair candidate approval required.")
+            try:
+                execution = apply_approved_repair_candidate(candidate, approval)
+            except ValueError as exc:
+                raise _error(status.HTTP_409_CONFLICT, "REPAIR_CANDIDATE_PRE_APPLY_REJECTED", str(exc)) from exc
+            uow.v2_repair_candidates.save_execution(job_id, stage_index, repair_candidate_id, execution)
+            public = uow.v2_repair_candidates.get_public(job_id, stage_index, repair_candidate_id)
+        return {"execution": redact_public_data(execution), "candidate": redact_public_data(public or {})}
 
     def _v2_gate_to_dict(
         gate: Any,
@@ -7926,7 +8003,38 @@ def _handle_v2_assistant_read_only_ask(
                 message="Assistant model invocation started.",
                 payload={"provider": "azure_openai", "role": "assistant"},
             )
-            if assistant_intent in {"apply_dependency_change", "rollback_pom_change"}:
+            candidate_repo = getattr(uow, "v2_repair_candidates", None)
+            repair_candidate = candidate_repo.latest_public_for_job(job_id) if candidate_repo is not None else None
+            if repair_candidate and "repair" in question.strip().lower():
+                latest_failure = next(
+                    (
+                        event
+                        for event in reversed(events)
+                        if str(getattr(event, "type", "")).endswith("_failed")
+                    ),
+                    None,
+                )
+                failed_text = (
+                    f"What failed: {latest_failure.type} at stage {latest_failure.stage}; {latest_failure.message}. "
+                    if latest_failure is not None
+                    else "What failed: backend recorded repair-blocked failure state. "
+                )
+                fallback_answer = (
+                    failed_text
+                    + repair_state_narration(repair_candidate)
+                    + " Assistant can explain this state only; human approval and backend apply endpoints own all state changes."
+                )
+                model_result = V2AssistantModelResult(
+                    content=fallback_answer,
+                    source="backend_controlled",
+                    model_status="not_used",
+                    provider="backend",
+                    role="assistant",
+                    success=True,
+                    redacted_summary="Backend-controlled repair state narration.",
+                    failure_reason="",
+                )
+            elif assistant_intent in {"apply_dependency_change", "rollback_pom_change"}:
                 model_result = V2AssistantModelResult(
                     content=fallback_answer,
                     source="backend_controlled",

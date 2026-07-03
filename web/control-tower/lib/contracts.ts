@@ -1069,6 +1069,8 @@ export type V2StageFailureClassificationResponse = {
 };
 
 export type V2RepairApplyCandidateResponse = {
+  job_id?: string;
+  stage_index?: number;
   repair_candidate_id: string;
   status: string;
   family: string;
@@ -1092,6 +1094,7 @@ export type V2RepairApplyCandidateResponse = {
   verification_status: string;
   rollback_status: string;
   proof_artifact: string;
+  execution_status?: string;
   created_at: string;
 };
 
@@ -1341,6 +1344,17 @@ export type V2FailureSummaryResponse = {
   repair_loop_active: boolean;
   repair_events: { type: string; message: string }[];
   artifact_kinds: string[];
+  repair_apply_candidate?: V2RepairApplyCandidateResponse | null;
+};
+
+export type V2RepairCandidateApprovalResponse = {
+  approval: Record<string, unknown>;
+  candidate: V2RepairApplyCandidateResponse;
+};
+
+export type V2RepairCandidateApplyResponse = {
+  execution: Record<string, unknown>;
+  candidate: V2RepairApplyCandidateResponse;
 };
 
 export type V2ArtifactPreviewResponse = {
