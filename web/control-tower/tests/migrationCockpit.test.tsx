@@ -2562,6 +2562,120 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).not.toContain("Edit patch");
   });
 
+  it("renders generic Repair Strategy panel without PowerMock-specific UI", () => {
+    const diagnosis = {
+      diagnosis_id: "diag-strategy",
+      command_id: "cmd-strategy",
+      trigger_event_type: "build_failed",
+      failure_type: "POWERMOCK_LEGACY_TEST_STRATEGY",
+      context_pack_id: "pack-stage",
+      context_pack_checksum: "sha256:ctx",
+      repair_proposal_id: "",
+      model_invocation_id: "model-stage",
+      redaction_status: "stage_evidence_collected",
+      created_at: "2026-07-01T00:00:00Z",
+      stage_evidence: null,
+      classification: {
+        stage_index: 2,
+        stage_name: "Stage 2",
+        source_boot_version: "2.7",
+        target_boot_version: "3.5.16",
+        source_java_version: "11",
+        target_java_version: "17",
+        failure_type: "POWERMOCK_LEGACY_TEST_STRATEGY",
+        classification_status: "unsupported_known_failure",
+        repair_family_candidate: "",
+        confidence: "high",
+        confidence_reason: "PowerMock legacy test strategy signal found.",
+        matched_signals: ["review_gate:powermock_legacy_test_strategy"],
+        missing_required_evidence: [],
+        usable_artifacts: ["pom_xml", "test_source", "test_report"],
+        repair_enabled: false,
+        repair_blocked_reason: "human_review_gate_no_auto_repair",
+        reason: "human_review_gate_no_auto_repair",
+        assistant_next_action: "review_powermock_legacy_test_strategy",
+        evidence_pack_id: "stage-evidence-power",
+        evidence_pack_checksum: "sha256:evidence",
+        downstream_stage_state: { next_stage_index: 3, state: "pending_blocked_by_failed_stage", auto_started: false },
+        repair_strategy_packet: {
+          strategy_id: "repair-strategy-power",
+          job_id: "job-r9",
+          stage_index: 2,
+          family: "POWERMOCK_LEGACY_TEST_STRATEGY",
+          risk_level: "high",
+          category: "test_modernization",
+          strategy_status: "available",
+          apply_candidate_allowed: false,
+          backend_recipe_available: false,
+          human_gate_required: true,
+          root_cause: "PowerMock static mocking requires human review.",
+          affected_files: ["src/test/java/ExampleTest.java"],
+          detected_patterns: ["PowerMockRunner", "static mocking", "constructor mocking"],
+          migration_options: ["replace simple static mocking with Mockito inline"],
+          recommended_strategy: "Create engineer-reviewed PowerMock modernization plan; do not auto-apply.",
+          risk_notes: ["High-risk family can change test behavior."],
+          missing_evidence: [],
+          engineer_checklist: ["Review PrepareForTest scope."],
+          llm_proposer: {
+            role: "repair_strategy_proposer",
+            status: "available",
+            llm_invoked: true,
+            fallback_used: false,
+            failure_reason: "",
+            input_checksum: "sha256:in",
+            output: {
+              confidence: "high",
+              recommended_strategy: "Create engineer-reviewed PowerMock modernization plan; do not auto-apply.",
+            },
+            output_checksum: "sha256:out",
+            schema_validation_status: "validated",
+            non_actionable: true,
+            apply_allowed: false,
+            approval_allowed: false,
+            downstream_start_allowed: false,
+          },
+          llm_reviewer: {
+            role: "repair_strategy_reviewer",
+            status: "available",
+            llm_invoked: true,
+            fallback_used: false,
+            failure_reason: "",
+            input_checksum: "sha256:review-in",
+            output: { confidence: "medium", verdict: "advisory_accept", critique: "Human gate remains required." },
+            output_checksum: "sha256:review-out",
+            schema_validation_status: "validated",
+            non_actionable: true,
+            apply_allowed: false,
+            approval_allowed: false,
+            downstream_start_allowed: false,
+          },
+          llm_fallback: null,
+          backend_gate: {
+            backend_authority: true,
+            llm_can_apply: false,
+            llm_can_approve: false,
+            downstream_start_allowed: false,
+          },
+          strategy_checksum: "sha256:strategy",
+        },
+        repair_apply_candidate: null,
+      },
+    };
+
+    const markup = renderToStaticMarkup(<StageFailureEvidenceDetails diagnosis={diagnosis} stage={2} />);
+    expect(markup).toContain("Repair Strategy");
+    expect(markup).toContain("Family: POWERMOCK_LEGACY_TEST_STRATEGY");
+    expect(markup).toContain("Risk level: high");
+    expect(markup).toContain("Apply candidate allowed: no");
+    expect(markup).toContain("Review PrepareForTest scope.");
+    expect(markup).toContain("Proposer output");
+    expect(markup).toContain("Reviewer output");
+    expect(markup).toContain("Backend gate");
+    expect(markup).not.toContain("PowerMock Strategy");
+    expect(markup).not.toContain("Force apply");
+    expect(markup).not.toContain("Choose target path");
+  });
+
   it("renders Repair Draft drafted_non_actionable initMocks state", () => {
     const diagnosis = {
       diagnosis_id: "diag-draft",

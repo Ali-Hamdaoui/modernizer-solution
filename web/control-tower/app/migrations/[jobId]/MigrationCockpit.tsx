@@ -50,6 +50,8 @@ import type {
   V2RepairDraftReviewResponse,
   V2LlmRepairShadowTraceResponse,
   V2LlmShadowRoleTraceResponse,
+  V2RepairStrategyPacketResponse,
+  V2RepairStrategyTraceResponse,
 } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
 
@@ -1025,6 +1027,7 @@ export function StageFailureEvidenceDetails({
           <p className="meta">Next action: {classification.assistant_next_action || "n/a"}</p>
           {classificationHelp && <p className="meta">{classificationHelp}</p>}
           <MigrationMemoryDetails memory={classification.migration_memory ?? null} />
+          <RepairStrategyDetails packet={classification.repair_strategy_packet ?? null} />
           <RepairDraftDetails draft={classification.repair_proposal_draft ?? null} />
           <RepairDraftReviewDetails review={classification.repair_draft_review ?? null} />
           <LlmRepairShadowDetails trace={classification.llm_repair_shadow_trace ?? null} />
@@ -1220,6 +1223,73 @@ export function RepairApplyCandidateDetails({
         </button>
       )}
     </div>
+  );
+}
+
+function RepairStrategyDetails({ packet }: { packet: V2RepairStrategyPacketResponse | null }) {
+  if (!packet) {
+    return (
+      <div className="trace-section">
+        <strong>Repair Strategy</strong>
+        <p className="meta">No generic repair strategy packet available.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="trace-section">
+      <strong>Repair Strategy</strong>
+      <p className="meta">Family: {packet.family}</p>
+      <p className="meta">Risk level: {packet.risk_level}</p>
+      <p className="meta">Strategy status: {packet.strategy_status}</p>
+      <p className="meta">Backend recipe available: {packet.backend_recipe_available ? "yes" : "no"}</p>
+      <p className="meta">Apply candidate allowed: {packet.apply_candidate_allowed ? "yes" : "no"}</p>
+      <p className="meta">Human gate required: {packet.human_gate_required ? "yes" : "no"}</p>
+      <p className="meta">Root cause: {packet.root_cause || "n/a"}</p>
+      <p className="meta">Affected files: {summarizeList(packet.affected_files, 8)}</p>
+      <p className="meta">Detected patterns: {summarizeList(packet.detected_patterns, 8)}</p>
+      <p className="meta">Migration options: {summarizeList(packet.migration_options, 8)}</p>
+      <p className="meta">Recommended strategy: {packet.recommended_strategy || "n/a"}</p>
+      <p className="meta">Risk notes: {summarizeList(packet.risk_notes, 8)}</p>
+      <p className="meta">Missing evidence: {summarizeList(packet.missing_evidence, 8)}</p>
+      <p className="meta">Engineer checklist: {summarizeList(packet.engineer_checklist, 8)}</p>
+      <RepairStrategyTraceDetails title="Proposer output" trace={packet.llm_proposer ?? null} />
+      <RepairStrategyTraceDetails title="Reviewer output" trace={packet.llm_reviewer ?? null} />
+      <RepairStrategyTraceDetails title="Fallback output" trace={packet.llm_fallback ?? null} />
+      <strong>Backend gate</strong>
+      <p className="meta">Backend authority: {packet.backend_gate?.backend_authority ? "yes" : "no"}</p>
+      <p className="meta">LLM can apply: {packet.backend_gate?.llm_can_apply ? "yes" : "no"}</p>
+      <p className="meta">LLM can approve: {packet.backend_gate?.llm_can_approve ? "yes" : "no"}</p>
+      <p className="meta">Downstream start allowed: {packet.backend_gate?.downstream_start_allowed ? "yes" : "no"}</p>
+    </div>
+  );
+}
+
+function RepairStrategyTraceDetails({
+  title,
+  trace,
+}: {
+  title: string;
+  trace: V2RepairStrategyTraceResponse | null;
+}) {
+  if (!trace) {
+    return (
+      <>
+        <strong>{title}</strong>
+        <p className="meta">No output.</p>
+      </>
+    );
+  }
+  const output = trace.output ?? {};
+  return (
+    <>
+      <strong>{title}</strong>
+      <p className="meta">Status: {trace.status}</p>
+      <p className="meta">Fallback used: {trace.fallback_used ? "yes" : "no"}</p>
+      <p className="meta">Confidence: {String(output.confidence ?? "unknown")}</p>
+      {"verdict" in output && <p className="meta">Verdict: {String(output.verdict ?? "")}</p>}
+      {"recommended_strategy" in output && <p className="meta">Recommended: {String(output.recommended_strategy ?? "")}</p>}
+      {"critique" in output && <p className="meta">Critique: {String(output.critique ?? "")}</p>}
+    </>
   );
 }
 

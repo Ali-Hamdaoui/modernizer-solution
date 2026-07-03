@@ -63,6 +63,9 @@ from migration_factory.control_tower.application.v2_repair_apply_candidate impor
     create_repair_apply_candidate,
     public_repair_apply_candidate,
 )
+from migration_factory.control_tower.application.v2_repair_strategy_packet import (
+    create_repair_strategy_packet,
+)
 
 
 # ── Diagnosis record ──────────────────────────────────────────────
@@ -790,6 +793,15 @@ class V2FailureDiagnosisService:
             repair_draft_review=classification["repair_draft_review"],
             llm_client=self._llm_repair_shadow_client,
             llm_shadow_enabled=self._llm_repair_shadow_enabled,
+        )
+        classification["repair_strategy_packet"] = create_repair_strategy_packet(
+            job_id=job_id or str(evidence_pack.get("job_id") or ""),
+            stage_index=evidence_pack.get("stage_index"),
+            classification=classification,
+            stage_evidence=evidence_pack,
+            migration_memory=classification["migration_memory"],
+            llm_client=self._llm_repair_shadow_client,
+            llm_enabled=self._llm_repair_shadow_enabled,
         )
         internal_candidate = create_repair_apply_candidate(
             classification,

@@ -170,6 +170,9 @@ from migration_factory.control_tower.application.v2_repair_apply_candidate impor
     apply_approved_repair_candidate,
     repair_state_narration,
 )
+from migration_factory.control_tower.application.v2_repair_strategy_packet import (
+    repair_strategy_narration,
+)
 from migration_factory.control_tower.application.v2_repair_gate_service import (
     V2RepairGateService,
     create_repair_gate_diagnosis_callback,
@@ -2302,11 +2305,15 @@ def create_app(
                 unit_of_work_factory=unit_of_work_factory,
             )
 
+        repair_state_question = _question_requests_repair_state_explanation(question_lower)
         if open_gates:
             open_gate = open_gates[0]
             if (
+                not repair_state_question
+                and (
                 _assistant_question_requires_write(question_lower=question_lower, assistant_intent=assistant_intent)
                 or _question_looks_like_approval_review_revision_request(payload.question)
+                )
             ):
                 try:
                     return _handle_gate_aware_ask(
@@ -2340,9 +2347,17 @@ def create_app(
                                 "cannot_write_files": True,
                                 "cannot_change_route_or_stage": True,
                                 "cannot_override_proof": True,
-                            },
-                        }
+                        },
+                    }
                     raise
+            if repair_state_question:
+                return _handle_v2_assistant_read_only_ask(
+                    app=app,
+                    job_id=job_id,
+                    question=payload.question,
+                    correlation_id=payload.correlation_id,
+                    unit_of_work_factory=unit_of_work_factory,
+                )
             return _handle_gate_aware_read_only_ask(
                 app=app,
                 job_id=job_id,
@@ -2437,7 +2452,7 @@ def create_app(
                             "cannot_override_proof": True,
                         },
                     }
-            if not _assistant_question_requires_write(
+            if repair_state_question or not _assistant_question_requires_write(
                 question_lower=question_lower,
                 assistant_intent=assistant_intent,
             ):
@@ -7475,6 +7490,37 @@ def _question_requests_governed_repair_proposal(question_lower: str) -> bool:
     return False
 
 
+def _question_requests_repair_state_explanation(question_lower: str) -> bool:
+    lowered = str(question_lower or "").strip().lower()
+    if not lowered:
+        return False
+    repair_terms = (
+        "repair",
+        "fix",
+        "approval",
+        "approve",
+        "candidate",
+        "strategy",
+        "migration failure",
+    )
+    if not any(term in lowered for term in repair_terms):
+        return False
+    explain_terms = (
+        "explain",
+        "status",
+        "state",
+        "why",
+        "whether",
+        "can you",
+        "what",
+        "how",
+        "show",
+        "summary",
+        "summarize",
+    )
+    return any(term in lowered for term in explain_terms)
+
+
 def _handle_governed_repair_proposal_ask(
     app: Any,
     job_id: str,
@@ -8013,6 +8059,7 @@ def _handle_v2_assistant_read_only_ask(
             )
             candidate_repo = getattr(uow, "v2_repair_candidates", None)
             repair_candidate = candidate_repo.latest_public_for_job(job_id) if candidate_repo is not None else None
+            latest_strategy = _latest_repair_strategy_packet(events)
             repair_question_terms = ("repair", "fix", "apply", "approval", "approve")
             is_repair_question = any(term in question.strip().lower() for term in repair_question_terms)
             if is_repair_question:
@@ -8032,6 +8079,8 @@ def _handle_v2_assistant_read_only_ask(
                 fallback_answer = (
                     failed_text
                     + repair_state_narration(repair_candidate)
+                    + " "
+                    + repair_strategy_narration(latest_strategy, repair_candidate)
                     + " Assistant can explain this state only; human approval and backend apply endpoints own all state changes."
                 )
                 model_result = V2AssistantModelResult(
@@ -12567,6 +12616,22 @@ def _overlay_repair_apply_candidate(summary: dict[str, Any], candidate: dict[str
             classification["repair_apply_candidate"] = candidate
 
 
+def _latest_repair_strategy_packet(events: tuple[Any, ...]) -> dict[str, Any] | None:
+    for event in reversed(events):
+        try:
+            payload = json.loads(event.payload_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        classification = payload.get("classification") if isinstance(payload, dict) else None
+        if not isinstance(classification, dict):
+            continue
+        strategy = classification.get("repair_strategy_packet")
+        safe = _safe_repair_strategy_packet(strategy)
+        if safe is not None:
+            return safe
+    return None
+
+
 def _empty_supervision_trace() -> dict[str, Any]:
     return {
         "ai_diagnosis": None,
@@ -12862,7 +12927,91 @@ def _safe_classification_envelope(value: Any) -> dict[str, Any] | None:
         "repair_proposal_draft": _safe_repair_proposal_draft(value.get("repair_proposal_draft")),
         "repair_draft_review": _safe_repair_draft_review(value.get("repair_draft_review")),
         "llm_repair_shadow_trace": _safe_llm_repair_shadow_trace(value.get("llm_repair_shadow_trace")),
+        "repair_strategy_packet": _safe_repair_strategy_packet(value.get("repair_strategy_packet")),
         "repair_apply_candidate": _safe_repair_apply_candidate(value.get("repair_apply_candidate")),
+    }
+
+
+def _safe_repair_strategy_packet(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    backend_gate = value.get("backend_gate") if isinstance(value.get("backend_gate"), dict) else {}
+    return {
+        "strategy_id": _safe_failure_str(value.get("strategy_id")),
+        "job_id": _safe_failure_str(value.get("job_id")),
+        "stage_index": value.get("stage_index"),
+        "family": _safe_failure_str(value.get("family")),
+        "risk_level": _safe_failure_str(value.get("risk_level")),
+        "category": _safe_failure_str(value.get("category")),
+        "strategy_status": _safe_failure_str(value.get("strategy_status")),
+        "apply_candidate_allowed": bool(value.get("apply_candidate_allowed")),
+        "backend_recipe_available": bool(value.get("backend_recipe_available")),
+        "human_gate_required": bool(value.get("human_gate_required")),
+        "root_cause": _safe_failure_str(value.get("root_cause")),
+        "affected_files": _safe_failure_list(value.get("affected_files")),
+        "detected_patterns": _safe_failure_list(value.get("detected_patterns")),
+        "migration_options": _safe_failure_list(value.get("migration_options")),
+        "recommended_strategy": _safe_failure_str(value.get("recommended_strategy")),
+        "risk_notes": _safe_failure_list(value.get("risk_notes")),
+        "missing_evidence": _safe_failure_list(value.get("missing_evidence")),
+        "engineer_checklist": _safe_failure_list(value.get("engineer_checklist")),
+        "llm_proposer": _safe_strategy_trace(value.get("llm_proposer")),
+        "llm_reviewer": _safe_strategy_trace(value.get("llm_reviewer")),
+        "llm_fallback": _safe_strategy_trace(value.get("llm_fallback")),
+        "backend_gate": {
+            "backend_authority": bool(backend_gate.get("backend_authority", True)),
+            "llm_can_apply": False,
+            "llm_can_approve": False,
+            "downstream_start_allowed": False,
+        },
+        "strategy_checksum": _safe_failure_str(value.get("strategy_checksum")),
+    }
+
+
+def _safe_strategy_trace(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    output = value.get("output") if isinstance(value.get("output"), dict) else {}
+    return {
+        "role": _safe_failure_str(value.get("role")),
+        "status": _safe_failure_str(value.get("status")),
+        "llm_invoked": bool(value.get("llm_invoked")),
+        "fallback_used": bool(value.get("fallback_used")),
+        "failure_reason": _safe_failure_str(value.get("failure_reason")),
+        "input_checksum": _safe_failure_str(value.get("input_checksum")),
+        "output": {
+            key: (
+                _safe_failure_list(output.get(key))
+                if isinstance(output.get(key), list)
+                else _safe_failure_str(output.get(key))
+            )
+            for key in (
+                "status",
+                "role",
+                "family",
+                "root_cause",
+                "affected_files",
+                "detected_patterns",
+                "migration_options",
+                "recommended_strategy",
+                "risk_notes",
+                "missing_evidence",
+                "engineer_checklist",
+                "confidence",
+                "verdict",
+                "critique",
+                "risks",
+                "unsafe_assumptions",
+                "recommended_next_action",
+            )
+            if key in output
+        },
+        "output_checksum": _safe_failure_str(value.get("output_checksum")),
+        "schema_validation_status": _safe_failure_str(value.get("schema_validation_status")),
+        "non_actionable": True,
+        "apply_allowed": False,
+        "approval_allowed": False,
+        "downstream_start_allowed": False,
     }
 
 

@@ -1058,6 +1058,7 @@ export type V2StageFailureClassificationResponse = {
   repair_proposal_draft?: V2EvidenceBoundRepairDraftResponse | null;
   repair_draft_review?: V2RepairDraftReviewResponse | null;
   llm_repair_shadow_trace?: V2LlmRepairShadowTraceResponse | null;
+  repair_strategy_packet?: V2RepairStrategyPacketResponse | null;
   repair_apply_candidate?: V2RepairApplyCandidateResponse | null;
   evidence_pack_id: string;
   evidence_pack_checksum: string;
@@ -1096,6 +1097,53 @@ export type V2RepairApplyCandidateResponse = {
   proof_artifact: string;
   execution_status?: string;
   created_at: string;
+};
+
+export type V2RepairStrategyTraceResponse = {
+  role: string;
+  status: string;
+  llm_invoked: boolean;
+  fallback_used: boolean;
+  failure_reason: string;
+  input_checksum: string;
+  output: Record<string, unknown>;
+  output_checksum: string;
+  schema_validation_status: string;
+  non_actionable: boolean;
+  apply_allowed: boolean;
+  approval_allowed: boolean;
+  downstream_start_allowed: boolean;
+};
+
+export type V2RepairStrategyPacketResponse = {
+  strategy_id: string;
+  job_id: string;
+  stage_index: number | null;
+  family: string;
+  risk_level: string;
+  category: string;
+  strategy_status: string;
+  apply_candidate_allowed: boolean;
+  backend_recipe_available: boolean;
+  human_gate_required: boolean;
+  root_cause: string;
+  affected_files: string[];
+  detected_patterns: string[];
+  migration_options: string[];
+  recommended_strategy: string;
+  risk_notes: string[];
+  missing_evidence: string[];
+  engineer_checklist: string[];
+  llm_proposer?: V2RepairStrategyTraceResponse | null;
+  llm_reviewer?: V2RepairStrategyTraceResponse | null;
+  llm_fallback?: V2RepairStrategyTraceResponse | null;
+  backend_gate: {
+    backend_authority: boolean;
+    llm_can_apply: boolean;
+    llm_can_approve: boolean;
+    downstream_start_allowed: boolean;
+  };
+  strategy_checksum: string;
 };
 
 export type V2MigrationMemoryMatchResponse = {

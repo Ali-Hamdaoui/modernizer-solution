@@ -852,6 +852,16 @@ class TestStageAwareEvidence:
         assert review["approval_enabled"] is False
         assert review["repair_enabled"] is False
         assert review["downstream_start_allowed"] is False
+        strategy = classification["repair_strategy_packet"]
+        assert strategy["family"] == "POWERMOCK_LEGACY_TEST_STRATEGY"
+        assert strategy["risk_level"] == "high"
+        assert strategy["apply_candidate_allowed"] is False
+        assert strategy["backend_recipe_available"] is False
+        assert strategy["human_gate_required"] is True
+        assert strategy["backend_gate"]["backend_authority"] is True
+        assert strategy["backend_gate"]["llm_can_apply"] is False
+        assert strategy["engineer_checklist"]
+        assert classification["repair_apply_candidate"] is None
 
     def test_diagnosis_attaches_non_actionable_initmocks_draft(
         self,

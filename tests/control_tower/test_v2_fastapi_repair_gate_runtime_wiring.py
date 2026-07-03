@@ -349,6 +349,19 @@ def test_live_diagnosis_persists_repair_candidate_then_approve_and_apply(tmp_pat
     assert approved_nested["repair_candidate_id"] == repair_candidate_id
     assert approved_nested["status"] == "approved"
     assert approved_nested["apply_enabled"] is True
+    strategy = approved_summary["failures"][0]["supervision_trace"]["ai_diagnosis"]["classification"]["repair_strategy_packet"]
+    assert strategy["backend_gate"]["downstream_start_allowed"] is False
+
+    ask_response = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        headers=_mutation_headers(),
+        json={"question": "Explain the repair strategy and whether you can apply it"},
+    )
+    assert ask_response.status_code == 200, ask_response.text
+    answer = ask_response.json()["assistant_message"]["content"]
+    assert "Repair strategy:" in answer
+    assert "Apply candidate: exists" in answer
+    assert "Assistant cannot approve, apply, execute, or start downstream" in answer
 
     apply_response = client.post(
         f"/v1/v2/jobs/{job_id}/stages/2/repair-candidates/{repair_candidate_id}/apply",
