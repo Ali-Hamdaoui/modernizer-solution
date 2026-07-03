@@ -130,7 +130,11 @@ def public_repair_apply_candidate(candidate: dict[str, Any] | None) -> dict[str,
 def repair_state_narration(candidate: dict[str, Any] | None) -> str:
     public = public_repair_apply_candidate(candidate)
     if not public:
-        return "Repair candidate: none. Failure remains human-gated. Downstream remains blocked until backend proof exists."
+        return (
+            "Repair candidate: none. Failure remains human-gated; PowerMock or unsupported failures require human review "
+            "and no backend apply candidate exists. Checksums: unavailable. Approval: unavailable. Apply: unavailable. "
+            "Verification: not_started. Rollback: not_started. Proof: pending. Downstream remains blocked until backend proof exists."
+        )
     return (
         f"Repair candidate: {public['repair_candidate_id']} for {public['family']}. "
         f"Status: {public['status']}. Required checksums: patch={public['patch_checksum']}, "
@@ -250,10 +254,18 @@ def _build_candidate(
     }
     if proposed_diff_checksum:
         patch_payload["proposed_diff_checksum"] = proposed_diff_checksum
+    identity_payload = {
+        "job_id": job_id,
+        "stage_index": stage_index,
+        "target_file": target_rel,
+        "pre_apply_checksum": pre_apply_checksum,
+        "patch_checksum": f"sha256:{sha256_canonical_json(patch_payload)}",
+        "review_checksum": review_checksum,
+    }
     candidate = {
         "job_id": job_id,
         "stage_index": stage_index,
-        "repair_candidate_id": f"repair-candidate-{uuid4().hex[:12]}",
+        "repair_candidate_id": f"repair-candidate-{sha256_canonical_json(identity_payload)[:12]}",
         "status": "pending_human_approval",
         "family": SUPPORTED_FAMILY,
         "patch_source": "backend_deterministic_recipe",
@@ -261,7 +273,7 @@ def _build_candidate(
         "target_file": target_rel,
         "pre_apply_checksum": pre_apply_checksum,
         "target_file_checksum": pre_apply_checksum,
-        "patch_checksum": f"sha256:{sha256_canonical_json(patch_payload)}",
+        "patch_checksum": identity_payload["patch_checksum"],
         "review_checksum": review_checksum,
         "proposal_checksum": proposal_checksum,
         "approval_required": True,

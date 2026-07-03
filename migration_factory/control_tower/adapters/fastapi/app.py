@@ -794,11 +794,18 @@ def create_app(
         if app.state.public_event_notifier is not None:
             asyncio.run(app.state.public_event_notifier.notify())
 
+    def _diagnosis_repair_candidate_sink(candidate: dict[str, Any]) -> None:
+        with unit_of_work_factory() as uow:
+            uow.v2_repair_candidates.save_candidate(candidate)
+        if app.state.public_event_notifier is not None:
+            asyncio.run(app.state.public_event_notifier.notify())
+
     _repair_flow = V2RepairFlowService()
     llm_repair_shadow_enabled = _llm_repair_shadow_enabled(app.state.v2_settings)
     _diagnosis_service = V2FailureDiagnosisService(
         repair_flow=_repair_flow,
         event_sink=_diagnosis_event_sink,
+        repair_candidate_sink=_diagnosis_repair_candidate_sink,
         llm_repair_shadow_client=app.state.v2_assistant_model_client,
         llm_repair_shadow_enabled=llm_repair_shadow_enabled,
     )
@@ -1464,6 +1471,7 @@ def create_app(
             candidate = candidate_repo.latest_public_for_job(job_id) if candidate_repo is not None else None
             if candidate:
                 summary["repair_apply_candidate"] = candidate
+                _overlay_repair_apply_candidate(summary, candidate)
         return redact_public_data(summary)
 
     @app.get("/v1/v2/jobs/{job_id}/stages/{stage_index}/repair-candidates/{repair_candidate_id}")
@@ -8005,7 +8013,9 @@ def _handle_v2_assistant_read_only_ask(
             )
             candidate_repo = getattr(uow, "v2_repair_candidates", None)
             repair_candidate = candidate_repo.latest_public_for_job(job_id) if candidate_repo is not None else None
-            if repair_candidate and "repair" in question.strip().lower():
+            repair_question_terms = ("repair", "fix", "apply", "approval", "approve")
+            is_repair_question = any(term in question.strip().lower() for term in repair_question_terms)
+            if is_repair_question:
                 latest_failure = next(
                     (
                         event
@@ -12530,6 +12540,33 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
     }
 
 
+def _overlay_repair_apply_candidate(summary: dict[str, Any], candidate: dict[str, Any]) -> None:
+    stage_index = candidate.get("stage_index")
+    candidate_id = str(candidate.get("repair_candidate_id") or "")
+    if not candidate_id:
+        return
+    for failure in summary.get("failures", []):
+        if not isinstance(failure, dict):
+            continue
+        if stage_index is not None and failure.get("stage") != stage_index:
+            continue
+        trace = failure.get("supervision_trace")
+        if not isinstance(trace, dict):
+            continue
+        diagnosis = trace.get("ai_diagnosis")
+        if not isinstance(diagnosis, dict):
+            continue
+        classification = diagnosis.get("classification")
+        if not isinstance(classification, dict):
+            continue
+        existing = classification.get("repair_apply_candidate")
+        if existing is None or (
+            isinstance(existing, dict)
+            and str(existing.get("repair_candidate_id") or "") == candidate_id
+        ):
+            classification["repair_apply_candidate"] = candidate
+
+
 def _empty_supervision_trace() -> dict[str, Any]:
     return {
         "ai_diagnosis": None,
@@ -12930,8 +12967,8 @@ def _safe_repair_apply_candidate(value: Any) -> dict[str, Any] | None:
         "proposal_checksum": _safe_failure_str(value.get("proposal_checksum")),
         "candidate_checksum": _safe_failure_str(value.get("candidate_checksum")),
         "approval_required": True,
-        "apply_enabled": False,
-        "approval_enabled": bool(value.get("approval_enabled")),
+        "apply_enabled": bool(value.get("apply_enabled")) or status == "approved",
+        "approval_enabled": bool(value.get("approval_enabled")) and status == "pending_human_approval",
         "sandbox_only": True,
         "legacy_mutation_allowed": False,
         "downstream_start_allowed": False,

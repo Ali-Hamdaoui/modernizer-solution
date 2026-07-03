@@ -89,6 +89,7 @@ def test_candidate_persisted_with_private_fields_not_exposed_publicly(tmp_path: 
     candidate = _candidate(tmp_path)
     with SqliteUnitOfWork(conn) as uow:
         uow.v2_repair_candidates.save_candidate(candidate)
+        uow.v2_repair_candidates.save_candidate(candidate)
 
     with SqliteUnitOfWork(conn) as uow:
         internal = uow.v2_repair_candidates.get_internal("job-r8", 1, candidate["repair_candidate_id"])
@@ -101,6 +102,26 @@ def test_candidate_persisted_with_private_fields_not_exposed_publicly(tmp_path: 
     assert internal["_patch_payload"]
     assert public is not None
     assert all(not key.startswith("_") for key in public)
+    count = conn.execute("SELECT COUNT(*) AS n FROM v2_repair_apply_candidates WHERE job_id = ?", ("job-r8",)).fetchone()["n"]
+    assert count == 1
+
+
+def test_public_only_candidate_is_not_persisted(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _seed_v2_job(conn)
+    candidate = _candidate(tmp_path)
+    public = public_repair_apply_candidate(candidate)
+    assert public is not None
+    try:
+        with SqliteUnitOfWork(conn) as uow:
+            uow.v2_repair_candidates.save_candidate(public)
+    except ValueError as exc:
+        assert str(exc) == "internal_repair_candidate_required"
+    else:
+        raise AssertionError("public-only candidate should not be persisted")
+
+    count = conn.execute("SELECT COUNT(*) AS n FROM v2_repair_apply_candidates WHERE job_id = ?", ("job-r8",)).fetchone()["n"]
+    assert count == 0
 
 
 def test_approve_endpoint_checksum_mismatch_rejected_and_valid_request_accepted(tmp_path: Path) -> None:
@@ -211,8 +232,34 @@ def test_chatbot_can_summarize_repair_state_but_cannot_execute(tmp_path: Path) -
     candidate = _candidate(tmp_path)
     summary = repair_state_narration(public_repair_apply_candidate(candidate))
     assert "Required checksums" in summary
+    assert "Status: pending_human_approval" in summary
     assert "Downstream remains blocked" in summary
     assert "execute" not in summary.lower()
+
+
+def test_chatbot_summarizes_no_candidate_and_terminal_candidate_states(tmp_path: Path) -> None:
+    no_candidate = repair_state_narration(None)
+    assert "Repair candidate: none" in no_candidate
+    assert "PowerMock or unsupported failures require human review" in no_candidate
+    assert "Approval: unavailable" in no_candidate
+    assert "Apply: unavailable" in no_candidate
+
+    candidate = public_repair_apply_candidate(_candidate(tmp_path))
+    assert candidate is not None
+    candidate["status"] = "approved"
+    approved = repair_state_narration(candidate)
+    assert "Status: approved" in approved
+    assert "Verification: not_started" in approved
+
+    candidate["status"] = "verified"
+    candidate["verification_status"] = "passed"
+    candidate["rollback_status"] = "not_needed"
+    candidate["proof_artifact"] = "artifact:repair-proof"
+    verified = repair_state_narration(candidate)
+    assert "Status: verified" in verified
+    assert "Verification: passed" in verified
+    assert "Rollback: not_needed" in verified
+    assert "Proof: artifact:repair-proof" in verified
 
 
 def test_powermock_remains_no_candidate_human_gate(tmp_path: Path) -> None:

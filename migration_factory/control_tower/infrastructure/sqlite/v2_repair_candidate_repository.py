@@ -15,10 +15,13 @@ class SqliteV2RepairCandidateRepository:
         self._connection = connection
 
     def save_candidate(self, candidate: dict[str, Any]) -> None:
+        for key in ("_sandbox_root", "_target_path", "_after_text", "_patch_payload"):
+            if not candidate.get(key):
+                raise ValueError("internal_repair_candidate_required")
         public = public_repair_apply_candidate(candidate) or {}
         now = str(candidate.get("created_at") or utc_now_text())
         self._connection.execute(
-            """INSERT INTO v2_repair_apply_candidates (
+            """INSERT OR IGNORE INTO v2_repair_apply_candidates (
                 repair_candidate_id, job_id, stage_index, status, public_json,
                 internal_json, approval_json, execution_json, patch_checksum,
                 target_file_checksum, review_checksum, created_at, updated_at
@@ -68,6 +71,8 @@ class SqliteV2RepairCandidateRepository:
         public["status"] = str(row["status"])
         if row["approval_json"]:
             public["approval"] = json.loads(str(row["approval_json"]))
+            public["apply_enabled"] = public["status"] == "approved"
+            public["approval_enabled"] = False
         if row["execution_json"]:
             execution = json.loads(str(row["execution_json"]))
             public.update({
@@ -76,6 +81,8 @@ class SqliteV2RepairCandidateRepository:
                 "verification_status": execution.get("verification_status", public.get("verification_status", "")),
                 "rollback_status": execution.get("rollback_status", public.get("rollback_status", "")),
                 "proof_artifact": execution.get("proof_artifact", public.get("proof_artifact", "")),
+                "apply_enabled": False,
+                "approval_enabled": False,
             })
         return public
 
@@ -92,6 +99,10 @@ class SqliteV2RepairCandidateRepository:
             return None
         public = json.loads(str(row["public_json"]))
         public["status"] = str(row["status"])
+        if row["approval_json"]:
+            public["approval"] = json.loads(str(row["approval_json"]))
+            public["apply_enabled"] = public["status"] == "approved"
+            public["approval_enabled"] = False
         if row["execution_json"]:
             execution = json.loads(str(row["execution_json"]))
             public.update({
@@ -100,6 +111,8 @@ class SqliteV2RepairCandidateRepository:
                 "verification_status": execution.get("verification_status", public.get("verification_status", "")),
                 "rollback_status": execution.get("rollback_status", public.get("rollback_status", "")),
                 "proof_artifact": execution.get("proof_artifact", public.get("proof_artifact", "")),
+                "apply_enabled": False,
+                "approval_enabled": False,
             })
         return public
 

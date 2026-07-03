@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -30,6 +31,51 @@ from migration_factory.control_tower.schemas.run_configuration import (
     RunPolicy,
     StageContinuationPolicy,
 )
+
+
+class _FakeShadowClient:
+    provider = "fake"
+    deployment = "shadow-deployment"
+    endpoint_metadata = "endpoint_host=[redacted-endpoint]"
+
+    def answer_with_role(self, *, role: Any, prompt: str, fallback: str, **_: Any) -> Any:
+        role_value = getattr(role, "value", str(role))
+        content = (
+            {
+                "status": "available",
+                "role": "repair_reviewer",
+                "verdict": "advisory_accept",
+                "critique": "Advisory accept only.",
+                "risks": [],
+                "missing_evidence": [],
+                "unsafe_assumptions": [],
+                "recommended_next_action": "keep_non_actionable",
+                "confidence": "medium",
+            }
+            if role_value == "reviewer"
+            else {
+                "status": "available",
+                "role": "repair_proposer",
+                "root_cause": "initMocks marker.",
+                "repair_strategy": "openMocks candidate.",
+                "expected_change": "test-local replacement.",
+                "affected_files": ["src/test/java/ExampleTest.java"],
+                "risk_notes": [],
+                "required_backend_recipe": "INITMOCKS_TO_OPENMOCKS",
+                "confidence": "medium",
+            }
+        )
+        return type("FakeShadowResult", (), {
+            "content": json.dumps(content),
+            "provider": "fake",
+            "source": "fake",
+            "model_status": "live_ok",
+            "success": True,
+            "failure_reason": "",
+            "fallback_used": False,
+            "deployment": "shadow-deployment",
+            "endpoint_metadata": "endpoint_host=[redacted-endpoint]",
+        })()
 
 
 def _mutation_headers() -> dict[str, str]:
@@ -232,3 +278,92 @@ def test_fastapi_create_app_skips_repair_gate_when_disabled(tmp_path: Path) -> N
     with SqliteUnitOfWork(conn) as uow:
         open_gates = uow.phase_gates.list_open(job_id)
         assert not any(gate.gate_phase == "repair_review" for gate in open_gates)
+
+
+def test_live_diagnosis_persists_repair_candidate_then_approve_and_apply(tmp_path: Path) -> None:
+    app, client, conn = _app_and_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    _seed_policy(conn, job_id)
+    app.state.v2_failure_diagnosis_service._llm_repair_shadow_client = _FakeShadowClient()
+    app.state.v2_failure_diagnosis_service._llm_repair_shadow_enabled = True
+    sandbox = tmp_path / "sandbox"
+    target = sandbox / "src" / "test" / "java" / "ExampleTest.java"
+    target.parent.mkdir(parents=True)
+    target.write_text("class ExampleTest { void setUp(){ MockitoAnnotations.initMocks(this); } }\n", encoding="utf-8")
+
+    callback = app.state.v2_orchestrator_runner._diagnosis_callback
+    payload = {
+        "build_status": "BUILD_FAILED_IN_SANDBOX",
+        "sandbox_path": str(sandbox),
+        "message": "MockitoAnnotations.initMocks(this);",
+        "artifact_refs": {
+            "sandbox": str(sandbox),
+            "test_source": str(target),
+        },
+    }
+    callback(job_id, 2, "cmd-initmocks-live", "build_failed", payload)
+    callback(job_id, 2, "cmd-initmocks-live", "build_failed", payload)
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="build_failed",
+            status="failed",
+            message="MockitoAnnotations.initMocks(this);",
+            payload=payload,
+        )
+
+    rows = conn.execute("SELECT repair_candidate_id FROM v2_repair_apply_candidates WHERE job_id = ?", (job_id,)).fetchall()
+    assert len(rows) == 1
+    repair_candidate_id = str(rows[0]["repair_candidate_id"])
+
+    summary_response = client.get(f"/v1/v2/jobs/{job_id}/failure-summary")
+    assert summary_response.status_code == 200, summary_response.text
+    summary_candidate = summary_response.json()["repair_apply_candidate"]
+    assert summary_candidate["repair_candidate_id"] == repair_candidate_id
+    assert summary_candidate["status"] == "pending_human_approval"
+    assert "_target_path" not in json.dumps(summary_candidate)
+
+    get_response = client.get(f"/v1/v2/jobs/{job_id}/stages/2/repair-candidates/{repair_candidate_id}")
+    assert get_response.status_code == 200, get_response.text
+    candidate = get_response.json()["candidate"]
+    assert candidate["repair_candidate_id"] == repair_candidate_id
+    assert "_sandbox_root" not in json.dumps(candidate)
+
+    approve_response = client.post(
+        f"/v1/v2/jobs/{job_id}/stages/2/repair-candidates/{repair_candidate_id}/approve",
+        headers=_mutation_headers(),
+        json={
+            "repair_candidate_id": repair_candidate_id,
+            "patch_checksum": candidate["patch_checksum"],
+            "target_file_checksum": candidate["target_file_checksum"],
+            "review_checksum": candidate["review_checksum"],
+        },
+    )
+    assert approve_response.status_code == 200, approve_response.text
+    assert approve_response.json()["candidate"]["status"] == "approved"
+    assert approve_response.json()["candidate"]["apply_enabled"] is True
+    approved_summary = client.get(f"/v1/v2/jobs/{job_id}/failure-summary").json()
+    approved_nested = approved_summary["failures"][0]["supervision_trace"]["ai_diagnosis"]["classification"]["repair_apply_candidate"]
+    assert approved_nested["repair_candidate_id"] == repair_candidate_id
+    assert approved_nested["status"] == "approved"
+    assert approved_nested["apply_enabled"] is True
+
+    apply_response = client.post(
+        f"/v1/v2/jobs/{job_id}/stages/2/repair-candidates/{repair_candidate_id}/apply",
+        headers=_mutation_headers(),
+        json={"repair_candidate_id": repair_candidate_id},
+    )
+    assert apply_response.status_code == 200, apply_response.text
+    assert apply_response.json()["execution"]["execution_status"] == "verified"
+    assert apply_response.json()["execution"]["downstream_start_allowed"] is False
+    assert "openMocks" in target.read_text(encoding="utf-8")
+    verified_summary = client.get(f"/v1/v2/jobs/{job_id}/failure-summary").json()
+    verified_nested = verified_summary["failures"][0]["supervision_trace"]["ai_diagnosis"]["classification"]["repair_apply_candidate"]
+    assert verified_nested["status"] == "verified"
+    assert verified_nested["apply_enabled"] is False
+    assert verified_nested["proof_artifact"]
+
+    events = conn.execute("SELECT type, stage FROM v2_job_events WHERE job_id = ?", (job_id,)).fetchall()
+    assert not any(str(row["type"]) == "stage_started" and int(row["stage"] or 0) > 2 for row in events)

@@ -961,9 +961,15 @@ export function AssistantPanelContent({
 export function StageFailureEvidenceDetails({
   diagnosis,
   stage,
+  busyKey,
+  onApprove,
+  onApply,
 }: {
   diagnosis: NonNullable<V2FailureSummaryResponse["failures"][number]["supervision_trace"]["ai_diagnosis"]>;
   stage?: number | null;
+  busyKey?: string | null;
+  onApprove?: (candidate: V2RepairApplyCandidateResponse) => void;
+  onApply?: (candidate: V2RepairApplyCandidateResponse) => void;
 }) {
   const stageEvidence = diagnosis.stage_evidence;
   const classification = diagnosis.classification;
@@ -1018,7 +1024,12 @@ export function StageFailureEvidenceDetails({
           <RepairDraftDetails draft={classification.repair_proposal_draft ?? null} />
           <RepairDraftReviewDetails review={classification.repair_draft_review ?? null} />
           <LlmRepairShadowDetails trace={classification.llm_repair_shadow_trace ?? null} />
-          <RepairApplyCandidateDetails candidate={classification.repair_apply_candidate ?? null} />
+          <RepairApplyCandidateDetails
+            candidate={classification.repair_apply_candidate ?? null}
+            busyKey={busyKey}
+            onApprove={onApprove}
+            onApply={onApply}
+          />
         </div>
       )}
     </>
@@ -1109,7 +1120,17 @@ function LlmShadowRolePanel({
   );
 }
 
-function RepairApplyCandidateDetails({ candidate }: { candidate: V2RepairApplyCandidateResponse | null }) {
+export function RepairApplyCandidateDetails({
+  candidate,
+  busyKey,
+  onApprove,
+  onApply,
+}: {
+  candidate: V2RepairApplyCandidateResponse | null;
+  busyKey?: string | null;
+  onApprove?: (candidate: V2RepairApplyCandidateResponse) => void;
+  onApply?: (candidate: V2RepairApplyCandidateResponse) => void;
+}) {
   if (!candidate) {
     return (
       <div className="trace-section">
@@ -1119,6 +1140,10 @@ function RepairApplyCandidateDetails({ candidate }: { candidate: V2RepairApplyCa
       </div>
     );
   }
+  const approveBusy = busyKey === `approve:${candidate.repair_candidate_id}`;
+  const applyBusy = busyKey === `apply:${candidate.repair_candidate_id}`;
+  const pendingApproval = candidate.status === "pending_human_approval" && candidate.approval_enabled;
+  const approved = candidate.status === "approved" && candidate.apply_enabled;
   return (
     <div className="trace-section">
       <strong>Repair Apply Candidate</strong>
@@ -1143,6 +1168,16 @@ function RepairApplyCandidateDetails({ candidate }: { candidate: V2RepairApplyCa
       <p className="meta">Rollback: {candidate.rollback_status || "not_started"}</p>
       <p className="meta">Proof artifact: {candidate.proof_artifact || "pending"}</p>
       <p className="meta">Downstream start: {candidate.downstream_start_allowed ? "enabled" : "disabled"}</p>
+      {pendingApproval && onApprove && (
+        <button type="button" disabled={approveBusy} onClick={() => onApprove(candidate)}>
+          {approveBusy ? "Approving..." : "Approve repair candidate"}
+        </button>
+      )}
+      {approved && candidate.status !== "verified" && candidate.status !== "rolled_back" && onApply && (
+        <button type="button" disabled={applyBusy} onClick={() => onApply(candidate)}>
+          {applyBusy ? "Applying..." : "Apply approved repair"}
+        </button>
+      )}
     </div>
   );
 }
@@ -2009,7 +2044,13 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
                         <p className="meta">Proposal: {f.supervision_trace.ai_diagnosis.repair_proposal_id}</p>
                       )}
                       <p className="meta">Redaction: {f.supervision_trace.ai_diagnosis.redaction_status || "unknown"}</p>
-                      <StageFailureEvidenceDetails diagnosis={f.supervision_trace.ai_diagnosis} stage={f.stage} />
+                      <StageFailureEvidenceDetails
+                        diagnosis={f.supervision_trace.ai_diagnosis}
+                        stage={f.stage}
+                        busyKey={repairCandidateBusy}
+                        onApprove={approveRepairCandidate}
+                        onApply={applyRepairCandidate}
+                      />
                     </div>
                   ) : (
                     <p className="meta">No backend AI diagnosis record.</p>
@@ -2314,7 +2355,7 @@ export function RepairApplyCandidateCard({
   const approveBusy = busyKey === `approve:${candidate.repair_candidate_id}`;
   const applyBusy = busyKey === `apply:${candidate.repair_candidate_id}`;
   const pendingApproval = candidate.status === "pending_human_approval" && candidate.approval_enabled;
-  const approved = candidate.status === "approved" || candidate.apply_enabled;
+  const approved = candidate.status === "approved" && candidate.apply_enabled;
   return (
     <div className="repair-card">
       <strong>Repair Apply Candidate</strong>

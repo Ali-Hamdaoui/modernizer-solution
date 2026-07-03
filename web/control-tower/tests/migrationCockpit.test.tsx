@@ -11,6 +11,7 @@ import {
   EMPTY_R6_REPAIR_UI_STATE,
   GatePanelContent,
   RepairApplyCandidateCard,
+  RepairApplyCandidateDetails,
   formatGateArtifactRefLabel,
   hasUnknownNonRepairableFailure,
   isControlledR6DemoUiEnabled,
@@ -1448,6 +1449,59 @@ describe("V2 Migration Cockpit contract", () => {
     expect(JSON.stringify(bodies)).not.toContain("target_path");
     expect(JSON.stringify(bodies)).not.toContain("command");
     expect(JSON.stringify(bodies)).not.toContain("model");
+  });
+
+  it("repair candidate detail panel exposes safe approve/apply actions", () => {
+    const pending: V2RepairApplyCandidateResponse = {
+      job_id: "job-123",
+      stage_index: 1,
+      repair_candidate_id: "repair-candidate-r8",
+      status: "pending_human_approval",
+      family: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+      patch_source: "backend_deterministic_recipe",
+      llm_source: "advisory_only",
+      target_file: "src/test/java/ExampleTest.java",
+      pre_apply_checksum: "sha256:file",
+      target_file_checksum: "sha256:file",
+      patch_checksum: "sha256:patch",
+      review_checksum: "sha256:review",
+      proposal_checksum: "sha256:proposal",
+      candidate_checksum: "sha256:candidate",
+      approval_required: true,
+      apply_enabled: false,
+      approval_enabled: true,
+      sandbox_only: true,
+      legacy_mutation_allowed: false,
+      downstream_start_allowed: false,
+      llm_can_apply: false,
+      browser_can_supply_patch: false,
+      verification_status: "not_started",
+      rollback_status: "not_started",
+      proof_artifact: "",
+      created_at: "2026-07-03T00:00:00Z",
+    };
+    const approved = { ...pending, status: "approved", apply_enabled: true, approval_enabled: false };
+    const notApplyEnabled = { ...pending, status: "approved", apply_enabled: false, approval_enabled: false };
+
+    const pendingMarkup = renderToStaticMarkup(
+      <RepairApplyCandidateDetails candidate={pending} busyKey={null} onApprove={() => undefined} onApply={() => undefined} />
+    );
+    const approvedMarkup = renderToStaticMarkup(
+      <RepairApplyCandidateDetails candidate={approved} busyKey={null} onApprove={() => undefined} onApply={() => undefined} />
+    );
+    const notApplyEnabledMarkup = renderToStaticMarkup(
+      <RepairApplyCandidateDetails candidate={notApplyEnabled} busyKey={null} onApprove={() => undefined} onApply={() => undefined} />
+    );
+
+    expect(pendingMarkup).toContain("Approve repair candidate");
+    expect(pendingMarkup).not.toContain("Apply approved repair");
+    expect(approvedMarkup).toContain("Apply approved repair");
+    expect(approvedMarkup).not.toContain("Approve repair candidate");
+    expect(notApplyEnabledMarkup).not.toContain("Apply approved repair");
+    expect(pendingMarkup + approvedMarkup).not.toContain("Upload patch");
+    expect(pendingMarkup + approvedMarkup).not.toContain("Edit target");
+    expect(pendingMarkup + approvedMarkup).not.toContain("Override checksum");
+    expect(pendingMarkup + approvedMarkup).not.toContain("Model");
   });
 
   it("empty approvals render as no pending decisions copy", () => {

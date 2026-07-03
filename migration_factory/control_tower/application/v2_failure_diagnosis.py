@@ -119,6 +119,7 @@ class V2FailureDiagnosisService:
         event_sink: Callable[[str, int | None, str, str, str, dict[str, Any] | None], None] | None = None,
         evidence_collector: Callable[..., tuple[dict[str, Any], Path, dict[str, Any]]] | None = None,
         run_dir_resolver: Callable[[str, str], str | None] | None = None,
+        repair_candidate_sink: Callable[[dict[str, Any]], None] | None = None,
         llm_repair_shadow_client: Any | None = None,
         llm_repair_shadow_enabled: bool = False,
     ) -> None:
@@ -126,6 +127,7 @@ class V2FailureDiagnosisService:
         self._event_sink = event_sink
         self._evidence_collector = evidence_collector
         self._run_dir_resolver = run_dir_resolver
+        self._repair_candidate_sink = repair_candidate_sink
         self._llm_repair_shadow_client = llm_repair_shadow_client
         self._llm_repair_shadow_enabled = llm_repair_shadow_enabled
 
@@ -789,13 +791,14 @@ class V2FailureDiagnosisService:
             llm_client=self._llm_repair_shadow_client,
             llm_shadow_enabled=self._llm_repair_shadow_enabled,
         )
-        classification["repair_apply_candidate"] = public_repair_apply_candidate(
-            create_repair_apply_candidate(
-                classification,
-                evidence_pack,
-                classification["llm_repair_shadow_trace"],
-            )
+        internal_candidate = create_repair_apply_candidate(
+            classification,
+            evidence_pack,
+            classification["llm_repair_shadow_trace"],
         )
+        if internal_candidate is not None and self._repair_candidate_sink is not None:
+            self._repair_candidate_sink(internal_candidate)
+        classification["repair_apply_candidate"] = public_repair_apply_candidate(internal_candidate)
         classification["repair_enabled"] = False
         return classification
 
@@ -846,6 +849,7 @@ def create_orchestrator_diagnosis_callback(
     event_sink: Any | None = None,
     evidence_collector: Any | None = None,
     run_dir_resolver: Any | None = None,
+    repair_candidate_sink: Any | None = None,
     profile_id: str | None = None,
     pom_summary_ref: str | None = None,
     sandbox_binding_ref: str | None = None,
@@ -869,6 +873,7 @@ def create_orchestrator_diagnosis_callback(
             event_sink=event_sink,
             evidence_collector=evidence_collector,
             run_dir_resolver=run_dir_resolver,
+            repair_candidate_sink=repair_candidate_sink,
         )
 
     def callback(
