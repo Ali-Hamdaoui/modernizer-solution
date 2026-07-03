@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-from uuid import uuid4
 
 from migration_factory.control_tower.application.redaction import redact_model_summary, redact_public_value
 from migration_factory.control_tower.application.v2_model_schemas import extract_json_object
@@ -66,17 +65,37 @@ def create_repair_strategy_packet(
         llm_client=llm_client,
         llm_enabled=llm_enabled and policy.llm_reviewer_required,
     )
-    fallback = _fallback_trace(policy, proposer, reviewer)
+    evidence_pack_checksum = str(stage_evidence.get("evidence_pack_checksum") or "")
+    classification_status = str(classification.get("classification_status") or "")
+    fallback = _fallback_trace(
+        policy,
+        proposer,
+        reviewer,
+        llm_client=llm_client,
+        llm_enabled=llm_enabled,
+    )
     status = _strategy_status(policy, missing)
     output = proposer["output"]
+    packet_job_id = str(job_id or stage_evidence.get("job_id") or "")
+    packet_stage_index = stage_index if stage_index is not None else stage_evidence.get("stage_index")
+    base_hash = sha256_canonical_json({
+        "job_id": packet_job_id,
+        "stage_index": packet_stage_index,
+        "family": policy.family,
+        "evidence_pack_checksum": evidence_pack_checksum,
+    })[:16]
     packet = {
-        "strategy_id": f"repair-strategy-{uuid4().hex[:12]}",
-        "job_id": str(job_id or stage_evidence.get("job_id") or ""),
-        "stage_index": stage_index if stage_index is not None else stage_evidence.get("stage_index"),
+        "strategy_id": f"repair-strategy-{base_hash}-v1",
+        "strategy_base_id": f"repair-strategy-{base_hash}",
+        "version": 1,
+        "job_id": packet_job_id,
+        "stage_index": packet_stage_index,
         "family": policy.family,
         "risk_level": policy.risk_level,
         "category": policy.category,
         "strategy_status": status,
+        "evidence_pack_checksum": evidence_pack_checksum,
+        "classification_status": classification_status,
         "apply_candidate_allowed": bool(policy.apply_candidate_allowed),
         "backend_recipe_available": bool(policy.backend_recipe_available),
         "human_gate_required": bool(policy.human_gate_required),
@@ -93,8 +112,17 @@ def create_repair_strategy_packet(
         "llm_fallback": fallback,
         "backend_gate": _backend_gate(),
     }
-    packet["strategy_checksum"] = f"sha256:{sha256_canonical_json(packet)}"
+    packet["strategy_checksum"] = repair_strategy_packet_checksum(packet)
     return _clamp_packet(packet, policy)
+
+
+def repair_strategy_packet_checksum(packet: dict[str, Any]) -> str:
+    body = {
+        key: value
+        for key, value in packet.items()
+        if key not in {"strategy_id", "strategy_base_id", "version", "strategy_checksum", "created_at", "updated_at", "history_count", "history"}
+    }
+    return f"sha256:{sha256_canonical_json(body)}"
 
 
 def repair_strategy_narration(packet: dict[str, Any] | None, candidate: dict[str, Any] | None = None) -> str:
@@ -104,13 +132,26 @@ def repair_strategy_narration(packet: dict[str, Any] | None, candidate: dict[str
     reviewer = packet.get("llm_reviewer") if isinstance(packet.get("llm_reviewer"), dict) else {}
     fallback = packet.get("llm_fallback") if isinstance(packet.get("llm_fallback"), dict) else {}
     candidate_text = "exists" if candidate else "none"
+    version = packet.get("version") or "unknown"
+    history_count = int(packet.get("history_count") or 0)
+    fallback_source = fallback.get("fallback_validated_output_source") or "none"
+    changed_text = (
+        f" Strategy history has {history_count} versions; latest differs from earlier packet checksums."
+        if history_count > 1
+        else " Strategy history has one version."
+    )
     return (
-        f"Repair strategy: family={packet.get('family')}, risk={packet.get('risk_level')}, "
-        f"status={packet.get('strategy_status')}. Root cause: {packet.get('root_cause')}. "
+        f"Repair strategy: id={packet.get('strategy_id')}, version={version}, "
+        f"family={packet.get('family')}, risk={packet.get('risk_level')}, status={packet.get('strategy_status')}. "
+        f"Checksum={packet.get('strategy_checksum')}; evidence={packet.get('evidence_pack_checksum')}. "
+        f"Root cause: {packet.get('root_cause')}. "
         f"Proposer: {_trace_summary(proposer)} Reviewer: {_trace_summary(reviewer)} "
-        f"Fallback: {_trace_summary(fallback)} Missing evidence: {', '.join(packet.get('missing_evidence') or []) or 'none'}. "
+        f"Fallback: {_trace_summary(fallback)}; fallback model invoked={bool(fallback.get('fallback_model_invoked'))}; "
+        f"fallback output source={fallback_source}. Missing evidence: {', '.join(packet.get('missing_evidence') or []) or 'none'}. "
         f"Engineer next: {'; '.join(packet.get('engineer_checklist') or []) or packet.get('recommended_strategy')}. "
         f"Apply candidate: {candidate_text}. Apply allowed: {bool(packet.get('apply_candidate_allowed')) and bool(packet.get('backend_recipe_available'))}. "
+        + changed_text
+        + " "
         "Assistant cannot approve, apply, execute, or start downstream; backend and human gates own state changes."
     )
 
@@ -280,9 +321,16 @@ def _trace(role: str, status: str, llm_invoked: bool, fallback_used: bool, reaso
     }
 
 
-def _fallback_trace(policy: RepairFamilyPolicy, proposer: dict[str, Any], reviewer: dict[str, Any]) -> dict[str, Any]:
+def _fallback_trace(
+    policy: RepairFamilyPolicy,
+    proposer: dict[str, Any],
+    reviewer: dict[str, Any],
+    *,
+    llm_client: object | None,
+    llm_enabled: bool,
+) -> dict[str, Any]:
     used = bool(proposer.get("fallback_used")) or bool(reviewer.get("fallback_used"))
-    output = {
+    deterministic = {
         "status": "fallback_used" if used else "unavailable",
         "role": "repair_strategy_fallback",
         "verdict": "advisory_needs_changes" if used else "advisory_accept",
@@ -293,7 +341,68 @@ def _fallback_trace(policy: RepairFamilyPolicy, proposer: dict[str, Any], review
         "recommended_next_action": _recommended_strategy(policy),
         "confidence": "low",
     }
-    return _trace("repair_strategy_fallback", output["status"], False, used, "" if used else "fallback_model_not_needed", "", output, "fallback_validated" if used else "not_applicable")
+    if not used:
+        trace = _trace("repair_strategy_fallback", deterministic["status"], False, False, "fallback_model_not_needed", "", deterministic, "not_applicable")
+        trace.update({
+            "fallback_model_invoked": False,
+            "fallback_model_used": False,
+            "fallback_failure_reason": "",
+            "fallback_validated_output_source": "none",
+        })
+        return trace
+
+    input_payload = {
+        "policy": policy.to_dict(),
+        "proposer_trace": proposer,
+        "reviewer_trace": reviewer,
+        "required_schema": "repair_strategy_fallback",
+        "governance": _backend_gate(),
+    }
+    input_checksum = f"sha256:{sha256_canonical_json(redact_public_value(input_payload))}"
+    if llm_client and llm_enabled:
+        try:
+            prompt = redact_model_summary(json.dumps(redact_public_value(input_payload), sort_keys=True)[:6000])
+            fallback_text = json.dumps(deterministic, sort_keys=True, separators=(",", ":"))
+            if hasattr(llm_client, "answer_with_role"):
+                raw = llm_client.answer_with_role(role=V2ModelRole.FALLBACK, prompt=prompt, fallback=fallback_text)
+            elif hasattr(llm_client, "answer"):
+                raw = llm_client.answer(prompt=prompt, fallback=fallback_text)
+            else:
+                raise TypeError("llm_strategy_client_missing_supported_method")
+            parsed = extract_json_object(str(getattr(raw, "content", raw) or ""))
+            if not isinstance(parsed, dict):
+                raise ValueError("invalid_json_fallback_model_output")
+            output = _clamp_output(parsed, "fallback")
+            missing = _missing_output_fields(output, "fallback")
+            if missing:
+                raise ValueError("schema_missing:" + ",".join(missing))
+            trace = _trace("repair_strategy_fallback", "fallback_used", True, True, "", input_checksum, output, "validated")
+            trace.update({
+                "fallback_model_invoked": True,
+                "fallback_model_used": True,
+                "fallback_failure_reason": "",
+                "fallback_validated_output_source": "fallback_model",
+            })
+            return trace
+        except Exception as exc:
+            reason = redact_model_summary(str(exc))[:300]
+            trace = _trace("repair_strategy_fallback", "fallback_used", True, True, reason, input_checksum, _clamp_output(deterministic, "fallback"), "fallback_validated")
+            trace.update({
+                "fallback_model_invoked": True,
+                "fallback_model_used": False,
+                "fallback_failure_reason": reason,
+                "fallback_validated_output_source": "deterministic_fallback",
+            })
+            return trace
+
+    trace = _trace("repair_strategy_fallback", "fallback_used", False, True, "fallback_model_unconfigured", input_checksum, _clamp_output(deterministic, "fallback"), "fallback_validated")
+    trace.update({
+        "fallback_model_invoked": False,
+        "fallback_model_used": False,
+        "fallback_failure_reason": "fallback_model_unconfigured",
+        "fallback_validated_output_source": "deterministic_fallback",
+    })
+    return trace
 
 
 def _default_proposer(policy: RepairFamilyPolicy, classification: dict[str, Any], stage_evidence: dict[str, Any], patterns: list[str], missing: list[str]) -> dict[str, Any]:

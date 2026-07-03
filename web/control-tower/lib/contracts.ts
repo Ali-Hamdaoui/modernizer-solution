@@ -1109,6 +1109,10 @@ export type V2RepairStrategyTraceResponse = {
   output: Record<string, unknown>;
   output_checksum: string;
   schema_validation_status: string;
+  fallback_model_invoked?: boolean;
+  fallback_model_used?: boolean;
+  fallback_failure_reason?: string;
+  fallback_validated_output_source?: string;
   non_actionable: boolean;
   apply_allowed: boolean;
   approval_allowed: boolean;
@@ -1117,12 +1121,21 @@ export type V2RepairStrategyTraceResponse = {
 
 export type V2RepairStrategyPacketResponse = {
   strategy_id: string;
+  strategy_base_id?: string;
+  version?: number | null;
   job_id: string;
   stage_index: number | null;
   family: string;
   risk_level: string;
   category: string;
   strategy_status: string;
+  strategy_checksum?: string;
+  evidence_pack_checksum?: string;
+  classification_status?: string;
+  created_at?: string;
+  updated_at?: string;
+  history_count?: number;
+  history?: V2RepairStrategyHistoryResponse[];
   apply_candidate_allowed: boolean;
   backend_recipe_available: boolean;
   human_gate_required: boolean;
@@ -1143,7 +1156,17 @@ export type V2RepairStrategyPacketResponse = {
     llm_can_approve: boolean;
     downstream_start_allowed: boolean;
   };
+};
+
+export type V2RepairStrategyHistoryResponse = {
+  strategy_id: string;
+  version?: number | null;
+  family: string;
+  risk_level: string;
+  strategy_status: string;
   strategy_checksum: string;
+  evidence_pack_checksum?: string;
+  created_at: string;
 };
 
 export type V2MigrationMemoryMatchResponse = {

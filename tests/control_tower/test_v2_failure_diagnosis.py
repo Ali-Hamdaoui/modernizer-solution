@@ -863,6 +863,44 @@ class TestStageAwareEvidence:
         assert strategy["engineer_checklist"]
         assert classification["repair_apply_candidate"] is None
 
+    def test_strategy_packet_persisted_during_diagnosis_sink(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        saved_packets: list[dict[str, Any]] = []
+
+        def save_strategy(packet: dict[str, Any]) -> dict[str, Any]:
+            saved = dict(packet)
+            saved["strategy_id"] = f"{packet['strategy_base_id']}-v1"
+            saved["version"] = 1
+            saved["created_at"] = "2026-07-03T00:00:00Z"
+            saved["updated_at"] = "2026-07-03T00:00:00Z"
+            saved_packets.append(saved)
+            return saved
+
+        service = V2FailureDiagnosisService(repair_strategy_sink=save_strategy)
+        payload = {
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+            "sandbox_path": str(tmp_path / "sandbox"),
+            "message": "org.powermock:powermock-api-mockito2 requires review",
+            "artifact_refs": {"pom_xml": str(tmp_path / "pom.xml")},
+        }
+
+        diagnosis = service.diagnose(
+            job_id="job-r9",
+            stage_index=2,
+            command_id="cmd-r9-strategy",
+            event_type="build_failed",
+            payload=payload,
+        )
+
+        classification = diagnosis.classification_envelope
+        assert classification is not None
+        strategy = classification["repair_strategy_packet"]
+        assert saved_packets
+        assert strategy["strategy_id"] == saved_packets[0]["strategy_id"]
+        assert strategy["version"] == 1
+
     def test_diagnosis_attaches_non_actionable_initmocks_draft(
         self,
         diagnosis_service: V2FailureDiagnosisService,

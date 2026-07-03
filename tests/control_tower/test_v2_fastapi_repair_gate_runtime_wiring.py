@@ -14,6 +14,9 @@ from migration_factory.control_tower.application.v2_setup_service import (
     CreateSetupRequest,
     V2SetupService,
 )
+from migration_factory.control_tower.application.v2_repair_strategy_packet import (
+    create_repair_strategy_packet,
+)
 from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.infrastructure.sqlite.migrations import (
     apply_pending_migrations,
@@ -26,6 +29,7 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository i
     V2PreflightResultRecord,
 )
 from ._helpers import canonical_json, seed_runner_profile, sha256_json
+from .test_v2_repair_strategy_packet import _powermock_classification, _powermock_evidence
 from .v1_fixtures import make_v1_pipeline_definition
 from migration_factory.control_tower.schemas.run_configuration import (
     RunPolicy,
@@ -227,6 +231,43 @@ def _seed_policy(
             job_id,
         ),
     )
+
+
+def test_repair_strategy_read_endpoints_return_safe_persisted_packets(tmp_path: Path) -> None:
+    _app, client, conn = _app_and_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    packet = create_repair_strategy_packet(
+        job_id=job_id,
+        stage_index=2,
+        classification=_powermock_classification(),
+        stage_evidence={**_powermock_evidence(), "job_id": job_id},
+    )
+    with SqliteUnitOfWork(conn) as uow:
+        first = uow.v2_repair_strategies.save_strategy_packet(packet)
+        changed = dict(packet)
+        changed["recommended_strategy"] = "Alternate engineer-reviewed plan."
+        second = uow.v2_repair_strategies.save_strategy_packet(changed)
+
+    latest = client.get(f"/v1/v2/jobs/{job_id}/repair-strategies/latest")
+    assert latest.status_code == 200, latest.text
+    body = latest.json()["strategy"]
+    assert body["strategy_id"] == second["strategy_id"]
+    assert body["version"] == 2
+    assert body["history_count"] == 2
+    assert body["backend_gate"]["llm_can_apply"] is False
+
+    history = client.get(f"/v1/v2/jobs/{job_id}/repair-strategies")
+    assert history.status_code == 200, history.text
+    assert [item["version"] for item in history.json()["strategies"]] == [2, 1]
+
+    stage_latest = client.get(f"/v1/v2/jobs/{job_id}/stages/2/repair-strategies/latest")
+    assert stage_latest.status_code == 200, stage_latest.text
+    assert stage_latest.json()["strategy"]["strategy_id"] == second["strategy_id"]
+
+    by_id = client.get(f"/v1/v2/jobs/{job_id}/repair-strategies/{first['strategy_id']}")
+    assert by_id.status_code == 200, by_id.text
+    assert by_id.json()["strategy"]["version"] == 1
 
 
 def test_fastapi_create_app_repair_gate_callback_creates_repair_review_gate(tmp_path: Path) -> None:

@@ -1236,8 +1236,14 @@ function RepairStrategyDetails({ packet }: { packet: V2RepairStrategyPacketRespo
     );
   }
   return (
-    <div className="trace-section">
+      <div className="trace-section">
       <strong>Repair Strategy</strong>
+      <p className="meta">Strategy ID: {packet.strategy_id || "n/a"}</p>
+      <p className="meta">Version: {packet.version ?? "n/a"}</p>
+      <p className="meta">Strategy checksum: {packet.strategy_checksum || "n/a"}</p>
+      <p className="meta">Evidence pack checksum: {packet.evidence_pack_checksum || "n/a"}</p>
+      <p className="meta">Created at: {packet.created_at || "n/a"}</p>
+      <p className="meta">Strategy history count: {packet.history_count ?? packet.history?.length ?? 0}</p>
       <p className="meta">Family: {packet.family}</p>
       <p className="meta">Risk level: {packet.risk_level}</p>
       <p className="meta">Strategy status: {packet.strategy_status}</p>
@@ -1255,6 +1261,16 @@ function RepairStrategyDetails({ packet }: { packet: V2RepairStrategyPacketRespo
       <RepairStrategyTraceDetails title="Proposer output" trace={packet.llm_proposer ?? null} />
       <RepairStrategyTraceDetails title="Reviewer output" trace={packet.llm_reviewer ?? null} />
       <RepairStrategyTraceDetails title="Fallback output" trace={packet.llm_fallback ?? null} />
+      {!!packet.history?.length && (
+        <>
+          <strong>Repair Strategy History</strong>
+          {packet.history.map((item) => (
+            <p className="meta" key={item.strategy_id}>
+              v{item.version ?? "?"} {item.family} / {item.risk_level} / {item.strategy_status} / {item.strategy_checksum || "no checksum"} / {item.created_at || "no date"}
+            </p>
+          ))}
+        </>
+      )}
       <strong>Backend gate</strong>
       <p className="meta">Backend authority: {packet.backend_gate?.backend_authority ? "yes" : "no"}</p>
       <p className="meta">LLM can apply: {packet.backend_gate?.llm_can_apply ? "yes" : "no"}</p>
@@ -1285,6 +1301,8 @@ function RepairStrategyTraceDetails({
       <strong>{title}</strong>
       <p className="meta">Status: {trace.status}</p>
       <p className="meta">Fallback used: {trace.fallback_used ? "yes" : "no"}</p>
+      <p className="meta">Fallback model invoked: {trace.fallback_model_invoked ? "yes" : "no"}</p>
+      <p className="meta">Fallback output source: {trace.fallback_validated_output_source || "n/a"}</p>
       <p className="meta">Confidence: {String(output.confidence ?? "unknown")}</p>
       {"verdict" in output && <p className="meta">Verdict: {String(output.verdict ?? "")}</p>}
       {"recommended_strategy" in output && <p className="meta">Recommended: {String(output.recommended_strategy ?? "")}</p>}

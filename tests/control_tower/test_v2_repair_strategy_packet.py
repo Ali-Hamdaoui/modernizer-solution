@@ -46,6 +46,54 @@ class _InvalidStrategyClient:
         return type("FakeResult", (), {"content": "not json"})()
 
 
+class _ProposerFailsFallbackClient:
+    def answer_with_role(self, *, role: Any, prompt: str, fallback: str, **_: Any) -> Any:
+        role_value = getattr(role, "value", str(role))
+        if role_value == "proposer":
+            raise RuntimeError("proposer unavailable")
+        if role_value == "fallback":
+            return type("FakeResult", (), {"content": json.dumps({
+                "status": "fallback_used",
+                "role": "repair_strategy_fallback",
+                "verdict": "advisory_needs_changes",
+                "critique": "Fallback model reviewed failed proposer path.",
+                "risks": ["advisory only"],
+                "missing_evidence": [],
+                "unsafe_assumptions": ["no apply"],
+                "recommended_next_action": "engineer_review",
+                "confidence": "medium",
+            })})()
+        return type("FakeResult", (), {"content": json.dumps({
+            "status": "available",
+            "role": "repair_strategy_reviewer",
+            "verdict": "advisory_accept",
+            "critique": "Reviewer ok.",
+            "risks": [],
+            "missing_evidence": [],
+            "unsafe_assumptions": [],
+            "recommended_next_action": "engineer_review",
+            "confidence": "medium",
+        })})()
+
+
+class _ReviewerFailsFallbackClient(_ProposerFailsFallbackClient):
+    def answer_with_role(self, *, role: Any, prompt: str, fallback: str, **_: Any) -> Any:
+        role_value = getattr(role, "value", str(role))
+        if role_value == "reviewer":
+            raise RuntimeError("reviewer unavailable")
+        if role_value == "proposer":
+            return _FakeStrategyClient().answer_with_role(role=role, prompt=prompt, fallback=fallback)
+        return super().answer_with_role(role=role, prompt=prompt, fallback=fallback)
+
+
+class _InvalidFallbackClient(_ProposerFailsFallbackClient):
+    def answer_with_role(self, *, role: Any, prompt: str, fallback: str, **_: Any) -> Any:
+        role_value = getattr(role, "value", str(role))
+        if role_value == "fallback":
+            return type("FakeResult", (), {"content": "{\"status\":\"fallback_used\"}"})()
+        return super().answer_with_role(role=role, prompt=prompt, fallback=fallback)
+
+
 def _powermock_classification() -> dict[str, Any]:
     return {
         "stage_index": 2,
@@ -151,3 +199,50 @@ def test_unknown_strategy_policy_is_safe() -> None:
     assert packet["risk_level"] == "unknown"
     assert packet["strategy_status"] == "unknown"
     assert packet["apply_candidate_allowed"] is False
+
+
+def test_fallback_model_invoked_when_proposer_fails() -> None:
+    packet = create_repair_strategy_packet(
+        job_id="job-r9",
+        stage_index=2,
+        classification=_powermock_classification(),
+        stage_evidence=_powermock_evidence(),
+        llm_client=_ProposerFailsFallbackClient(),
+        llm_enabled=True,
+    )
+    fallback = packet["llm_fallback"]
+    assert fallback["fallback_model_invoked"] is True
+    assert fallback["fallback_model_used"] is True
+    assert fallback["fallback_validated_output_source"] == "fallback_model"
+    assert fallback["apply_allowed"] is False
+    assert fallback["approval_allowed"] is False
+    assert fallback["downstream_start_allowed"] is False
+
+
+def test_fallback_model_invoked_when_reviewer_fails() -> None:
+    packet = create_repair_strategy_packet(
+        job_id="job-r9",
+        stage_index=2,
+        classification=_powermock_classification(),
+        stage_evidence=_powermock_evidence(),
+        llm_client=_ReviewerFailsFallbackClient(),
+        llm_enabled=True,
+    )
+    assert packet["llm_fallback"]["fallback_model_invoked"] is True
+    assert packet["llm_fallback"]["fallback_validated_output_source"] == "fallback_model"
+
+
+def test_invalid_fallback_model_output_uses_deterministic_fallback() -> None:
+    packet = create_repair_strategy_packet(
+        job_id="job-r9",
+        stage_index=2,
+        classification=_powermock_classification(),
+        stage_evidence=_powermock_evidence(),
+        llm_client=_InvalidFallbackClient(),
+        llm_enabled=True,
+    )
+    fallback = packet["llm_fallback"]
+    assert fallback["fallback_model_invoked"] is True
+    assert fallback["fallback_model_used"] is False
+    assert fallback["fallback_validated_output_source"] == "deterministic_fallback"
+    assert fallback["output"]["non_actionable"] is True

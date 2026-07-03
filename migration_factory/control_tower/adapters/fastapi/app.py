@@ -803,12 +803,20 @@ def create_app(
         if app.state.public_event_notifier is not None:
             asyncio.run(app.state.public_event_notifier.notify())
 
+    def _diagnosis_repair_strategy_sink(packet: dict[str, Any]) -> dict[str, Any] | None:
+        with unit_of_work_factory() as uow:
+            saved = uow.v2_repair_strategies.save_strategy_packet(packet)
+        if app.state.public_event_notifier is not None:
+            asyncio.run(app.state.public_event_notifier.notify())
+        return saved
+
     _repair_flow = V2RepairFlowService()
     llm_repair_shadow_enabled = _llm_repair_shadow_enabled(app.state.v2_settings)
     _diagnosis_service = V2FailureDiagnosisService(
         repair_flow=_repair_flow,
         event_sink=_diagnosis_event_sink,
         repair_candidate_sink=_diagnosis_repair_candidate_sink,
+        repair_strategy_sink=_diagnosis_repair_strategy_sink,
         llm_repair_shadow_client=app.state.v2_assistant_model_client,
         llm_repair_shadow_enabled=llm_repair_shadow_enabled,
     )
@@ -1475,7 +1483,56 @@ def create_app(
             if candidate:
                 summary["repair_apply_candidate"] = candidate
                 _overlay_repair_apply_candidate(summary, candidate)
+            strategy_repo = getattr(uow, "v2_repair_strategies", None)
+            strategy = strategy_repo.latest_for_job(job_id) if strategy_repo is not None else None
+            strategy_history = strategy_repo.history_for_job(job_id) if strategy_repo is not None else []
+            if strategy:
+                safe_strategy = _safe_repair_strategy_packet(strategy)
+                if safe_strategy is not None:
+                    safe_strategy["history_count"] = len(strategy_history)
+                    summary["repair_strategy_packet"] = safe_strategy
+                    _overlay_repair_strategy_packet(summary, safe_strategy, strategy_history)
         return redact_public_data(summary)
+
+    @app.get("/v1/v2/jobs/{job_id}/repair-strategies/latest")
+    def get_latest_repair_strategy(job_id: str) -> dict[str, Any]:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            packet = uow.v2_repair_strategies.latest_for_job(job_id)
+            history_count = len(uow.v2_repair_strategies.history_for_job(job_id))
+        if packet is None:
+            raise _error(status.HTTP_404_NOT_FOUND, "REPAIR_STRATEGY_NOT_FOUND", "Repair strategy not found.")
+        safe = _safe_repair_strategy_packet(packet) or {}
+        safe["history_count"] = history_count
+        return {"strategy": redact_public_data(safe)}
+
+    @app.get("/v1/v2/jobs/{job_id}/repair-strategies")
+    def list_repair_strategies(job_id: str) -> dict[str, Any]:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            history = uow.v2_repair_strategies.history_for_job(job_id)
+        return {"strategies": [redact_public_data(_safe_repair_strategy_packet(packet) or {}) for packet in history]}
+
+    @app.get("/v1/v2/jobs/{job_id}/stages/{stage_index}/repair-strategies/latest")
+    def get_latest_stage_repair_strategy(job_id: str, stage_index: int) -> dict[str, Any]:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            packet = uow.v2_repair_strategies.latest_for_stage(job_id, stage_index)
+            history_count = len(uow.v2_repair_strategies.history_for_stage(job_id, stage_index))
+        if packet is None:
+            raise _error(status.HTTP_404_NOT_FOUND, "REPAIR_STRATEGY_NOT_FOUND", "Repair strategy not found.")
+        safe = _safe_repair_strategy_packet(packet) or {}
+        safe["history_count"] = history_count
+        return {"strategy": redact_public_data(safe)}
+
+    @app.get("/v1/v2/jobs/{job_id}/repair-strategies/{strategy_id}")
+    def get_repair_strategy(job_id: str, strategy_id: str) -> dict[str, Any]:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            packet = uow.v2_repair_strategies.get_by_id(job_id, strategy_id)
+        if packet is None:
+            raise _error(status.HTTP_404_NOT_FOUND, "REPAIR_STRATEGY_NOT_FOUND", "Repair strategy not found.")
+        return {"strategy": redact_public_data(_safe_repair_strategy_packet(packet) or {})}
 
     @app.get("/v1/v2/jobs/{job_id}/stages/{stage_index}/repair-candidates/{repair_candidate_id}")
     def get_repair_candidate(job_id: str, stage_index: int, repair_candidate_id: str) -> dict[str, Any]:
@@ -8059,7 +8116,15 @@ def _handle_v2_assistant_read_only_ask(
             )
             candidate_repo = getattr(uow, "v2_repair_candidates", None)
             repair_candidate = candidate_repo.latest_public_for_job(job_id) if candidate_repo is not None else None
-            latest_strategy = _latest_repair_strategy_packet(events)
+            strategy_repo = getattr(uow, "v2_repair_strategies", None)
+            latest_strategy = strategy_repo.latest_for_job(job_id) if strategy_repo is not None else None
+            if latest_strategy is None:
+                latest_strategy = _latest_repair_strategy_packet(events)
+            else:
+                safe_latest = _safe_repair_strategy_packet(latest_strategy)
+                if safe_latest is not None:
+                    safe_latest["history_count"] = len(strategy_repo.history_for_job(job_id))
+                    latest_strategy = safe_latest
             repair_question_terms = ("repair", "fix", "apply", "approval", "approve")
             is_repair_question = any(term in question.strip().lower() for term in repair_question_terms)
             if is_repair_question:
@@ -12613,7 +12678,37 @@ def _overlay_repair_apply_candidate(summary: dict[str, Any], candidate: dict[str
             isinstance(existing, dict)
             and str(existing.get("repair_candidate_id") or "") == candidate_id
         ):
-            classification["repair_apply_candidate"] = candidate
+                classification["repair_apply_candidate"] = candidate
+
+
+def _overlay_repair_strategy_packet(
+    summary: dict[str, Any],
+    strategy: dict[str, Any],
+    history: list[dict[str, Any]] | None = None,
+) -> None:
+    stage_index = strategy.get("stage_index")
+    strategy_id = str(strategy.get("strategy_id") or "")
+    if not strategy_id:
+        return
+    safe_history = [_safe_repair_strategy_history_item(item) for item in list(history or [])]
+    for failure in summary.get("failures", []):
+        if not isinstance(failure, dict):
+            continue
+        if stage_index is not None and failure.get("stage") != stage_index:
+            continue
+        trace = failure.get("supervision_trace")
+        if not isinstance(trace, dict):
+            continue
+        diagnosis = trace.get("ai_diagnosis")
+        if not isinstance(diagnosis, dict):
+            continue
+        classification = diagnosis.get("classification")
+        if not isinstance(classification, dict):
+            continue
+        latest = dict(strategy)
+        latest["history"] = safe_history
+        latest["history_count"] = len(safe_history)
+        classification["repair_strategy_packet"] = latest
 
 
 def _latest_repair_strategy_packet(events: tuple[Any, ...]) -> dict[str, Any] | None:
@@ -12944,6 +13039,18 @@ def _safe_repair_strategy_packet(value: Any) -> dict[str, Any] | None:
         "risk_level": _safe_failure_str(value.get("risk_level")),
         "category": _safe_failure_str(value.get("category")),
         "strategy_status": _safe_failure_str(value.get("strategy_status")),
+        "strategy_base_id": _safe_failure_str(value.get("strategy_base_id")),
+        "version": value.get("version"),
+        "evidence_pack_checksum": _safe_failure_str(value.get("evidence_pack_checksum")),
+        "classification_status": _safe_failure_str(value.get("classification_status")),
+        "created_at": _safe_failure_str(value.get("created_at")),
+        "updated_at": _safe_failure_str(value.get("updated_at")),
+        "history_count": int(value.get("history_count") or 0),
+        "history": [
+            _safe_repair_strategy_history_item(item)
+            for item in list(value.get("history") or [])[:20]
+            if isinstance(item, dict)
+        ],
         "apply_candidate_allowed": bool(value.get("apply_candidate_allowed")),
         "backend_recipe_available": bool(value.get("backend_recipe_available")),
         "human_gate_required": bool(value.get("human_gate_required")),
@@ -12965,6 +13072,21 @@ def _safe_repair_strategy_packet(value: Any) -> dict[str, Any] | None:
             "downstream_start_allowed": False,
         },
         "strategy_checksum": _safe_failure_str(value.get("strategy_checksum")),
+    }
+
+
+def _safe_repair_strategy_history_item(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        "strategy_id": _safe_failure_str(value.get("strategy_id")),
+        "version": value.get("version"),
+        "family": _safe_failure_str(value.get("family")),
+        "risk_level": _safe_failure_str(value.get("risk_level")),
+        "strategy_status": _safe_failure_str(value.get("strategy_status")),
+        "strategy_checksum": _safe_failure_str(value.get("strategy_checksum")),
+        "evidence_pack_checksum": _safe_failure_str(value.get("evidence_pack_checksum")),
+        "created_at": _safe_failure_str(value.get("created_at")),
     }
 
 
@@ -13008,6 +13130,10 @@ def _safe_strategy_trace(value: Any) -> dict[str, Any] | None:
         },
         "output_checksum": _safe_failure_str(value.get("output_checksum")),
         "schema_validation_status": _safe_failure_str(value.get("schema_validation_status")),
+        "fallback_model_invoked": bool(value.get("fallback_model_invoked")),
+        "fallback_model_used": bool(value.get("fallback_model_used")),
+        "fallback_failure_reason": _safe_failure_str(value.get("fallback_failure_reason")),
+        "fallback_validated_output_source": _safe_failure_str(value.get("fallback_validated_output_source")),
         "non_actionable": True,
         "apply_allowed": False,
         "approval_allowed": False,

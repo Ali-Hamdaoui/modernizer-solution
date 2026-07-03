@@ -123,6 +123,7 @@ class V2FailureDiagnosisService:
         evidence_collector: Callable[..., tuple[dict[str, Any], Path, dict[str, Any]]] | None = None,
         run_dir_resolver: Callable[[str, str], str | None] | None = None,
         repair_candidate_sink: Callable[[dict[str, Any]], None] | None = None,
+        repair_strategy_sink: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
         llm_repair_shadow_client: Any | None = None,
         llm_repair_shadow_enabled: bool = False,
     ) -> None:
@@ -131,6 +132,7 @@ class V2FailureDiagnosisService:
         self._evidence_collector = evidence_collector
         self._run_dir_resolver = run_dir_resolver
         self._repair_candidate_sink = repair_candidate_sink
+        self._repair_strategy_sink = repair_strategy_sink
         self._llm_repair_shadow_client = llm_repair_shadow_client
         self._llm_repair_shadow_enabled = llm_repair_shadow_enabled
 
@@ -794,7 +796,7 @@ class V2FailureDiagnosisService:
             llm_client=self._llm_repair_shadow_client,
             llm_shadow_enabled=self._llm_repair_shadow_enabled,
         )
-        classification["repair_strategy_packet"] = create_repair_strategy_packet(
+        strategy_packet = create_repair_strategy_packet(
             job_id=job_id or str(evidence_pack.get("job_id") or ""),
             stage_index=evidence_pack.get("stage_index"),
             classification=classification,
@@ -803,6 +805,11 @@ class V2FailureDiagnosisService:
             llm_client=self._llm_repair_shadow_client,
             llm_enabled=self._llm_repair_shadow_enabled,
         )
+        if self._repair_strategy_sink is not None:
+            persisted = self._repair_strategy_sink(strategy_packet)
+            if isinstance(persisted, dict):
+                strategy_packet = persisted
+        classification["repair_strategy_packet"] = strategy_packet
         internal_candidate = create_repair_apply_candidate(
             classification,
             evidence_pack,
@@ -862,6 +869,7 @@ def create_orchestrator_diagnosis_callback(
     evidence_collector: Any | None = None,
     run_dir_resolver: Any | None = None,
     repair_candidate_sink: Any | None = None,
+    repair_strategy_sink: Any | None = None,
     profile_id: str | None = None,
     pom_summary_ref: str | None = None,
     sandbox_binding_ref: str | None = None,
@@ -886,6 +894,7 @@ def create_orchestrator_diagnosis_callback(
             evidence_collector=evidence_collector,
             run_dir_resolver=run_dir_resolver,
             repair_candidate_sink=repair_candidate_sink,
+            repair_strategy_sink=repair_strategy_sink,
         )
 
     def callback(
