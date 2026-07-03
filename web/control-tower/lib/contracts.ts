@@ -1207,6 +1207,9 @@ export type V2LlmShadowRoleTraceResponse = {
   output: Record<string, unknown>;
   output_checksum: string;
   schema_validation_status: string;
+  raw_output_redacted_preview: string;
+  json_parse_error_kind: string;
+  model_output_was_json: boolean;
   non_actionable: boolean;
   apply_allowed: boolean;
   approval_allowed: boolean;

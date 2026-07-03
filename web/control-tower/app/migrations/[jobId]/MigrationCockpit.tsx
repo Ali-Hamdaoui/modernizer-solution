@@ -1086,6 +1086,11 @@ function LlmShadowRolePanel({
       )}
       {reviewer && <p className="meta">Verdict: {String(trace.output?.verdict ?? "n/a")}</p>}
       <p className="meta">Schema validation status: {trace.schema_validation_status || "n/a"}</p>
+      <p className="meta">Model output JSON: {trace.model_output_was_json ? "yes" : "no"}</p>
+      {trace.json_parse_error_kind && <p className="meta">JSON parse error: {trace.json_parse_error_kind}</p>}
+      {trace.raw_output_redacted_preview && (
+        <pre className="diff-preview"><code>{trace.raw_output_redacted_preview}</code></pre>
+      )}
       <p className="meta">Non-actionable: {trace.non_actionable ? "yes" : "no"}</p>
       <p className="meta">Apply allowed: {trace.apply_allowed ? "yes" : "no"}</p>
     </div>

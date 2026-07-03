@@ -19,6 +19,9 @@ REQUIRED_SCHEMAS = (
     "PlanProposal",
     "RepairProposal",
     "ReviewerCritique",
+    "RepairProposerShadowOutput",
+    "RepairReviewerShadowOutput",
+    "RepairFallbackShadowOutput",
     "ActionRequest",
     "AssistantAnswer",
     "GateActionRequest",
@@ -90,6 +93,93 @@ REVIEWER_CRITIQUE_SCHEMA = {
             "items": {"type": "string"},
             "minItems": 0,
         },
+    },
+}
+
+_SHADOW_STATUS_ENUM = ["available", "unavailable", "failed", "fallback_used"]
+_SHADOW_CONFIDENCE_ENUM = ["low", "medium", "high"]
+_SHADOW_VERDICT_ENUM = ["advisory_accept", "advisory_reject", "advisory_needs_changes"]
+
+REPAIR_PROPOSER_SHADOW_OUTPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "status",
+        "role",
+        "summary",
+        "root_cause",
+        "repair_intent",
+        "expected_change",
+        "affected_files",
+        "risk_notes",
+        "missing_evidence",
+        "confidence",
+    ],
+    "properties": {
+        "status": {"type": "string", "enum": _SHADOW_STATUS_ENUM},
+        "role": {"type": "string", "enum": ["repair_proposer"]},
+        "summary": {"type": "string"},
+        "root_cause": {"type": "string"},
+        "repair_intent": {"type": "string"},
+        "expected_change": {"type": "string"},
+        "affected_files": {"type": "array", "items": {"type": "string"}},
+        "risk_notes": {"type": "array", "items": {"type": "string"}},
+        "missing_evidence": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "string", "enum": _SHADOW_CONFIDENCE_ENUM},
+    },
+}
+
+REPAIR_REVIEWER_SHADOW_OUTPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "status",
+        "role",
+        "verdict",
+        "critique",
+        "risks",
+        "missing_evidence",
+        "unsafe_assumptions",
+        "recommended_next_action",
+        "confidence",
+    ],
+    "properties": {
+        "status": {"type": "string", "enum": _SHADOW_STATUS_ENUM},
+        "role": {"type": "string", "enum": ["repair_reviewer"]},
+        "verdict": {"type": "string", "enum": _SHADOW_VERDICT_ENUM},
+        "critique": {"type": "string"},
+        "risks": {"type": "array", "items": {"type": "string"}},
+        "missing_evidence": {"type": "array", "items": {"type": "string"}},
+        "unsafe_assumptions": {"type": "array", "items": {"type": "string"}},
+        "recommended_next_action": {"type": "string"},
+        "confidence": {"type": "string", "enum": _SHADOW_CONFIDENCE_ENUM},
+    },
+}
+
+REPAIR_FALLBACK_SHADOW_OUTPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "status",
+        "role",
+        "verdict",
+        "critique",
+        "risks",
+        "missing_evidence",
+        "unsafe_assumptions",
+        "recommended_next_action",
+        "confidence",
+    ],
+    "properties": {
+        "status": {"type": "string", "enum": _SHADOW_STATUS_ENUM},
+        "role": {"type": "string", "enum": ["repair_fallback"]},
+        "verdict": {"type": "string", "enum": _SHADOW_VERDICT_ENUM},
+        "critique": {"type": "string"},
+        "risks": {"type": "array", "items": {"type": "string"}},
+        "missing_evidence": {"type": "array", "items": {"type": "string"}},
+        "unsafe_assumptions": {"type": "array", "items": {"type": "string"}},
+        "recommended_next_action": {"type": "string"},
+        "confidence": {"type": "string", "enum": _SHADOW_CONFIDENCE_ENUM},
     },
 }
 
@@ -256,6 +346,9 @@ SCHEMA_REGISTRY = {
     "PlanProposal": PLAN_PROPOSAL_SCHEMA,
     "RepairProposal": REPAIR_PROPOSAL_SCHEMA,
     "ReviewerCritique": REVIEWER_CRITIQUE_SCHEMA,
+    "RepairProposerShadowOutput": REPAIR_PROPOSER_SHADOW_OUTPUT_SCHEMA,
+    "RepairReviewerShadowOutput": REPAIR_REVIEWER_SHADOW_OUTPUT_SCHEMA,
+    "RepairFallbackShadowOutput": REPAIR_FALLBACK_SHADOW_OUTPUT_SCHEMA,
     "ActionRequest": ACTION_REQUEST_SCHEMA,
     "AssistantAnswer": ASSISTANT_ANSWER_SCHEMA,
     "GateActionRequest": GATE_ACTION_REQUEST_SCHEMA,

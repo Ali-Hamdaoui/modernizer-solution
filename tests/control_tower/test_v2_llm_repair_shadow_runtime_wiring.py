@@ -37,14 +37,21 @@ class _FakeAzureRoleClient:
         self.invalid_reviewer = invalid_reviewer
         self.calls: list[dict[str, str]] = []
 
-    def answer_with_role(self, *, role: Any, prompt: str, fallback: str, **_: Any) -> _FakeAzureResult:
+    def answer_with_role(self, *, role: Any, prompt: str, fallback: str, **kwargs: Any) -> _FakeAzureResult:
         role_value = getattr(role, "value", str(role))
         deployment = {
             "proposer": "gpt5-mini",
             "reviewer": "Llama-3.3-70B-Instruct",
             "fallback": "Mistral-Large-3",
         }[role_value]
-        self.calls.append({"role": role_value, "deployment": deployment, "prompt": prompt, "fallback": fallback})
+        self.calls.append({
+            "role": role_value,
+            "deployment": deployment,
+            "prompt": prompt,
+            "fallback": fallback,
+            "output_schema_name": kwargs.get("output_schema_name"),
+            "require_schema": kwargs.get("require_schema"),
+        })
         if role_value == V2ModelRole.REVIEWER.value and self.invalid_reviewer:
             return _FakeAzureResult(
                 content="not json",
@@ -150,6 +157,11 @@ def test_runtime_app_wires_existing_model_client_when_shadow_enabled(monkeypatch
 
     assert trace["runtime_mode"] == "configured_llm_shadow_mode"
     assert [call["role"] for call in fake_client.calls] == ["proposer", "reviewer"]
+    assert [call["output_schema_name"] for call in fake_client.calls] == [
+        "RepairProposerShadowOutput",
+        "RepairReviewerShadowOutput",
+    ]
+    assert all(call["require_schema"] is True for call in fake_client.calls)
     assert trace["proposer_trace"]["model_metadata"]["role"] == "repair_proposer_model"
     assert trace["reviewer_trace"]["model_metadata"]["role"] == "repair_reviewer_model"
     assert trace["proposer_trace"]["model_metadata"]["expected_model"] == "gpt5-mini"
@@ -170,6 +182,11 @@ def test_runtime_fallback_role_invoked_on_invalid_reviewer(monkeypatch, tmp_path
     trace = _diagnose_initmocks(app, tmp_path)
 
     assert [call["role"] for call in fake_client.calls] == ["proposer", "reviewer", "fallback"]
+    assert [call["output_schema_name"] for call in fake_client.calls] == [
+        "RepairProposerShadowOutput",
+        "RepairReviewerShadowOutput",
+        "RepairFallbackShadowOutput",
+    ]
     fallback = trace["llm_fallback_trace"]
     assert fallback["llm_invoked"] is True
     assert fallback["model_metadata"]["role"] == "repair_fallback_model"

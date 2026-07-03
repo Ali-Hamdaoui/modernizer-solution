@@ -35,8 +35,14 @@ class _FakeShadowClient:
         self.proposer_summary = proposer_summary
         self.calls: list[dict[str, Any]] = []
 
-    def answer_with_role(self, *, role: Any, prompt: str, fallback: str, **_: Any) -> _FakeModelResult:
-        self.calls.append({"role": getattr(role, "value", str(role)), "prompt": prompt, "fallback": fallback})
+    def answer_with_role(self, *, role: Any, prompt: str, fallback: str, **kwargs: Any) -> _FakeModelResult:
+        self.calls.append({
+            "role": getattr(role, "value", str(role)),
+            "prompt": prompt,
+            "fallback": fallback,
+            "output_schema_name": kwargs.get("output_schema_name"),
+            "require_schema": kwargs.get("require_schema"),
+        })
         role_value = getattr(role, "value", str(role))
         if role_value == "reviewer":
             return _FakeModelResult(json.dumps({
@@ -70,6 +76,27 @@ class _FakeShadowClient:
             "approval_allowed": True,
             "downstream_start_allowed": True,
         }))
+
+
+class _StaticShadowClient:
+    provider = "fake"
+    deployment = "shadow-deployment"
+    endpoint_metadata = "endpoint_host=[redacted-endpoint]"
+
+    def __init__(self, outputs: dict[str, str]) -> None:
+        self.outputs = outputs
+        self.calls: list[dict[str, Any]] = []
+
+    def answer_with_role(self, *, role: Any, prompt: str, fallback: str, **kwargs: Any) -> _FakeModelResult:
+        role_value = getattr(role, "value", str(role))
+        self.calls.append({
+            "role": role_value,
+            "prompt": prompt,
+            "fallback": fallback,
+            "output_schema_name": kwargs.get("output_schema_name"),
+            "require_schema": kwargs.get("require_schema"),
+        })
+        return _FakeModelResult(self.outputs.get(role_value, fallback))
 
 
 def _classification() -> dict[str, Any]:
@@ -155,6 +182,49 @@ def _trace(client: Any | None = None, *, enabled: bool = False) -> dict[str, Any
     )
 
 
+def _valid_proposer_json(summary: str = "initMocks can be modernized.") -> str:
+    return json.dumps({
+        "status": "available",
+        "role": "repair_proposer",
+        "summary": summary,
+        "root_cause": "MockitoAnnotations.initMocks is legacy Mockito setup.",
+        "repair_intent": "Replace initMocks with openMocks in test source.",
+        "expected_change": "One test-local method call changes.",
+        "affected_files": ["src/test/java/ExampleTest.java"],
+        "risk_notes": ["No apply in R7E.3.1."],
+        "missing_evidence": [],
+        "confidence": "medium",
+    })
+
+
+def _valid_reviewer_json(verdict: str = "advisory_accept") -> str:
+    return json.dumps({
+        "status": "available",
+        "role": "repair_reviewer",
+        "verdict": verdict,
+        "critique": "Bounded diff is reasonable.",
+        "risks": ["Future backend gate required."],
+        "missing_evidence": [],
+        "unsafe_assumptions": [],
+        "recommended_next_action": "use_deterministic_backend_gate",
+        "confidence": "medium",
+    })
+
+
+def _valid_fallback_json() -> str:
+    return json.dumps({
+        "status": "available",
+        "role": "repair_fallback",
+        "verdict": "advisory_needs_changes",
+        "critique": "Fallback critique remains advisory.",
+        "risks": ["Backend gate remains authoritative."],
+        "missing_evidence": [],
+        "unsafe_assumptions": ["primary shadow failed"],
+        "recommended_next_action": "use_deterministic_backend_gate",
+        "confidence": "low",
+    })
+
+
 def test_llm_shadow_trace_created_for_initmocks_with_fake_client() -> None:
     client = _FakeShadowClient()
     trace = _trace(client, enabled=True)
@@ -164,6 +234,30 @@ def test_llm_shadow_trace_created_for_initmocks_with_fake_client() -> None:
     assert trace["proposer_trace"]["output"]["summary"] == "initMocks can be modernized."
     assert trace["reviewer_trace"]["output"]["verdict"] == "advisory_accept"
     assert len(client.calls) == 2
+
+
+def test_shadow_prompts_use_strict_json_contracts_and_schema_context() -> None:
+    client = _FakeShadowClient()
+    _trace(client, enabled=True)
+    proposer_prompt = client.calls[0]["prompt"]
+    reviewer_prompt = client.calls[1]["prompt"]
+    for prompt in (proposer_prompt, reviewer_prompt):
+        assert "Return only one valid JSON object." in prompt
+        assert "Do not use markdown." in prompt
+        assert "Do not use code fences." in prompt
+        assert "All required fields must be present." in prompt
+        assert "Do not approve apply." in prompt
+        assert "Do not start downstream." in prompt
+    assert '"role": "repair_proposer"' in proposer_prompt
+    assert '"summary": "string"' in proposer_prompt
+    assert '"affected_files": []' in proposer_prompt
+    assert client.calls[0]["output_schema_name"] == "RepairProposerShadowOutput"
+    assert client.calls[0]["require_schema"] is True
+    assert '"role": "repair_reviewer"' in reviewer_prompt
+    assert '"verdict": "advisory_needs_changes"' in reviewer_prompt
+    assert '"unsafe_assumptions": []' in reviewer_prompt
+    assert client.calls[1]["output_schema_name"] == "RepairReviewerShadowOutput"
+    assert client.calls[1]["require_schema"] is True
 
 
 def test_missing_llm_config_produces_fallback_only_trace() -> None:
@@ -203,6 +297,83 @@ def test_proposer_and_reviewer_outputs_are_clamped_non_actionable() -> None:
         assert output["approval_allowed"] is False
         assert output["downstream_start_allowed"] is False
         assert trace[role]["schema_validation_status"] == "validated"
+
+
+def test_fenced_json_is_extracted_and_validated() -> None:
+    client = _StaticShadowClient({
+        "proposer": f"```json\n{_valid_proposer_json('fenced proposer')}\n```",
+        "reviewer": _valid_reviewer_json(),
+    })
+    trace = _trace(client, enabled=True)
+    assert trace["proposer_trace"]["schema_validation_status"] == "validated"
+    assert trace["proposer_trace"]["output"]["summary"] == "fenced proposer"
+    assert trace["proposer_trace"]["model_output_was_json"] is True
+    assert trace["proposer_trace"]["json_parse_error_kind"] == ""
+
+
+def test_invalid_json_fails_closed_with_redacted_preview() -> None:
+    client = _StaticShadowClient({
+        "proposer": "not json with secret sk-abc123",
+        "reviewer": _valid_reviewer_json(),
+        "fallback": _valid_fallback_json(),
+    })
+    trace = _trace(client, enabled=True)
+    proposer = trace["proposer_trace"]
+    assert proposer["schema_validation_status"] == "fallback_validated"
+    assert proposer["failure_reason"] == "invalid_json_model_output"
+    assert proposer["json_parse_error_kind"] == "invalid_json"
+    assert proposer["model_output_was_json"] is False
+    assert "sk-abc123" not in json.dumps(trace)
+    assert "redacted" in proposer["raw_output_redacted_preview"].lower()
+
+
+def test_missing_required_fields_fail_closed_with_schema_missing() -> None:
+    client = _StaticShadowClient({
+        "proposer": json.dumps({"status": "available", "role": "repair_proposer"}),
+        "reviewer": _valid_reviewer_json(),
+        "fallback": _valid_fallback_json(),
+    })
+    trace = _trace(client, enabled=True)
+    assert trace["proposer_trace"]["schema_validation_status"] == "fallback_validated"
+    assert trace["proposer_trace"]["failure_reason"].startswith("schema_missing:")
+    assert "summary" in trace["proposer_trace"]["failure_reason"]
+
+
+def test_fallback_prompt_and_valid_json_are_used_when_forced() -> None:
+    client = _StaticShadowClient({
+        "proposer": "not json",
+        "reviewer": _valid_reviewer_json(),
+        "fallback": _valid_fallback_json(),
+    })
+    trace = _trace(client, enabled=True)
+    fallback_call = client.calls[-1]
+    assert fallback_call["role"] == "fallback"
+    assert fallback_call["output_schema_name"] == "RepairFallbackShadowOutput"
+    assert fallback_call["require_schema"] is True
+    assert "Return only one valid JSON object." in fallback_call["prompt"]
+    assert '"role": "repair_fallback"' in fallback_call["prompt"]
+    assert '"recommended_next_action": "use_deterministic_backend_gate"' in fallback_call["prompt"]
+    assert trace["llm_fallback_trace"]["schema_validation_status"] == "validated"
+    assert trace["llm_fallback_trace"]["output"]["role"] == "repair_fallback"
+
+
+def test_dangerous_model_fields_are_clamped_after_valid_json() -> None:
+    dangerous = json.loads(_valid_proposer_json())
+    dangerous.update({
+        "apply_allowed": True,
+        "approval_allowed": True,
+        "downstream_start_allowed": True,
+    })
+    client = _StaticShadowClient({
+        "proposer": json.dumps(dangerous),
+        "reviewer": _valid_reviewer_json(),
+    })
+    trace = _trace(client, enabled=True)
+    output = trace["proposer_trace"]["output"]
+    assert trace["proposer_trace"]["schema_validation_status"] == "validated"
+    assert output["apply_allowed"] is False
+    assert output["approval_allowed"] is False
+    assert output["downstream_start_allowed"] is False
 
 
 def test_reviewer_input_includes_proposer_output_and_checksum_context() -> None:

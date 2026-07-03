@@ -10,6 +10,12 @@ import json
 from typing import Any
 
 from migration_factory.control_tower.application.redaction import redact_model_summary, redact_public_value
+from migration_factory.control_tower.application.v2_model_schemas import (
+    SchemaValidationError,
+    extract_json_object,
+    normalize_schema_object,
+    validate_model_output,
+)
 from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json
 
@@ -24,6 +30,45 @@ EXPECTED_MODEL_BY_ROLE = {
     V2ModelRole.PROPOSER: "gpt5-mini",
     V2ModelRole.REVIEWER: "Llama-3.3-70B-Instruct",
     V2ModelRole.FALLBACK: "Mistral-Large-3",
+}
+SCHEMA_BY_OUTPUT_KIND = {
+    "proposer": "RepairProposerShadowOutput",
+    "reviewer": "RepairReviewerShadowOutput",
+    "fallback": "RepairFallbackShadowOutput",
+}
+PROPOSER_JSON_SHAPE = {
+    "status": "available",
+    "role": "repair_proposer",
+    "summary": "string",
+    "root_cause": "string",
+    "repair_intent": "string",
+    "expected_change": "string",
+    "affected_files": [],
+    "risk_notes": [],
+    "missing_evidence": [],
+    "confidence": "low",
+}
+REVIEWER_JSON_SHAPE = {
+    "status": "available",
+    "role": "repair_reviewer",
+    "verdict": "advisory_needs_changes",
+    "critique": "string",
+    "risks": [],
+    "missing_evidence": [],
+    "unsafe_assumptions": [],
+    "recommended_next_action": "use_deterministic_backend_gate",
+    "confidence": "low",
+}
+FALLBACK_JSON_SHAPE = {
+    "status": "available",
+    "role": "repair_fallback",
+    "verdict": "advisory_needs_changes",
+    "critique": "string",
+    "risks": [],
+    "missing_evidence": [],
+    "unsafe_assumptions": [],
+    "recommended_next_action": "use_deterministic_backend_gate",
+    "confidence": "low",
 }
 
 
@@ -173,9 +218,8 @@ def _reviewer_input(
     review: dict[str, Any],
 ) -> dict[str, Any]:
     return _redact_obj({
-        "proposer_input_checksum": f"sha256:{sha256_canonical_json(proposer_input)}",
-        "proposer_input_preview": _bounded_json(proposer_input),
         "proposer_output": proposer_output,
+        "proposer_input_checksum": f"sha256:{sha256_canonical_json(proposer_input)}",
         "classification": {
             "failure_type": classification.get("failure_type", ""),
             "classification_status": classification.get("classification_status", ""),
@@ -245,7 +289,7 @@ def _run_role_trace(
     try:
         raw = _invoke_client(llm_client, model_role, prompt, fallback_output, output_kind)
         content = str(getattr(raw, "content", raw) or "")
-        output, schema_status, failure_reason = _parse_and_clamp(content, fallback_output, output_kind)
+        output, schema_status, failure_reason, parse_error_kind, model_output_was_json = _parse_and_clamp(content, fallback_output, output_kind)
         status = "available" if schema_status == "validated" else "failed"
         return _trace(
             role,
@@ -258,10 +302,27 @@ def _run_role_trace(
             input_checksum,
             output,
             schema_status,
+            raw_output_redacted_preview=_safe_text(content, limit=1200),
+            json_parse_error_kind=parse_error_kind,
+            model_output_was_json=model_output_was_json,
         )
     except Exception as exc:
         output = _clamp_output(fallback_output, output_kind)
-        return _trace(role, model_metadata, "failed", False, True, redact_model_summary(f"{type(exc).__name__}: {exc}"), input_preview, input_checksum, output, "fallback_validated")
+        return _trace(
+            role,
+            model_metadata,
+            "failed",
+            False,
+            True,
+            redact_model_summary(f"{type(exc).__name__}: {exc}"),
+            input_preview,
+            input_checksum,
+            output,
+            "fallback_validated",
+            raw_output_redacted_preview="",
+            json_parse_error_kind="client_exception",
+            model_output_was_json=False,
+        )
 
 
 def _run_llm_fallback_trace(
@@ -302,13 +363,14 @@ def _run_llm_fallback_trace(
 
 def _invoke_client(llm_client: object, model_role: V2ModelRole, prompt: str, fallback_output: dict[str, Any], output_kind: str) -> Any:
     fallback = json.dumps(fallback_output, separators=(",", ":"), sort_keys=True)
+    schema_name = SCHEMA_BY_OUTPUT_KIND.get(output_kind)
     if hasattr(llm_client, "answer_with_role"):
         return llm_client.answer_with_role(
             role=model_role,
             prompt=prompt,
             fallback=fallback,
-            output_schema_name=None,
-            require_schema=False,
+            output_schema_name=schema_name,
+            require_schema=bool(schema_name),
         )
     if hasattr(llm_client, "answer"):
         return llm_client.answer(prompt=prompt, fallback=fallback)
@@ -328,6 +390,9 @@ def _trace(
     input_checksum: str,
     output: dict[str, Any],
     schema_status: str,
+    raw_output_redacted_preview: str = "",
+    json_parse_error_kind: str = "",
+    model_output_was_json: bool = False,
 ) -> dict[str, Any]:
     return {
         "role": role,
@@ -341,6 +406,9 @@ def _trace(
         "output": output,
         "output_checksum": f"sha256:{sha256_canonical_json(output)}",
         "schema_validation_status": schema_status,
+        "raw_output_redacted_preview": redact_model_summary(raw_output_redacted_preview)[:1200],
+        "json_parse_error_kind": redact_model_summary(json_parse_error_kind)[:160],
+        "model_output_was_json": bool(model_output_was_json),
         "non_actionable": True,
         "apply_allowed": False,
         "approval_allowed": False,
@@ -348,19 +416,28 @@ def _trace(
     }
 
 
-def _parse_and_clamp(content: str, fallback_output: dict[str, Any], output_kind: str) -> tuple[dict[str, Any], str, str]:
+def _parse_and_clamp(content: str, fallback_output: dict[str, Any], output_kind: str) -> tuple[dict[str, Any], str, str, str, bool]:
+    parsed = extract_json_object(content)
+    if not isinstance(parsed, dict):
+        return (
+            _clamp_output(fallback_output, output_kind),
+            "fallback_validated",
+            "invalid_json_model_output",
+            "invalid_json",
+            False,
+        )
+    schema_name = SCHEMA_BY_OUTPUT_KIND.get(output_kind, "")
     try:
-        parsed = json.loads(content)
-        if not isinstance(parsed, dict):
-            return _clamp_output(fallback_output, output_kind), "fallback_validated", "non_object_model_output"
-    except Exception:
-        return _clamp_output(fallback_output, output_kind), "fallback_validated", "invalid_json_model_output"
-    output = _clamp_output(parsed, output_kind)
-    missing = _missing_output_fields(output, output_kind)
-    if missing:
+        normalized = normalize_schema_object(schema_name, parsed)
+        validate_model_output(schema_name, normalized)
+    except (SchemaValidationError, ValueError) as exc:
+        output = _clamp_output(parsed, output_kind)
+        missing = _missing_output_fields(output, output_kind)
+        reason = f"schema_missing:{','.join(missing)}" if missing else f"schema_invalid:{redact_model_summary(str(exc))}"
         fallback = _clamp_output({**fallback_output, **output}, output_kind)
-        return fallback, "fallback_validated", f"schema_missing:{','.join(missing)}"
-    return output, "validated", ""
+        return fallback, "fallback_validated", reason, "schema_invalid", True
+    output = _clamp_output(normalized, output_kind)
+    return output, "validated", "", "", True
 
 
 def _clamp_output(value: dict[str, Any], output_kind: str) -> dict[str, Any]:
@@ -525,26 +602,52 @@ def _artifact_summaries(stage_evidence: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def _proposer_instructions() -> str:
-    return (
-        "You are a repair proposer. Explain root cause and repair intent. "
-        "Do not request apply. Do not claim authority. Do not invent evidence. "
-        "Do not output secrets. Output is advisory only in R7E.2."
+    return _json_only_instructions(
+        role="repair proposer",
+        shape=PROPOSER_JSON_SHAPE,
+        extra=(
+            "Explain root cause and repair intent using only supplied evidence. "
+            "affected_files must contain safe relative paths only."
+        ),
     )
 
 
 def _reviewer_instructions() -> str:
-    return (
-        "You are a repair reviewer. Review proposer output and backend-owned draft. "
-        "Do not approve apply. Do not claim authority. Do not override backend deterministic gates. "
-        "List risks, missing evidence, unsafe assumptions, and advisory critique only."
+    return _json_only_instructions(
+        role="repair reviewer",
+        shape=REVIEWER_JSON_SHAPE,
+        extra="Review proposer output and backend-owned draft. List risks, missing evidence, and unsafe assumptions.",
     )
 
 
 def _fallback_instructions() -> str:
+    return _json_only_instructions(
+        role="repair fallback reviewer",
+        shape=FALLBACK_JSON_SHAPE,
+        extra="Explain why primary LLM shadow role failed and give advisory fallback critique.",
+    )
+
+
+def _json_only_instructions(*, role: str, shape: dict[str, Any], extra: str) -> str:
     return (
-        "You are a repair fallback reviewer. Explain why primary LLM shadow role failed. "
-        "Do not approve apply. Do not claim authority. Do not override backend gates. "
-        "Output is advisory only in R7E.3."
+        f"You are a {role}. {extra}\n"
+        "Return only one valid JSON object.\n"
+        "Do not use markdown.\n"
+        "Do not use code fences.\n"
+        "Do not include explanations outside JSON.\n"
+        "Do not include comments.\n"
+        "Do not include trailing commas.\n"
+        "Use double quotes only.\n"
+        "All required fields must be present.\n"
+        "Allowed status values: available, unavailable, failed, fallback_used.\n"
+        "Allowed confidence values: low, medium, high.\n"
+        "Reviewer/fallback verdict values: advisory_accept, advisory_reject, advisory_needs_changes.\n"
+        "Output is advisory only.\n"
+        "Do not claim authority.\n"
+        "Do not approve apply.\n"
+        "Do not start downstream.\n"
+        "Do not output secrets.\n"
+        f"Exact JSON shape:\n{json.dumps(shape, indent=2, sort_keys=True)}"
     )
 
 

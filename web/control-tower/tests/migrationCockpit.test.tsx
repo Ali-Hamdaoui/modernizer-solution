@@ -2071,6 +2071,9 @@ describe("V2 Migration Cockpit contract", () => {
             },
             output_checksum: "sha256:proposer-output",
             schema_validation_status: "validated",
+            raw_output_redacted_preview: "{\"status\":\"available\"}",
+            json_parse_error_kind: "",
+            model_output_was_json: true,
             non_actionable: true,
             apply_allowed: false,
             approval_allowed: false,
@@ -2110,6 +2113,9 @@ describe("V2 Migration Cockpit contract", () => {
             },
             output_checksum: "sha256:reviewer-output",
             schema_validation_status: "validated",
+            raw_output_redacted_preview: "{\"status\":\"available\"}",
+            json_parse_error_kind: "",
+            model_output_was_json: true,
             non_actionable: true,
             apply_allowed: false,
             approval_allowed: false,
@@ -2149,6 +2155,9 @@ describe("V2 Migration Cockpit contract", () => {
             },
             output_checksum: "sha256:fallback-output",
             schema_validation_status: "validated",
+            raw_output_redacted_preview: "{\"status\":\"available\"}",
+            json_parse_error_kind: "",
+            model_output_was_json: true,
             non_actionable: true,
             apply_allowed: false,
             approval_allowed: false,
@@ -2200,6 +2209,8 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("endpoint_host=[redacted-endpoint]");
     expect(markup).toContain("Input checksum: sha256:proposer-input");
     expect(markup).toContain("Output checksum: sha256:proposer-output");
+    expect(markup).toContain("Schema validation status: validated");
+    expect(markup).toContain("Model output JSON: yes");
     expect(markup).toContain("Reviewer");
     expect(markup).toContain("Role: repair_reviewer_model");
     expect(markup).toContain("Expected model/deployment: Llama-3.3-70B-Instruct");
