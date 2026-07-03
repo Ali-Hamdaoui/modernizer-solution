@@ -64,6 +64,9 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_assistant_reposito
 from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
     SqliteV2RepairRepository,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_repair_candidate_repository import (
+    SqliteV2RepairCandidateRepository,
+)
 from migration_factory.control_tower.infrastructure.sqlite.v2_event_repository import (
     SqliteV2JobEventRepository,
 )
@@ -143,6 +146,7 @@ class SqliteControlTowerUnitOfWork:
         self.v2_approvals = SqliteV2ApprovalRepository(connection)
         self.v2_assistant = SqliteV2AssistantRepository(connection)
         self.v2_repairs = SqliteV2RepairRepository(connection)
+        self.v2_repair_candidates = SqliteV2RepairCandidateRepository(connection)
         self.v2_events = SqliteV2JobEventRepository(connection)
         self.v2_reviewer = SqliteV2ReviewerRepository(connection)
         self.v2_pom_proposals = SqlitePomChangeProposalRepository(connection)
