@@ -13011,6 +13011,7 @@ def _safe_classification_envelope(value: Any) -> dict[str, Any] | None:
         ],
         "repair_enabled": bool(value.get("repair_enabled")),
         "repair_blocked_reason": _safe_failure_str(value.get("repair_blocked_reason")),
+        "repair_apply_candidate_blocked_reason": _safe_failure_str(value.get("repair_apply_candidate_blocked_reason")),
         "reason": _safe_failure_str(value.get("reason")),
         "assistant_next_action": _safe_failure_str(value.get("assistant_next_action")),
         "governance_gate_type": _safe_failure_str(value.get("governance_gate_type")),

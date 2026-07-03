@@ -468,10 +468,17 @@ def test_live_diagnosis_persists_repair_candidate_then_approve_and_apply(tmp_pat
     _seed_policy(conn, job_id)
     app.state.v2_failure_diagnosis_service._llm_repair_shadow_client = _FakeShadowClient()
     app.state.v2_failure_diagnosis_service._llm_repair_shadow_enabled = True
+    legacy = tmp_path / "legacy" / "src" / "test" / "java" / "ExampleTest.java"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("class ExampleTest { void setUp(){ MockitoAnnotations.initMocks(this); } }\n", encoding="utf-8")
     sandbox = tmp_path / "sandbox"
     target = sandbox / "src" / "test" / "java" / "ExampleTest.java"
     target.parent.mkdir(parents=True)
     target.write_text("class ExampleTest { void setUp(){ MockitoAnnotations.initMocks(this); } }\n", encoding="utf-8")
+    test_report = tmp_path / "TEST-ExampleTest.xml"
+    test_report.write_text("<failure>test setup failed</failure>", encoding="utf-8")
+    build_error = tmp_path / "build-error.json"
+    build_error.write_text('{"error":"test setup failed"}', encoding="utf-8")
 
     callback = app.state.v2_orchestrator_runner._diagnosis_callback
     payload = {
@@ -481,6 +488,8 @@ def test_live_diagnosis_persists_repair_candidate_then_approve_and_apply(tmp_pat
         "artifact_refs": {
             "sandbox": str(sandbox),
             "test_source": str(target),
+            "test_report": str(test_report),
+            "build_error_contract": str(build_error),
         },
     }
     callback(job_id, 2, "cmd-initmocks-live", "build_failed", payload)
@@ -535,7 +544,9 @@ def test_live_diagnosis_persists_repair_candidate_then_approve_and_apply(tmp_pat
     assessment = approved_summary["failures"][0]["supervision_trace"]["ai_diagnosis"]["classification"]["repair_subfamily_assessment"]
     assert assessment["subfamily"] == "INITMOCKS_DIRECT_REPLACEMENT"
     assert assessment["promotion_status"] == "safe_recipe_candidate"
+    assert assessment["backend_recipe_available"] is True
     assert assessment["apply_candidate_allowed"] is True
+    assert assessment["missing_evidence"] == []
 
     ask_response = client.post(
         f"/v1/v2/jobs/{job_id}/assistant/ask",
@@ -557,11 +568,35 @@ def test_live_diagnosis_persists_repair_candidate_then_approve_and_apply(tmp_pat
     assert apply_response.json()["execution"]["execution_status"] == "verified"
     assert apply_response.json()["execution"]["downstream_start_allowed"] is False
     assert "openMocks" in target.read_text(encoding="utf-8")
+    assert "initMocks" not in target.read_text(encoding="utf-8")
+    assert "initMocks" in legacy.read_text(encoding="utf-8")
     verified_summary = client.get(f"/v1/v2/jobs/{job_id}/failure-summary").json()
+    assert verified_summary["repair_strategy_packet"]
     verified_nested = verified_summary["failures"][0]["supervision_trace"]["ai_diagnosis"]["classification"]["repair_apply_candidate"]
     assert verified_nested["status"] == "verified"
     assert verified_nested["apply_enabled"] is False
+    assert verified_nested["verification_status"] == "passed"
+    assert verified_nested["rollback_status"]
     assert verified_nested["proof_artifact"]
+    assert verified_nested["downstream_start_allowed"] is False
+    verified_assessment = verified_summary["failures"][0]["supervision_trace"]["ai_diagnosis"]["classification"]["repair_subfamily_assessment"]
+    assert verified_assessment["subfamily"] == "INITMOCKS_DIRECT_REPLACEMENT"
+
+    final_ask_response = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        headers=_mutation_headers(),
+        json={"question": "Explain the repair status and whether the migration can continue."},
+    )
+    assert final_ask_response.status_code == 200, final_ask_response.text
+    final_answer = final_ask_response.json()["assistant_message"]["content"]
+    assert "INITMOCKS_DIRECT_REPLACEMENT" in final_answer
+    assert "promotion=safe_recipe_candidate" in final_answer
+    assert "Apply candidate: exists" in final_answer
+    assert "Status: verified" in final_answer
+    assert "Verification: passed" in final_answer
+    assert "Proof:" in final_answer
+    assert "Downstream remains blocked" in final_answer
+    assert "Assistant cannot approve, apply, execute, or start downstream" in final_answer
 
     events = conn.execute("SELECT type, stage FROM v2_job_events WHERE job_id = ?", (job_id,)).fetchall()
     assert not any(str(row["type"]) == "stage_started" and int(row["stage"] or 0) > 2 for row in events)

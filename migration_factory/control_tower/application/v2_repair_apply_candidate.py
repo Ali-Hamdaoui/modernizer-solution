@@ -177,6 +177,7 @@ def _create_candidate_from_r8_evidence(
     _require(assessment.get("promotion_status") == "safe_recipe_candidate", "subfamily_not_safe_recipe_candidate", reasons)
     _require(bool(assessment.get("backend_recipe_available")), "subfamily_backend_recipe_unavailable", reasons)
     _require(bool(assessment.get("apply_candidate_allowed")), "subfamily_apply_candidate_not_allowed", reasons)
+    _require(not list(assessment.get("missing_evidence") or []), "subfamily_missing_required_evidence", reasons)
     _require(draft.get("proposal_status") == "drafted_non_actionable", "deterministic_draft_missing", reasons)
     _require(review.get("verdict") == "accepted_for_future_apply_gate", "deterministic_reviewer_not_accepted", reasons)
     _require(review.get("checksum_verification_status") == "verified", "deterministic_review_checksum_not_verified", reasons)
@@ -185,6 +186,7 @@ def _create_candidate_from_r8_evidence(
     _require(proposer_output.get("required_backend_recipe") == BACKEND_RECIPE, "llm_proposer_recipe_not_supported", reasons)
     _require(reviewer_output.get("verdict") == "advisory_accept", "llm_reviewer_not_advisory_accept", reasons)
     if reasons:
+        classification["repair_apply_candidate_blocked_reason"] = ";".join(reasons)
         return None
 
     targets = list(draft.get("target_files") or [])

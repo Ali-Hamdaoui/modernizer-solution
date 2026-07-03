@@ -84,3 +84,21 @@ def test_classifier_unknown_is_unsupported_and_browser_cannot_override_flags() -
     assert assessment["promotion_status"] == "unsupported"
     assert assessment["apply_candidate_allowed"] is False
     assert assessment["backend_gate"]["llm_can_apply"] is False
+
+
+def test_cross_family_whennew_does_not_promote_unknown_to_powermock_constructor() -> None:
+    assessment = _assessment("UNKNOWN_FAILURE", "PowerMockito.whenNew(Foo.class).thenReturn(foo);")
+    assert assessment["subfamily"] == "UNKNOWN_SUBFAMILY"
+    assert assessment["promotion_status"] == "unsupported"
+
+
+def test_cross_family_runwith_does_not_promote_unknown_to_junit_runner() -> None:
+    assessment = _assessment("UNKNOWN_FAILURE", "@RunWith(SpringRunner.class) class ExampleTest {}")
+    assert assessment["subfamily"] == "UNKNOWN_SUBFAMILY"
+    assert assessment["promotion_status"] == "unsupported"
+
+
+def test_cross_family_javax_does_not_promote_unknown_to_jakarta_import() -> None:
+    assessment = _assessment("UNKNOWN_FAILURE", "import javax.servlet.Filter;")
+    assert assessment["subfamily"] == "UNKNOWN_SUBFAMILY"
+    assert assessment["promotion_status"] == "unsupported"

@@ -73,29 +73,43 @@ def repair_subfamily_assessment_checksum(assessment: dict[str, Any]) -> str:
 
 
 def _select_subfamily(family: str, text: str) -> str:
-    if "powermockito.whennew" in text or "whennew" in text:
-        return "POWERMOCK_CONSTRUCTOR_MOCKING"
-    if any(pattern in text for pattern in ("whitebox", "private method", "private method mocking", "final class", "final-class", "final class mocking")):
-        return "POWERMOCK_PRIVATE_OR_FINAL_MOCKING"
     if "mockitoannotations.initmocks" in text:
         return "INITMOCKS_DIRECT_REPLACEMENT"
-    if "@mockbean" in text or "mockbean" in text:
+    if family == "MOCKBEAN_TO_MOCKITOBEAN_CANDIDATE" and ("@mockbean" in text or "mockbean" in text):
         return "MOCKBEAN_DIRECT_REPLACEMENT"
-    if family == "POWERMOCK_LEGACY_TEST_STRATEGY" and any(pattern in text for pattern in ("powermockito.mockstatic", "mockstatic")):
-        return "POWERMOCK_STATIC_MOCK_SIMPLE"
-    if "@rule" in text or "externalresource" in text:
-        return "JUNIT4_RULE_COMPLEX"
-    if "@runwith" in text:
-        return "JUNIT4_RUNNER_SIMPLE"
-    if family == "SPRING_SECURITY_API_DRIFT" or any(pattern in text for pattern in ("securityfilterchain", "websecurityconfigureradapter", "authorizehttprequests")):
-        return "SPRING_SECURITY_BEHAVIORAL_CHANGE"
-    if family == "JAKARTA_NAMESPACE_MISMATCH" and "javax." in text and "dependency" not in text:
-        return "JAKARTA_IMPORT_ONLY"
-    if family == "JAKARTA_NAMESPACE_MISMATCH" and "dependency" in text:
-        return "JAKARTA_DEPENDENCY_ALIGNMENT"
-    if family == "DEPENDENCY_VERSION_ALIGNMENT" and "version" in text:
-        return "DEPENDENCY_VERSION_BUMP_ONLY"
+    if family == "POWERMOCK_LEGACY_TEST_STRATEGY":
+        if "powermockito.whennew" in text or "whennew" in text:
+            return "POWERMOCK_CONSTRUCTOR_MOCKING"
+        if any(pattern in text for pattern in ("whitebox", "private method", "private method mocking", "final class", "final-class", "final class mocking")):
+            return "POWERMOCK_PRIVATE_OR_FINAL_MOCKING"
+        if any(pattern in text for pattern in ("powermockito.mockstatic", "mockstatic")):
+            return "POWERMOCK_STATIC_MOCK_SIMPLE"
+        return "UNKNOWN_SUBFAMILY"
+    if family == "JUNIT4_TO_JUNIT5_TEST_MIGRATION" or _classification_indicates_junit(text):
+        if "@rule" in text or "externalresource" in text:
+            return "JUNIT4_RULE_COMPLEX"
+        if "@runwith" in text:
+            return "JUNIT4_RUNNER_SIMPLE"
+        return "UNKNOWN_SUBFAMILY"
+    if family == "SPRING_SECURITY_API_DRIFT":
+        if any(pattern in text for pattern in ("securityfilterchain", "websecurityconfigureradapter", "authorizehttprequests")):
+            return "SPRING_SECURITY_BEHAVIORAL_CHANGE"
+        return "UNKNOWN_SUBFAMILY"
+    if family == "JAKARTA_NAMESPACE_MISMATCH":
+        if "javax." in text and "dependency" not in text:
+            return "JAKARTA_IMPORT_ONLY"
+        if "dependency" in text:
+            return "JAKARTA_DEPENDENCY_ALIGNMENT"
+        return "UNKNOWN_SUBFAMILY"
+    if family == "DEPENDENCY_VERSION_ALIGNMENT":
+        if "version" in text:
+            return "DEPENDENCY_VERSION_BUMP_ONLY"
+        return "UNKNOWN_SUBFAMILY"
     return "UNKNOWN_SUBFAMILY"
+
+
+def _classification_indicates_junit(text: str) -> bool:
+    return "junit4_to_junit5_test_migration" in text or ("junit4" in text and "migration" in text)
 
 
 def _matched_patterns(policy: RepairSubfamilyPolicy, text: str) -> list[str]:

@@ -1050,6 +1050,7 @@ export type V2StageFailureClassificationResponse = {
   usable_artifacts: string[];
   repair_enabled: boolean;
   repair_blocked_reason: string;
+  repair_apply_candidate_blocked_reason?: string;
   reason: string;
   assistant_next_action: string;
   governance_gate_type?: string;

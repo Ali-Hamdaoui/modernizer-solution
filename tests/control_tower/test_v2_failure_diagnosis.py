@@ -942,6 +942,9 @@ class TestStageAwareEvidence:
         assert assessment["subfamily"] == "INITMOCKS_DIRECT_REPLACEMENT"
         assert assessment["promotion_status"] == "safe_recipe_candidate"
         assert assessment["apply_candidate_allowed"] is True
+        assert "test_report" in assessment["missing_evidence"]
+        assert classification["repair_apply_candidate"] is None
+        assert "subfamily_missing_required_evidence" in classification["repair_apply_candidate_blocked_reason"]
         assert draft["evidence_pack_checksum"].startswith("sha256:")
         assert draft["memory_query_signature"].startswith("sha256:")
         assert draft["target_files"] == ["src/test/java/ExampleTest.java"]
