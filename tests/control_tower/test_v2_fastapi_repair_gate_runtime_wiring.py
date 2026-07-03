@@ -270,6 +270,139 @@ def test_repair_strategy_read_endpoints_return_safe_persisted_packets(tmp_path: 
     assert by_id.json()["strategy"]["version"] == 1
 
 
+def test_live_powermock_failure_persists_strategy_overlays_summary_and_chatbot(tmp_path: Path) -> None:
+    app, client, conn = _app_and_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    _seed_policy(conn, job_id)
+    sandbox = tmp_path / "sandbox"
+    test_source = sandbox / "src" / "test" / "java" / "LegacyPowerMockTest.java"
+    test_source.parent.mkdir(parents=True)
+    test_source.write_text(
+        "\n".join(
+            [
+                "import org.powermock.modules.junit4.PowerMockRunner;",
+                "import org.powermock.core.classloader.annotations.PrepareForTest;",
+                "import org.powermock.api.mockito.PowerMockito;",
+                "@RunWith(PowerMockRunner.class)",
+                "@PrepareForTest({LegacyFactory.class, StaticUtil.class})",
+                "class LegacyPowerMockTest {",
+                "  void testLegacy() throws Exception {",
+                "    PowerMockito.mockStatic(StaticUtil.class);",
+                "    PowerMockito.whenNew(LegacyFactory.class).withNoArguments().thenReturn(new LegacyFactory());",
+                "  }",
+                "}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    payload = {
+        "build_status": "BUILD_FAILED_IN_SANDBOX",
+        "test_status": "FAILED",
+        "sandbox_path": str(sandbox),
+        "message": "org.powermock PowerMockRunner PrepareForTest PowerMockito.mockStatic PowerMockito.whenNew",
+        "artifact_refs": {
+            "sandbox": str(sandbox),
+            "test_source": str(test_source),
+            "pom_xml": str(tmp_path / "pom.xml"),
+            "test_report": str(tmp_path / "TEST-LegacyPowerMockTest.xml"),
+            "build_error_contract": str(tmp_path / "build-error.json"),
+        },
+    }
+    (tmp_path / "pom.xml").write_text("<dependency>org.powermock</dependency>", encoding="utf-8")
+    (tmp_path / "TEST-LegacyPowerMockTest.xml").write_text("<failure>PowerMockRunner</failure>", encoding="utf-8")
+    (tmp_path / "build-error.json").write_text('{"error":"PowerMockito.mockStatic"}', encoding="utf-8")
+
+    callback = app.state.v2_orchestrator_runner._diagnosis_callback
+    callback(job_id, 2, "cmd-powermock-live", "test_failed", payload)
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="test_failed",
+            status="failed",
+            message=payload["message"],
+            payload=payload,
+        )
+
+    with SqliteUnitOfWork(conn) as uow:
+        history = uow.v2_repair_strategies.history_for_stage(job_id, 2)
+        assert len(history) == 1
+        persisted = history[0]
+        assert persisted["strategy_id"]
+        assert persisted["version"] >= 1
+        assert persisted["strategy_checksum"].startswith("sha256:")
+        assert persisted["family"] == "POWERMOCK_LEGACY_TEST_STRATEGY"
+        assert persisted["risk_level"] == "high"
+        assert persisted["apply_candidate_allowed"] is False
+        assert persisted["backend_recipe_available"] is False
+        assert persisted["human_gate_required"] is True
+        assert uow.v2_repair_candidates.latest_public_for_job(job_id) is None
+
+    latest = client.get(f"/v1/v2/jobs/{job_id}/repair-strategies/latest")
+    assert latest.status_code == 200, latest.text
+    latest_strategy = latest.json()["strategy"]
+    assert latest_strategy["strategy_id"] == persisted["strategy_id"]
+    assert latest_strategy["family"] == "POWERMOCK_LEGACY_TEST_STRATEGY"
+    assert latest_strategy["backend_gate"]["llm_can_apply"] is False
+    assert latest_strategy["backend_gate"]["llm_can_approve"] is False
+    assert latest_strategy["backend_gate"]["downstream_start_allowed"] is False
+
+    all_strategies = client.get(f"/v1/v2/jobs/{job_id}/repair-strategies")
+    assert all_strategies.status_code == 200, all_strategies.text
+    assert len(all_strategies.json()["strategies"]) >= 1
+    stage_latest = client.get(f"/v1/v2/jobs/{job_id}/stages/2/repair-strategies/latest")
+    assert stage_latest.status_code == 200, stage_latest.text
+    assert stage_latest.json()["strategy"]["strategy_id"] == persisted["strategy_id"]
+
+    summary = client.get(f"/v1/v2/jobs/{job_id}/failure-summary")
+    assert summary.status_code == 200, summary.text
+    body = summary.json()
+    top_strategy = body["repair_strategy_packet"]
+    nested_classification = body["failures"][0]["supervision_trace"]["ai_diagnosis"]["classification"]
+    nested_strategy = nested_classification["repair_strategy_packet"]
+    assert top_strategy["strategy_id"] == persisted["strategy_id"]
+    assert nested_strategy["strategy_id"] == persisted["strategy_id"]
+    assert nested_classification["failure_type"] == "POWERMOCK_LEGACY_TEST_STRATEGY"
+    assert nested_classification["classification_status"] == "unsupported_known_failure"
+    assert nested_strategy["family"] == "POWERMOCK_LEGACY_TEST_STRATEGY"
+    assert nested_strategy["risk_level"] == "high"
+    assert nested_strategy["apply_candidate_allowed"] is False
+    assert nested_strategy["backend_recipe_available"] is False
+    assert nested_strategy["human_gate_required"] is True
+    assert nested_classification["repair_apply_candidate"] is None
+    assert nested_classification["downstream_stage_state"]["auto_started"] is False
+
+    before_candidates = conn.execute(
+        "SELECT COUNT(*) AS count FROM v2_repair_apply_candidates WHERE job_id = ?",
+        (job_id,),
+    ).fetchone()["count"]
+    ask_response = client.post(
+        f"/v1/v2/jobs/{job_id}/assistant/ask",
+        headers=_mutation_headers(),
+        json={"question": "Explain the repair strategy for this migration failure."},
+    )
+    assert ask_response.status_code == 200, ask_response.text
+    answer = ask_response.json()["assistant_message"]["content"]
+    assert "POWERMOCK_LEGACY_TEST_STRATEGY" in answer
+    assert "risk=high" in answer
+    assert "version=" in answer or "id=repair-strategy" in answer
+    assert "fallback model invoked=" in answer
+    assert "Engineer next:" in answer or "Create engineer-reviewed PowerMock modernization plan" in answer
+    assert "Apply candidate: none" in answer
+    assert "Apply allowed: False" in answer
+    assert "Assistant cannot approve, apply, execute, or start downstream" in answer
+    after_candidates = conn.execute(
+        "SELECT COUNT(*) AS count FROM v2_repair_apply_candidates WHERE job_id = ?",
+        (job_id,),
+    ).fetchone()["count"]
+    assert before_candidates == 0
+    assert after_candidates == 0
+    events = conn.execute("SELECT type, stage FROM v2_job_events WHERE job_id = ?", (job_id,)).fetchall()
+    assert not any(str(row["type"]) == "stage_started" and int(row["stage"] or 0) > 2 for row in events)
+    assert "PowerMockito.whenNew" in test_source.read_text(encoding="utf-8")
+
+
 def test_fastapi_create_app_repair_gate_callback_creates_repair_review_gate(tmp_path: Path) -> None:
     app, client, conn = _app_and_client(tmp_path)
     setup_id = _ready_setup(conn)

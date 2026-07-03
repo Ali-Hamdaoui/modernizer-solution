@@ -2599,12 +2599,31 @@ describe("V2 Migration Cockpit contract", () => {
         downstream_stage_state: { next_stage_index: 3, state: "pending_blocked_by_failed_stage", auto_started: false },
         repair_strategy_packet: {
           strategy_id: "repair-strategy-power",
+          strategy_base_id: "repair-strategy-power",
+          version: 2,
           job_id: "job-r9",
           stage_index: 2,
           family: "POWERMOCK_LEGACY_TEST_STRATEGY",
           risk_level: "high",
           category: "test_modernization",
           strategy_status: "available",
+          strategy_checksum: "sha256:strategy",
+          evidence_pack_checksum: "sha256:evidence",
+          classification_status: "unsupported_known_failure",
+          created_at: "2026-07-01T00:00:00Z",
+          history_count: 2,
+          history: [
+            {
+              strategy_id: "repair-strategy-power-v2",
+              version: 2,
+              family: "POWERMOCK_LEGACY_TEST_STRATEGY",
+              risk_level: "high",
+              strategy_status: "available",
+              strategy_checksum: "sha256:strategy",
+              evidence_pack_checksum: "sha256:evidence",
+              created_at: "2026-07-01T00:00:00Z",
+            },
+          ],
           apply_candidate_allowed: false,
           backend_recipe_available: false,
           human_gate_required: true,
@@ -2649,14 +2668,30 @@ describe("V2 Migration Cockpit contract", () => {
             approval_allowed: false,
             downstream_start_allowed: false,
           },
-          llm_fallback: null,
+          llm_fallback: {
+            role: "repair_strategy_fallback",
+            status: "fallback_used",
+            llm_invoked: true,
+            fallback_used: true,
+            failure_reason: "",
+            input_checksum: "sha256:fallback-in",
+            output: { confidence: "low", verdict: "advisory_needs_changes", critique: "Fallback remains advisory." },
+            output_checksum: "sha256:fallback-out",
+            schema_validation_status: "validated",
+            fallback_model_invoked: true,
+            fallback_model_used: true,
+            fallback_validated_output_source: "fallback_model",
+            non_actionable: true,
+            apply_allowed: false,
+            approval_allowed: false,
+            downstream_start_allowed: false,
+          },
           backend_gate: {
             backend_authority: true,
             llm_can_apply: false,
             llm_can_approve: false,
             downstream_start_allowed: false,
           },
-          strategy_checksum: "sha256:strategy",
         },
         repair_apply_candidate: null,
       },
@@ -2664,16 +2699,41 @@ describe("V2 Migration Cockpit contract", () => {
 
     const markup = renderToStaticMarkup(<StageFailureEvidenceDetails diagnosis={diagnosis} stage={2} />);
     expect(markup).toContain("Repair Strategy");
+    expect(markup).toContain("Strategy ID: repair-strategy-power");
+    expect(markup).toContain("Version: 2");
+    expect(markup).toContain("Strategy checksum: sha256:strategy");
+    expect(markup).toContain("Evidence pack checksum: sha256:evidence");
+    expect(markup).toContain("Strategy history count: 2");
     expect(markup).toContain("Family: POWERMOCK_LEGACY_TEST_STRATEGY");
     expect(markup).toContain("Risk level: high");
     expect(markup).toContain("Apply candidate allowed: no");
+    expect(markup).toContain("Backend recipe available: no");
+    expect(markup).toContain("Human gate required: yes");
+    expect(markup).toContain("Detected patterns:");
+    expect(markup).toContain("Migration options:");
+    expect(markup).toContain("Engineer checklist:");
     expect(markup).toContain("Review PrepareForTest scope.");
     expect(markup).toContain("Proposer output");
     expect(markup).toContain("Reviewer output");
+    expect(markup).toContain("Fallback model invoked: yes");
+    expect(markup).toContain("Fallback output source: fallback_model");
+    expect(markup).toContain("Repair Strategy History");
     expect(markup).toContain("Backend gate");
+    expect(markup).toContain("Backend authority: yes");
+    expect(markup).toContain("LLM can apply: no");
+    expect(markup).toContain("LLM can approve: no");
+    expect(markup).toContain("Downstream start allowed: no");
     expect(markup).not.toContain("PowerMock Strategy");
+    expect(markup).not.toContain("Apply approved repair");
+    expect(markup).not.toContain("Approve repair candidate");
     expect(markup).not.toContain("Force apply");
     expect(markup).not.toContain("Choose target path");
+    expect(markup).not.toContain("Choose command");
+    expect(markup).not.toContain("Choose model");
+    expect(markup).not.toContain("Upload patch");
+    expect(markup).not.toContain("Edit patch");
+    expect(markup).not.toContain("Override checksum");
+    expect(markup).not.toContain("Start Stage 2");
   });
 
   it("renders Repair Draft drafted_non_actionable initMocks state", () => {
