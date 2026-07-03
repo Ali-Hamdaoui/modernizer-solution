@@ -12717,6 +12717,7 @@ def _safe_classification_envelope(value: Any) -> dict[str, Any] | None:
         "repair_proposal_draft": _safe_repair_proposal_draft(value.get("repair_proposal_draft")),
         "repair_draft_review": _safe_repair_draft_review(value.get("repair_draft_review")),
         "llm_repair_shadow_trace": _safe_llm_repair_shadow_trace(value.get("llm_repair_shadow_trace")),
+        "repair_apply_candidate": _safe_repair_apply_candidate(value.get("repair_apply_candidate")),
     }
 
 
@@ -12796,6 +12797,43 @@ def _is_safe_relative_ui_path(value: str) -> bool:
         and "[redacted" not in text.lower()
         and all(part not in ("", ".", "..") for part in text.split("/"))
     )
+
+
+def _safe_repair_apply_candidate(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    trusted = _safe_failure_str(value.get("patch_source")) == "backend_deterministic_recipe"
+    if not trusted or _safe_failure_str(value.get("family")) != "INITMOCKS_TO_OPENMOCKS_CANDIDATE":
+        return None
+    status = _safe_failure_str(value.get("status"))
+    if status not in {"pending_human_approval", "approved", "applying", "verified", "failed", "rolled_back"}:
+        status = "pending_human_approval"
+    return {
+        "repair_candidate_id": _safe_failure_str(value.get("repair_candidate_id")),
+        "status": status,
+        "family": "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+        "patch_source": "backend_deterministic_recipe",
+        "llm_source": "advisory_only",
+        "target_file": _safe_failure_str(value.get("target_file")),
+        "pre_apply_checksum": _safe_failure_str(value.get("pre_apply_checksum")),
+        "target_file_checksum": _safe_failure_str(value.get("target_file_checksum")),
+        "patch_checksum": _safe_failure_str(value.get("patch_checksum")),
+        "review_checksum": _safe_failure_str(value.get("review_checksum")),
+        "proposal_checksum": _safe_failure_str(value.get("proposal_checksum")),
+        "candidate_checksum": _safe_failure_str(value.get("candidate_checksum")),
+        "approval_required": True,
+        "apply_enabled": False,
+        "approval_enabled": bool(value.get("approval_enabled")),
+        "sandbox_only": True,
+        "legacy_mutation_allowed": False,
+        "downstream_start_allowed": False,
+        "llm_can_apply": False,
+        "browser_can_supply_patch": False,
+        "verification_status": _safe_failure_str(value.get("verification_status")),
+        "rollback_status": _safe_failure_str(value.get("rollback_status")),
+        "proof_artifact": _safe_failure_str(value.get("proof_artifact")),
+        "created_at": _safe_failure_str(value.get("created_at")),
+    }
 
 
 def _safe_repair_draft_review(value: Any) -> dict[str, Any] | None:

@@ -39,13 +39,12 @@ SCHEMA_BY_OUTPUT_KIND = {
 PROPOSER_JSON_SHAPE = {
     "status": "available",
     "role": "repair_proposer",
-    "summary": "string",
     "root_cause": "string",
-    "repair_intent": "string",
+    "repair_strategy": "string",
     "expected_change": "string",
     "affected_files": [],
     "risk_notes": [],
-    "missing_evidence": [],
+    "required_backend_recipe": "INITMOCKS_TO_OPENMOCKS",
     "confidence": "low",
 }
 REVIEWER_JSON_SHAPE = {
@@ -511,13 +510,14 @@ def _clamp_output(value: dict[str, Any], output_kind: str) -> dict[str, Any]:
     return {
         "status": _status(value.get("status")),
         "role": PROPOSER_ROLE,
-        "summary": _safe_text(value.get("summary")),
         "root_cause": _safe_text(value.get("root_cause")),
-        "repair_intent": _safe_text(value.get("repair_intent")),
+        "repair_strategy": _safe_text(value.get("repair_strategy")),
         "expected_change": _safe_text(value.get("expected_change")),
         "affected_files": _safe_relative_list(value.get("affected_files")),
         "risk_notes": _safe_list(value.get("risk_notes")),
-        "missing_evidence": _safe_list(value.get("missing_evidence")),
+        "required_backend_recipe": "INITMOCKS_TO_OPENMOCKS"
+        if str(value.get("required_backend_recipe") or "") == "INITMOCKS_TO_OPENMOCKS"
+        else "",
         "confidence": _confidence(value.get("confidence")),
         "non_actionable": True,
         "apply_allowed": False,
@@ -530,7 +530,7 @@ def _missing_output_fields(output: dict[str, Any], output_kind: str) -> list[str
     required = (
         ("status", "role", "verdict", "critique", "risks", "missing_evidence", "unsafe_assumptions", "recommended_next_action", "confidence")
         if output_kind in {"reviewer", "fallback"}
-        else ("status", "role", "summary", "root_cause", "repair_intent", "expected_change", "affected_files", "risk_notes", "missing_evidence", "confidence")
+        else ("status", "role", "root_cause", "repair_strategy", "expected_change", "affected_files", "risk_notes", "required_backend_recipe", "confidence")
     )
     return [field for field in required if field not in output or output.get(field) in (None, "")]
 
@@ -539,13 +539,12 @@ def _fallback_proposer_output(classification: dict[str, Any], draft: dict[str, A
     return {
         "status": "fallback_used",
         "role": PROPOSER_ROLE,
-        "summary": "LLM proposer unavailable; deterministic evidence-bound draft remains visible.",
         "root_cause": str(classification.get("failure_type") or "unknown"),
-        "repair_intent": str(draft.get("supported_family") or "none"),
+        "repair_strategy": str(draft.get("supported_family") or "none"),
         "expected_change": "No LLM-authored change is actionable in R7E.2.",
         "affected_files": draft.get("target_files", []),
         "risk_notes": ["LLM shadow proposer unavailable or disabled."],
-        "missing_evidence": classification.get("missing_required_evidence", []),
+        "required_backend_recipe": "INITMOCKS_TO_OPENMOCKS",
         "confidence": "low",
     }
 

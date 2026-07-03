@@ -2372,6 +2372,32 @@ describe("V2 Migration Cockpit contract", () => {
           reasons: [],
           safety_warnings: ["Reviewer verdict is non-actionable in R7E."],
         },
+        repair_apply_candidate: {
+          repair_candidate_id: "repair-candidate-r8",
+          status: "pending_human_approval",
+          family: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+          patch_source: "backend_deterministic_recipe",
+          llm_source: "advisory_only",
+          target_file: "src/test/java/ExampleTest.java",
+          pre_apply_checksum: "sha256:file",
+          target_file_checksum: "sha256:file",
+          patch_checksum: "sha256:patch",
+          review_checksum: "sha256:review",
+          proposal_checksum: "sha256:proposal",
+          candidate_checksum: "sha256:candidate",
+          approval_required: true,
+          apply_enabled: false,
+          approval_enabled: true,
+          sandbox_only: true,
+          legacy_mutation_allowed: false,
+          downstream_start_allowed: false,
+          llm_can_apply: false,
+          browser_can_supply_patch: false,
+          verification_status: "pending",
+          rollback_status: "not_started",
+          proof_artifact: "",
+          created_at: "2026-07-01T00:00:00Z",
+        },
       },
     };
 
@@ -2406,6 +2432,18 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).toContain("Checksum verification: verified");
     expect(markup).toContain("Future LLM reviewer compatible: yes");
     expect(markup).toContain("Reviewer verdict is non-actionable in R7E.");
+    expect(markup).toContain("Repair Apply Candidate");
+    expect(markup).toContain("Status: pending_human_approval");
+    expect(markup).toContain("Patch source: backend_deterministic_recipe");
+    expect(markup).toContain("LLM source: advisory_only");
+    expect(markup).toContain("Patch checksum: sha256:patch");
+    expect(markup).toContain("Approval required: yes");
+    expect(markup).toContain("Apply: disabled until approval");
+    expect(markup).toContain("LLM advisory only: yes");
+    expect(markup).toContain("Browser can supply patch: no");
+    expect(markup).toContain("Repair Approval");
+    expect(markup).toContain("Checksum-bound approval requires exact patch, target file, and review checksums.");
+    expect(markup).toContain("Repair Execution");
     expect(markup).not.toContain("Apply repair");
     expect(markup).not.toContain("Upload patch");
     expect(markup).not.toContain("Override checksum");

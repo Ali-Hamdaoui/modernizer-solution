@@ -47,6 +47,7 @@ import type {
   V2RepairDraftReviewResponse,
   V2LlmRepairShadowTraceResponse,
   V2LlmShadowRoleTraceResponse,
+  V2RepairApplyCandidateResponse,
 } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
 
@@ -1015,6 +1016,7 @@ export function StageFailureEvidenceDetails({
           <RepairDraftDetails draft={classification.repair_proposal_draft ?? null} />
           <RepairDraftReviewDetails review={classification.repair_draft_review ?? null} />
           <LlmRepairShadowDetails trace={classification.llm_repair_shadow_trace ?? null} />
+          <RepairApplyCandidateDetails candidate={classification.repair_apply_candidate ?? null} />
         </div>
       )}
     </>
@@ -1101,6 +1103,44 @@ function LlmShadowRolePanel({
       )}
       <p className="meta">Non-actionable: {trace.non_actionable ? "yes" : "no"}</p>
       <p className="meta">Apply allowed: {trace.apply_allowed ? "yes" : "no"}</p>
+    </div>
+  );
+}
+
+function RepairApplyCandidateDetails({ candidate }: { candidate: V2RepairApplyCandidateResponse | null }) {
+  if (!candidate) {
+    return (
+      <div className="trace-section">
+        <strong>Repair Apply Candidate</strong>
+        <p className="meta">No backend apply candidate available.</p>
+        <p className="meta">PowerMock and unsupported failures remain human-gated.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="trace-section">
+      <strong>Repair Apply Candidate</strong>
+      <p className="meta">Status: {candidate.status}</p>
+      <p className="meta">Family: {candidate.family}</p>
+      <p className="meta">Patch source: {candidate.patch_source}</p>
+      <p className="meta">LLM source: {candidate.llm_source}</p>
+      <p className="meta">Target file: {candidate.target_file}</p>
+      <p className="checksum">Patch checksum: {candidate.patch_checksum || "n/a"}</p>
+      <p className="checksum">Pre-apply checksum: {candidate.pre_apply_checksum || "n/a"}</p>
+      <p className="checksum">Review checksum: {candidate.review_checksum || "n/a"}</p>
+      <p className="checksum">Candidate checksum: {candidate.candidate_checksum || "n/a"}</p>
+      <p className="meta">Approval required: {candidate.approval_required ? "yes" : "no"}</p>
+      <p className="meta">Apply: {candidate.apply_enabled ? "enabled" : "disabled until approval"}</p>
+      <p className="meta">LLM advisory only: {candidate.llm_source === "advisory_only" ? "yes" : "no"}</p>
+      <p className="meta">Browser can supply patch: {candidate.browser_can_supply_patch ? "yes" : "no"}</p>
+      <strong>Repair Approval</strong>
+      <p className="meta">Checksum-bound approval requires exact patch, target file, and review checksums.</p>
+      <p className="meta">No patch editing, target path editing, command editing, or checksum override is available here.</p>
+      <strong>Repair Execution</strong>
+      <p className="meta">Verification: {candidate.verification_status || "pending"}</p>
+      <p className="meta">Rollback: {candidate.rollback_status || "not_started"}</p>
+      <p className="meta">Proof artifact: {candidate.proof_artifact || "pending"}</p>
+      <p className="meta">Downstream start: {candidate.downstream_start_allowed ? "enabled" : "disabled"}</p>
     </div>
   );
 }

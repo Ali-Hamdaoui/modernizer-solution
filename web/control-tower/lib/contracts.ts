@@ -1058,6 +1058,7 @@ export type V2StageFailureClassificationResponse = {
   repair_proposal_draft?: V2EvidenceBoundRepairDraftResponse | null;
   repair_draft_review?: V2RepairDraftReviewResponse | null;
   llm_repair_shadow_trace?: V2LlmRepairShadowTraceResponse | null;
+  repair_apply_candidate?: V2RepairApplyCandidateResponse | null;
   evidence_pack_id: string;
   evidence_pack_checksum: string;
   downstream_stage_state: {
@@ -1065,6 +1066,33 @@ export type V2StageFailureClassificationResponse = {
     state: string;
     auto_started: boolean;
   } | null;
+};
+
+export type V2RepairApplyCandidateResponse = {
+  repair_candidate_id: string;
+  status: string;
+  family: string;
+  patch_source: string;
+  llm_source: string;
+  target_file: string;
+  pre_apply_checksum: string;
+  target_file_checksum: string;
+  patch_checksum: string;
+  review_checksum: string;
+  proposal_checksum: string;
+  candidate_checksum: string;
+  approval_required: boolean;
+  apply_enabled: boolean;
+  approval_enabled: boolean;
+  sandbox_only: boolean;
+  legacy_mutation_allowed: boolean;
+  downstream_start_allowed: boolean;
+  llm_can_apply: boolean;
+  browser_can_supply_patch: boolean;
+  verification_status: string;
+  rollback_status: string;
+  proof_artifact: string;
+  created_at: string;
 };
 
 export type V2MigrationMemoryMatchResponse = {

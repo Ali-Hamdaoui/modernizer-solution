@@ -59,6 +59,10 @@ from migration_factory.control_tower.application.v2_repair_reviewer import (
 from migration_factory.control_tower.application.v2_llm_repair_shadow import (
     run_llm_repair_shadow_trace,
 )
+from migration_factory.control_tower.application.v2_repair_apply_candidate import (
+    create_repair_apply_candidate,
+    public_repair_apply_candidate,
+)
 
 
 # ── Diagnosis record ──────────────────────────────────────────────
@@ -784,6 +788,13 @@ class V2FailureDiagnosisService:
             repair_draft_review=classification["repair_draft_review"],
             llm_client=self._llm_repair_shadow_client,
             llm_shadow_enabled=self._llm_repair_shadow_enabled,
+        )
+        classification["repair_apply_candidate"] = public_repair_apply_candidate(
+            create_repair_apply_candidate(
+                classification,
+                evidence_pack,
+                classification["llm_repair_shadow_trace"],
+            )
         )
         classification["repair_enabled"] = False
         return classification

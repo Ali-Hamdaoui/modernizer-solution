@@ -70,13 +70,12 @@ class _FakeShadowClient:
         return _FakeModelResult(json.dumps({
             "status": "available",
             "role": "repair_proposer",
-            "summary": self.proposer_summary,
             "root_cause": "MockitoAnnotations.initMocks is legacy Mockito setup.",
-            "repair_intent": "Replace initMocks with openMocks in test source.",
+            "repair_strategy": self.proposer_summary,
             "expected_change": "One test-local method call changes.",
             "affected_files": ["src/test/java/ExampleTest.java"],
             "risk_notes": ["No apply in R7E.2."],
-            "missing_evidence": [],
+            "required_backend_recipe": "INITMOCKS_TO_OPENMOCKS",
             "confidence": "medium",
             "non_actionable": False,
             "apply_allowed": True,
@@ -193,13 +192,12 @@ def _valid_proposer_json(summary: str = "initMocks can be modernized.") -> str:
     return json.dumps({
         "status": "available",
         "role": "repair_proposer",
-        "summary": summary,
         "root_cause": "MockitoAnnotations.initMocks is legacy Mockito setup.",
-        "repair_intent": "Replace initMocks with openMocks in test source.",
+        "repair_strategy": summary,
         "expected_change": "One test-local method call changes.",
         "affected_files": ["src/test/java/ExampleTest.java"],
         "risk_notes": ["No apply in R7E.3.1."],
-        "missing_evidence": [],
+        "required_backend_recipe": "INITMOCKS_TO_OPENMOCKS",
         "confidence": "medium",
     })
 
@@ -238,7 +236,7 @@ def test_llm_shadow_trace_created_for_initmocks_with_fake_client() -> None:
     assert trace["runtime_mode"] == "configured_llm_shadow_mode"
     assert trace["proposer_trace"]["llm_invoked"] is True
     assert trace["reviewer_trace"]["llm_invoked"] is True
-    assert trace["proposer_trace"]["output"]["summary"] == "initMocks can be modernized."
+    assert trace["proposer_trace"]["output"]["repair_strategy"] == "initMocks can be modernized."
     assert trace["reviewer_trace"]["output"]["verdict"] == "advisory_accept"
     assert len(client.calls) == 2
 
@@ -256,7 +254,8 @@ def test_shadow_prompts_use_strict_json_contracts_and_schema_context() -> None:
         assert "Do not approve apply." in prompt
         assert "Do not start downstream." in prompt
     assert '"role": "repair_proposer"' in proposer_prompt
-    assert '"summary": "string"' in proposer_prompt
+    assert '"repair_strategy": "string"' in proposer_prompt
+    assert '"required_backend_recipe": "INITMOCKS_TO_OPENMOCKS"' in proposer_prompt
     assert '"affected_files": []' in proposer_prompt
     assert client.calls[0]["output_schema_name"] == "RepairProposerShadowOutput"
     assert client.calls[0]["require_schema"] is True
@@ -314,7 +313,7 @@ def test_fenced_json_is_extracted_and_validated() -> None:
     })
     trace = _trace(client, enabled=True)
     assert trace["proposer_trace"]["schema_validation_status"] == "validated"
-    assert trace["proposer_trace"]["output"]["summary"] == "fenced proposer"
+    assert trace["proposer_trace"]["output"]["repair_strategy"] == "fenced proposer"
     assert trace["proposer_trace"]["model_output_was_json"] is True
     assert trace["proposer_trace"]["json_parse_error_kind"] == ""
 
@@ -346,7 +345,7 @@ def test_missing_required_fields_fail_closed_with_schema_missing() -> None:
     trace = _trace(client, enabled=True)
     assert trace["proposer_trace"]["schema_validation_status"] == "fallback_validated"
     assert trace["proposer_trace"]["failure_reason"].startswith("schema_missing:")
-    assert "summary" in trace["proposer_trace"]["failure_reason"]
+    assert "root_cause" in trace["proposer_trace"]["failure_reason"]
 
 
 def test_fallback_prompt_and_valid_json_are_used_when_forced() -> None:
