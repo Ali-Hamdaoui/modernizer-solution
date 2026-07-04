@@ -23,6 +23,7 @@ Non-goals (inherited from architecture):
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import re
 from typing import Any, Callable
@@ -95,7 +96,31 @@ def _bind_power_mock_test_source_if_present(bound: dict[str, str], root: Path) -
         return
 
 
+def _bind_compile_error_source_files(bound: dict[str, str], contract: Path, sandbox: Path) -> None:
+    try:
+        text = contract.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    refs: list[str] = []
+    for error in _extract_public_compile_errors(text):
+        public_path = error.get("path", "")
+        if not public_path.startswith("src/main/java"):
+            continue
+        candidate = (sandbox / public_path).resolve()
+        try:
+            candidate.relative_to(sandbox.resolve())
+        except ValueError:
+            continue
+        if candidate.is_file():
+            refs.append(str(candidate))
+    for index, ref in enumerate(dict.fromkeys(refs), start=1):
+        bound[f"source_ref:{index}"] = ref
+    if refs and not bound.get("source_ref"):
+        bound["source_ref"] = refs[0]
+
+
 def _extract_public_compile_errors(text: str) -> list[dict[str, str]]:
+    text = _failure_contract_search_text(text)
     pattern = re.compile(
         r"(?P<path>(?:[a-z]:)?[^\"'\n\r]*src[\\/]+main[\\/]+java[^:\]\n\r]*\.java)"
         r"(?::?\[(?P<bracket_line>\d+),(?P<bracket_column>\d+)\]|[:\[](?P<line>\d+)(?:,(?P<column>\d+))?)?"
@@ -111,6 +136,31 @@ def _extract_public_compile_errors(text: str) -> list[dict[str, str]]:
             "message": match.group("message"),
         })
     return errors[:12]
+
+
+def _failure_contract_search_text(text: str) -> str:
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+    fields = ("stdout_tail", "stderr_tail", "errors", "blockers", "compile_errors", "message", "details", "causes", "logs")
+    collected: list[str] = []
+
+    def collect(value: Any, key: str = "") -> None:
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                if str(child_key) in fields or key in fields:
+                    collect(child_value, str(child_key))
+                elif isinstance(child_value, (dict, list)):
+                    collect(child_value, str(child_key))
+        elif isinstance(value, list):
+            for item in value:
+                collect(item, key)
+        elif key in fields or isinstance(value, str):
+            collected.append(str(value))
+
+    collect(parsed)
+    return "\n".join(collected) if collected else text
 
 
 def _public_source_path(path: str) -> str:
@@ -746,6 +796,9 @@ class V2FailureDiagnosisService:
                 usable.append(self._artifact_summary(kind, str(ref)))
             else:
                 missing.append(kind)
+        for kind, ref in sorted(bound_refs.items()):
+            if kind.startswith("source_ref:"):
+                usable.append(self._artifact_summary("source_ref", str(ref)))
 
         stage_meta = self._stage_metadata(stage_index, payload)
         downstream = {
@@ -828,6 +881,8 @@ class V2FailureDiagnosisService:
                     matches = []
                 if matches:
                     bound["build_error_contract"] = str(matches[-1])
+            if bound.get("build_error_contract") and sandbox_path is not None:
+                _bind_compile_error_source_files(bound, Path(bound["build_error_contract"]), sandbox_path)
         return bound
 
     @staticmethod
@@ -845,13 +900,13 @@ class V2FailureDiagnosisService:
             path = Path(ref)
             if path.is_file():
                 checksum, size_bytes = stream_sha256(path)
-                raw_text = path.read_text(encoding="utf-8", errors="replace")[:2000]
+                raw_text = path.read_text(encoding="utf-8", errors="replace")
                 summary["checksum"] = f"sha256:{checksum}"
                 summary["size_bytes"] = size_bytes
                 if kind == "build_error_contract":
                     summary["compile_errors"] = _extract_public_compile_errors(raw_text)
                 summary["excerpt"] = redact_absolute_paths(
-                    redact_model_summary(raw_text)
+                    redact_model_summary(raw_text[:2000])
                 )
             elif path.exists():
                 summary["note"] = "ref_exists_not_file"

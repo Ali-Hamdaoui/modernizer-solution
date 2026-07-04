@@ -808,7 +808,51 @@ class TestStageAwareEvidence:
         assert "build_error_contract" not in evidence["missing_artifacts"]
         assert "pom_xml" not in evidence["missing_artifacts"]
 
-    def test_main_source_compile_error_takes_priority_over_readonly_powermock(
+    def test_long_build_contract_main_source_errors_do_not_become_powermock(
+        self,
+        diagnosis_service: V2FailureDiagnosisService,
+        tmp_path: Path,
+    ) -> None:
+        run_dir = tmp_path / ".migration" / "runs" / "v2-long"
+        sandbox = run_dir / "workspaces" / "sandbox"
+        readonly_test = run_dir / "analysis" / "readonly-workspace" / "src" / "test" / "java" / "PowerTest.java"
+        build_dir = run_dir / "build"
+        readonly_test.parent.mkdir(parents=True)
+        build_dir.mkdir(parents=True)
+        sandbox.mkdir(parents=True)
+        (sandbox / "pom.xml").write_text("<project />", encoding="utf-8")
+        (sandbox / "src" / "main" / "java" / "com" / "total" / "corp" / "common" / "dto").mkdir(parents=True)
+        (sandbox / "src" / "main" / "java" / "com" / "total" / "corp" / "common" / "dto" / "DTOHelpers.java").write_text(
+            "class DTOHelpers { void f(){ final Sort sort = new Sort(sortDirection, sortCollumn); } }",
+            encoding="utf-8",
+        )
+        readonly_test.write_text("PowerMockito.whenNew(Foo.class).thenReturn(foo);", encoding="utf-8")
+        build_error = build_dir / "build-error-long.json"
+        build_error.write_text(
+            json.dumps({
+                "message": "x" * 3000,
+                "stdout_tail": [
+                    "[ERROR] /tmp/run/workspaces/sandbox/src/main/java/com/total/corp/common/dto/DTOHelpers.java:[29,51] incompatible types: java.lang.String cannot be converted to java.util.List<java.lang.String>"
+                ],
+            }),
+            encoding="utf-8",
+        )
+
+        diagnosis = diagnosis_service.diagnose(
+            job_id="job-live",
+            stage_index=1,
+            command_id="cmd-long-compile",
+            event_type="build_failed",
+            payload={"build_status": "BUILD_FAILED_IN_SANDBOX", "sandbox_path": str(sandbox)},
+        )
+
+        classification = diagnosis.classification_envelope
+        assert classification is not None
+        assert classification["failure_type"] == "SPRING_DATA_SORT_API_DRIFT"
+        assert classification["failure_type"] != "POWERMOCK_LEGACY_TEST_STRATEGY"
+        assert classification["compile_blockers"][0]["path"].endswith("DTOHelpers.java")
+
+    def test_sort_compile_error_takes_priority_over_readonly_powermock(
         self,
         diagnosis_service: V2FailureDiagnosisService,
         tmp_path: Path,
@@ -823,6 +867,18 @@ class TestStageAwareEvidence:
         build_dir.mkdir(parents=True)
         sandbox.mkdir(parents=True)
         (sandbox / "pom.xml").write_text("<project />", encoding="utf-8")
+        search_service = sandbox / "src" / "main" / "java" / "com" / "total" / "corp" / "common" / "service" / "base" / "SearchService.java"
+        dto_helpers = sandbox / "src" / "main" / "java" / "com" / "total" / "corp" / "common" / "dto" / "DTOHelpers.java"
+        search_service.parent.mkdir(parents=True)
+        dto_helpers.parent.mkdir(parents=True)
+        search_service.write_text(
+            "class SearchService { void s(){ final Sort sort = new Sort(Direction.fromString(query.getSortDirection()), query.getSortColumn()); } }",
+            encoding="utf-8",
+        )
+        dto_helpers.write_text(
+            "class DTOHelpers { void p(){ final Sort sort = new Sort(sortDirection, sortCollumn); } }",
+            encoding="utf-8",
+        )
         (test_report / "TEST-com.total.corp.bus.AzureBusTopicTest.xml").write_text("<testsuite />", encoding="utf-8")
         readonly_test.write_text(
             "\n".join([
@@ -859,12 +915,15 @@ class TestStageAwareEvidence:
 
         classification = diagnosis.classification_envelope
         assert classification is not None
-        assert classification["failure_type"] == "JAVA_MAIN_SOURCE_COMPILE_FAILURE"
-        assert classification["primary_failure"] == "Java compilation/build failure"
-        assert classification["classification_status"] == "unsupported_known_failure"
-        assert "compiler:main_source_compile_failure" in classification["matched_signals"]
+        assert classification["failure_type"] == "SPRING_DATA_SORT_API_DRIFT"
+        assert classification["primary_failure"] == "Spring Data Sort API drift"
+        assert classification["classification_status"] == "known_family_candidate"
+        assert "compiler:spring_data_sort_constructor_removed" in classification["matched_signals"]
+        assert "golden_reference:msa_utils_cli_sort_by" in classification["matched_signals"]
         assert "advisory:powermock_signal_not_primary_without_build_or_test_failure" in classification["advisory_signals"]
-        assert classification["repair_apply_candidate"] is None
+        assert classification["repair_apply_candidate"] is not None
+        assert classification["repair_apply_candidate"]["status"] == "pending_human_approval"
+        assert classification["repair_apply_candidate"]["apply_enabled"] is False
         assert "POWERMOCK_CONSTRUCTOR_MOCKING" not in json.dumps(classification)
         evidence = diagnosis.stage_evidence_pack
         assert evidence is not None
@@ -896,6 +955,41 @@ class TestStageAwareEvidence:
         assert evidence is not None
         assert "rewrite_patch" in evidence["missing_artifacts"]
         assert all(item["kind"] != "rewrite_patch" for item in evidence["usable_artifacts"])
+
+    def test_main_source_compile_error_without_sort_stays_generic_compile_failure(
+        self,
+        diagnosis_service: V2FailureDiagnosisService,
+        tmp_path: Path,
+    ) -> None:
+        run_dir = tmp_path / ".migration" / "runs" / "v2-generic"
+        sandbox = run_dir / "workspaces" / "sandbox"
+        build_dir = run_dir / "build"
+        source = sandbox / "src" / "main" / "java" / "com" / "acme" / "Broken.java"
+        source.parent.mkdir(parents=True)
+        build_dir.mkdir(parents=True)
+        (sandbox / "pom.xml").write_text("<project />", encoding="utf-8")
+        source.write_text("class Broken { MissingType value; }", encoding="utf-8")
+        (build_dir / "build-error-generic.json").write_text(
+            json.dumps({
+                "stdout_tail": [
+                    "[ERROR] /tmp/run/workspaces/sandbox/src/main/java/com/acme/Broken.java:[1,16] cannot find symbol"
+                ],
+            }),
+            encoding="utf-8",
+        )
+
+        diagnosis = diagnosis_service.diagnose(
+            job_id="job-generic",
+            stage_index=1,
+            command_id="cmd-generic-compile",
+            event_type="build_failed",
+            payload={"build_status": "BUILD_FAILED_IN_SANDBOX", "sandbox_path": str(sandbox)},
+        )
+
+        classification = diagnosis.classification_envelope
+        assert classification is not None
+        assert classification["failure_type"] == "JAVA_MAIN_SOURCE_COMPILE_FAILURE"
+        assert classification["repair_apply_candidate"] is None
 
     def test_stage_evidence_can_mark_known_family_candidate_without_enabling_repair(
         self,

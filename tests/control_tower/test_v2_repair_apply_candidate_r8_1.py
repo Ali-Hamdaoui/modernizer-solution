@@ -274,3 +274,84 @@ def test_powermock_remains_no_candidate_human_gate(tmp_path: Path) -> None:
         review_checksum="sha256:review",
     )
     assert candidate is None
+
+
+def test_sort_by_apply_candidate_is_governed_and_not_auto_applied(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    target = sandbox / "src" / "main" / "java" / "com" / "total" / "corp" / "common" / "dto" / "DTOHelpers.java"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "class DTOHelpers { void p(){ final Sort sort = new Sort(sortDirection, sortCollumn); } }",
+        encoding="utf-8",
+    )
+    classification = {
+        "failure_type": "SPRING_DATA_SORT_API_DRIFT",
+        "sort_api_drift_targets": [{"path": "src/main/java/com/total/corp/common/dto/DTOHelpers.java"}],
+    }
+    stage_evidence = {
+        "job_id": "job-sort",
+        "stage_index": 1,
+        "evidence_pack_checksum": "sha256:evidence",
+        "usable_artifacts": [
+            {"kind": "sandbox", "internal_ref": str(sandbox)},
+            {"kind": "source_ref", "internal_ref": str(target), "excerpt": target.read_text(encoding="utf-8")},
+            {"kind": "build_error_contract", "compile_errors": [{"path": "src/main/java/com/total/corp/common/dto/DTOHelpers.java"}]},
+            {"kind": "pom_xml", "internal_ref": str(sandbox / "pom.xml")},
+        ],
+    }
+
+    candidate = create_repair_apply_candidate(classification, stage_evidence, {})
+
+    assert candidate is not None
+    public = public_repair_apply_candidate(candidate)
+    assert public is not None
+    assert public["family"] == "SPRING_DATA_SORT_API_DRIFT"
+    assert public["recipe_id"] == "SPRING_DATA_SORT_BY"
+    assert public["status"] == "pending_human_approval"
+    assert public["sandbox_only"] is True
+    assert public["approval_required"] is True
+    assert public["human_gate_required"] is True
+    assert public["apply_enabled"] is False
+    assert public["downstream_start_allowed"] is False
+    assert public["legacy_mutation_allowed"] is False
+    assert public["patch_checksum"].startswith("sha256:")
+    assert public["candidate_checksum"].startswith("sha256:")
+    assert public["rollback_metadata"]["rollback_required"] is True
+    assert public["impact_summary"]
+    assert public["risk_notes"]
+    assert "new Sort(" in target.read_text(encoding="utf-8")
+    assert "Sort.by(" in candidate["_after_text"]
+
+
+def test_sort_by_candidate_rejects_outside_sandbox_or_ambiguous_pattern(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    outside = tmp_path / "outside" / "src" / "main" / "java" / "DTOHelpers.java"
+    ambiguous = sandbox / "src" / "main" / "java" / "DTOHelpers.java"
+    outside.parent.mkdir(parents=True)
+    ambiguous.parent.mkdir(parents=True)
+    outside.write_text("class DTOHelpers { void p(){ final Sort sort = new Sort(sortDirection, sortCollumn); } }", encoding="utf-8")
+    ambiguous.write_text("class DTOHelpers { void p(){ final Sort sort = new Sort(factory.create(), other); } }", encoding="utf-8")
+    classification = {
+        "failure_type": "SPRING_DATA_SORT_API_DRIFT",
+        "sort_api_drift_targets": [{"path": "src/main/java/DTOHelpers.java"}],
+    }
+
+    outside_candidate = create_repair_apply_candidate(classification, {
+        "job_id": "job-sort",
+        "stage_index": 1,
+        "usable_artifacts": [
+            {"kind": "sandbox", "internal_ref": str(sandbox)},
+            {"kind": "source_ref", "internal_ref": str(outside), "excerpt": outside.read_text(encoding="utf-8")},
+        ],
+    }, {})
+    ambiguous_candidate = create_repair_apply_candidate(classification, {
+        "job_id": "job-sort",
+        "stage_index": 1,
+        "usable_artifacts": [
+            {"kind": "sandbox", "internal_ref": str(sandbox)},
+            {"kind": "source_ref", "internal_ref": str(ambiguous), "excerpt": ambiguous.read_text(encoding="utf-8")},
+        ],
+    }, {})
+
+    assert outside_candidate is None
+    assert ambiguous_candidate is None

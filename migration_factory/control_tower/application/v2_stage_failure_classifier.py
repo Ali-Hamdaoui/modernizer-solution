@@ -446,6 +446,27 @@ def _main_source_compile_failure(evidence_pack: dict[str, Any], text: str) -> di
     advisory = []
     if "powermock" in text or "powermockito" in text or "preparefortest" in text:
         advisory.append("advisory:powermock_signal_not_primary_without_build_or_test_failure")
+    sort_targets = _sort_api_drift_targets(evidence_pack, blockers)
+    if sort_targets:
+        return _review_gate(
+            status="known_family_candidate",
+            failure_type="SPRING_DATA_SORT_API_DRIFT",
+            repair_family_candidate="SPRING_DATA_SORT_API_DRIFT",
+            confidence="high",
+            reason="Spring Data Sort constructor compile failure found in main source. Reference CLI migration used Sort.by(...) for same msa-utils drift; backend treats reference as advisory evidence only.",
+            signals=["compiler:spring_data_sort_constructor_removed", "golden_reference:msa_utils_cli_sort_by"],
+            required=["build_error_contract", "pom_xml", "source_ref"],
+            assistant_next_action="prepare_sort_by_apply_candidate",
+            repair_blocked_reason="human_approval_required_before_sandbox_apply",
+            governance_gate_type="backend_deterministic_candidate",
+            stage_relevance=_stage_relevance(evidence_pack, "Sort.by recipe is sandbox-only and requires checksum-bound human approval."),
+            extra={
+                "primary_failure": "Spring Data Sort API drift",
+                "compile_blockers": blockers[:12],
+                "sort_api_drift_targets": sort_targets[:12],
+                "advisory_signals": advisory[:8],
+            },
+        )
     return _review_gate(
         status="unsupported_known_failure",
         failure_type="JAVA_MAIN_SOURCE_COMPILE_FAILURE",
@@ -508,6 +529,32 @@ def _main_source_compile_blockers(evidence_pack: dict[str, Any]) -> list[dict[st
                 "message": match.group("message"),
             })
     return blockers[:12]
+
+
+def _sort_api_drift_targets(evidence_pack: dict[str, Any], blockers: list[dict[str, Any]]) -> list[dict[str, str]]:
+    blocker_paths = {str(item.get("path") or "").replace("\\", "/") for item in blockers}
+    result: list[dict[str, str]] = []
+    for artifact in evidence_pack.get("usable_artifacts", []):
+        if not isinstance(artifact, dict) or artifact.get("kind") != "source_ref":
+            continue
+        excerpt = str(artifact.get("excerpt") or "")
+        ref = str(artifact.get("internal_ref") or artifact.get("ref") or "").replace("\\", "/")
+        if not _has_sort_constructor(excerpt):
+            continue
+        matched_path = next((path for path in blocker_paths if path and (path in ref or ref.endswith(path))), "")
+        if not matched_path and "src/main/java" in ref:
+            matched_path = ref[ref.index("src/main/java"):]
+        if matched_path:
+            result.append({
+                "path": matched_path,
+                "recipe": "SPRING_DATA_SORT_BY",
+                "reference": "msa-utils migrated/reference",
+            })
+    return result[:12]
+
+
+def _has_sort_constructor(text: str) -> bool:
+    return bool(re.search(r"\bnew\s+Sort\s*\(", text))
 
 
 def _normalize_source_path(path: str) -> str:
