@@ -729,6 +729,39 @@ def _safe_artifact_display_ref(value: Any) -> str | None:
     return Path(PureWindowsPath(text).name).name
 
 
+def _unavailable_allowed_actions(payload: dict[str, Any]) -> list[str]:
+    final_diff_exists = bool(payload.get("final_diff_exists"))
+    actions: list[str] = ["view_reviewer_opinion", "view_files_changed", "ask_explanation", "view_attempt_history"]
+    if final_diff_exists:
+        actions.insert(0, "view_diff")
+    return actions
+
+
+def _safe_retry_reason(reason_code: str, payload: dict[str, Any]) -> str:
+    if reason_code != "MALFORMED_DIFF":
+        return ""
+    explicit = str(payload.get("retry_reason") or "").strip()
+    if explicit:
+        for pattern in ("C:\\", "/Users/", "/home/", ".control-tower", "AZURE_OPENAI", "Bearer"):
+            if pattern in explicit:
+                return ""
+        return explicit
+    return "Backend retry is deferred. Re-trigger repair after investigation."
+
+
+def _next_action_for_unavailable(reason_code: str, payload: dict[str, Any]) -> str:
+    retry_status = _retry_status(reason_code, payload)
+    if retry_status:
+        return "Backend retry required; no approve action available."
+    if reason_code == "MALFORMED_DIFF":
+        return "Backend retry required; no approve action available."
+    if reason_code == "PROPOSER_DIFF_MISSING":
+        return "Main model did not produce a diff. Operator may re-trigger or revise."
+    if reason_code == "PATCH_POLICY_REJECTED":
+        return "Backend policy rejected the diff. Operator may review requested revisions."
+    return "No repair proposal available."
+
+
 def _latest_repair_materialization_unavailable(uow: Any, job_id: str) -> dict[str, Any] | None:
     events = tuple(uow.v2_events.list_by_job(job_id))
     latest = next(
@@ -761,12 +794,21 @@ def _latest_repair_materialization_unavailable(uow: Any, job_id: str) -> dict[st
         "schema_name": _safe_event_text(payload.get("schema_name")),
         "provider_alias": _safe_event_text(payload.get("provider_alias")),
         "deployment_alias_hash": _safe_event_text(payload.get("deployment_alias_hash")),
+        "context_checksum": _safe_event_text(payload.get("context_checksum")),
         "final_diff_exists": bool(payload.get("final_diff_exists")),
         "policy_ran": bool(payload.get("policy_ran")),
         "gate_created": bool(payload.get("gate_created")),
         "proposal_created": bool(payload.get("proposal_created")),
-        "allowed_actions": list(READ_ONLY_REPAIR_ACTIONS),
+        "input_checksum": bool(_safe_event_text(payload.get("input_checksum"))),
+        "output_checksum": bool(_safe_event_text(payload.get("output_checksum"))),
+        "allowed_actions": _unavailable_allowed_actions(payload),
         "retry_status": _retry_status(reason_code, payload),
+        "retry_reason": _safe_retry_reason(reason_code, payload),
+        "main_status": None,
+        "reviewer_status": None,
+        "main_output_checksum": None,
+        "reviewer_output_checksum": None,
+        "next_action": _next_action_for_unavailable(reason_code, payload),
     }
     invocation_ids = {
         str(value or "")
@@ -783,6 +825,17 @@ def _latest_repair_materialization_unavailable(uow: Any, job_id: str) -> dict[st
                 diagnostic["deployment_alias_hash"] = _safe_event_text(getattr(record, "deployment_alias_hash", None))
             if not diagnostic["schema_name"]:
                 diagnostic["schema_name"] = _safe_event_text(getattr(record, "schema_name", None))
+            if not diagnostic["main_status"] and str(getattr(record, "responsibility", "") or "") == "repair_proposal":
+                diagnostic["main_status"] = _safe_event_text(getattr(record, "status", None))
+            if not diagnostic["reviewer_status"] and str(getattr(record, "responsibility", "") or "") == "repair_review":
+                diagnostic["reviewer_status"] = _safe_event_text(getattr(record, "status", None))
+            resp = str(getattr(record, "responsibility", "") or "")
+            oc = _safe_event_text(getattr(record, "output_checksum", None))
+            if oc:
+                if resp == "repair_proposal" and not diagnostic["main_output_checksum"]:
+                    diagnostic["main_output_checksum"] = oc
+                if resp == "repair_review" and not diagnostic["reviewer_output_checksum"]:
+                    diagnostic["reviewer_output_checksum"] = oc
     return diagnostic
 
 
@@ -829,6 +882,37 @@ def _safe_event_text(value: Any) -> str | None:
     if ":\\" in text or "/" in text or "\\" in text:
         return None
     return text[:160]
+
+
+_SAFE_EVENT_FORBIDDEN_KEYS = frozenset({
+    "target_path", "patch_content", "sandbox_path", "argv", "env",
+    "raw_command", "azure_endpoint", "api_key", "password",
+    "authorization", "secret", "endpoint", "deployment",
+    "prompt", "completion", "raw_content", "raw_output",
+})
+
+_SAFE_EVENT_FORBIDDEN_PATTERNS = [
+    "C:\\", "/Users/", "/home/", ".control-tower",
+    "AZURE_OPENAI", "Bearer",
+]
+
+
+def _safe_event_payload(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        result: dict[str, Any] = {}
+        for key, value in obj.items():
+            if str(key).lower() in {k.lower() for k in _SAFE_EVENT_FORBIDDEN_KEYS}:
+                continue
+            result[key] = _safe_event_payload(value)
+        return result
+    if isinstance(obj, list):
+        return [_safe_event_payload(item) for item in obj]
+    if isinstance(obj, str):
+        for pattern in _SAFE_EVENT_FORBIDDEN_PATTERNS:
+            if pattern in obj:
+                return ""
+        return obj
+    return obj
 
 
 def _materialization_title(reason_code: str) -> str:

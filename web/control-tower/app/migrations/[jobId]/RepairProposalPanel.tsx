@@ -798,6 +798,24 @@ export function ReviewedRepairMaterializationFailed({
   const title = diagnostic?.title?.trim() || "Reviewed Repair Materialization Failed";
   const summary = diagnostic?.message?.trim() || "Backend could not materialize a reviewed diff for user approval.";
   const isMalformedDiff = reasonCode === "MALFORMED_DIFF";
+  const isDuplicateMainBlocked = reasonCode === "duplicate_main_blocked";
+  const blockedByReasonCode = diagnostic?.blocked_by_reason_code?.trim() ?? "";
+  const blockedByStructIssue = diagnostic?.blocked_by_struct_issue?.trim() ?? "";
+  const hasBlockedBy = blockedByReasonCode !== "";
+  const reviewerStatusFromDiag = diagnostic?.reviewer_status?.trim() ?? null;
+  const mainStatusFromDiag = diagnostic?.main_status?.trim() ?? null;
+  const contextChecksum = diagnostic?.context_checksum || reviewerInvocation?.context_checksum || mainInvocation?.context_checksum || null;
+  const nextActionFromDiag = diagnostic?.next_action?.trim() ?? null;
+  const effectiveMainStatus = mainStatusFromDiag ?? mainModelStatus;
+  const effectiveReviewerStatus = reviewerStatusFromDiag ?? reviewerModelStatus;
+  const failureSummaryText = isMalformedDiff
+    ? "Latest reviewed diff failed structural validation"
+    : hasBlockedBy
+      ? "Backend encountered a secondary blocking condition after the primary diagnostic was raised."
+      : summary;
+  const malformedExplainer = isMalformedDiff
+    ? "Reviewer accepted the repair, but backend structural validation rejected the reviewed diff before user approval."
+    : null;
   const noValidationPath = diagnostic
     ? "No backend validation or apply path is available until a valid reviewed diff is materialized."
     : null;
@@ -810,10 +828,15 @@ export function ReviewedRepairMaterializationFailed({
           <h2>{title}</h2>
           <div className="failure-summary" data-testid="reviewed-repair-materialization-failed">
             <strong>Failure Summary</strong>
-            <p className="meta">{summary}</p>
-            {isMalformedDiff && (
+            <p className="meta">{failureSummaryText}</p>
+            {malformedExplainer && (
               <p className="meta">
-                Reviewer accepted the repair, but backend structural validation rejected the reviewed diff before user approval.
+                {malformedExplainer}
+              </p>
+            )}
+            {hasBlockedBy && (
+              <p className="meta warning-text" data-testid="blocked-by-message">
+                Blocked by: {blockedByReasonCode}{blockedByStructIssue ? `: ${blockedByStructIssue}` : ""}
               </p>
             )}
             {noValidationPath && <p className="meta warning-text">{noValidationPath}</p>}
@@ -826,7 +849,7 @@ export function ReviewedRepairMaterializationFailed({
           <div className="table-list repair-metadata-grid">
             <div className="table-row">
               <span className="meta">Main Model</span>
-              <strong data-testid="main-model-status">{mainModelStatus}</strong>
+              <strong data-testid="main-model-status">{effectiveMainStatus}</strong>
             </div>
             {mainInvocation?.redacted_summary && (
               <div className="table-row">
@@ -848,7 +871,7 @@ export function ReviewedRepairMaterializationFailed({
             )}
             <div className="table-row">
               <span className="meta">Reviewer Model</span>
-              <strong data-testid="reviewer-model-status">{reviewerModelStatus}</strong>
+              <strong data-testid="reviewer-model-status">{effectiveReviewerStatus}</strong>
             </div>
             {reviewerInvocation?.redacted_summary && (
               <div className="table-row">
@@ -868,10 +891,22 @@ export function ReviewedRepairMaterializationFailed({
                 <strong data-testid="materialization-detail">{detail}</strong>
               </div>
             )}
+            {blockedByReasonCode && (
+              <div className="table-row">
+                <span className="meta">Blocked by</span>
+                <strong data-testid="blocked-by-reason-code">{blockedByReasonCode}{blockedByStructIssue ? `: ${blockedByStructIssue}` : ""}</strong>
+              </div>
+            )}
             {diagnostic?.deployment_alias_hash && (
               <div className="table-row">
                 <span className="meta">Diagnostic deployment hash</span>
                 <strong className="checksum">{diagnostic.deployment_alias_hash}</strong>
+              </div>
+            )}
+            {contextChecksum && (
+              <div className="table-row">
+                <span className="meta">Context checksum</span>
+                <strong className="checksum">{contextChecksum}</strong>
               </div>
             )}
             <div className="table-row">
@@ -892,7 +927,7 @@ export function ReviewedRepairMaterializationFailed({
             )}
             <div className="table-row">
               <span className="meta">Next action</span>
-              <strong>{diagnostic?.retry_status === "retry_required" ? "Backend retry required; no approve action available." : "Request backend retry or revision."}</strong>
+              <strong>{nextActionFromDiag ?? (diagnostic?.retry_status === "retry_required" ? "Backend retry required; no approve action available." : "Request backend retry or revision.")}</strong>
             </div>
           </div>
         </div>

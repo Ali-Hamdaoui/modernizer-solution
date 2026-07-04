@@ -1268,8 +1268,19 @@ export type RepairMaterializationUnavailable = {
   policy_ran: boolean;
   gate_created: boolean;
   proposal_created: boolean;
+  input_checksum?: boolean;
+  output_checksum?: boolean;
   allowed_actions: string[];
   retry_status?: string | null;
+  blocked_by_reason_code?: string | null;
+  blocked_by_struct_issue?: string | null;
+  reviewer_status?: string | null;
+  main_status?: string | null;
+  context_checksum?: string | null;
+  main_output_checksum?: string | null;
+  reviewer_output_checksum?: string | null;
+  retry_reason?: string | null;
+  next_action?: string | null;
 };
 
 export type RepairProposalCurrentResponse = {

@@ -1788,3 +1788,317 @@ describe("PR-F no-proposal UI states", () => {
     expect(hasProposalMarkup).toContain("Apply, Rebuild, Test");
   });
 });
+
+describe("AMF-241 MALFORMED_DIFF and materialization diagnostic", () => {
+  const baseInvocation: V2LlmInvocationEntry = {
+    invocation_id: "inv-main",
+    job_id: "job-1",
+    proposal_id: null,
+    gate_id: null,
+    role: "main",
+    responsibility: "repair_proposal",
+    provider_alias: "azure_openai",
+    model_display_name: "Product safe proposer",
+    deployment_alias_hash: "abc123",
+    context_checksum: "sha256:context",
+    input_checksum: "sha256:input",
+    output_checksum: "sha256:output",
+    schema_name: "RepairPrimaryOutput",
+    status: "completed",
+    fallback_used: false,
+    redacted_error: null,
+    redacted_summary: "Proposer completed successfully.",
+    prompt_tokens: 12,
+    completion_tokens: 8,
+    total_tokens: 20,
+    latency_ms: 1200,
+    created_at: "2026-06-30T00:00:00Z",
+    completed_at: "2026-06-30T00:00:01Z",
+  };
+
+  const malformedDiffDiagnostic = {
+    kind: "materialization_failed" as const,
+    title: "Reviewed Repair Diff Invalid",
+    reason_code: "MALFORMED_DIFF",
+    detail: "hunk_old_count_mismatch",
+    struct_issue: "hunk_old_count_mismatch",
+    message: "Reviewer accepted the repair, but backend structural validation rejected the reviewed diff before user approval.",
+    main_invocation_id: "inv-main",
+    reviewer_invocation_id: "inv-reviewer",
+    schema_name: "RepairPrimaryOutput",
+    provider_alias: "azure_openai",
+    deployment_alias_hash: "deployment-hash",
+    final_diff_exists: true,
+    policy_ran: false,
+    gate_created: false,
+    proposal_created: false,
+    allowed_actions: ["view_repair_history", "view_model_trace"],
+    retry_status: "retry_required" as const,
+  };
+
+  it("renders MALFORMED_DIFF with structural validation failure message", () => {
+    const invocations: V2LlmInvocationEntry[] = [
+      baseInvocation,
+      {
+        ...baseInvocation,
+        invocation_id: "inv-reviewer",
+        role: "reviewer",
+        responsibility: "repair_review",
+        model_display_name: "Reviewer Model",
+        status: "completed",
+        fallback_used: false,
+        redacted_error: null,
+        redacted_summary: "Reviewer accepted the repair proposal.",
+        output_checksum: "sha256:reviewer-output",
+        created_at: "2026-06-30T00:00:02Z",
+      },
+    ];
+
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairMaterializationFailed
+        invocations={invocations}
+        loading={false}
+        error={null}
+        diagnostic={malformedDiffDiagnostic}
+      />,
+    );
+
+    expect(markup).toContain("Latest reviewed diff failed structural validation");
+    expect(markup).toContain("Reviewer accepted the repair, but backend structural validation rejected the reviewed diff before user approval.");
+    expect(markup).not.toContain("No independent reviewer completed");
+    expect(markup).toContain("Not available");
+  });
+
+  it("renders no View diff button or approve action when no proposal exists", () => {
+    const invocations: V2LlmInvocationEntry[] = [
+      baseInvocation,
+      {
+        ...baseInvocation,
+        invocation_id: "inv-reviewer",
+        role: "reviewer",
+        responsibility: "repair_review",
+        model_display_name: "Reviewer Model",
+        status: "completed",
+        created_at: "2026-06-30T00:00:02Z",
+      },
+    ];
+
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairMaterializationFailed
+        invocations={invocations}
+        loading={false}
+        error={null}
+        diagnostic={malformedDiffDiagnostic}
+      />,
+    );
+
+    expect(markup).not.toContain("View diff");
+    expect(markup).not.toContain("Approve sandbox apply");
+    expect(markup).not.toContain("Request revision");
+    expect(markup).not.toContain("safe-diff-file");
+  });
+
+  it("shows reviewer completed correctly in MALFORMED_DIFF state", () => {
+    const invocations: V2LlmInvocationEntry[] = [
+      baseInvocation,
+      {
+        ...baseInvocation,
+        invocation_id: "inv-reviewer",
+        role: "reviewer",
+        responsibility: "repair_review",
+        model_display_name: "Reviewer Model",
+        status: "completed",
+        fallback_used: false,
+        redacted_error: null,
+        redacted_summary: "Reviewer accepted the repair proposal.",
+        created_at: "2026-06-30T00:00:02Z",
+      },
+    ];
+
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairMaterializationFailed
+        invocations={invocations}
+        loading={false}
+        error={null}
+        diagnostic={malformedDiffDiagnostic}
+      />,
+    );
+
+    expect(markup).toContain("completed");
+    expect(markup).not.toContain("No independent reviewer completed");
+    expect(markup).toContain("MALFORMED_DIFF");
+  });
+
+  it("renders blocked_by_reason_code and blocked_by_struct_issue when present", () => {
+    const invocations: V2LlmInvocationEntry[] = [baseInvocation];
+
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairMaterializationFailed
+        invocations={invocations}
+        loading={false}
+        error={null}
+        diagnostic={{
+          ...malformedDiffDiagnostic,
+          blocked_by_reason_code: "duplicate_main_blocked",
+          blocked_by_struct_issue: "main_proposer_already_has_active_gate",
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Blocked by");
+    expect(markup).toContain("duplicate_main_blocked");
+    expect(markup).toContain("main_proposer_already_has_active_gate");
+    expect(markup).toContain("blocked-by-reason-code");
+    expect(markup).toContain("blocked-by-message");
+  });
+
+  it("duplicate_main_blocked does not override MALFORMED_DIFF primary cause", () => {
+    const invocations: V2LlmInvocationEntry[] = [baseInvocation];
+
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairMaterializationFailed
+        invocations={invocations}
+        loading={false}
+        error={null}
+        diagnostic={{
+          ...malformedDiffDiagnostic,
+          reason_code: "MALFORMED_DIFF",
+          blocked_by_reason_code: "duplicate_main_blocked",
+          blocked_by_struct_issue: "main_proposer_already_has_active_gate",
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Latest reviewed diff failed structural validation");
+    expect(markup).toContain("MALFORMED_DIFF");
+    expect(markup).toContain("duplicate_main_blocked");
+    expect(markup).not.toContain("No independent reviewer completed");
+  });
+
+  it("PROPOSER_DIFF_MISSING still renders correct state", () => {
+    const invocations: V2LlmInvocationEntry[] = [baseInvocation];
+
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairMaterializationFailed
+        invocations={invocations}
+        loading={false}
+        error={null}
+        diagnostic={{
+          ...malformedDiffDiagnostic,
+          title: "Main Model Did Not Produce a Patch",
+          reason_code: "PROPOSER_DIFF_MISSING",
+          message: "Main model completed, but it did not produce a backend-owned patch for reviewer approval.",
+          reviewer_invocation_id: null,
+          final_diff_exists: false,
+          retry_status: undefined,
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Main Model Did Not Produce a Patch");
+    expect(markup).toContain("PROPOSER_DIFF_MISSING");
+    expect(markup).not.toContain("Approve sandbox apply");
+    expect(markup).not.toContain("Latest reviewed diff failed structural validation");
+  });
+
+  it("does not render raw fields (prompt, completion, endpoint, local paths)", () => {
+    const invocations: V2LlmInvocationEntry[] = [baseInvocation];
+
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairMaterializationFailed
+        invocations={invocations}
+        loading={false}
+        error={null}
+        diagnostic={malformedDiffDiagnostic}
+      />,
+    );
+
+    const forbidden = ["prompt", "completion", "endpoint", "api_key", "AZURE_OPENAI", "Bearer ", "C:\\", "/Users/", "/home/", "sandbox_path", "target_path", "patch_content"];
+    for (const field of forbidden) {
+      expect(markup).not.toContain(field);
+    }
+  });
+
+  it("renders reviewer_status and main_status from diagnostic when available", () => {
+    const invocations: V2LlmInvocationEntry[] = [
+      baseInvocation,
+      {
+        ...baseInvocation,
+        invocation_id: "inv-reviewer",
+        role: "reviewer",
+        responsibility: "repair_review",
+        model_display_name: "Reviewer Model",
+        status: "completed",
+        created_at: "2026-06-30T00:00:02Z",
+      },
+    ];
+
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairMaterializationFailed
+        invocations={invocations}
+        loading={false}
+        error={null}
+        diagnostic={{
+          ...malformedDiffDiagnostic,
+          reviewer_status: "completed",
+          main_status: "completed",
+          context_checksum: "sha256:ctx-123",
+          next_action: "Retry from backend; structural validation must pass first.",
+        }}
+      />,
+    );
+
+    expect(markup).toContain("completed");
+    expect(markup).toContain("Context checksum");
+    expect(markup).toContain("sha256:ctx-123");
+    expect(markup).toContain("Retry from backend; structural validation must pass first.");
+  });
+
+  it("existing approve_failed apply-failed UI still works with diagnostic", () => {
+    const invocations: V2LlmInvocationEntry[] = [
+      baseInvocation,
+      {
+        ...baseInvocation,
+        invocation_id: "inv-reviewer",
+        role: "reviewer",
+        responsibility: "repair_review",
+        model_display_name: "Reviewer Model",
+        status: "completed",
+        created_at: "2026-06-30T00:00:02Z",
+      },
+    ];
+
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairMaterializationFailed
+        invocations={invocations}
+        loading={false}
+        error={null}
+      />,
+    );
+
+    expect(markup).toContain("Reviewed Repair Materialization Failed");
+    expect(markup).toContain("Backend could not materialize a reviewed diff for user approval.");
+    expect(markup).toContain("completed");
+    expect(markup).not.toContain("Approve sandbox apply");
+    expect(markup).not.toContain("MALFORMED_DIFF");
+  });
+
+  it("uses next_action from diagnostic over default", () => {
+    const invocations: V2LlmInvocationEntry[] = [baseInvocation];
+
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairMaterializationFailed
+        invocations={invocations}
+        loading={false}
+        error={null}
+        diagnostic={{
+          ...malformedDiffDiagnostic,
+          next_action: "Manual intervention required: structural validation must pass before any retry.",
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Manual intervention required: structural validation must pass before any retry.");
+    expect(markup).not.toContain("Request backend retry or revision.");
+  });
+});

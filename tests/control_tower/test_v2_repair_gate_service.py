@@ -1073,7 +1073,7 @@ def test_materialization_failure_event_reason_code_not_detail(tmp_path: Path) ->
         detail="Diff structure validation failed: hunk_old_count_mismatch",
     )
 
-    assert len(recorder.events) == 1
+    assert len(recorder.events) == 2
     event = recorder.events[0]
     payload = event["payload"]
     assert payload["reason_code"] == "MALFORMED_DIFF"
@@ -1083,6 +1083,132 @@ def test_materialization_failure_event_reason_code_not_detail(tmp_path: Path) ->
     assert payload["gate_created"] is False
     assert payload["proposal_created"] is False
     assert payload["retry_status"] == "retry_required"
+    assert payload["retry_reason"] == (
+        "Backend retry is deferred for operator review. "
+        "Re-trigger repair after investigation."
+    )
+    retry_event = recorder.events[1]
+    assert retry_event["payload"]["retry_count"] == 0
+    assert retry_event["payload"]["max_retries"] == 0
+    assert retry_event["payload"]["reason_code"] == "MALFORMED_DIFF"
+    assert retry_event["payload"]["struct_issue"] == "hunk_old_count_mismatch"
+    assert retry_event["payload"]["retry_reason"] == (
+        "Backend retry is deferred for operator review. "
+        "Re-trigger repair after investigation."
+    )
+
+
+def test_reviewer_completed_duplicate_main_blocked_does_not_claim_no_reviewer(
+    tmp_path: Path,
+) -> None:
+    """When both main and reviewer completed but chain raises duplicate_main_blocked,
+    the 'No independent reviewer completed' message must NOT appear."""
+    _, _, gate_svc, _, _, _, _, _ = _svc(tmp_path)
+    recorder = _EventRecorder()
+    svc = V2RepairGateService(gate_service=gate_svc, event_repo=recorder)
+
+    class _FakeLLMRecord:
+        def __init__(self, invocation_id, responsibility, status, context_checksum="ctx-cs"):
+            self.invocation_id = invocation_id
+            self.responsibility = responsibility
+            self.status = status
+            self.context_checksum = context_checksum
+
+    class _FakeLLMRepo:
+        def list_by_job(self, job_id):
+            return [
+                _FakeLLMRecord("main-inv", "repair_proposal", "completed"),
+                _FakeLLMRecord("reviewer-inv", "repair_review", "completed"),
+            ]
+
+    svc._llm_invocation_repo = _FakeLLMRepo()
+
+    svc._emit_reviewed_repair_unavailable(
+        job_id="job-dup",
+        stage_index=1,
+        context_checksum="ctx-cs",
+        reason_code="duplicate_main_blocked",
+    )
+
+    assert len(recorder.events) == 1
+    payload = recorder.events[0]["payload"]
+    assert "No independent reviewer completed" not in recorder.events[0]["message"]
+    assert "Reviewed repair unavailable because the latest reviewed diff failed structural validation." in recorder.events[0]["message"]
+    assert payload["main_status"] == "completed"
+    assert payload["reviewer_status"] == "completed"
+    assert payload["blocked_by_reason_code"] == "duplicate_main_blocked"
+
+
+def test_duplicate_main_blocked_after_materialization_failed_skips_emit(
+    tmp_path: Path,
+) -> None:
+    """When materialization_failed event already exists, _prior_main_schema_invalid_reason
+    returns materialization_previously_failed."""
+    _, _, gate_svc, _, _, _, _, _ = _svc(tmp_path)
+
+    class _FakeEvent:
+        def __init__(self, event_type, payload=None):
+            self.event_type = event_type
+            self.payload = payload or {}
+
+    class _FakeEventRepo:
+        def save(self, **kwargs):
+            pass
+        def list_by_job(self, job_id):
+            return [
+                _FakeEvent("reviewed_repair_materialization_failed", {
+                    "context_checksum": "ctx-cs",
+                    "reason_code": "MALFORMED_DIFF",
+                    "struct_issue": "hunk_old_count_mismatch",
+                }),
+            ]
+
+    svc = V2RepairGateService(gate_service=gate_svc, event_repo=_FakeEventRepo())
+    reason = svc._prior_main_schema_invalid_reason(
+        job_id="job-mat-skip",
+        context_checksum="ctx-cs",
+    )
+    assert reason == "materialization_previously_failed"
+
+
+def test_duplicate_main_blocked_with_reviewer_completed_appends_blocked_by(
+    tmp_path: Path,
+) -> None:
+    """When duplicate_main_blocked with reviewer completed, blocked_by fields
+    are included in the unavailable event payload."""
+    _, _, gate_svc, _, _, _, _, _ = _svc(tmp_path)
+    recorder = _EventRecorder()
+    svc = V2RepairGateService(gate_service=gate_svc, event_repo=recorder)
+
+    class _FakeLLMRecord:
+        def __init__(self, invocation_id, responsibility, status, context_checksum="ctx-cs"):
+            self.invocation_id = invocation_id
+            self.responsibility = responsibility
+            self.status = status
+            self.context_checksum = context_checksum
+
+    class _FakeLLMRepo:
+        def list_by_job(self, job_id):
+            return [
+                _FakeLLMRecord("main-inv", "repair_proposal", "completed"),
+                _FakeLLMRecord("reviewer-inv", "repair_review", "completed"),
+            ]
+
+    svc._llm_invocation_repo = _FakeLLMRepo()
+
+    svc._emit_reviewed_repair_unavailable(
+        job_id="job-blocked-by",
+        stage_index=1,
+        context_checksum="ctx-cs",
+        reason_code="duplicate_main_blocked",
+    )
+
+    assert len(recorder.events) == 1
+    payload = recorder.events[0]["payload"]
+    assert "blocked_by_reason_code" in payload
+    assert "blocked_by_struct_issue" in payload
+    assert payload["main_status"] == "completed"
+    assert payload["reviewer_status"] == "completed"
 
 
 class TestRepairGateDiagnosisCallback:
@@ -1171,3 +1297,339 @@ class TestRepairGateDiagnosisCallback:
         open_gates = gate_svc._gate_repo.list_open("job-abc")
         assert len(open_gates) == 1
         assert open_gates[0].gate_phase == "repair_review"
+
+
+# ── Deterministic Happy-Path Fixture / Valid Diff Tests ──────────────
+
+
+class TestDeterministicHappyPath:
+    """AMF-241: Deterministic fixture-based happy-path coverage — no live
+    Azure model output required."""
+
+    def test_h2_patch_passes_structural_validation(self) -> None:
+        from migration_factory.repair_loop.patch_apply import validate_unified_diff_structure
+        diff = _h2_patch()
+        result = validate_unified_diff_structure(diff)
+        assert result is None, f"h2 patch should pass validation, got: {result}"
+
+    def test_simple_diff_text_passes_structural_validation(self) -> None:
+        from migration_factory.repair_loop.patch_apply import validate_unified_diff_structure
+        diff = (
+            "diff --git a/src/App.java b/src/App.java\n"
+            "--- a/src/App.java\n"
+            "+++ b/src/App.java\n"
+            "@@ -1,3 +1,3 @@\n"
+            " class App {\n"
+            "-    String mode = \"old\";\n"
+            "+    String mode = \"new\";\n"
+            " }\n"
+        )
+        result = validate_unified_diff_structure(diff)
+        assert result is None, f"simple diff should pass validation, got: {result}"
+
+    def test_reviewed_chain_creates_gate_with_all_refs(self, tmp_path: Path) -> None:
+        conn = _connection(tmp_path)
+        gate_repo = SqlitePhaseGateRepository(conn)
+        revision_repo = SqliteArtifactRevisionRepository(conn)
+        gate_svc = V2PhaseGateService(gate_repo)
+        repair_gate_svc = V2RepairGateService(
+            gate_service=gate_svc,
+            revision_repo=revision_repo,
+        )
+        sandbox = tmp_path / "sandbox"
+        legacy = tmp_path / "legacy"
+        sandbox.mkdir()
+        legacy.mkdir()
+        (sandbox / "pom.xml").write_text("<project/>", encoding="utf-8")
+
+        chain = _reviewed_chain_files(tmp_path)
+        assert chain["review_chain"]["reviewer_decision"] == "accept"
+
+        result = repair_gate_svc.create_repair_gate_from_reviewed_chain(
+            job_id="job-happy",
+            stage_index=1,
+            command_id="cmd-happy",
+            review_chain_result=chain,
+            failure_evidence_checksum="failure-cs",
+            context_pack_checksum="ctx-cs",
+            base_repo_state_checksum="repo-cs",
+            sandbox_path=str(sandbox),
+            run_dir=str(tmp_path / "run"),
+            legacy_path=str(legacy),
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+            h2_required=True,
+        )
+
+        assert result.status == "created", f"expected created, got {result.status}: {result.reason}"
+        assert result.gate_id
+        assert result.revision_id
+        assert result.policy_validation_checksum
+
+        gate = gate_repo.get(result.gate_id)
+        assert gate is not None
+        assert gate.gate_phase == "repair_review"
+        assert gate.gate_status == "open"
+        assert gate.job_id == "job-happy"
+
+        refs_json = gate.source_artifact_refs_json
+        assert "failure_evidence_checksum:failure-cs" in refs_json
+        assert "context_pack_checksum:ctx-cs" in refs_json
+        assert "reviewer_output_checksum:reviewer-cs" in refs_json
+        assert "policy_validation_checksum:" in refs_json
+        assert "final_reviewed_diff_checksum:diff-cs" in refs_json
+
+        revision = revision_repo.get(result.revision_id)
+        assert revision is not None
+        assert revision.revision_kind == "repair"
+        assert revision.revision_status == "draft"
+
+    def test_reviewed_chain_produces_policy_validation_file(self, tmp_path: Path) -> None:
+        conn = _connection(tmp_path)
+        gate_repo = SqlitePhaseGateRepository(conn)
+        revision_repo = SqliteArtifactRevisionRepository(conn)
+        gate_svc = V2PhaseGateService(gate_repo)
+        repair_gate_svc = V2RepairGateService(
+            gate_service=gate_svc,
+            revision_repo=revision_repo,
+        )
+        sandbox = tmp_path / "sandbox"
+        legacy = tmp_path / "legacy"
+        sandbox.mkdir()
+        legacy.mkdir()
+        (sandbox / "pom.xml").write_text("<project/>", encoding="utf-8")
+        run_dir = tmp_path / "run"
+
+        result = repair_gate_svc.create_repair_gate_from_reviewed_chain(
+            job_id="job-policy",
+            stage_index=1,
+            command_id="cmd-policy",
+            review_chain_result=_reviewed_chain_files(tmp_path),
+            failure_evidence_checksum="failure-cs",
+            context_pack_checksum="ctx-cs",
+            base_repo_state_checksum="repo-cs",
+            sandbox_path=str(sandbox),
+            run_dir=str(run_dir),
+            legacy_path=str(legacy),
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+            h2_required=True,
+        )
+
+        assert result.status == "created"
+        policy_file = run_dir / "repairs" / "repair_policy_validation.json"
+        assert policy_file.is_file()
+        policy = json.loads(policy_file.read_text(encoding="utf-8"))
+        assert "human_review_required" in policy
+        assert policy["human_review_required"] is False
+
+    def test_make_simple_diff_text_is_valid_unified_diff(self) -> None:
+        from migration_factory.repair_loop.patch_apply import validate_unified_diff_structure
+        diff = (
+            "diff --git a/src/App.java b/src/App.java\n"
+            "--- a/src/App.java\n"
+            "+++ b/src/App.java\n"
+            "@@ -1,3 +1,3 @@\n"
+            " class App {\n"
+            "-    String mode = \"old\";\n"
+            "+    String mode = \"new\";\n"
+            " }\n"
+        )
+        result = validate_unified_diff_structure(diff)
+        assert result is None
+
+        result = validate_unified_diff_structure(diff)
+        assert result is None
+
+
+# ── Observability / Structured Diagnostics Tests ────────────────────
+
+HTTP_FORBIDDEN_KEYS = frozenset({
+    "target_path", "patch_content", "sandbox_path", "argv", "env",
+    "raw_command", "azure_endpoint", "api_key", "password",
+    "authorization", "secret", "endpoint", "deployment",
+    "raw_output", "prompt", "completion", "raw_content",
+    "raw_prompt", "raw_completion",
+})
+
+HTTP_FORBIDDEN_PATTERNS = [
+    "C:\\", "/Users/", "/home/", ".control-tower",
+    ".control-tower-dev", "AZURE_OPENAI", "Bearer",
+]
+
+
+def _check_no_forbidden_keys(data):
+    if isinstance(data, dict):
+        for key, value in data.items():
+            assert key not in HTTP_FORBIDDEN_KEYS, f"Forbidden key {key!r} in payload"
+            _check_no_forbidden_keys(value)
+    elif isinstance(data, list):
+        for item in data:
+            _check_no_forbidden_keys(item)
+
+
+def _check_no_forbidden_values(data):
+    text = json.dumps(data)
+    for pattern in HTTP_FORBIDDEN_PATTERNS:
+        assert pattern not in text, f"Forbidden pattern {pattern!r} in payload"
+
+
+class TestDiagnosticEventCheckpoints:
+    """Observability: diagnostic event checkpoints for repair chain lifecycle."""
+
+    def test_repair_chain_started_event_no_raw_paths(self, tmp_path: Path) -> None:
+        _, _, gate_svc, _, _, _, _, _ = _svc(tmp_path)
+        recorder = _EventRecorder()
+        svc = V2RepairGateService(gate_service=gate_svc, event_repo=recorder)
+        svc._emit_repair_chain_started(
+            job_id="job-1",
+            stage_index=1,
+            command_id="safe-cmd",
+            context_pack_checksum="ctx-cs",
+            reason="build_failed",
+        )
+        event = recorder.events[0]
+        assert event["event_type"] == "repair_chain_started"
+        payload = event["payload"]
+        assert payload["job_id"] == "job-1"
+        assert payload["stage_index"] == 1
+        assert payload["context_checksum"] == "ctx-cs"
+        assert payload["reason"] == "build_failed"
+        _check_no_forbidden_keys(payload)
+        _check_no_forbidden_values(payload)
+
+    def test_repair_chain_started_blocks_path_command_ids(self, tmp_path: Path) -> None:
+        _, _, gate_svc, _, _, _, _, _ = _svc(tmp_path)
+        recorder = _EventRecorder()
+        svc = V2RepairGateService(gate_service=gate_svc, event_repo=recorder)
+        svc._emit_repair_chain_started(
+            job_id="job-1",
+            stage_index=1,
+            command_id="C:\\windows\\system32\\cmd.exe",
+            context_pack_checksum="ctx-cs",
+            reason="build_failed",
+        )
+        payload = recorder.events[0]["payload"]
+        assert payload["command_id"] == ""
+
+    def test_structural_validation_started_no_raw_diff(self, tmp_path: Path) -> None:
+        _, _, gate_svc, _, _, _, _, _ = _svc(tmp_path)
+        recorder = _EventRecorder()
+        svc = V2RepairGateService(gate_service=gate_svc, event_repo=recorder)
+        svc._emit_structural_validation_started(
+            job_id="job-1",
+            stage_index=2,
+            context_pack_checksum="ctx-cs",
+            chain={
+                "proposer_invocation_id": "main-inv",
+                "reviewer_invocation_id": "reviewer-inv",
+                "proposed_diff_checksum": "diff-cs",
+            },
+            final_diff_ref=str(tmp_path / "final.diff"),
+        )
+        event = recorder.events[0]
+        assert event["event_type"] == "reviewed_diff_structural_validation_started"
+        payload = event["payload"]
+        assert payload["main_invocation_id"] == "main-inv"
+        assert payload["reviewer_invocation_id"] == "reviewer-inv"
+        assert payload["proposed_diff_checksum"] == "diff-cs"
+        _check_no_forbidden_keys(payload)
+        _check_no_forbidden_values(payload)
+
+    def test_structural_validation_passed_payload(self, tmp_path: Path) -> None:
+        _, _, gate_svc, _, _, _, _, _ = _svc(tmp_path)
+        recorder = _EventRecorder()
+        svc = V2RepairGateService(gate_service=gate_svc, event_repo=recorder)
+        svc._emit_structural_validation_passed(
+            job_id="job-1",
+            stage_index=2,
+            final_diff_checksum="abc123",
+            touched_paths_count=3,
+        )
+        event = recorder.events[0]
+        assert event["event_type"] == "reviewed_diff_structural_validation_passed"
+        payload = event["payload"]
+        assert payload["final_diff_checksum"] == "abc123"
+        assert payload["touched_paths_count"] == 3
+        _check_no_forbidden_keys(payload)
+        _check_no_forbidden_values(payload)
+
+    def test_patch_policy_events_no_forbidden(self, tmp_path: Path) -> None:
+        _, _, gate_svc, _, _, _, _, _ = _svc(tmp_path)
+        recorder = _EventRecorder()
+        svc = V2RepairGateService(gate_service=gate_svc, event_repo=recorder)
+        svc._emit_patch_policy_started(job_id="job-1", stage_index=1)
+        svc._emit_patch_policy_completed(
+            job_id="job-1",
+            stage_index=1,
+            policy_status="ALLOWED",
+            policy_reason_code="",
+            touched_paths=["pom.xml"],
+            policy_checksum="policy-cs",
+        )
+        assert recorder.events[0]["event_type"] == "patch_policy_started"
+        assert recorder.events[1]["event_type"] == "patch_policy_completed"
+        for event in recorder.events:
+            _check_no_forbidden_keys(event["payload"])
+            _check_no_forbidden_values(event["payload"])
+
+    def test_materialization_failed_includes_retry_fields(self, tmp_path: Path) -> None:
+        _, _, gate_svc, _, _, _, _, _ = _svc(tmp_path)
+        recorder = _EventRecorder()
+        svc = V2RepairGateService(gate_service=gate_svc, event_repo=recorder)
+        svc._emit_reviewed_repair_materialization_failed(
+            job_id="job-retry",
+            stage_index=1,
+            context_checksum="ctx-cs",
+            reason_code="MALFORMED_DIFF",
+            chain={
+                "proposer_invocation_id": "main-inv",
+                "reviewer_invocation_id": "reviewer-inv",
+                "proposed_diff_checksum": "diff-cs",
+                "final_diff_ref": "",
+            },
+            detail="Diff structure validation failed: hunk_old_count_mismatch",
+        )
+        retry_events = [e for e in recorder.events if e["event_type"] == "retry_required"]
+        assert len(retry_events) == 1
+        retry = retry_events[0]
+        assert retry["payload"]["reason_code"] == "MALFORMED_DIFF"
+        assert retry["payload"]["struct_issue"] == "hunk_old_count_mismatch"
+        assert retry["payload"]["retry_count"] == 0
+        assert retry["payload"]["max_retries"] == 0
+        assert retry["payload"]["retry_reason"] == (
+            "Backend retry is deferred for operator review. "
+            "Re-trigger repair after investigation."
+        )
+        assert len(retry["payload"]["retry_identity_hash"]) == 16
+        _check_no_forbidden_keys(retry["payload"])
+
+    def test_all_diagnostic_event_payloads_pass_forbidden_check(self, tmp_path: Path) -> None:
+        _, _, gate_svc, _, _, _, _, _ = _svc(tmp_path)
+        recorder = _EventRecorder()
+        svc = V2RepairGateService(gate_service=gate_svc, event_repo=recorder)
+
+        svc._emit_repair_chain_started(
+            job_id="job-1", stage_index=1, command_id="cmd-1",
+            context_pack_checksum="ctx-cs", reason="build_failed",
+        )
+        svc._emit_structural_validation_started(
+            job_id="job-1", stage_index=1, context_pack_checksum="ctx-cs",
+            chain={"proposer_invocation_id": "p", "reviewer_invocation_id": "r",
+                   "proposed_diff_checksum": "diff-cs"},
+            final_diff_ref=str(tmp_path / "final.diff"),
+        )
+        svc._emit_structural_validation_passed(
+            job_id="job-1", stage_index=1,
+            final_diff_checksum="abc", touched_paths_count=1,
+        )
+        svc._emit_patch_policy_started(job_id="job-1", stage_index=1)
+        svc._emit_patch_policy_completed(
+            job_id="job-1", stage_index=1, policy_status="ALLOWED",
+            policy_reason_code="", touched_paths=["f.xml"], policy_checksum="cs",
+        )
+
+        for event in recorder.events:
+            payload = event["payload"]
+            _check_no_forbidden_keys(payload)
+            _check_no_forbidden_values(payload)
+            assert "prompt" not in json.dumps(payload).lower()
+            assert "completion" not in json.dumps(payload).lower()

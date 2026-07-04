@@ -280,3 +280,64 @@ def test_hunk_new_count_mismatch_detected_and_not_approval_safe(tmp_path: Path) 
     assert preview.parse_status == "hunk_count_mismatch"
     assert preview.can_approve is False
     assert "hunk header line counts do not match hunk body" in preview.redactions
+
+
+def test_simple_diff_preview_is_parseable_and_approvable(tmp_path: Path) -> None:
+    diff_text = (
+        "diff --git a/test.txt b/test.txt\n"
+        "--- a/test.txt\n"
+        "+++ b/test.txt\n"
+        "@@ -1,2 +1,3 @@\n"
+        " line1\n"
+        "+line2_new\n"
+        " line3\n"
+    )
+    diff_path = _write_diff(tmp_path, "happy.diff", diff_text)
+
+    preview = build_safe_diff_preview(proposal_id="proposal-happy", diff_ref=diff_path)
+
+    assert preview.parse_status == "parsed"
+    assert preview.can_approve is True
+    assert preview.checksum_mismatch is False
+    assert preview.total_additions == 1
+    assert preview.total_deletions == 0
+    assert len(preview.files) == 1
+    assert preview.files[0].path == "test.txt"
+
+
+def test_import_diff_preview_is_parseable_and_approvable(tmp_path: Path) -> None:
+    diff_text = (
+        "diff --git a/src/main/java/com/example/App.java b/src/main/java/com/example/App.java\n"
+        "--- a/src/main/java/com/example/App.java\n"
+        "+++ b/src/main/java/com/example/App.java\n"
+        "@@ -1,2 +1,3 @@\n"
+        "+ import com.fasterxml.jackson.databind.JsonNode;\n"
+        " public class App {\n"
+        "     public static void main(String[] args) {\n"
+    )
+    diff_path = _write_diff(tmp_path, "import.diff", diff_text)
+
+    preview = build_safe_diff_preview(proposal_id="proposal-import", diff_ref=diff_path)
+
+    assert preview.parse_status == "parsed"
+    assert preview.can_approve is True
+    assert preview.total_additions == 1
+    assert preview.total_deletions == 0
+
+
+def test_h2_patch_preview_is_parseable_and_approvable(tmp_path: Path) -> None:
+    diff_text = (
+        "diff --git a/pom.xml b/pom.xml\n"
+        "--- a/pom.xml\n"
+        "+++ b/pom.xml\n"
+        "@@ -1,0 +1,1 @@\n"
+        "+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n"
+    )
+    diff_path = _write_diff(tmp_path, "h2.diff", diff_text)
+
+    preview = build_safe_diff_preview(proposal_id="proposal-h2", diff_ref=diff_path)
+
+    assert preview.parse_status == "parsed"
+    assert preview.can_approve is True
+    assert preview.total_additions == 1
+    assert preview.total_deletions == 0

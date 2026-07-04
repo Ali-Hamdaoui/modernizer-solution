@@ -950,6 +950,15 @@ class TestHttpEndpointCurrentProposal:
         assert unavailable["proposal_created"] is False
         assert unavailable["retry_status"] == "retry_required"
         assert "approve_sandbox_apply" not in unavailable["allowed_actions"]
+        assert "request_revision" not in unavailable["allowed_actions"]
+        assert unavailable["context_checksum"] == "ctx-cs"
+        assert unavailable["main_status"] == "completed"
+        assert unavailable["reviewer_status"] == "completed"
+        assert unavailable["main_output_checksum"] == "main-output-cs"
+        assert unavailable["reviewer_output_checksum"] == "reviewer-output-cs"
+        assert unavailable["next_action"] is not None
+        assert "view_diff" in unavailable["allowed_actions"]
+        assert unavailable["retry_reason"] is not None
         _check_no_forbidden_keys(data)
         _check_no_forbidden_values(data)
 
@@ -1056,6 +1065,157 @@ class TestHttpEndpointCurrentProposal:
         client, conn, _, _ = _api_client_with_proposal(tmp_path, diff_path=None)
         response = client.get("/v1/v2/jobs/nonexistent/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
         assert response.status_code == 404
+
+
+class TestUnavailableDiagnosticShape:
+    def test_malformed_diff_no_view_diff_when_no_final_diff(self, tmp_path: Path) -> None:
+        client, conn, job_id = _api_client_with_job(tmp_path)
+        with SqliteUnitOfWork(conn) as uow:
+            uow.v2_events.save(
+                job_id=job_id,
+                stage=1,
+                event_type="reviewed_repair_materialization_failed",
+                status="failed",
+                message="malformed",
+                payload={
+                    "job_id": job_id, "stage_index": 1,
+                    "context_checksum": "ctx-cs",
+                    "main_invocation_id": "main-inv",
+                    "reviewer_invocation_id": "reviewer-inv",
+                    "reason_code": "MALFORMED_DIFF",
+                    "struct_issue": "hunk_old_count_mismatch",
+                    "final_diff_exists": False,
+                },
+            )
+        response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
+        assert response.status_code == 200
+        unavailable = response.json()["unavailable"]
+        assert unavailable["kind"] == "materialization_failed"
+        assert unavailable["reason_code"] == "MALFORMED_DIFF"
+        assert "view_diff" not in unavailable["allowed_actions"]
+        assert "approve_sandbox_apply" not in unavailable["allowed_actions"]
+        assert "request_revision" not in unavailable["allowed_actions"]
+
+    def test_malformed_diff_view_diff_when_final_diff_exists(self, tmp_path: Path) -> None:
+        client, conn, job_id = _api_client_with_job(tmp_path)
+        with SqliteUnitOfWork(conn) as uow:
+            uow.v2_events.save(
+                job_id=job_id,
+                stage=1,
+                event_type="reviewed_repair_materialization_failed",
+                status="failed",
+                message="malformed",
+                payload={
+                    "job_id": job_id, "stage_index": 1,
+                    "context_checksum": "ctx-cs",
+                    "main_invocation_id": "main-inv",
+                    "reviewer_invocation_id": "reviewer-inv",
+                    "reason_code": "MALFORMED_DIFF",
+                    "struct_issue": "hunk_old_count_mismatch",
+                    "final_diff_exists": True,
+                },
+            )
+        response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
+        unavailable = response.json()["unavailable"]
+        assert unavailable["reason_code"] == "MALFORMED_DIFF"
+        assert "view_diff" in unavailable["allowed_actions"]
+
+    def test_unavailable_carries_reviewer_status_completed(self, tmp_path: Path) -> None:
+        client, conn, job_id = _api_client_with_job(tmp_path)
+        with SqliteUnitOfWork(conn) as uow:
+            uow.v2_llm_invocations.save(V2LLMInvocationRecord(
+                invocation_id="main-inv", job_id=job_id, role="main",
+                responsibility="repair_proposal", status="completed",
+                created_at=utc_now_text(), provider_alias="azure",
+                deployment_alias_hash="dh", output_checksum="moc",
+            ))
+            uow.v2_llm_invocations.save(V2LLMInvocationRecord(
+                invocation_id="reviewer-inv", job_id=job_id, role="reviewer",
+                responsibility="repair_review", status="completed",
+                created_at=utc_now_text(), provider_alias="azure",
+                deployment_alias_hash="dh", output_checksum="roc",
+            ))
+            uow.v2_events.save(
+                job_id=job_id, stage=1,
+                event_type="reviewed_repair_materialization_failed",
+                status="failed", message="malformed",
+                payload={
+                    "job_id": job_id, "stage_index": 1,
+                    "context_checksum": "ctx-cs",
+                    "main_invocation_id": "main-inv",
+                    "reviewer_invocation_id": "reviewer-inv",
+                    "reason_code": "MALFORMED_DIFF",
+                    "struct_issue": "hunk_old_count_mismatch",
+                    "final_diff_exists": False,
+                },
+            )
+        response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
+        unavailable = response.json()["unavailable"]
+        assert unavailable["reviewer_status"] == "completed"
+        assert unavailable["main_status"] == "completed"
+        assert unavailable["reviewer_output_checksum"] == "roc"
+        assert unavailable["main_output_checksum"] == "moc"
+
+    def test_proposer_diff_missing_shape(self, tmp_path: Path) -> None:
+        client, conn, job_id = _api_client_with_job(tmp_path)
+        with SqliteUnitOfWork(conn) as uow:
+            uow.v2_events.save(
+                job_id=job_id, stage=1,
+                event_type="reviewed_repair_materialization_failed",
+                status="failed", message="no diff",
+                payload={
+                    "job_id": job_id, "stage_index": 1,
+                    "context_checksum": "ctx-cs",
+                    "reason_code": "PROPOSER_DIFF_MISSING",
+                    "final_diff_exists": False,
+                },
+            )
+        response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
+        unavailable = response.json()["unavailable"]
+        assert unavailable["reason_code"] == "PROPOSER_DIFF_MISSING"
+        assert "view_diff" not in unavailable["allowed_actions"]
+
+    def test_patch_policy_rejected_shape(self, tmp_path: Path) -> None:
+        client, conn, job_id = _api_client_with_job(tmp_path)
+        with SqliteUnitOfWork(conn) as uow:
+            uow.v2_events.save(
+                job_id=job_id, stage=1,
+                event_type="reviewed_repair_materialization_failed",
+                status="failed", message="policy reject",
+                payload={
+                    "job_id": job_id, "stage_index": 1,
+                    "context_checksum": "ctx-cs",
+                    "reason_code": "PATCH_POLICY_REJECTED",
+                    "final_diff_exists": False,
+                },
+            )
+        response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
+        unavailable = response.json()["unavailable"]
+        assert unavailable["reason_code"] == "PATCH_POLICY_REJECTED"
+        assert "approve_sandbox_apply" not in unavailable["allowed_actions"]
+        assert "request_revision" not in unavailable["allowed_actions"]
+
+    def test_malformed_diff_has_no_approve_or_revision_actions(self, tmp_path: Path) -> None:
+        client, conn, job_id = _api_client_with_job(tmp_path)
+        with SqliteUnitOfWork(conn) as uow:
+            uow.v2_events.save(
+                job_id=job_id, stage=1,
+                event_type="reviewed_repair_materialization_failed",
+                status="failed", message="malformed",
+                payload={
+                    "job_id": job_id, "stage_index": 1,
+                    "context_checksum": "ctx-cs",
+                    "main_invocation_id": "main-inv",
+                    "reviewer_invocation_id": "reviewer-inv",
+                    "reason_code": "MALFORMED_DIFF",
+                    "struct_issue": "hunk_old_count_mismatch",
+                    "final_diff_exists": True,
+                },
+            )
+        response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
+        unavailable = response.json()["unavailable"]
+        assert "approve_sandbox_apply" not in unavailable["allowed_actions"]
+        assert "request_revision" not in unavailable["allowed_actions"]
 
 
 class TestHttpEndpointGetProposal:

@@ -1295,7 +1295,8 @@ class TestApproveApplyFailureModes:
     def test_successful_apply_triggers_validation(
         self, conn: sqlite3.Connection, tmp_path: Path, monkeypatch,
     ) -> None:
-        """Validation rerun starts after successful apply."""
+        """Validation rerun starts after successful apply.  Response and
+        persisted record show apply_status=APPLIED and status=approved_applied."""
         from migration_factory.repair_loop.patch_apply import PatchApplyResult
         validation_called = []
 
@@ -1349,7 +1350,19 @@ class TestApproveApplyFailureModes:
             "gate_id": refs["gate_id"],
         })
         assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "approved_applied"
+        assert data["apply_status"] == "APPLIED"
+        assert data["rerun_status"] == "passed"
         assert len(validation_called) == 1
+
+        with SqliteControlTowerUnitOfWork(conn) as uow:
+            record = uow.v2_repairs.get_proposal(proposal_id)
+            assert record is not None
+            assert record.status == "approved_applied"
+            assert record.apply_status == "APPLIED"
+            assert record.rerun_status == "passed"
+            assert record.completed_at is not None
 
     def test_apply_failure_event_has_no_unsafe_data(
         self, conn: sqlite3.Connection, tmp_path: Path, monkeypatch,
