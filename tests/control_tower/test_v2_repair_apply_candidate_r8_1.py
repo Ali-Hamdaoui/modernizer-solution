@@ -276,12 +276,22 @@ def test_powermock_remains_no_candidate_human_gate(tmp_path: Path) -> None:
     assert candidate is None
 
 
-def test_sort_by_apply_candidate_is_governed_and_not_auto_applied(tmp_path: Path) -> None:
+def _sort_sandbox(tmp_path: Path) -> tuple[Path, Path, Path, dict, dict]:
     sandbox = tmp_path / "sandbox"
-    target = sandbox / "src" / "main" / "java" / "com" / "total" / "corp" / "common" / "dto" / "DTOHelpers.java"
-    target.parent.mkdir(parents=True)
-    target.write_text(
-        "class DTOHelpers { void p(){ final Sort sort = new Sort(sortDirection, sortCollumn); } }",
+    dto = sandbox / "src" / "main" / "java" / "com" / "total" / "corp" / "common" / "dto" / "DTOHelpers.java"
+    search = sandbox / "src" / "main" / "java" / "com" / "total" / "corp" / "common" / "service" / "base" / "SearchService.java"
+    dto.parent.mkdir(parents=True)
+    search.parent.mkdir(parents=True)
+    dto.write_text(
+        "class DTOHelpers {\n"
+        "  void p(){ final Sort sort = new Sort(sortDirection, sortCollumn); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    search.write_text(
+        "class SearchService {\n"
+        "  void p(){ final Sort sort = new Sort(Direction.fromString(query.getSortDirection()), query.getSortColumn()); }\n"
+        "}\n",
         encoding="utf-8",
     )
     classification = {
@@ -294,11 +304,16 @@ def test_sort_by_apply_candidate_is_governed_and_not_auto_applied(tmp_path: Path
         "evidence_pack_checksum": "sha256:evidence",
         "usable_artifacts": [
             {"kind": "sandbox", "internal_ref": str(sandbox)},
-            {"kind": "source_ref", "internal_ref": str(target), "excerpt": target.read_text(encoding="utf-8")},
+            {"kind": "source_ref", "internal_ref": str(dto), "excerpt": dto.read_text(encoding="utf-8")},
             {"kind": "build_error_contract", "compile_errors": [{"path": "src/main/java/com/total/corp/common/dto/DTOHelpers.java"}]},
             {"kind": "pom_xml", "internal_ref": str(sandbox / "pom.xml")},
         ],
     }
+    return sandbox, dto, search, classification, stage_evidence
+
+
+def test_sort_by_apply_candidate_is_governed_and_not_auto_applied(tmp_path: Path) -> None:
+    _, dto, search, classification, stage_evidence = _sort_sandbox(tmp_path)
 
     candidate = create_repair_apply_candidate(classification, stage_evidence, {})
 
@@ -307,20 +322,61 @@ def test_sort_by_apply_candidate_is_governed_and_not_auto_applied(tmp_path: Path
     assert public is not None
     assert public["family"] == "SPRING_DATA_SORT_API_DRIFT"
     assert public["recipe_id"] == "SPRING_DATA_SORT_BY"
+    assert public["target_files"] == [
+        "src/main/java/com/total/corp/common/dto/DTOHelpers.java",
+        "src/main/java/com/total/corp/common/service/base/SearchService.java",
+    ]
+    assert len(public["change_preview"]) == 2
+    assert {item["target_file"] for item in public["change_preview"]} == set(public["target_files"])
+    assert all(item["replacement_count"] == 1 for item in public["change_preview"])
+    assert all(item["before_marker"] == "new Sort(" for item in public["change_preview"])
+    assert all(item["after_marker"] == "Sort.by(" for item in public["change_preview"])
     assert public["status"] == "pending_human_approval"
     assert public["sandbox_only"] is True
     assert public["approval_required"] is True
     assert public["human_gate_required"] is True
     assert public["apply_enabled"] is False
+    assert public["approval_enabled"] is True
     assert public["downstream_start_allowed"] is False
     assert public["legacy_mutation_allowed"] is False
+    assert public["browser_can_supply_patch"] is False
+    assert public["llm_can_apply"] is False
     assert public["patch_checksum"].startswith("sha256:")
+    assert public["target_file_checksum"].startswith("sha256:")
+    assert public["review_checksum"].startswith("sha256:")
     assert public["candidate_checksum"].startswith("sha256:")
     assert public["rollback_metadata"]["rollback_required"] is True
     assert public["impact_summary"]
     assert public["risk_notes"]
-    assert "new Sort(" in target.read_text(encoding="utf-8")
-    assert "Sort.by(" in candidate["_after_text"]
+    assert "new Sort(" in dto.read_text(encoding="utf-8")
+    assert "new Sort(" in search.read_text(encoding="utf-8")
+    assert public["target_files"] == [change["target_file"] for change in candidate["_file_changes"]]
+
+
+def test_sort_by_multi_file_candidate_applies_both_files_after_checksum_approval(tmp_path: Path) -> None:
+    sandbox, dto, search, classification, stage_evidence = _sort_sandbox(tmp_path)
+    candidate = create_repair_apply_candidate(classification, stage_evidence, {})
+    assert candidate is not None
+    approval = approve_repair_apply_candidate(candidate, {
+        "repair_candidate_id": candidate["repair_candidate_id"],
+        "patch_checksum": candidate["patch_checksum"],
+        "target_file_checksum": candidate["target_file_checksum"],
+        "review_checksum": candidate["review_checksum"],
+    })
+
+    result = apply_approved_repair_candidate(candidate, approval)
+
+    dto_text = dto.read_text(encoding="utf-8")
+    search_text = search.read_text(encoding="utf-8")
+    assert "Sort.by(sortDirection, sortCollumn)" in dto_text
+    assert "Sort.by(Direction.fromString(query.getSortDirection()), query.getSortColumn())" in search_text
+    assert "new Sort(" not in dto_text
+    assert "new Sort(" not in search_text
+    assert result["execution_status"] == "verified"
+    assert result["verification_status"] == "passed"
+    assert result["rollback_status"] == "not_needed"
+    assert result["downstream_start_allowed"] is False
+    assert (sandbox / ".migration" / "repair-proofs" / f"{candidate['repair_candidate_id']}.json").is_file()
 
 
 def test_sort_by_candidate_rejects_outside_sandbox_or_ambiguous_pattern(tmp_path: Path) -> None:

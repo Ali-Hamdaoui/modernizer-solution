@@ -346,12 +346,16 @@ def _create_sort_candidate_from_evidence(classification: dict[str, Any], stage_e
         after, replacements = _replace_sort_constructor_calls(before)
         if before == after or replacements < 1:
             return None
+        preview = _sort_change_preview(target_rel, before, after, replacements)
+        if preview is None:
+            return None
         checksum, _ = stream_sha256(target_path)
         changes.append({
             "target_file": target_rel,
             "pre_apply_checksum": f"sha256:{checksum}",
             "before_marker": "new Sort(",
             "after_marker": "Sort.by(",
+            "change_preview": preview,
             "_target_path": str(target_path),
             "_after_text": after,
             "_before_text": before,
@@ -365,6 +369,7 @@ def _create_sort_candidate_from_evidence(classification: dict[str, Any], stage_e
         "target_files": [change["target_file"] for change in changes],
         "operations": ["replace Spring Data Sort constructor with Sort.by"],
         "golden_reference": "msa-utils migrated/reference advisory evidence only",
+        "change_preview": [change["change_preview"] for change in changes],
     }
     review_payload = {
         "family": SORT_FAMILY,
@@ -407,6 +412,7 @@ def _create_sort_candidate_from_evidence(classification: dict[str, Any], stage_e
         "verification_status": "not_started",
         "rollback_status": "not_started",
         "proof_artifact": "",
+        "change_preview": patch_payload["change_preview"],
         "impact_summary": "Replace removed Spring Data Sort constructor calls with Sort.by in sandbox main source files only.",
         "risk_notes": [
             "Low-risk API drift replacement; preserves same Direction and property arguments.",
@@ -431,11 +437,13 @@ def _create_sort_candidate_from_evidence(classification: dict[str, Any], stage_e
 
 def _sort_target_paths(classification: dict[str, Any], stage_evidence: dict[str, Any], sandbox_root: Path) -> list[Path]:
     wanted = {
-        str(item.get("path") or "").replace("\\", "/")
+        _safe_relative(str(item.get("path") or ""))
         for item in classification.get("sort_api_drift_targets", [])
         if isinstance(item, dict)
     }
+    wanted.discard("")
     result: list[Path] = []
+
     for item in stage_evidence.get("usable_artifacts", []) or []:
         if not isinstance(item, dict) or str(item.get("kind") or "") != "source_ref":
             continue
@@ -444,9 +452,46 @@ def _sort_target_paths(classification: dict[str, Any], stage_evidence: dict[str,
             continue
         path = Path(ref).resolve()
         rel = _relative_to_sandbox(path, sandbox_root)
-        if rel and (not wanted or rel in wanted):
+        if _is_java_main_source_rel(rel) and (not wanted or rel in wanted):
             result.append(path)
+
+    for rel in sorted(wanted):
+        if not _is_java_main_source_rel(rel):
+            continue
+        path = (sandbox_root / rel).resolve()
+        if _is_contained(path, sandbox_root) and path.is_file():
+            result.append(path)
+
+    for root in _main_source_roots(sandbox_root):
+        for path in sorted(root.rglob("*.java"))[:250]:
+            path = path.resolve()
+            rel = _relative_to_sandbox(path, sandbox_root)
+            if not _is_java_main_source_rel(rel):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if SORT_CONSTRUCTOR_PATTERN.search(text):
+                result.append(path)
     return list(dict.fromkeys(result))[:8]
+
+
+def _is_java_main_source_rel(value: str) -> bool:
+    rel = value.replace("\\", "/").strip()
+    return bool(rel.endswith(".java") and (rel.startswith("src/main/java/") or "/src/main/java/" in rel))
+
+
+def _main_source_roots(sandbox_root: Path) -> list[Path]:
+    roots: list[Path] = []
+    direct = (sandbox_root / "src" / "main" / "java").resolve()
+    if _is_contained(direct, sandbox_root) and direct.is_dir():
+        roots.append(direct)
+    for child in sorted(sandbox_root.iterdir()) if sandbox_root.is_dir() else []:
+        module_root = (child / "src" / "main" / "java").resolve()
+        if _is_contained(module_root, sandbox_root) and module_root.is_dir():
+            roots.append(module_root)
+    return list(dict.fromkeys(roots))[:25]
 
 
 def _replace_sort_constructor_calls(text: str) -> tuple[str, int]:
@@ -492,6 +537,28 @@ def _safe_sort_args(args: str) -> bool:
     if "Direction.fromString(" in args:
         return True
     return bool(re.match(r"\s*(?:Direction\.[A-Z]+|sortDirection)\s*,\s*[A-Za-z_][A-Za-z0-9_]*(?:\([^;{}]*\))?\s*$", args))
+
+
+def _sort_change_preview(target_file: str, before: str, after: str, replacements: int) -> dict[str, Any] | None:
+    before_line = _first_line_containing(before, "new Sort(")
+    after_line = _first_line_containing(after, "Sort.by(")
+    if not before_line or not after_line:
+        return None
+    return {
+        "target_file": target_file,
+        "replacement_count": replacements,
+        "before_marker": "new Sort(",
+        "after_marker": "Sort.by(",
+        "before": before_line[:240],
+        "after": after_line[:240],
+    }
+
+
+def _first_line_containing(text: str, marker: str) -> str:
+    for line in text.splitlines():
+        if marker in line:
+            return line.strip()
+    return ""
 
 
 def _relative_to_sandbox(path: Path, sandbox_root: Path) -> str:
