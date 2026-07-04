@@ -758,6 +758,119 @@ class TestStageAwareEvidence:
         usable = {item["kind"]: item for item in evidence["usable_artifacts"]}
         assert usable["build_error_contract"]["checksum"].startswith("sha256:")
 
+    def test_live_build_failure_binds_existing_sandbox_artifacts(
+        self,
+        diagnosis_service: V2FailureDiagnosisService,
+        tmp_path: Path,
+    ) -> None:
+        run_dir = tmp_path / ".migration" / "runs" / "v2-216aff6d"
+        sandbox = run_dir / "workspaces" / "sandbox"
+        build_dir = run_dir / "build"
+        (sandbox / ".migration").mkdir(parents=True)
+        (run_dir / "orchestration").mkdir(parents=True)
+        (run_dir / "logs").mkdir(parents=True)
+        build_dir.mkdir(parents=True)
+        (sandbox / "pom.xml").write_text("<project />", encoding="utf-8")
+        (sandbox / ".migration" / "ledger.json").write_text("{}", encoding="utf-8")
+        (run_dir / "orchestration" / "orchestration_summary.json").write_text("{}", encoding="utf-8")
+        (run_dir / "logs" / "phase2_transform.log").write_text("[ERROR] build failed", encoding="utf-8")
+        build_error = build_dir / "build-error-20260704-012441-compilation_error.json"
+        build_error.write_text(
+            json.dumps({
+                "status": "failed",
+                "stdout_tail": [
+                    "[ERROR] src/main/java/com/total/corp/common/dto/DTOHelpers.java:[29,51] incompatible types"
+                ],
+            }),
+            encoding="utf-8",
+        )
+
+        diagnosis = diagnosis_service.diagnose(
+            job_id="job-live",
+            stage_index=1,
+            command_id="cmd-live-bind",
+            event_type="build_failed",
+            payload={
+                "build_status": "BUILD_FAILED_IN_SANDBOX",
+                "sandbox_path": str(sandbox),
+            },
+        )
+
+        evidence = diagnosis.stage_evidence_pack
+        assert evidence is not None
+        usable = {item["kind"]: item for item in evidence["usable_artifacts"]}
+        assert "build_error_contract" in usable
+        assert "pom_xml" in usable
+        assert "sandbox" in usable
+        assert "orchestration_summary" in usable
+        assert "phase2_log" in usable
+        assert "migration_ledger" in usable
+        assert "build_error_contract" not in evidence["missing_artifacts"]
+        assert "pom_xml" not in evidence["missing_artifacts"]
+
+    def test_main_source_compile_error_takes_priority_over_readonly_powermock(
+        self,
+        diagnosis_service: V2FailureDiagnosisService,
+        tmp_path: Path,
+    ) -> None:
+        run_dir = tmp_path / ".migration" / "runs" / "v2-216aff6d"
+        sandbox = run_dir / "workspaces" / "sandbox"
+        readonly_test = run_dir / "analysis" / "readonly-workspace" / "src" / "test" / "java" / "com" / "total" / "corp" / "bus" / "AzureBusTopicTest.java"
+        test_report = run_dir / "analysis" / "readonly-workspace" / "target" / "surefire-reports"
+        build_dir = run_dir / "build"
+        readonly_test.parent.mkdir(parents=True)
+        test_report.mkdir(parents=True)
+        build_dir.mkdir(parents=True)
+        sandbox.mkdir(parents=True)
+        (sandbox / "pom.xml").write_text("<project />", encoding="utf-8")
+        (test_report / "TEST-com.total.corp.bus.AzureBusTopicTest.xml").write_text("<testsuite />", encoding="utf-8")
+        readonly_test.write_text(
+            "\n".join([
+                "import org.powermock.modules.junit4.PowerMockRunner;",
+                "import org.powermock.core.classloader.annotations.PrepareForTest;",
+                "@RunWith(PowerMockRunner.class)",
+                "@PrepareForTest(TopicClient.class)",
+                "class AzureBusTopicTest {}",
+            ]),
+            encoding="utf-8",
+        )
+        build_error = build_dir / "build-error-20260704-012441-compilation_error.json"
+        build_error.write_text(
+            json.dumps({
+                "status": "failed",
+                "stdout_tail": [
+                    "[ERROR] /tmp/run/workspaces/sandbox/src/main/java/com/total/corp/common/service/base/SearchService.java:[27,103] incompatible types: java.lang.String cannot be converted to java.util.List<java.lang.String>",
+                    "[ERROR] /tmp/run/workspaces/sandbox/src/main/java/com/total/corp/common/dto/DTOHelpers.java:[29,51] incompatible types: java.lang.String cannot be converted to java.util.List<java.lang.String>",
+                ],
+            }),
+            encoding="utf-8",
+        )
+
+        diagnosis = diagnosis_service.diagnose(
+            job_id="job-live",
+            stage_index=1,
+            command_id="cmd-live-compile",
+            event_type="build_failed",
+            payload={
+                "build_status": "BUILD_FAILED_IN_SANDBOX",
+                "sandbox_path": str(sandbox),
+            },
+        )
+
+        classification = diagnosis.classification_envelope
+        assert classification is not None
+        assert classification["failure_type"] == "JAVA_MAIN_SOURCE_COMPILE_FAILURE"
+        assert classification["primary_failure"] == "Java compilation/build failure"
+        assert classification["classification_status"] == "unsupported_known_failure"
+        assert "compiler:main_source_compile_failure" in classification["matched_signals"]
+        assert "advisory:powermock_signal_not_primary_without_build_or_test_failure" in classification["advisory_signals"]
+        assert classification["repair_apply_candidate"] is None
+        assert "POWERMOCK_CONSTRUCTOR_MOCKING" not in json.dumps(classification)
+        evidence = diagnosis.stage_evidence_pack
+        assert evidence is not None
+        assert "build_error_contract" not in evidence["missing_artifacts"]
+        assert "pom_xml" not in evidence["missing_artifacts"]
+
     def test_payload_artifact_alias_does_not_accept_unowned_patch_path(
         self,
         diagnosis_service: V2FailureDiagnosisService,

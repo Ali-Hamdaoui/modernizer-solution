@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -66,6 +67,57 @@ from migration_factory.control_tower.application.v2_repair_apply_candidate impor
 from migration_factory.control_tower.application.v2_repair_strategy_packet import (
     create_repair_strategy_packet,
 )
+
+
+def _bind_if_exists(bound: dict[str, str], kind: str, path: Path) -> None:
+    if bound.get(kind):
+        return
+    try:
+        if path.exists():
+            bound[kind] = str(path)
+    except OSError:
+        return
+
+
+def _bind_power_mock_test_source_if_present(bound: dict[str, str], root: Path) -> None:
+    if bound.get("test_source"):
+        return
+    try:
+        files = root.rglob("*.java") if root.exists() else ()
+        for index, path in enumerate(files):
+            if index >= 200:
+                break
+            text = path.read_text(encoding="utf-8", errors="replace")[:2000].lower()
+            if any(marker in text for marker in ("powermock", "powermockito", "preparefortest", "whennew", "mockstatic", "whitebox")):
+                bound["test_source"] = str(path)
+                return
+    except OSError:
+        return
+
+
+def _extract_public_compile_errors(text: str) -> list[dict[str, str]]:
+    pattern = re.compile(
+        r"(?P<path>(?:[a-z]:)?[^\"'\n\r]*src[\\/]+main[\\/]+java[^:\]\n\r]*\.java)"
+        r"(?::?\[(?P<bracket_line>\d+),(?P<bracket_column>\d+)\]|[:\[](?P<line>\d+)(?:,(?P<column>\d+))?)?"
+        r".{0,220}?(?P<message>incompatible types|cannot find symbol|package [^\"'\n\r]+ does not exist|compilation failure)",
+        re.IGNORECASE,
+    )
+    errors: list[dict[str, str]] = []
+    for match in pattern.finditer(text):
+        errors.append({
+            "path": _public_source_path(match.group("path")),
+            "line": match.group("bracket_line") or match.group("line") or "",
+            "column": match.group("bracket_column") or match.group("column") or "",
+            "message": match.group("message"),
+        })
+    return errors[:12]
+
+
+def _public_source_path(path: str) -> str:
+    marker = "src/main/java"
+    normalized = path.replace("\\", "/")
+    idx = normalized.lower().find(marker)
+    return normalized[idx:] if idx >= 0 else normalized[-220:]
 
 
 # ── Diagnosis record ──────────────────────────────────────────────
@@ -675,14 +727,17 @@ class V2FailureDiagnosisService:
             "rewrite_patch",
             "rewrite_preview",
             "migration_ledger",
+            "orchestration_summary",
+            "phase2_log",
             "transformation_execution_plan",
             "target_dependency_plan",
             "sandbox",
         )
+        bound_refs = self._bind_existing_failure_artifacts(artifact_refs, sandbox_ref)
         usable: list[dict[str, Any]] = []
         missing: list[str] = []
         for kind in expected:
-            ref = artifact_refs.get(kind)
+            ref = bound_refs.get(kind)
             if ref is None and kind == "build_error_contract" and payload.get(kind):
                 ref = payload.get(kind)
             if ref is None and kind == "sandbox" and sandbox_ref:
@@ -723,6 +778,59 @@ class V2FailureDiagnosisService:
         return pack
 
     @staticmethod
+    def _bind_existing_failure_artifacts(artifact_refs: dict[str, Any], sandbox_ref: str) -> dict[str, str]:
+        bound = {
+            str(kind): str(ref)
+            for kind, ref in artifact_refs.items()
+            if ref
+        }
+        aliases = {
+            "build_error_contract": ("build_error_path", "error_contract_path", "build_error", "result_contract"),
+            "pom_xml": ("pom", "pom.xml", "sandbox_pom", "primary_pom"),
+            "phase2_log": ("phase2_transform_log", "transform_log", "log_path"),
+            "orchestration_summary": ("summary", "final_summary", "orchestration"),
+            "migration_ledger": ("ledger", "ledger_path"),
+        }
+        for canonical, keys in aliases.items():
+            if bound.get(canonical):
+                continue
+            for key in keys:
+                value = artifact_refs.get(key)
+                if value:
+                    bound[canonical] = str(value)
+                    break
+
+        sandbox_path = Path(sandbox_ref) if sandbox_ref else None
+        run_dir = None
+        if sandbox_path is not None:
+            try:
+                if sandbox_path.name == "sandbox" and sandbox_path.parent.name == "workspaces":
+                    run_dir = sandbox_path.parent.parent
+            except IndexError:
+                run_dir = None
+            _bind_if_exists(bound, "sandbox", sandbox_path)
+            _bind_if_exists(bound, "pom_xml", sandbox_path / "pom.xml")
+            _bind_if_exists(bound, "migration_ledger", sandbox_path / ".migration" / "ledger.json")
+            _bind_if_exists(bound, "test_report", sandbox_path / "target" / "surefire-reports")
+
+        if run_dir is not None:
+            _bind_if_exists(bound, "orchestration_summary", run_dir / "orchestration" / "orchestration_summary.json")
+            _bind_if_exists(bound, "phase2_log", run_dir / "logs" / "phase2_transform.log")
+            _bind_if_exists(bound, "runtime_contract", run_dir / "analysis" / "runtime_contract.json")
+            _bind_if_exists(bound, "test_report", run_dir / "analysis" / "readonly-workspace" / "target" / "surefire-reports")
+            _bind_if_exists(bound, "pom_xml", run_dir / "workspaces" / "sandbox" / "pom.xml")
+            _bind_power_mock_test_source_if_present(bound, run_dir / "analysis" / "readonly-workspace" / "src" / "test" / "java")
+            if not bound.get("build_error_contract"):
+                build_dir = run_dir / "build"
+                try:
+                    matches = sorted(build_dir.glob("build-error-*.json"))
+                except OSError:
+                    matches = []
+                if matches:
+                    bound["build_error_contract"] = str(matches[-1])
+        return bound
+
+    @staticmethod
     def _artifact_summary(kind: str, ref: str) -> dict[str, Any]:
         redacted_ref = redact_absolute_paths(redact_model_summary(ref))
         summary: dict[str, Any] = {
@@ -737,10 +845,13 @@ class V2FailureDiagnosisService:
             path = Path(ref)
             if path.is_file():
                 checksum, size_bytes = stream_sha256(path)
+                raw_text = path.read_text(encoding="utf-8", errors="replace")[:2000]
                 summary["checksum"] = f"sha256:{checksum}"
                 summary["size_bytes"] = size_bytes
+                if kind == "build_error_contract":
+                    summary["compile_errors"] = _extract_public_compile_errors(raw_text)
                 summary["excerpt"] = redact_absolute_paths(
-                    redact_model_summary(path.read_text(encoding="utf-8", errors="replace")[:2000])
+                    redact_model_summary(raw_text)
                 )
             elif path.exists():
                 summary["note"] = "ref_exists_not_file"

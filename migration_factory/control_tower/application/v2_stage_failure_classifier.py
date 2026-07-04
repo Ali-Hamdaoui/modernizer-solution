@@ -33,6 +33,24 @@ def classify_stage_failure(evidence_pack: dict[str, Any]) -> dict[str, Any]:
         if isinstance(item, dict) and item.get("kind")
     ]
 
+    compile_gate = _main_source_compile_failure(evidence_pack, text)
+    if compile_gate is not None:
+        return _envelope(
+            evidence_pack=evidence_pack,
+            status=compile_gate["status"],
+            failure_type=compile_gate["failure_type"],
+            repair_family_candidate=compile_gate.get("repair_family_candidate", ""),
+            confidence=compile_gate["confidence"],
+            confidence_reason=compile_gate["reason"],
+            matched_signals=compile_gate["signals"],
+            missing_required_evidence=_missing_required(compile_gate["required"], usable, missing),
+            assistant_next_action=compile_gate["assistant_next_action"],
+            repair_blocked_reason=compile_gate["repair_blocked_reason"],
+            governance_gate_type=compile_gate["governance_gate_type"],
+            stage_relevance=compile_gate["stage_relevance"],
+            extra=compile_gate.get("extra", {}),
+        )
+
     review_gate = _review_gate_signal(text, boot3_plus, missing)
     if review_gate is not None:
         return _envelope(
@@ -142,8 +160,9 @@ def _envelope(
     repair_family_candidate: str = "",
     governance_gate_type: str = "",
     stage_relevance: str = "",
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    envelope = {
         "stage_index": evidence_pack.get("stage_index"),
         "stage_name": evidence_pack.get("stage_name", ""),
         "source_boot_version": evidence_pack.get("source_boot_version", ""),
@@ -172,6 +191,9 @@ def _envelope(
         "evidence_pack_id": evidence_pack.get("evidence_pack_id"),
         "evidence_pack_checksum": evidence_pack.get("evidence_pack_checksum"),
     }
+    if extra:
+        envelope.update(extra)
+    return envelope
 
 
 def _evidence_text(evidence_pack: dict[str, Any]) -> str:
@@ -208,8 +230,9 @@ def _review_gate(
     governance_gate_type: str,
     stage_relevance: str,
     repair_family_candidate: str = "",
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    gate = {
         "status": status,
         "failure_type": failure_type,
         "repair_family_candidate": repair_family_candidate,
@@ -222,6 +245,9 @@ def _review_gate(
         "governance_gate_type": governance_gate_type,
         "stage_relevance": stage_relevance,
     }
+    if extra:
+        gate["extra"] = extra
+    return gate
 
 
 def _review_gate_signal(text: str, boot3_plus: bool, missing: list[str]) -> dict[str, Any] | None:
@@ -401,6 +427,96 @@ def _review_gate_signal(text: str, boot3_plus: bool, missing: list[str]) -> dict
         return behavioral
 
     return None
+
+
+def _main_source_compile_failure(evidence_pack: dict[str, Any], text: str) -> dict[str, Any] | None:
+    build_status = str(evidence_pack.get("build_status") or "").lower()
+    usable = {
+        str(item.get("kind") or "")
+        for item in evidence_pack.get("usable_artifacts", [])
+        if isinstance(item, dict)
+    }
+    if "build_failed_in_sandbox" not in build_status and "build_error_contract" not in usable:
+        return None
+    if not _looks_like_java_compile_failure(text):
+        return None
+    blockers = _main_source_compile_blockers(evidence_pack)
+    if not blockers:
+        return None
+    advisory = []
+    if "powermock" in text or "powermockito" in text or "preparefortest" in text:
+        advisory.append("advisory:powermock_signal_not_primary_without_build_or_test_failure")
+    return _review_gate(
+        status="unsupported_known_failure",
+        failure_type="JAVA_MAIN_SOURCE_COMPILE_FAILURE",
+        confidence="high",
+        reason="Build error contract contains Java compilation errors in src/main/java; build evidence has priority over unrelated readonly test signals.",
+        signals=["compiler:main_source_compile_failure"],
+        required=["build_error_contract", "pom_xml"],
+        assistant_next_action="review_main_source_compile_failure",
+        repair_blocked_reason="compile_failure_no_auto_repair",
+        governance_gate_type="human_review_gate",
+        stage_relevance=_stage_relevance(evidence_pack, "build contract is primary source for BUILD_FAILED_IN_SANDBOX; downstream remains blocked."),
+        extra={
+            "primary_failure": "Java compilation/build failure",
+            "compile_blockers": blockers[:12],
+            "advisory_signals": advisory[:8],
+        },
+    )
+
+
+def _looks_like_java_compile_failure(text: str) -> bool:
+    markers = (
+        "compilation error",
+        "compilation failure",
+        "maven-compiler-plugin",
+        "incompatible types",
+        "cannot find symbol",
+        "package ",
+        "does not exist",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _main_source_compile_blockers(evidence_pack: dict[str, Any]) -> list[dict[str, Any]]:
+    blockers: list[dict[str, Any]] = []
+    pattern = re.compile(
+        r"(?P<path>(?:[a-z]:)?[^\"'\n\r]*src[\\/]+main[\\/]+java[^:\]\n\r]*\.java)"
+        r"(?::?\[(?P<bracket_line>\d+),(?P<bracket_column>\d+)\]|[:\[](?P<line>\d+)(?:,(?P<column>\d+))?)?"
+        r".{0,220}?(?P<message>incompatible types|cannot find symbol|package [^\"'\n\r]+ does not exist|compilation failure)",
+        re.IGNORECASE,
+    )
+    for artifact in evidence_pack.get("usable_artifacts", []):
+        if not isinstance(artifact, dict):
+            continue
+        if artifact.get("kind") != "build_error_contract":
+            continue
+        for error in artifact.get("compile_errors", []):
+            if isinstance(error, dict) and str(error.get("path") or "").startswith("src/main/java"):
+                blockers.append({
+                    "path": str(error.get("path") or ""),
+                    "line": str(error.get("line") or ""),
+                    "column": str(error.get("column") or ""),
+                    "message": str(error.get("message") or ""),
+                })
+        haystack = " ".join(str(artifact.get(key) or "") for key in ("excerpt", "ref"))
+        for match in pattern.finditer(haystack):
+            blockers.append({
+                "path": _normalize_source_path(match.group("path")),
+                "line": match.group("bracket_line") or match.group("line") or "",
+                "column": match.group("bracket_column") or match.group("column") or "",
+                "message": match.group("message"),
+            })
+    return blockers[:12]
+
+
+def _normalize_source_path(path: str) -> str:
+    marker = "src/main/java"
+    normalized = path.replace("\\", "/")
+    idx = normalized.lower().find(marker)
+    if idx >= 0:
+        return normalized[idx:]
+    return normalized[-220:]
 
 
 def _behavioral_test_failure(text: str, missing: list[str]) -> dict[str, Any] | None:
