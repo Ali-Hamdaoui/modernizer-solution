@@ -14,6 +14,7 @@ import type {
   ReviewedDiffProposal,
   SafeDiffPreview as SafeDiffPreviewType,
   RepairAttemptSummary,
+  RepairMaterializationUnavailable,
   V2LlmInvocationEntry,
 } from "../../../lib/contracts";
 import { formatSafeRelativePath } from "../../../lib/safeDisplay";
@@ -25,7 +26,7 @@ import { ValidationProgressPanel } from "./ValidationProgressPanel";
 
 type ProposalState =
   | { status: "loading" }
-  | { status: "no-proposal" }
+  | { status: "no-proposal"; unavailable?: RepairMaterializationUnavailable | null }
   | { status: "error"; message: string }
   | { status: "available"; proposal: ReviewedDiffProposal };
 
@@ -146,7 +147,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
             setActivityState({ status: "error", message: "Activity not available", invocations: [] });
           }
         } else {
-          setProposalState({ status: "no-proposal" });
+          setProposalState({ status: "no-proposal", unavailable: response.unavailable ?? null });
           setActivityState({ status: "loading" });
           const activityResponse = await getV2LlmActivity(jobId).catch(() => null);
           if (cancelled) return;
@@ -207,7 +208,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
           setActivityState({ status: "error", message: "Activity not available", invocations: [] });
         }
       } else {
-        setProposalState({ status: "no-proposal" });
+        setProposalState({ status: "no-proposal", unavailable: response.unavailable ?? null });
         setActivityState({ status: "loading" });
         const activityResponse = await getV2LlmActivity(jobId).catch(() => null);
         if (activityResponse?.invocations) {
@@ -291,6 +292,19 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
   }
 
   if (proposalState.status === "no-proposal") {
+    if (proposalState.unavailable?.kind === "materialization_failed") {
+      const unavailableInvocations = activityState.status === "available" || activityState.status === "error"
+        ? activityState.invocations
+        : [];
+      return (
+        <ReviewedRepairMaterializationFailed
+          invocations={unavailableInvocations}
+          loading={activityState.status === "loading"}
+          error={activityState.status === "error" ? activityState.message : null}
+          diagnostic={proposalState.unavailable}
+        />
+      );
+    }
     const unavailableInvocations = activityState.status === "available" || activityState.status === "error"
       ? activityState.invocations
       : [];
@@ -359,8 +373,12 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
     ? activityState.invocations
     : [];
   const activityError = activityState.status === "error" ? activityState.message : null;
-  const approveAllowed = proposal.allowed_actions.includes("approve_sandbox_apply");
-  const revisionAllowed = proposal.allowed_actions.some((action) => (
+
+  // approve_failed is a terminal read-only state
+  const isApproveFailed = proposal.status === "approve_failed";
+
+  const approveAllowed = !isApproveFailed && proposal.allowed_actions.includes("approve_sandbox_apply");
+  const revisionAllowed = !isApproveFailed && proposal.allowed_actions.some((action) => (
     action === "request_revision" ||
     action === "request_repair_revision" ||
     action === "revise_repair_proposal"
@@ -410,6 +428,19 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
             <div className="error-banner" data-testid="approve-error-banner" role="alert">
               <p>{errorBanner}</p>
               <button type="button" onClick={() => setErrorBanner(null)}>Dismiss</button>
+            </div>
+          )}
+
+          {isApproveFailed && (
+            <div className="failure-summary" data-testid="approve-failed-summary">
+              <strong>Reviewed Repair Apply Failed</strong>
+              <p className="meta">Reviewer accepted and backend tried to apply, but the sandbox apply failed. The reviewed diff is still viewable. No build/test rerun was started.</p>
+              {proposal.reason_code && (
+                <p className="meta warning-text" data-testid="apply-reason-code">Reason code: {proposal.reason_code}</p>
+              )}
+              {proposal.status_reason && (
+                <p className="meta" data-testid="apply-status-reason">{proposal.status_reason}</p>
+              )}
             </div>
           )}
 
@@ -721,11 +752,13 @@ export function ReviewedRepairMaterializationFailed({
   loading,
   error,
   policyReasonCode,
+  diagnostic,
 }: {
   invocations: V2LlmInvocationEntry[];
   loading: boolean;
   error: string | null;
   policyReasonCode?: string | null;
+  diagnostic?: RepairMaterializationUnavailable | null;
 }) {
   const sorted = [...invocations].sort((a, b) => b.created_at.localeCompare(a.created_at));
   const mainInvocation = sorted.find((invocation) => (
@@ -760,16 +793,30 @@ export function ReviewedRepairMaterializationFailed({
   const displayReason = policyReasonCode
     ? policyReasonDisplay[policyReasonCode as keyof typeof policyReasonDisplay] ?? policyReasonCode
     : null;
+  const reasonCode = diagnostic?.reason_code?.trim() ?? "";
+  const detail = diagnostic?.struct_issue?.trim() || diagnostic?.detail?.trim() || "";
+  const title = diagnostic?.title?.trim() || "Reviewed Repair Materialization Failed";
+  const summary = diagnostic?.message?.trim() || "Backend could not materialize a reviewed diff for user approval.";
+  const isMalformedDiff = reasonCode === "MALFORMED_DIFF";
+  const noValidationPath = diagnostic
+    ? "No backend validation or apply path is available until a valid reviewed diff is materialized."
+    : null;
 
   return (
     <section className="panel repair-proposal-panel" data-testid="repair-proposal-panel">
       <div className="repair-proposal-layout">
         <div className="repair-proposal-main">
           <div className="repair-panel-kicker">Reviewed Repair Gate</div>
-          <h2>Reviewed Repair Materialization Failed</h2>
+          <h2>{title}</h2>
           <div className="failure-summary" data-testid="reviewed-repair-materialization-failed">
             <strong>Failure Summary</strong>
-            <p className="meta">Backend could not materialize a reviewed diff for user approval.</p>
+            <p className="meta">{summary}</p>
+            {isMalformedDiff && (
+              <p className="meta">
+                Reviewer accepted the repair, but backend structural validation rejected the reviewed diff before user approval.
+              </p>
+            )}
+            {noValidationPath && <p className="meta warning-text">{noValidationPath}</p>}
             {displayReason && (
               <p className="meta policy-reason" data-testid="policy-reason">
                 Backend reason: {displayReason}
@@ -809,19 +856,49 @@ export function ReviewedRepairMaterializationFailed({
                 <strong>{reviewerInvocation.redacted_summary}</strong>
               </div>
             )}
+            {reasonCode && (
+              <div className="table-row">
+                <span className="meta">Reason code</span>
+                <strong data-testid="materialization-reason-code">{reasonCode}</strong>
+              </div>
+            )}
+            {detail && (
+              <div className="table-row">
+                <span className="meta">Detail</span>
+                <strong data-testid="materialization-detail">{detail}</strong>
+              </div>
+            )}
+            {diagnostic?.deployment_alias_hash && (
+              <div className="table-row">
+                <span className="meta">Diagnostic deployment hash</span>
+                <strong className="checksum">{diagnostic.deployment_alias_hash}</strong>
+              </div>
+            )}
             <div className="table-row">
               <span className="meta">Reviewed diff</span>
               <strong>Not available</strong>
             </div>
+            {diagnostic && (
+              <>
+                <div className="table-row">
+                  <span className="meta">Backend validation path</span>
+                  <strong>Unavailable</strong>
+                </div>
+                <div className="table-row">
+                  <span className="meta">Retry status</span>
+                  <strong>{diagnostic.retry_status === "retry_required" ? "Backend retry required" : "No retry action available"}</strong>
+                </div>
+              </>
+            )}
             <div className="table-row">
               <span className="meta">Next action</span>
-              <strong>Request backend retry or revision.</strong>
+              <strong>{diagnostic?.retry_status === "retry_required" ? "Backend retry required; no approve action available." : "Request backend retry or revision."}</strong>
             </div>
           </div>
         </div>
         <div className="repair-proposal-side">
           <ModelRoleActivity invocations={invocations} loading={loading} error={error} />
-          <ValidationProgressPanel attempts={[]} />
+          <ValidationProgressPanel attempts={[]} unavailableSummary={summary} />
         </div>
       </div>
     </section>

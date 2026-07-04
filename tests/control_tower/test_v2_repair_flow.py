@@ -548,7 +548,7 @@ def _h2_patch() -> str:
         "diff --git a/pom.xml b/pom.xml\n"
         "--- a/pom.xml\n"
         "+++ b/pom.xml\n"
-        "@@\n"
+        "@@ -1,1 +1,2 @@\n"
         " <dependencies>\n"
         "+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n"
     )

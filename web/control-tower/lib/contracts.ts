@@ -1214,6 +1214,10 @@ export type ReviewedDiffProposal = {
   gate_status?: string | null;
   gate_decision?: string | null;
   evidence_sources?: string[];
+  apply_status?: string | null;
+  rerun_status?: string | null;
+  status_reason?: string | null;
+  reason_code?: string | null;
 };
 
 export type V2LlmInvocationEntry = {
@@ -1248,9 +1252,30 @@ export type V2LlmActivityResponse = {
   invocations: V2LlmInvocationEntry[];
 };
 
+export type RepairMaterializationUnavailable = {
+  kind: "materialization_failed";
+  title: string;
+  reason_code: string;
+  detail: string | null;
+  struct_issue?: string | null;
+  message: string;
+  main_invocation_id: string | null;
+  reviewer_invocation_id: string | null;
+  schema_name: string | null;
+  provider_alias: string | null;
+  deployment_alias_hash: string | null;
+  final_diff_exists: boolean;
+  policy_ran: boolean;
+  gate_created: boolean;
+  proposal_created: boolean;
+  allowed_actions: string[];
+  retry_status?: string | null;
+};
+
 export type RepairProposalCurrentResponse = {
   proposal: ReviewedDiffProposal | null;
   job_id: string;
+  unavailable?: RepairMaterializationUnavailable | null;
 };
 
 export type RepairProposalDetailResponse = {
@@ -1333,6 +1358,8 @@ export type RepairProposalApproveResponse = {
   rollback_status: string;
   remaining_attempts: number;
   allowed_next_actions: string[];
+  reason_code?: string;
+  status_reason?: string;
 };
 
 export const PROFILE_BY_ID: Record<MigrationProfileId, MigrationProfileOption> =

@@ -128,7 +128,7 @@ def _h2_patch() -> str:
         "diff --git a/pom.xml b/pom.xml\n"
         "--- a/pom.xml\n"
         "+++ b/pom.xml\n"
-        "@@\n"
+        "@@ -1,0 +1,1 @@\n"
         "+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n"
     )
 
@@ -342,6 +342,45 @@ class TestCreateRepairGateOnBuildFailure:
         assert gate is not None
         assert gate.gate_phase == "repair_review"
         assert (run_dir / "repairs" / "repair_policy_validation.json").is_file()
+
+    def test_malformed_diff_rejected_before_gate_creation(self, tmp_path: Path) -> None:
+        conn = _connection(tmp_path)
+        gate_repo = SqlitePhaseGateRepository(conn)
+        repair_gate_svc = V2RepairGateService(gate_service=V2PhaseGateService(gate_repo))
+        sandbox = tmp_path / "sandbox"
+        legacy = tmp_path / "legacy"
+        sandbox.mkdir()
+        legacy.mkdir()
+        (sandbox / "pom.xml").write_text("<project/>", encoding="utf-8")
+
+        malformed_diff = (
+            "diff --git a/pom.xml b/pom.xml\n"
+            "--- a/pom.xml\n"
+            "+++ b/pom.xml\n"
+            "@@ -1,4 +1,5 @@\n"
+            " line1\n"
+            " line2\n"
+            " line3\n"
+            " line4\n"
+            " line5\n"
+            "+line6\n"
+        )
+        result = repair_gate_svc.create_repair_gate_from_reviewed_chain(
+            job_id="job-1",
+            stage_index=3,
+            command_id="cmd-1",
+            review_chain_result=_reviewed_chain_files(tmp_path, diff=malformed_diff),
+            failure_evidence_checksum="failure-cs",
+            context_pack_checksum="ctx-cs",
+            base_repo_state_checksum="repo-cs",
+            sandbox_path=str(sandbox),
+            run_dir=str(tmp_path / "run"),
+            legacy_path=str(legacy),
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+            h2_required=True,
+        )
+        assert result.status == "skipped"
+        assert "Diff structure validation failed: hunk_old_count_mismatch" in result.reason
 
     def test_reviewed_chain_reviewer_reject_does_not_open_gate(self, tmp_path: Path) -> None:
         conn = _connection(tmp_path)
@@ -1014,6 +1053,36 @@ def test_reviewer_schema_unavailable_event_preserves_safe_diagnostics(tmp_path: 
     assert "raw_output" not in serialized
     assert "prompt" not in serialized
     assert "completion" not in serialized
+
+
+def test_materialization_failure_event_reason_code_not_detail(tmp_path: Path) -> None:
+    _, _, gate_svc, _, _, _, _, _ = _svc(tmp_path)
+    recorder = _EventRecorder()
+    svc = V2RepairGateService(gate_service=gate_svc, event_repo=recorder)
+
+    svc._emit_reviewed_repair_materialization_failed(
+        job_id="job-materialization",
+        stage_index=1,
+        context_checksum="ctx-cs",
+        reason_code="MALFORMED_DIFF",
+        chain={
+            "proposer_invocation_id": "main-inv",
+            "reviewer_invocation_id": "reviewer-inv",
+            "proposed_diff_checksum": "diff-cs",
+        },
+        detail="Diff structure validation failed: hunk_old_count_mismatch",
+    )
+
+    assert len(recorder.events) == 1
+    event = recorder.events[0]
+    payload = event["payload"]
+    assert payload["reason_code"] == "MALFORMED_DIFF"
+    assert payload["struct_issue"] == "hunk_old_count_mismatch"
+    assert payload["detail"] == "Diff structure validation failed: hunk_old_count_mismatch"
+    assert payload["policy_ran"] is False
+    assert payload["gate_created"] is False
+    assert payload["proposal_created"] is False
+    assert payload["retry_status"] == "retry_required"
 
 
 class TestRepairGateDiagnosisCallback:

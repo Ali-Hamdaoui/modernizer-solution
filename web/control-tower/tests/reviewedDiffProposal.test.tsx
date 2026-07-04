@@ -1000,6 +1000,102 @@ describe("F5 model activity and validation panels", () => {
       expect(markup).not.toContain(forbidden);
     }
   });
+
+  it("renders malformed diff materialization diagnostic with exact safe reason", () => {
+    const invocations: V2LlmInvocationEntry[] = [
+      {
+        ...baseInvocation,
+        proposal_id: null,
+        gate_id: null,
+        output_checksum: "sha256:main-output",
+      },
+      {
+        ...baseInvocation,
+        invocation_id: "inv-reviewer",
+        proposal_id: null,
+        gate_id: null,
+        role: "reviewer",
+        responsibility: "repair_review",
+        model_display_name: "Reviewer Model",
+        status: "completed",
+        fallback_used: false,
+        redacted_error: null,
+        redacted_summary: "Reviewer accepted the repair proposal.",
+        output_checksum: "sha256:reviewer-output",
+        created_at: "2026-06-30T00:00:02Z",
+      },
+    ];
+
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairMaterializationFailed
+        invocations={invocations}
+        loading={false}
+        error={null}
+        diagnostic={{
+          kind: "materialization_failed",
+          title: "Reviewed Repair Diff Invalid",
+          reason_code: "MALFORMED_DIFF",
+          detail: "hunk_old_count_mismatch",
+          struct_issue: "hunk_old_count_mismatch",
+          message: "Reviewer accepted the repair, but backend structural validation rejected the reviewed diff before user approval.",
+          main_invocation_id: "inv-main",
+          reviewer_invocation_id: "inv-reviewer",
+          schema_name: "RepairPrimaryOutput",
+          provider_alias: "azure_openai",
+          deployment_alias_hash: "deployment-hash",
+          final_diff_exists: true,
+          policy_ran: false,
+          gate_created: false,
+          proposal_created: false,
+          allowed_actions: ["view_repair_history", "view_model_trace"],
+          retry_status: "retry_required",
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Reviewed Repair Diff Invalid");
+    expect(markup).toContain("MALFORMED_DIFF");
+    expect(markup).toContain("hunk_old_count_mismatch");
+    expect(markup).toContain("Reviewer accepted the repair");
+    expect(markup).toContain("Backend retry required");
+    expect(markup).toContain("completed");
+    expect(markup).not.toContain("Approve sandbox apply");
+    expect(markup).not.toContain("Request revision");
+    for (const forbidden of ["endpoint", "api_key", "raw deployment", "AZURE_OPENAI", "prompt", "completion", "sandbox_path", "diff --git"]) {
+      expect(markup).not.toContain(forbidden);
+    }
+  });
+
+  it("renders proposer missing diff diagnostic", () => {
+    const markup = renderToStaticMarkup(
+      <ReviewedRepairMaterializationFailed
+        invocations={[baseInvocation]}
+        loading={false}
+        error={null}
+        diagnostic={{
+          kind: "materialization_failed",
+          title: "Main Model Did Not Produce a Patch",
+          reason_code: "PROPOSER_DIFF_MISSING",
+          detail: "",
+          message: "Main model completed, but it did not produce a backend-owned patch for reviewer approval.",
+          main_invocation_id: "inv-main",
+          reviewer_invocation_id: null,
+          schema_name: "RepairPrimaryOutput",
+          provider_alias: "azure_openai",
+          deployment_alias_hash: "deployment-hash",
+          final_diff_exists: false,
+          policy_ran: false,
+          gate_created: false,
+          proposal_created: false,
+          allowed_actions: ["view_repair_history", "view_model_trace"],
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Main Model Did Not Produce a Patch");
+    expect(markup).toContain("PROPOSER_DIFF_MISSING");
+    expect(markup).not.toContain("Approve sandbox apply");
+  });
 });
 
 describe("PR-C forbidden-field tests", () => {

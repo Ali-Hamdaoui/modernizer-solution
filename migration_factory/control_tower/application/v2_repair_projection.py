@@ -255,6 +255,10 @@ class ReviewedDiffProposal:
     gate_status: str | None = None
     gate_decision: str | None = None
     evidence_sources: tuple[str, ...] = ()
+    apply_status: str | None = None
+    rerun_status: str | None = None
+    status_reason: str | None = None
+    reason_code: str | None = None
 
 
 
@@ -372,6 +376,10 @@ def reviewed_diff_proposal_to_safe_dict(proposal: ReviewedDiffProposal) -> dict[
         "gate_status": proposal.gate_status,
         "gate_decision": proposal.gate_decision,
         "evidence_sources": list(proposal.evidence_sources),
+        "apply_status": proposal.apply_status,
+        "rerun_status": proposal.rerun_status,
+        "status_reason": proposal.status_reason,
+        "reason_code": proposal.reason_code,
     }
 
 
@@ -526,6 +534,9 @@ def build_reviewed_diff_proposal_from_record(
     gate_status: str | None = None,
     gate_decision: str | None = None,
     evidence_sources: tuple[str, ...] = (),
+    apply_status: str | None = None,
+    rerun_status: str | None = None,
+    reason_code: str | None = None,
 ) -> ReviewedDiffProposal:
     """Build a ReviewedDiffProposal from persisted V2RepairProposalRecord fields.
 
@@ -599,6 +610,10 @@ def build_reviewed_diff_proposal_from_record(
         gate_status=gate_status,
         gate_decision=gate_decision,
         evidence_sources=evidence_sources,
+        apply_status=apply_status,
+        rerun_status=rerun_status,
+        status_reason=status_reason,
+        reason_code=reason_code,
     )
 
 

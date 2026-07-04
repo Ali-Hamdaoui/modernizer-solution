@@ -217,6 +217,7 @@ class SqliteV2RepairRepository:
         return self._row_to_proposal(row)
 
     def get_current_proposal_for_job(self, job_id: str) -> V2RepairProposalRecord | None:
+        # First, try to find an actionable proposal
         row = self._connection.execute(
             """SELECT * FROM v2_repair_proposals
                WHERE job_id = ?
@@ -226,9 +227,19 @@ class SqliteV2RepairRepository:
                LIMIT 1""",
             (job_id,),
         ).fetchone()
-        if row is None:
-            return None
-        return self._row_to_proposal(row)
+        if row is not None:
+            return self._row_to_proposal(row)
+        # Fallback: return the latest approve_failed proposal for the job
+        row = self._connection.execute(
+            """SELECT * FROM v2_repair_proposals
+               WHERE job_id = ? AND status = 'approve_failed'
+               ORDER BY created_at DESC
+               LIMIT 1""",
+            (job_id,),
+        ).fetchone()
+        if row is not None:
+            return self._row_to_proposal(row)
+        return None
 
     def list_attempts_by_job(self, job_id: str) -> tuple[V2RepairProposalRecord, ...]:
         rows = self._connection.execute(

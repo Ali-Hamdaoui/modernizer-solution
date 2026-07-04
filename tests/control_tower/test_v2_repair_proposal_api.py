@@ -28,6 +28,9 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository 
     SqliteV2RepairRepository,
     V2RepairProposalRecord,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_llm_invocation_repository import (
+    V2LLMInvocationRecord,
+)
 from migration_factory.control_tower.infrastructure.sqlite.v2_reviewer_repository import (
     V2ReviewerCritiqueRecord,
 )
@@ -65,7 +68,7 @@ def _make_simple_diff_text() -> str:
         "diff --git a/src/App.java b/src/App.java\n"
         "--- a/src/App.java\n"
         "+++ b/src/App.java\n"
-        "@@ -1,3 +1,4 @@\n"
+        "@@ -1,3 +1,3 @@\n"
         " class App {\n"
         "-    String mode = \"old\";\n"
         "+    String mode = \"new\";\n"
@@ -879,6 +882,76 @@ class TestHttpEndpointCurrentProposal:
         data = response.json()
         assert data["job_id"] == job_id
         assert "proposal" in data
+
+    def test_materialization_failure_malformed_diff_returns_current_unavailable_diagnostic(self, tmp_path: Path) -> None:
+        client, conn, job_id = _api_client_with_job(tmp_path)
+        with SqliteUnitOfWork(conn) as uow:
+            uow.v2_llm_invocations.save(V2LLMInvocationRecord(
+                invocation_id="main-inv",
+                job_id=job_id,
+                role="main",
+                responsibility="repair_proposal",
+                status="completed",
+                created_at=utc_now_text(),
+                provider_alias="azure_openai",
+                deployment_alias_hash="deployment-hash",
+                context_checksum="ctx-cs",
+                schema_name="RepairPrimaryOutput",
+                output_checksum="main-output-cs",
+            ))
+            uow.v2_llm_invocations.save(V2LLMInvocationRecord(
+                invocation_id="reviewer-inv",
+                job_id=job_id,
+                role="reviewer",
+                responsibility="repair_review",
+                status="completed",
+                created_at=utc_now_text(),
+                provider_alias="azure_openai",
+                deployment_alias_hash="deployment-hash",
+                context_checksum="ctx-cs",
+                schema_name="RepairReviewerOutput",
+                output_checksum="reviewer-output-cs",
+            ))
+            uow.v2_events.save(
+                job_id=job_id,
+                stage=1,
+                event_type="reviewed_repair_materialization_failed",
+                status="failed",
+                message="Reviewed repair diff failed structural validation before user approval.",
+                payload={
+                    "job_id": job_id,
+                    "stage_index": 1,
+                    "context_checksum": "ctx-cs",
+                    "main_invocation_id": "main-inv",
+                    "reviewer_invocation_id": "reviewer-inv",
+                    "reason_code": "MALFORMED_DIFF",
+                    "struct_issue": "hunk_old_count_mismatch",
+                    "schema_name": "RepairPrimaryOutput",
+                    "final_diff_exists": True,
+                    "policy_ran": False,
+                    "gate_created": False,
+                    "proposal_created": False,
+                    "retry_status": "retry_required",
+                },
+            )
+
+        response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/current", headers={"host": "127.0.0.1:8000"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["proposal"] is None
+        unavailable = data["unavailable"]
+        assert unavailable["kind"] == "materialization_failed"
+        assert unavailable["title"] == "Reviewed Repair Diff Invalid"
+        assert unavailable["reason_code"] == "MALFORMED_DIFF"
+        assert unavailable["detail"] == "hunk_old_count_mismatch"
+        assert unavailable["final_diff_exists"] is True
+        assert unavailable["policy_ran"] is False
+        assert unavailable["gate_created"] is False
+        assert unavailable["proposal_created"] is False
+        assert unavailable["retry_status"] == "retry_required"
+        assert "approve_sandbox_apply" not in unavailable["allowed_actions"]
+        _check_no_forbidden_keys(data)
+        _check_no_forbidden_values(data)
 
     def test_current_proposal_contains_proposal_when_diff_ref_present(self, tmp_path: Path) -> None:
         diff_path = _write_diff(tmp_path, _make_simple_diff_text())

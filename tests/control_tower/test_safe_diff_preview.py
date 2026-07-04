@@ -223,3 +223,60 @@ def test_checksum_is_content_derived_and_changes_when_diff_changes(tmp_path: Pat
 
     assert preview_one.diff_checksum != preview_two.diff_checksum
     assert preview_one.diff_checksum == hashlib.sha256(diff_one.read_bytes()).hexdigest()
+
+
+def test_hunk_old_count_mismatch_detected_and_not_approval_safe(tmp_path: Path) -> None:
+    diff_path = _write_diff(
+        tmp_path,
+        "hunk_old_count_mismatch.diff",
+        "\n".join(
+            [
+                "diff --git a/test.txt b/test.txt",
+                "--- a/test.txt",
+                "+++ b/test.txt",
+                "@@ -1,4 +1,5 @@",
+                " line1",
+                " line2",
+                " line3",
+                " line4",
+                " line5",
+                "+line6",
+            ]
+        )
+        + "\n",
+    )
+    preview = build_safe_diff_preview(
+        proposal_id="proposal-hunk-old",
+        diff_ref=diff_path,
+    )
+    assert preview.parse_status == "hunk_count_mismatch"
+    assert preview.can_approve is False
+    assert "hunk header line counts do not match hunk body" in preview.redactions
+
+
+def test_hunk_new_count_mismatch_detected_and_not_approval_safe(tmp_path: Path) -> None:
+    diff_path = _write_diff(
+        tmp_path,
+        "hunk_new_count_mismatch.diff",
+        "\n".join(
+            [
+                "diff --git a/test.txt b/test.txt",
+                "--- a/test.txt",
+                "+++ b/test.txt",
+                "@@ -1,3 +1,3 @@",
+                " line1",
+                "-line2",
+                "+line2_updated",
+                " line3",
+                "+line4",
+            ]
+        )
+        + "\n",
+    )
+    preview = build_safe_diff_preview(
+        proposal_id="proposal-hunk-new",
+        diff_ref=diff_path,
+    )
+    assert preview.parse_status == "hunk_count_mismatch"
+    assert preview.can_approve is False
+    assert "hunk header line counts do not match hunk body" in preview.redactions

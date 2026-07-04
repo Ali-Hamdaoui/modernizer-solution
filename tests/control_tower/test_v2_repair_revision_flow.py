@@ -49,7 +49,7 @@ def _make_simple_diff_text() -> str:
         "diff --git a/src/App.java b/src/App.java\n"
         "--- a/src/App.java\n"
         "+++ b/src/App.java\n"
-        "@@ -1,3 +1,4 @@\n"
+        "@@ -1,3 +1,3 @@\n"
         " class App {\n"
         "-    String mode = \"old\";\n"
         "+    String mode = \"new\";\n"

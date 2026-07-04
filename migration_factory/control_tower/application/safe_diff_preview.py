@@ -77,7 +77,7 @@ class SafeDiffPreview:
             self.parse_status == "parsed"
             and not self.checksum_mismatch
             and not self.truncated
-            and self.total_additions > 0 or self.total_deletions > 0
+            and (self.total_additions > 0 or self.total_deletions > 0)
         )
 
 
@@ -180,6 +180,7 @@ class _SafeDiffParser:
         self._total_deletions = 0
         self._total_lines = 0
         self._current: _CurrentFileState | None = None
+        self._hunk_count_mismatch = False
 
     def parse(self, diff_text: str) -> None:
         for raw_line in diff_text.splitlines():
@@ -237,7 +238,10 @@ class _SafeDiffParser:
         has_any_file = bool(self._files)
         has_any_hunk = any(len(f.hunks) > 0 for f in self._files)
         parse_status: str = "unparseable"
-        if not has_content:
+        if self._hunk_count_mismatch:
+            parse_status = "hunk_count_mismatch"
+            self._add_redaction("hunk header line counts do not match hunk body")
+        elif not has_content:
             parse_status = "no_content"
         elif has_any_hunk and (self._total_additions > 0 or self._total_deletions > 0):
             parse_status = "parsed"
@@ -286,6 +290,7 @@ class _SafeDiffParser:
         if self._current is None:
             return
         if self._current.current_hunk is not None:
+            self._validate_hunk_counts(self._current.current_hunk)
             self._current.hunks.append(self._current.current_hunk.hunk)
             self._current.current_hunk = None
         if len(self._current.hunks) >= MAX_HUNKS_PER_FILE:
@@ -333,6 +338,7 @@ class _SafeDiffParser:
             old_line_number = None
             new_line_number = self._current.current_hunk.new_line_number
             self._current.current_hunk.new_line_number += 1
+            self._current.current_hunk.addition_count += 1
             self._current.additions += 1
             self._total_additions += 1
             body = raw_line[1:]
@@ -341,6 +347,7 @@ class _SafeDiffParser:
             old_line_number = self._current.current_hunk.old_line_number
             new_line_number = None
             self._current.current_hunk.old_line_number += 1
+            self._current.current_hunk.deletion_count += 1
             self._current.deletions += 1
             self._total_deletions += 1
             body = raw_line[1:]
@@ -349,6 +356,7 @@ class _SafeDiffParser:
             new_line_number = self._current.current_hunk.new_line_number
             self._current.current_hunk.old_line_number += 1
             self._current.current_hunk.new_line_number += 1
+            self._current.current_hunk.context_count += 1
             body = raw_line[1:]
         else:
             return
@@ -378,6 +386,7 @@ class _SafeDiffParser:
 
         file_state = self._current
         if file_state.current_hunk is not None:
+            self._validate_hunk_counts(file_state.current_hunk)
             file_state.hunks.append(file_state.current_hunk.hunk)
             file_state.current_hunk = None
         path, change_type, path_redacted = _finalize_file_path(file_state)
@@ -401,6 +410,14 @@ class _SafeDiffParser:
         )
         self._current = None
 
+    def _validate_hunk_counts(self, hunk_state: _CurrentHunkState) -> None:
+        actual_old = hunk_state.context_count + hunk_state.deletion_count
+        actual_new = hunk_state.context_count + hunk_state.addition_count
+        if actual_old != hunk_state.hunk.old_lines:
+            self._hunk_count_mismatch = True
+        if actual_new != hunk_state.hunk.new_lines:
+            self._hunk_count_mismatch = True
+
     def _add_redaction(self, reason: str) -> None:
         if reason not in self._redactions:
             self._redactions.append(reason)
@@ -411,6 +428,9 @@ class _CurrentHunkState:
     hunk: SafeDiffHunk
     old_line_number: int
     new_line_number: int
+    context_count: int = 0
+    deletion_count: int = 0
+    addition_count: int = 0
 
 
 @dataclass

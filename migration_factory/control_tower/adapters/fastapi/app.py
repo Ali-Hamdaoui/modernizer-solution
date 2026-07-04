@@ -694,6 +694,8 @@ class RepairProposalApproveResponse(BaseModel):
     rollback_status: str = ""
     remaining_attempts: int = 0
     allowed_next_actions: tuple[str, ...] = ()
+    reason_code: str = ""
+    status_reason: str = ""
 
 
 # ── F5 Reviewed repair approval (checksum-only, no raw diff/patch) ────
@@ -725,6 +727,135 @@ def _safe_artifact_display_ref(value: Any) -> str | None:
     if text is None:
         return None
     return Path(PureWindowsPath(text).name).name
+
+
+def _latest_repair_materialization_unavailable(uow: Any, job_id: str) -> dict[str, Any] | None:
+    events = tuple(uow.v2_events.list_by_job(job_id))
+    latest = next(
+        (
+            event for event in reversed(events)
+            if getattr(event, "type", "") == "reviewed_repair_materialization_failed"
+        ),
+        None,
+    )
+    if latest is None:
+        return None
+    try:
+        payload = json.loads(str(getattr(latest, "payload_json", "") or "{}"))
+    except json.JSONDecodeError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    reason_code = _stable_materialization_reason_code(payload.get("reason_code"))
+    struct_issue = _safe_struct_issue(payload.get("struct_issue") or payload.get("detail"))
+    diagnostic: dict[str, Any] = {
+        "kind": "materialization_failed",
+        "title": _materialization_title(reason_code),
+        "reason_code": reason_code,
+        "detail": struct_issue,
+        "struct_issue": struct_issue,
+        "message": _materialization_message(reason_code),
+        "main_invocation_id": _safe_event_text(payload.get("main_invocation_id")),
+        "reviewer_invocation_id": _safe_event_text(payload.get("reviewer_invocation_id")),
+        "schema_name": _safe_event_text(payload.get("schema_name")),
+        "provider_alias": _safe_event_text(payload.get("provider_alias")),
+        "deployment_alias_hash": _safe_event_text(payload.get("deployment_alias_hash")),
+        "final_diff_exists": bool(payload.get("final_diff_exists")),
+        "policy_ran": bool(payload.get("policy_ran")),
+        "gate_created": bool(payload.get("gate_created")),
+        "proposal_created": bool(payload.get("proposal_created")),
+        "allowed_actions": list(READ_ONLY_REPAIR_ACTIONS),
+        "retry_status": _retry_status(reason_code, payload),
+    }
+    invocation_ids = {
+        str(value or "")
+        for value in (diagnostic["main_invocation_id"], diagnostic["reviewer_invocation_id"])
+        if str(value or "").strip()
+    }
+    if invocation_ids:
+        for record in uow.v2_llm_invocations.list_by_job(job_id):
+            if str(getattr(record, "invocation_id", "") or "") not in invocation_ids:
+                continue
+            if not diagnostic["provider_alias"]:
+                diagnostic["provider_alias"] = _safe_event_text(getattr(record, "provider_alias", None))
+            if not diagnostic["deployment_alias_hash"]:
+                diagnostic["deployment_alias_hash"] = _safe_event_text(getattr(record, "deployment_alias_hash", None))
+            if not diagnostic["schema_name"]:
+                diagnostic["schema_name"] = _safe_event_text(getattr(record, "schema_name", None))
+    return diagnostic
+
+
+def _stable_materialization_reason_code(value: Any) -> str:
+    text = str(value or "").strip()
+    stable = {
+        "MALFORMED_DIFF",
+        "PROPOSER_DIFF_MISSING",
+        "DIFF_REF_MISSING",
+        "PATCH_POLICY_REJECTED",
+        "CHECKSUM_MISMATCH",
+        "ARTIFACT_WRITE_FAILED",
+        "SAFE_DIFF_PREVIEW_FAILED",
+        "UNKNOWN_MATERIALIZATION_FAILURE",
+    }
+    if text in stable:
+        return text
+    lowered = text.lower()
+    if "hunk_" in lowered or "diff structure validation failed" in lowered or "malformed" in lowered:
+        return "MALFORMED_DIFF"
+    if "policy" in lowered:
+        return "PATCH_POLICY_REJECTED"
+    if "checksum" in lowered:
+        return "CHECKSUM_MISMATCH"
+    if "diff_ref" in lowered:
+        return "DIFF_REF_MISSING"
+    return "UNKNOWN_MATERIALIZATION_FAILURE"
+
+
+def _safe_struct_issue(value: Any) -> str:
+    text = str(value or "").strip()
+    marker = "Diff structure validation failed:"
+    if text.startswith(marker):
+        text = text[len(marker):].strip()
+    if ":\\" in text or "/" in text or "\\" in text:
+        return ""
+    return text[:160]
+
+
+def _safe_event_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if ":\\" in text or "/" in text or "\\" in text:
+        return None
+    return text[:160]
+
+
+def _materialization_title(reason_code: str) -> str:
+    if reason_code == "MALFORMED_DIFF":
+        return "Reviewed Repair Diff Invalid"
+    if reason_code == "PROPOSER_DIFF_MISSING":
+        return "Main Model Did Not Produce a Patch"
+    if reason_code == "PATCH_POLICY_REJECTED":
+        return "Reviewed Repair Rejected by Patch Policy"
+    return "Reviewed Repair Materialization Failed"
+
+
+def _materialization_message(reason_code: str) -> str:
+    if reason_code == "MALFORMED_DIFF":
+        return "Reviewer accepted the repair, but backend structural validation rejected the reviewed diff before user approval."
+    if reason_code == "PROPOSER_DIFF_MISSING":
+        return "Main model completed, but it did not produce a backend-owned patch for reviewer approval."
+    if reason_code == "PATCH_POLICY_REJECTED":
+        return "Reviewer accepted the repair, but backend patch policy rejected the reviewed diff."
+    return "Backend could not materialize a reviewed diff for user approval."
+
+
+def _retry_status(reason_code: str, payload: dict[str, Any]) -> str:
+    explicit = str(payload.get("retry_status") or "").strip()
+    if explicit:
+        return explicit
+    return "retry_required" if reason_code == "MALFORMED_DIFF" else ""
 
 
 def _normalize_reviewer_decision(value: Any) -> str:
@@ -3556,7 +3687,11 @@ def create_app(
             _require_v2_job(uow, job_id)
             record = uow.v2_repairs.get_current_proposal_for_job(job_id)
             if record is None:
-                return {"proposal": None, "job_id": job_id}
+                return {
+                    "proposal": None,
+                    "job_id": job_id,
+                    "unavailable": _latest_repair_materialization_unavailable(uow, job_id),
+                }
             if getattr(record, "diff_ref", None) is not None:
                 try:
                     gate = None
@@ -3575,6 +3710,12 @@ def create_app(
                         gate=gate,
                         preview=preview,
                     )
+                    record_status_reason = getattr(record, "status_reason", None) or ""
+                    reason_code = None
+                    if record_status_reason.startswith("["):
+                        close = record_status_reason.find("]")
+                        if close > 0:
+                            reason_code = record_status_reason[1:close]
                     projection = build_reviewed_diff_proposal_from_record(
                         proposal_id=record.proposal_id,
                         status=record.status,
@@ -3594,7 +3735,7 @@ def create_app(
                         reviewer_output_checksum=evidence.reviewer_output_checksum,
                         policy_validation_checksum=evidence.policy_validation_checksum,
                         policy_status=evidence.policy_status,
-                        status_reason=getattr(record, "status_reason", None),
+                        status_reason=record_status_reason,
                         allowed_actions=evidence.allowed_actions,
                         final_diff_text=None,
                         reviewer_decision=evidence.reviewer_decision,
@@ -3603,14 +3744,40 @@ def create_app(
                         gate_status=evidence.gate_status,
                         gate_decision=evidence.gate_decision,
                         evidence_sources=evidence.evidence_sources,
+                        apply_status=getattr(record, "apply_status", None),
+                        rerun_status=getattr(record, "rerun_status", None),
+                        reason_code=reason_code,
                     )
                     return {
                         "proposal": reviewed_diff_proposal_to_safe_dict(projection),
                         "job_id": job_id,
                     }
                 except (ValueError, OSError):
-                    pass
-            return {"proposal": None, "job_id": job_id}
+                    if record.status == "approve_failed":
+                        record_status_reason = getattr(record, "status_reason", None) or ""
+                        reason_code = None
+                        if record_status_reason.startswith("["):
+                            close = record_status_reason.find("]")
+                            if close > 0:
+                                reason_code = record_status_reason[1:close]
+                        return {
+                            "proposal": {
+                                "proposal_id": record.proposal_id,
+                                "job_id": getattr(record, "job_id", None) or job_id,
+                                "status": record.status,
+                                "apply_status": getattr(record, "apply_status", None),
+                                "rerun_status": getattr(record, "rerun_status", None),
+                                "status_reason": record_status_reason,
+                                "reason_code": reason_code,
+                                "allowed_actions": list(READ_ONLY_REPAIR_ACTIONS),
+                            },
+                            "job_id": job_id,
+                        }
+            return {
+                "proposal": None,
+                "job_id": job_id,
+                "unavailable": _latest_repair_materialization_unavailable(uow, job_id),
+            }
 
     @app.get("/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}")
     def get_repair_proposal(
@@ -4248,13 +4415,15 @@ def create_app(
 
             apply_status = apply_result.status
             apply_reason = apply_result.reason
+            reason_code = getattr(apply_result, "reason_code", "")
 
             if apply_status != "APPLIED":
                 completed_at = utc_now_text()
+                reason_status = f"[{reason_code}] Sandbox apply failed: {apply_reason}" if reason_code else f"Sandbox apply failed: {apply_reason}"
                 uow.v2_repairs.update_proposal_prf_fields(
                     proposal_id,
                     status="approve_failed",
-                    status_reason=f"Sandbox apply failed: {apply_reason}",
+                    status_reason=reason_status,
                     apply_status=apply_status,
                     rerun_status="",
                     rollback_status="",
@@ -4268,13 +4437,19 @@ def create_app(
                     event_type="repair_approve_apply_failed",
                     status="failed",
                     message=f"Sandbox apply failed for proposal {proposal_id}: {apply_reason}",
-                    payload={"proposal_id": proposal_id, "apply_status": apply_status},
+                    payload={
+                        "proposal_id": proposal_id,
+                        "apply_status": apply_status,
+                        "reason_code": reason_code,
+                    },
                 )
                 return RepairProposalApproveResponse(
                     job_id=job_id,
                     proposal_id=proposal_id,
                     status="approve_failed",
                     apply_status=apply_status,
+                    reason_code=reason_code,
+                    status_reason=apply_reason,
                 ).model_dump()
 
             # ── Rerun validation ────────────────────────────────

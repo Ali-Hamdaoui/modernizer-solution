@@ -65,6 +65,7 @@ from migration_factory.repair_loop.failure_evidence import (
     NormalizedTestFailure,
 )
 from migration_factory.repair_loop.patch_gate import evaluate_patch_proposal
+from migration_factory.repair_loop.patch_apply import validate_unified_diff_structure
 from migration_factory.repair_loop.repair_context import RepairContextPack
 
 
@@ -280,13 +281,15 @@ class V2RepairGateService:
             h2_required=_truthy(payload.get("_repair_h2_required")),
         )
         if gate_result.status != "created":
-            self._emit_reviewed_repair_materialization_failed(
-                job_id=job_id,
-                stage_index=stage_index,
-                context_checksum=str(payload["_repair_context_pack_checksum"]),
-                reason_code=gate_result.reason or "gate_not_created",
-                chain=chain_result.get("review_chain"),
-            )
+            if not _is_structural_materialization_failure(gate_result.reason):
+                self._emit_reviewed_repair_materialization_failed(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    context_checksum=str(payload["_repair_context_pack_checksum"]),
+                    reason_code=_materialization_reason_code(gate_result.reason),
+                    chain=chain_result.get("review_chain"),
+                    detail=gate_result.reason or "",
+                )
             return gate_result
         try:
             proposal_id = self._persist_reviewed_repair_proposal(
@@ -490,12 +493,34 @@ class V2RepairGateService:
                 if not reviewer_invocation_id and responsibility == "repair_review":
                     reviewer_invocation_id = str(record.invocation_id)
 
+        reason_code = _materialization_reason_code(reason_code)
+        struct_issue = _extract_struct_issue(detail)
         policy_reason_code = ""
         changed_files: list[str] = []
-        diff_checksum = ""
+        proposed_diff_checksum = str(chain.get("proposed_diff_checksum") or "")
+        reviewed_diff_checksum = proposed_diff_checksum
+        final_diff_checksum = ""
+        final_diff_exists = False
+        final_diff_ref = str(chain.get("final_diff_ref") or "")
+        if final_diff_ref:
+            try:
+                final_diff_path = Path(final_diff_ref)
+                final_diff_exists = final_diff_path.is_file()
+                if final_diff_exists:
+                    final_diff_checksum = sha256_hex(final_diff_path.read_bytes())
+            except OSError:
+                final_diff_exists = False
         if policy_result is not None:
             policy_reason_code = str(getattr(policy_result, "reason_code", "") or "")
             changed_files = list(getattr(policy_result, "touched_paths", ()))
+
+        if reason_code == "MALFORMED_DIFF":
+            fallback_message = "Reviewed repair diff failed structural validation before user approval."
+        elif reason_code == "PATCH_POLICY_REJECTED":
+            fallback_message = "Reviewer accepted, but backend patch policy rejected the reviewed diff."
+        else:
+            fallback_message = "Backend could not materialize a reviewed diff for user approval."
+        message = fallback_message
 
         payload: dict[str, Any] = {
             "job_id": job_id,
@@ -504,18 +529,36 @@ class V2RepairGateService:
             "main_invocation_id": main_invocation_id,
             "reviewer_invocation_id": reviewer_invocation_id,
             "reason_code": reason_code,
+            "struct_issue": struct_issue,
             "policy_reason_code": policy_reason_code,
             "detail": detail,
             "changed_files": changed_files,
-            "diff_checksum": diff_checksum,
-            "message": "Reviewer accepted, but backend patch policy rejected the reviewed diff.",
+            "proposed_diff_checksum": proposed_diff_checksum,
+            "reviewed_diff_checksum": reviewed_diff_checksum,
+            "final_diff_checksum": final_diff_checksum,
+            "final_diff_exists": final_diff_exists,
+            "policy_ran": policy_result is not None,
+            "gate_created": False,
+            "proposal_created": False,
+            "schema_name": "RepairPrimaryOutput",
+            "message": message,
+            "retry_status": "retry_required" if reason_code == "MALFORMED_DIFF" else "",
         }
+        if self._llm_invocation_repo is not None:
+            for record in self._llm_invocation_repo.list_by_job(job_id):
+                invocation_id = str(getattr(record, "invocation_id", "") or "")
+                if invocation_id not in {main_invocation_id, reviewer_invocation_id}:
+                    continue
+                if not payload.get("provider_alias"):
+                    payload["provider_alias"] = str(getattr(record, "provider_alias", "") or "")
+                if not payload.get("deployment_alias_hash"):
+                    payload["deployment_alias_hash"] = str(getattr(record, "deployment_alias_hash", "") or "")
         self._event_repo.save(
             job_id=job_id,
             stage=stage_index,
             event_type="reviewed_repair_materialization_failed",
             status="failed",
-            message="Reviewer accepted, but backend patch policy rejected the reviewed diff.",
+            message=message,
             payload=payload,
         )
 
@@ -720,6 +763,26 @@ class V2RepairGateService:
         reviewed_diff = open(final_diff_ref, encoding="utf-8").read()
         final_diff_bytes = Path(final_diff_ref).read_bytes()
         final_diff_sha256_hex = sha256_hex(final_diff_bytes)
+
+        struct_issue = validate_unified_diff_structure(reviewed_diff)
+        if struct_issue is not None:
+            self._emit_reviewed_repair_materialization_failed(
+                job_id=job_id,
+                stage_index=stage_index,
+                context_checksum=context_pack_checksum,
+                reason_code="MALFORMED_DIFF",
+                chain=chain,
+                detail=f"Diff structure validation failed: {struct_issue}",
+            )
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="skipped",
+                reason=f"Diff structure validation failed: {struct_issue}",
+                policy_validation_checksum="",
+            )
+
         policy_result = evaluate_patch_proposal(
             proposal={
                 "deterministic_rule_id": deterministic_rule_id,
@@ -1855,6 +1918,52 @@ def _reviewed_repair_unavailable_reason(exc: Exception) -> str:
     if "primary repair model failed closed" in text:
         return "proposer_model_failed"
     return "reviewer_model_unavailable" if "reviewer repair model failed closed" in text else "diff_materialization_failed"
+
+
+def _is_structural_materialization_failure(reason: str | None) -> bool:
+    return "diff structure validation failed:" in str(reason or "").strip().lower()
+
+
+def _extract_struct_issue(detail: str | None) -> str:
+    text = str(detail or "").strip()
+    marker = "Diff structure validation failed:"
+    if text.startswith(marker):
+        return text[len(marker):].strip()
+    return ""
+
+
+def _materialization_reason_code(reason: str | None) -> str:
+    text = str(reason or "").strip()
+    lowered = text.lower()
+    stable = {
+        "MALFORMED_DIFF",
+        "PROPOSER_DIFF_MISSING",
+        "DIFF_REF_MISSING",
+        "PATCH_POLICY_REJECTED",
+        "CHECKSUM_MISMATCH",
+        "ARTIFACT_WRITE_FAILED",
+        "SAFE_DIFF_PREVIEW_FAILED",
+        "UNKNOWN_MATERIALIZATION_FAILURE",
+    }
+    if text in stable:
+        return text
+    if not text:
+        return "UNKNOWN_MATERIALIZATION_FAILURE"
+    if "diff structure validation failed" in lowered:
+        return "MALFORMED_DIFF"
+    if "missing artifact refs" in lowered or "missing_diff_ref" in lowered or "diff_ref" in lowered:
+        return "DIFF_REF_MISSING"
+    if "checksum" in lowered:
+        return "CHECKSUM_MISMATCH"
+    if "policy validation failed" in lowered or "patch policy" in lowered:
+        return "PATCH_POLICY_REJECTED"
+    if "safe diff" in lowered or "preview" in lowered:
+        return "SAFE_DIFF_PREVIEW_FAILED"
+    if "write" in lowered or "persistence" in lowered:
+        return "ARTIFACT_WRITE_FAILED"
+    if "proposed_diff" in lowered or "proposer" in lowered:
+        return "PROPOSER_DIFF_MISSING"
+    return "UNKNOWN_MATERIALIZATION_FAILURE"
 
 
 def _truthy(value: Any) -> bool:

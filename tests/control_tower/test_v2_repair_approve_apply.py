@@ -1097,3 +1097,313 @@ class TestSandboxPathRelativeResolution:
         error = data.get("error", data)
         assert error.get("code") == "RUNTIME_CONTEXT_RESOLUTION_FAILED"
         assert error.get("reason_code") == "missing_sandbox_artifact"
+
+
+class TestApproveApplyFailureModes:
+    """Apply failure scenarios at the endpoint level."""
+
+    def _mock_runtime_context(self, tmp_path: Path, sandbox_path: str | None = None) -> dict[str, Any]:
+        """Return a minimal valid runtime context for bypassing the real resolver."""
+        if sandbox_path is None:
+            sandbox_path = str(tmp_path / "sandbox")
+        return {
+            "sandbox_path": sandbox_path,
+            "run_dir": str(tmp_path / "run"),
+            "legacy_path": str(tmp_path / "legacy"),
+            "deterministic_rule_id": "test-rule",
+            "risk": "LOW",
+            "h2_required": False,
+            "target_path": "test.txt",
+            "expected_validation": (),
+            "command_id": "cmd-full-1",
+        }
+
+    def _build_full_context(
+        self, conn: sqlite3.Connection, tmp_path: Path,
+        proposal_status: str = "user_review_required",
+    ) -> tuple[TestClient, dict[str, str], Path, str, str]:
+        sandbox_dir = tmp_path / "sandbox"
+        sandbox_dir.mkdir(parents=True, exist_ok=True)
+        (sandbox_dir / "test.txt").write_text("line1\nline2\nline3\n", encoding="utf-8")
+
+        diff_text = (
+            "diff --git a/test.txt b/test.txt\n"
+            "--- a/test.txt\n"
+            "+++ b/test.txt\n"
+            "@@ -1,3 +1,4 @@\n"
+            " line1\n"
+            "+new_line\n"
+            " line2\n"
+            " line3\n"
+        )
+        diff_path = tmp_path / "final_reviewed_repair.diff"
+        diff_path.write_text(diff_text, encoding="utf-8", newline="")
+        diff_checksum = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
+
+        gate_id = uuid4().hex
+        proposal_id = uuid4().hex
+        command_id = "cmd-full-1"
+        event_id = uuid4().hex
+        reviewer_verdict = _make_reviewer_critique_record()
+
+        with SqliteControlTowerUnitOfWork(conn) as uow:
+            uow.v2_jobs.save(_make_job_record(setup_id="setup-1"))
+            _insert_setup(conn, setup_id="setup-1",
+                          legacy_app_path=str(tmp_path / "legacy"),
+                          output_parent_path=str(tmp_path))
+            _save_command(uow, command_id=command_id)
+            _save_event(uow, event_id=event_id,
+                        payload={"sandbox_path": str(sandbox_dir)})
+            gate_record = _make_gate_record(gate_id=gate_id, job_id="job-1", stage_index=1)
+            uow.phase_gates.save(gate_record)
+            uow.v2_reviewer.save_critique(reviewer_verdict)
+            uow.v2_repairs.save_proposal(_make_new_style_record(
+                job_id="job-1",
+                proposal_id=proposal_id,
+                status=proposal_status,
+                diff_ref=str(diff_path),
+                diff_checksum=diff_checksum,
+                reviewer_verdict_id=reviewer_verdict.critique_id,
+                gate_id=gate_id,
+                command_id=command_id,
+            ))
+
+        app = create_app(lambda: SqliteControlTowerUnitOfWork(conn))
+        client = TestClient(app, base_url="http://127.0.0.1:8000")
+        refs = {
+            "proposal_id": proposal_id,
+            "diff_checksum": diff_checksum,
+            "reviewer_verdict_id": reviewer_verdict.critique_id,
+            "gate_id": gate_id,
+        }
+        return client, refs, tmp_path, proposal_id, command_id
+
+    def test_apply_failure_persists_approve_failed(
+        self, conn: sqlite3.Connection, tmp_path: Path, monkeypatch,
+    ) -> None:
+        """When apply fails, status becomes approve_failed with REJECTED apply_status."""
+        from migration_factory.repair_loop.patch_apply import PatchApplyResult
+        def _fail_apply(**kwargs):
+            from pathlib import Path as _Path
+            _run_dir = _Path(kwargs.get("run_dir", tmp_path))
+            return PatchApplyResult(
+                status="REJECTED",
+                reason="git apply failed",
+                patch_path=_run_dir / "repairs" / "patch_attempt_1.diff",
+                touched_paths=kwargs.get("touched_paths", []),
+                before_hashes={},
+                after_hashes={},
+                snapshot_dir=_run_dir / "repairs" / "snapshots" / "attempt_1",
+                created_paths=[],
+                errors=["git apply failed"],
+                reason_code="PATCH_ENGINE_UNAVAILABLE",
+            )
+        monkeypatch.setattr(
+            "migration_factory.control_tower.adapters.fastapi.app.apply_patch_to_sandbox",
+            _fail_apply,
+        )
+        monkeypatch.setattr(
+            "migration_factory.control_tower.adapters.fastapi.app._resolve_reviewed_repair_runtime_context",
+            lambda **kw: self._mock_runtime_context(tmp_path),
+        )
+        monkeypatch.setattr(
+            "migration_factory.control_tower.adapters.fastapi.app.evaluate_patch_proposal",
+            lambda **kw: type("GateResult", (), {"status": "ALLOWED", "reason": "", "touched_paths": ["test.txt"]})(),
+        )
+        client, refs, _, proposal_id, _ = self._build_full_context(conn, tmp_path)
+
+        resp = _post_approve(client, "job-1", refs["proposal_id"], {
+            "proposal_id": refs["proposal_id"],
+            "diff_checksum": refs["diff_checksum"],
+            "reviewer_verdict_id": refs["reviewer_verdict_id"],
+            "gate_id": refs["gate_id"],
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "approve_failed"
+        assert data["apply_status"] == "REJECTED"
+        assert data["reason_code"] == "PATCH_ENGINE_UNAVAILABLE"
+        assert data["status_reason"]
+
+        # Verify persistence
+        with SqliteControlTowerUnitOfWork(conn) as uow:
+            record = uow.v2_repairs.get_proposal(proposal_id)
+            assert record is not None
+            assert record.status == "approve_failed"
+            assert record.apply_status == "REJECTED"
+            assert record.status_reason
+
+    def test_apply_failure_does_not_trigger_validation(
+        self, conn: sqlite3.Connection, tmp_path: Path, monkeypatch,
+    ) -> None:
+        """Validation rerun does not start after failed apply."""
+        from migration_factory.repair_loop.patch_apply import PatchApplyResult
+        validation_called = []
+
+        def _fail_apply(**kwargs):
+            from pathlib import Path as _Path
+            _run_dir = _Path(kwargs.get("run_dir", tmp_path))
+            return PatchApplyResult(
+                status="REJECTED",
+                reason="apply failed",
+                patch_path=_run_dir / "repairs" / "patch_attempt_1.diff",
+                touched_paths=kwargs.get("touched_paths", []),
+                before_hashes={},
+                after_hashes={},
+                snapshot_dir=_run_dir / "repairs" / "snapshots" / "attempt_1",
+                created_paths=[],
+                errors=["apply failed"],
+                reason_code="PATCH_APPLY_FAILED",
+            )
+
+        def _track_validation(*args, **kwargs):
+            validation_called.append(True)
+            from dataclasses import dataclass
+            @dataclass
+            class _ValidationResult:
+                passed: bool = True
+                errors: list = ()
+            return _ValidationResult()
+
+        monkeypatch.setattr(
+            "migration_factory.control_tower.adapters.fastapi.app.apply_patch_to_sandbox",
+            _fail_apply,
+        )
+        monkeypatch.setattr(
+            "migration_factory.control_tower.adapters.fastapi.app.run_validation_after_patch",
+            _track_validation,
+        )
+        monkeypatch.setattr(
+            "migration_factory.control_tower.adapters.fastapi.app._resolve_reviewed_repair_runtime_context",
+            lambda **kw: self._mock_runtime_context(tmp_path),
+        )
+        monkeypatch.setattr(
+            "migration_factory.control_tower.adapters.fastapi.app.evaluate_patch_proposal",
+            lambda **kw: type("GateResult", (), {"status": "ALLOWED", "reason": "", "touched_paths": ["test.txt"]})(),
+        )
+        client, refs, _, proposal_id, _ = self._build_full_context(conn, tmp_path)
+
+        resp = _post_approve(client, "job-1", refs["proposal_id"], {
+            "proposal_id": refs["proposal_id"],
+            "diff_checksum": refs["diff_checksum"],
+            "reviewer_verdict_id": refs["reviewer_verdict_id"],
+            "gate_id": refs["gate_id"],
+        })
+        assert resp.status_code == 200
+        assert len(validation_called) == 0
+
+    def test_successful_apply_triggers_validation(
+        self, conn: sqlite3.Connection, tmp_path: Path, monkeypatch,
+    ) -> None:
+        """Validation rerun starts after successful apply."""
+        from migration_factory.repair_loop.patch_apply import PatchApplyResult
+        validation_called = []
+
+        def _succeed_apply(**kwargs):
+            from pathlib import Path as _Path
+            _run_dir = _Path(kwargs.get("run_dir", tmp_path))
+            return PatchApplyResult(
+                status="APPLIED",
+                reason="patch applied",
+                patch_path=_run_dir / "repairs" / "patch_attempt_1.diff",
+                touched_paths=kwargs.get("touched_paths", []),
+                before_hashes={},
+                after_hashes={},
+                snapshot_dir=_run_dir / "repairs" / "snapshots" / "attempt_1",
+                created_paths=[],
+                errors=[],
+                reason_code="",
+            )
+
+        def _track_validation(*args, **kwargs):
+            validation_called.append(True)
+            from dataclasses import dataclass
+            @dataclass
+            class _ValidationResult:
+                passed: bool = True
+                errors: list = ()
+            return _ValidationResult()
+
+        monkeypatch.setattr(
+            "migration_factory.control_tower.adapters.fastapi.app.apply_patch_to_sandbox",
+            _succeed_apply,
+        )
+        monkeypatch.setattr(
+            "migration_factory.control_tower.adapters.fastapi.app.run_validation_after_patch",
+            _track_validation,
+        )
+        monkeypatch.setattr(
+            "migration_factory.control_tower.adapters.fastapi.app._resolve_reviewed_repair_runtime_context",
+            lambda **kw: self._mock_runtime_context(tmp_path),
+        )
+        monkeypatch.setattr(
+            "migration_factory.control_tower.adapters.fastapi.app.evaluate_patch_proposal",
+            lambda **kw: type("GateResult", (), {"status": "ALLOWED", "reason": "", "touched_paths": ["test.txt"]})(),
+        )
+        client, refs, _, proposal_id, _ = self._build_full_context(conn, tmp_path)
+
+        resp = _post_approve(client, "job-1", refs["proposal_id"], {
+            "proposal_id": refs["proposal_id"],
+            "diff_checksum": refs["diff_checksum"],
+            "reviewer_verdict_id": refs["reviewer_verdict_id"],
+            "gate_id": refs["gate_id"],
+        })
+        assert resp.status_code == 200
+        assert len(validation_called) == 1
+
+    def test_apply_failure_event_has_no_unsafe_data(
+        self, conn: sqlite3.Connection, tmp_path: Path, monkeypatch,
+    ) -> None:
+        """Event payload for apply failure contains only safe fields."""
+        from migration_factory.repair_loop.patch_apply import PatchApplyResult
+        def _fail_apply(**kwargs):
+            from pathlib import Path as _Path
+            _run_dir = _Path(kwargs.get("run_dir", tmp_path))
+            return PatchApplyResult(
+                status="REJECTED",
+                reason="git apply failed",
+                patch_path=_run_dir / "repairs" / "patch_attempt_1.diff",
+                touched_paths=kwargs.get("touched_paths", []),
+                before_hashes={},
+                after_hashes={},
+                snapshot_dir=_run_dir / "repairs" / "snapshots" / "attempt_1",
+                created_paths=[],
+                errors=["git apply failed"],
+                reason_code="PATCH_CHECK_FAILED",
+            )
+        monkeypatch.setattr(
+            "migration_factory.control_tower.adapters.fastapi.app.apply_patch_to_sandbox",
+            _fail_apply,
+        )
+        monkeypatch.setattr(
+            "migration_factory.control_tower.adapters.fastapi.app._resolve_reviewed_repair_runtime_context",
+            lambda **kw: self._mock_runtime_context(tmp_path),
+        )
+        monkeypatch.setattr(
+            "migration_factory.control_tower.adapters.fastapi.app.evaluate_patch_proposal",
+            lambda **kw: type("GateResult", (), {"status": "ALLOWED", "reason": "", "touched_paths": ["test.txt"]})(),
+        )
+        client, refs, _, proposal_id, _ = self._build_full_context(conn, tmp_path)
+
+        resp = _post_approve(client, "job-1", refs["proposal_id"], {
+            "proposal_id": refs["proposal_id"],
+            "diff_checksum": refs["diff_checksum"],
+            "reviewer_verdict_id": refs["reviewer_verdict_id"],
+            "gate_id": refs["gate_id"],
+        })
+        assert resp.status_code == 200
+        serialized = json.dumps(resp.json())
+        # No forbidden fields in response
+        for forbidden in FORBIDDEN_FIELDS:
+            assert forbidden not in serialized, f"Response contains forbidden field: {forbidden}"
+
+        # Verify event is safe
+        with SqliteControlTowerUnitOfWork(conn) as uow:
+            from migration_factory.control_tower.infrastructure.sqlite.v2_event_repository import V2JobEventRecord
+            events = uow.v2_events.list_by_job(job_id="job-1")
+            failed_events = [e for e in events if "repair_approve_apply_failed" in str(e)]
+            if failed_events:
+                event = failed_events[-1]
+                payload_str = json.dumps(getattr(event, "payload", {}))
+                for forbidden in FORBIDDEN_FIELDS:
+                    assert forbidden not in payload_str, f"Event payload contains forbidden field: {forbidden}"
