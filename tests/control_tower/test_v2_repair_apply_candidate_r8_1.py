@@ -409,13 +409,22 @@ class _FakePostRepairRunner:
     def __call__(self, command: list[str], cwd: Path) -> dict[str, Any]:
         self.calls.append((list(command), str(cwd)))
         key = " ".join(command)
-        response = dict(self.responses.get(key, {"exit_code": 1, "stdout": "", "stderr": f"missing response: {key}"}))
+        default = {"exit_code": 1, "stdout": "", "stderr": f"missing response: {key}"}
+        if key == "java -version":
+            default = {"exit_code": 0, "stdout": "", "stderr": 'openjdk version "11.0.22"'}
+        elif key == "mvn -version":
+            default = {"exit_code": 0, "stdout": "Apache Maven 3.9.9", "stderr": ""}
+        response = dict(self.responses.get(key, default))
         response.setdefault("command", list(command))
         response.setdefault("working_directory", str(cwd))
         response.setdefault("started_at", "2026-07-05T00:00:00Z")
         response.setdefault("completed_at", "2026-07-05T00:00:01Z")
         response.setdefault("duration_ms", 1)
         return response
+
+
+def _long_prefix(text: str, size: int = 9000) -> str:
+    return "\n".join([f"[INFO] line {index} harmless Maven output" for index in range(size // 32)]) + "\n" + text
 
 
 def test_sort_by_apply_candidate_is_governed_and_not_auto_applied(tmp_path: Path) -> None:
@@ -653,6 +662,53 @@ def test_post_repair_verification_failure_after_sort_creates_jackson_candidate(t
     artifacts = {item["kind"]: item for item in result["post_repair_verification"]["evidence_pack"]["usable_artifacts"]}
     assert "ToStringSerializerBase" in artifacts["test_report"]["excerpt"]
     assert "jackson-databind" in artifacts["dependency_graph"]["excerpt"]
+    assert "java" in result["environment_summary"]
+    assert "maven" in result["environment_summary"]
+
+
+def test_post_repair_verification_long_logs_keep_late_jackson_evidence(tmp_path: Path) -> None:
+    _, dto, search, classification, stage_evidence = _sort_sandbox(tmp_path)
+    sandbox = tmp_path / "sandbox"
+    (sandbox / "pom.xml").write_text(_jackson_pom(), encoding="utf-8")
+    candidate = create_repair_apply_candidate(classification, stage_evidence, {})
+    assert candidate is not None
+    approval = approve_repair_apply_candidate(candidate, {
+        "repair_candidate_id": candidate["repair_candidate_id"],
+        "patch_checksum": candidate["patch_checksum"],
+        "target_file_checksum": candidate["target_file_checksum"],
+        "review_checksum": candidate["review_checksum"],
+    })
+    test_tail = "\n".join([
+        "java.lang.NoClassDefFoundError: com/fasterxml/jackson/databind/ser/std/ToStringSerializerBase",
+        "at com.total.corp.common.util.MessageUtils.createObjectMapper(MessageUtils.java:50)",
+        "MessageUtilsTest failed",
+        "BUILD FAILURE",
+    ])
+    dep_tail = "\n".join([
+        "com.fasterxml.jackson.core:jackson-databind:jar:2.13.5 omitted for conflict with 2.9.6",
+        "com.fasterxml.jackson.core:jackson-core:jar:2.13.5 omitted for conflict with 2.10.0",
+    ])
+    runner = _FakePostRepairRunner(
+        {
+            "mvn -DskipTests clean compile": {"exit_code": 0, "stdout": _long_prefix("[INFO] BUILD SUCCESS"), "stderr": ""},
+            "mvn test": {"exit_code": 1, "stdout": "", "stderr": _long_prefix(test_tail, 12000)},
+            "mvn dependency:tree -DoutputType=text": {"exit_code": 0, "stdout": _long_prefix(dep_tail, 12000), "stderr": ""},
+        }
+    )
+
+    result = apply_approved_repair_candidate(candidate, approval, post_repair_verification_runner=runner)
+
+    artifacts = {item["kind"]: item for item in result["post_repair_verification"]["evidence_pack"]["usable_artifacts"]}
+    assert result["post_repair_verification_status"] == "failed"
+    assert result["classification"]["failure_type"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+    assert result["next_repair_candidate"] is not None
+    assert result["next_repair_candidate"]["family"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+    assert result["next_repair_candidate"]["recipe_id"] == "JACKSON_PROPERTY_BOM_ALIGNMENT"
+    assert "ToStringSerializerBase" in artifacts["test_report"]["excerpt"]
+    assert "jackson-databind" in artifacts["dependency_graph"]["excerpt"]
+    assert "omitted for conflict" in artifacts["dependency_graph"]["excerpt"]
+    assert result["post_repair_verification"]["environment_summary"]["java"]
+    assert result["post_repair_verification"]["environment_summary"]["maven"]
 
 
 def test_post_repair_verification_success_marks_stage_recovered(tmp_path: Path) -> None:

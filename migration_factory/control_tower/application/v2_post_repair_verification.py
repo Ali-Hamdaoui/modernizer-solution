@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -19,7 +20,42 @@ POST_REPAIR_COMMANDS: tuple[list[str], ...] = (
     ["mvn", "-DskipTests", "clean", "compile"],
     ["mvn", "test"],
 )
+ENVIRONMENT_COMMANDS: tuple[list[str], ...] = (
+    ["java", "-version"],
+    ["mvn", "-version"],
+)
 DEPENDENCY_TREE_COMMAND: list[str] = ["mvn", "dependency:tree", "-DoutputType=text"]
+LOG_EXCERPT_PATTERNS: tuple[str, ...] = (
+    "NoClassDefFoundError",
+    "ClassNotFoundException",
+    "ToStringSerializerBase",
+    "MessageUtilsTest",
+    "MessageUtils.createObjectMapper",
+    "BUILD FAILURE",
+    "COMPILATION ERROR",
+    "Tests run:",
+    "Failures:",
+    "Errors:",
+    "omitted for conflict",
+    "jackson-databind",
+    "jackson-core",
+    "jackson-annotations",
+    "new Sort",
+    "Sort.by",
+    "PowerMock",
+    "Mockito",
+    "initMocks",
+    "MockBean",
+    "Jacoco",
+    "lombok",
+    "jackson-dataformat-csv",
+    "jackson-datatype-jsr310",
+    "version managed from",
+    "2.9.6",
+    "2.10.0",
+    "2.13.5",
+    "2.8.11",
+)
 
 
 def run_post_repair_verification(
@@ -77,7 +113,10 @@ def run_post_repair_verification(
     build_ok = command_records[0]["exit_code"] == 0
     test_ok = command_records[1]["exit_code"] == 0
     dependency_record: dict[str, Any] | None = None
-    if not (build_ok and test_ok):
+    if build_ok and not test_ok:
+        dependency_record = _normalize_command_result(DEPENDENCY_TREE_COMMAND, sandbox, runner(DEPENDENCY_TREE_COMMAND, sandbox))
+        command_records.append(dependency_record)
+    elif not build_ok:
         dependency_record = _normalize_command_result(DEPENDENCY_TREE_COMMAND, sandbox, runner(DEPENDENCY_TREE_COMMAND, sandbox))
         command_records.append(dependency_record)
 
@@ -89,6 +128,8 @@ def run_post_repair_verification(
     if dependency_record is not None:
         dependency_log_path = proof_dir / "dependency-tree.log"
         dependency_log_path.write_text(_command_log_text(dependency_record), encoding="utf-8")
+
+    env_records = [_normalize_command_result(command, sandbox, runner(command, sandbox)) for command in ENVIRONMENT_COMMANDS]
 
     evidence_pack = {
         "job_id": job_id,
@@ -111,17 +152,18 @@ def run_post_repair_verification(
                 "kind": "build_error_contract",
                 "internal_ref": str(build_log_path),
                 "ref": redact_absolute_paths(str(build_log_path)),
-                "excerpt": build_log_path.read_text(encoding="utf-8", errors="replace")[:4000],
+                "excerpt": _extract_relevant_log_excerpt(build_log_path.read_text(encoding="utf-8", errors="replace"), LOG_EXCERPT_PATTERNS),
             },
             {
                 "kind": "test_report",
                 "internal_ref": str(test_log_path),
                 "ref": redact_absolute_paths(str(test_log_path)),
-                "excerpt": test_log_path.read_text(encoding="utf-8", errors="replace")[:4000],
+                "excerpt": _extract_relevant_log_excerpt(test_log_path.read_text(encoding="utf-8", errors="replace"), LOG_EXCERPT_PATTERNS),
             },
         ],
         "missing_artifacts": [],
         "repair_enabled": False,
+        "environment_summary": _environment_summary(env_records),
     }
     if dependency_log_path is not None:
         evidence_pack["usable_artifacts"].append(
@@ -129,7 +171,11 @@ def run_post_repair_verification(
                 "kind": "dependency_graph",
                 "internal_ref": str(dependency_log_path),
                 "ref": redact_absolute_paths(str(dependency_log_path)),
-                "excerpt": dependency_log_path.read_text(encoding="utf-8", errors="replace")[:4000],
+                "excerpt": _extract_relevant_log_excerpt(
+                    dependency_log_path.read_text(encoding="utf-8", errors="replace"),
+                    LOG_EXCERPT_PATTERNS,
+                    max_chars=16000,
+                ),
             }
         )
     evidence_pack["evidence_pack_id"] = f"post-repair-evidence-{repair_candidate.get('repair_candidate_id') or 'repair'}"
@@ -161,6 +207,7 @@ def run_post_repair_verification(
         "commands": command_records,
         "evidence_pack_checksum": evidence_pack["evidence_pack_checksum"],
         "classification": classification,
+        "environment_summary": evidence_pack["environment_summary"],
         "proof_created_at": utc_now_text(),
         "downstream_start_allowed": False,
     }
@@ -174,6 +221,7 @@ def run_post_repair_verification(
         "commands": command_records,
         "evidence_pack": evidence_pack,
         "classification": classification,
+        "environment_summary": evidence_pack["environment_summary"],
         "proof_artifact": redact_absolute_paths(str(proof_path)),
         "post_repair_proof_artifact": redact_absolute_paths(str(proof_path)),
         "downstream_start_allowed": False,
@@ -259,3 +307,59 @@ def _command_log_text(record: dict[str, Any]) -> str:
             str(record.get("stderr") or "").strip(),
         ]
     ).strip()
+
+
+def _environment_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+    summary: dict[str, Any] = {"java": {}, "maven": {}}
+    for record in records:
+        command = " ".join(record.get("command") or [])
+        stdout = str(record.get("stdout") or "").strip()
+        stderr = str(record.get("stderr") or "").strip()
+        text = "\n".join([stdout, stderr]).strip()
+        if command.startswith("java "):
+            summary["java"] = {"command": record.get("command"), "exit_code": record.get("exit_code"), "output": text}
+        elif command.startswith("mvn "):
+            summary["maven"] = {"command": record.get("command"), "exit_code": record.get("exit_code"), "output": text}
+    return summary
+
+
+def _extract_relevant_log_excerpt(text: str, patterns: list[str] | tuple[str, ...], max_chars: int = 12000) -> str:
+    if not text:
+        return ""
+    windows: list[tuple[int, int]] = []
+    total_len = len(text)
+    head = min(total_len, max(1000, max_chars // 5))
+    tail = min(total_len, max(1000, max_chars // 5))
+    windows.append((0, head))
+    windows.append((max(0, total_len - tail), total_len))
+    lowered = text.lower()
+    for pattern in patterns:
+        needle = str(pattern).lower()
+        if not needle:
+            continue
+        start = 0
+        while True:
+            index = lowered.find(needle, start)
+            if index < 0:
+                break
+            window_start = max(0, index - 350)
+            window_end = min(total_len, index + len(needle) + 650)
+            windows.append((window_start, window_end))
+            start = index + max(1, len(needle))
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(windows):
+        if not merged or start > merged[-1][1] + 16:
+            merged.append((start, end))
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+    parts: list[str] = []
+    last_end = 0
+    for start, end in merged:
+        if start > last_end:
+            parts.append("...")
+        parts.append(text[start:end].strip())
+        last_end = end
+    excerpt = "\n".join(part for part in parts if part)
+    if len(excerpt) <= max_chars:
+        return excerpt
+    return excerpt[:max_chars]
