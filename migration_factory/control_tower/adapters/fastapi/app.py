@@ -800,8 +800,19 @@ def _latest_repair_materialization_unavailable(uow: Any, job_id: str) -> dict[st
         "MALFORMED_DIFF",
         "REVIEWED_DIFF_STRUCTURAL_INVALID",
         "PATCH_CHECK_FAILED",
+        "PATCH_POLICY_REJECTED",
         "reviewer_schema_invalid",
         "REVIEWER_ACCEPT_CONTRACT_INVALID",
+        "REVIEWER_ACCEPTED_EMPTY_REVIEWED_DIFF",
+        "REVIEWER_DECLINED_REPAIR",
+        "REVIEWER_NEEDS_MORE_CONTEXT",
+        "REVIEWER_REQUESTED_REVISION",
+        "REVIEWER_INVALID_DECISION",
+        "REVIEWER_CHECKSUM_MISMATCH",
+        "REVIEWER_SCHEMA_INVALID",
+        "REVIEWER_MODEL_UNAVAILABLE",
+        "REVIEWER_MODEL_FAILED",
+        "REVIEWER_OUTPUT_ARTIFACT_MISSING",
     }
     for item in candidates:
         _, _, payload = item
@@ -890,6 +901,7 @@ def _latest_repair_materialization_unavailable(uow: Any, job_id: str) -> dict[st
         "reviewer_status": None,
         "main_output_checksum": None,
         "reviewer_output_checksum": _safe_event_text(payload.get("reviewer_output_checksum")),
+        "reviewer_decision": _safe_event_text(payload.get("reviewer_decision")),
         "next_action": _next_action_for_unavailable(reason_code, payload),
         "applicability_status": _safe_event_text(payload.get("applicability_status")),
         "applicability_reason_code": _safe_event_text(payload.get("applicability_reason_code")),
@@ -900,6 +912,10 @@ def _latest_repair_materialization_unavailable(uow: Any, job_id: str) -> dict[st
         "reviewer_self_repair_succeeded": bool(payload.get("reviewer_self_repair_succeeded")),
         "reviewer_self_repair_failure_reason": _safe_event_text(payload.get("reviewer_self_repair_failure_reason")),
         "reviewer_mechanical_validation_issue": _safe_event_text(payload.get("reviewer_mechanical_validation_issue")),
+        "reviewer_self_repair_schema_repair_attempted": bool(payload.get("reviewer_self_repair_schema_repair_attempted")),
+        "reviewer_self_repair_schema_repair_succeeded": bool(payload.get("reviewer_self_repair_schema_repair_succeeded")),
+        "reviewer_self_repair_schema_repair_failure_reason": _safe_event_text(payload.get("reviewer_self_repair_schema_repair_failure_reason")),
+        "reviewer_self_repair_schema_repair_parse_failure_category": _safe_event_text(payload.get("reviewer_self_repair_schema_repair_parse_failure_category")),
         "apply_check_stderr_summary": _safe_apply_check_summary(payload.get("apply_check_stderr_summary")),
         "schema_repair_attempted": bool(schema_diagnostics.get("schema_repair_attempted")),
         "schema_repair_succeeded": bool(schema_diagnostics.get("schema_repair_succeeded")),
@@ -956,10 +972,20 @@ def _stable_materialization_reason_code(value: Any) -> str:
         "PATCH_POLICY_REJECTED",
         "CHECKSUM_MISMATCH",
         "REVIEWER_ACCEPT_CONTRACT_INVALID",
+        "REVIEWER_ACCEPTED_EMPTY_REVIEWED_DIFF",
         "ARTIFACT_WRITE_FAILED",
         "SAFE_DIFF_PREVIEW_FAILED",
         "PATCH_CHECK_FAILED",
         "REVIEWED_DIFF_STRUCTURAL_INVALID",
+        "REVIEWER_DECLINED_REPAIR",
+        "REVIEWER_NEEDS_MORE_CONTEXT",
+        "REVIEWER_REQUESTED_REVISION",
+        "REVIEWER_INVALID_DECISION",
+        "REVIEWER_CHECKSUM_MISMATCH",
+        "REVIEWER_SCHEMA_INVALID",
+        "REVIEWER_MODEL_UNAVAILABLE",
+        "REVIEWER_MODEL_FAILED",
+        "REVIEWER_OUTPUT_ARTIFACT_MISSING",
         "UNKNOWN_MATERIALIZATION_FAILURE",
         "duplicate_main_blocked",
         "reviewer_schema_invalid",
@@ -972,6 +998,20 @@ def _stable_materialization_reason_code(value: Any) -> str:
         return "proposer_schema_invalid" if lowered == "main_schema_invalid" else lowered
     if "hunk_" in lowered or "diff structure validation failed" in lowered or "malformed" in lowered:
         return "MALFORMED_DIFF"
+    if "reviewer_declined" in lowered or "reviewer_rejected" in lowered or "decision not accept" in lowered:
+        return "REVIEWER_DECLINED_REPAIR"
+    if "needs_more_context" in lowered:
+        return "REVIEWER_NEEDS_MORE_CONTEXT"
+    if "needs_revision" in lowered or "requested_revision" in lowered:
+        return "REVIEWER_REQUESTED_REVISION"
+    if "accepted_empty" in lowered or "empty_reviewed_diff" in lowered:
+        return "REVIEWER_ACCEPTED_EMPTY_REVIEWED_DIFF"
+    if "checksum_mismatch" in lowered:
+        return "REVIEWER_CHECKSUM_MISMATCH"
+    if "model_unavailable" in lowered:
+        return "REVIEWER_MODEL_UNAVAILABLE"
+    if "model_failed" in lowered:
+        return "REVIEWER_MODEL_FAILED"
     if "reviewer_schema_invalid" in lowered:
         return "reviewer_schema_invalid"
     if "proposer_schema_invalid" in lowered or "main_schema_invalid" in lowered:

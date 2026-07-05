@@ -17,11 +17,14 @@ Reuses:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 from migration_factory.control_tower.application.v2_failure_diagnosis import (
     V2FailureDiagnosisService,
@@ -261,33 +264,7 @@ class V2RepairGateService:
                 partial_chain = dict(getattr(exc, "partial_chain", {}) or {})
             reason_code = _reviewed_repair_unavailable_reason(exc)
             materialization_reason = _materialization_reason_code(reason_code)
-            if partial_chain and materialization_reason in {"MALFORMED_DIFF", "REVIEWED_DIFF_STRUCTURAL_INVALID", "REVIEWER_ACCEPT_CONTRACT_INVALID"}:
-                detail = str(getattr(exc, "detail", "") or str(exc))
-                struct_issue = str(getattr(exc, "struct_issue", "") or partial_chain.get("struct_issue") or "").strip()
-                if struct_issue and "Diff structure validation failed:" not in detail:
-                    detail = f"Diff structure validation failed: {struct_issue}"
-                self._emit_reviewed_repair_materialization_failed(
-                    job_id=job_id,
-                    stage_index=stage_index,
-                    context_checksum=str(payload["_repair_context_pack_checksum"]),
-                    reason_code=materialization_reason,
-                    chain=partial_chain,
-                    detail=detail,
-                )
-                self._emit_reviewed_repair_unavailable(
-                    job_id=job_id,
-                    stage_index=stage_index,
-                    context_checksum=str(payload["_repair_context_pack_checksum"]),
-                    reason_code=materialization_reason,
-                    schema_diagnostics=schema_diagnostics,
-                )
-                return RepairGateCreationResult(
-                    gate_id="",
-                    gate_checksum="",
-                    diagnosis=None,
-                    status="skipped",
-                    reason=f"reviewed repair materialization failed: {materialization_reason}",
-                )
+
             if reason_code == "duplicate_main_blocked":
                 reason_code = self._prior_main_schema_invalid_reason(
                     job_id=job_id,
@@ -299,6 +276,10 @@ class V2RepairGateService:
                         context_checksum=str(payload["_repair_context_pack_checksum"]),
                     )
                     if mat_event is not None:
+                        logger.info(
+                            "chain_closed job=%s stage=%d reason=%s duplicate_blocked=true",
+                            job_id, stage_index, reason_code,
+                        )
                         return RepairGateCreationResult(
                             gate_id="",
                             gate_checksum="",
@@ -306,19 +287,60 @@ class V2RepairGateService:
                             status="skipped",
                             reason="reviewed repair chain failed closed: materialization previously failed",
                         )
+                logger.info(
+                    "chain_closed job=%s stage=%d reason=%s duplicate_blocked=true",
+                    job_id, stage_index, reason_code,
+                )
+                self._emit_reviewed_repair_unavailable(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    context_checksum=str(payload["_repair_context_pack_checksum"]),
+                    reason_code=reason_code,
+                    schema_diagnostics=schema_diagnostics,
+                )
+                return RepairGateCreationResult(
+                    gate_id="",
+                    gate_checksum="",
+                    diagnosis=None,
+                    status="skipped",
+                    reason="reviewed repair chain failed closed: duplicate_main_blocked",
+                )
+
+            detail = str(getattr(exc, "detail", "") or str(exc))
+            struct_issue = str(getattr(exc, "struct_issue", "") or partial_chain.get("struct_issue") or "").strip()
+            self._emit_reviewed_repair_materialization_failed(
+                job_id=job_id,
+                stage_index=stage_index,
+                context_checksum=str(payload["_repair_context_pack_checksum"]),
+                reason_code=materialization_reason,
+                chain=partial_chain,
+                detail=detail,
+            )
+            logger.warning(
+                "materialization_failed job=%s stage=%d reason=%s detail=%s inv_main=%s inv_reviewer=%s",
+                job_id, stage_index, materialization_reason,
+                detail[:200] if detail else "",
+                str(partial_chain.get("proposer_invocation_id") or ""),
+                str(partial_chain.get("reviewer_invocation_id") or ""),
+            )
             self._emit_reviewed_repair_unavailable(
                 job_id=job_id,
                 stage_index=stage_index,
                 context_checksum=str(payload["_repair_context_pack_checksum"]),
-                reason_code=reason_code,
+                reason_code=materialization_reason,
                 schema_diagnostics=schema_diagnostics,
+            )
+            logger.info(
+                "chain_closed job=%s stage=%d reason=%s proposal_created=false final_diff_exists=%s",
+                job_id, stage_index, materialization_reason,
+                str(bool(partial_chain.get("final_diff_exists"))),
             )
             return RepairGateCreationResult(
                 gate_id="",
                 gate_checksum="",
                 diagnosis=None,
                 status="skipped",
-                reason=f"reviewed repair chain failed closed: {type(exc).__name__}",
+                reason=f"reviewed repair materialization failed: {materialization_reason}",
             )
 
         review_chain = chain_result.get("review_chain") or {}
@@ -500,7 +522,10 @@ class V2RepairGateService:
         if mat_event is not None:
             message = "Reviewed repair unavailable because the latest reviewed diff failed structural validation."
         elif reason_code == "reviewer_schema_invalid":
-            message = "Reviewer model output failed schema validation."
+            if schema_diagnostics and str(schema_diagnostics.get("responsibility") or "").strip() == "repair_review_self_repair":
+                message = "Reviewer self-repair output failed schema validation."
+            else:
+                message = "Reviewer model output failed schema validation."
         else:
             reviewer_completed = reviewer_status.lower() == "completed"
             if reviewer_completed or (main_status.lower() == "completed" and reason_code == "duplicate_main_blocked"):
@@ -526,9 +551,13 @@ class V2RepairGateService:
         if mat_payload:
             for key in (
                 "detail", "struct_issue", "reviewed_diff_checksum", "reviewer_output_checksum",
-                "reviewer_accept_contract_issue", "reviewer_self_repair_attempted",
+                "reviewer_accept_contract_issue", "reviewer_decision", "reviewer_self_repair_attempted",
                 "reviewer_self_repair_succeeded", "reviewer_mechanical_validation_issue",
                 "reviewer_self_repair_failure_reason",
+                "reviewer_self_repair_schema_repair_attempted",
+                "reviewer_self_repair_schema_repair_succeeded",
+                "reviewer_self_repair_schema_repair_failure_reason",
+                "reviewer_self_repair_schema_repair_parse_failure_category",
                 "final_diff_exists", "proposal_created", "gate_created", "policy_ran",
                 "retry_status", "retry_reason", "applicability_status",
                 "applicability_reason_code", "applicability_checked_at",
@@ -700,6 +729,26 @@ class V2RepairGateService:
             fallback_message = "Reviewed repair diff failed structural validation before user approval."
         elif reason_code == "REVIEWER_ACCEPT_CONTRACT_INVALID":
             fallback_message = "Reviewer accepted a reviewed diff that contradicted the required accept contract."
+        elif reason_code == "REVIEWER_ACCEPTED_EMPTY_REVIEWED_DIFF":
+            fallback_message = "Reviewer accepted the repair but returned an empty reviewed diff."
+        elif reason_code == "REVIEWER_DECLINED_REPAIR":
+            fallback_message = "Reviewer declined the repair proposal."
+        elif reason_code == "REVIEWER_NEEDS_MORE_CONTEXT":
+            fallback_message = "Reviewer requires more context to complete the review."
+        elif reason_code == "REVIEWER_REQUESTED_REVISION":
+            fallback_message = "Reviewer requested a revision of the repair proposal."
+        elif reason_code == "REVIEWER_INVALID_DECISION":
+            fallback_message = "Reviewer returned an unrecognised decision."
+        elif reason_code == "REVIEWER_CHECKSUM_MISMATCH":
+            fallback_message = "Reviewer checksum binding did not match the reviewed artifacts."
+        elif reason_code == "REVIEWER_SCHEMA_INVALID":
+            fallback_message = "Reviewer output failed schema validation."
+        elif reason_code == "REVIEWER_MODEL_UNAVAILABLE":
+            fallback_message = "Reviewer model was unavailable."
+        elif reason_code == "REVIEWER_MODEL_FAILED":
+            fallback_message = "Reviewer model invocation failed."
+        elif reason_code == "REVIEWER_OUTPUT_ARTIFACT_MISSING":
+            fallback_message = "Reviewer output artifact was not persisted."
         elif reason_code == "REVIEWED_DIFF_STRUCTURAL_INVALID":
             fallback_message = "Reviewed repair diff failed structural validation before reviewer self-repair could complete."
         elif reason_code == "PATCH_POLICY_REJECTED":
@@ -716,6 +765,7 @@ class V2RepairGateService:
             "context_checksum": context_checksum,
             "main_invocation_id": main_invocation_id,
             "reviewer_invocation_id": reviewer_invocation_id,
+            "reviewer_decision": str(chain.get("reviewer_decision") or ""),
             "reason_code": reason_code,
             "struct_issue": struct_issue,
             "policy_reason_code": policy_reason_code,
@@ -736,8 +786,20 @@ class V2RepairGateService:
             "reviewer_self_repair_attempted": bool(chain.get("reviewer_self_repair_attempted")),
             "reviewer_self_repair_succeeded": bool(chain.get("reviewer_self_repair_succeeded")),
             "reviewer_mechanical_validation_issue": str(chain.get("reviewer_mechanical_validation_issue") or ""),
+            "reviewer_self_repair_schema_repair_attempted": bool(chain.get("reviewer_self_repair_schema_repair_attempted")),
+            "reviewer_self_repair_schema_repair_succeeded": bool(chain.get("reviewer_self_repair_schema_repair_succeeded")),
+            "reviewer_self_repair_schema_repair_failure_reason": str(chain.get("reviewer_self_repair_schema_repair_failure_reason") or ""),
+            "reviewer_self_repair_schema_repair_parse_failure_category": str(chain.get("reviewer_self_repair_schema_repair_parse_failure_category") or ""),
             "apply_check_stderr_summary": detail if reason_code == REASON_CODE_PATCH_CHECK_FAILED else "",
-            "schema_name": "RepairReviewerOutput" if reason_code in {"MALFORMED_DIFF", "REVIEWED_DIFF_STRUCTURAL_INVALID", "REVIEWER_ACCEPT_CONTRACT_INVALID", REASON_CODE_PATCH_CHECK_FAILED} else "RepairPrimaryOutput",
+            "schema_name": "RepairReviewerOutput" if reason_code in {
+                "MALFORMED_DIFF", "REVIEWED_DIFF_STRUCTURAL_INVALID", "REVIEWER_ACCEPT_CONTRACT_INVALID",
+                "REVIEWER_ACCEPTED_EMPTY_REVIEWED_DIFF", "REVIEWER_DECLINED_REPAIR",
+                "REVIEWER_NEEDS_MORE_CONTEXT", "REVIEWER_REQUESTED_REVISION",
+                "REVIEWER_INVALID_DECISION", "REVIEWER_CHECKSUM_MISMATCH",
+                "REVIEWER_SCHEMA_INVALID", "REVIEWER_MODEL_UNAVAILABLE", "REVIEWER_MODEL_FAILED",
+                "REVIEWER_OUTPUT_ARTIFACT_MISSING",
+                REASON_CODE_PATCH_CHECK_FAILED,
+            } else "RepairPrimaryOutput",
             "message": message,
             "retry_status": (
                 "reviewer_retry_exhausted"
@@ -831,6 +893,10 @@ class V2RepairGateService:
             message="Reviewed repair chain started.",
             payload=payload,
         )
+        logger.info(
+            "repair_chain_started job=%s stage=%d context_checksum=%s",
+            job_id, stage_index, context_pack_checksum,
+        )
 
     def _emit_reviewed_repair_materialized(
         self,
@@ -870,9 +936,12 @@ class V2RepairGateService:
             event_type="repair_diff_materialized",
             status="completed",
             message="Reviewed repair diff materialized and passed backend patch policy.",
-            payload=payload,
-        )
-
+            payload=payload,
+
+        )
+
+
+
 
     def _emit_structural_validation_started(
         self,
@@ -2584,21 +2653,37 @@ def _reviewed_repair_unavailable_reason(exc: Exception) -> str:
     if hasattr(exc, "reason_code") and exc.reason_code:
         raw_reason_code = str(exc.reason_code).strip()
         rc = raw_reason_code.lower()
-        if rc == "reviewer_schema_invalid":
-            return "reviewer_schema_invalid"
-        if rc in {"main_schema_invalid", "proposer_schema_invalid"}:
-            return "proposer_schema_invalid"
-        if "schema_invalid" in rc:
-            return rc
-        if raw_reason_code in {
+        known = {
+            "reviewer_schema_invalid",
+            "proposer_schema_invalid",
+            "main_schema_invalid",
             "MALFORMED_DIFF",
             "REVIEWED_DIFF_STRUCTURAL_INVALID",
             "REVIEWER_ACCEPT_CONTRACT_INVALID",
+            "REVIEWER_ACCEPTED_EMPTY_REVIEWED_DIFF",
+            "REVIEWER_DECLINED_REPAIR",
+            "REVIEWER_NEEDS_MORE_CONTEXT",
+            "REVIEWER_REQUESTED_REVISION",
+            "REVIEWER_INVALID_DECISION",
+            "REVIEWER_CHECKSUM_MISMATCH",
+            "REVIEWER_SCHEMA_INVALID",
+            "REVIEWER_MODEL_UNAVAILABLE",
+            "REVIEWER_MODEL_FAILED",
+            "REVIEWER_OUTPUT_ARTIFACT_MISSING",
             "PATCH_POLICY_REJECTED",
             "CHECKSUM_MISMATCH",
-        }:
+            "PATCH_CHECK_FAILED",
+            "duplicate_main_blocked",
+        }
+        if raw_reason_code in known:
             return raw_reason_code
-        return rc
+        if rc in known:
+            for k in known:
+                if k.lower() == rc:
+                    return k
+        if "schema_invalid" in rc:
+            return rc
+        return raw_reason_code
     if "proposer_schema_invalid" in text or "primary repair output" in text or "azure_response_format_rejected" in text:
         return "proposer_schema_invalid"
     if "reviewer_model_unavailable" in text or "missing_reviewer_deployment" in text:
@@ -2607,6 +2692,8 @@ def _reviewed_repair_unavailable_reason(exc: Exception) -> str:
         return "reviewer_schema_invalid"
     if "reviewer_model_failed" in text:
         return "reviewer_model_failed"
+    if "reviewer decision not accept" in text:
+        return "REVIEWER_DECLINED_REPAIR"
     if "reviewer decision failed closed" in text or "request_revision" in text or "reject" in text:
         return "reviewer_rejected"
     if "missing_endpoint" in text or "missing_key" in text or "azure_model_config_missing" in text:
@@ -2663,8 +2750,18 @@ def _materialization_reason_code(reason: str | None) -> str:
         "ARTIFACT_WRITE_FAILED",
         "SAFE_DIFF_PREVIEW_FAILED",
         "REVIEWER_ACCEPT_CONTRACT_INVALID",
+        "REVIEWER_ACCEPTED_EMPTY_REVIEWED_DIFF",
         "PATCH_CHECK_FAILED",
         "REVIEWED_DIFF_STRUCTURAL_INVALID",
+        "REVIEWER_DECLINED_REPAIR",
+        "REVIEWER_NEEDS_MORE_CONTEXT",
+        "REVIEWER_REQUESTED_REVISION",
+        "REVIEWER_INVALID_DECISION",
+        "REVIEWER_CHECKSUM_MISMATCH",
+        "REVIEWER_SCHEMA_INVALID",
+        "REVIEWER_MODEL_UNAVAILABLE",
+        "REVIEWER_MODEL_FAILED",
+        "REVIEWER_OUTPUT_ARTIFACT_MISSING",
         "UNKNOWN_MATERIALIZATION_FAILURE",
     }
     if text in stable:
@@ -2675,6 +2772,26 @@ def _materialization_reason_code(reason: str | None) -> str:
         return "MALFORMED_DIFF"
     if "reviewer accept contract" in lowered or "accepted_unparseable" in lowered:
         return "REVIEWER_ACCEPT_CONTRACT_INVALID"
+    if "accepted_empty" in lowered or "empty reviewed_diff" in lowered or "empty_reviewed_diff" in lowered:
+        return "REVIEWER_ACCEPTED_EMPTY_REVIEWED_DIFF"
+    if "reviewer_declined" in lowered or "reviewer_rejected" in lowered or "decision not accept" in lowered:
+        return "REVIEWER_DECLINED_REPAIR"
+    if "needs_more_context" in lowered:
+        return "REVIEWER_NEEDS_MORE_CONTEXT"
+    if "needs_revision" in lowered or "requested_revision" in lowered:
+        return "REVIEWER_REQUESTED_REVISION"
+    if "invalid_decision" in lowered:
+        return "REVIEWER_INVALID_DECISION"
+    if "checksum_mismatch" in lowered:
+        return "REVIEWER_CHECKSUM_MISMATCH"
+    if "model_unavailable" in lowered:
+        return "REVIEWER_MODEL_UNAVAILABLE"
+    if "model_failed" in lowered:
+        return "REVIEWER_MODEL_FAILED"
+    if "schema_invalid" in lowered:
+        return "REVIEWER_SCHEMA_INVALID"
+    if "artifact" in lowered and ("missing" in lowered or "not found" in lowered):
+        return "REVIEWER_OUTPUT_ARTIFACT_MISSING"
     if "missing artifact refs" in lowered or "missing_diff_ref" in lowered or "diff_ref" in lowered:
         return "DIFF_REF_MISSING"
     if "checksum" in lowered:

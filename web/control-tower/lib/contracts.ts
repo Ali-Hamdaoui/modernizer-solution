@@ -1282,6 +1282,7 @@ export type RepairMaterializationUnavailable = {
   reviewer_accept_contract_issue?: string | null;
   main_output_checksum?: string | null;
   reviewer_output_checksum?: string | null;
+  reviewer_decision?: string | null;
   retry_reason?: string | null;
   next_action?: string | null;
   schema_repair_attempted?: boolean;
@@ -1297,6 +1298,10 @@ export type RepairMaterializationUnavailable = {
   reviewer_self_repair_succeeded?: boolean;
   reviewer_self_repair_failure_reason?: string | null;
   reviewer_mechanical_validation_issue?: string | null;
+  reviewer_self_repair_schema_repair_attempted?: boolean;
+  reviewer_self_repair_schema_repair_succeeded?: boolean;
+  reviewer_self_repair_schema_repair_failure_reason?: string | null;
+  reviewer_self_repair_schema_repair_parse_failure_category?: string | null;
   apply_check_stderr_summary?: string | null;
 };
 

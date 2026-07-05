@@ -95,6 +95,7 @@ class V2RoleModelRequest:
     output_schema_name: str | None = None
     require_schema: bool = False
     conversation_history: tuple[dict[str, str], ...] = ()
+    responsibility: str = ""
 
 
 @dataclass(frozen=True)
@@ -515,6 +516,7 @@ class V2ModelRoleRouter:
             ),
             "response_format_used": bool(response_format_used) if response_format_used is not None else False,
             "deployment_alias_hash": _deployment_alias_hash(deployment),
+            "responsibility": (request.responsibility or "").strip(),
         }
         if parsed is None:
             base.update({

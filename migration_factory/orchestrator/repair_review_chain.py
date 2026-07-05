@@ -4,6 +4,40 @@ Deterministic repair artifact -> Primary Repair LLM (PROPOSER) -> Reviewer Repai
 -> Final reviewed repair diff artifact.
 
 Core rule: A model reviews another model for repair. Reviewer is mandatory.
+
+── Future path: structured-edit fallback ──────────────────────────────
+When raw reviewed-diff mode fails repeated mechanical diff validation, a
+backend-generated diff from structured edit operations provides a fallback:
+
+  1. Main proposes structured_edits (new optional key in RepairPrimaryOutput).
+  2. Reviewer finalizes structured_edits.
+  3. Backend verifies exact old_text in sandbox (must exist exactly once).
+  4. Backend applies replacements to temp copies (never mutates sandbox).
+  5. Backend generates unified diff from real before/after content.
+  6. Existing diff validation, path safety, git apply --check, patch policy,
+     proposal persistence, and human approval remain unchanged.
+
+New module (not yet implemented):
+  migration_factory/repair_loop/structured_edits.py
+
+Structured edit schema:
+  {"path": "repo-relative POSIX path",
+   "old_text": "exact source text to replace",
+   "replacement_text": "replacement source text",
+   "reason": "why this edit fixes the failure",
+   "expected_imports": [],
+   "expected_classes": []}
+
+Backend materialization requirements:
+  - Path validation: repo-relative POSIX only, resolve under sandbox root
+  - Exact old_text: must exist exactly once in file, or fail closed
+  - Temp copy only: never mutate sandbox during materialization
+  - Generate unified diff via Python difflib or git diff against temp copy
+  - Reuse existing validate_unified_diff_structure(), check_patch_applicability()
+  - Do NOT create a second patch engine
+
+Activation: config flag or internal fallback threshold (TBD).
+Do NOT implement until a separate AMF ticket is opened.
 """
 
 from __future__ import annotations
@@ -61,7 +95,7 @@ class RepairReviewChainProductionError(RuntimeError):
         struct_issue: str = "",
     ) -> None:
         super().__init__(message)
-        self.schema_diagnostics = schema_diagnostics
+        self.schema_diagnostics = schema_diagnostics or {}
         self.reason_code = reason_code or ""
         self.schema_name = schema_name or ""
         self.role = role or ""
@@ -260,12 +294,39 @@ def _reviewer_self_repair_prompt(
         "You are the same repair reviewer. Your previous reviewed_diff failed backend "
         "mechanical validation. Repair only your final reviewed_diff once, using the "
         "grounded source context and exact backend issue below.\n\n"
-        "Output only valid JSON matching RepairReviewerOutput. No markdown, no prose, no code fences.\n\n"
-        "If you can produce a corrected strict Git-style unified diff, return decision=\"accept\". "
-        "If the source context is insufficient, return decision=\"needs_more_context\" or "
-        "decision=\"needs_revision\" and leave reviewed_diff empty.\n\n"
-        "Backend validation issue:\n"
-        f"{validation_issue}\n\n"
+        "Return exactly one JSON object matching RepairReviewerOutput. "
+        "No markdown. No code fences. No prose outside JSON. Do not add extra keys.\n\n"
+        "Required JSON keys:\n"
+        "  decision (one of: accept, reject, needs_more_context, needs_revision)\n"
+        "  review_summary (string)\n"
+        "  main_patch_findings (list of strings)\n"
+        "  changed_files_verified (boolean)\n"
+        "  reviewed_diff (string)\n"
+        "  diff_changed_by_reviewer (boolean)\n"
+        "  risks (list of strings)\n"
+        "  policy_concerns (list of strings)\n"
+        "  main_diff_diagnostics_acknowledged (boolean)\n"
+        "  diff_parseable (boolean)\n"
+        "  reviewed_context_checksum (string)\n"
+        "  reviewed_primary_output_checksum (string)\n\n"
+        "Accept contract:\n"
+        "  If decision=\"accept\":\n"
+        "    - reviewed_diff must be non-empty\n"
+        "    - diff_parseable must be true\n"
+        "    - changed_files_verified must be true\n"
+        "    - main_diff_diagnostics_acknowledged must be true\n"
+        "    - reviewed_context_checksum must equal the provided context checksum\n"
+        "    - reviewed_primary_output_checksum must equal the provided primary output checksum\n"
+        "    - Each diff hunk old/new counts must match the hunk body\n"
+        "    - Every hunk must include real context lines\n"
+        "    - All paths must be repo-relative POSIX paths\n"
+        "    - No absolute paths, sandbox paths, env, argv, raw commands, or secrets\n\n"
+        "Safe failure contract:\n"
+        "  If you cannot produce a structurally valid diff:\n"
+        "    - decision must be needs_revision or needs_more_context\n"
+        "    - reviewed_diff must be \"\" (empty string)\n"
+        "    - diff_parseable must be false\n"
+        "    - review_summary must explain the blocker\n\n"
         "Critical mechanical rules:\n"
         f"- Exact backend issue: {validation_issue}\n"
         "- Hunk header counts must exactly match hunk body old/new line counts.\n"
@@ -275,7 +336,7 @@ def _reviewer_self_repair_prompt(
         "- Use repo-relative POSIX paths only.\n"
         "- Do not invent file bodies, placeholder lines, ellipses, or bare @@ hunks.\n"
         "- Preserve the existing package/import context from source_contexts.\n"
-        "- Set diff_parseable=true and model_claimed_diff_parseable=true only if your reviewed_diff is parseable.\n"
+        "- Set diff_parseable=true only if your reviewed_diff is parseable.\n"
         "- Backend will reject the output again if hunk counts do not match.\n\n"
         f"Deterministic repair artifact checksum: {deterministic_checksum}\n"
         f"Context pack checksum: {context_checksum}\n"
@@ -469,11 +530,6 @@ def _coerce_reviewer_repair_output(
             schema_name="RepairReviewerOutput",
             role="reviewer",
         )
-    if decision == "revise":
-        decision = "needs_more_context"
-    if decision == "needs_revision":
-        decision = "needs_more_context"
-
     required_checksum_fields = {
         "reviewed_context_checksum",
         "reviewed_primary_output_checksum",
@@ -1100,6 +1156,61 @@ def _reviewer_self_repair_validation_issue(mechanical_issue: str) -> str:
     return mechanical_issue
 
 
+def _persist_failure_review_chain(
+    *,
+    output_dir: Path,
+    job_id: str,
+    stage_index: int,
+    context_checksum: str,
+    primary_checksum: str,
+    diff_checksum: str,
+    reviewer_output: dict[str, Any],
+    reviewer_output_ref: str,
+    reviewer_accept_contract_issue: str | None,
+    reviewer_self_repair_attempted: bool,
+    proposer_invocation_id: str | None,
+    reviewer_invocation_id: str | None,
+    reviewer_self_repair_invocation_id: str | None,
+    deterministic_checksum: str,
+    reason_code: str,
+    detail: str,
+    deterministic_path: str = "",
+    primary_path: str = "",
+    reviewer_schema_repair_metadata: dict[str, Any] | None = None,
+    initial_reviewer_output_ref: str = "",
+    initial_reviewer_output: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    partial = _partial_failed_review_chain(
+        context_checksum=context_checksum,
+        primary_checksum=primary_checksum,
+        diff_checksum=diff_checksum,
+        reviewer_output=reviewer_output,
+        reviewer_accept_contract_issue=reviewer_accept_contract_issue,
+        reviewer_self_repair_attempted=reviewer_self_repair_attempted,
+        proposer_invocation_id=proposer_invocation_id,
+        reviewer_invocation_id=reviewer_invocation_id,
+        reviewer_self_repair_invocation_id=reviewer_self_repair_invocation_id,
+        deterministic_checksum=deterministic_checksum,
+    )
+    partial["job_id"] = job_id
+    partial["stage_index"] = stage_index
+    partial["reason_code"] = reason_code
+    partial["detail"] = detail
+    partial["reviewer_output_ref"] = reviewer_output_ref
+    if deterministic_path:
+        partial["deterministic_artifact_ref"] = deterministic_path
+    if primary_path:
+        partial["primary_output_ref"] = primary_path
+    if reviewer_schema_repair_metadata:
+        partial["reviewer_schema_repair"] = reviewer_schema_repair_metadata
+    if initial_reviewer_output_ref:
+        partial["reviewer_initial_output_ref"] = initial_reviewer_output_ref
+        if initial_reviewer_output:
+            partial["reviewer_initial_output_checksum"] = str(initial_reviewer_output.get("output_checksum") or "")
+    _write_json(output_dir / "review_chain.json", partial)
+    return partial
+
+
 def _partial_failed_review_chain(
     *,
     context_checksum: str,
@@ -1115,6 +1226,10 @@ def _partial_failed_review_chain(
     reviewer_self_repair_succeeded: bool = False,
     reviewer_mechanical_validation_issue: str | None = None,
     reviewer_self_repair_failure_reason: str | None = None,
+    reviewer_self_repair_schema_repair_attempted: bool = False,
+    reviewer_self_repair_schema_repair_succeeded: bool = False,
+    reviewer_self_repair_schema_repair_failure_reason: str = "",
+    reviewer_self_repair_schema_repair_parse_failure_category: str = "",
 ) -> dict[str, Any]:
     reviewed_diff = _strip_reviewed_diff_fences(str(reviewer_output.get("reviewed_diff") or ""))
     reviewed_diff_checksum = (
@@ -1140,6 +1255,10 @@ def _partial_failed_review_chain(
         "reviewer_self_repair_succeeded": reviewer_self_repair_succeeded,
         "reviewer_self_repair_failure_reason": reviewer_self_repair_failure_reason or "",
         "reviewer_mechanical_validation_issue": reviewer_mechanical_validation_issue or "",
+        "reviewer_self_repair_schema_repair_attempted": reviewer_self_repair_schema_repair_attempted,
+        "reviewer_self_repair_schema_repair_succeeded": reviewer_self_repair_schema_repair_succeeded,
+        "reviewer_self_repair_schema_repair_failure_reason": reviewer_self_repair_schema_repair_failure_reason,
+        "reviewer_self_repair_schema_repair_parse_failure_category": reviewer_self_repair_schema_repair_parse_failure_category,
         "struct_issue": _reviewed_diff_struct_issue(reviewer_mechanical_validation_issue),
         "final_diff_exists": False,
         "proposal_created": False,
@@ -1202,6 +1321,11 @@ def _persist_reviewed_diff_validation_failure(
         "reviewer_mechanical_validation_issue": mechanical_issue,
         "reviewer_self_repair_attempted": bool(review_chain.get("reviewer_self_repair_attempted")),
         "reviewer_self_repair_succeeded": False,
+        "reviewer_self_repair_failure_reason": str(review_chain.get("reviewer_self_repair_failure_reason") or ""),
+        "reviewer_self_repair_schema_repair_attempted": bool(review_chain.get("reviewer_self_repair_schema_repair_attempted")),
+        "reviewer_self_repair_schema_repair_succeeded": bool(review_chain.get("reviewer_self_repair_schema_repair_succeeded")),
+        "reviewer_self_repair_schema_repair_failure_reason": str(review_chain.get("reviewer_self_repair_schema_repair_failure_reason") or ""),
+        "reviewer_self_repair_schema_repair_parse_failure_category": str(review_chain.get("reviewer_self_repair_schema_repair_parse_failure_category") or ""),
         "reviewer_accept_contract_valid": bool(review_chain.get("reviewer_accept_contract_valid")),
         "reviewed_diff_checksum": str(review_chain.get("reviewed_diff_checksum") or ""),
         "final_diff_exists": False,
@@ -1270,6 +1394,7 @@ def _invoke_reviewer_self_repair(
         fallback="Reviewer self-repair model unavailable; reviewed repair cannot be produced.",
         output_schema_name="RepairReviewerOutput",
         require_schema=True,
+        responsibility="repair_review_self_repair",
     )
     fallback_used = str(getattr(result, "source", "") or "") == "deterministic"
     if self_repair_invocation_id is not None:
@@ -1483,6 +1608,13 @@ def produce_repair_review_chain(
     deterministic_path = output_dir / "deterministic_repair_artifact.json"
     _write_json(deterministic_path, deterministic_payload)
 
+    logger.info(
+        "repair_chain_started job=%s stage=%d context_checksum=%s deterministic_checksum=%s",
+        context_pack.job_id, context_pack.stage_index,
+        getattr(context_pack, "context_pack_checksum", ""),
+        deterministic_checksum,
+    )
+
     client = model_client or V2AssistantModelClient()
 
     # ── PR-G: Capture proposer invocation ────────────────────────────
@@ -1553,6 +1685,15 @@ def produce_repair_review_chain(
             reason_code=str(primary_result.failure_reason or ""),
         )
 
+    logger.info(
+        "main_invocation_completed job=%s stage=%d inv=%s schema=%s checksum=%s latency_ms=%s",
+        context_pack.job_id, context_pack.stage_index,
+        proposer_invocation_id or "",
+        "RepairPrimaryOutput",
+        sha256_canonical_json({"content": primary_result.content[:80]}),
+        str(getattr(primary_result, "latency_ms", "") or ""),
+    )
+
     primary_output = _coerce_primary_repair_output(primary_result.content)
 
     # ── Normalize diff to Git-style before validation and reviewer ─────
@@ -1604,6 +1745,13 @@ def produce_repair_review_chain(
             schema_name="RepairReviewerOutput",
         )
 
+    logger.info(
+        "reviewer_invocation_started job=%s stage=%d inv=%s schema=%s",
+        context_pack.job_id, context_pack.stage_index,
+        reviewer_invocation_id or "",
+        "RepairReviewerOutput",
+    )
+
     # Reviewer Repair LLM (REVIEWER)
     reviewer_result = client.answer_with_role(
         role=V2ModelRole.REVIEWER,
@@ -1654,18 +1802,143 @@ def produce_repair_review_chain(
         primary_checksum=primary_checksum,
     )
     reviewer_schema_repair_metadata = _safe_schema_repair_metadata(reviewer_result)
+    schema_repair_attempted = bool(reviewer_schema_repair_metadata.get("schema_repair_attempted"))
+
+    if schema_repair_attempted:
+        schema_repair_succeeded = bool(reviewer_schema_repair_metadata.get("schema_repair_succeeded"))
+        if schema_repair_succeeded:
+            logger.info(
+                "reviewer_schema_repair_succeeded job=%s stage=%d inv=%s",
+                context_pack.job_id, context_pack.stage_index, reviewer_invocation_id or "",
+            )
+        else:
+            logger.warning(
+                "reviewer_schema_repair_failed job=%s stage=%d inv=%s reason=%s",
+                context_pack.job_id, context_pack.stage_index, reviewer_invocation_id or "",
+                str(reviewer_schema_repair_metadata.get("schema_repair_failure_reason") or ""),
+            )
+
+    reviewer_checksum = _compute_reviewer_repair_checksum(reviewer_output)
+    reviewer_output["output_checksum"] = reviewer_checksum
+    reviewer_path = output_dir / "reviewer_repair_llm_output.json"
+    _write_json(reviewer_path, reviewer_output)
+    reviewer_output_ref = str(reviewer_path)
+    logger.info(
+        "reviewer_output_artifact_written job=%s stage=%d inv=%s schema=%s "
+        "schema_repair_attempted=%s schema_repair_succeeded=%s checksum=%s",
+        context_pack.job_id, context_pack.stage_index,
+        reviewer_invocation_id or "",
+        "RepairReviewerOutput",
+        str(schema_repair_attempted),
+        str(bool(reviewer_schema_repair_metadata.get("schema_repair_succeeded"))),
+        reviewer_checksum,
+    )
 
     if reviewer_output["reviewed_context_checksum"] != context_checksum:
+        cm_chain = _persist_failure_review_chain(
+            output_dir=output_dir,
+            job_id=context_pack.job_id,
+            stage_index=context_pack.stage_index,
+            context_checksum=context_checksum,
+            primary_checksum=primary_checksum,
+            diff_checksum=diff_checksum,
+            reviewer_output=reviewer_output,
+            reviewer_output_ref=reviewer_output_ref,
+            reviewer_accept_contract_issue="reviewer_context_checksum_mismatch",
+            reviewer_self_repair_attempted=False,
+            proposer_invocation_id=proposer_invocation_id,
+            reviewer_invocation_id=reviewer_invocation_id,
+            reviewer_self_repair_invocation_id=None,
+            deterministic_checksum=deterministic_checksum,
+            reason_code="REVIEWER_CHECKSUM_MISMATCH",
+            detail="reviewed_context_checksum mismatch",
+            deterministic_path=str(deterministic_path),
+            primary_path=str(primary_path),
+            reviewer_schema_repair_metadata=reviewer_schema_repair_metadata,
+        )
+        logger.warning(
+            "reviewer_accept_contract_failed job=%s stage=%d reason=%s detail=%s",
+            context_pack.job_id, context_pack.stage_index,
+            "REVIEWER_CHECKSUM_MISMATCH",
+            "reviewed_context_checksum mismatch",
+        )
         raise RepairReviewChainProductionError(
             f"reviewer context checksum mismatch: expected {context_checksum}, got {reviewer_output['reviewed_context_checksum']}",
             schema_diagnostics=_reviewer_checksum_mismatch_diagnostics("reviewed_context_checksum"),
-            reason_code="reviewer_checksum_mismatch",
+            reason_code="REVIEWER_CHECKSUM_MISMATCH",
+            partial_chain=cm_chain,
+            detail="reviewed_context_checksum mismatch",
         )
     if reviewer_output["reviewed_primary_output_checksum"] != primary_checksum:
+        cm_chain = _persist_failure_review_chain(
+            output_dir=output_dir,
+            job_id=context_pack.job_id,
+            stage_index=context_pack.stage_index,
+            context_checksum=context_checksum,
+            primary_checksum=primary_checksum,
+            diff_checksum=diff_checksum,
+            reviewer_output=reviewer_output,
+            reviewer_output_ref=reviewer_output_ref,
+            reviewer_accept_contract_issue="reviewer_primary_output_checksum_mismatch",
+            reviewer_self_repair_attempted=False,
+            proposer_invocation_id=proposer_invocation_id,
+            reviewer_invocation_id=reviewer_invocation_id,
+            reviewer_self_repair_invocation_id=None,
+            deterministic_checksum=deterministic_checksum,
+            reason_code="REVIEWER_CHECKSUM_MISMATCH",
+            detail="reviewed_primary_output_checksum mismatch",
+            deterministic_path=str(deterministic_path),
+            primary_path=str(primary_path),
+            reviewer_schema_repair_metadata=reviewer_schema_repair_metadata,
+        )
+        logger.warning(
+            "reviewer_accept_contract_failed job=%s stage=%d reason=%s detail=%s",
+            context_pack.job_id, context_pack.stage_index,
+            "REVIEWER_CHECKSUM_MISMATCH",
+            "reviewed_primary_output_checksum mismatch",
+        )
         raise RepairReviewChainProductionError(
             f"reviewer primary checksum mismatch: expected {primary_checksum}, got {reviewer_output['reviewed_primary_output_checksum']}",
             schema_diagnostics=_reviewer_checksum_mismatch_diagnostics("reviewed_primary_output_checksum"),
-            reason_code="reviewer_checksum_mismatch",
+            reason_code="REVIEWER_CHECKSUM_MISMATCH",
+            partial_chain=cm_chain,
+            detail="reviewed_primary_output_checksum mismatch",
+        )
+
+    if reviewer_output["decision"] == "accept" and not str(reviewer_output.get("reviewed_diff") or "").strip():
+        empty_diff_chain = _persist_failure_review_chain(
+            output_dir=output_dir,
+            job_id=context_pack.job_id,
+            stage_index=context_pack.stage_index,
+            context_checksum=context_checksum,
+            primary_checksum=primary_checksum,
+            diff_checksum=diff_checksum,
+            reviewer_output=reviewer_output,
+            reviewer_output_ref=reviewer_output_ref,
+            reviewer_accept_contract_issue="reviewer_accepted_empty_reviewed_diff",
+            reviewer_self_repair_attempted=False,
+            proposer_invocation_id=proposer_invocation_id,
+            reviewer_invocation_id=reviewer_invocation_id,
+            reviewer_self_repair_invocation_id=None,
+            deterministic_checksum=deterministic_checksum,
+            reason_code="REVIEWER_ACCEPTED_EMPTY_REVIEWED_DIFF",
+            detail="reviewer accepted but reviewed_diff is empty",
+            deterministic_path=str(deterministic_path),
+            primary_path=str(primary_path),
+            reviewer_schema_repair_metadata=reviewer_schema_repair_metadata,
+        )
+        logger.info(
+            "reviewer_decision_classified job=%s stage=%d decision=%s reason=%s",
+            context_pack.job_id, context_pack.stage_index,
+            "accept", "REVIEWER_ACCEPTED_EMPTY_REVIEWED_DIFF",
+        )
+        raise RepairReviewChainProductionError(
+            "Reviewer accepted repair but provided empty reviewed_diff",
+            reason_code="REVIEWER_ACCEPTED_EMPTY_REVIEWED_DIFF",
+            schema_name="RepairReviewerOutput",
+            role="reviewer",
+            partial_chain=empty_diff_chain,
+            detail="reviewer accepted but reviewed_diff is empty",
         )
     initial_reviewer_output: dict[str, Any] | None = None
     initial_reviewer_output_ref = ""
@@ -1679,6 +1952,12 @@ def produce_repair_review_chain(
 
     if reviewer_accept_contract_issue or reviewed_diff_mechanical_issue:
         reviewer_self_repair_attempted = True
+        logger.info(
+            "reviewer_self_repair_started job=%s stage=%d inv=%s issue=%s",
+            context_pack.job_id, context_pack.stage_index,
+            reviewer_invocation_id or "",
+            (reviewer_accept_contract_issue or reviewed_diff_mechanical_issue or "reviewed_diff_invalid"),
+        )
         initial_reviewer_output = dict(reviewer_output)
         initial_reviewer_checksum = _compute_reviewer_repair_checksum(initial_reviewer_output)
         initial_reviewer_output["output_checksum"] = initial_reviewer_checksum
@@ -1711,6 +1990,27 @@ def produce_repair_review_chain(
             failed_mechanical_issue = reviewed_diff_mechanical_issue or reviewer_accept_contract_issue or "reviewed_diff_invalid"
             struct_issue = _reviewed_diff_struct_issue(failed_mechanical_issue) or failed_mechanical_issue
             failure_reason = _safe_reviewer_self_repair_failure_reason(exc)
+            self_repair_schema_diag = getattr(exc, "schema_diagnostics", None)
+            self_repair_schema_repair_attempted = (
+                bool(self_repair_schema_diag.get("schema_repair_attempted"))
+                if isinstance(self_repair_schema_diag, dict)
+                else False
+            )
+            self_repair_schema_repair_succeeded = (
+                bool(self_repair_schema_diag.get("schema_repair_succeeded"))
+                if isinstance(self_repair_schema_diag, dict)
+                else False
+            )
+            self_repair_schema_repair_failure_reason = (
+                str(self_repair_schema_diag.get("schema_repair_failure_reason") or "")
+                if isinstance(self_repair_schema_diag, dict)
+                else ""
+            )
+            self_repair_schema_repair_parse_category = (
+                str(self_repair_schema_diag.get("schema_repair_parse_failure_category") or "")
+                if isinstance(self_repair_schema_diag, dict)
+                else ""
+            )
             failed_chain = _partial_failed_review_chain(
                 context_checksum=context_checksum,
                 primary_checksum=primary_checksum,
@@ -1725,6 +2025,10 @@ def produce_repair_review_chain(
                 reviewer_self_repair_succeeded=False,
                 reviewer_mechanical_validation_issue=failed_mechanical_issue,
                 reviewer_self_repair_failure_reason=failure_reason,
+                reviewer_self_repair_schema_repair_attempted=self_repair_schema_repair_attempted,
+                reviewer_self_repair_schema_repair_succeeded=self_repair_schema_repair_succeeded,
+                reviewer_self_repair_schema_repair_failure_reason=self_repair_schema_repair_failure_reason,
+                reviewer_self_repair_schema_repair_parse_failure_category=self_repair_schema_repair_parse_category,
             )
             if initial_reviewer_output_ref:
                 failed_chain["reviewer_initial_output_ref"] = initial_reviewer_output_ref
@@ -1752,42 +2056,87 @@ def produce_repair_review_chain(
             reviewed_diff_mechanical_issue = _reviewed_diff_mechanical_issue(reviewed_diff)
 
     if reviewer_output["decision"] != "accept":
+        _decision_reason_map: dict[str, str] = {
+            "reject": "REVIEWER_DECLINED_REPAIR",
+            "needs_more_context": "REVIEWER_NEEDS_MORE_CONTEXT",
+            "needs_revision": "REVIEWER_REQUESTED_REVISION",
+            "revise": "REVIEWER_REQUESTED_REVISION",
+        }
+        non_accept_reason = _decision_reason_map.get(
+            reviewer_output["decision"], "REVIEWER_INVALID_DECISION"
+        )
+        non_accept_chain = _persist_failure_review_chain(
+            output_dir=output_dir,
+            job_id=context_pack.job_id,
+            stage_index=context_pack.stage_index,
+            context_checksum=context_checksum,
+            primary_checksum=primary_checksum,
+            diff_checksum=diff_checksum,
+            reviewer_output=reviewer_output,
+            reviewer_output_ref=reviewer_output_ref,
+            reviewer_accept_contract_issue=None,
+            reviewer_self_repair_attempted=reviewer_self_repair_attempted,
+            proposer_invocation_id=proposer_invocation_id,
+            reviewer_invocation_id=reviewer_invocation_id,
+            reviewer_self_repair_invocation_id=reviewer_self_repair_invocation_id,
+            deterministic_checksum=deterministic_checksum,
+            reason_code=non_accept_reason,
+            detail=f"decision={reviewer_output['decision']}",
+            deterministic_path=str(deterministic_path),
+            primary_path=str(primary_path),
+            reviewer_schema_repair_metadata=reviewer_schema_repair_metadata,
+            initial_reviewer_output_ref=initial_reviewer_output_ref,
+            initial_reviewer_output=initial_reviewer_output,
+        )
+        logger.info(
+            "reviewer_decision_classified job=%s stage=%d decision=%s reason=%s",
+            context_pack.job_id, context_pack.stage_index,
+            reviewer_output["decision"], non_accept_reason,
+        )
         raise RepairReviewChainProductionError(
-            f"reviewer decision failed closed: {reviewer_output['decision']}",
-            reason_code="reviewer_rejected_diff",
+            f"reviewer decision not accept: {reviewer_output['decision']}",
+            reason_code=non_accept_reason,
             schema_name="RepairReviewerOutput",
             role="reviewer",
-            partial_chain=_partial_failed_review_chain(
-                context_checksum=context_checksum,
-                primary_checksum=primary_checksum,
-                diff_checksum=diff_checksum,
-                reviewer_output=reviewer_output,
-                reviewer_accept_contract_issue=None,
-                reviewer_self_repair_attempted=reviewer_self_repair_attempted,
-                proposer_invocation_id=proposer_invocation_id,
-                reviewer_invocation_id=reviewer_invocation_id,
-                reviewer_self_repair_invocation_id=reviewer_self_repair_invocation_id,
-                deterministic_checksum=deterministic_checksum,
-            ),
+            partial_chain=non_accept_chain,
+            detail=f"decision={reviewer_output['decision']}",
         )
     if reviewer_accept_contract_issue:
+        contract_chain = _persist_failure_review_chain(
+            output_dir=output_dir,
+            job_id=context_pack.job_id,
+            stage_index=context_pack.stage_index,
+            context_checksum=context_checksum,
+            primary_checksum=primary_checksum,
+            diff_checksum=diff_checksum,
+            reviewer_output=reviewer_output,
+            reviewer_output_ref=reviewer_output_ref,
+            reviewer_accept_contract_issue=reviewer_accept_contract_issue,
+            reviewer_self_repair_attempted=reviewer_self_repair_attempted,
+            proposer_invocation_id=proposer_invocation_id,
+            reviewer_invocation_id=reviewer_invocation_id,
+            reviewer_self_repair_invocation_id=reviewer_self_repair_invocation_id,
+            deterministic_checksum=deterministic_checksum,
+            reason_code="REVIEWER_ACCEPT_CONTRACT_INVALID",
+            detail=reviewer_accept_contract_issue,
+            deterministic_path=str(deterministic_path),
+            primary_path=str(primary_path),
+            reviewer_schema_repair_metadata=reviewer_schema_repair_metadata,
+            initial_reviewer_output_ref=initial_reviewer_output_ref,
+            initial_reviewer_output=initial_reviewer_output,
+        )
+        logger.warning(
+            "reviewer_accept_contract_failed job=%s stage=%d reason=%s detail=%s",
+            context_pack.job_id, context_pack.stage_index,
+            "REVIEWER_ACCEPT_CONTRACT_INVALID", reviewer_accept_contract_issue,
+        )
         raise RepairReviewChainProductionError(
             f"reviewer accept contract invalid: {reviewer_accept_contract_issue}",
             reason_code="REVIEWER_ACCEPT_CONTRACT_INVALID",
             schema_name="RepairReviewerOutput",
             role="reviewer",
-            partial_chain=_partial_failed_review_chain(
-                context_checksum=context_checksum,
-                primary_checksum=primary_checksum,
-                diff_checksum=diff_checksum,
-                reviewer_output=reviewer_output,
-                reviewer_accept_contract_issue=reviewer_accept_contract_issue,
-                reviewer_self_repair_attempted=reviewer_self_repair_attempted,
-                proposer_invocation_id=proposer_invocation_id,
-                reviewer_invocation_id=reviewer_invocation_id,
-                reviewer_self_repair_invocation_id=reviewer_self_repair_invocation_id,
-                deterministic_checksum=deterministic_checksum,
-            ),
+            partial_chain=contract_chain,
+            detail=reviewer_accept_contract_issue,
         )
     if reviewed_diff_mechanical_issue:
         failed_chain = _partial_failed_review_chain(
@@ -1846,6 +2195,11 @@ def produce_repair_review_chain(
 
     diff_path = output_dir / "final_reviewed_repair.diff"
     diff_path.write_text(reviewed_diff, encoding="utf-8")
+    logger.info(
+        "final_diff_written job=%s stage=%d diff_checksum=%s",
+        context_pack.job_id, context_pack.stage_index,
+        reviewer_output["reviewed_diff_checksum"],
+    )
 
     review_chain: dict[str, Any] = {
         "deterministic_artifact_checksum": deterministic_checksum,
@@ -1911,6 +2265,11 @@ def produce_repair_review_chain(
     if initial_reviewer_output_ref:
         produced_refs["reviewer_initial_llm_output"] = initial_reviewer_output_ref
 
+    logger.info(
+        "chain_closed job=%s stage=%d final_diff_exists=true proposal_created=false reason=%s",
+        context_pack.job_id, context_pack.stage_index,
+        reviewer_output["decision"],
+    )
     return {"artifact_refs": produced_refs, "review_chain": review_chain}
 
 

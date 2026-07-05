@@ -50,6 +50,8 @@ type ActivityState =
 
 const REVIEWER_SCHEMA_FAILURE_SUMMARY =
   "Reviewer model output failed schema validation, so no reviewed diff was produced.";
+const REVIEWER_SELF_REPAIR_SCHEMA_FAILURE_SUMMARY =
+  "Reviewer self-repair output failed schema validation.";
 const REVIEWER_UNAVAILABLE_SUMMARY =
   "Reviewer model did not produce a reviewed diff.";
 const MAIN_SCHEMA_FAILURE_SUMMARY =
@@ -546,6 +548,13 @@ export function ReviewedRepairUnavailable({
 
   const isProposerSchemaInvalid = mainSchemaInvalidProp === true || isMainSchemaInvalid(mainInvocation);
   const isReviewerSchemaFailure = reviewerSchemaInvalid === true || isReviewerSchemaInvalid(reviewerInvocation);
+  const selfRepairInvocation = sorted.find(
+    (inv) => normalized(inv.responsibility) === "repair_review_self_repair"
+  );
+  const isReviewerSelfRepairSchemaFailure = isReviewerSchemaFailure && (
+    (selfRepairInvocation !== undefined && isReviewerSchemaInvalid(selfRepairInvocation)) ||
+    normalized(reviewerInvocation?.responsibility) === "repair_review_self_repair"
+  );
 
   const mainModelStatus = displayStatus(mainInvocation, isProposerSchemaInvalid);
   const reviewerModelStatus = reviewerInvocation
@@ -559,16 +568,20 @@ export function ReviewedRepairUnavailable({
     && !normalized(mainInvocation.redacted_summary).includes("schema invalid")
     ? mainInvocation.redacted_summary
     : null;
-  const summary = isReviewerSchemaFailure
-    ? REVIEWER_SCHEMA_FAILURE_SUMMARY
-    : isProposerSchemaInvalid
-      ? MAIN_SCHEMA_FAILURE_SUMMARY
-      : REVIEWER_UNAVAILABLE_SUMMARY;
-  const nextAction = isReviewerSchemaFailure
-    ? "Retry after reviewer/schema contract fix"
-    : isProposerSchemaInvalid
-        ? "Retry after Main model/schema/config fix"
-        : "Retry after reviewer/model availability fix";
+  const summary = isReviewerSelfRepairSchemaFailure
+    ? REVIEWER_SELF_REPAIR_SCHEMA_FAILURE_SUMMARY
+    : isReviewerSchemaFailure
+      ? REVIEWER_SCHEMA_FAILURE_SUMMARY
+      : isProposerSchemaInvalid
+        ? MAIN_SCHEMA_FAILURE_SUMMARY
+        : REVIEWER_UNAVAILABLE_SUMMARY;
+  const nextAction = isReviewerSelfRepairSchemaFailure
+    ? "Reviewer self-repair output failed schema validation; retry after Reviewer prompt/config fix"
+    : isReviewerSchemaFailure
+      ? "Retry after reviewer/schema contract fix"
+      : isProposerSchemaInvalid
+          ? "Retry after Main model/schema/config fix"
+          : "Retry after reviewer/model availability fix";
   const safeReasonCode = isReviewerSchemaFailure
     ? reviewerInvocation?.reason_code || reviewerInvocation?.redacted_error
     : isProposerSchemaInvalid
@@ -810,6 +823,7 @@ export function ReviewedRepairMaterializationFailed({
   const reviewerSelfRepairFailureReason = diagnostic?.reviewer_self_repair_failure_reason?.trim() ?? "";
   const reviewerMechanicalValidationIssue = diagnostic?.reviewer_mechanical_validation_issue?.trim() ?? "";
   const reviewerAcceptContractIssue = diagnostic?.reviewer_accept_contract_issue?.trim() ?? "";
+  const reviewerDecision = diagnostic?.reviewer_decision?.trim() ?? "";
   const reviewedDiffChecksum = diagnostic?.reviewed_diff_checksum?.trim() ?? "";
   const reviewerStatusFromDiag = diagnostic?.reviewer_status?.trim() ?? null;
   const mainStatusFromDiag = diagnostic?.main_status?.trim() ?? null;
@@ -915,6 +929,12 @@ export function ReviewedRepairMaterializationFailed({
                 <strong data-testid="reviewer-accept-contract-issue">{reviewerAcceptContractIssue}</strong>
               </div>
             )}
+            {reviewerDecision && (
+              <div className="table-row">
+                <span className="meta">Reviewer decision</span>
+                <strong data-testid="reviewer-decision">{reviewerDecision}</strong>
+              </div>
+            )}
             {blockedByReasonCode && (
               <div className="table-row">
                 <span className="meta">Blocked by</span>
@@ -931,6 +951,30 @@ export function ReviewedRepairMaterializationFailed({
               <div className="table-row">
                 <span className="meta">Reviewer self-repair succeeded</span>
                 <strong>{diagnostic.reviewer_self_repair_succeeded ? "true" : "false"}</strong>
+              </div>
+            )}
+            {typeof diagnostic?.reviewer_self_repair_schema_repair_attempted === "boolean" && (
+              <div className="table-row">
+                <span className="meta">Self-repair schema repair attempted</span>
+                <strong>{diagnostic.reviewer_self_repair_schema_repair_attempted ? "true" : "false"}</strong>
+              </div>
+            )}
+            {typeof diagnostic?.reviewer_self_repair_schema_repair_succeeded === "boolean" && (
+              <div className="table-row">
+                <span className="meta">Self-repair schema repair succeeded</span>
+                <strong>{diagnostic.reviewer_self_repair_schema_repair_succeeded ? "true" : "false"}</strong>
+              </div>
+            )}
+            {diagnostic?.reviewer_self_repair_schema_repair_failure_reason && (
+              <div className="table-row">
+                <span className="meta">Self-repair schema repair failure</span>
+                <strong>{diagnostic.reviewer_self_repair_schema_repair_failure_reason}</strong>
+              </div>
+            )}
+            {diagnostic?.reviewer_self_repair_schema_repair_parse_failure_category && (
+              <div className="table-row">
+                <span className="meta">Self-repair schema repair parse failure</span>
+                <strong>{diagnostic.reviewer_self_repair_schema_repair_parse_failure_category}</strong>
               </div>
             )}
             {reviewerMechanicalValidationIssue && (

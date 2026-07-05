@@ -223,6 +223,7 @@ class V2AssistantModelClient:
         conversation_history: list[dict[str, str]] | None = None,
         output_schema_name: str | None = None,
         require_schema: bool = False,
+        responsibility: str = "",
     ) -> V2AssistantModelResult:
         router = V2ModelRoleRouter()
         request = V2RoleModelRequest(
@@ -232,6 +233,7 @@ class V2AssistantModelClient:
             output_schema_name=output_schema_name,
             require_schema=require_schema,
             conversation_history=tuple(conversation_history or ()),
+            responsibility=responsibility or "",
         )
         routed = router.route(
             request,

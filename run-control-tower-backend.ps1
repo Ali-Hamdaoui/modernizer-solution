@@ -406,6 +406,16 @@ Invoke-RoleSmoke `
     -MaxCompletionTokens 1000
 
 # ---------------------------------------------------------------------
+# Repair flight-recorder trace
+# ---------------------------------------------------------------------
+if (-not (Test-Path "Env:AI_MIGRATION_LOG_LEVEL")) {
+    Set-EnvValue "AI_MIGRATION_LOG_LEVEL" "INFO"
+}
+if (-not (Test-Path "Env:AI_MIGRATION_REPAIR_TRACE")) {
+    Set-EnvValue "AI_MIGRATION_REPAIR_TRACE" "1"
+}
+
+# ---------------------------------------------------------------------
 # Start backend
 # ---------------------------------------------------------------------
 "`n--- Starting backend on http://127.0.0.1:8000 ---"
