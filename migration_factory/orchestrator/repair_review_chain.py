@@ -2138,6 +2138,8 @@ def produce_repair_review_chain(
             partial_chain=contract_chain,
             detail=reviewer_accept_contract_issue,
         )
+    import_replacement_resolved = False
+    import_replacement_fallback_info: dict[str, Any] = {}
     if reviewed_diff_mechanical_issue:
         failed_chain = _partial_failed_review_chain(
             context_checksum=context_checksum,
@@ -2160,13 +2162,133 @@ def produce_repair_review_chain(
             mechanical_issue=reviewed_diff_mechanical_issue,
         )
         struct_issue = _reviewed_diff_struct_issue(reviewed_diff_mechanical_issue) or reviewed_diff_mechanical_issue
-        raise RepairReviewChainProductionError(
-            f"Diff structure validation failed: {struct_issue}",
-            reason_code="MALFORMED_DIFF",
-            schema_name="RepairReviewerOutput",
-            role="reviewer",
-            partial_chain=failed_chain,
-        )
+
+        # ── AMF-250A: Attempt import replacement fallback ───────────────
+        is_hunk_mismatch = struct_issue == "hunk_old_count_mismatch"
+        if is_hunk_mismatch and sandbox_path is not None:
+            logger.info(
+                "import_replacement_fallback_considered job=%s stage=%d struct_issue=%s",
+                context_pack.job_id, context_pack.stage_index, struct_issue,
+            )
+            try:
+                from migration_factory.repair_loop.import_replacement_materializer import (
+                    ImportReplacementMaterializationResult,
+                    materialize_import_replacement_diff,
+                )
+                reviewed_diff_for_fallback = str(reviewer_output.get("reviewed_diff") or "")
+                mat_result = materialize_import_replacement_diff(
+                    sandbox_root=Path(str(sandbox_path)),
+                    output_diff_path=output_dir / "backend_import_replacement.diff",
+                    main_output=primary_output,
+                    reviewer_output=reviewer_output,
+                    reviewed_diff=reviewed_diff_for_fallback,
+                    original_failure_reason_code="MALFORMED_DIFF",
+                    original_struct_issue=struct_issue,
+                    reviewer_decision="accept",
+                    reviewer_self_repair_attempted=reviewer_self_repair_attempted,
+                    reviewer_self_repair_succeeded=False,
+                )
+                fallback_artifact_payload = {
+                    "attempted": mat_result.attempted,
+                    "eligible": mat_result.eligible,
+                    "succeeded": mat_result.succeeded,
+                    "reason_code": mat_result.reason_code,
+                    "detail": mat_result.detail,
+                    "candidate_files": mat_result.candidate_files,
+                    "changed_files": mat_result.changed_files,
+                    "replacement_count": mat_result.replacement_count,
+                    "generated_diff_checksum": mat_result.generated_diff_checksum,
+                    "generated_diff_path": mat_result.generated_diff_path,
+                    "original_failure_reason_code": mat_result.original_failure_reason_code,
+                    "original_struct_issue": mat_result.original_struct_issue,
+                    "reviewer_decision": mat_result.reviewer_decision,
+                    "reviewer_self_repair_attempted": mat_result.reviewer_self_repair_attempted,
+                    "reviewer_self_repair_succeeded": mat_result.reviewer_self_repair_succeeded,
+                    "rejected_paths": mat_result.rejected_paths,
+                    "changed_lines_summary": mat_result.changed_lines_summary,
+                }
+                _write_json(
+                    output_dir / "backend_import_replacement_materialization.json",
+                    fallback_artifact_payload,
+                )
+                import_replacement_fallback_info = {
+                    "backend_import_replacement_fallback_attempted": True,
+                    "backend_import_replacement_fallback_eligible": mat_result.eligible,
+                    "backend_import_replacement_fallback_succeeded": mat_result.succeeded,
+                    "backend_import_replacement_fallback_reason_code": mat_result.reason_code,
+                    "backend_import_replacement_fallback_detail": mat_result.detail,
+                }
+
+                if mat_result.succeeded and mat_result.diff_text:
+                    backend_struct_issue = validate_unified_diff_structure(mat_result.diff_text)
+                    if backend_struct_issue is None:
+                        import_replacement_resolved = True
+                        reviewed_diff = mat_result.diff_text
+                        reviewed_diff_mechanical_issue = None
+                        reviewer_output["reviewed_diff"] = reviewed_diff
+                        reviewer_output["reviewed_diff_checksum"] = sha256_canonical_json({"unified_diff": reviewed_diff})
+                        reviewer_output["diff_changed_by_reviewer"] = True
+                        reviewer_output["_backend_import_replacement"] = True
+                        import_replacement_fallback_info.update({
+                            "backend_generated_diff": True,
+                            "backend_generated_diff_checksum": mat_result.generated_diff_checksum,
+                            "backend_generated_diff_changed_files": mat_result.changed_files,
+                            "backend_generated_diff_replacement_count": mat_result.replacement_count,
+                        })
+                        logger.info(
+                            "import_replacement_fallback_succeeded job=%s stage=%d files=%s count=%d checksum=%s",
+                            context_pack.job_id, context_pack.stage_index,
+                            ",".join(mat_result.changed_files), mat_result.replacement_count,
+                            mat_result.generated_diff_checksum,
+                        )
+                    else:
+                        logger.warning(
+                            "import_replacement_fallback_validation_failed job=%s stage=%d struct_issue=%s",
+                            context_pack.job_id, context_pack.stage_index, backend_struct_issue,
+                        )
+                else:
+                    logger.info(
+                        "import_replacement_fallback_ineligible job=%s stage=%d reason=%s",
+                        context_pack.job_id, context_pack.stage_index, mat_result.reason_code,
+                    )
+            except Exception as fb_exc:
+                logger.warning(
+                    "import_replacement_fallback_exception job=%s stage=%d error=%s",
+                    context_pack.job_id, context_pack.stage_index,
+                    str(fb_exc)[:200],
+                )
+                import_replacement_fallback_info = {
+                    "backend_import_replacement_fallback_attempted": True,
+                    "backend_import_replacement_fallback_succeeded": False,
+                    "backend_import_replacement_fallback_reason_code": "FALLBACK_EXCEPTION",
+                    "backend_generated_diff": False,
+                }
+
+        if import_replacement_resolved:
+            review_chain_update = dict(import_replacement_fallback_info)
+            review_chain_update.update({
+                "reviewer_mechanical_validation_issue": str(reviewed_diff_mechanical_issue) if reviewed_diff_mechanical_issue else "",
+                "final_diff_exists": True,
+                "proposal_created": False,
+                "gate_created": False,
+                "policy_ran": False,
+            })
+            failed_chain.update(review_chain_update)
+            reviewed_diff = _strip_reviewed_diff_fences(reviewed_diff)
+            reviewer_output["reviewed_diff"] = reviewed_diff
+            reviewer_output["reviewed_diff_checksum"] = sha256_canonical_json({"unified_diff": reviewed_diff})
+            # Clear the mechanical issue so success path continues
+        else:
+            if import_replacement_fallback_info:
+                failed_chain.update(import_replacement_fallback_info)
+                _write_json(output_dir / "review_chain.json", failed_chain)
+            raise RepairReviewChainProductionError(
+                f"Diff structure validation failed: {struct_issue}",
+                reason_code="MALFORMED_DIFF",
+                schema_name="RepairReviewerOutput",
+                role="reviewer",
+                partial_chain=failed_chain,
+            )
 
     reviewed_diff = _strip_reviewed_diff_fences(reviewed_diff)
     reviewer_output["reviewed_diff"] = reviewed_diff
@@ -2244,6 +2366,14 @@ def produce_repair_review_chain(
         review_chain["diff_normalized"] = True
     if was_hunk_repaired:
         review_chain["hunks_repaired"] = True
+    if reviewer_output.get("_backend_import_replacement"):
+        review_chain["backend_import_replacement_fallback_attempted"] = True
+        review_chain["backend_import_replacement_fallback_succeeded"] = True
+        review_chain["backend_import_replacement_fallback_reason_code"] = import_replacement_fallback_info.get("backend_import_replacement_fallback_reason_code", "IMPORT_REPLACEMENT_FALLBACK_SUCCEEDED")
+        review_chain["backend_generated_diff"] = True
+        review_chain["backend_generated_diff_checksum"] = import_replacement_fallback_info.get("backend_generated_diff_checksum", "")
+        review_chain["backend_generated_diff_changed_files"] = import_replacement_fallback_info.get("backend_generated_diff_changed_files", [])
+        review_chain["backend_generated_diff_replacement_count"] = import_replacement_fallback_info.get("backend_generated_diff_replacement_count", 0)
     if proposer_invocation_id is not None and reviewer_invocation_id is not None:
         review_chain["proposer_invocation_id"] = proposer_invocation_id
         review_chain["reviewer_invocation_id"] = reviewer_invocation_id

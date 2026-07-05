@@ -1303,6 +1303,15 @@ export type RepairMaterializationUnavailable = {
   reviewer_self_repair_schema_repair_failure_reason?: string | null;
   reviewer_self_repair_schema_repair_parse_failure_category?: string | null;
   apply_check_stderr_summary?: string | null;
+  backend_import_replacement_fallback_attempted?: boolean;
+  backend_import_replacement_fallback_eligible?: boolean;
+  backend_import_replacement_fallback_succeeded?: boolean;
+  backend_import_replacement_fallback_reason_code?: string | null;
+  backend_import_replacement_fallback_detail?: string | null;
+  backend_generated_diff?: boolean;
+  backend_generated_diff_checksum?: string | null;
+  backend_generated_diff_changed_files?: string[];
+  backend_generated_diff_replacement_count?: number;
 };
 
 export type RepairProposalCurrentResponse = {

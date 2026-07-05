@@ -563,6 +563,15 @@ class V2RepairGateService:
                 "applicability_reason_code", "applicability_checked_at",
                 "reviewer_applicability_repair_attempted",
                 "reviewer_applicability_repair_succeeded", "apply_check_stderr_summary",
+                "backend_import_replacement_fallback_attempted",
+                "backend_import_replacement_fallback_eligible",
+                "backend_import_replacement_fallback_succeeded",
+                "backend_import_replacement_fallback_reason_code",
+                "backend_import_replacement_fallback_detail",
+                "backend_generated_diff",
+                "backend_generated_diff_checksum",
+                "backend_generated_diff_changed_files",
+                "backend_generated_diff_replacement_count",
             ):
                 if key in mat_payload:
                     payload[key] = mat_payload[key]
@@ -821,6 +830,22 @@ class V2RepairGateService:
             payload["reviewer_output_checksum"] = str(chain.get("reviewer_output_checksum") or "")
         if chain.get("reviewer_self_repair_failure_reason"):
             payload["reviewer_self_repair_failure_reason"] = str(chain.get("reviewer_self_repair_failure_reason") or "")
+
+        fallback_keys = (
+            "backend_import_replacement_fallback_attempted",
+            "backend_import_replacement_fallback_eligible",
+            "backend_import_replacement_fallback_succeeded",
+            "backend_import_replacement_fallback_reason_code",
+            "backend_import_replacement_fallback_detail",
+            "backend_generated_diff",
+            "backend_generated_diff_checksum",
+            "backend_generated_diff_changed_files",
+            "backend_generated_diff_replacement_count",
+        )
+        for key in fallback_keys:
+            value = chain.get(key)
+            if value is not None:
+                payload[key] = value
         if self._llm_invocation_repo is not None:
             for record in self._llm_invocation_repo.list_by_job(job_id):
                 invocation_id = str(getattr(record, "invocation_id", "") or "")
@@ -930,6 +955,19 @@ class V2RepairGateService:
             "diff_normalized": diff_normalized,
             "message": "Reviewed repair diff materialized successfully.",
         }
+        fallback_keys = (
+            "backend_import_replacement_fallback_attempted",
+            "backend_import_replacement_fallback_succeeded",
+            "backend_import_replacement_fallback_reason_code",
+            "backend_generated_diff",
+            "backend_generated_diff_checksum",
+            "backend_generated_diff_changed_files",
+            "backend_generated_diff_replacement_count",
+        )
+        for key in fallback_keys:
+            value = chain.get(key)
+            if value is not None:
+                payload[key] = value
         self._event_repo.save(
             job_id=job_id,
             stage=stage_index,

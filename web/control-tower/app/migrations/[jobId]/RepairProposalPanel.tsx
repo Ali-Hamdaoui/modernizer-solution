@@ -989,6 +989,48 @@ export function ReviewedRepairMaterializationFailed({
                 <strong>{reviewerSelfRepairFailureReason}</strong>
               </div>
             )}
+            {typeof diagnostic?.backend_import_replacement_fallback_attempted === "boolean" && (
+              <div className="table-row">
+                <span className="meta">Backend import replacement fallback attempted</span>
+                <strong data-testid="backend-fallback-attempted">{diagnostic.backend_import_replacement_fallback_attempted ? "true" : "false"}</strong>
+              </div>
+            )}
+            {typeof diagnostic?.backend_import_replacement_fallback_succeeded === "boolean" && (
+              <div className="table-row">
+                <span className="meta">Backend import replacement fallback succeeded</span>
+                <strong data-testid="backend-fallback-succeeded">{diagnostic.backend_import_replacement_fallback_succeeded ? "true" : "false"}</strong>
+              </div>
+            )}
+            {diagnostic?.backend_import_replacement_fallback_reason_code && (
+              <div className="table-row">
+                <span className="meta">Backend fallback reason</span>
+                <strong data-testid="backend-fallback-reason">{diagnostic.backend_import_replacement_fallback_reason_code}</strong>
+              </div>
+            )}
+            {typeof diagnostic?.backend_generated_diff === "boolean" && (
+              <div className="table-row">
+                <span className="meta">Backend generated diff</span>
+                <strong data-testid="backend-generated-diff">{diagnostic.backend_generated_diff ? "true" : "false"}</strong>
+              </div>
+            )}
+            {diagnostic?.backend_generated_diff_checksum && (
+              <div className="table-row">
+                <span className="meta">Backend generated diff checksum</span>
+                <strong className="checksum" data-testid="backend-generated-diff-checksum">{diagnostic.backend_generated_diff_checksum}</strong>
+              </div>
+            )}
+            {diagnostic?.backend_generated_diff_changed_files && diagnostic.backend_generated_diff_changed_files.length > 0 && (
+              <div className="table-row">
+                <span className="meta">Backend changed files</span>
+                <strong data-testid="backend-changed-files">{diagnostic.backend_generated_diff_changed_files.join(", ")}</strong>
+              </div>
+            )}
+            {diagnostic?.backend_generated_diff_replacement_count != null && diagnostic.backend_generated_diff_replacement_count > 0 && (
+              <div className="table-row">
+                <span className="meta">Backend replacement count</span>
+                <strong data-testid="backend-replacement-count">{diagnostic.backend_generated_diff_replacement_count}</strong>
+              </div>
+            )}
             {diagnostic?.deployment_alias_hash && (
               <div className="table-row">
                 <span className="meta">Diagnostic deployment hash</span>
