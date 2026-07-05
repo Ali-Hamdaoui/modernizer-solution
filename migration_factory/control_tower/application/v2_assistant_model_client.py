@@ -46,6 +46,8 @@ class V2AssistantModelResult:
     total_tokens: int | None = None
     reasoning_tokens: int | None = None
     latency_ms: int | None = None
+    finish_reason: str = ""
+    max_output_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -379,6 +381,8 @@ class V2AssistantModelClient:
             total_tokens=usage_data.get("total_tokens"),
             reasoning_tokens=usage_data.get("reasoning_tokens"),
             latency_ms=latency_ms,
+            finish_reason=str(usage_data.get("finish_reason") or ""),
+            max_output_tokens=usage_data.get("max_output_tokens"),
         )
 
     def _answer_with_mistral(
@@ -493,6 +497,7 @@ class V2AssistantModelClient:
             failure_reason="",
             response_format_requested=require_schema,
             response_format_used=bool(response_format),
+            max_output_tokens=max_tokens,
         )
 
     def _to_assistant_result(self, routed: V2RoleModelResult) -> V2AssistantModelResult:
@@ -517,6 +522,8 @@ class V2AssistantModelClient:
             total_tokens=routed.total_tokens,
             reasoning_tokens=routed.reasoning_tokens,
             latency_ms=routed.latency_ms,
+            finish_reason=routed.finish_reason,
+            max_output_tokens=routed.max_output_tokens,
         )
 
     @staticmethod
@@ -876,6 +883,8 @@ class V2AssistantModelClient:
             # Empty response — log redacted diagnostics
             _log_empty_azure_response(data, deployment)
         usage = _extract_usage_data(data)
+        usage["finish_reason"] = _extract_finish_reason(data)
+        usage["max_output_tokens"] = max_completion_tokens
         return content, usage
 
     def _post_responses_v1(
@@ -1094,7 +1103,7 @@ def _extract_responses_output_text(data: Any) -> str:
     raise RuntimeError("missing responses output text")
 
 
-def _extract_usage_data(data: Any) -> dict[str, int | None]:
+def _extract_usage_data(data: Any) -> dict[str, Any]:
     """Extract usage token counts from an Azure OpenAI response dict."""
     if not isinstance(data, dict):
         return {"prompt_tokens": None, "completion_tokens": None, "total_tokens": None, "reasoning_tokens": None}
@@ -1116,6 +1125,16 @@ def _extract_usage_data(data: Any) -> dict[str, int | None]:
         "total_tokens": total_tokens,
         "reasoning_tokens": reasoning_tokens,
     }
+
+
+def _extract_finish_reason(data: Any) -> str:
+    if not isinstance(data, dict):
+        return ""
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first = choices[0] if isinstance(choices[0], dict) else {}
+    return str(first.get("finish_reason") or "")[:64]
 
 
 def _log_empty_azure_response(data: dict[str, Any], deployment: str) -> None:

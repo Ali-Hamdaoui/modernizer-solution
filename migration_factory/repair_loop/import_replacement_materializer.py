@@ -293,6 +293,7 @@ def materialize_import_replacement_diff(
         udiff = list(difflib.unified_diff(
             before_no_eol, after_no_eol,
             fromfile=f"a/{path}", tofile=f"b/{path}", n=3,
+            lineterm="",
         ))
         if not udiff:
             continue

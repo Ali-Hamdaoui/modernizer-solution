@@ -1787,12 +1787,47 @@ def produce_repair_review_chain(
             )
 
     if not reviewer_result.success:
+        schema_failure_artifact = _persist_reviewer_schema_failure_artifact(
+            output_dir=output_dir,
+            reviewer_result=reviewer_result,
+            reviewer_invocation_id=reviewer_invocation_id,
+        )
+        schema_diag = getattr(reviewer_result, "schema_diagnostics", None)
+        schema_repair_attempted = bool(
+            schema_diag.get("schema_repair_attempted")
+        ) if isinstance(schema_diag, dict) else False
+        schema_repair_succeeded = bool(
+            schema_diag.get("schema_repair_succeeded")
+        ) if isinstance(schema_diag, dict) else False
+        partial_chain = {
+            "reviewer_invocation_id": reviewer_invocation_id or "",
+            "reason_code": str(reviewer_result.failure_reason or "reviewer_model_failed"),
+            "schema_name": "RepairReviewerOutput",
+            "reviewer_schema_failure_ref": schema_failure_artifact,
+            "reviewer_self_repair_schema_repair_attempted": schema_repair_attempted,
+            "reviewer_self_repair_schema_repair_succeeded": schema_repair_succeeded,
+            "reviewer_self_repair_schema_repair_failure_reason": (
+                str(schema_diag.get("schema_repair_failure_reason") or "")
+                if isinstance(schema_diag, dict) else ""
+            ),
+            "reviewer_self_repair_schema_repair_parse_failure_category": (
+                str(schema_diag.get("schema_repair_parse_failure_category") or "")
+                if isinstance(schema_diag, dict) else ""
+            ),
+            "final_diff_exists": False,
+            "proposal_created": False,
+            "gate_created": False,
+            "policy_ran": False,
+        }
+        if proposer_invocation_id:
+            partial_chain["proposer_invocation_id"] = proposer_invocation_id
         raise RepairReviewChainProductionError(
             f"reviewer repair model failed closed: {reviewer_result.failure_reason or reviewer_result.model_status}",
             schema_diagnostics=getattr(reviewer_result, "schema_diagnostics", None),
             reason_code=str(reviewer_result.failure_reason or "reviewer_model_failed"),
             schema_name="RepairReviewerOutput",
             role="reviewer",
+            partial_chain=partial_chain,
         )
 
     reviewer_output = _coerce_reviewer_repair_output(
@@ -2206,6 +2241,8 @@ def produce_repair_review_chain(
                     "reviewer_self_repair_succeeded": mat_result.reviewer_self_repair_succeeded,
                     "rejected_paths": mat_result.rejected_paths,
                     "changed_lines_summary": mat_result.changed_lines_summary,
+                    "backend_import_replacement_diff_promoted": False,
+                    "backend_struct_issue": "",
                 }
                 _write_json(
                     output_dir / "backend_import_replacement_materialization.json",
@@ -2217,6 +2254,10 @@ def produce_repair_review_chain(
                     "backend_import_replacement_fallback_succeeded": mat_result.succeeded,
                     "backend_import_replacement_fallback_reason_code": mat_result.reason_code,
                     "backend_import_replacement_fallback_detail": mat_result.detail,
+                    "backend_import_replacement_diff_promoted": False,
+                    "backend_generated_diff": False,
+                    "original_struct_issue": mat_result.original_struct_issue,
+                    "backend_struct_issue": "",
                 }
 
                 if mat_result.succeeded and mat_result.diff_text:
@@ -2230,11 +2271,13 @@ def produce_repair_review_chain(
                         reviewer_output["diff_changed_by_reviewer"] = True
                         reviewer_output["_backend_import_replacement"] = True
                         import_replacement_fallback_info.update({
+                            "backend_import_replacement_diff_promoted": True,
                             "backend_generated_diff": True,
                             "backend_generated_diff_checksum": mat_result.generated_diff_checksum,
                             "backend_generated_diff_changed_files": mat_result.changed_files,
                             "backend_generated_diff_replacement_count": mat_result.replacement_count,
                         })
+                        fallback_artifact_payload["backend_import_replacement_diff_promoted"] = True
                         logger.info(
                             "import_replacement_fallback_succeeded job=%s stage=%d files=%s count=%d checksum=%s",
                             context_pack.job_id, context_pack.stage_index,
@@ -2242,15 +2285,30 @@ def produce_repair_review_chain(
                             mat_result.generated_diff_checksum,
                         )
                     else:
+                        import_replacement_fallback_info.update({
+                            "backend_import_replacement_diff_promoted": False,
+                            "backend_generated_diff": False,
+                            "backend_struct_issue": backend_struct_issue,
+                            "original_struct_issue": mat_result.original_struct_issue,
+                        })
+                        fallback_artifact_payload.update({
+                            "backend_import_replacement_diff_promoted": False,
+                            "backend_struct_issue": backend_struct_issue,
+                        })
                         logger.warning(
-                            "import_replacement_fallback_validation_failed job=%s stage=%d struct_issue=%s",
-                            context_pack.job_id, context_pack.stage_index, backend_struct_issue,
+                            "import_replacement_fallback_validation_failed job=%s stage=%d original_struct_issue=%s backend_struct_issue=%s",
+                            context_pack.job_id, context_pack.stage_index,
+                            mat_result.original_struct_issue, backend_struct_issue,
                         )
                 else:
                     logger.info(
                         "import_replacement_fallback_ineligible job=%s stage=%d reason=%s",
                         context_pack.job_id, context_pack.stage_index, mat_result.reason_code,
                     )
+                _write_json(
+                    output_dir / "backend_import_replacement_materialization.json",
+                    fallback_artifact_payload,
+                )
             except Exception as fb_exc:
                 logger.warning(
                     "import_replacement_fallback_exception job=%s stage=%d error=%s",
@@ -2370,6 +2428,8 @@ def produce_repair_review_chain(
         review_chain["backend_import_replacement_fallback_attempted"] = True
         review_chain["backend_import_replacement_fallback_succeeded"] = True
         review_chain["backend_import_replacement_fallback_reason_code"] = import_replacement_fallback_info.get("backend_import_replacement_fallback_reason_code", "IMPORT_REPLACEMENT_FALLBACK_SUCCEEDED")
+        review_chain["backend_import_replacement_diff_promoted"] = True
+        review_chain["original_struct_issue"] = import_replacement_fallback_info.get("original_struct_issue", "")
         review_chain["backend_generated_diff"] = True
         review_chain["backend_generated_diff_checksum"] = import_replacement_fallback_info.get("backend_generated_diff_checksum", "")
         review_chain["backend_generated_diff_changed_files"] = import_replacement_fallback_info.get("backend_generated_diff_changed_files", [])
@@ -2401,6 +2461,65 @@ def produce_repair_review_chain(
         reviewer_output["decision"],
     )
     return {"artifact_refs": produced_refs, "review_chain": review_chain}
+
+
+def _persist_reviewer_schema_failure_artifact(
+    *,
+    output_dir: Path,
+    reviewer_result: Any,
+    reviewer_invocation_id: str | None,
+) -> str:
+    diagnostics = getattr(reviewer_result, "schema_diagnostics", None)
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+    safe_keys = {
+        "parse_failure_category",
+        "output_checksum",
+        "response_format_requested",
+        "response_format_used",
+        "finish_reason",
+        "max_output_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "deployment_alias_hash",
+        "schema_repair_attempted",
+        "schema_repair_succeeded",
+        "schema_repair_failure_reason",
+        "schema_repair_parse_failure_category",
+        "schema_repair_output_checksum",
+        "original_schema_failure_reason",
+        "original_parse_failure_category",
+    }
+    safe_diag = {key: diagnostics.get(key) for key in safe_keys if key in diagnostics}
+    payload = {
+        "schema_name": "RepairReviewerOutput",
+        "role": "reviewer",
+        "reason_code": str(
+            diagnostics.get("reason_code")
+            or getattr(reviewer_result, "failure_reason", "")
+            or "reviewer_schema_invalid"
+        ),
+        "parse_failure_category": str(diagnostics.get("parse_failure_category") or ""),
+        "response_format_requested": bool(diagnostics.get("response_format_requested")),
+        "response_format_used": bool(diagnostics.get("response_format_used")),
+        "schema_repair_attempted": bool(diagnostics.get("schema_repair_attempted")),
+        "schema_repair_succeeded": bool(diagnostics.get("schema_repair_succeeded")),
+        "schema_repair_failure_reason": str(diagnostics.get("schema_repair_failure_reason") or ""),
+        "reviewer_invocation_id": reviewer_invocation_id or "",
+        "output_checksum": str(diagnostics.get("output_checksum") or ""),
+        "redacted_summary": str(getattr(reviewer_result, "redacted_summary", "") or "")[:1000],
+        "provider_alias": str(getattr(reviewer_result, "provider", "") or ""),
+        "deployment_alias_hash": str(
+            diagnostics.get("deployment_alias_hash")
+            or getattr(reviewer_result, "deployment_alias_hash", "")
+            or ""
+        ),
+        "schema_diagnostics": safe_diag,
+    }
+    path = output_dir / "reviewer_repair_schema_failure.json"
+    _write_json(path, payload)
+    return str(path)
 
 
 def _write_json(path: Path, payload: Any) -> None:

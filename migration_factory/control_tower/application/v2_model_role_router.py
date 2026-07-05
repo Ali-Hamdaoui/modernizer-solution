@@ -120,6 +120,8 @@ class V2RoleModelResult:
     total_tokens: int | None = None
     reasoning_tokens: int | None = None
     latency_ms: int | None = None
+    finish_reason: str = ""
+    max_output_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -169,6 +171,14 @@ class V2ModelRoleRouter:
         settings: ControlTowerSettings | None = None,
     ) -> V2RoleModelResult:
         route = self.plan(request, settings=settings)
+        capability_diag = self._schema_required_route_capability_issue(route, request)
+        if capability_diag is not None:
+            return self._deterministic_result(
+                request=request,
+                primary_failure_reason="REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE",
+                fallback_failure_reason="",
+                schema_diagnostics=capability_diag,
+            )
         primary_result, primary_failure = self._try_invoke(
             invoke,
             deployment=route.primary_deployment,
@@ -188,6 +198,11 @@ class V2ModelRoleRouter:
                     deployment=route.primary_deployment,
                     response_format_requested=result.response_format_requested,
                     response_format_used=result.response_format_used,
+                    finish_reason=result.finish_reason,
+                    max_output_tokens=result.max_output_tokens,
+                    prompt_tokens=result.prompt_tokens,
+                    completion_tokens=result.completion_tokens,
+                    total_tokens=result.total_tokens,
                 )
                 schema_summary = _build_schema_failure_summary(request, result.content)
                 if self._should_attempt_reviewer_schema_repair(request, schema_failure):
@@ -214,11 +229,16 @@ class V2ModelRoleRouter:
                     fallback_used=False,
                     schema_validated=True,
                     redacted_summary=schema_summary,
+                    response_format_requested=result.response_format_requested,
+                    response_format_used=result.response_format_used,
+                    deployment_alias_hash=result.deployment_alias_hash,
                     prompt_tokens=result.prompt_tokens,
                     completion_tokens=result.completion_tokens,
                     total_tokens=result.total_tokens,
                     reasoning_tokens=result.reasoning_tokens,
                     latency_ms=result.latency_ms,
+                    finish_reason=result.finish_reason,
+                    max_output_tokens=result.max_output_tokens,
                 )
             primary_failure = (
                 result.failure_reason
@@ -261,11 +281,16 @@ class V2ModelRoleRouter:
                         schema_validated=True,
                         redacted_summary=redacted or result.redacted_summary,
                         schema_diagnostics=schema_diag or None,
+                        response_format_requested=result.response_format_requested,
+                        response_format_used=result.response_format_used,
+                        deployment_alias_hash=result.deployment_alias_hash,
                         prompt_tokens=result.prompt_tokens,
                         completion_tokens=result.completion_tokens,
                         total_tokens=result.total_tokens,
                         reasoning_tokens=result.reasoning_tokens,
                         latency_ms=result.latency_ms,
+                        finish_reason=result.finish_reason,
+                        max_output_tokens=result.max_output_tokens,
                     )
                 fallback_failure = result.failure_reason or schema_failure or fallback_failure or "fallback_model_failed"
             else:
@@ -362,6 +387,11 @@ class V2ModelRoleRouter:
             deployment=route.primary_deployment,
             response_format_requested=result.response_format_requested,
             response_format_used=result.response_format_used,
+            finish_reason=result.finish_reason,
+            max_output_tokens=result.max_output_tokens,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            total_tokens=result.total_tokens,
         )
         repair_diag["schema_repair_output_checksum"] = str(
             repair_result_diag.get("output_checksum") or ""
@@ -405,6 +435,8 @@ class V2ModelRoleRouter:
                     total_tokens=result.total_tokens,
                     reasoning_tokens=result.reasoning_tokens,
                     latency_ms=result.latency_ms,
+                    finish_reason=result.finish_reason,
+                    max_output_tokens=result.max_output_tokens,
                 ),
                 success_diag,
             )
@@ -435,6 +467,8 @@ class V2ModelRoleRouter:
             total_tokens=getattr(result, "total_tokens", None),
             reasoning_tokens=getattr(result, "reasoning_tokens", None),
             latency_ms=getattr(result, "latency_ms", None),
+            finish_reason=str(getattr(result, "finish_reason", "") or ""),
+            max_output_tokens=getattr(result, "max_output_tokens", None),
         )
 
     def _coerce_fallback_result(
@@ -463,10 +497,42 @@ class V2ModelRoleRouter:
             total_tokens=coerced.total_tokens,
             reasoning_tokens=coerced.reasoning_tokens,
             latency_ms=coerced.latency_ms,
+            finish_reason=coerced.finish_reason,
+            max_output_tokens=coerced.max_output_tokens,
         )
 
     def _schema_ok(self, request: V2RoleModelRequest, content: str) -> bool:
         return self._schema_failure_reason(request, content) == ""
+
+    def _schema_required_route_capability_issue(
+        self,
+        route: V2RoleModelRoute,
+        request: V2RoleModelRequest,
+    ) -> dict[str, Any] | None:
+        if not (
+            request.role == V2ModelRole.REVIEWER
+            and request.require_schema
+            and request.output_schema_name == "RepairReviewerOutput"
+        ):
+            return None
+        role_config = ModelRoleConfigLoader.try_load_role("reviewer")
+        if role_config is None or role_config.supports_json_object:
+            return None
+        return {
+            "schema_validated": False,
+            "schema_name": request.output_schema_name,
+            "role": request.role.value,
+            "stage": "reviewer",
+            "reason_code": "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE",
+            "parse_failure_category": "unsupported_response_format",
+            "response_format_requested": True,
+            "response_format_used": False,
+            "deployment_alias_hash": _deployment_alias_hash(route.primary_deployment),
+            "responsibility": (request.responsibility or "").strip(),
+            "schema_repair_attempted": False,
+            "schema_repair_succeeded": False,
+            "schema_repair_failure_reason": "schema_capability_unavailable",
+        }
 
     def _schema_failure_reason(self, request: V2RoleModelRequest, content: str) -> str:
         if not request.require_schema:
@@ -498,6 +564,11 @@ class V2ModelRoleRouter:
         deployment: str = "",
         response_format_requested: bool | None = None,
         response_format_used: bool | None = None,
+        finish_reason: str = "",
+        max_output_tokens: int | None = None,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        total_tokens: int | None = None,
     ) -> dict[str, Any]:
         """Return safe schema diagnostics without leaking raw content."""
         if not request.require_schema or not request.output_schema_name:
@@ -518,6 +589,16 @@ class V2ModelRoleRouter:
             "deployment_alias_hash": _deployment_alias_hash(deployment),
             "responsibility": (request.responsibility or "").strip(),
         }
+        if finish_reason:
+            base["finish_reason"] = str(finish_reason)
+        if max_output_tokens is not None:
+            base["max_output_tokens"] = max_output_tokens
+        if prompt_tokens is not None:
+            base["prompt_tokens"] = prompt_tokens
+        if completion_tokens is not None:
+            base["completion_tokens"] = completion_tokens
+        if total_tokens is not None:
+            base["total_tokens"] = total_tokens
         if parsed is None:
             base.update({
                 "schema_validated": False,
@@ -590,6 +671,9 @@ class V2ModelRoleRouter:
             schema_validated=schema_validated,
             redacted_summary=redacted,
             schema_diagnostics=schema_diagnostics,
+            response_format_requested=bool((schema_diagnostics or {}).get("response_format_requested")),
+            response_format_used=bool((schema_diagnostics or {}).get("response_format_used")),
+            deployment_alias_hash=str((schema_diagnostics or {}).get("deployment_alias_hash") or ""),
         )
 
     def _build_schema_redacted_summary(
@@ -775,7 +859,7 @@ def _build_diagnostic_summary_from_diag(diag: dict[str, Any]) -> str:
         return f"{subject} model response appears truncated."
 
     if category == "unsupported_response_format":
-        return f"{subject} model returned unsupported response format."
+        return f"{subject} model route does not support required structured output."
 
     if category == "invalid_json":
         return f"{subject} model returned invalid JSON."

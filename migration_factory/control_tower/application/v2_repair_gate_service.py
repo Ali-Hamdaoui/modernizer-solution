@@ -521,11 +521,13 @@ class V2RepairGateService:
 
         if mat_event is not None:
             message = "Reviewed repair unavailable because the latest reviewed diff failed structural validation."
-        elif reason_code == "reviewer_schema_invalid":
+        elif reason_code in {"reviewer_schema_invalid", "REVIEWER_SCHEMA_INVALID"}:
             if schema_diagnostics and str(schema_diagnostics.get("responsibility") or "").strip() == "repair_review_self_repair":
                 message = "Reviewer self-repair output failed schema validation."
             else:
                 message = "Reviewer model output failed schema validation."
+        elif reason_code == "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE":
+            message = "No schema-capable reviewer deployment is configured."
         else:
             reviewer_completed = reviewer_status.lower() == "completed"
             if reviewer_completed or (main_status.lower() == "completed" and reason_code == "duplicate_main_blocked"):
@@ -568,6 +570,9 @@ class V2RepairGateService:
                 "backend_import_replacement_fallback_succeeded",
                 "backend_import_replacement_fallback_reason_code",
                 "backend_import_replacement_fallback_detail",
+                "backend_import_replacement_diff_promoted",
+                "original_struct_issue",
+                "backend_struct_issue",
                 "backend_generated_diff",
                 "backend_generated_diff_checksum",
                 "backend_generated_diff_changed_files",
@@ -589,6 +594,8 @@ class V2RepairGateService:
                     "has_proposed_diff", "proposed_diff_parse_status",
                     "output_checksum", "response_format_requested",
                     "response_format_used", "deployment_alias_hash", "reason_code",
+                    "finish_reason", "max_output_tokens", "prompt_tokens",
+                    "completion_tokens", "total_tokens",
                     "schema_name", "original_schema_failure_reason",
                     "original_parse_failure_category", "schema_repair_attempted",
                     "schema_repair_succeeded", "schema_repair_failure_reason",
@@ -752,6 +759,8 @@ class V2RepairGateService:
             fallback_message = "Reviewer checksum binding did not match the reviewed artifacts."
         elif reason_code == "REVIEWER_SCHEMA_INVALID":
             fallback_message = "Reviewer output failed schema validation."
+        elif reason_code == "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE":
+            fallback_message = "No schema-capable reviewer deployment is configured."
         elif reason_code == "REVIEWER_MODEL_UNAVAILABLE":
             fallback_message = "Reviewer model was unavailable."
         elif reason_code == "REVIEWER_MODEL_FAILED":
@@ -799,13 +808,15 @@ class V2RepairGateService:
             "reviewer_self_repair_schema_repair_succeeded": bool(chain.get("reviewer_self_repair_schema_repair_succeeded")),
             "reviewer_self_repair_schema_repair_failure_reason": str(chain.get("reviewer_self_repair_schema_repair_failure_reason") or ""),
             "reviewer_self_repair_schema_repair_parse_failure_category": str(chain.get("reviewer_self_repair_schema_repair_parse_failure_category") or ""),
+            "reviewer_schema_failure_ref": str(chain.get("reviewer_schema_failure_ref") or ""),
             "apply_check_stderr_summary": detail if reason_code == REASON_CODE_PATCH_CHECK_FAILED else "",
             "schema_name": "RepairReviewerOutput" if reason_code in {
                 "MALFORMED_DIFF", "REVIEWED_DIFF_STRUCTURAL_INVALID", "REVIEWER_ACCEPT_CONTRACT_INVALID",
                 "REVIEWER_ACCEPTED_EMPTY_REVIEWED_DIFF", "REVIEWER_DECLINED_REPAIR",
                 "REVIEWER_NEEDS_MORE_CONTEXT", "REVIEWER_REQUESTED_REVISION",
                 "REVIEWER_INVALID_DECISION", "REVIEWER_CHECKSUM_MISMATCH",
-                "REVIEWER_SCHEMA_INVALID", "REVIEWER_MODEL_UNAVAILABLE", "REVIEWER_MODEL_FAILED",
+                "REVIEWER_SCHEMA_INVALID", "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE",
+                "REVIEWER_MODEL_UNAVAILABLE", "REVIEWER_MODEL_FAILED",
                 "REVIEWER_OUTPUT_ARTIFACT_MISSING",
                 REASON_CODE_PATCH_CHECK_FAILED,
             } else "RepairPrimaryOutput",
@@ -837,6 +848,9 @@ class V2RepairGateService:
             "backend_import_replacement_fallback_succeeded",
             "backend_import_replacement_fallback_reason_code",
             "backend_import_replacement_fallback_detail",
+            "backend_import_replacement_diff_promoted",
+            "original_struct_issue",
+            "backend_struct_issue",
             "backend_generated_diff",
             "backend_generated_diff_checksum",
             "backend_generated_diff_changed_files",
@@ -959,6 +973,9 @@ class V2RepairGateService:
             "backend_import_replacement_fallback_attempted",
             "backend_import_replacement_fallback_succeeded",
             "backend_import_replacement_fallback_reason_code",
+            "backend_import_replacement_diff_promoted",
+            "original_struct_issue",
+            "backend_struct_issue",
             "backend_generated_diff",
             "backend_generated_diff_checksum",
             "backend_generated_diff_changed_files",
@@ -2705,6 +2722,7 @@ def _reviewed_repair_unavailable_reason(exc: Exception) -> str:
             "REVIEWER_INVALID_DECISION",
             "REVIEWER_CHECKSUM_MISMATCH",
             "REVIEWER_SCHEMA_INVALID",
+            "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE",
             "REVIEWER_MODEL_UNAVAILABLE",
             "REVIEWER_MODEL_FAILED",
             "REVIEWER_OUTPUT_ARTIFACT_MISSING",
@@ -2724,6 +2742,8 @@ def _reviewed_repair_unavailable_reason(exc: Exception) -> str:
         return raw_reason_code
     if "proposer_schema_invalid" in text or "primary repair output" in text or "azure_response_format_rejected" in text:
         return "proposer_schema_invalid"
+    if "reviewer_schema_capability_unavailable" in text or "schema_capability_unavailable" in text:
+        return "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE"
     if "reviewer_model_unavailable" in text or "missing_reviewer_deployment" in text:
         return "reviewer_model_unavailable"
     if "reviewer_schema_invalid" in text or "reviewer output must be valid json" in text:
@@ -2797,6 +2817,7 @@ def _materialization_reason_code(reason: str | None) -> str:
         "REVIEWER_INVALID_DECISION",
         "REVIEWER_CHECKSUM_MISMATCH",
         "REVIEWER_SCHEMA_INVALID",
+        "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE",
         "REVIEWER_MODEL_UNAVAILABLE",
         "REVIEWER_MODEL_FAILED",
         "REVIEWER_OUTPUT_ARTIFACT_MISSING",
@@ -2822,6 +2843,8 @@ def _materialization_reason_code(reason: str | None) -> str:
         return "REVIEWER_INVALID_DECISION"
     if "checksum_mismatch" in lowered:
         return "REVIEWER_CHECKSUM_MISMATCH"
+    if "schema_capability_unavailable" in lowered:
+        return "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE"
     if "model_unavailable" in lowered:
         return "REVIEWER_MODEL_UNAVAILABLE"
     if "model_failed" in lowered:
