@@ -65,6 +65,12 @@ def _stage_evidence(sandbox: Path, target: Path) -> dict[str, Any]:
                 "internal_ref": str(target),
                 "excerpt": target.read_text(encoding="utf-8"),
             },
+            {
+                "kind": "test_report",
+                "ref": str(target.parent.parent.parent / "surefire-reports" / "TEST-ExampleTest.xml"),
+                "internal_ref": str(target.parent.parent.parent / "surefire-reports" / "TEST-ExampleTest.xml"),
+                "excerpt": "<testsuite failures='1'><failure>MockitoAnnotations.initMocks(this);</failure></testsuite>",
+            },
             {"kind": "sandbox", "ref": str(sandbox), "internal_ref": str(sandbox)},
         ],
     }

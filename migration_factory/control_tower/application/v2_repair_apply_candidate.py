@@ -9,6 +9,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from migration_factory.control_tower.application.redaction import redact_absolute_paths, redact_model_summary
+from migration_factory.control_tower.application.v2_post_repair_verification import run_post_repair_verification
 from migration_factory.control_tower.application.v2_repair_family_registry import repair_family_policy
 from migration_factory.control_tower.application.v2_repair_subfamily_classifier import classify_repair_subfamily
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json, stream_sha256, utc_now_text
@@ -80,6 +81,7 @@ def apply_approved_repair_candidate(
     approval: dict[str, Any],
     *,
     verification_runner: Callable[[Path], tuple[bool, str]] | None = None,
+    post_repair_verification_runner: Callable[[list[str], Path], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Apply backend-owned recipe to sandbox only, verify, rollback on failure."""
 
@@ -95,7 +97,12 @@ def apply_approved_repair_candidate(
 
     file_changes = candidate.get("_file_changes") if isinstance(candidate.get("_file_changes"), list) else []
     if file_changes:
-        return _apply_multi_file_candidate(candidate, approval, verification_runner=verification_runner)
+        return _apply_multi_file_candidate(
+            candidate,
+            approval,
+            verification_runner=verification_runner,
+            post_repair_verification_runner=post_repair_verification_runner,
+        )
 
     before = target.read_text(encoding="utf-8", errors="replace")
     rollback_dir = sandbox / ".migration" / "rollback" / str(candidate["repair_candidate_id"])
@@ -120,7 +127,17 @@ def apply_approved_repair_candidate(
             verification_log=verification_log,
             rollback_status="not_needed",
         )
-        return _execution_result(candidate, approval, "verified", f"sha256:{post_checksum}", "passed", verification_log, "not_needed", proof)
+        execution = _execution_result(candidate, approval, "verified", f"sha256:{post_checksum}", "passed", verification_log, "not_needed", proof)
+        post_repair = run_post_repair_verification(
+            job_id=str(candidate.get("job_id") or ""),
+            stage_index=int(candidate.get("stage_index") or 1),
+            repair_candidate=candidate,
+            approval=approval,
+            command_runner=post_repair_verification_runner,
+        )
+        execution["post_repair_verification"] = {key: value for key, value in post_repair.items() if key != "_next_repair_candidate"}
+        execution.update(post_repair)
+        return execution
     except Exception as exc:
         target.write_text(before, encoding="utf-8")
         rollback_checksum, _ = stream_sha256(target)
@@ -287,11 +304,15 @@ def _build_candidate(
     if len(matches) != 1:
         return None
     after = INITMOCKS_PATTERN.sub(lambda match: f"MockitoAnnotations.openMocks({match.group(1)});", before, count=1)
+    before_checksum = _text_checksum(before)
+    after_checksum = _text_checksum(after)
     patch_payload = {
         "recipe": BACKEND_RECIPE,
         "target_file": target_rel,
         "before_marker": "MockitoAnnotations.initMocks",
         "after_marker": "MockitoAnnotations.openMocks",
+        "before_checksum": before_checksum,
+        "after_checksum": after_checksum,
     }
     if proposed_diff_checksum:
         patch_payload["proposed_diff_checksum"] = proposed_diff_checksum
@@ -329,12 +350,14 @@ def _build_candidate(
         "rollback_status": "not_started",
         "proof_artifact": "",
         "created_at": utc_now_text(),
+        "_before_checksum": before_checksum,
+        "_after_checksum": after_checksum,
         "_sandbox_root": str(sandbox_root),
         "_target_path": str(target_path),
         "_after_text": after,
         "_patch_payload": patch_payload,
     }
-    candidate["candidate_checksum"] = f"sha256:{sha256_canonical_json(public_repair_apply_candidate(candidate))}"
+    candidate["candidate_checksum"] = f"sha256:{sha256_canonical_json(_candidate_checksum_payload(candidate))}"
     return candidate
 
 
@@ -361,6 +384,8 @@ def _create_jackson_candidate_from_evidence(classification: dict[str, Any], stag
         return None
     checksum, _ = stream_sha256(pom_path)
     pre_apply_checksum = f"sha256:{checksum}"
+    before_checksum = _text_checksum(before)
+    after_checksum = _text_checksum(after)
     patch_payload = {
         "recipe": JACKSON_BACKEND_RECIPE,
         "target_files": [target_rel],
@@ -369,6 +394,9 @@ def _create_jackson_candidate_from_evidence(classification: dict[str, Any], stag
         "source": "cli_msa_utils_reference_advisory",
         "authority": "backend_deterministic_recipe",
         "change_preview": previews,
+        "before_checksum": before_checksum,
+        "after_checksum": after_checksum,
+        "evidence_pack_checksum": stage_evidence.get("evidence_pack_checksum", ""),
     }
     review_payload = {
         "family": JACKSON_FAMILY,
@@ -430,12 +458,15 @@ def _create_jackson_candidate_from_evidence(classification: dict[str, Any], stag
             "mvn test",
         ],
         "created_at": utc_now_text(),
+        "_before_checksum": before_checksum,
+        "_after_checksum": after_checksum,
+        "_evidence_pack_checksum": stage_evidence.get("evidence_pack_checksum", ""),
         "_sandbox_root": str(sandbox_root),
         "_target_path": str(pom_path),
         "_after_text": after,
         "_patch_payload": patch_payload,
     }
-    candidate["candidate_checksum"] = f"sha256:{sha256_canonical_json(public_repair_apply_candidate(candidate))}"
+    candidate["candidate_checksum"] = f"sha256:{sha256_canonical_json(_candidate_checksum_payload(candidate))}"
     return candidate
 
 
@@ -463,12 +494,16 @@ def _create_sort_candidate_from_evidence(classification: dict[str, Any], stage_e
         if preview is None:
             return None
         checksum, _ = stream_sha256(target_path)
+        before_checksum = _text_checksum(before)
+        after_checksum = _text_checksum(after)
         changes.append({
             "target_file": target_rel,
             "pre_apply_checksum": f"sha256:{checksum}",
             "before_marker": "new Sort(",
             "after_marker": "Sort.by(",
             "change_preview": preview,
+            "before_checksum": before_checksum,
+            "after_checksum": after_checksum,
             "_target_path": str(target_path),
             "_after_text": after,
             "_before_text": before,
@@ -483,6 +518,17 @@ def _create_sort_candidate_from_evidence(classification: dict[str, Any], stage_e
         "operations": ["replace Spring Data Sort constructor with Sort.by"],
         "golden_reference": "msa-utils migrated/reference advisory evidence only",
         "change_preview": [change["change_preview"] for change in changes],
+        "evidence_pack_checksum": stage_evidence.get("evidence_pack_checksum", ""),
+        "file_changes": [
+            {
+                "target_file": change["target_file"],
+                "before_checksum": change["before_checksum"],
+                "after_checksum": change["after_checksum"],
+                "before_marker": change["before_marker"],
+                "after_marker": change["after_marker"],
+            }
+            for change in changes
+        ],
     }
     review_payload = {
         "family": SORT_FAMILY,
@@ -538,13 +584,16 @@ def _create_sort_candidate_from_evidence(classification: dict[str, Any], stage_e
             "target_files": patch_payload["target_files"],
         },
         "created_at": utc_now_text(),
+        "_before_checksums": [change["before_checksum"] for change in changes],
+        "_after_checksums": [change["after_checksum"] for change in changes],
+        "_evidence_pack_checksum": stage_evidence.get("evidence_pack_checksum", ""),
         "_sandbox_root": str(sandbox_root),
         "_target_path": str(target_paths[0]),
         "_after_text": changes[0]["_after_text"],
         "_file_changes": changes,
         "_patch_payload": patch_payload,
     }
-    candidate["candidate_checksum"] = f"sha256:{sha256_canonical_json(public_repair_apply_candidate(candidate))}"
+    candidate["candidate_checksum"] = f"sha256:{sha256_canonical_json(_candidate_checksum_payload(candidate))}"
     return candidate
 
 
@@ -686,6 +735,7 @@ def _apply_multi_file_candidate(
     approval: dict[str, Any],
     *,
     verification_runner: Callable[[Path], tuple[bool, str]] | None = None,
+    post_repair_verification_runner: Callable[[list[str], Path], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     sandbox = Path(str(candidate.get("_sandbox_root") or "")).resolve()
     changes = [item for item in candidate.get("_file_changes", []) if isinstance(item, dict)]
@@ -721,7 +771,17 @@ def _apply_multi_file_candidate(
             verification_log="; ".join(verification_logs),
             rollback_status="not_needed",
         )
-        return _execution_result(candidate, approval, "verified", post_apply_checksum, "passed", "; ".join(verification_logs), "not_needed", proof)
+        execution = _execution_result(candidate, approval, "verified", post_apply_checksum, "passed", "; ".join(verification_logs), "not_needed", proof)
+        post_repair = run_post_repair_verification(
+            job_id=str(candidate.get("job_id") or ""),
+            stage_index=int(candidate.get("stage_index") or 1),
+            repair_candidate=candidate,
+            approval=approval,
+            command_runner=post_repair_verification_runner,
+        )
+        execution["post_repair_verification"] = {key: value for key, value in post_repair.items() if key != "_next_repair_candidate"}
+        execution.update(post_repair)
+        return execution
     except Exception as exc:
         for target, before in before_by_path.items():
             target.write_text(before, encoding="utf-8")
@@ -1017,6 +1077,24 @@ def _has_direct_dependency(text: str, group_id: str, artifact_id: str) -> bool:
         r".*?</dependency>"
     )
     return bool(re.search(pattern, text, re.DOTALL))
+
+
+def _text_checksum(text: str) -> str:
+    return f"sha256:{sha256_canonical_json({'text': text})}"
+
+
+def _candidate_checksum_payload(candidate: dict[str, Any]) -> dict[str, Any]:
+    public = public_repair_apply_candidate(candidate) or {}
+    return {
+        "public": public,
+        "after_checksum": candidate.get("_after_checksum") or candidate.get("_after_checksums") or "",
+        "before_checksum": candidate.get("_before_checksum") or candidate.get("_before_checksums") or "",
+        "file_changes": candidate.get("_file_changes") or [],
+        "target_file_checksum": public.get("target_file_checksum", ""),
+        "patch_checksum": public.get("patch_checksum", ""),
+        "review_checksum": public.get("review_checksum", ""),
+        "evidence_pack_checksum": candidate.get("_evidence_pack_checksum") or public.get("evidence_pack_checksum", ""),
+    }
 
 
 def _safe_relative(value: str) -> str:

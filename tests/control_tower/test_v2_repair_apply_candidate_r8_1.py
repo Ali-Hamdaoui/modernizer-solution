@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pytest
 
 from migration_factory.control_tower.adapters.fastapi import create_app
 from migration_factory.control_tower.application.v2_repair_apply_candidate import (
@@ -400,6 +401,23 @@ def _jackson_evidence(pom: Path, sandbox: Path, *, include_mismatch: bool = True
     return classification, stage_evidence
 
 
+class _FakePostRepairRunner:
+    def __init__(self, responses: dict[str, dict[str, Any]]) -> None:
+        self.responses = responses
+        self.calls: list[tuple[list[str], str]] = []
+
+    def __call__(self, command: list[str], cwd: Path) -> dict[str, Any]:
+        self.calls.append((list(command), str(cwd)))
+        key = " ".join(command)
+        response = dict(self.responses.get(key, {"exit_code": 1, "stdout": "", "stderr": f"missing response: {key}"}))
+        response.setdefault("command", list(command))
+        response.setdefault("working_directory", str(cwd))
+        response.setdefault("started_at", "2026-07-05T00:00:00Z")
+        response.setdefault("completed_at", "2026-07-05T00:00:01Z")
+        response.setdefault("duration_ms", 1)
+        return response
+
+
 def test_sort_by_apply_candidate_is_governed_and_not_auto_applied(tmp_path: Path) -> None:
     _, dto, search, classification, stage_evidence = _sort_sandbox(tmp_path)
 
@@ -552,8 +570,14 @@ def test_jackson_alignment_candidate_applies_after_checksum_approval(tmp_path: P
         "target_file_checksum": candidate["target_file_checksum"],
         "review_checksum": candidate["review_checksum"],
     })
+    runner = _FakePostRepairRunner(
+        {
+            "mvn -DskipTests clean compile": {"exit_code": 0, "stdout": "[INFO] BUILD SUCCESS", "stderr": ""},
+            "mvn test": {"exit_code": 0, "stdout": "Tests run: 124, Failures: 0, Errors: 0, Skipped: 4", "stderr": ""},
+        }
+    )
 
-    result = apply_approved_repair_candidate(candidate, approval)
+    result = apply_approved_repair_candidate(candidate, approval, post_repair_verification_runner=runner)
 
     text = pom.read_text(encoding="utf-8")
     assert "<fasterxml-jackson.version>2.13.5</fasterxml-jackson.version>" in text
@@ -570,6 +594,163 @@ def test_jackson_alignment_candidate_applies_after_checksum_approval(tmp_path: P
     assert (sandbox / ".migration" / "repair-proofs" / f"{candidate['repair_candidate_id']}.json").is_file()
 
 
+def test_post_repair_verification_failure_after_sort_creates_jackson_candidate(tmp_path: Path) -> None:
+    _, dto, search, classification, stage_evidence = _sort_sandbox(tmp_path)
+    sandbox = tmp_path / "sandbox"
+    (sandbox / "pom.xml").write_text(_jackson_pom(), encoding="utf-8")
+    candidate = create_repair_apply_candidate(classification, stage_evidence, {})
+    assert candidate is not None
+    approval = approve_repair_apply_candidate(candidate, {
+        "repair_candidate_id": candidate["repair_candidate_id"],
+        "patch_checksum": candidate["patch_checksum"],
+        "target_file_checksum": candidate["target_file_checksum"],
+        "review_checksum": candidate["review_checksum"],
+    })
+    runner = _FakePostRepairRunner(
+        {
+            "mvn -DskipTests clean compile": {"exit_code": 0, "stdout": "[INFO] BUILD SUCCESS", "stderr": ""},
+            "mvn test": {
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": "\n".join([
+                    "java.lang.NoClassDefFoundError: com/fasterxml/jackson/databind/ser/std/ToStringSerializerBase",
+                    "at com.total.corp.common.util.MessageUtils.createObjectMapper(MessageUtils.java:50)",
+                    "MessageUtilsTest failed",
+                    "com.fasterxml.jackson.core:jackson-databind:jar:2.13.5 omitted for conflict with 2.9.6",
+                    "com.fasterxml.jackson.core:jackson-core:jar:2.13.5 omitted for conflict with 2.10.0",
+                    "selected jackson-databind is 2.9.6",
+                    "selected jackson-core is 2.10.0",
+                ]),
+            },
+            "mvn dependency:tree -DoutputType=text": {
+                "exit_code": 0,
+                "stdout": "\n".join([
+                    "[INFO] com.fasterxml.jackson.core:jackson-databind:jar:2.13.5 omitted for conflict with 2.9.6",
+                    "[INFO] com.fasterxml.jackson.core:jackson-core:jar:2.13.5 omitted for conflict with 2.10.0",
+                    "[INFO] selected jackson-databind is 2.9.6",
+                    "[INFO] selected jackson-core is 2.10.0",
+                ]),
+                "stderr": "",
+            },
+        }
+    )
+
+    result = apply_approved_repair_candidate(candidate, approval, post_repair_verification_runner=runner)
+
+    assert result["verification_status"] == "passed"
+    assert result["post_repair_verification_status"] == "failed"
+    assert result["stage_recovery_status"] == "still_failed"
+    assert result["downstream_start_allowed"] is False
+    assert result["classification"]["failure_type"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+    next_candidate = result["next_repair_candidate"]
+    assert next_candidate is not None
+    assert next_candidate["family"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+    assert next_candidate["recipe_id"] == "JACKSON_PROPERTY_BOM_ALIGNMENT"
+    assert next_candidate["approval_required"] is True
+    assert next_candidate["apply_enabled"] is False
+    assert next_candidate["sandbox_only"] is True
+    assert next_candidate["downstream_start_allowed"] is False
+    artifacts = {item["kind"]: item for item in result["post_repair_verification"]["evidence_pack"]["usable_artifacts"]}
+    assert "ToStringSerializerBase" in artifacts["test_report"]["excerpt"]
+    assert "jackson-databind" in artifacts["dependency_graph"]["excerpt"]
+
+
+def test_post_repair_verification_success_marks_stage_recovered(tmp_path: Path) -> None:
+    _, dto, search, classification, stage_evidence = _sort_sandbox(tmp_path)
+    sandbox = tmp_path / "sandbox"
+    (sandbox / "pom.xml").write_text(_jackson_pom(), encoding="utf-8")
+    candidate = create_repair_apply_candidate(classification, stage_evidence, {})
+    assert candidate is not None
+    approval = approve_repair_apply_candidate(candidate, {
+        "repair_candidate_id": candidate["repair_candidate_id"],
+        "patch_checksum": candidate["patch_checksum"],
+        "target_file_checksum": candidate["target_file_checksum"],
+        "review_checksum": candidate["review_checksum"],
+    })
+    runner = _FakePostRepairRunner(
+        {
+            "mvn -DskipTests clean compile": {"exit_code": 0, "stdout": "[INFO] BUILD SUCCESS", "stderr": ""},
+            "mvn test": {"exit_code": 0, "stdout": "Tests run: 124, Failures: 0, Errors: 0, Skipped: 4", "stderr": ""},
+        }
+    )
+
+    result = apply_approved_repair_candidate(candidate, approval, post_repair_verification_runner=runner)
+
+    assert result["verification_status"] == "passed"
+    assert result["post_repair_verification_status"] == "passed"
+    assert result["stage_recovery_status"] == "recovered"
+    assert result["downstream_start_allowed"] is False
+    assert result["post_repair_proof_artifact"]
+    assert result["post_repair_verification"]["post_repair_verification_status"] == "passed"
+    assert result["post_repair_verification"]["stage_recovery_status"] == "recovered"
+    assert result["next_repair_candidate"] is None
+
+
+def test_post_repair_verification_ignores_browser_command_and_sandbox_override(tmp_path: Path) -> None:
+    _, dto, search, classification, stage_evidence = _sort_sandbox(tmp_path)
+    sandbox = tmp_path / "sandbox"
+    (sandbox / "pom.xml").write_text(_jackson_pom(), encoding="utf-8")
+    candidate = create_repair_apply_candidate(classification, stage_evidence, {})
+    assert candidate is not None
+    candidate["command"] = "echo hacked"
+    candidate["sandbox_path"] = r"C:\wrong"
+    approval = approve_repair_apply_candidate(candidate, {
+        "repair_candidate_id": candidate["repair_candidate_id"],
+        "patch_checksum": candidate["patch_checksum"],
+        "target_file_checksum": candidate["target_file_checksum"],
+        "review_checksum": candidate["review_checksum"],
+    })
+    runner = _FakePostRepairRunner(
+        {
+            "mvn -DskipTests clean compile": {"exit_code": 0, "stdout": "[INFO] BUILD SUCCESS", "stderr": ""},
+            "mvn test": {"exit_code": 0, "stdout": "Tests run: 124, Failures: 0, Errors: 0, Skipped: 4", "stderr": ""},
+        }
+    )
+
+    result = apply_approved_repair_candidate(candidate, approval, post_repair_verification_runner=runner)
+
+    assert runner.calls[0][0] == ["mvn", "-DskipTests", "clean", "compile"]
+    assert runner.calls[1][0] == ["mvn", "test"]
+    assert runner.calls[0][1] == str(sandbox.resolve())
+    assert result["downstream_start_allowed"] is False
+
+
+def test_jackson_alignment_checksum_changes_with_after_text(tmp_path: Path) -> None:
+    sandbox_a = tmp_path / "sandbox-a"
+    sandbox_b = tmp_path / "sandbox-b"
+    pom_a = sandbox_a / "pom.xml"
+    pom_b = sandbox_b / "pom.xml"
+    sandbox_a.mkdir(parents=True)
+    sandbox_b.mkdir(parents=True)
+    pom_a.write_text(_jackson_pom(), encoding="utf-8")
+    pom_b.write_text(_jackson_pom(dependency_management=True), encoding="utf-8")
+    class_a, evidence_a = _jackson_evidence(pom_a, sandbox_a)
+    class_b, evidence_b = _jackson_evidence(pom_b, sandbox_b)
+    candidate_a = create_repair_apply_candidate(class_a, evidence_a, {})
+    candidate_b = create_repair_apply_candidate(class_b, evidence_b, {})
+    assert candidate_a is not None
+    assert candidate_b is not None
+    assert candidate_a["patch_checksum"] != candidate_b["patch_checksum"]
+    assert candidate_a["candidate_checksum"] != candidate_b["candidate_checksum"]
+
+
+def test_jackson_alignment_approval_rejects_stale_checksum(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    pom = sandbox / "pom.xml"
+    sandbox.mkdir(parents=True)
+    pom.write_text(_jackson_pom(), encoding="utf-8")
+    classification, stage_evidence = _jackson_evidence(pom, sandbox)
+    candidate = create_repair_apply_candidate(classification, stage_evidence, {})
+    assert candidate is not None
+    with pytest.raises(ValueError, match="patch_checksum_mismatch"):
+        approve_repair_apply_candidate(candidate, {
+            "repair_candidate_id": candidate["repair_candidate_id"],
+            "patch_checksum": "sha256:stale",
+            "target_file_checksum": candidate["target_file_checksum"],
+            "review_checksum": candidate["review_checksum"],
+        })
+
+
 def test_jackson_alignment_preserves_existing_dependency_management_structure(tmp_path: Path) -> None:
     sandbox = tmp_path / "sandbox"
     pom = sandbox / "pom.xml"
@@ -584,8 +765,14 @@ def test_jackson_alignment_preserves_existing_dependency_management_structure(tm
         "target_file_checksum": candidate["target_file_checksum"],
         "review_checksum": candidate["review_checksum"],
     })
+    runner = _FakePostRepairRunner(
+        {
+            "mvn -DskipTests clean compile": {"exit_code": 0, "stdout": "[INFO] BUILD SUCCESS", "stderr": ""},
+            "mvn test": {"exit_code": 0, "stdout": "Tests run: 124, Failures: 0, Errors: 0, Skipped: 4", "stderr": ""},
+        }
+    )
 
-    result = apply_approved_repair_candidate(candidate, approval)
+    result = apply_approved_repair_candidate(candidate, approval, post_repair_verification_runner=runner)
 
     text = pom.read_text(encoding="utf-8")
     assert result["execution_status"] == "verified"

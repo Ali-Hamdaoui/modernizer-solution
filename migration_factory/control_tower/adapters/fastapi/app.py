@@ -1585,6 +1585,9 @@ def create_app(
             except ValueError as exc:
                 raise _error(status.HTTP_409_CONFLICT, "REPAIR_CANDIDATE_PRE_APPLY_REJECTED", str(exc)) from exc
             uow.v2_repair_candidates.save_execution(job_id, stage_index, repair_candidate_id, execution)
+            next_candidate = execution.get("_next_repair_candidate") if isinstance(execution.get("_next_repair_candidate"), dict) else None
+            if next_candidate is not None:
+                uow.v2_repair_candidates.save_candidate(next_candidate)
             public = uow.v2_repair_candidates.get_public(job_id, stage_index, repair_candidate_id)
         return {"execution": redact_public_data(execution), "candidate": redact_public_data(public or {})}
 

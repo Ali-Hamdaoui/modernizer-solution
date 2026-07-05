@@ -81,6 +81,10 @@ class SqliteV2RepairCandidateRepository:
                 "verification_status": execution.get("verification_status", public.get("verification_status", "")),
                 "rollback_status": execution.get("rollback_status", public.get("rollback_status", "")),
                 "proof_artifact": execution.get("proof_artifact", public.get("proof_artifact", "")),
+                "post_repair_verification_status": execution.get("post_repair_verification_status", public.get("post_repair_verification_status", "")),
+                "stage_recovery_status": execution.get("stage_recovery_status", public.get("stage_recovery_status", "")),
+                "post_repair_verification": execution.get("post_repair_verification", public.get("post_repair_verification")),
+                "next_repair_candidate": execution.get("next_repair_candidate", public.get("next_repair_candidate")),
                 "apply_enabled": False,
                 "approval_enabled": False,
             })
@@ -111,6 +115,10 @@ class SqliteV2RepairCandidateRepository:
                 "verification_status": execution.get("verification_status", public.get("verification_status", "")),
                 "rollback_status": execution.get("rollback_status", public.get("rollback_status", "")),
                 "proof_artifact": execution.get("proof_artifact", public.get("proof_artifact", "")),
+                "post_repair_verification_status": execution.get("post_repair_verification_status", public.get("post_repair_verification_status", "")),
+                "stage_recovery_status": execution.get("stage_recovery_status", public.get("stage_recovery_status", "")),
+                "post_repair_verification": execution.get("post_repair_verification", public.get("post_repair_verification")),
+                "next_repair_candidate": execution.get("next_repair_candidate", public.get("next_repair_candidate")),
                 "apply_enabled": False,
                 "approval_enabled": False,
             })
