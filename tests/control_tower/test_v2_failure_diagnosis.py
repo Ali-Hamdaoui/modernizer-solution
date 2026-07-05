@@ -26,6 +26,7 @@ from migration_factory.control_tower.application.v2_failure_diagnosis import (
     FailureDiagnosisRecord,
     create_orchestrator_diagnosis_callback,
 )
+from migration_factory.control_tower.application.v2_stage_failure_classifier import classify_stage_failure
 from migration_factory.control_tower.application.v2_repair_flow import (
     V2RepairFlowService,
     RepairProposal,
@@ -929,6 +930,39 @@ class TestStageAwareEvidence:
         assert evidence is not None
         assert "build_error_contract" not in evidence["missing_artifacts"]
         assert "pom_xml" not in evidence["missing_artifacts"]
+
+    def test_jackson_runtime_class_missing_with_dependency_conflict_is_known_family(self) -> None:
+        conflict = "\n".join([
+            "java.lang.NoClassDefFoundError: com/fasterxml/jackson/databind/ser/std/ToStringSerializerBase",
+            "at com.total.corp.common.util.MessageUtils.createObjectMapper(MessageUtils.java:50)",
+            "MessageUtilsTest errors",
+            "com.fasterxml.jackson.core:jackson-databind:jar:2.13.5 omitted for conflict with 2.9.6",
+            "com.fasterxml.jackson.core:jackson-core:jar:2.13.5 omitted for conflict with 2.10.0",
+            "selected jackson-databind is 2.9.6",
+            "spring-boot.version 2.7.18",
+        ])
+        classification = classify_stage_failure({
+            "stage_index": 1,
+            "stage_name": "stage-1",
+            "target_boot_version": "2.7.18",
+            "target_java_version": "11",
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+            "usable_artifacts": [
+                {"kind": "pom_xml", "excerpt": "<spring-boot.version>2.7.18</spring-boot.version>"},
+                {"kind": "test_report", "excerpt": conflict},
+                {"kind": "dependency_graph", "excerpt": conflict},
+            ],
+            "missing_artifacts": [],
+        })
+
+        assert classification["classification_status"] == "known_family_candidate"
+        assert classification["failure_type"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+        assert classification["repair_family_candidate"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+        assert classification["governance_gate_type"] == "backend_deterministic_candidate"
+        assert "runtime:jackson_tostringserializerbase_missing" in classification["matched_signals"]
+        assert "dependency:jackson_mixed_versions" in classification["matched_signals"]
+        assert classification["repair_enabled"] is False
+        assert classification["jackson_alignment_target_version"] == "2.13.5"
 
     def test_payload_artifact_alias_does_not_accept_unowned_patch_path(
         self,

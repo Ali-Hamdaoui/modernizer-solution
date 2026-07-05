@@ -105,6 +105,10 @@ def _select_subfamily(family: str, text: str) -> str:
         if "version" in text:
             return "DEPENDENCY_VERSION_BUMP_ONLY"
         return "UNKNOWN_SUBFAMILY"
+    if family == "JACKSON_VERSION_ALIGNMENT_DRIFT":
+        if "tostringserializerbase" in text and "jackson-databind" in text:
+            return "JACKSON_PROPERTY_BOM_ALIGNMENT"
+        return "UNKNOWN_SUBFAMILY"
     return "UNKNOWN_SUBFAMILY"
 
 

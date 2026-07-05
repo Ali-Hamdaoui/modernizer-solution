@@ -297,6 +297,17 @@ def _proposed_operations(policy: RepairRecipePolicy, target_files: list[str], pl
             }
         ]
 
+    if policy.subfamily == "JACKSON_PROPERTY_BOM_ALIGNMENT":
+        return [
+            {
+                "operation": "pom_dependency_alignment",
+                "target": "pom.xml",
+                "from": "mixed Jackson 2.9.6/2.10.0 with omitted 2.13.5",
+                "to": "fasterxml-jackson.version 2.13.5 plus Jackson BOM/direct deps when evidence requires",
+                "authority": "backend_recipe_policy",
+            }
+        ]
+
     if policy.recipe_status == "dry_run_only":
         return [
             {

@@ -13,6 +13,7 @@ def test_recipe_registry_returns_known_policies() -> None:
         "JAKARTA_IMPORT_ONLY",
         "MOCKBEAN_DIRECT_REPLACEMENT",
         "DEPENDENCY_VERSION_BUMP_ONLY",
+        "JACKSON_PROPERTY_BOM_ALIGNMENT",
         "POWERMOCK_STATIC_MOCK_SIMPLE",
         "POWERMOCK_CONSTRUCTOR_MOCKING",
         "POWERMOCK_PRIVATE_OR_FINAL_MOCKING",
@@ -54,6 +55,20 @@ def test_mockbean_dependency_and_powermock_static_are_dry_run_only() -> None:
         assert policy.backend_recipe_available is False
         assert policy.apply_candidate_allowed is False
         assert policy.dry_run_available is True
+
+
+def test_jackson_alignment_recipe_is_apply_enabled_with_human_gate() -> None:
+    policy = repair_recipe_policy("JACKSON_PROPERTY_BOM_ALIGNMENT")
+    assert policy.family == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+    assert policy.recipe_status == "apply_enabled"
+    assert policy.risk_level == "medium"
+    assert policy.backend_recipe_available is True
+    assert policy.apply_candidate_allowed is True
+    assert policy.dry_run_available is True
+    assert policy.rollback_required is True
+    assert policy.proof_required is True
+    assert "pom_xml" in policy.required_evidence
+    assert "dependency_graph" in policy.required_evidence
 
 
 def test_high_risk_families_are_not_apply_capable() -> None:

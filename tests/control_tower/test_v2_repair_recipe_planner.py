@@ -116,6 +116,34 @@ def test_recipe_planner_creates_dry_run_for_mockbean_dependency_and_powermock_st
         assert plan["backend_gate"]["rag_can_apply"] is False
 
 
+def test_recipe_planner_creates_apply_plan_for_jackson_alignment() -> None:
+    plan = plan_recipe(
+        {"subfamily": "JACKSON_PROPERTY_BOM_ALIGNMENT"},
+        {
+            "artifact_refs": {
+                "sandbox": "/tmp/sandbox",
+                "pom_xml": "pom.xml",
+                "dependency_graph": "dependency-tree.txt",
+                "test_report": "TEST-MessageUtilsTest.xml",
+            },
+            "message": "NoClassDefFoundError ToStringSerializerBase jackson-databind omitted for conflict",
+        },
+        {"strategy_checksum": "sha256:strategy"},
+    )
+
+    assert plan["recipe_id"] == "recipe-jackson-property-bom-alignment-v1"
+    assert plan["family"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+    assert plan["subfamily"] == "JACKSON_PROPERTY_BOM_ALIGNMENT"
+    assert plan["recipe_status"] == "apply_enabled"
+    assert plan["plan_status"] == "planned"
+    assert plan["risk_level"] == "medium"
+    assert plan["apply_candidate_allowed"] is True
+    assert plan["human_gate_required"] is True
+    assert plan["backend_gate"]["llm_can_apply"] is False
+    assert plan["backend_gate"]["rag_can_apply"] is False
+    assert plan["proposed_operations"][0]["operation"] == "pom_dependency_alignment"
+
+
 def test_recipe_planner_blocks_human_refactor_powermock_constructor() -> None:
     plan = plan_recipe(
         {"subfamily": "POWERMOCK_CONSTRUCTOR_MOCKING"},

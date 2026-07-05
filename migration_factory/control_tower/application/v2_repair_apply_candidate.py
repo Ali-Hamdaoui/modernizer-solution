@@ -18,8 +18,14 @@ SUPPORTED_FAMILY = "INITMOCKS_TO_OPENMOCKS_CANDIDATE"
 BACKEND_RECIPE = "INITMOCKS_TO_OPENMOCKS"
 SORT_FAMILY = "SPRING_DATA_SORT_API_DRIFT"
 SORT_BACKEND_RECIPE = "SPRING_DATA_SORT_BY"
+JACKSON_FAMILY = "JACKSON_VERSION_ALIGNMENT_DRIFT"
+JACKSON_BACKEND_RECIPE = "JACKSON_PROPERTY_BOM_ALIGNMENT"
+JACKSON_TARGET_VERSION = "2.13.5"
 INITMOCKS_PATTERN = re.compile(r"MockitoAnnotations\.initMocks\(([^)]*)\);")
 SORT_CONSTRUCTOR_PATTERN = re.compile(r"\bnew\s+Sort\s*\(")
+JACKSON_PROPERTY_PATTERN = re.compile(
+    r"(<fasterxml-jackson\.version>\s*)(?P<version>[^<]+)(\s*</fasterxml-jackson\.version>)"
+)
 PUBLIC_STATUSES = {
     "pending_human_approval",
     "approved",
@@ -101,7 +107,7 @@ def apply_approved_repair_candidate(
         after = str(candidate.get("_after_text") or "")
         _must(after and after != before, "backend_recipe_noop")
         target.write_text(after, encoding="utf-8")
-        verified, verification_log = verification_runner(target) if verification_runner else _default_verification(target)
+        verified, verification_log = verification_runner(target) if verification_runner else _default_verification_for_candidate(candidate, target)
         if not verified:
             raise RuntimeError("verification_failed")
         post_checksum, _ = stream_sha256(target)
@@ -182,6 +188,12 @@ def _create_candidate_from_r8_evidence(
         candidate = _create_sort_candidate_from_evidence(classification, stage_evidence)
         if candidate is None:
             classification["repair_apply_candidate_blocked_reason"] = "sort_by_candidate_safety_gate_failed"
+        return candidate
+
+    if classification.get("failure_type") == JACKSON_FAMILY:
+        candidate = _create_jackson_candidate_from_evidence(classification, stage_evidence)
+        if candidate is None:
+            classification["repair_apply_candidate_blocked_reason"] = "jackson_alignment_candidate_safety_gate_failed"
         return candidate
 
     reasons: list[str] = []
@@ -319,6 +331,107 @@ def _build_candidate(
         "created_at": utc_now_text(),
         "_sandbox_root": str(sandbox_root),
         "_target_path": str(target_path),
+        "_after_text": after,
+        "_patch_payload": patch_payload,
+    }
+    candidate["candidate_checksum"] = f"sha256:{sha256_canonical_json(public_repair_apply_candidate(candidate))}"
+    return candidate
+
+
+def _create_jackson_candidate_from_evidence(classification: dict[str, Any], stage_evidence: dict[str, Any]) -> dict[str, Any] | None:
+    sandbox_root = _find_sandbox_root(stage_evidence, None)
+    pom_path = _find_pom_xml(stage_evidence, sandbox_root)
+    if sandbox_root is None or pom_path is None:
+        return None
+    sandbox_root = sandbox_root.resolve()
+    pom_path = pom_path.resolve()
+    if not _is_contained(pom_path, sandbox_root) or pom_path.name != "pom.xml" or not pom_path.is_file():
+        return None
+    evidence_text = _stage_evidence_text(stage_evidence, classification)
+    if not _has_jackson_mismatch_evidence(evidence_text):
+        return None
+    before = pom_path.read_text(encoding="utf-8", errors="replace")
+    if not _is_stage1_boot27_pom(before):
+        return None
+    after, operations, previews = _patch_jackson_alignment_pom(before, add_direct_dependencies=_needs_direct_jackson_dependencies(evidence_text))
+    if before == after or not operations:
+        return None
+    target_rel = _relative_to_sandbox(pom_path, sandbox_root)
+    if target_rel != "pom.xml":
+        return None
+    checksum, _ = stream_sha256(pom_path)
+    pre_apply_checksum = f"sha256:{checksum}"
+    patch_payload = {
+        "recipe": JACKSON_BACKEND_RECIPE,
+        "target_files": [target_rel],
+        "operations": operations,
+        "target_version": JACKSON_TARGET_VERSION,
+        "source": "cli_msa_utils_reference_advisory",
+        "authority": "backend_deterministic_recipe",
+        "change_preview": previews,
+    }
+    review_payload = {
+        "family": JACKSON_FAMILY,
+        "evidence_pack_checksum": stage_evidence.get("evidence_pack_checksum", ""),
+        "target_files": [target_rel],
+        "approval_required": True,
+    }
+    identity_payload = {
+        "job_id": str(stage_evidence.get("job_id") or classification.get("job_id") or ""),
+        "stage_index": int(stage_evidence.get("stage_index") or classification.get("stage_index") or 1),
+        "target_file": target_rel,
+        "pre_apply_checksum": pre_apply_checksum,
+        "patch_checksum": f"sha256:{sha256_canonical_json(patch_payload)}",
+    }
+    candidate = {
+        "job_id": identity_payload["job_id"],
+        "stage_index": identity_payload["stage_index"],
+        "repair_candidate_id": f"repair-candidate-{sha256_canonical_json(identity_payload)[:12]}",
+        "status": "pending_human_approval",
+        "family": JACKSON_FAMILY,
+        "recipe_id": JACKSON_BACKEND_RECIPE,
+        "patch_source": "backend_deterministic_recipe",
+        "llm_source": "advisory_only",
+        "target_file": target_rel,
+        "target_files": [target_rel],
+        "pre_apply_checksum": pre_apply_checksum,
+        "target_file_checksum": pre_apply_checksum,
+        "patch_checksum": identity_payload["patch_checksum"],
+        "review_checksum": f"sha256:{sha256_canonical_json(review_payload)}",
+        "proposal_checksum": "",
+        "approval_required": True,
+        "human_gate_required": True,
+        "apply_enabled": False,
+        "approval_enabled": True,
+        "sandbox_only": True,
+        "legacy_mutation_allowed": False,
+        "downstream_start_allowed": False,
+        "llm_can_apply": False,
+        "browser_can_supply_patch": False,
+        "verification_status": "not_started",
+        "rollback_status": "not_started",
+        "proof_artifact": "",
+        "change_preview": previews,
+        "operation_count": len(operations),
+        "impact_summary": "Align Jackson dependencies in sandbox pom.xml for Stage 1 Boot 2.7 / Java 11 by using Jackson 2.13.5.",
+        "risk_notes": [
+            "Medium-risk POM-only dependency alignment; no source or test code changes.",
+            "Boot 3.5 reference uses Jackson 2.20.0 but is advisory only and not copied into Stage 1.",
+            "Human must approve exact checksums before sandbox apply.",
+        ],
+        "rollback_metadata": {
+            "rollback_required": True,
+            "rollback_scope": "sandbox_only",
+            "target_files": [target_rel],
+        },
+        "suggested_verification_commands": [
+            "mvn -DskipTests clean compile",
+            "mvn -Dtest=MessageUtilsTest test",
+            "mvn test",
+        ],
+        "created_at": utc_now_text(),
+        "_sandbox_root": str(sandbox_root),
+        "_target_path": str(pom_path),
         "_after_text": after,
         "_patch_payload": patch_payload,
     }
@@ -676,10 +789,26 @@ def _default_verification(target: Path) -> tuple[bool, str]:
     return ok, "deterministic_file_verification_passed" if ok else "deterministic_file_verification_failed"
 
 
+def _default_verification_for_candidate(candidate: dict[str, Any], target: Path) -> tuple[bool, str]:
+    if candidate.get("family") == JACKSON_FAMILY:
+        return _default_jackson_verification(target)
+    return _default_verification(target)
+
+
 def _default_sort_verification(target: Path) -> tuple[bool, str]:
     text = target.read_text(encoding="utf-8", errors="replace")
     ok = "Sort.by(" in text and "new Sort(" not in text
     return ok, "deterministic_sort_by_verification_passed" if ok else "deterministic_sort_by_verification_failed"
+
+
+def _default_jackson_verification(target: Path) -> tuple[bool, str]:
+    text = target.read_text(encoding="utf-8", errors="replace")
+    ok = (
+        f"<fasterxml-jackson.version>{JACKSON_TARGET_VERSION}</fasterxml-jackson.version>" in text
+        and "<artifactId>jackson-bom</artifactId>" in text
+        and "2.20.0" not in text
+    )
+    return ok, "deterministic_jackson_alignment_verification_passed" if ok else "deterministic_jackson_alignment_verification_failed"
 
 
 def _find_internal_target(stage_evidence: dict[str, Any], target_rel: str) -> Path | None:
@@ -706,6 +835,152 @@ def _find_sandbox_root(stage_evidence: dict[str, Any], target: Path | None) -> P
     if ref and "[" not in ref:
         return Path(ref).resolve()
     return target.parents[5].resolve() if target is not None and len(target.parents) > 5 else None
+
+
+def _find_pom_xml(stage_evidence: dict[str, Any], sandbox_root: Path | None) -> Path | None:
+    for item in stage_evidence.get("usable_artifacts", []) or []:
+        if not isinstance(item, dict) or str(item.get("kind") or "") != "pom_xml":
+            continue
+        ref = str(item.get("internal_ref") or item.get("ref") or "")
+        if ref and "[" not in ref:
+            path = Path(ref).resolve()
+            if sandbox_root is None or _is_contained(path, sandbox_root):
+                return path
+    return None
+
+
+def _stage_evidence_text(*values: Any) -> str:
+    try:
+        return json.dumps(values, sort_keys=True, default=str).lower()
+    except TypeError:
+        return str(values).lower()
+
+
+def _has_jackson_mismatch_evidence(text: str) -> bool:
+    has_missing_class = "tostringserializerbase" in text and ("noclassdeffounderror" in text or "classnotfoundexception" in text)
+    has_jackson_conflict = "jackson-databind" in text and "2.13.5" in text and ("2.9.6" in text or "2.10.0" in text or "omitted for conflict" in text)
+    return has_missing_class and has_jackson_conflict
+
+
+def _needs_direct_jackson_dependencies(text: str) -> bool:
+    return "jackson-databind" in text and "2.9.6" in text and ("omitted for conflict" in text or "conflict with 2.9.6" in text)
+
+
+def _is_stage1_boot27_pom(text: str) -> bool:
+    lowered = text.lower()
+    return ("<spring-boot.version>2.7." in lowered or "spring-boot-starter-parent" in lowered and "<version>2.7." in lowered)
+
+
+def _patch_jackson_alignment_pom(text: str, *, add_direct_dependencies: bool) -> tuple[str, list[str], list[dict[str, Any]]]:
+    operations: list[str] = []
+    previews: list[dict[str, Any]] = []
+    match = JACKSON_PROPERTY_PATTERN.search(text)
+    if match is None:
+        return text, [], []
+    old_version = match.group("version").strip()
+    if old_version == JACKSON_TARGET_VERSION:
+        return text, [], []
+    updated = JACKSON_PROPERTY_PATTERN.sub(
+        lambda item: f"{item.group(1)}{JACKSON_TARGET_VERSION}{item.group(3)}",
+        text,
+        count=1,
+    )
+    operations.append("update fasterxml-jackson.version property to 2.13.5")
+    previews.append({
+        "target_file": "pom.xml",
+        "operation": "replace_property",
+        "replacement_count": 1,
+        "before": f"<fasterxml-jackson.version>{old_version}</fasterxml-jackson.version>",
+        "after": f"<fasterxml-jackson.version>{JACKSON_TARGET_VERSION}</fasterxml-jackson.version>",
+    })
+    if "<artifactId>jackson-bom</artifactId>" not in updated:
+        updated = _insert_dependency_management(updated)
+        if updated == "":
+            return text, [], []
+        operations.append("insert jackson-bom dependencyManagement import")
+        previews.append({
+            "target_file": "pom.xml",
+            "operation": "insert_dependency_management",
+            "replacement_count": 1,
+            "before": "no jackson-bom dependencyManagement import",
+            "after": "jackson-bom ${fasterxml-jackson.version} import",
+        })
+    if add_direct_dependencies:
+        updated, added = _insert_direct_jackson_dependencies(updated)
+        if added:
+            operations.append("insert direct Jackson core dependencies")
+            previews.append({
+                "target_file": "pom.xml",
+                "operation": "insert_direct_dependencies",
+                "replacement_count": added,
+                "before": "transitive Jackson conflict can select older databind/core/annotations",
+                "after": "direct jackson-databind/core/annotations use ${fasterxml-jackson.version}",
+            })
+    return updated, operations, previews
+
+
+def _insert_dependency_management(text: str) -> str:
+    dependency = (
+        "            <dependency>\n"
+        "                <groupId>com.fasterxml.jackson</groupId>\n"
+        "                <artifactId>jackson-bom</artifactId>\n"
+        "                <version>${fasterxml-jackson.version}</version>\n"
+        "                <type>pom</type>\n"
+        "                <scope>import</scope>\n"
+        "            </dependency>\n"
+    )
+    existing = re.search(r"(<dependencyManagement>.*?<dependencies>)(?P<body>.*?)(</dependencies>\s*</dependencyManagement>)", text, re.DOTALL)
+    if existing is not None:
+        insert_at = existing.start(3)
+        return text[:insert_at] + dependency + text[insert_at:]
+    block = (
+        "    <dependencyManagement>\n"
+        "        <dependencies>\n"
+        f"{dependency}"
+        "        </dependencies>\n"
+        "    </dependencyManagement>\n\n"
+    )
+    marker = "<dependencies>"
+    index = text.rfind(marker)
+    if index < 0:
+        marker = "</properties>"
+        index = text.find(marker)
+        if index < 0:
+            return ""
+        return text[: index + len(marker)] + "\n\n" + block + text[index + len(marker):]
+    return text[:index] + block + text[index:]
+
+
+def _insert_direct_jackson_dependencies(text: str) -> tuple[str, int]:
+    additions: list[str] = []
+    for artifact in ("jackson-databind", "jackson-core", "jackson-annotations"):
+        if _has_direct_dependency(text, "com.fasterxml.jackson.core", artifact):
+            continue
+        additions.append(
+            "        <dependency>\n"
+            "            <groupId>com.fasterxml.jackson.core</groupId>\n"
+            f"            <artifactId>{artifact}</artifactId>\n"
+            "            <version>${fasterxml-jackson.version}</version>\n"
+            "        </dependency>\n"
+        )
+    if not additions:
+        return text, 0
+    marker = "<dependencies>"
+    index = text.find(marker)
+    if index < 0:
+        return text, 0
+    insert_at = index + len(marker)
+    return text[:insert_at] + "\n" + "".join(additions) + text[insert_at:], len(additions)
+
+
+def _has_direct_dependency(text: str, group_id: str, artifact_id: str) -> bool:
+    pattern = (
+        r"<dependency>\s*"
+        rf"(?=.*<groupId>\s*{re.escape(group_id)}\s*</groupId>)"
+        rf"(?=.*<artifactId>\s*{re.escape(artifact_id)}\s*</artifactId>)"
+        r".*?</dependency>"
+    )
+    return bool(re.search(pattern, text, re.DOTALL))
 
 
 def _safe_relative(value: str) -> str:

@@ -51,6 +51,24 @@ def classify_stage_failure(evidence_pack: dict[str, Any]) -> dict[str, Any]:
             extra=compile_gate.get("extra", {}),
         )
 
+    jackson_gate = _jackson_alignment_failure(evidence_pack, text)
+    if jackson_gate is not None:
+        return _envelope(
+            evidence_pack=evidence_pack,
+            status=jackson_gate["status"],
+            failure_type=jackson_gate["failure_type"],
+            repair_family_candidate=jackson_gate.get("repair_family_candidate", ""),
+            confidence=jackson_gate["confidence"],
+            confidence_reason=jackson_gate["reason"],
+            matched_signals=jackson_gate["signals"],
+            missing_required_evidence=_missing_required(jackson_gate["required"], usable, missing),
+            assistant_next_action=jackson_gate["assistant_next_action"],
+            repair_blocked_reason=jackson_gate["repair_blocked_reason"],
+            governance_gate_type=jackson_gate["governance_gate_type"],
+            stage_relevance=jackson_gate["stage_relevance"],
+            extra=jackson_gate.get("extra", {}),
+        )
+
     review_gate = _review_gate_signal(text, boot3_plus, missing)
     if review_gate is not None:
         return _envelope(
@@ -427,6 +445,54 @@ def _review_gate_signal(text: str, boot3_plus: bool, missing: list[str]) -> dict
         return behavioral
 
     return None
+
+
+def _jackson_alignment_failure(evidence_pack: dict[str, Any], text: str) -> dict[str, Any] | None:
+    missing_class = (
+        "com.fasterxml.jackson.databind.ser.std.tostringserializerbase" in text
+        or "com/fasterxml/jackson/databind/ser/std/tostringserializerbase" in text
+    )
+    has_runtime_missing = (
+        "noclassdeffounderror" in text
+        or "classnotfoundexception" in text
+    ) and missing_class
+    has_message_utils = "messageutils.createobjectmapper" in text or "messageutilstest" in text
+    has_conflict = (
+        "jackson-databind" in text
+        and "2.13.5" in text
+        and ("2.9.6" in text or "2.10.0" in text or "omitted for conflict" in text)
+    )
+    has_mixed_versions = _has_mixed_jackson_versions(text)
+    if not (has_runtime_missing and has_message_utils and (has_conflict or has_mixed_versions)):
+        return None
+    return _review_gate(
+        status="known_family_candidate",
+        failure_type="JACKSON_VERSION_ALIGNMENT_DRIFT",
+        repair_family_candidate="JACKSON_VERSION_ALIGNMENT_DRIFT",
+        confidence="high",
+        reason="Jackson runtime class missing in MessageUtilsTest with mixed Jackson dependency versions on Boot 2.7.x; backend can prepare a checksum-bound POM-only alignment candidate.",
+        signals=[
+            "runtime:jackson_tostringserializerbase_missing",
+            "test:messageutils_createobjectmapper_failure",
+            "dependency:jackson_mixed_versions",
+            "stage:boot_2_7_jackson_2_13_5_alignment",
+        ],
+        required=["test_report", "dependency_graph", "pom_xml"],
+        assistant_next_action="prepare_jackson_alignment_apply_candidate",
+        repair_blocked_reason="human_approval_required_before_sandbox_apply",
+        governance_gate_type="backend_deterministic_candidate",
+        stage_relevance=_stage_relevance(evidence_pack, "Stage 1 Boot 2.7 / Java 11; align Jackson around 2.13.5, not Boot 3.5 reference 2.20.0."),
+        extra={
+            "primary_failure": "Jackson version alignment drift",
+            "jackson_alignment_target_version": "2.13.5",
+            "advisory_signals": ["reference:msa_utils_migrated_reference_confirms_alignment_trajectory"],
+        },
+    )
+
+
+def _has_mixed_jackson_versions(text: str) -> bool:
+    versions = set(re.findall(r"jackson-[a-z0-9-]+[^\\n\\r]{0,120}?(2\.\d+\.\d+)", text))
+    return len(versions) >= 2 and any(version in versions for version in {"2.9.6", "2.10.0"}) and "2.13.5" in versions
 
 
 def _main_source_compile_failure(evidence_pack: dict[str, Any], text: str) -> dict[str, Any] | None:

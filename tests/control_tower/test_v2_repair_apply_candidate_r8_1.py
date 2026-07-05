@@ -312,6 +312,52 @@ def _sort_sandbox(tmp_path: Path) -> tuple[Path, Path, Path, dict, dict]:
     return sandbox, dto, search, classification, stage_evidence
 
 
+def _jackson_pom(version: str = "2.10.0") -> str:
+    return (
+        "<project>\n"
+        "  <properties>\n"
+        "    <java.version>11</java.version>\n"
+        "    <spring-boot.version>2.7.18</spring-boot.version>\n"
+        f"    <fasterxml-jackson.version>{version}</fasterxml-jackson.version>\n"
+        "  </properties>\n"
+        "  <dependencies>\n"
+        "    <dependency>\n"
+        "      <groupId>com.fasterxml.jackson.dataformat</groupId>\n"
+        "      <artifactId>jackson-dataformat-csv</artifactId>\n"
+        "      <version>${fasterxml-jackson.version}</version>\n"
+        "    </dependency>\n"
+        "  </dependencies>\n"
+        "</project>\n"
+    )
+
+
+def _jackson_evidence(pom: Path, sandbox: Path, *, include_mismatch: bool = True) -> tuple[dict, dict]:
+    conflict = (
+        "java.lang.NoClassDefFoundError: com/fasterxml/jackson/databind/ser/std/ToStringSerializerBase\n"
+        "MessageUtils.createObjectMapper(MessageUtils.java:50)\n"
+        "MessageUtilsTest failures\n"
+        "com.fasterxml.jackson.core:jackson-databind:jar:2.13.5 omitted for conflict with 2.9.6\n"
+        "com.fasterxml.jackson.core:jackson-core:jar:2.13.5 omitted for conflict with 2.10.0\n"
+        "selected jackson-databind is 2.9.6\n"
+    )
+    classification = {
+        "failure_type": "JACKSON_VERSION_ALIGNMENT_DRIFT",
+        "matched_signals": ["runtime:jackson_tostringserializerbase_missing"],
+    }
+    stage_evidence = {
+        "job_id": "job-jackson",
+        "stage_index": 1,
+        "evidence_pack_checksum": "sha256:evidence",
+        "usable_artifacts": [
+            {"kind": "sandbox", "internal_ref": str(sandbox)},
+            {"kind": "pom_xml", "internal_ref": str(pom), "excerpt": pom.read_text(encoding="utf-8")},
+            {"kind": "test_report", "excerpt": conflict if include_mismatch else "MessageUtilsTest passed"},
+            {"kind": "dependency_graph", "excerpt": conflict if include_mismatch else "jackson-databind 2.13.5"},
+        ],
+    }
+    return classification, stage_evidence
+
+
 def test_sort_by_apply_candidate_is_governed_and_not_auto_applied(tmp_path: Path) -> None:
     _, dto, search, classification, stage_evidence = _sort_sandbox(tmp_path)
 
@@ -411,3 +457,107 @@ def test_sort_by_candidate_rejects_outside_sandbox_or_ambiguous_pattern(tmp_path
 
     assert outside_candidate is None
     assert ambiguous_candidate is None
+
+
+def test_jackson_alignment_candidate_is_pom_only_governed_and_previewed(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    pom = sandbox / "pom.xml"
+    sandbox.mkdir(parents=True)
+    pom.write_text(_jackson_pom(), encoding="utf-8")
+    classification, stage_evidence = _jackson_evidence(pom, sandbox)
+
+    candidate = create_repair_apply_candidate(classification, stage_evidence, {})
+
+    assert candidate is not None
+    public = public_repair_apply_candidate(candidate)
+    assert public is not None
+    assert public["family"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+    assert public["recipe_id"] == "JACKSON_PROPERTY_BOM_ALIGNMENT"
+    assert public["target_file"] == "pom.xml"
+    assert public["target_files"] == ["pom.xml"]
+    assert public["status"] == "pending_human_approval"
+    assert public["approval_required"] is True
+    assert public["human_gate_required"] is True
+    assert public["apply_enabled"] is False
+    assert public["approval_enabled"] is True
+    assert public["sandbox_only"] is True
+    assert public["legacy_mutation_allowed"] is False
+    assert public["downstream_start_allowed"] is False
+    assert public["browser_can_supply_patch"] is False
+    assert public["llm_can_apply"] is False
+    assert public["patch_checksum"].startswith("sha256:")
+    assert public["target_file_checksum"].startswith("sha256:")
+    assert public["review_checksum"].startswith("sha256:")
+    assert public["candidate_checksum"].startswith("sha256:")
+    assert public["rollback_metadata"]["rollback_required"] is True
+    assert public["operation_count"] >= 2
+    assert any("2.10.0" in item["before"] and "2.13.5" in item["after"] for item in public["change_preview"])
+    assert any(item["operation"] == "insert_dependency_management" for item in public["change_preview"])
+    assert any(item["operation"] == "insert_direct_dependencies" for item in public["change_preview"])
+
+
+def test_jackson_alignment_candidate_applies_after_checksum_approval(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    pom = sandbox / "pom.xml"
+    sandbox.mkdir(parents=True)
+    pom.write_text(_jackson_pom(), encoding="utf-8")
+    classification, stage_evidence = _jackson_evidence(pom, sandbox)
+    candidate = create_repair_apply_candidate(classification, stage_evidence, {})
+    assert candidate is not None
+    approval = approve_repair_apply_candidate(candidate, {
+        "repair_candidate_id": candidate["repair_candidate_id"],
+        "patch_checksum": candidate["patch_checksum"],
+        "target_file_checksum": candidate["target_file_checksum"],
+        "review_checksum": candidate["review_checksum"],
+    })
+
+    result = apply_approved_repair_candidate(candidate, approval)
+
+    text = pom.read_text(encoding="utf-8")
+    assert "<fasterxml-jackson.version>2.13.5</fasterxml-jackson.version>" in text
+    assert "<artifactId>jackson-bom</artifactId>" in text
+    assert "<artifactId>jackson-databind</artifactId>" in text
+    assert "<artifactId>jackson-core</artifactId>" in text
+    assert "<artifactId>jackson-annotations</artifactId>" in text
+    assert "2.20.0" not in text
+    assert result["execution_status"] == "verified"
+    assert result["verification_status"] == "passed"
+    assert result["rollback_status"] == "not_needed"
+    assert result["downstream_start_allowed"] is False
+    assert (sandbox / ".migration" / "repair-proofs" / f"{candidate['repair_candidate_id']}.json").is_file()
+
+
+def test_jackson_alignment_candidate_negative_gates(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    pom = sandbox / "pom.xml"
+    outside = tmp_path / "outside" / "pom.xml"
+    sandbox.mkdir(parents=True)
+    outside.parent.mkdir(parents=True)
+    pom.write_text(_jackson_pom(), encoding="utf-8")
+    outside.write_text(_jackson_pom(), encoding="utf-8")
+    classification, stage_evidence = _jackson_evidence(pom, sandbox)
+
+    no_pom = dict(stage_evidence)
+    no_pom["usable_artifacts"] = [item for item in stage_evidence["usable_artifacts"] if item["kind"] != "pom_xml"]
+    no_mismatch_classification, no_mismatch = _jackson_evidence(pom, sandbox, include_mismatch=False)
+    outside_evidence = dict(stage_evidence)
+    outside_evidence["usable_artifacts"] = [
+        {"kind": "sandbox", "internal_ref": str(sandbox)},
+        {"kind": "pom_xml", "internal_ref": str(outside), "excerpt": outside.read_text(encoding="utf-8")},
+        {"kind": "test_report", "excerpt": stage_evidence["usable_artifacts"][2]["excerpt"]},
+        {"kind": "dependency_graph", "excerpt": stage_evidence["usable_artifacts"][3]["excerpt"]},
+    ]
+    aligned = sandbox / "aligned-pom.xml"
+    aligned.write_text(_jackson_pom("2.13.5"), encoding="utf-8")
+    aligned_evidence = dict(stage_evidence)
+    aligned_evidence["usable_artifacts"] = [
+        {"kind": "sandbox", "internal_ref": str(sandbox)},
+        {"kind": "pom_xml", "internal_ref": str(aligned), "excerpt": aligned.read_text(encoding="utf-8")},
+        {"kind": "test_report", "excerpt": stage_evidence["usable_artifacts"][2]["excerpt"]},
+        {"kind": "dependency_graph", "excerpt": stage_evidence["usable_artifacts"][3]["excerpt"]},
+    ]
+
+    assert create_repair_apply_candidate(classification, no_pom, {}) is None
+    assert create_repair_apply_candidate(no_mismatch_classification, no_mismatch, {}) is None
+    assert create_repair_apply_candidate(classification, outside_evidence, {}) is None
+    assert create_repair_apply_candidate(classification, aligned_evidence, {}) is None
