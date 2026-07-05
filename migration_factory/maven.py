@@ -15,6 +15,14 @@ def resolve_maven_executable(env: Mapping[str, str] | None = None) -> str:
     if configured and _looks_like_maven_executable(configured):
         return configured
 
+    maven_home = str(effective_env.get("MAVEN_HOME") or "").strip()
+    if maven_home:
+        home_path = Path(maven_home)
+        if os.name == "nt":
+            return str(home_path / "bin" / "mvn.cmd")
+        else:
+            return str(home_path / "bin" / "mvn")
+
     path_value = effective_env.get("PATH")
     candidates = ("mvn.cmd", "mvn.bat", "mvn.exe", "mvn") if os.name == "nt" else ("mvn",)
     for candidate in candidates:
@@ -22,6 +30,23 @@ def resolve_maven_executable(env: Mapping[str, str] | None = None) -> str:
         if resolved:
             return resolved
     return "mvn"
+
+
+def resolve_java_executable(env: Mapping[str, str] | None = None) -> str:
+    effective_env = _effective_env(env)
+    java_home = str(effective_env.get("JAVA_HOME") or "").strip()
+    if java_home:
+        home_path = Path(java_home)
+        if os.name == "nt":
+            return str(home_path / "bin" / "java.exe")
+        else:
+            return str(home_path / "bin" / "java")
+
+    path_value = effective_env.get("PATH")
+    resolved = shutil.which("java", path=path_value)
+    if resolved:
+        return resolved
+    return "java"
 
 
 def resolve_maven_command(command: list[str], env: Mapping[str, str] | None = None) -> list[str]:

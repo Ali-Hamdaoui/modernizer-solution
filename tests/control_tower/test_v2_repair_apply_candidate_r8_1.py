@@ -17,6 +17,7 @@ from migration_factory.control_tower.application.v2_repair_apply_candidate impor
 )
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
+from migration_factory.maven import resolve_java_executable, resolve_maven_executable
 
 
 def _headers() -> dict[str, str]:
@@ -409,18 +410,28 @@ class _FakePostRepairRunner:
     def __call__(self, command: list[str], cwd: Path) -> dict[str, Any]:
         self.calls.append((list(command), str(cwd)))
         key = " ".join(command)
+        normalized_key = " ".join([_normalize_executable_name(command[0]), *command[1:]]) if command else key
         default = {"exit_code": 1, "stdout": "", "stderr": f"missing response: {key}"}
         if key == "java -version":
             default = {"exit_code": 0, "stdout": "", "stderr": 'openjdk version "11.0.22"'}
         elif key == "mvn -version":
             default = {"exit_code": 0, "stdout": "Apache Maven 3.9.9", "stderr": ""}
-        response = dict(self.responses.get(key, default))
+        response = dict(self.responses.get(key, self.responses.get(normalized_key, default)))
         response.setdefault("command", list(command))
         response.setdefault("working_directory", str(cwd))
         response.setdefault("started_at", "2026-07-05T00:00:00Z")
         response.setdefault("completed_at", "2026-07-05T00:00:01Z")
         response.setdefault("duration_ms", 1)
         return response
+
+
+def _normalize_executable_name(value: str) -> str:
+    name = Path(value).name.lower()
+    if name in {"mvn.cmd", "mvn.bat", "mvn.exe"}:
+        return "mvn"
+    if name in {"java.exe", "java"}:
+        return "java"
+    return name
 
 
 def _long_prefix(text: str, size: int = 9000) -> str:
@@ -765,10 +776,112 @@ def test_post_repair_verification_ignores_browser_command_and_sandbox_override(t
 
     result = apply_approved_repair_candidate(candidate, approval, post_repair_verification_runner=runner)
 
-    assert runner.calls[0][0] == ["mvn", "-DskipTests", "clean", "compile"]
-    assert runner.calls[1][0] == ["mvn", "test"]
+    assert any(_normalize_executable_name(call[0][0]) == "java" for call in runner.calls)
+    assert any(_normalize_executable_name(call[0][0]) == "mvn" and call[0][1:] == ["-DskipTests", "clean", "compile"] for call in runner.calls)
+    assert any(_normalize_executable_name(call[0][0]) == "mvn" and call[0][1:] == ["test"] for call in runner.calls)
     assert runner.calls[0][1] == str(sandbox.resolve())
     assert result["downstream_start_allowed"] is False
+
+
+def test_post_repair_verification_uses_backend_maven_cmd_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, dto, search, classification, stage_evidence = _sort_sandbox(tmp_path)
+    sandbox = tmp_path / "sandbox"
+    (sandbox / "pom.xml").write_text(_jackson_pom(), encoding="utf-8")
+    candidate = create_repair_apply_candidate(classification, stage_evidence, {})
+    assert candidate is not None
+    monkeypatch.setenv("MAVEN_CMD", r"C:\Tools\maven\bin\mvn.cmd")
+    approval = approve_repair_apply_candidate(candidate, {
+        "repair_candidate_id": candidate["repair_candidate_id"],
+        "patch_checksum": candidate["patch_checksum"],
+        "target_file_checksum": candidate["target_file_checksum"],
+        "review_checksum": candidate["review_checksum"],
+    })
+    runner = _FakePostRepairRunner(
+        {
+            r"mvn.cmd -DskipTests clean compile": {"exit_code": 0, "stdout": "[INFO] BUILD SUCCESS", "stderr": ""},
+            r"mvn.cmd -version": {"exit_code": 0, "stdout": "Apache Maven 3.9.9", "stderr": ""},
+            r"mvn.cmd test": {"exit_code": 0, "stdout": "Tests run: 124, Failures: 0, Errors: 0, Skipped: 4", "stderr": ""},
+        }
+    )
+
+    result = apply_approved_repair_candidate(candidate, approval, post_repair_verification_runner=runner)
+
+    assert any(call[0][0] == r"C:\Tools\maven\bin\mvn.cmd" for call in runner.calls)
+    assert result["environment_summary"]["maven"]["command"][0] == r"C:\Tools\maven\bin\mvn.cmd"
+    assert result["downstream_start_allowed"] is False
+
+
+def test_post_repair_verification_uses_backend_maven_home_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("migration_factory.maven.os.name", "nt", raising=False)
+    monkeypatch.setenv("MAVEN_HOME", r"C:\Tools\apache-maven")
+    assert resolve_maven_executable() == r"C:\Tools\apache-maven\bin\mvn.cmd"
+
+
+def test_post_repair_verification_uses_backend_java_home_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("migration_factory.maven.os.name", "nt", raising=False)
+    monkeypatch.setenv("JAVA_HOME", r"C:\Tools\jdk-11")
+    assert resolve_java_executable() == r"C:\Tools\jdk-11\bin\java.exe"
+
+
+def test_post_repair_verification_toolchain_unavailable_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, dto, search, classification, stage_evidence = _sort_sandbox(tmp_path)
+    sandbox = tmp_path / "sandbox"
+    (sandbox / "pom.xml").write_text(_jackson_pom(), encoding="utf-8")
+    candidate = create_repair_apply_candidate(classification, stage_evidence, {})
+    assert candidate is not None
+    monkeypatch.delenv("MAVEN_CMD", raising=False)
+    monkeypatch.delenv("MVN_CMD", raising=False)
+    monkeypatch.delenv("MAVEN_HOME", raising=False)
+    monkeypatch.setattr("migration_factory.control_tower.application.v2_post_repair_verification.shutil.which", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("migration_factory.control_tower.application.v2_post_repair_verification.resolve_maven_executable", lambda _env=None: "mvn")
+    approval = approve_repair_apply_candidate(candidate, {
+        "repair_candidate_id": candidate["repair_candidate_id"],
+        "patch_checksum": candidate["patch_checksum"],
+        "target_file_checksum": candidate["target_file_checksum"],
+        "review_checksum": candidate["review_checksum"],
+    })
+    runner = _FakePostRepairRunner({})
+
+    result = apply_approved_repair_candidate(candidate, approval, post_repair_verification_runner=runner)
+
+    assert result["post_repair_verification_status"] == "failed"
+    assert result["post_repair_failure_kind"] == "toolchain_unavailable"
+    assert result["missing_tool"] == "maven"
+    assert result["next_repair_candidate"] is None
+    assert result["downstream_start_allowed"] is False
+    assert result["proof_artifact"]
+    assert result["classification"]["failure_type"] == "TOOLCHAIN_UNAVAILABLE"
+    assert all(call[0][0] != "mvn" for call in runner.calls)
+
+
+def test_post_repair_verification_environment_summary_and_java_warning(tmp_path: Path) -> None:
+    _, dto, search, classification, stage_evidence = _sort_sandbox(tmp_path)
+    sandbox = tmp_path / "sandbox"
+    (sandbox / "pom.xml").write_text(_jackson_pom(), encoding="utf-8")
+    candidate = create_repair_apply_candidate(classification, stage_evidence, {})
+    assert candidate is not None
+    candidate["target_java_version"] = "11"
+    approval = approve_repair_apply_candidate(candidate, {
+        "repair_candidate_id": candidate["repair_candidate_id"],
+        "patch_checksum": candidate["patch_checksum"],
+        "target_file_checksum": candidate["target_file_checksum"],
+        "review_checksum": candidate["review_checksum"],
+    })
+    runner = _FakePostRepairRunner(
+        {
+            "java -version": {"exit_code": 0, "stdout": "", "stderr": 'openjdk version "21.0.11"'},
+            "mvn -version": {"exit_code": 0, "stdout": "Apache Maven 3.9.9", "stderr": ""},
+            "mvn -DskipTests clean compile": {"exit_code": 0, "stdout": "[INFO] BUILD SUCCESS", "stderr": ""},
+            "mvn test": {"exit_code": 0, "stdout": "Tests run: 124, Failures: 0, Errors: 0, Skipped: 4", "stderr": ""},
+        }
+    )
+
+    result = apply_approved_repair_candidate(candidate, approval, post_repair_verification_runner=runner)
+
+    assert result["environment_summary"]["java"]
+    assert result["environment_summary"]["maven"]
+    assert result["toolchain_warnings"]
+    assert any("java_version_mismatch_target_11_actual_21" == warning for warning in result["toolchain_warnings"])
 
 
 def test_jackson_alignment_checksum_changes_with_after_text(tmp_path: Path) -> None:
