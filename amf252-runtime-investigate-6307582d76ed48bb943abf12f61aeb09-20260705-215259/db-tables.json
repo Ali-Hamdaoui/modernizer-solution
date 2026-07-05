@@ -1,0 +1,206 @@
+[
+  {
+    "name": "artifacts"
+  },
+  {
+    "name": "audit_records"
+  },
+  {
+    "name": "command_executions"
+  },
+  {
+    "name": "event_types"
+  },
+  {
+    "name": "idempotency_records"
+  },
+  {
+    "name": "migration_jobs"
+  },
+  {
+    "name": "pipeline_definitions"
+  },
+  {
+    "name": "run_configurations"
+  },
+  {
+    "name": "run_events"
+  },
+  {
+    "name": "runner_profiles"
+  },
+  {
+    "name": "schema_migrations"
+  },
+  {
+    "name": "sqlite_sequence"
+  },
+  {
+    "name": "stage_runs"
+  },
+  {
+    "name": "v1_approval_resume_queue"
+  },
+  {
+    "name": "v1_approvals"
+  },
+  {
+    "name": "v1_context_pack_manifests"
+  },
+  {
+    "name": "v1_event_type_registry"
+  },
+  {
+    "name": "v1_fake_repair_proposals"
+  },
+  {
+    "name": "v1_model_invocations"
+  },
+  {
+    "name": "v1_model_profile_events"
+  },
+  {
+    "name": "v1_model_profiles"
+  },
+  {
+    "name": "v1_patch_applications"
+  },
+  {
+    "name": "v1_patch_maven_validations"
+  },
+  {
+    "name": "v1_patch_policy_validations"
+  },
+  {
+    "name": "v1_patch_rollbacks"
+  },
+  {
+    "name": "v1_plan_amendments"
+  },
+  {
+    "name": "v1_plan_review_decisions"
+  },
+  {
+    "name": "v1_plan_revisions"
+  },
+  {
+    "name": "v1_privileged_action_decisions"
+  },
+  {
+    "name": "v1_privileged_action_executions"
+  },
+  {
+    "name": "v1_privileged_actions"
+  },
+  {
+    "name": "v1_proof_gate_summary"
+  },
+  {
+    "name": "v1_proof_gates"
+  },
+  {
+    "name": "v1_proof_report_gates"
+  },
+  {
+    "name": "v1_proof_reports"
+  },
+  {
+    "name": "v1_repair_classifications"
+  },
+  {
+    "name": "v1_route_config"
+  },
+  {
+    "name": "v1_route_validation_events"
+  },
+  {
+    "name": "v1_runner_readiness_checks"
+  },
+  {
+    "name": "v1_sandbox_snapshots"
+  },
+  {
+    "name": "v1_stage_chain_events"
+  },
+  {
+    "name": "v1_stage_chain_ledger"
+  },
+  {
+    "name": "v1_stage_continuation_event"
+  },
+  {
+    "name": "v1_stage_continuation_policy"
+  },
+  {
+    "name": "v1_stage_output_registry"
+  },
+  {
+    "name": "v2_approval_decisions"
+  },
+  {
+    "name": "v2_artifact_revisions"
+  },
+  {
+    "name": "v2_assistant_messages"
+  },
+  {
+    "name": "v2_chain_attempts"
+  },
+  {
+    "name": "v2_gate_decisions"
+  },
+  {
+    "name": "v2_job_events"
+  },
+  {
+    "name": "v2_jobs"
+  },
+  {
+    "name": "v2_llm_invocations"
+  },
+  {
+    "name": "v2_migration_jobs"
+  },
+  {
+    "name": "v2_migration_setups"
+  },
+  {
+    "name": "v2_model_health_checks"
+  },
+  {
+    "name": "v2_pending_action_drafts"
+  },
+  {
+    "name": "v2_phase_gates"
+  },
+  {
+    "name": "v2_pom_change_proposals"
+  },
+  {
+    "name": "v2_pom_changes"
+  },
+  {
+    "name": "v2_pom_repair_plans"
+  },
+  {
+    "name": "v2_pom_validations"
+  },
+  {
+    "name": "v2_preflight_results"
+  },
+  {
+    "name": "v2_repair_proposals"
+  },
+  {
+    "name": "v2_resume_commands"
+  },
+  {
+    "name": "v2_reviewer_critiques"
+  },
+  {
+    "name": "v2_sandbox_actions"
+  },
+  {
+    "name": "v2_stage_commands"
+  }
+]

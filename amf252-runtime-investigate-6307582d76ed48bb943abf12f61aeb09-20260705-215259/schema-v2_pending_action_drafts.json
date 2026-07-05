@@ -1,0 +1,66 @@
+[
+  {
+    "cid": 0,
+    "name": "action_id",
+    "type": "TEXT",
+    "notnull": 0,
+    "dflt_value": null,
+    "pk": 1
+  },
+  {
+    "cid": 1,
+    "name": "job_id",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 2,
+    "name": "action_type",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 3,
+    "name": "reason",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": "''",
+    "pk": 0
+  },
+  {
+    "cid": 4,
+    "name": "stage_index",
+    "type": "INTEGER",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 5,
+    "name": "payload_checksum",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": "''",
+    "pk": 0
+  },
+  {
+    "cid": 6,
+    "name": "status",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": "'draft'",
+    "pk": 0
+  },
+  {
+    "cid": 7,
+    "name": "created_at",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  }
+]

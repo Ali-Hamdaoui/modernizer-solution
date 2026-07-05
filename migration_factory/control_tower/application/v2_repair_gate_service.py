@@ -535,9 +535,14 @@ class V2RepairGateService:
             else:
                 message = "No independent reviewer completed, so no reviewed diff was materialized."
 
-        schema_name = "RepairPrimaryOutput"
-        if schema_diagnostics and str(schema_diagnostics.get("schema_name") or "").strip():
-            schema_name = str(schema_diagnostics.get("schema_name") or "").strip()
+        if reason_code == "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE":
+            schema_name = "RepairReviewerOutput"
+        elif reason_code == "REVIEWER_SCHEMA_REPAIR_SEMANTIC_DRIFT":
+            schema_name = "RepairReviewerOutput"
+        else:
+            schema_name = "RepairPrimaryOutput"
+            if schema_diagnostics and str(schema_diagnostics.get("schema_name") or "").strip():
+                schema_name = str(schema_diagnostics.get("schema_name") or "").strip()
         payload: dict[str, Any] = {
             "job_id": job_id,
             "stage_index": stage_index,
@@ -552,71 +557,106 @@ class V2RepairGateService:
         }
         if mat_payload:
             for key in (
-                "detail", "struct_issue", "reviewed_diff_checksum", "reviewer_output_checksum",
-                "reviewer_accept_contract_issue", "reviewer_decision", "reviewer_self_repair_attempted",
-                "reviewer_self_repair_succeeded", "reviewer_mechanical_validation_issue",
-                "reviewer_self_repair_failure_reason",
-                "reviewer_self_repair_schema_repair_attempted",
-                "reviewer_self_repair_schema_repair_succeeded",
-                "reviewer_self_repair_schema_repair_failure_reason",
-                "reviewer_self_repair_schema_repair_parse_failure_category",
-                "final_diff_exists", "proposal_created", "gate_created", "policy_ran",
-                "retry_status", "retry_reason", "applicability_status",
-                "applicability_reason_code", "applicability_checked_at",
-                "reviewer_applicability_repair_attempted",
-                "reviewer_applicability_repair_succeeded", "apply_check_stderr_summary",
-                "backend_import_replacement_fallback_attempted",
-                "backend_import_replacement_fallback_eligible",
-                "backend_import_replacement_fallback_succeeded",
-                "backend_import_replacement_fallback_reason_code",
-                "backend_import_replacement_fallback_detail",
-                "backend_import_replacement_diff_promoted",
-                "original_struct_issue",
-                "backend_struct_issue",
-                "backend_generated_diff",
-                "backend_generated_diff_checksum",
-                "backend_generated_diff_changed_files",
-                "backend_generated_diff_replacement_count",
-            ):
-                if key in mat_payload:
-                    payload[key] = mat_payload[key]
-        if schema_diagnostics:
-            for key in ("role", "stage"):
-                value = str(schema_diagnostics.get(key) or "").strip()
-                if value:
-                    payload[key] = value
-        if schema_diagnostics:
-            safe_diag = {
-                k: v for k, v in schema_diagnostics.items()
-                if k in (
-                    "parse_failure_category", "missing_fields", "wrong_field_types",
-                    "wrong_field_names", "invalid_fields", "extra_fields",
-                    "has_proposed_diff", "proposed_diff_parse_status",
-                    "output_checksum", "response_format_requested",
-                    "response_format_used", "deployment_alias_hash", "reason_code",
-                    "finish_reason", "max_output_tokens", "prompt_tokens",
-                    "completion_tokens", "total_tokens",
-                    "schema_name", "original_schema_failure_reason",
-                    "original_parse_failure_category", "schema_repair_attempted",
-                    "schema_repair_succeeded", "schema_repair_failure_reason",
-                    "schema_repair_parse_failure_category",
-                    "schema_repair_output_checksum",
-                )
-            }
-            payload["schema_diagnostics"] = safe_diag
-        if (mat_event is not None
-                or (reason_code == "duplicate_main_blocked" and reviewer_status.lower() == "completed")):
-            payload["blocked_by_reason_code"] = str(mat_payload.get("reason_code") or reason_code)
-            payload["blocked_by_struct_issue"] = str(mat_payload.get("struct_issue") or "")
+                    "detail", "struct_issue", "reviewed_diff_checksum", "reviewer_output_checksum",
+                    "reviewer_accept_contract_issue", "reviewer_decision", "reviewer_self_repair_attempted",
+                    "reviewer_self_repair_succeeded", "reviewer_mechanical_validation_issue",
+                    "reviewer_self_repair_failure_reason",
+                    "reviewer_self_repair_schema_repair_attempted",
+                    "reviewer_self_repair_schema_repair_succeeded",
+                    "reviewer_self_repair_schema_repair_failure_reason",
+                    "reviewer_self_repair_schema_repair_parse_failure_category",
+                    "final_diff_exists", "proposal_created", "gate_created", "policy_ran",
+                    "retry_status", "retry_reason", "applicability_status",
+                    "applicability_reason_code", "applicability_checked_at",
+                    "reviewer_applicability_repair_attempted",
+                    "reviewer_applicability_repair_succeeded", "apply_check_stderr_summary",
+                    "backend_import_replacement_fallback_attempted",
+                    "backend_import_replacement_fallback_eligible",
+                    "backend_import_replacement_fallback_succeeded",
+                    "backend_import_replacement_fallback_reason_code",
+                    "backend_import_replacement_fallback_detail",
+                    "backend_import_replacement_diff_promoted",
+                    "original_struct_issue",
+                    "backend_struct_issue",
+                    "backend_generated_diff",
+                    "backend_generated_diff_checksum",
+                    "backend_generated_diff_changed_files",
+                    "backend_generated_diff_replacement_count",
+                ):
+                    if key in mat_payload:
+                        payload[key] = mat_payload[key]
+            if schema_diagnostics:
+                for key in ("role", "stage"):
+                    value = str(schema_diagnostics.get(key) or "").strip()
+                    if value:
+                        payload[key] = value
+            if schema_diagnostics:
+                safe_diag = {
+                    k: v for k, v in schema_diagnostics.items()
+                    if k in (
+                        "parse_failure_category", "missing_fields", "wrong_field_types",
+                        "wrong_field_names", "invalid_fields", "extra_fields",
+                        "has_proposed_diff", "proposed_diff_parse_status",
+                        "output_checksum", "response_format_requested",
+                        "response_format_used", "deployment_alias_hash", "reason_code",
+                        "finish_reason", "max_output_tokens", "prompt_tokens",
+                        "completion_tokens", "total_tokens",
+                        "schema_name", "original_schema_failure_reason",
+                        "original_parse_failure_category", "schema_repair_attempted",
+                        "schema_repair_succeeded", "schema_repair_failure_reason",
+                        "schema_repair_parse_failure_category",
+                        "schema_repair_output_checksum",
+                    )
+                }
+                payload["schema_diagnostics"] = safe_diag
+            if (mat_event is not None
+                    or (reason_code == "duplicate_main_blocked" and reviewer_status.lower() == "completed")):
+                payload["blocked_by_reason_code"] = str(mat_payload.get("reason_code") or reason_code)
+                payload["blocked_by_struct_issue"] = str(mat_payload.get("struct_issue") or "")
 
-        self._event_repo.save(
-            job_id=job_id,
-            stage=stage_index,
-            event_type=event_type,
-            status="blocked",
-            message=message,
-            payload=payload,
-        )
+            if reason_code == "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE":
+                payload.update({
+                    "parse_failure_category": "unsupported_response_format",
+                    "response_format_requested": True,
+                    "response_format_used": False,
+                    "schema_repair_attempted": False,
+                    "schema_repair_succeeded": False,
+                    "schema_repair_failure_reason": "schema_capability_unavailable",
+                    "reviewer_schema_failure_ref": str(
+                        (schema_diagnostics or {}).get("reviewer_schema_failure_ref")
+                        or ""
+                    ),
+                    "final_diff_exists": False,
+                    "policy_ran": False,
+                    "gate_created": False,
+                    "proposal_created": False,
+                })
+            elif reason_code == "REVIEWER_SCHEMA_REPAIR_SEMANTIC_DRIFT":
+                payload.update({
+                    "parse_failure_category": "schema_repair_semantic_drift",
+                    "response_format_requested": True,
+                    "response_format_used": True,
+                    "schema_repair_attempted": True,
+                    "schema_repair_succeeded": False,
+                    "schema_repair_failure_reason": "REVIEWER_SCHEMA_REPAIR_SEMANTIC_DRIFT",
+                    "final_diff_exists": False,
+                    "policy_ran": False,
+                    "gate_created": False,
+                    "proposal_created": False,
+                })
+                if schema_diagnostics:
+                    drift_fields = schema_diagnostics.get("semantic_drift_fields")
+                    if drift_fields:
+                        payload["semantic_drift_fields"] = drift_fields
+
+            self._event_repo.save(
+                job_id=job_id,
+                stage=stage_index,
+                event_type=event_type,
+                status="blocked",
+                message=message,
+                payload=payload,
+            )
 
     def _prior_main_schema_invalid_reason(self, *, job_id: str, context_checksum: str) -> str | None:
         if self._llm_invocation_repo is not None:
@@ -666,6 +706,16 @@ class V2RepairGateService:
                     continue
                 reason = str(payload.get("reason_code") or "")
                 if reason and reason != "duplicate_main_blocked":
+                    _reviewer_terminal_reasons = {
+                        "REVIEWER_REQUESTED_REVISION",
+                        "REVIEWER_DECLINED_REPAIR",
+                        "REVIEWER_SCHEMA_REPAIR_SEMANTIC_DRIFT",
+                        "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE",
+                        "REVIEWER_SCHEMA_INVALID",
+                        "REVIEWER_REPAIR_OUTPUT_INVALID",
+                    }
+                    if reason in _reviewer_terminal_reasons:
+                        return reason
                     return "materialization_previously_failed"
         return None
 
@@ -761,6 +811,8 @@ class V2RepairGateService:
             fallback_message = "Reviewer output failed schema validation."
         elif reason_code == "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE":
             fallback_message = "No schema-capable reviewer deployment is configured."
+        elif reason_code == "REVIEWER_SCHEMA_REPAIR_SEMANTIC_DRIFT":
+            fallback_message = "Reviewer schema repair changed critical semantic fields and was rejected."
         elif reason_code == "REVIEWER_MODEL_UNAVAILABLE":
             fallback_message = "Reviewer model was unavailable."
         elif reason_code == "REVIEWER_MODEL_FAILED":
@@ -816,6 +868,7 @@ class V2RepairGateService:
                 "REVIEWER_NEEDS_MORE_CONTEXT", "REVIEWER_REQUESTED_REVISION",
                 "REVIEWER_INVALID_DECISION", "REVIEWER_CHECKSUM_MISMATCH",
                 "REVIEWER_SCHEMA_INVALID", "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE",
+                "REVIEWER_SCHEMA_REPAIR_SEMANTIC_DRIFT",
                 "REVIEWER_MODEL_UNAVAILABLE", "REVIEWER_MODEL_FAILED",
                 "REVIEWER_OUTPUT_ARTIFACT_MISSING",
                 REASON_CODE_PATCH_CHECK_FAILED,
@@ -860,6 +913,19 @@ class V2RepairGateService:
             value = chain.get(key)
             if value is not None:
                 payload[key] = value
+        if reason_code == "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE":
+            payload.update({
+                "parse_failure_category": "unsupported_response_format",
+                "response_format_requested": True,
+                "response_format_used": False,
+                "schema_repair_attempted": False,
+                "schema_repair_succeeded": False,
+                "schema_repair_failure_reason": "schema_capability_unavailable",
+            })
+            if not payload.get("reviewer_schema_failure_ref"):
+                payload["reviewer_schema_failure_ref"] = str(
+                    chain.get("reviewer_schema_failure_ref") or ""
+                )
         if self._llm_invocation_repo is not None:
             for record in self._llm_invocation_repo.list_by_job(job_id):
                 invocation_id = str(getattr(record, "invocation_id", "") or "")

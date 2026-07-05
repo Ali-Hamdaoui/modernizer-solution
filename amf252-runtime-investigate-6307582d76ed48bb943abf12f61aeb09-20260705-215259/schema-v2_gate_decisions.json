@@ -1,0 +1,138 @@
+[
+  {
+    "cid": 0,
+    "name": "decision_id",
+    "type": "TEXT",
+    "notnull": 0,
+    "dflt_value": null,
+    "pk": 1
+  },
+  {
+    "cid": 1,
+    "name": "gate_id",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 2,
+    "name": "job_id",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 3,
+    "name": "action",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 4,
+    "name": "expected_gate_checksum",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 5,
+    "name": "idempotency_key",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 6,
+    "name": "request_checksum",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 7,
+    "name": "result_gate_id",
+    "type": "TEXT",
+    "notnull": 0,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 8,
+    "name": "result_command_id",
+    "type": "TEXT",
+    "notnull": 0,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 9,
+    "name": "result_revision_id",
+    "type": "TEXT",
+    "notnull": 0,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 10,
+    "name": "decided_by",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": "''",
+    "pk": 0
+  },
+  {
+    "cid": 11,
+    "name": "decided_at",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": "''",
+    "pk": 0
+  },
+  {
+    "cid": 12,
+    "name": "actor_type",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": "'human'",
+    "pk": 0
+  },
+  {
+    "cid": 13,
+    "name": "actor_id",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": "''",
+    "pk": 0
+  },
+  {
+    "cid": 14,
+    "name": "correlation_id",
+    "type": "TEXT",
+    "notnull": 0,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 15,
+    "name": "causation_id",
+    "type": "TEXT",
+    "notnull": 0,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 16,
+    "name": "reason",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": "''",
+    "pk": 0
+  }
+]

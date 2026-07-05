@@ -1,0 +1,21 @@
+[
+  {
+    "decision_id": "14839ef1ae7b4dbda7047d96dc311e02",
+    "gate_id": "428c34dd339142a181ea85a29b11e672",
+    "job_id": "6307582d76ed48bb943abf12f61aeb09",
+    "action": "approve",
+    "expected_gate_checksum": "f811318e85e9869dfa9f2ccd5ea189a9870ab18f20be62c0c03d03ba6320cc89",
+    "idempotency_key": "428c34dd339142a181ea85a29b11e672:approve",
+    "request_checksum": "258ffd4198c6e7f64a18341cc324918f0da57dcc071328b979607ffc0b17b804",
+    "result_gate_id": null,
+    "result_command_id": null,
+    "result_revision_id": null,
+    "decided_by": "human",
+    "decided_at": "2026-07-05T20:26:41.020254Z",
+    "actor_type": "human",
+    "actor_id": "human",
+    "correlation_id": null,
+    "causation_id": null,
+    "reason": ""
+  }
+]

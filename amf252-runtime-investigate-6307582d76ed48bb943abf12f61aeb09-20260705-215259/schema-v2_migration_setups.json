@@ -1,0 +1,138 @@
+[
+  {
+    "cid": 0,
+    "name": "setup_id",
+    "type": "TEXT",
+    "notnull": 0,
+    "dflt_value": null,
+    "pk": 1
+  },
+  {
+    "cid": 1,
+    "name": "run_name",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 2,
+    "name": "legacy_app_path",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 3,
+    "name": "output_parent_path",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 4,
+    "name": "ai_hub_path",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 5,
+    "name": "java11_home",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 6,
+    "name": "java17_home",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 7,
+    "name": "java21_home",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 8,
+    "name": "maven_cmd",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 9,
+    "name": "proof_level",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": "'build_test_verified'",
+    "pk": 0
+  },
+  {
+    "cid": 10,
+    "name": "skip_endpoint_smoke",
+    "type": "INTEGER",
+    "notnull": 1,
+    "dflt_value": "0",
+    "pk": 0
+  },
+  {
+    "cid": 11,
+    "name": "migration_flags_json",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": "'{}'",
+    "pk": 0
+  },
+  {
+    "cid": 12,
+    "name": "setup_checksum",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 13,
+    "name": "checksum_algorithm",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": "'sha256'",
+    "pk": 0
+  },
+  {
+    "cid": 14,
+    "name": "created_at",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 15,
+    "name": "created_by",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": "'operator'",
+    "pk": 0
+  },
+  {
+    "cid": 16,
+    "name": "correlation_id",
+    "type": "TEXT",
+    "notnull": 0,
+    "dflt_value": null,
+    "pk": 0
+  }
+]

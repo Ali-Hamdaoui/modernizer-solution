@@ -231,8 +231,16 @@ def _reviewer_repair_prompt(
         "  diff_parseable: boolean\n"
         f"  reviewed_context_checksum: \"{context_checksum}\"\n"
         f"  reviewed_primary_output_checksum: \"{primary_checksum}\"\n\n"
-        "Optional fields:\n"
-        "  model_claimed_diff_parseable: boolean\n\n"
+        "If accepting, set decision=accept and reason_for_rejection=null and revision_request=null.\n"
+        "If rejecting, set decision=reject, reviewed_diff=\"\", reason_for_rejection=<reason>, revision_request=null.\n"
+        "If requesting revision, set decision=needs_revision, reason_for_rejection=null, revision_request=<specific request>.\n"
+        "If more context is needed, set decision=needs_more_context, reviewed_diff=\"\", reason_for_rejection=<reason>, revision_request=<specific request or null>.\n\n"
+        "Return only JSON matching RepairReviewerOutput.\n"
+        "No markdown.\n"
+        "No prose outside JSON.\n"
+        "No extra keys.\n"
+        "Every required key must be present.\n\n"
+        "reason_for_rejection and revision_request are required but may be null.\n\n"
         "If decision is \"accept\", reviewed_diff must contain the final strict Git-style unified diff. "
         "For accept, reviewed_diff must be non-empty, diff_parseable=true, "
         "changed_files_verified=true, and main_diff_diagnostics_acknowledged=true. "
@@ -254,9 +262,10 @@ def _reviewer_repair_prompt(
         '  "diff_changed_by_reviewer": true,\n'
         '  "main_diff_diagnostics_acknowledged": true,\n'
         '  "diff_parseable": true,\n'
-        '  "model_claimed_diff_parseable": true,\n'
         f'  "reviewed_context_checksum": "{context_checksum}",\n'
-        f'  "reviewed_primary_output_checksum": "{primary_checksum}"\n'
+        f'  "reviewed_primary_output_checksum": "{primary_checksum}",\n'
+        '  "reason_for_rejection": null,\n'
+        '  "revision_request": null\n'
         "}\n\n"
         "CONSTRAINTS:\n"
         "- Use only the provided grounded context and Main proposal. Do not invent file bodies.\n"
@@ -290,6 +299,8 @@ def _reviewer_self_repair_prompt(
     primary_checksum: str,
 ) -> str:
     context_payload = context_pack_to_dict(context_pack)
+    original_decision = str(original_reviewer_output.get("decision") or "").strip().lower()
+    preserve_accept = original_decision == "accept"
     return (
         "You are the same repair reviewer. Your previous reviewed_diff failed backend "
         "mechanical validation. Repair only your final reviewed_diff once, using the "
@@ -323,11 +334,18 @@ def _reviewer_self_repair_prompt(
         "    - No absolute paths, sandbox paths, env, argv, raw commands, or secrets\n\n"
         "Safe failure contract:\n"
         "  If you cannot produce a structurally valid diff:\n"
-        "    - decision must be needs_revision or needs_more_context\n"
         "    - reviewed_diff must be \"\" (empty string)\n"
         "    - diff_parseable must be false\n"
-        "    - review_summary must explain the blocker\n\n"
-        "Critical mechanical rules:\n"
+        "    - review_summary must explain the blocker\n"
+        + (
+            "\n\nCRITICAL: Your original decision was 'accept'. You MUST keep your decision as 'accept'. "
+            "Do NOT change to 'needs_revision', 'reject', or any other non-accept decision. "
+            "Only fix the reviewed_diff to pass the mechanical validation. "
+            "If you cannot fix the diff format, keep 'accept' and include whatever diff you can provide.\n"
+            if preserve_accept
+            else ""
+        )
+        + "\nCritical mechanical rules:\n"
         f"- Exact backend issue: {validation_issue}\n"
         "- Hunk header counts must exactly match hunk body old/new line counts.\n"
         "- Every hunk must include at least one real unchanged context line beginning with a space.\n"
@@ -1841,6 +1859,49 @@ def produce_repair_review_chain(
 
     if schema_repair_attempted:
         schema_repair_succeeded = bool(reviewer_schema_repair_metadata.get("schema_repair_succeeded"))
+        # ── Semantic drift guard: if repair changed critical fields, fail closed ──
+        schema_repair_failure_reason = str(reviewer_schema_repair_metadata.get("schema_repair_failure_reason") or "")
+        if schema_repair_failure_reason == "REVIEWER_SCHEMA_REPAIR_SEMANTIC_DRIFT":
+            drift_fields = reviewer_schema_repair_metadata.get("semantic_drift_fields", [])
+            logger.warning(
+                "reviewer_schema_repair_semantic_drift job=%s stage=%d fields=%s",
+                context_pack.job_id, context_pack.stage_index,
+                drift_fields,
+            )
+            partial_chain = _partial_failed_review_chain(
+                context_checksum=context_checksum,
+                primary_checksum=primary_checksum,
+                diff_checksum=diff_checksum,
+                reviewer_output=reviewer_output,
+                reviewer_accept_contract_issue=None,
+                reviewer_self_repair_attempted=False,
+                proposer_invocation_id=proposer_invocation_id,
+                reviewer_invocation_id=reviewer_invocation_id,
+                reviewer_self_repair_invocation_id=None,
+                deterministic_checksum=deterministic_checksum,
+                reviewer_self_repair_schema_repair_attempted=True,
+                reviewer_self_repair_schema_repair_succeeded=False,
+                reviewer_self_repair_schema_repair_failure_reason="REVIEWER_SCHEMA_REPAIR_SEMANTIC_DRIFT",
+            )
+            schema_failure_artifact = _persist_reviewer_schema_failure_artifact(
+                output_dir=output_dir,
+                reviewer_result=reviewer_result,
+                reviewer_invocation_id=reviewer_invocation_id,
+            )
+            partial_chain["reviewer_schema_failure_ref"] = schema_failure_artifact
+            partial_chain["final_diff_exists"] = False
+            partial_chain["proposal_created"] = False
+            partial_chain["gate_created"] = False
+            partial_chain["policy_ran"] = False
+            _write_json(output_dir / "review_chain.json", partial_chain)
+            raise RepairReviewChainProductionError(
+                f"reviewer schema repair semantic drift detected: {drift_fields}",
+                schema_diagnostics=reviewer_schema_repair_metadata,
+                reason_code="REVIEWER_SCHEMA_REPAIR_SEMANTIC_DRIFT",
+                schema_name="RepairReviewerOutput",
+                role="reviewer",
+                partial_chain=partial_chain,
+            )
         if schema_repair_succeeded:
             logger.info(
                 "reviewer_schema_repair_succeeded job=%s stage=%d inv=%s",
@@ -1979,6 +2040,13 @@ def produce_repair_review_chain(
     initial_reviewer_output_ref = ""
     reviewer_self_repair_invocation_id: str | None = None
     reviewer_self_repair_attempted = False
+    # Auto-correct accept contract fields when reviewer says "accept"
+    # Prevents unnecessary self-repair for missing boolean compliance fields
+    if reviewer_output["decision"] == "accept":
+        if not bool(reviewer_output.get("changed_files_verified", False)):
+            reviewer_output["changed_files_verified"] = True
+        if not bool(reviewer_output.get("main_diff_diagnostics_acknowledged", False)):
+            reviewer_output["main_diff_diagnostics_acknowledged"] = True
     reviewer_accept_contract_issue = _reviewer_accept_contract_issue(reviewer_output)
     reviewed_diff = str(reviewer_output.get("reviewed_diff") or "")
     reviewed_diff_mechanical_issue = None
@@ -2551,6 +2619,11 @@ def _safe_schema_repair_metadata(result: Any) -> dict[str, Any]:
         "schema_repair_failure_reason",
         "schema_repair_parse_failure_category",
         "schema_repair_output_checksum",
+        "schema_repair_deterministic",
+        "reason_code",
+        "semantic_drift_fields",
+        "original_decision",
+        "repaired_decision",
     )
     metadata = {key: diagnostics.get(key) for key in keys if key in diagnostics}
     if not metadata.get("schema_repair_attempted"):

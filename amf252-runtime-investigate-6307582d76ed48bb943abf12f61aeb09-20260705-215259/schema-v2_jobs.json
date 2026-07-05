@@ -1,0 +1,10 @@
+[
+  {
+    "cid": 0,
+    "name": "job_id",
+    "type": "TEXT",
+    "notnull": 0,
+    "dflt_value": null,
+    "pk": 1
+  }
+]

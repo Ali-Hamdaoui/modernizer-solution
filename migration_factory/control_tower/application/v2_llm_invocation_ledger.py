@@ -199,9 +199,6 @@ class V2LLMInvocationLedger:
         safe_error = str(redact_model_summary(redacted_error or ""))[:500] if redacted_error else None
         safe_summary = str(redact_model_summary(redacted_summary or ""))[:500] if redacted_summary else None
         failure_status = "failed"
-        combined = f"{safe_error or ''} {safe_summary or ''}".lower()
-        if "schema_invalid" in combined or "schema validation" in combined:
-            failure_status = "schema_invalid"
         self._repository.update_status(
             invocation_id=invocation_id,
             status="fallback" if fallback_used else failure_status,
@@ -256,8 +253,6 @@ class V2LLMInvocationLedger:
         )
         reason_code = _derive_invocation_reason_code(record)
         status = dto.status
-        if status == "completed" and reason_code in {"main_schema_invalid", "proposer_schema_invalid", "reviewer_schema_invalid"}:
-            status = "schema_invalid"
         return {
             "invocation_id": dto.invocation_id,
             "job_id": dto.job_id,

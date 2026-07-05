@@ -95,7 +95,7 @@ class ModelRoleConfigLoader:
             "reasoning_effort": raw_reasoning or None,
             "schema_name": None,
             "supports_json_schema": _get_env_bool(
-                f"{prefix}_SUPPORTS_JSON_SCHEMA", True
+                f"{prefix}_SUPPORTS_JSON_SCHEMA", False if role == "reviewer" else True
             ),
             "supports_json_object": _get_env_bool(
                 f"{prefix}_SUPPORTS_JSON_OBJECT", True

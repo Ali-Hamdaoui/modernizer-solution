@@ -20,7 +20,11 @@ from migration_factory.control_tower.application.v2_model_role_config import (
     ModelRoleConfigLoader,
     ModelRoleConfigMissingError,
 )
-from migration_factory.control_tower.application.v2_model_schemas import validate_model_output
+from migration_factory.control_tower.application.v2_model_schemas import (
+    SCHEMA_REGISTRY,
+    structured_response_schema,
+    validate_model_output,
+)
 from migration_factory.control_tower.application.v2_settings import ControlTowerSettings
 from migration_factory.control_tower.application.redaction import redact_model_summary
 
@@ -350,12 +354,65 @@ class V2ModelRoleRouter:
         original_schema_diagnostics: dict[str, Any],
         original_failure_reason: str,
     ) -> tuple[V2RoleModelResult | None, dict[str, Any]]:
-        repair_prompt = _build_reviewer_schema_repair_prompt(
-            original_prompt=request.prompt,
-            invalid_content=invalid_content,
-            schema_diagnostics=original_schema_diagnostics,
-            original_failure_reason=original_failure_reason,
-        )
+        reply_result: Any = None
+        reply_content: str = invalid_content
+
+        # ── Step 0: deterministic normalization ──────────────────────
+        normalized = _normalize_repair_reviewer_output_schema_only(invalid_content)
+        if normalized is not None:
+            normalized_dict, removed_extra_keys = normalized
+            normalized_json = json.dumps(normalized_dict, sort_keys=True)
+            # Rebuild a deterministic success result with normalized content
+            # Import client to create a synthetic result
+            try:
+                from migration_factory.control_tower.application.v2_assistant_model_client import (
+                    V2AssistantModelResult,
+                )
+                reply_result = V2AssistantModelResult(
+                    content=normalized_json,
+                    source="deterministic",
+                    model_status="live_ok",
+                    provider="deterministic",
+                    role="reviewer",
+                    success=True,
+                    redacted_summary="Reviewer output repaired deterministically (no LLM call).",
+                    failure_reason="",
+                    response_format_requested=True,
+                    response_format_used=True,
+                )
+            except ImportError:
+                pass
+
+        # ── Step 1: LLM self-repair only if deterministic normalization failed ──
+        if reply_result is None:
+            repair_prompt = _build_reviewer_schema_repair_prompt(
+                original_prompt=request.prompt,
+                invalid_content=invalid_content,
+                schema_diagnostics=original_schema_diagnostics,
+                original_failure_reason=original_failure_reason,
+            )
+            raw_repair_result, repair_failure = self._try_invoke(
+                invoke,
+                deployment=route.primary_deployment,
+                provider=route.provider,
+                request=request,
+                role=request.role.value,
+                prompt_override=repair_prompt,
+            )
+            if raw_repair_result is None:
+                return None, {
+                    **original_schema_diagnostics,
+                    "original_schema_failure_reason": original_failure_reason,
+                    "original_parse_failure_category": str(
+                        original_schema_diagnostics.get("parse_failure_category") or ""
+                    ),
+                    "schema_repair_attempted": True,
+                    "schema_repair_succeeded": False,
+                    "schema_repair_failure_reason": repair_failure or "reviewer_model_failed",
+                    "schema_repair_parse_failure_category": "",
+                }
+            reply_result = raw_repair_result
+
         repair_diag: dict[str, Any] = {
             **original_schema_diagnostics,
             "original_schema_failure_reason": original_failure_reason,
@@ -367,19 +424,8 @@ class V2ModelRoleRouter:
             "schema_repair_failure_reason": "",
             "schema_repair_parse_failure_category": "",
         }
-        raw_repair_result, repair_failure = self._try_invoke(
-            invoke,
-            deployment=route.primary_deployment,
-            provider=route.provider,
-            request=request,
-            role=request.role.value,
-            prompt_override=repair_prompt,
-        )
-        if raw_repair_result is None:
-            repair_diag["schema_repair_failure_reason"] = repair_failure or "reviewer_model_failed"
-            return None, repair_diag
 
-        result = self._coerce_primary_result(raw_repair_result, request)
+        result = self._coerce_primary_result(reply_result, request)
         repair_schema_failure = self._schema_failure_reason(request, result.content)
         repair_result_diag = self._schema_diagnostics(
             request,
@@ -401,6 +447,18 @@ class V2ModelRoleRouter:
         )
 
         if result.success and not repair_schema_failure:
+            # ── Semantic drift guard: compare original vs repaired ──
+            original_parsed, _ = _parse_model_json_safe(invalid_content)
+            repaired_parsed, _ = _parse_model_json_safe(result.content)
+            if original_parsed is not None and repaired_parsed is not None:
+                drift_diag = _detect_reviewer_schema_repair_semantic_drift(
+                    original=original_parsed,
+                    repaired=repaired_parsed,
+                )
+                if drift_diag is not None:
+                    repair_diag.update(drift_diag)
+                    return None, repair_diag
+
             success_diag = {
                 **repair_result_diag,
                 "original_schema_failure_reason": original_failure_reason,
@@ -411,6 +469,11 @@ class V2ModelRoleRouter:
                 "schema_repair_parse_failure_category": "",
                 "schema_repair_output_checksum": repair_diag["schema_repair_output_checksum"],
             }
+            # Mark as deterministic if no LLM was called
+            if getattr(result, "source", "") == "deterministic":
+                success_diag["schema_repair_deterministic"] = True
+                if removed_extra_keys:
+                    success_diag["deterministic_removed_extra_keys"] = removed_extra_keys
             return (
                 V2RoleModelResult(
                     content=result.content,
@@ -444,7 +507,7 @@ class V2ModelRoleRouter:
         repair_diag["schema_repair_failure_reason"] = (
             repair_schema_failure
             or result.failure_reason
-            or repair_failure
+            or repair_diag.get("schema_repair_failure_reason")
             or "reviewer_schema_invalid"
         )
         return None, repair_diag
@@ -516,8 +579,19 @@ class V2ModelRoleRouter:
         ):
             return None
         role_config = ModelRoleConfigLoader.try_load_role("reviewer")
-        if role_config is None or role_config.supports_json_object:
-            return None
+        if role_config is None:
+            return self._reviewer_schema_capability_issue(request, route.primary_deployment)
+        if not role_config.supports_json_schema:
+            return self._reviewer_schema_capability_issue(request, route.primary_deployment)
+        if role_config.response_format != "json_schema":
+            return self._reviewer_schema_capability_issue(request, route.primary_deployment)
+        return None
+
+    def _reviewer_schema_capability_issue(
+        self,
+        request: V2RoleModelRequest,
+        deployment: str = "",
+    ) -> dict[str, Any]:
         return {
             "schema_validated": False,
             "schema_name": request.output_schema_name,
@@ -527,7 +601,7 @@ class V2ModelRoleRouter:
             "parse_failure_category": "unsupported_response_format",
             "response_format_requested": True,
             "response_format_used": False,
-            "deployment_alias_hash": _deployment_alias_hash(route.primary_deployment),
+            "deployment_alias_hash": _deployment_alias_hash(deployment),
             "responsibility": (request.responsibility or "").strip(),
             "schema_repair_attempted": False,
             "schema_repair_succeeded": False,
@@ -778,8 +852,14 @@ def _build_reviewer_schema_repair_prompt(
     }
     return (
         "You are the same repair reviewer. Your previous response failed backend "
-        "schema validation and was not used. Rewrite the reviewer answer as one "
-        "schema-valid JSON object only.\n\n"
+        "schema validation and was not used.\n\n"
+        "IMPORTANT: You are only fixing JSON/schema shape. You are NOT re-reviewing "
+        "the repair. Preserve all semantic fields exactly. Do not change decision. "
+        "Do not change reviewed_diff. Do not change checksums. Do not change "
+        "booleans. Do not add new findings. Do not remove existing findings. "
+        "Only add missing nullable schema fields when required. Only remove extra "
+        "fields that are not allowed by schema.\n\n"
+        "Return only JSON matching RepairReviewerOutput.\n"
         "Return only JSON. No markdown. No code fences. No prose outside JSON. "
         "Do not add extra keys.\n\n"
         f"Safe schema failure reason: {redact_model_summary(original_failure_reason)}\n"
@@ -798,13 +878,14 @@ def _build_reviewer_schema_repair_prompt(
         '  "diff_parseable": false,\n'
         '  "reviewed_context_checksum": "string",\n'
         '  "reviewed_primary_output_checksum": "string",\n'
-        '  "model_claimed_diff_parseable": false\n'
+        '  "reason_for_rejection": null,\n'
+        '  "revision_request": null\n'
         "}\n\n"
         "Required fields: decision, review_summary, main_patch_findings, "
         "changed_files_verified, reviewed_diff, diff_changed_by_reviewer, risks, "
         "policy_concerns, main_diff_diagnostics_acknowledged, diff_parseable, "
-        "reviewed_context_checksum, reviewed_primary_output_checksum.\n"
-        "Optional field: model_claimed_diff_parseable.\n"
+        "reviewed_context_checksum, reviewed_primary_output_checksum, "
+        "reason_for_rejection, revision_request.\n"
         "Allowed decisions: accept, reject, needs_more_context, needs_revision.\n"
         "No additional properties are allowed.\n\n"
         "If decision is accept, reviewed_diff must be non-empty, diff_parseable must "
@@ -837,6 +918,149 @@ def _deployment_alias_hash(deployment: str) -> str:
     if not deployment:
         return ""
     return hashlib.sha256(deployment.encode("utf-8")).hexdigest()[:16]
+
+
+_CRITICAL_REVIEWER_FIELDS = frozenset({
+    "decision",
+    "reviewed_diff",
+    "reviewed_context_checksum",
+    "reviewed_primary_output_checksum",
+    "diff_parseable",
+    "changed_files_verified",
+    "main_diff_diagnostics_acknowledged",
+})
+
+_REVIEWER_PROHIBITED_NORMALIZATION_FIELDS = frozenset({
+    "decision",
+    "reviewed_diff",
+    "reviewed_context_checksum",
+    "reviewed_primary_output_checksum",
+    "diff_parseable",
+    "changed_files_verified",
+    "main_diff_diagnostics_acknowledged",
+    "risks",
+    "policy_concerns",
+    "main_patch_findings",
+    "review_summary",
+})
+
+_ALLOWED_REVIEWER_NULLABLE_FIELDS = frozenset({
+    "reason_for_rejection",
+    "revision_request",
+})
+
+
+def _checksum_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _normalize_repair_reviewer_output_schema_only(content: str) -> tuple[dict[str, Any], list[str]] | None:
+    """Try deterministic normalization of reviewer output before LLM self-repair.
+
+    Allowed:
+    - Extract JSON object from markdown/code fences.
+    - Strip harmless wrapper text if one valid JSON object is recoverable.
+    - Fill missing nullable fields: reason_for_rejection=null, revision_request=null.
+    - Remove extra keys only if they do not alter required semantic fields.
+
+    Forbidden: modifying any semantic field listed in
+    _REVIEWER_PROHIBITED_NORMALIZATION_FIELDS.
+
+    Returns (normalized_dict, removed_extra_keys) if valid, or None if
+    deterministic normalization cannot produce a valid output. The normalized
+    dict never contains diagnostic metadata keys.
+    """
+    raw = str(content).strip()
+    if not raw:
+        return None
+
+    parsed, _category = _parse_model_json_safe(raw)
+    if parsed is None:
+        return None
+
+    # Fill missing nullable fields
+    for nullable_field in _ALLOWED_REVIEWER_NULLABLE_FIELDS:
+        if nullable_field not in parsed:
+            parsed[nullable_field] = None
+
+    # Remove extra keys that are harmless schema extras
+    provider_schema = structured_response_schema("RepairReviewerOutput")
+    allowed_props = set(provider_schema.get("properties", {}).keys())
+    extra_keys = set(parsed.keys()) - allowed_props
+    removed_keys: list[str] = []
+    for key in list(extra_keys):
+        if key in _REVIEWER_PROHIBITED_NORMALIZATION_FIELDS:
+            continue
+        del parsed[key]
+        removed_keys.append(key)
+
+    # Validate against the internal schema
+    try:
+        validate_model_output("RepairReviewerOutput", parsed)
+    except Exception:
+        return None
+
+    return parsed, removed_keys
+
+
+def _detect_reviewer_schema_repair_semantic_drift(
+    *,
+    original: dict[str, Any],
+    repaired: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Compare critical semantic fields between original and repaired reviewer output.
+
+    Returns None if no drift detected, or a diagnostics dict if critical fields changed.
+    """
+    drift_fields: list[str] = []
+    drift_detail: dict[str, Any] = {}
+
+    for field in sorted(_CRITICAL_REVIEWER_FIELDS):
+        original_value = original.get(field)
+        repaired_value = repaired.get(field)
+
+        if field == "reviewed_diff":
+            original_checksum = _checksum_text(str(original_value or ""))
+            repaired_checksum = _checksum_text(str(repaired_value or ""))
+            if original_checksum != repaired_checksum:
+                drift_fields.append(field)
+                drift_detail[f"original_{field}_checksum"] = original_checksum
+                drift_detail[f"repaired_{field}_checksum"] = repaired_checksum
+        elif field in ("reviewed_context_checksum", "reviewed_primary_output_checksum"):
+            original_s = str(original_value or "").strip()
+            repaired_s = str(repaired_value or "").strip()
+            if original_s != repaired_s:
+                drift_fields.append(field)
+                drift_detail[f"original_{field}"] = original_s
+                drift_detail[f"repaired_{field}"] = repaired_s
+        elif field == "decision":
+            original_d = str(original_value or "").strip().lower()
+            repaired_d = str(repaired_value or "").strip().lower()
+            if original_d != repaired_d:
+                drift_fields.append(field)
+                drift_detail["original_decision"] = original_d
+                drift_detail["repaired_decision"] = repaired_d
+        else:
+            if bool(original_value) != bool(repaired_value):
+                drift_fields.append(field)
+                drift_detail[f"original_{field}"] = bool(original_value)
+                drift_detail[f"repaired_{field}"] = bool(repaired_value)
+
+    if not drift_fields:
+        return None
+
+    return {
+        "reason_code": "REVIEWER_SCHEMA_REPAIR_SEMANTIC_DRIFT",
+        "schema_name": "RepairReviewerOutput",
+        "parse_failure_category": "schema_repair_semantic_drift",
+        "schema_repair_attempted": True,
+        "schema_repair_succeeded": False,
+        "schema_repair_failure_reason": "REVIEWER_SCHEMA_REPAIR_SEMANTIC_DRIFT",
+        "response_format_requested": True,
+        "response_format_used": True,
+        "semantic_drift_fields": drift_fields,
+        **drift_detail,
+    }
 
 
 def _build_diagnostic_summary_from_diag(diag: dict[str, Any]) -> str:

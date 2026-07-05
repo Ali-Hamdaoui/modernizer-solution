@@ -1,0 +1,33 @@
+﻿{
+    "job_id":  "6307582d76ed48bb943abf12f61aeb09",
+    "stages":  [
+                   {
+                       "stage_index":  1,
+                       "stage_run_id":  "6d3997d9380244b8a4f6042db00d53cf",
+                       "pipeline_stage":  "Stage 1",
+                       "input_source_kind":  "legacy_source",
+                       "chain_status":  "failed"
+                   },
+                   {
+                       "stage_index":  2,
+                       "stage_run_id":  "a3180476b94e4061b7fd8952cc12454f",
+                       "pipeline_stage":  "Stage 2",
+                       "input_source_kind":  "stage_1_sandbox",
+                       "chain_status":  "pending"
+                   },
+                   {
+                       "stage_index":  3,
+                       "stage_run_id":  "e95ad73d4a2d4e8e92b300e6a1a4b5f0",
+                       "pipeline_stage":  "Stage 3",
+                       "input_source_kind":  "stage_2_sandbox",
+                       "chain_status":  "pending"
+                   },
+                   {
+                       "stage_index":  4,
+                       "stage_run_id":  "2fe9f56d63bb49faab9162b0b23a4809",
+                       "pipeline_stage":  "Stage 4",
+                       "input_source_kind":  "stage_3_sandbox",
+                       "chain_status":  "pending"
+                   }
+               ]
+}

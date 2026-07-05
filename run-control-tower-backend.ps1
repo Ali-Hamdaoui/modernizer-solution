@@ -168,6 +168,92 @@ function Invoke-RoleSmoke {
     "$Role smoke finish_reason: " + $smoke.choices[0].finish_reason
 }
 
+function Invoke-ReviewerStrictSchemaSmoke {
+    param(
+        [Parameter(Mandatory = $true)][string]$Role,
+        [Parameter(Mandatory = $true)][string]$Model,
+        [Parameter(Mandatory = $true)][string]$DisplayName,
+        [Parameter(Mandatory = $true)][int]$MaxCompletionTokens
+    )
+
+    "`n--- Reviewer strict json_schema smoke test: $Role ---"
+    "Role display name: $DisplayName"
+
+    $messages = @(
+        @{
+            role = "system"
+            content = "You are a JSON-only assistant. Return valid JSON only. No markdown. No code fences."
+        },
+        @{
+            role = "user"
+            content = "Return only JSON with this exact shape: {`"ok`": true, `"role`": `"reviewer`"}. No markdown."
+        }
+    )
+
+    $response_format = @{
+        type = "json_schema"
+        json_schema = @{
+            name = "ReviewerSchemaSmoke"
+            strict = $true
+            schema = @{
+                type = "object"
+                additionalProperties = $false
+                required = @("ok", "role")
+                properties = @{
+                    ok = @{ type = "boolean" }
+                    role = @{ type = "string"; enum = @("reviewer") }
+                }
+            }
+        }
+    }
+
+    $body = @{
+        model = $Model
+        messages = $messages
+        response_format = $response_format
+        max_completion_tokens = $MaxCompletionTokens
+    }
+
+    $jsonBody = $body | ConvertTo-Json -Depth 20
+
+    try {
+        $smoke = Invoke-RestMethod `
+            -Method Post `
+            -Uri "$env:AZURE_OPENAI_ENDPOINT/chat/completions" `
+            -Headers $script:SmokeHeaders `
+            -Body $jsonBody
+    } catch {
+        "$Role strict json_schema smoke test FAILED: " + $_.Exception.Message
+        "Reviewer deployment is not schema-capable. Repair automation cannot create proposals."
+        throw
+    }
+
+    if ($null -eq $smoke -or $null -eq $smoke.choices -or $smoke.choices.Count -eq 0) {
+        throw "$Role strict json_schema smoke test returned no choices."
+    }
+
+    $content = $smoke.choices[0].message.content
+    if ([string]::IsNullOrWhiteSpace($content)) {
+        throw "$Role strict json_schema smoke test returned empty content."
+    }
+
+    try {
+        $parsedSmoke = $content | ConvertFrom-Json
+    } catch {
+        "$Role strict json_schema smoke raw content:"
+        $content
+        throw "$Role strict json_schema smoke test did not return valid JSON."
+    }
+
+    if ($parsedSmoke.ok -ne $true) {
+        throw "$Role strict json_schema smoke test JSON did not contain ok=true."
+    }
+
+    "$Role strict json_schema smoke OK: true"
+    "$Role smoke response model: " + $smoke.model
+    "$Role smoke finish_reason: " + $smoke.choices[0].finish_reason
+}
+
 # ---------------------------------------------------------------------
 # Clear conflicting old provider/model env
 # ---------------------------------------------------------------------
@@ -189,6 +275,8 @@ $VarsToClear = @(
     "AI_MIGRATION_MAIN_ENDPOINT_TYPE",
     "AI_MIGRATION_MAIN_RESPONSE_FORMAT",
     "AI_MIGRATION_MAIN_SUPPORTS_JSON_OBJECT",
+    "AI_MIGRATION_MAIN_SUPPORTS_JSON_SCHEMA",
+    "AI_MIGRATION_MAIN_SUPPORTS_STRUCTURED_OUTPUTS",
     "AI_MIGRATION_MAIN_SUPPORTS_REASONING_EFFORT",
     "AI_MIGRATION_MAIN_SUPPORTS_TEMPERATURE",
     "AI_MIGRATION_MAIN_MAX_INPUT_TOKENS",
@@ -202,6 +290,8 @@ $VarsToClear = @(
     "AI_MIGRATION_REVIEWER_ENDPOINT_TYPE",
     "AI_MIGRATION_REVIEWER_RESPONSE_FORMAT",
     "AI_MIGRATION_REVIEWER_SUPPORTS_JSON_OBJECT",
+    "AI_MIGRATION_REVIEWER_SUPPORTS_JSON_SCHEMA",
+    "AI_MIGRATION_REVIEWER_SUPPORTS_STRUCTURED_OUTPUTS",
     "AI_MIGRATION_REVIEWER_SUPPORTS_REASONING_EFFORT",
     "AI_MIGRATION_REVIEWER_SUPPORTS_TEMPERATURE",
     "AI_MIGRATION_REVIEWER_MAX_INPUT_TOKENS",
@@ -215,6 +305,8 @@ $VarsToClear = @(
     "AI_MIGRATION_FALLBACK_ENDPOINT_TYPE",
     "AI_MIGRATION_FALLBACK_RESPONSE_FORMAT",
     "AI_MIGRATION_FALLBACK_SUPPORTS_JSON_OBJECT",
+    "AI_MIGRATION_FALLBACK_SUPPORTS_JSON_SCHEMA",
+    "AI_MIGRATION_FALLBACK_SUPPORTS_STRUCTURED_OUTPUTS",
     "AI_MIGRATION_FALLBACK_SUPPORTS_REASONING_EFFORT",
     "AI_MIGRATION_FALLBACK_SUPPORTS_TEMPERATURE",
     "AI_MIGRATION_FALLBACK_MAX_INPUT_TOKENS",
@@ -356,14 +448,22 @@ Set-EnvValue "AI_MIGRATION_ALLOW_GUARDED_SANDBOX_TRANSFORM" "true"
 "Endpoint host: " + $parsedEndpoint.Host
 "API key configured: " + [bool]$env:AZURE_OPENAI_API_KEY
 
-"`nRole config:"
+"`nInitial role config before strict schema promotion:"
 "MAIN model: " + $env:AI_MIGRATION_MAIN_MODEL
-"MAIN JSON object support: " + $env:AI_MIGRATION_MAIN_SUPPORTS_JSON_OBJECT
+"MAIN response format: " + $env:AI_MIGRATION_MAIN_RESPONSE_FORMAT
+"MAIN supports json_object: " + $env:AI_MIGRATION_MAIN_SUPPORTS_JSON_OBJECT
+"MAIN supports json_schema: " + $env:AI_MIGRATION_MAIN_SUPPORTS_JSON_SCHEMA
 "MAIN reasoning effort support: " + $env:AI_MIGRATION_MAIN_SUPPORTS_REASONING_EFFORT
 "REVIEWER model: " + $env:AI_MIGRATION_REVIEWER_MODEL
-"REVIEWER JSON object support: " + $env:AI_MIGRATION_REVIEWER_SUPPORTS_JSON_OBJECT
+"REVIEWER response format: " + $env:AI_MIGRATION_REVIEWER_RESPONSE_FORMAT
+"REVIEWER supports json_object: " + $env:AI_MIGRATION_REVIEWER_SUPPORTS_JSON_OBJECT
+"REVIEWER supports json_schema: " + $env:AI_MIGRATION_REVIEWER_SUPPORTS_JSON_SCHEMA
 "REVIEWER reasoning effort support: " + $env:AI_MIGRATION_REVIEWER_SUPPORTS_REASONING_EFFORT
 "FALLBACK model: " + $env:AI_MIGRATION_FALLBACK_MODEL
+"FALLBACK response format: " + $env:AI_MIGRATION_FALLBACK_RESPONSE_FORMAT
+"FALLBACK supports json_object: " + $env:AI_MIGRATION_FALLBACK_SUPPORTS_JSON_OBJECT
+"FALLBACK supports json_schema: " + $env:AI_MIGRATION_FALLBACK_SUPPORTS_JSON_SCHEMA
+"FALLBACK reasoning effort support: " + $env:AI_MIGRATION_FALLBACK_SUPPORTS_REASONING_EFFORT
 
 "`nJava:"
 java -version
@@ -404,6 +504,24 @@ Invoke-RoleSmoke `
     -SupportsReasoningEffort $env:AI_MIGRATION_REVIEWER_SUPPORTS_REASONING_EFFORT `
     -ReasoningEffort $env:AI_MIGRATION_REVIEWER_REASONING_EFFORT `
     -MaxCompletionTokens 1000
+
+Invoke-ReviewerStrictSchemaSmoke `
+    -Role "REVIEWER" `
+    -Model $env:AI_MIGRATION_REVIEWER_MODEL `
+    -DisplayName $env:AI_MIGRATION_REVIEWER_MODEL_DISPLAY_NAME `
+    -MaxCompletionTokens 1000
+
+# ---------------------------------------------------------------------
+# Product-success reviewer config — safe after strict schema smoke passed
+Set-EnvValue "AI_MIGRATION_REVIEWER_RESPONSE_FORMAT" "json_schema"
+Set-EnvValue "AI_MIGRATION_REVIEWER_SUPPORTS_JSON_SCHEMA" "true"
+Set-EnvValue "AI_MIGRATION_REVIEWER_SUPPORTS_STRUCTURED_OUTPUTS" "true"
+
+"`nReviewer strict schema final config:"
+"REVIEWER final response format: " + $env:AI_MIGRATION_REVIEWER_RESPONSE_FORMAT
+"REVIEWER final supports json_schema: " + $env:AI_MIGRATION_REVIEWER_SUPPORTS_JSON_SCHEMA
+"REVIEWER final supports structured outputs: " + $env:AI_MIGRATION_REVIEWER_SUPPORTS_STRUCTURED_OUTPUTS
+# ---------------------------------------------------------------------
 
 # ---------------------------------------------------------------------
 # Repair flight-recorder trace

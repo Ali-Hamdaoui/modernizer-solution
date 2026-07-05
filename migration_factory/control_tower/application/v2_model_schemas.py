@@ -121,6 +121,8 @@ REPAIR_REVIEWER_OUTPUT_SCHEMA = {
         "diff_parseable",
         "reviewed_context_checksum",
         "reviewed_primary_output_checksum",
+        "reason_for_rejection",
+        "revision_request",
     ],
     "properties": {
         "decision": {"type": "string", "enum": ["accept", "reject", "needs_more_context", "needs_revision"]},
@@ -139,8 +141,8 @@ REPAIR_REVIEWER_OUTPUT_SCHEMA = {
         "reviewed_context_checksum": {"type": "string"},
         "reviewed_primary_output_checksum": {"type": "string"},
         "reviewed_diff_checksum": {"type": "string"},
-        "reason_for_rejection": {"type": "string"},
-        "revision_request": {"type": "string"},
+        "reason_for_rejection": {"type": ["string", "null"]},
+        "revision_request": {"type": ["string", "null"]},
         "review_dimensions": {"type": "object"},
     },
 }
@@ -467,6 +469,86 @@ SCHEMA_REGISTRY = {
     "GateActionRequest": GATE_ACTION_REQUEST_SCHEMA,
     "AssistantGateAnswer": ASSISTANT_GATE_ANSWER_SCHEMA,
 }
+
+
+# ── Provider-safe structured response schema ────────────────────────
+
+
+def structured_response_schema(schema_name: str) -> dict[str, Any]:
+    """Return a provider-safe strict JSON Schema for structured output.
+
+    For RepairReviewerOutput, returns a schema that:
+    - root type = object
+    - root anyOf = not used
+    - additionalProperties = false
+    - every property listed in required
+    - nullable type used for conditional fields
+    - nested objects also have additionalProperties=false
+    - omits non-required/internal optional fields
+
+    Args:
+        schema_name: One of the REQUIRED_SCHEMAS names.
+
+    Returns:
+        A provider-safe strict JSON Schema dict.
+
+    Raises:
+        ValueError: If schema_name is unknown.
+    """
+    if schema_name == "RepairReviewerOutput":
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "decision",
+                "review_summary",
+                "main_patch_findings",
+                "changed_files_verified",
+                "reviewed_diff",
+                "diff_changed_by_reviewer",
+                "risks",
+                "policy_concerns",
+                "main_diff_diagnostics_acknowledged",
+                "diff_parseable",
+                "reviewed_context_checksum",
+                "reviewed_primary_output_checksum",
+                "reason_for_rejection",
+                "revision_request",
+            ],
+            "properties": {
+                "decision": {
+                    "type": "string",
+                    "enum": ["accept", "reject", "needs_more_context", "needs_revision"],
+                },
+                "review_summary": {"type": "string"},
+                "main_patch_findings": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "changed_files_verified": {"type": "boolean"},
+                "reviewed_diff": {"type": "string"},
+                "diff_changed_by_reviewer": {"type": "boolean"},
+                "risks": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "policy_concerns": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "main_diff_diagnostics_acknowledged": {"type": "boolean"},
+                "diff_parseable": {"type": "boolean"},
+                "reviewed_context_checksum": {"type": "string"},
+                "reviewed_primary_output_checksum": {"type": "string"},
+                "reason_for_rejection": {"type": ["string", "null"]},
+                "revision_request": {"type": ["string", "null"]},
+            },
+        }
+
+    schema = SCHEMA_REGISTRY.get(schema_name)
+    if schema is None:
+        raise ValueError(f"Unknown schema: {schema_name!r}")
+    return schema
 
 
 # ── Schema validation ────────────────────────────────────────────────

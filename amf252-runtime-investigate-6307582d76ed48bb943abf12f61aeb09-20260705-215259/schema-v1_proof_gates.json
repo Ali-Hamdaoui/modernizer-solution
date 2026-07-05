@@ -1,0 +1,82 @@
+[
+  {
+    "cid": 0,
+    "name": "proof_gate_id",
+    "type": "TEXT",
+    "notnull": 0,
+    "dflt_value": null,
+    "pk": 1
+  },
+  {
+    "cid": 1,
+    "name": "job_id",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 2,
+    "name": "stage_index",
+    "type": "INTEGER",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 3,
+    "name": "output_checksum",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 4,
+    "name": "output_artifact_id",
+    "type": "TEXT",
+    "notnull": 0,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 5,
+    "name": "proof_gate_checksum",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 6,
+    "name": "proof_gate_algorithm",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": "'sha256'",
+    "pk": 0
+  },
+  {
+    "cid": 7,
+    "name": "chain_status",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": "'passed'",
+    "pk": 0
+  },
+  {
+    "cid": 8,
+    "name": "computed_at",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": null,
+    "pk": 0
+  },
+  {
+    "cid": 9,
+    "name": "computed_by",
+    "type": "TEXT",
+    "notnull": 1,
+    "dflt_value": "'system'",
+    "pk": 0
+  }
+]

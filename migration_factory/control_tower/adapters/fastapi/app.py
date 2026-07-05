@@ -766,6 +766,7 @@ def _next_action_for_unavailable(reason_code: str, payload: dict[str, Any]) -> s
         "reviewer_schema_invalid",
         "REVIEWER_SCHEMA_INVALID",
         "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE",
+        "REVIEWER_SCHEMA_REPAIR_SEMANTIC_DRIFT",
     }:
         return "Retry after reviewer/schema contract fix"
     if reason_code == "proposer_schema_invalid":
@@ -816,6 +817,7 @@ def _latest_repair_materialization_unavailable(uow: Any, job_id: str) -> dict[st
         "REVIEWER_CHECKSUM_MISMATCH",
         "REVIEWER_SCHEMA_INVALID",
         "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE",
+        "REVIEWER_SCHEMA_REPAIR_SEMANTIC_DRIFT",
         "REVIEWER_MODEL_UNAVAILABLE",
         "REVIEWER_MODEL_FAILED",
         "REVIEWER_OUTPUT_ARTIFACT_MISSING",
@@ -922,7 +924,7 @@ def _latest_repair_materialization_unavailable(uow: Any, job_id: str) -> dict[st
         "reviewer_self_repair_schema_repair_succeeded": bool(payload.get("reviewer_self_repair_schema_repair_succeeded")),
         "reviewer_self_repair_schema_repair_failure_reason": _safe_event_text(payload.get("reviewer_self_repair_schema_repair_failure_reason")),
         "reviewer_self_repair_schema_repair_parse_failure_category": _safe_event_text(payload.get("reviewer_self_repair_schema_repair_parse_failure_category")),
-        "reviewer_schema_failure_ref": _safe_event_text(payload.get("reviewer_schema_failure_ref")),
+        "reviewer_schema_failure_ref": _safe_artifact_display_ref(payload.get("reviewer_schema_failure_ref")),
         "apply_check_stderr_summary": _safe_apply_check_summary(payload.get("apply_check_stderr_summary")),
         "backend_import_replacement_fallback_attempted": bool(payload.get("backend_import_replacement_fallback_attempted")),
         "backend_import_replacement_fallback_eligible": bool(payload.get("backend_import_replacement_fallback_eligible")),
@@ -971,13 +973,25 @@ def _latest_repair_materialization_unavailable(uow: Any, job_id: str) -> dict[st
                 schema_diagnostics.get("schema_repair_parse_failure_category")
             )
     if duplicate_after_primary is not None and reason_code != "duplicate_main_blocked":
-        diagnostic["blocked_by_reason_code"] = "duplicate_main_blocked"
-        diagnostic["duplicate_blocked"] = True
-        blocked_struct_issue = _safe_struct_issue(
-            duplicate_after_primary.get("struct_issue") or duplicate_after_primary.get("detail")
-        )
-        if blocked_struct_issue:
-            diagnostic["blocked_by_struct_issue"] = blocked_struct_issue
+        _reviewer_terminal_reasons = {
+            "REVIEWER_REQUESTED_REVISION",
+            "REVIEWER_DECLINED_REPAIR",
+            "REVIEWER_SCHEMA_REPAIR_SEMANTIC_DRIFT",
+            "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE",
+            "REVIEWER_SCHEMA_INVALID",
+            "REVIEWER_REPAIR_OUTPUT_INVALID",
+        }
+        if reason_code not in _reviewer_terminal_reasons:
+            diagnostic["blocked_by_reason_code"] = "duplicate_main_blocked"
+            diagnostic["duplicate_blocked"] = True
+            blocked_struct_issue = _safe_struct_issue(
+                duplicate_after_primary.get("struct_issue") or duplicate_after_primary.get("detail")
+            )
+            if blocked_struct_issue:
+                diagnostic["blocked_by_struct_issue"] = blocked_struct_issue
+        else:
+            diagnostic["secondary_duplicate_blocked"] = True
+            diagnostic["secondary_blocked_by_reason_code"] = "duplicate_main_blocked"
     invocation_ids = {
         str(value or "")
         for value in (diagnostic["main_invocation_id"], diagnostic["reviewer_invocation_id"])
@@ -1028,6 +1042,7 @@ def _stable_materialization_reason_code(value: Any) -> str:
         "REVIEWER_CHECKSUM_MISMATCH",
         "REVIEWER_SCHEMA_INVALID",
         "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE",
+        "REVIEWER_SCHEMA_REPAIR_SEMANTIC_DRIFT",
         "REVIEWER_MODEL_UNAVAILABLE",
         "REVIEWER_MODEL_FAILED",
         "REVIEWER_OUTPUT_ARTIFACT_MISSING",
@@ -1057,6 +1072,8 @@ def _stable_materialization_reason_code(value: Any) -> str:
         return "reviewer_schema_invalid"
     if "schema_capability_unavailable" in lowered:
         return "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE"
+    if "semantic_drift" in lowered:
+        return "REVIEWER_SCHEMA_REPAIR_SEMANTIC_DRIFT"
     if "model_unavailable" in lowered:
         return "REVIEWER_MODEL_UNAVAILABLE"
     if "model_failed" in lowered:
@@ -1154,6 +1171,8 @@ def _safe_event_payload(obj: Any) -> Any:
 def _materialization_title(reason_code: str) -> str:
     if reason_code == "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE":
         return "Reviewer Schema Capability Unavailable"
+    if reason_code == "REVIEWER_SCHEMA_REPAIR_SEMANTIC_DRIFT":
+        return "Reviewer Schema Repair Semantic Drift"
     if reason_code in {"reviewer_schema_invalid", "REVIEWER_SCHEMA_INVALID"}:
         return "Reviewed Repair Unavailable"
     if reason_code == "proposer_schema_invalid":
@@ -1174,6 +1193,8 @@ def _materialization_title(reason_code: str) -> str:
 def _materialization_message(reason_code: str) -> str:
     if reason_code == "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE":
         return "No schema-capable reviewer deployment is configured, so no reviewed diff was produced."
+    if reason_code == "REVIEWER_SCHEMA_REPAIR_SEMANTIC_DRIFT":
+        return "Reviewer schema repair changed critical semantic fields. The repair output was rejected."
     if reason_code in {"reviewer_schema_invalid", "REVIEWER_SCHEMA_INVALID"}:
         return "Reviewer model output failed schema validation, so no reviewed diff was produced."
     if reason_code == "proposer_schema_invalid":

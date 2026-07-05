@@ -1,0 +1,17 @@
+[
+  {
+    "run_configuration_id": "run-config-6307582d76ed48bb943abf12f61aeb09",
+    "job_id": "6307582d76ed48bb943abf12f61aeb09",
+    "schema_version": "1.0.0",
+    "runner_profile_id": "runner-default",
+    "runner_profile_version": "2026.06",
+    "pipeline_id": "springboot-216-to-400-java21-four-stage",
+    "pipeline_version": "2026.06",
+    "target_proof_level": "BUILD_TEST_VERIFIED",
+    "enabled_gates_json": "[]",
+    "policy_json": "{\"continue_after_warning\":false,\"enable_build_repair\":true,\"enable_endpoint_gate\":false,\"enable_llm_repair_proposal\":true,\"enable_runtime_gate\":false,\"max_repair_attempts\":3,\"repair_scope\":\"build_only\",\"stage_continuation_policy\":\"auto_on_green\"}",
+    "payload_json": "{\"enabled_gates\":[],\"job_id\":\"6307582d76ed48bb943abf12f61aeb09\",\"pipeline_id\":\"springboot-216-to-400-java21-four-stage\",\"pipeline_version\":\"2026.06\",\"policy\":{\"continue_after_warning\":false,\"enable_build_repair\":true,\"enable_endpoint_gate\":false,\"enable_llm_repair_proposal\":true,\"enable_runtime_gate\":false,\"max_repair_attempts\":3,\"repair_scope\":\"build_only\",\"stage_continuation_policy\":\"auto_on_green\"},\"run_configuration_id\":\"run-config-6307582d76ed48bb943abf12f61aeb09\",\"runner_profile_id\":\"runner-default\",\"runner_profile_version\":\"2026.06\",\"schema_version\":\"1.0.0\",\"source_profile\":\"springboot-3.5-java21\",\"target_profile\":\"springboot-4.0-java21\",\"target_proof_level\":\"BUILD_TEST_VERIFIED\"}",
+    "payload_checksum": "8c7b2c9479235995c2be52ac0da0f5143cc1b711124ef955dc7915de40a7fc29",
+    "created_at": "2026-07-05T20:19:46.522042Z"
+  }
+]

@@ -24,6 +24,9 @@ from migration_factory.control_tower.application.v2_model_role_router import (
     V2RoleModelRequest,
     V2RoleModelResult,
 )
+from migration_factory.control_tower.application.v2_model_schemas import (
+    structured_response_schema,
+)
 from migration_factory.control_tower.domain.checksums import utc_now_text
 
 
@@ -323,8 +326,18 @@ class V2AssistantModelClient:
                 api_key=api_key,
             )
             # Detect response_format rejection
-            if require_schema and code == 400 and ("response_format" in snippet.lower() or "json_object" in snippet.lower() or "json mode" in snippet.lower()):
-                summary = "Azure rejected response_format=json_object. The deployment does not support structured output."
+            if _is_response_format_rejected(require_schema, code, snippet):
+                snippet_lower = snippet.lower()
+                if output_schema_name == "RepairReviewerOutput" and role == V2ModelRole.REVIEWER:
+                    summary = "Reviewer model route does not support required structured output."
+                    failure_reason = "REVIEWER_SCHEMA_CAPABILITY_UNAVAILABLE"
+                elif "json_schema" in snippet_lower:
+                    summary = "Azure rejected response_format=json_schema. The deployment does not support structured output."
+                    failure_reason = "azure_response_format_rejected"
+                else:
+                    summary = "Azure rejected response_format=json_object. The deployment does not support structured output."
+                    failure_reason = "azure_response_format_rejected"
+                return _fallback_result(fallback, summary, failure_reason)
             else:
                 summary = _summary_with_snippet(
                     _http_error_summary(code),
@@ -333,7 +346,7 @@ class V2AssistantModelClient:
             return _fallback_result(
                 fallback,
                 summary,
-                "azure_response_format_rejected" if (require_schema and code == 400 and ("response_format" in snippet.lower() or "json_object" in snippet.lower())) else _http_failure_reason(code),
+                _http_failure_reason(code),
             )
         except urllib.error.URLError as exc:
             reason = str(exc.reason) if hasattr(exc, "reason") else str(exc)
@@ -375,7 +388,15 @@ class V2AssistantModelClient:
             redacted_summary="Azure OpenAI assistant invocation succeeded.",
             failure_reason="",
             response_format_requested=bool(require_schema),
-            response_format_used=bool(require_schema and (role_config.supports_json_object if role_config else True)),
+            response_format_used=(
+                _build_response_format(
+                    role=role,
+                    role_config=role_config,
+                    require_schema=require_schema,
+                    output_schema_name=output_schema_name,
+                )
+                is not None
+            ),
             prompt_tokens=usage_data.get("prompt_tokens"),
             completion_tokens=usage_data.get("completion_tokens"),
             total_tokens=usage_data.get("total_tokens"),
@@ -424,10 +445,18 @@ class V2AssistantModelClient:
             conversation_history=conversation_history,
         )
 
-        response_format: dict | None = None
-        if require_schema:
-            response_format = {"type": "json_object"}
-            # Inject JSON-only instruction into the system message
+        response_format = _build_response_format(
+            role=role,
+            role_config=role_config,
+            require_schema=require_schema,
+            output_schema_name=output_schema_name,
+        )
+        strict_reviewer_schema = _requires_strict_reviewer_schema(
+            role=role,
+            require_schema=require_schema,
+            output_schema_name=output_schema_name,
+        )
+        if require_schema and not strict_reviewer_schema:
             if messages and messages[0].get("role") == "system":
                 existing = str(messages[0].get("content", ""))
                 json_instr = MistralProviderClient.build_json_mode_system_instruction()
@@ -575,8 +604,8 @@ class V2AssistantModelClient:
             except urllib.error.HTTPError as exc:
                 snippet = _sanitize_body_snippet(exc).lower()
                 code = int(getattr(exc, "code", 0) or 0)
-                # Azure rejects json_object mode — do NOT silently retry
-                if require_schema and code == 400 and ("response_format" in snippet or "json_object" in snippet or "json mode" in snippet):
+                # Azure rejects response_format — do NOT silently retry
+                if _is_response_format_rejected(require_schema, code, snippet):
                     raise
                 if _should_retry_with_legacy_endpoint(exc):
                     content = self._chat_completion_legacy(
@@ -628,7 +657,7 @@ class V2AssistantModelClient:
                 except urllib.error.HTTPError as chat_exc:
                     snippet = _sanitize_body_snippet(chat_exc).lower()
                     code = int(getattr(chat_exc, "code", 0) or 0)
-                    if require_schema and code == 400 and ("response_format" in snippet or "json_object" in snippet or "json mode" in snippet):
+                    if _is_response_format_rejected(require_schema, code, snippet):
                         raise
                     if _should_retry_with_legacy_endpoint(chat_exc):
                         content = self._chat_completion_legacy(
@@ -646,7 +675,7 @@ class V2AssistantModelClient:
                     raise
             snippet = _sanitize_body_snippet(exc).lower()
             code = int(getattr(exc, "code", 0) or 0)
-            if require_schema and code == 400 and ("response_format" in snippet or "json_object" in snippet or "json mode" in snippet):
+            if _is_response_format_rejected(require_schema, code, snippet):
                 raise
             if _should_retry_with_legacy_endpoint(exc):
                 content = self._chat_completion_legacy(
@@ -843,9 +872,18 @@ class V2AssistantModelClient:
             "messages": messages,
             "max_completion_tokens": max_completion_tokens,
         }
-        # Schema-required calls always get prompt-enforced JSON. Only roles that
-        # advertise JSON mode support receive response_format=json_object.
-        if require_schema:
+        response_format = _build_response_format(
+            role=role,
+            role_config=role_config,
+            require_schema=require_schema,
+            output_schema_name=output_schema_name,
+        )
+        strict_reviewer_schema = _requires_strict_reviewer_schema(
+            role=role,
+            require_schema=require_schema,
+            output_schema_name=output_schema_name,
+        )
+        if require_schema and not strict_reviewer_schema:
             if messages and messages[0].get("role") == "system":
                 existing = str(messages[0].get("content", ""))
                 json_instruction = (
@@ -854,8 +892,8 @@ class V2AssistantModelClient:
                 )
                 if "json-only assistant" not in existing.lower():
                     messages[0]["content"] = json_instruction + existing
-        if require_schema and supports_json_object:
-            payload["response_format"] = {"type": "json_object"}
+        if response_format is not None:
+            payload["response_format"] = response_format
         # Only add one of temperature / reasoning_effort when explicitly configured.
         # Sending an unsupported parameter to a model that does not recognise it
         # causes a 400 "badly formed" rejection at the Azure infrastructure layer.
@@ -1245,6 +1283,71 @@ def _role_max_output_tokens(role: V2ModelRole, default_tokens: int = 20000) -> i
         if value and value.isdigit():
             return int(value)
     return default_tokens
+
+
+def _requires_strict_reviewer_schema(
+    *,
+    role: V2ModelRole,
+    require_schema: bool,
+    output_schema_name: str | None,
+) -> bool:
+    """Check if this call requires strict json_schema for reviewer RepairReviewerOutput."""
+    return (
+        require_schema
+        and role == V2ModelRole.REVIEWER
+        and output_schema_name == "RepairReviewerOutput"
+    )
+
+
+def _build_response_format(
+    *,
+    role: V2ModelRole,
+    role_config: Any,
+    require_schema: bool,
+    output_schema_name: str | None,
+) -> dict | None:
+    """Centralized response-format selection.
+
+    For reviewer RepairReviewerOutput, returns strict json_schema.
+    For other schema-required routes, returns json_object if supported.
+    Returns None when the required format cannot be satisfied.
+    """
+    if not require_schema:
+        return None
+
+    if role == V2ModelRole.REVIEWER and output_schema_name == "RepairReviewerOutput":
+        if role_config is None:
+            return None
+        if not role_config.supports_json_schema:
+            return None
+        if role_config.response_format != "json_schema":
+            return None
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "RepairReviewerOutput",
+                "strict": True,
+                "schema": structured_response_schema("RepairReviewerOutput"),
+            },
+        }
+
+    if role_config and role_config.supports_json_object:
+        return {"type": "json_object"}
+    return None
+
+
+def _is_response_format_rejected(require_schema: bool, code: int, snippet: str) -> bool:
+    """Check if an HTTP error represents a response_format rejection."""
+    if not require_schema or code != 400:
+        return False
+    return any(
+        kw in snippet
+        for kw in (
+            "response_format", "json_object", "json mode", "json_schema",
+            "invalid response format", "unsupported response format",
+            "unsupported value", "invalid parameter", "invalid_request_error",
+        )
+    )
 
 
 def _model_role_config(role: V2ModelRole):
