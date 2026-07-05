@@ -917,13 +917,28 @@ def _stage_evidence_text(*values: Any) -> str:
 
 
 def _has_jackson_mismatch_evidence(text: str) -> bool:
-    has_missing_class = "tostringserializerbase" in text and ("noclassdeffounderror" in text or "classnotfoundexception" in text)
-    has_jackson_conflict = "jackson-databind" in text and "2.13.5" in text and ("2.9.6" in text or "2.10.0" in text or "omitted for conflict" in text)
+    has_missing_class = "tostringserializerbase" in text and (
+        "noclassdeffounderror" in text
+        or "classnotfoundexception" in text
+        or "could not initialize class" in text
+    )
+    has_jackson_conflict = "jackson-" in text and "2.13.5" in text and _has_legacy_jackson_runtime_version(text)
     return has_missing_class and has_jackson_conflict
 
 
 def _needs_direct_jackson_dependencies(text: str) -> bool:
-    return "jackson-databind" in text and "2.9.6" in text and ("omitted for conflict" in text or "conflict with 2.9.6" in text)
+    return _has_legacy_jackson_runtime_version(text)
+
+
+def _has_legacy_jackson_runtime_version(text: str) -> bool:
+    legacy_markers = (
+        "jackson-databind" in text and "2.9.6" in text,
+        "jackson-core" in text and "2.10.0" in text,
+        "jackson-annotations" in text and "2.10.0" in text,
+        "jackson-dataformat-csv" in text and "2.10.0" in text,
+        "jackson-dataformat-xml" in text and "2.8.11" in text,
+    )
+    return any(legacy_markers)
 
 
 def _is_stage1_boot27_pom(text: str) -> bool:
@@ -938,21 +953,21 @@ def _patch_jackson_alignment_pom(text: str, *, add_direct_dependencies: bool) ->
     if match is None:
         return text, [], []
     old_version = match.group("version").strip()
-    if old_version == JACKSON_TARGET_VERSION:
-        return text, [], []
-    updated = JACKSON_PROPERTY_PATTERN.sub(
-        lambda item: f"{item.group(1)}{JACKSON_TARGET_VERSION}{item.group(3)}",
-        text,
-        count=1,
-    )
-    operations.append("update fasterxml-jackson.version property to 2.13.5")
-    previews.append({
-        "target_file": "pom.xml",
-        "operation": "replace_property",
-        "replacement_count": 1,
-        "before": f"<fasterxml-jackson.version>{old_version}</fasterxml-jackson.version>",
-        "after": f"<fasterxml-jackson.version>{JACKSON_TARGET_VERSION}</fasterxml-jackson.version>",
-    })
+    updated = text
+    if old_version != JACKSON_TARGET_VERSION:
+        updated = JACKSON_PROPERTY_PATTERN.sub(
+            lambda item: f"{item.group(1)}{JACKSON_TARGET_VERSION}{item.group(3)}",
+            text,
+            count=1,
+        )
+        operations.append("update fasterxml-jackson.version property to 2.13.5")
+        previews.append({
+            "target_file": "pom.xml",
+            "operation": "replace_property",
+            "replacement_count": 1,
+            "before": f"<fasterxml-jackson.version>{old_version}</fasterxml-jackson.version>",
+            "after": f"<fasterxml-jackson.version>{JACKSON_TARGET_VERSION}</fasterxml-jackson.version>",
+        })
     if "<artifactId>jackson-bom</artifactId>" not in updated:
         updated = _insert_dependency_management(updated)
         if updated == "":

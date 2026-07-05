@@ -378,10 +378,16 @@ def _assert_jackson_dependency_structure(text: str) -> None:
 def _jackson_evidence(pom: Path, sandbox: Path, *, include_mismatch: bool = True) -> tuple[dict, dict]:
     conflict = (
         "java.lang.NoClassDefFoundError: com/fasterxml/jackson/databind/ser/std/ToStringSerializerBase\n"
+        "Could not initialize class com.total.corp.common.utils.MessageUtils\n"
         "MessageUtils.createObjectMapper(MessageUtils.java:50)\n"
         "MessageUtilsTest failures\n"
+        "Failed to instantiate com.fasterxml.jackson.datatype.jsr310.JavaTimeModule\n"
+        "com.fasterxml.jackson.datatype:jackson-datatype-jsr310:jar:2.13.5\n"
         "com.fasterxml.jackson.core:jackson-databind:jar:2.13.5 omitted for conflict with 2.9.6\n"
         "com.fasterxml.jackson.core:jackson-core:jar:2.13.5 omitted for conflict with 2.10.0\n"
+        "com.fasterxml.jackson.dataformat:jackson-dataformat-xml:jar:2.8.11\n"
+        "com.fasterxml.jackson.dataformat:jackson-dataformat-csv:jar:2.10.0\n"
+        "com.fasterxml.jackson.core:jackson-annotations:jar:2.10.0\n"
         "selected jackson-databind is 2.9.6\n"
     )
     classification = {
@@ -576,6 +582,32 @@ def test_jackson_alignment_candidate_is_pom_only_governed_and_previewed(tmp_path
     assert any(item["operation"] == "insert_direct_dependencies" for item in public["change_preview"])
 
 
+def test_jackson_alignment_candidate_created_when_property_already_target_but_runtime_mixed(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    pom = sandbox / "pom.xml"
+    sandbox.mkdir(parents=True)
+    pom.write_text(_jackson_pom("2.13.5"), encoding="utf-8")
+    classification, stage_evidence = _jackson_evidence(pom, sandbox)
+
+    candidate = create_repair_apply_candidate(classification, stage_evidence, {})
+
+    assert candidate is not None
+    public = public_repair_apply_candidate(candidate)
+    assert public["family"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+    assert public["recipe_id"] == "JACKSON_PROPERTY_BOM_ALIGNMENT"
+    assert public["target_file"] == "pom.xml"
+    assert public["target_files"] == ["pom.xml"]
+    assert public["status"] == "pending_human_approval"
+    assert public["approval_required"] is True
+    assert public["apply_enabled"] is False
+    assert public["sandbox_only"] is True
+    assert public["downstream_start_allowed"] is False
+    operations = {entry["operation"] for entry in public["change_preview"]}
+    assert "replace_property" not in operations
+    assert "insert_dependency_management" in operations
+    assert "insert_direct_dependencies" in operations
+
+
 def test_jackson_alignment_candidate_applies_after_checksum_approval(tmp_path: Path) -> None:
     sandbox = tmp_path / "sandbox"
     pom = sandbox / "pom.xml"
@@ -675,6 +707,63 @@ def test_post_repair_verification_failure_after_sort_creates_jackson_candidate(t
     assert "jackson-databind" in artifacts["dependency_graph"]["excerpt"]
     assert "java" in result["environment_summary"]
     assert "maven" in result["environment_summary"]
+
+
+def test_post_repair_verification_live_like_aligned_property_still_creates_jackson_candidate(tmp_path: Path) -> None:
+    _, _dto, _search, classification, stage_evidence = _sort_sandbox(tmp_path)
+    sandbox = tmp_path / "sandbox"
+    (sandbox / "pom.xml").write_text(_jackson_pom("2.13.5"), encoding="utf-8")
+    candidate = create_repair_apply_candidate(classification, stage_evidence, {})
+    assert candidate is not None
+    approval = approve_repair_apply_candidate(candidate, {
+        "repair_candidate_id": candidate["repair_candidate_id"],
+        "patch_checksum": candidate["patch_checksum"],
+        "target_file_checksum": candidate["target_file_checksum"],
+        "review_checksum": candidate["review_checksum"],
+    })
+    runner = _FakePostRepairRunner(
+        {
+            "mvn -DskipTests clean compile": {"exit_code": 0, "stdout": "[INFO] BUILD SUCCESS", "stderr": ""},
+            "mvn test": {
+                "exit_code": 1,
+                "stdout": "\n".join([
+                    "Tests run: 124, Failures: 0, Errors: 1",
+                    "java.lang.NoClassDefFoundError: com/fasterxml/jackson/databind/ser/std/ToStringSerializerBase",
+                    "Could not initialize class com.total.corp.common.utils.MessageUtils",
+                    "Failed to instantiate com.fasterxml.jackson.datatype.jsr310.JavaTimeModule",
+                    "MessageUtilsTest",
+                ]),
+                "stderr": "",
+            },
+            "mvn dependency:tree -DoutputType=text": {
+                "exit_code": 0,
+                "stdout": "\n".join([
+                    "[INFO] com.fasterxml.jackson.datatype:jackson-datatype-jsr310:jar:2.13.5",
+                    "[INFO] com.fasterxml.jackson.core:jackson-databind:jar:2.9.6",
+                    "[INFO] com.fasterxml.jackson.core:jackson-core:jar:2.10.0",
+                    "[INFO] com.fasterxml.jackson.dataformat:jackson-dataformat-xml:jar:2.8.11",
+                    "[INFO] com.fasterxml.jackson.dataformat:jackson-dataformat-csv:jar:2.10.0",
+                    "[INFO] com.fasterxml.jackson.core:jackson-annotations:jar:2.10.0",
+                ]),
+                "stderr": "",
+            },
+        }
+    )
+
+    result = apply_approved_repair_candidate(candidate, approval, post_repair_verification_runner=runner)
+
+    assert result["post_repair_verification_status"] == "failed"
+    assert result["post_repair_verification"]["classification"]["failure_type"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+    next_candidate = result["next_repair_candidate"]
+    assert next_candidate is not None
+    assert next_candidate["family"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+    assert next_candidate["recipe_id"] == "JACKSON_PROPERTY_BOM_ALIGNMENT"
+    assert next_candidate["target_file"] == "pom.xml"
+    assert next_candidate["target_files"] == ["pom.xml"]
+    assert next_candidate["approval_required"] is True
+    assert next_candidate["apply_enabled"] is False
+    assert next_candidate["sandbox_only"] is True
+    assert next_candidate["downstream_start_allowed"] is False
 
 
 def test_post_repair_verification_long_logs_keep_late_jackson_evidence(tmp_path: Path) -> None:
@@ -970,12 +1059,45 @@ def test_jackson_alignment_candidate_negative_gates(tmp_path: Path) -> None:
         {"kind": "test_report", "excerpt": stage_evidence["usable_artifacts"][2]["excerpt"]},
         {"kind": "dependency_graph", "excerpt": stage_evidence["usable_artifacts"][3]["excerpt"]},
     ]
-    aligned = sandbox / "aligned-pom.xml"
-    aligned.write_text(_jackson_pom("2.13.5"), encoding="utf-8")
-    aligned_evidence = dict(stage_evidence)
-    aligned_evidence["usable_artifacts"] = [
+    fully_aligned = sandbox / "fully-aligned-pom.xml"
+    fully_aligned.write_text(
+        _jackson_pom("2.13.5").replace(
+            "  <dependencies>\n",
+            "  <dependencyManagement>\n"
+            "    <dependencies>\n"
+            "            <dependency>\n"
+            "                <groupId>com.fasterxml.jackson</groupId>\n"
+            "                <artifactId>jackson-bom</artifactId>\n"
+            "                <version>${fasterxml-jackson.version}</version>\n"
+            "                <type>pom</type>\n"
+            "                <scope>import</scope>\n"
+            "            </dependency>\n"
+            "    </dependencies>\n"
+            "  </dependencyManagement>\n"
+            "\n"
+            "  <dependencies>\n"
+            "        <dependency>\n"
+            "            <groupId>com.fasterxml.jackson.core</groupId>\n"
+            "            <artifactId>jackson-databind</artifactId>\n"
+            "            <version>${fasterxml-jackson.version}</version>\n"
+            "        </dependency>\n"
+            "        <dependency>\n"
+            "            <groupId>com.fasterxml.jackson.core</groupId>\n"
+            "            <artifactId>jackson-core</artifactId>\n"
+            "            <version>${fasterxml-jackson.version}</version>\n"
+            "        </dependency>\n"
+            "        <dependency>\n"
+            "            <groupId>com.fasterxml.jackson.core</groupId>\n"
+            "            <artifactId>jackson-annotations</artifactId>\n"
+            "            <version>${fasterxml-jackson.version}</version>\n"
+            "        </dependency>\n",
+        ),
+        encoding="utf-8",
+    )
+    fully_aligned_evidence = dict(stage_evidence)
+    fully_aligned_evidence["usable_artifacts"] = [
         {"kind": "sandbox", "internal_ref": str(sandbox)},
-        {"kind": "pom_xml", "internal_ref": str(aligned), "excerpt": aligned.read_text(encoding="utf-8")},
+        {"kind": "pom_xml", "internal_ref": str(fully_aligned), "excerpt": fully_aligned.read_text(encoding="utf-8")},
         {"kind": "test_report", "excerpt": stage_evidence["usable_artifacts"][2]["excerpt"]},
         {"kind": "dependency_graph", "excerpt": stage_evidence["usable_artifacts"][3]["excerpt"]},
     ]
@@ -983,4 +1105,4 @@ def test_jackson_alignment_candidate_negative_gates(tmp_path: Path) -> None:
     assert create_repair_apply_candidate(classification, no_pom, {}) is None
     assert create_repair_apply_candidate(no_mismatch_classification, no_mismatch, {}) is None
     assert create_repair_apply_candidate(classification, outside_evidence, {}) is None
-    assert create_repair_apply_candidate(classification, aligned_evidence, {}) is None
+    assert create_repair_apply_candidate(classification, fully_aligned_evidence, {}) is None

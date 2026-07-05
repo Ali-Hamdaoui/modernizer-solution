@@ -17,6 +17,9 @@ from migration_factory.control_tower.application.v2_setup_service import (
 from migration_factory.control_tower.application.v2_repair_strategy_packet import (
     create_repair_strategy_packet,
 )
+from migration_factory.control_tower.application.v2_repair_apply_candidate import (
+    create_repair_apply_candidate,
+)
 from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.infrastructure.sqlite.migrations import (
     apply_pending_migrations,
@@ -30,6 +33,7 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository i
 )
 from ._helpers import canonical_json, seed_runner_profile, sha256_json
 from .test_v2_repair_strategy_packet import _powermock_classification, _powermock_evidence
+from .test_v2_repair_apply_candidate_r8_1 import _jackson_evidence, _jackson_pom
 from .v1_fixtures import make_v1_pipeline_definition
 from migration_factory.control_tower.schemas.run_configuration import (
     RunPolicy,
@@ -434,6 +438,38 @@ def test_fastapi_create_app_repair_gate_callback_creates_repair_review_gate(tmp_
         open_gates = uow.phase_gates.list_open(job_id)
         assert open_gates
         assert any(gate.gate_phase == "repair_review" for gate in open_gates)
+
+
+def test_failure_summary_exposes_persisted_jackson_next_candidate(tmp_path: Path) -> None:
+    _app, client, conn = _app_and_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    sandbox = tmp_path / "sandbox"
+    pom = sandbox / "pom.xml"
+    sandbox.mkdir(parents=True)
+    pom.write_text(_jackson_pom("2.13.5"), encoding="utf-8")
+    classification, stage_evidence = _jackson_evidence(pom, sandbox)
+    stage_evidence["job_id"] = job_id
+    candidate = create_repair_apply_candidate(classification, stage_evidence, {})
+    assert candidate is not None
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_repair_candidates.save_candidate(candidate)
+
+    summary = client.get(f"/v1/v2/migration-jobs/{job_id}/failure-summary")
+
+    assert summary.status_code == 200, summary.text
+    public = summary.json()["repair_apply_candidate"]
+    assert public["family"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+    assert public["recipe_id"] == "JACKSON_PROPERTY_BOM_ALIGNMENT"
+    assert public["target_file"] == "pom.xml"
+    assert public["target_files"] == ["pom.xml"]
+    assert public["status"] == "pending_human_approval"
+    assert public["approval_required"] is True
+    assert public["apply_enabled"] is False
+    assert public["sandbox_only"] is True
+    assert public["downstream_start_allowed"] is False
+    assert "patch" not in public
+    assert "_target_path" not in json.dumps(public)
 
 
 def test_fastapi_create_app_skips_repair_gate_when_disabled(tmp_path: Path) -> None:
