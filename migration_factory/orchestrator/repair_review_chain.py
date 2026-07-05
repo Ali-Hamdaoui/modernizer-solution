@@ -57,6 +57,8 @@ class RepairReviewChainProductionError(RuntimeError):
         schema_name: str = "",
         role: str = "",
         partial_chain: dict[str, Any] | None = None,
+        detail: str = "",
+        struct_issue: str = "",
     ) -> None:
         super().__init__(message)
         self.schema_diagnostics = schema_diagnostics
@@ -64,6 +66,8 @@ class RepairReviewChainProductionError(RuntimeError):
         self.schema_name = schema_name or ""
         self.role = role or ""
         self.partial_chain = partial_chain or {}
+        self.detail = detail or ""
+        self.struct_issue = struct_issue or ""
 
 
 # ── F5-T3: Deterministic repair artifact ─────────────────────────────
@@ -1110,6 +1114,7 @@ def _partial_failed_review_chain(
     deterministic_checksum: str = "",
     reviewer_self_repair_succeeded: bool = False,
     reviewer_mechanical_validation_issue: str | None = None,
+    reviewer_self_repair_failure_reason: str | None = None,
 ) -> dict[str, Any]:
     reviewed_diff = _strip_reviewed_diff_fences(str(reviewer_output.get("reviewed_diff") or ""))
     reviewed_diff_checksum = (
@@ -1133,6 +1138,7 @@ def _partial_failed_review_chain(
         "reviewer_accept_contract_issue": reviewer_accept_contract_issue or "",
         "reviewer_self_repair_attempted": reviewer_self_repair_attempted,
         "reviewer_self_repair_succeeded": reviewer_self_repair_succeeded,
+        "reviewer_self_repair_failure_reason": reviewer_self_repair_failure_reason or "",
         "reviewer_mechanical_validation_issue": reviewer_mechanical_validation_issue or "",
         "struct_issue": _reviewed_diff_struct_issue(reviewer_mechanical_validation_issue),
         "final_diff_exists": False,
@@ -1148,6 +1154,21 @@ def _partial_failed_review_chain(
         chain["reviewer_self_repair_invocation_id"] = reviewer_self_repair_invocation_id
         chain["reviewer_invocation_id"] = reviewer_self_repair_invocation_id
     return chain
+
+
+def _safe_reviewer_self_repair_failure_reason(exc: Exception) -> str:
+    text = f"{type(exc).__name__}: {exc}".replace("\r\n", "\n").replace("\r", "\n").strip()
+    text = re.sub(r"[A-Za-z]:[\\/][^\s]+", "[redacted-path]", text)
+    text = re.sub(r"(?<!\w)/(?:Users|home)/[^\s]+", "[redacted-path]", text)
+    text = re.sub(
+        r"\b[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*=\S+",
+        "[redacted-secret]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    for pattern in ("AZURE_OPENAI", "Bearer"):
+        text = text.replace(pattern, "[redacted]")
+    return text[:300] or type(exc).__name__
 
 
 def _persist_reviewed_diff_validation_failure(
@@ -1188,6 +1209,9 @@ def _persist_reviewed_diff_validation_failure(
         "gate_created": False,
         "policy_ran": False,
     }
+    failure_reason = str(review_chain.get("reviewer_self_repair_failure_reason") or "").strip()
+    if failure_reason:
+        validation_payload["reviewer_self_repair_failure_reason"] = failure_reason
     validation_path = output_dir / "reviewed_diff_validation_failure.json"
     _write_json(validation_path, validation_payload)
 
@@ -1670,18 +1694,56 @@ def produce_repair_review_chain(
                 else "reviewed_diff_invalid"
             )
         )
-        reviewer_output, reviewer_self_repair_invocation_id, reviewer_self_repair_result = _invoke_reviewer_self_repair(
-            client=client,
-            context_pack=context_pack,
-            primary_output=primary_output,
-            main_diff_diagnostics=main_diff_diagnostics,
-            original_reviewer_output=initial_reviewer_output,
-            validation_issue=self_repair_validation_issue,
-            deterministic_checksum=deterministic_checksum,
-            context_checksum=context_checksum,
-            primary_checksum=primary_checksum,
-            invocation_ledger=invocation_ledger,
-        )
+        try:
+            reviewer_output, reviewer_self_repair_invocation_id, reviewer_self_repair_result = _invoke_reviewer_self_repair(
+                client=client,
+                context_pack=context_pack,
+                primary_output=primary_output,
+                main_diff_diagnostics=main_diff_diagnostics,
+                original_reviewer_output=initial_reviewer_output,
+                validation_issue=self_repair_validation_issue,
+                deterministic_checksum=deterministic_checksum,
+                context_checksum=context_checksum,
+                primary_checksum=primary_checksum,
+                invocation_ledger=invocation_ledger,
+            )
+        except Exception as exc:
+            failed_mechanical_issue = reviewed_diff_mechanical_issue or reviewer_accept_contract_issue or "reviewed_diff_invalid"
+            struct_issue = _reviewed_diff_struct_issue(failed_mechanical_issue) or failed_mechanical_issue
+            failure_reason = _safe_reviewer_self_repair_failure_reason(exc)
+            failed_chain = _partial_failed_review_chain(
+                context_checksum=context_checksum,
+                primary_checksum=primary_checksum,
+                diff_checksum=diff_checksum,
+                reviewer_output=initial_reviewer_output,
+                reviewer_accept_contract_issue=reviewer_accept_contract_issue,
+                reviewer_self_repair_attempted=True,
+                proposer_invocation_id=proposer_invocation_id,
+                reviewer_invocation_id=reviewer_invocation_id,
+                reviewer_self_repair_invocation_id=reviewer_self_repair_invocation_id,
+                deterministic_checksum=deterministic_checksum,
+                reviewer_self_repair_succeeded=False,
+                reviewer_mechanical_validation_issue=failed_mechanical_issue,
+                reviewer_self_repair_failure_reason=failure_reason,
+            )
+            if initial_reviewer_output_ref:
+                failed_chain["reviewer_initial_output_ref"] = initial_reviewer_output_ref
+                failed_chain["reviewer_initial_output_checksum"] = str(initial_reviewer_output.get("output_checksum") or "")
+            _persist_reviewed_diff_validation_failure(
+                output_dir=output_dir,
+                reviewer_output=initial_reviewer_output,
+                review_chain=failed_chain,
+                mechanical_issue=failed_mechanical_issue,
+            )
+            raise RepairReviewChainProductionError(
+                f"Reviewer self-repair failed after reviewed diff structural validation failed: {struct_issue}",
+                reason_code="REVIEWED_DIFF_STRUCTURAL_INVALID",
+                schema_name="RepairReviewerOutput",
+                role="reviewer",
+                partial_chain=failed_chain,
+                detail=struct_issue,
+                struct_issue=struct_issue,
+            ) from exc
         reviewer_result = reviewer_self_repair_result
         reviewer_accept_contract_issue = _reviewer_accept_contract_issue(reviewer_output)
         reviewed_diff = str(reviewer_output.get("reviewed_diff") or "")

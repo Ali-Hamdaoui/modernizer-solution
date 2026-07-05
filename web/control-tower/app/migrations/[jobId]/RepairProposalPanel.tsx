@@ -801,11 +801,14 @@ export function ReviewedRepairMaterializationFailed({
   const title = diagnostic?.title?.trim() || "Reviewed Repair Materialization Failed";
   const summary = diagnostic?.message?.trim() || "Backend could not materialize a reviewed diff for user approval.";
   const isMalformedDiff = reasonCode === "MALFORMED_DIFF";
+  const isReviewedDiffStructuralInvalid = reasonCode === "REVIEWED_DIFF_STRUCTURAL_INVALID";
   const isPatchCheckFailed = reasonCode === "PATCH_CHECK_FAILED";
   const isDuplicateMainBlocked = reasonCode === "duplicate_main_blocked";
   const blockedByReasonCode = diagnostic?.blocked_by_reason_code?.trim() ?? "";
   const blockedByStructIssue = diagnostic?.blocked_by_struct_issue?.trim() ?? "";
   const hasBlockedBy = blockedByReasonCode !== "";
+  const reviewerSelfRepairFailureReason = diagnostic?.reviewer_self_repair_failure_reason?.trim() ?? "";
+  const reviewerMechanicalValidationIssue = diagnostic?.reviewer_mechanical_validation_issue?.trim() ?? "";
   const reviewerAcceptContractIssue = diagnostic?.reviewer_accept_contract_issue?.trim() ?? "";
   const reviewedDiffChecksum = diagnostic?.reviewed_diff_checksum?.trim() ?? "";
   const reviewerStatusFromDiag = diagnostic?.reviewer_status?.trim() ?? null;
@@ -814,14 +817,14 @@ export function ReviewedRepairMaterializationFailed({
   const nextActionFromDiag = diagnostic?.next_action?.trim() ?? null;
   const effectiveMainStatus = mainStatusFromDiag ?? mainModelStatus;
   const effectiveReviewerStatus = reviewerStatusFromDiag ?? reviewerModelStatus;
-  const failureSummaryText = isMalformedDiff
+  const failureSummaryText = (isMalformedDiff || isReviewedDiffStructuralInvalid)
     ? "Latest reviewed diff failed structural validation"
     : isPatchCheckFailed
       ? "Backend apply-check failed; new proposal required."
     : hasBlockedBy
       ? "Backend encountered a secondary blocking condition after the primary diagnostic was raised."
       : summary;
-  const malformedExplainer = isMalformedDiff
+  const malformedExplainer = (isMalformedDiff || isReviewedDiffStructuralInvalid)
     ? "Reviewer accepted the repair, but backend structural validation rejected the reviewed diff before user approval."
     : null;
   const noValidationPath = diagnostic
@@ -916,6 +919,30 @@ export function ReviewedRepairMaterializationFailed({
               <div className="table-row">
                 <span className="meta">Blocked by</span>
                 <strong data-testid="blocked-by-reason-code">{blockedByReasonCode}{blockedByStructIssue ? `: ${blockedByStructIssue}` : ""}</strong>
+              </div>
+            )}
+            {typeof diagnostic?.reviewer_self_repair_attempted === "boolean" && (
+              <div className="table-row">
+                <span className="meta">Reviewer self-repair attempted</span>
+                <strong>{diagnostic.reviewer_self_repair_attempted ? "true" : "false"}</strong>
+              </div>
+            )}
+            {typeof diagnostic?.reviewer_self_repair_succeeded === "boolean" && (
+              <div className="table-row">
+                <span className="meta">Reviewer self-repair succeeded</span>
+                <strong>{diagnostic.reviewer_self_repair_succeeded ? "true" : "false"}</strong>
+              </div>
+            )}
+            {reviewerMechanicalValidationIssue && (
+              <div className="table-row">
+                <span className="meta">Reviewer mechanical issue</span>
+                <strong>{reviewerMechanicalValidationIssue}</strong>
+              </div>
+            )}
+            {reviewerSelfRepairFailureReason && (
+              <div className="table-row">
+                <span className="meta">Reviewer self-repair failure</span>
+                <strong>{reviewerSelfRepairFailureReason}</strong>
               </div>
             )}
             {diagnostic?.deployment_alias_hash && (

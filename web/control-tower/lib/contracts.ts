@@ -1274,6 +1274,7 @@ export type RepairMaterializationUnavailable = {
   retry_status?: string | null;
   blocked_by_reason_code?: string | null;
   blocked_by_struct_issue?: string | null;
+  duplicate_blocked?: boolean;
   reviewer_status?: string | null;
   main_status?: string | null;
   context_checksum?: string | null;
@@ -1294,6 +1295,7 @@ export type RepairMaterializationUnavailable = {
   reviewer_applicability_repair_succeeded?: boolean;
   reviewer_self_repair_attempted?: boolean;
   reviewer_self_repair_succeeded?: boolean;
+  reviewer_self_repair_failure_reason?: string | null;
   reviewer_mechanical_validation_issue?: string | null;
   apply_check_stderr_summary?: string | null;
 };

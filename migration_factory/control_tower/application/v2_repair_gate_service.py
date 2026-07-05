@@ -261,9 +261,9 @@ class V2RepairGateService:
                 partial_chain = dict(getattr(exc, "partial_chain", {}) or {})
             reason_code = _reviewed_repair_unavailable_reason(exc)
             materialization_reason = _materialization_reason_code(reason_code)
-            if partial_chain and materialization_reason in {"MALFORMED_DIFF", "REVIEWER_ACCEPT_CONTRACT_INVALID"}:
-                detail = str(exc)
-                struct_issue = str(partial_chain.get("struct_issue") or "").strip()
+            if partial_chain and materialization_reason in {"MALFORMED_DIFF", "REVIEWED_DIFF_STRUCTURAL_INVALID", "REVIEWER_ACCEPT_CONTRACT_INVALID"}:
+                detail = str(getattr(exc, "detail", "") or str(exc))
+                struct_issue = str(getattr(exc, "struct_issue", "") or partial_chain.get("struct_issue") or "").strip()
                 if struct_issue and "Diff structure validation failed:" not in detail:
                     detail = f"Diff structure validation failed: {struct_issue}"
                 self._emit_reviewed_repair_materialization_failed(
@@ -528,6 +528,7 @@ class V2RepairGateService:
                 "detail", "struct_issue", "reviewed_diff_checksum", "reviewer_output_checksum",
                 "reviewer_accept_contract_issue", "reviewer_self_repair_attempted",
                 "reviewer_self_repair_succeeded", "reviewer_mechanical_validation_issue",
+                "reviewer_self_repair_failure_reason",
                 "final_diff_exists", "proposal_created", "gate_created", "policy_ran",
                 "retry_status", "retry_reason", "applicability_status",
                 "applicability_reason_code", "applicability_checked_at",
@@ -611,14 +612,16 @@ class V2RepairGateService:
                     return "proposer_schema_invalid"
             for event in events:
                 event_type = str(getattr(event, "event_type", "") or "")
-                if event_type != "reviewed_repair_materialization_failed":
+                if event_type not in {"reviewed_repair_materialization_failed", "reviewed_repair_unavailable"}:
                     continue
                 payload = getattr(event, "payload", {}) or {}
                 if not isinstance(payload, dict):
                     continue
                 if context_checksum and str(payload.get("context_checksum") or "") != context_checksum:
                     continue
-                return "materialization_previously_failed"
+                reason = str(payload.get("reason_code") or "")
+                if reason and reason != "duplicate_main_blocked":
+                    return "materialization_previously_failed"
         return None
 
     def _find_materialization_failed_event(self, job_id: str, context_checksum: str) -> Any | None:
@@ -631,16 +634,22 @@ class V2RepairGateService:
             events = list_by_job(job_id)
         except Exception:
             return None
+        fallback_event = None
         for event in reversed(events):
             event_type = str(getattr(event, "event_type", "") or "")
-            if event_type != "reviewed_repair_materialization_failed":
+            if event_type not in {"reviewed_repair_materialization_failed", "reviewed_repair_unavailable"}:
                 continue
             payload = getattr(event, "payload", {}) or {}
             if not isinstance(payload, dict):
                 continue
             if str(payload.get("context_checksum") or "") == context_checksum:
-                return event
-        return None
+                reason = str(payload.get("reason_code") or "")
+                detail = str(payload.get("struct_issue") or payload.get("detail") or "")
+                if reason != "duplicate_main_blocked" and detail:
+                    return event
+                if fallback_event is None:
+                    fallback_event = event
+        return fallback_event
 
     def _emit_reviewed_repair_materialization_failed(
         self,
@@ -691,6 +700,8 @@ class V2RepairGateService:
             fallback_message = "Reviewed repair diff failed structural validation before user approval."
         elif reason_code == "REVIEWER_ACCEPT_CONTRACT_INVALID":
             fallback_message = "Reviewer accepted a reviewed diff that contradicted the required accept contract."
+        elif reason_code == "REVIEWED_DIFF_STRUCTURAL_INVALID":
+            fallback_message = "Reviewed repair diff failed structural validation before reviewer self-repair could complete."
         elif reason_code == "PATCH_POLICY_REJECTED":
             fallback_message = "Reviewer accepted, but backend patch policy rejected the reviewed diff."
         elif reason_code == REASON_CODE_PATCH_CHECK_FAILED:
@@ -726,7 +737,7 @@ class V2RepairGateService:
             "reviewer_self_repair_succeeded": bool(chain.get("reviewer_self_repair_succeeded")),
             "reviewer_mechanical_validation_issue": str(chain.get("reviewer_mechanical_validation_issue") or ""),
             "apply_check_stderr_summary": detail if reason_code == REASON_CODE_PATCH_CHECK_FAILED else "",
-            "schema_name": "RepairReviewerOutput" if reason_code in {"MALFORMED_DIFF", "REVIEWER_ACCEPT_CONTRACT_INVALID", REASON_CODE_PATCH_CHECK_FAILED} else "RepairPrimaryOutput",
+            "schema_name": "RepairReviewerOutput" if reason_code in {"MALFORMED_DIFF", "REVIEWED_DIFF_STRUCTURAL_INVALID", "REVIEWER_ACCEPT_CONTRACT_INVALID", REASON_CODE_PATCH_CHECK_FAILED} else "RepairPrimaryOutput",
             "message": message,
             "retry_status": (
                 "reviewer_retry_exhausted"
@@ -746,6 +757,8 @@ class V2RepairGateService:
             payload["reviewer_accept_contract_issue"] = str(chain.get("reviewer_accept_contract_issue") or "")
         if chain.get("reviewer_output_checksum"):
             payload["reviewer_output_checksum"] = str(chain.get("reviewer_output_checksum") or "")
+        if chain.get("reviewer_self_repair_failure_reason"):
+            payload["reviewer_self_repair_failure_reason"] = str(chain.get("reviewer_self_repair_failure_reason") or "")
         if self._llm_invocation_repo is not None:
             for record in self._llm_invocation_repo.list_by_job(job_id):
                 invocation_id = str(getattr(record, "invocation_id", "") or "")
@@ -2579,6 +2592,7 @@ def _reviewed_repair_unavailable_reason(exc: Exception) -> str:
             return rc
         if raw_reason_code in {
             "MALFORMED_DIFF",
+            "REVIEWED_DIFF_STRUCTURAL_INVALID",
             "REVIEWER_ACCEPT_CONTRACT_INVALID",
             "PATCH_POLICY_REJECTED",
             "CHECKSUM_MISMATCH",
@@ -2650,6 +2664,7 @@ def _materialization_reason_code(reason: str | None) -> str:
         "SAFE_DIFF_PREVIEW_FAILED",
         "REVIEWER_ACCEPT_CONTRACT_INVALID",
         "PATCH_CHECK_FAILED",
+        "REVIEWED_DIFF_STRUCTURAL_INVALID",
         "UNKNOWN_MATERIALIZATION_FAILURE",
     }
     if text in stable:

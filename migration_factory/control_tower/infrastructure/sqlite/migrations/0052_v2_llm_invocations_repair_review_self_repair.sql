@@ -1,22 +1,14 @@
--- PR-G: Governed LLM invocation ledger for proposer/reviewer/fallback telemetry.
---
--- V2 governed table with role, responsibility, checksums, safe alias fields,
--- and redacted summaries. Distinct from v1_model_invocations which lacks
--- role, responsibility, proposal/gate correlation, context_checksum,
--- output_checksum, fallback_used, and safe deployment alias/hash fields.
---
--- Security constraints:
---   * Raw prompts, completions, endpoints, and API keys are never stored.
---   * provider_alias is a safe display label, not a raw provider ID.
---   * deployment_alias_hash is a content-derived hash, not the raw deployment name.
---   * redacted_error stores only sanitized/redacted error text.
---   * redacted_summary stores only a safe summary string.
---   * No foreign key to avoid cascading issues; job_id is an opaque reference.
---
--- Invariants preserved:
---   * proposer and reviewer invocations have distinct invocation_id values.
---   * role + responsibility uniquely describe the model's function in the pipeline.
---   * For a given proposal, proposer and reviewer must not have the same invocation_id.
+-- AMF-247: Allow Reviewer mechanical self-repair invocations in the governed LLM ledger.
+
+ALTER TABLE v2_llm_invocations
+RENAME TO v2_llm_invocations_old_0052;
+
+DROP INDEX IF EXISTS ix_v2_llm_invocations_job_created;
+DROP INDEX IF EXISTS ix_v2_llm_invocations_proposal;
+DROP INDEX IF EXISTS ix_v2_llm_invocations_gate;
+DROP INDEX IF EXISTS ix_v2_llm_invocations_role;
+DROP INDEX IF EXISTS ix_v2_llm_invocations_status;
+DROP TRIGGER IF EXISTS v2_llm_invocations_no_delete;
 
 CREATE TABLE v2_llm_invocations (
     invocation_id TEXT PRIMARY KEY,
@@ -47,6 +39,21 @@ CREATE TABLE v2_llm_invocations (
     CHECK (fallback_used IN (0, 1))
 );
 
+INSERT INTO v2_llm_invocations (
+    invocation_id, job_id, proposal_id, gate_id, role, responsibility,
+    provider_alias, deployment_alias_hash, context_checksum, input_checksum,
+    output_checksum, schema_name, status, fallback_used, redacted_error,
+    redacted_summary, prompt_tokens, completion_tokens, total_tokens,
+    latency_ms, created_at, completed_at
+)
+SELECT
+    invocation_id, job_id, proposal_id, gate_id, role, responsibility,
+    provider_alias, deployment_alias_hash, context_checksum, input_checksum,
+    output_checksum, schema_name, status, fallback_used, redacted_error,
+    redacted_summary, prompt_tokens, completion_tokens, total_tokens,
+    latency_ms, created_at, completed_at
+FROM v2_llm_invocations_old_0052;
+
 CREATE INDEX ix_v2_llm_invocations_job_created
 ON v2_llm_invocations(job_id, created_at);
 
@@ -67,3 +74,5 @@ BEFORE DELETE ON v2_llm_invocations
 BEGIN
     SELECT RAISE(ABORT, 'v2_llm_invocations is append-only');
 END;
+
+DROP TABLE v2_llm_invocations_old_0052;

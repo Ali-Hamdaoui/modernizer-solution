@@ -794,6 +794,34 @@ def _latest_repair_materialization_unavailable(uow: Any, job_id: str) -> dict[st
     if not candidates:
         return None
 
+    duplicate_candidates: list[tuple[int, Any, dict[str, Any]]] = []
+    specific_candidates: list[tuple[int, Any, dict[str, Any]]] = []
+    known_repair_failure_reasons = {
+        "MALFORMED_DIFF",
+        "REVIEWED_DIFF_STRUCTURAL_INVALID",
+        "PATCH_CHECK_FAILED",
+        "reviewer_schema_invalid",
+        "REVIEWER_ACCEPT_CONTRACT_INVALID",
+    }
+    for item in candidates:
+        _, _, payload = item
+        schema_diagnostics = payload.get("schema_diagnostics")
+        if not isinstance(schema_diagnostics, dict):
+            schema_diagnostics = {}
+        reason = _stable_materialization_reason_code(
+            payload.get("reason_code") or schema_diagnostics.get("reason_code")
+        )
+        detail = _safe_struct_issue(payload.get("struct_issue") or payload.get("detail"))
+        if reason == "duplicate_main_blocked":
+            duplicate_candidates.append(item)
+        elif reason in known_repair_failure_reasons or detail:
+            specific_candidates.append(item)
+
+    ranked_pool = specific_candidates or [
+        item for item in candidates
+        if _stable_materialization_reason_code(item[2].get("reason_code")) != "duplicate_main_blocked"
+    ] or duplicate_candidates or candidates
+
     def _candidate_score(item: tuple[int, Any, dict[str, Any]]) -> tuple[int, int]:
         index, event, payload = item
         schema_diagnostics = payload.get("schema_diagnostics")
@@ -819,7 +847,12 @@ def _latest_repair_materialization_unavailable(uow: Any, job_id: str) -> dict[st
             score -= 8
         return score, index
 
-    _, latest, payload = max(candidates, key=_candidate_score)
+    primary_index, latest, payload = max(ranked_pool, key=_candidate_score)
+    duplicate_after_primary: dict[str, Any] | None = None
+    for index, _, duplicate_payload in reversed(duplicate_candidates):
+        if index > primary_index:
+            duplicate_after_primary = duplicate_payload
+            break
 
     schema_diagnostics = payload.get("schema_diagnostics")
     if not isinstance(schema_diagnostics, dict):
@@ -865,6 +898,7 @@ def _latest_repair_materialization_unavailable(uow: Any, job_id: str) -> dict[st
         "reviewer_applicability_repair_succeeded": bool(payload.get("reviewer_applicability_repair_succeeded")),
         "reviewer_self_repair_attempted": bool(payload.get("reviewer_self_repair_attempted")),
         "reviewer_self_repair_succeeded": bool(payload.get("reviewer_self_repair_succeeded")),
+        "reviewer_self_repair_failure_reason": _safe_event_text(payload.get("reviewer_self_repair_failure_reason")),
         "reviewer_mechanical_validation_issue": _safe_event_text(payload.get("reviewer_mechanical_validation_issue")),
         "apply_check_stderr_summary": _safe_apply_check_summary(payload.get("apply_check_stderr_summary")),
         "schema_repair_attempted": bool(schema_diagnostics.get("schema_repair_attempted")),
@@ -876,6 +910,14 @@ def _latest_repair_materialization_unavailable(uow: Any, job_id: str) -> dict[st
             schema_diagnostics.get("schema_repair_parse_failure_category")
         ),
     }
+    if duplicate_after_primary is not None and reason_code != "duplicate_main_blocked":
+        diagnostic["blocked_by_reason_code"] = "duplicate_main_blocked"
+        diagnostic["duplicate_blocked"] = True
+        blocked_struct_issue = _safe_struct_issue(
+            duplicate_after_primary.get("struct_issue") or duplicate_after_primary.get("detail")
+        )
+        if blocked_struct_issue:
+            diagnostic["blocked_by_struct_issue"] = blocked_struct_issue
     invocation_ids = {
         str(value or "")
         for value in (diagnostic["main_invocation_id"], diagnostic["reviewer_invocation_id"])
@@ -1027,7 +1069,7 @@ def _materialization_title(reason_code: str) -> str:
         return "Reviewed Repair Unavailable"
     if reason_code == "proposer_schema_invalid":
         return "Main Model Schema Invalid"
-    if reason_code == "MALFORMED_DIFF":
+    if reason_code in {"MALFORMED_DIFF", "REVIEWED_DIFF_STRUCTURAL_INVALID"}:
         return "Reviewed Repair Diff Invalid"
     if reason_code == "PROPOSER_DIFF_MISSING":
         return "Main Model Did Not Produce a Patch"
@@ -1047,6 +1089,8 @@ def _materialization_message(reason_code: str) -> str:
         return "Main model output failed schema validation, so Reviewer was not run and no reviewed diff was produced."
     if reason_code == "MALFORMED_DIFF":
         return "Reviewer accepted the repair, but backend structural validation rejected the reviewed diff before user approval."
+    if reason_code == "REVIEWED_DIFF_STRUCTURAL_INVALID":
+        return "Reviewer self-repair could not complete after backend structural validation rejected the reviewed diff."
     if reason_code == "PROPOSER_DIFF_MISSING":
         return "Main model completed, but it did not produce a backend-owned patch for reviewer approval."
     if reason_code == "PATCH_POLICY_REJECTED":
