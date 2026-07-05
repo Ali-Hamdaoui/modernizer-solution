@@ -312,7 +312,22 @@ def _sort_sandbox(tmp_path: Path) -> tuple[Path, Path, Path, dict, dict]:
     return sandbox, dto, search, classification, stage_evidence
 
 
-def _jackson_pom(version: str = "2.10.0") -> str:
+def _jackson_pom(version: str = "2.10.0", *, dependency_management: bool = False) -> str:
+    dependency_management_block = (
+        "  <dependencyManagement>\n"
+        "    <dependencies>\n"
+        "      <dependency>\n"
+        "        <groupId>org.springframework.boot</groupId>\n"
+        "        <artifactId>spring-boot-dependencies</artifactId>\n"
+        "        <version>${spring-boot.version}</version>\n"
+        "        <type>pom</type>\n"
+        "        <scope>import</scope>\n"
+        "      </dependency>\n"
+        "    </dependencies>\n"
+        "  </dependencyManagement>\n"
+        if dependency_management
+        else ""
+    )
     return (
         "<project>\n"
         "  <properties>\n"
@@ -320,6 +335,7 @@ def _jackson_pom(version: str = "2.10.0") -> str:
         "    <spring-boot.version>2.7.18</spring-boot.version>\n"
         f"    <fasterxml-jackson.version>{version}</fasterxml-jackson.version>\n"
         "  </properties>\n"
+        f"{dependency_management_block}"
         "  <dependencies>\n"
         "    <dependency>\n"
         "      <groupId>com.fasterxml.jackson.dataformat</groupId>\n"
@@ -329,6 +345,32 @@ def _jackson_pom(version: str = "2.10.0") -> str:
         "  </dependencies>\n"
         "</project>\n"
     )
+
+
+def _dependency_management_block(text: str) -> str:
+    start = text.index("<dependencyManagement>")
+    end = text.index("</dependencyManagement>") + len("</dependencyManagement>")
+    return text[start:end]
+
+
+def _project_dependencies_block(text: str) -> str:
+    start = text.index("</dependencyManagement>") + len("</dependencyManagement>")
+    deps_start = text.index("<dependencies>", start)
+    deps_end = text.index("</dependencies>", deps_start) + len("</dependencies>")
+    return text[deps_start:deps_end]
+
+
+def _assert_jackson_dependency_structure(text: str) -> None:
+    dependency_management = _dependency_management_block(text)
+    project_dependencies = _project_dependencies_block(text)
+    assert "<artifactId>jackson-bom</artifactId>" in dependency_management
+    assert "<artifactId>jackson-databind</artifactId>" not in dependency_management
+    assert "<artifactId>jackson-core</artifactId>" not in dependency_management
+    assert "<artifactId>jackson-annotations</artifactId>" not in dependency_management
+    assert "<artifactId>jackson-databind</artifactId>" in project_dependencies
+    assert "<artifactId>jackson-core</artifactId>" in project_dependencies
+    assert "<artifactId>jackson-annotations</artifactId>" in project_dependencies
+    assert text.index("<artifactId>jackson-bom</artifactId>") < text.index("<artifactId>jackson-databind</artifactId>")
 
 
 def _jackson_evidence(pom: Path, sandbox: Path, *, include_mismatch: bool = True) -> tuple[dict, dict]:
@@ -519,12 +561,37 @@ def test_jackson_alignment_candidate_applies_after_checksum_approval(tmp_path: P
     assert "<artifactId>jackson-databind</artifactId>" in text
     assert "<artifactId>jackson-core</artifactId>" in text
     assert "<artifactId>jackson-annotations</artifactId>" in text
+    _assert_jackson_dependency_structure(text)
     assert "2.20.0" not in text
     assert result["execution_status"] == "verified"
     assert result["verification_status"] == "passed"
     assert result["rollback_status"] == "not_needed"
     assert result["downstream_start_allowed"] is False
     assert (sandbox / ".migration" / "repair-proofs" / f"{candidate['repair_candidate_id']}.json").is_file()
+
+
+def test_jackson_alignment_preserves_existing_dependency_management_structure(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    pom = sandbox / "pom.xml"
+    sandbox.mkdir(parents=True)
+    pom.write_text(_jackson_pom(dependency_management=True), encoding="utf-8")
+    classification, stage_evidence = _jackson_evidence(pom, sandbox)
+    candidate = create_repair_apply_candidate(classification, stage_evidence, {})
+    assert candidate is not None
+    approval = approve_repair_apply_candidate(candidate, {
+        "repair_candidate_id": candidate["repair_candidate_id"],
+        "patch_checksum": candidate["patch_checksum"],
+        "target_file_checksum": candidate["target_file_checksum"],
+        "review_checksum": candidate["review_checksum"],
+    })
+
+    result = apply_approved_repair_candidate(candidate, approval)
+
+    text = pom.read_text(encoding="utf-8")
+    assert result["execution_status"] == "verified"
+    assert "<artifactId>spring-boot-dependencies</artifactId>" in _dependency_management_block(text)
+    _assert_jackson_dependency_structure(text)
+    assert text.count("<dependencyManagement>") == 1
 
 
 def test_jackson_alignment_candidate_negative_gates(tmp_path: Path) -> None:

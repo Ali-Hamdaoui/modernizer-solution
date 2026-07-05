@@ -929,9 +929,14 @@ def _insert_dependency_management(text: str) -> str:
         "                <scope>import</scope>\n"
         "            </dependency>\n"
     )
-    existing = re.search(r"(<dependencyManagement>.*?<dependencies>)(?P<body>.*?)(</dependencies>\s*</dependencyManagement>)", text, re.DOTALL)
-    if existing is not None:
-        insert_at = existing.start(3)
+    existing_block = _find_top_level_block(text, "dependencyManagement")
+    if existing_block is not None:
+        block_start, block_end, _, _ = existing_block
+        block = text[block_start:block_end]
+        dependencies = re.search(r"(<dependencies>)(?P<body>.*?)(</dependencies>)", block, re.DOTALL)
+        if dependencies is None:
+            return ""
+        insert_at = block_start + dependencies.start(3)
         return text[:insert_at] + dependency + text[insert_at:]
     block = (
         "    <dependencyManagement>\n"
@@ -940,15 +945,14 @@ def _insert_dependency_management(text: str) -> str:
         "        </dependencies>\n"
         "    </dependencyManagement>\n\n"
     )
-    marker = "<dependencies>"
-    index = text.rfind(marker)
-    if index < 0:
-        marker = "</properties>"
-        index = text.find(marker)
-        if index < 0:
-            return ""
-        return text[: index + len(marker)] + "\n\n" + block + text[index + len(marker):]
-    return text[:index] + block + text[index:]
+    properties = _find_top_level_block(text, "properties")
+    if properties is not None:
+        insert_at = properties[1]
+        return text[:insert_at] + "\n\n" + block + text[insert_at:]
+    project_deps = _find_top_level_block(text, "dependencies")
+    if project_deps is not None:
+        return text[:project_deps[0]] + block + text[project_deps[0]:]
+    return ""
 
 
 def _insert_direct_jackson_dependencies(text: str) -> tuple[str, int]:
@@ -965,12 +969,44 @@ def _insert_direct_jackson_dependencies(text: str) -> tuple[str, int]:
         )
     if not additions:
         return text, 0
-    marker = "<dependencies>"
-    index = text.find(marker)
-    if index < 0:
+    project_deps = _find_top_level_block(text, "dependencies")
+    if project_deps is None:
         return text, 0
-    insert_at = index + len(marker)
+    insert_at = project_deps[2]
     return text[:insert_at] + "\n" + "".join(additions) + text[insert_at:], len(additions)
+
+
+def _find_top_level_block(text: str, tag_name: str) -> tuple[int, int, int, int] | None:
+    token_pattern = re.compile(r"<(?P<closing>/)?(?P<name>[A-Za-z_][A-Za-z0-9_.:-]*)(?P<attrs>[^>]*)>")
+    stack: list[str] = []
+    target: tuple[int, int, int] | None = None
+    depth = 0
+    for match in token_pattern.finditer(text):
+        full = match.group(0)
+        if full.startswith("<?") or full.startswith("<!"):
+            continue
+        name = match.group("name").split(":")[-1]
+        closing = bool(match.group("closing"))
+        self_closing = full.rstrip().endswith("/>")
+        if closing:
+            if target is not None and name == tag_name:
+                depth -= 1
+                if depth == 0:
+                    return target[0], match.end(), target[1], match.start()
+            if stack:
+                stack.pop()
+            continue
+        is_project_child = len(stack) == 1 and stack[-1].split(":")[-1] == "project"
+        if is_project_child and name == tag_name and target is None:
+            target = (match.start(), match.end(), len(stack))
+            depth = 1
+            if self_closing:
+                return match.start(), match.end(), match.end(), match.start()
+        elif target is not None and name == tag_name:
+            depth += 1
+        if not self_closing:
+            stack.append(name)
+    return None
 
 
 def _has_direct_dependency(text: str, group_id: str, artifact_id: str) -> bool:
