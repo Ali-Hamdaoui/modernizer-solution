@@ -85,6 +85,9 @@ class SqliteV2RepairCandidateRepository:
                 "stage_recovery_status": execution.get("stage_recovery_status", public.get("stage_recovery_status", "")),
                 "post_repair_verification": execution.get("post_repair_verification", public.get("post_repair_verification")),
                 "next_repair_candidate": execution.get("next_repair_candidate", public.get("next_repair_candidate")),
+                "next_repair_candidate_blocked_reason": execution.get("next_repair_candidate_blocked_reason", public.get("next_repair_candidate_blocked_reason", "")),
+                "next_repair_candidate_blocked_gate": execution.get("next_repair_candidate_blocked_gate", public.get("next_repair_candidate_blocked_gate", "")),
+                "next_repair_candidate_gate_trace": execution.get("next_repair_candidate_gate_trace", public.get("next_repair_candidate_gate_trace")),
                 "apply_enabled": False,
                 "approval_enabled": False,
             })
@@ -119,6 +122,9 @@ class SqliteV2RepairCandidateRepository:
                 "stage_recovery_status": execution.get("stage_recovery_status", public.get("stage_recovery_status", "")),
                 "post_repair_verification": execution.get("post_repair_verification", public.get("post_repair_verification")),
                 "next_repair_candidate": execution.get("next_repair_candidate", public.get("next_repair_candidate")),
+                "next_repair_candidate_blocked_reason": execution.get("next_repair_candidate_blocked_reason", public.get("next_repair_candidate_blocked_reason", "")),
+                "next_repair_candidate_blocked_gate": execution.get("next_repair_candidate_blocked_gate", public.get("next_repair_candidate_blocked_gate", "")),
+                "next_repair_candidate_gate_trace": execution.get("next_repair_candidate_gate_trace", public.get("next_repair_candidate_gate_trace")),
                 "apply_enabled": False,
                 "approval_enabled": False,
             })

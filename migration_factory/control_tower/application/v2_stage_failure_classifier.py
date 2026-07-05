@@ -448,23 +448,26 @@ def _review_gate_signal(text: str, boot3_plus: bool, missing: list[str]) -> dict
 
 
 def _jackson_alignment_failure(evidence_pack: dict[str, Any], text: str) -> dict[str, Any] | None:
-    missing_class = (
-        "com.fasterxml.jackson.databind.ser.std.tostringserializerbase" in text
-        or "com/fasterxml/jackson/databind/ser/std/tostringserializerbase" in text
+    missing_class = "tostringserializerbase" in text
+    has_runtime_missing = missing_class and (
+        "noclassdeffound" in text
+        or "classnotfound" in text
+        or "could not initialize class" in text
+        or "failed to instantiate" in text
     )
-    has_runtime_missing = (
-        "noclassdeffounderror" in text
-        or "classnotfoundexception" in text
-    ) and missing_class
-    has_message_utils = "messageutils.createobjectmapper" in text or "messageutilstest" in text
-    has_conflict = (
-        "jackson-databind" in text
-        and "2.13.5" in text
-        and ("2.9.6" in text or "2.10.0" in text or "omitted for conflict" in text)
+    has_object_mapper_signal = (
+        "messageutils.createobjectmapper" in text
+        or "messageutilstest" in text
+        or "messageutils" in text
+        or "objectmapper" in text
+        or "javatimemodule" in text
     )
+    has_conflict = "jackson-" in text and "2.13.5" in text and _has_legacy_jackson_version(text)
     has_mixed_versions = _has_mixed_jackson_versions(text)
-    if not (has_runtime_missing and has_message_utils and (has_conflict or has_mixed_versions)):
+    if not (has_runtime_missing and has_object_mapper_signal and (has_conflict or has_mixed_versions)):
         return None
+    advisory = ["reference:msa_utils_migrated_reference_confirms_alignment_trajectory"]
+    advisory.extend(_dependency_review_advisory_signals(text))
     return _review_gate(
         status="known_family_candidate",
         failure_type="JACKSON_VERSION_ALIGNMENT_DRIFT",
@@ -485,14 +488,42 @@ def _jackson_alignment_failure(evidence_pack: dict[str, Any], text: str) -> dict
         extra={
             "primary_failure": "Jackson version alignment drift",
             "jackson_alignment_target_version": "2.13.5",
-            "advisory_signals": ["reference:msa_utils_migrated_reference_confirms_alignment_trajectory"],
+            "advisory_signals": advisory[:8],
         },
     )
 
 
 def _has_mixed_jackson_versions(text: str) -> bool:
-    versions = set(re.findall(r"jackson-[a-z0-9-]+[^\\n\\r]{0,120}?(2\.\d+\.\d+)", text))
-    return len(versions) >= 2 and any(version in versions for version in {"2.9.6", "2.10.0"}) and "2.13.5" in versions
+    versions = set(re.findall(r"jackson-[a-z0-9-]+[^\n\r]{0,160}?(2\.\d+\.\d+)", text))
+    if not versions:
+        versions = set(re.findall(r"selected jackson-[a-z0-9-]+ is (2\.\d+\.\d+)", text))
+        if "2.13.5" in text and "jackson-" in text:
+            versions.add("2.13.5")
+    return "2.13.5" in versions and any(version in versions for version in {"2.9.6", "2.10.0", "2.8.11"})
+
+
+def _has_legacy_jackson_version(text: str) -> bool:
+    legacy_pairs = (
+        ("jackson-databind", "2.9.6"),
+        ("jackson-core", "2.10.0"),
+        ("jackson-annotations", "2.10.0"),
+        ("jackson-dataformat-csv", "2.10.0"),
+        ("jackson-dataformat-xml", "2.8.11"),
+    )
+    return any(artifact in text and version in text for artifact, version in legacy_pairs)
+
+
+def _dependency_review_advisory_signals(text: str) -> list[str]:
+    signals: list[str] = []
+    if "com.microsoft.azure" in text or "com.microsoft.windowsazure" in text or "com.microsoft.rest" in text:
+        signals.append("advisory:azure_sdk_api_migration_review_not_primary")
+    if "io.jsonwebtoken" in text or "jjwt-api" in text or "jjwt-impl" in text or "jjwt-jackson" in text:
+        signals.append("advisory:jjwt_version_alignment_review_not_primary")
+    if "org.apache.juneau" in text or "juneau-" in text:
+        signals.append("advisory:juneau_version_alignment_review_not_primary")
+    if "spring-security" in text or "spring security" in text or "websecurityconfigureradapter" in text:
+        signals.append("advisory:spring_security_behavior_review_not_primary")
+    return signals
 
 
 def _main_source_compile_failure(evidence_pack: dict[str, Any], text: str) -> dict[str, Any] | None:

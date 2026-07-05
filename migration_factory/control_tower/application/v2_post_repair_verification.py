@@ -274,6 +274,9 @@ def run_post_repair_verification(
     classification = classify_stage_failure(evidence_pack)
     next_candidate = None
     next_candidate_public = None
+    next_candidate_blocked_reason = ""
+    next_candidate_blocked_gate = ""
+    next_candidate_gate_trace: dict[str, Any] | None = None
     if classification.get("classification_status") == "known_family_candidate":
         from migration_factory.control_tower.application.v2_repair_apply_candidate import (
             create_repair_apply_candidate,
@@ -283,6 +286,19 @@ def run_post_repair_verification(
         next_candidate = create_repair_apply_candidate(classification, evidence_pack, {})
         if next_candidate is not None:
             next_candidate_public = public_repair_apply_candidate(next_candidate)
+        else:
+            next_candidate_blocked_reason = str(
+                classification.get("repair_apply_candidate_blocked_reason")
+                or "known_family_candidate_generation_returned_null"
+            )
+            next_candidate_blocked_gate = str(classification.get("governance_gate_type") or "backend_candidate_generation")
+            next_candidate_gate_trace = {
+                "classification_status": classification.get("classification_status"),
+                "failure_type": classification.get("failure_type"),
+                "repair_family_candidate": classification.get("repair_family_candidate"),
+                "missing_required_evidence": classification.get("missing_required_evidence", []),
+                "usable_artifacts": classification.get("usable_artifacts", []),
+            }
 
     passed = build_ok and test_ok
     post_status = "passed" if passed else "failed"
@@ -299,6 +315,9 @@ def run_post_repair_verification(
         "classification": classification,
         "environment_summary": evidence_pack["environment_summary"],
         "toolchain_warnings": toolchain_warnings,
+        "next_repair_candidate_blocked_reason": next_candidate_blocked_reason,
+        "next_repair_candidate_blocked_gate": next_candidate_blocked_gate,
+        "next_repair_candidate_gate_trace": next_candidate_gate_trace,
         "proof_created_at": utc_now_text(),
         "downstream_start_allowed": False,
     }
@@ -322,6 +341,9 @@ def run_post_repair_verification(
         "sandbox_path": redact_absolute_paths(str(sandbox)),
         "working_directory": redact_absolute_paths(str(sandbox)),
         "next_repair_candidate": next_candidate_public,
+        "next_repair_candidate_blocked_reason": next_candidate_blocked_reason,
+        "next_repair_candidate_blocked_gate": next_candidate_blocked_gate,
+        "next_repair_candidate_gate_trace": next_candidate_gate_trace,
         "_next_repair_candidate": next_candidate,
     }
     return result

@@ -738,6 +738,9 @@ def test_post_repair_verification_live_like_aligned_property_still_creates_jacks
             "mvn dependency:tree -DoutputType=text": {
                 "exit_code": 0,
                 "stdout": "\n".join([
+                    "[INFO] com.microsoft.azure:azure-servicebus:jar:3.6.7",
+                    "[INFO] io.jsonwebtoken:jjwt-jackson:jar:0.11.5",
+                    "[INFO] org.apache.juneau:juneau-marshall:jar:8.2.0",
                     "[INFO] com.fasterxml.jackson.datatype:jackson-datatype-jsr310:jar:2.13.5",
                     "[INFO] com.fasterxml.jackson.core:jackson-databind:jar:2.9.6",
                     "[INFO] com.fasterxml.jackson.core:jackson-core:jar:2.10.0",
@@ -754,6 +757,8 @@ def test_post_repair_verification_live_like_aligned_property_still_creates_jacks
 
     assert result["post_repair_verification_status"] == "failed"
     assert result["post_repair_verification"]["classification"]["failure_type"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+    assert result["post_repair_verification"]["classification"]["failure_type"] != "AZURE_SDK_API_MIGRATION_REVIEW"
+    assert "advisory:azure_sdk_api_migration_review_not_primary" in result["post_repair_verification"]["classification"]["advisory_signals"]
     next_candidate = result["next_repair_candidate"]
     assert next_candidate is not None
     assert next_candidate["family"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
@@ -764,6 +769,55 @@ def test_post_repair_verification_live_like_aligned_property_still_creates_jacks
     assert next_candidate["apply_enabled"] is False
     assert next_candidate["sandbox_only"] is True
     assert next_candidate["downstream_start_allowed"] is False
+
+
+def test_post_repair_verification_known_family_null_candidate_exposes_blocked_reason(tmp_path: Path) -> None:
+    _, _dto, _search, classification, stage_evidence = _sort_sandbox(tmp_path)
+    sandbox = tmp_path / "sandbox"
+    (sandbox / "pom.xml").write_text(
+        "<project><properties><fasterxml-jackson.version>2.13.5</fasterxml-jackson.version></properties></project>",
+        encoding="utf-8",
+    )
+    candidate = create_repair_apply_candidate(classification, stage_evidence, {})
+    assert candidate is not None
+    approval = approve_repair_apply_candidate(candidate, {
+        "repair_candidate_id": candidate["repair_candidate_id"],
+        "patch_checksum": candidate["patch_checksum"],
+        "target_file_checksum": candidate["target_file_checksum"],
+        "review_checksum": candidate["review_checksum"],
+    })
+    runner = _FakePostRepairRunner(
+        {
+            "mvn -DskipTests clean compile": {"exit_code": 0, "stdout": "[INFO] BUILD SUCCESS", "stderr": ""},
+            "mvn test": {
+                "exit_code": 1,
+                "stdout": "\n".join([
+                    "java.lang.NoClassDefFoundError: com/fasterxml/jackson/databind/ser/std/ToStringSerializerBase",
+                    "Failed to instantiate com.fasterxml.jackson.databind.ObjectMapper",
+                    "MessageUtilsTest",
+                ]),
+                "stderr": "",
+            },
+            "mvn dependency:tree -DoutputType=text": {
+                "exit_code": 0,
+                "stdout": "\n".join([
+                    "[INFO] com.fasterxml.jackson.datatype:jackson-datatype-jsr310:jar:2.13.5",
+                    "[INFO] com.fasterxml.jackson.core:jackson-databind:jar:2.9.6",
+                ]),
+                "stderr": "",
+            },
+        }
+    )
+
+    result = apply_approved_repair_candidate(candidate, approval, post_repair_verification_runner=runner)
+
+    assert result["post_repair_verification"]["classification"]["classification_status"] == "known_family_candidate"
+    assert result["post_repair_verification"]["classification"]["failure_type"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+    assert result["next_repair_candidate"] is None
+    assert result["next_repair_candidate_blocked_reason"] == "jackson_alignment_candidate_safety_gate_failed"
+    assert result["next_repair_candidate_blocked_gate"] == "backend_deterministic_candidate"
+    assert result["next_repair_candidate_gate_trace"]["failure_type"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+    assert result["post_repair_verification"]["next_repair_candidate_blocked_reason"] == "jackson_alignment_candidate_safety_gate_failed"
 
 
 def test_post_repair_verification_long_logs_keep_late_jackson_evidence(tmp_path: Path) -> None:

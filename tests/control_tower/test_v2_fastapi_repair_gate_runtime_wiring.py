@@ -472,6 +472,56 @@ def test_failure_summary_exposes_persisted_jackson_next_candidate(tmp_path: Path
     assert "_target_path" not in json.dumps(public)
 
 
+def test_failure_summary_exposes_post_repair_next_candidate_blocked_reason(tmp_path: Path) -> None:
+    _app, client, conn = _app_and_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    sandbox = tmp_path / "sandbox"
+    pom = sandbox / "pom.xml"
+    sandbox.mkdir(parents=True)
+    pom.write_text(_jackson_pom("2.13.5"), encoding="utf-8")
+    classification, stage_evidence = _jackson_evidence(pom, sandbox)
+    stage_evidence["job_id"] = job_id
+    candidate = create_repair_apply_candidate(classification, stage_evidence, {})
+    assert candidate is not None
+    execution = {
+        "status": "verified",
+        "execution_status": "verified",
+        "verification_status": "passed",
+        "rollback_status": "not_needed",
+        "post_repair_verification_status": "failed",
+        "stage_recovery_status": "still_failed",
+        "post_repair_verification": {
+            "next_repair_candidate_blocked_reason": "jackson_alignment_candidate_safety_gate_failed",
+            "next_repair_candidate_blocked_gate": "backend_deterministic_candidate",
+        },
+        "next_repair_candidate": None,
+        "next_repair_candidate_blocked_reason": "jackson_alignment_candidate_safety_gate_failed",
+        "next_repair_candidate_blocked_gate": "backend_deterministic_candidate",
+        "next_repair_candidate_gate_trace": {
+            "failure_type": "JACKSON_VERSION_ALIGNMENT_DRIFT",
+            "classification_status": "known_family_candidate",
+        },
+    }
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_repair_candidates.save_candidate(candidate)
+        uow.v2_repair_candidates.save_execution(
+            job_id,
+            int(candidate["stage_index"]),
+            str(candidate["repair_candidate_id"]),
+            execution,
+        )
+
+    summary = client.get(f"/v1/v2/migration-jobs/{job_id}/failure-summary")
+
+    assert summary.status_code == 200, summary.text
+    public = summary.json()["repair_apply_candidate"]
+    assert public["next_repair_candidate"] is None
+    assert public["next_repair_candidate_blocked_reason"] == "jackson_alignment_candidate_safety_gate_failed"
+    assert public["next_repair_candidate_blocked_gate"] == "backend_deterministic_candidate"
+    assert public["next_repair_candidate_gate_trace"]["failure_type"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+
+
 def test_fastapi_create_app_skips_repair_gate_when_disabled(tmp_path: Path) -> None:
     app, client, conn = _app_and_client(tmp_path)
     setup_id = _ready_setup(conn)

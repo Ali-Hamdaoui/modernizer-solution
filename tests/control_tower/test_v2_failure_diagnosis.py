@@ -964,6 +964,54 @@ class TestStageAwareEvidence:
         assert classification["repair_enabled"] is False
         assert classification["jackson_alignment_target_version"] == "2.13.5"
 
+    def test_jackson_runtime_failure_wins_over_dependency_review_signals(self) -> None:
+        test_report = "\n".join([
+            "Tests run: 124, Failures: 0, Errors: 1",
+            "java.lang.NoClassDefFoundError: com/fasterxml/jackson/databind/ser/std/ToStringSerializerBase",
+            "Could not initialize class com.total.corp.common.utils.MessageUtils",
+            "Failed to instantiate com.fasterxml.jackson.datatype.jsr310.JavaTimeModule",
+            "Failed to instantiate com.fasterxml.jackson.databind.ObjectMapper",
+            "MessageUtilsTest",
+        ])
+        dependency_graph = "\n".join([
+            "[INFO] com.microsoft.azure:azure-servicebus:jar:3.6.7",
+            "[INFO] io.jsonwebtoken:jjwt-jackson:jar:0.11.5",
+            "[INFO] org.apache.juneau:juneau-marshall:jar:8.2.0",
+            "[INFO] org.springframework.security:spring-security-web:jar:5.7.11",
+            "[INFO] com.fasterxml.jackson.datatype:jackson-datatype-jsr310:jar:2.13.5",
+            "[INFO] com.fasterxml.jackson.core:jackson-databind:jar:2.9.6",
+            "[INFO] com.fasterxml.jackson.core:jackson-core:jar:2.10.0",
+            "[INFO] com.fasterxml.jackson.dataformat:jackson-dataformat-xml:jar:2.8.11",
+            "[INFO] com.fasterxml.jackson.dataformat:jackson-dataformat-csv:jar:2.10.0",
+            "[INFO] com.fasterxml.jackson.core:jackson-annotations:jar:2.10.0",
+        ])
+
+        classification = classify_stage_failure({
+            "stage_index": 1,
+            "stage_name": "stage-1",
+            "target_boot_version": "2.7.18",
+            "target_java_version": "11",
+            "build_status": "BUILD_PASSED_IN_SANDBOX",
+            "test_status": "TEST_FAILED",
+            "usable_artifacts": [
+                {"kind": "pom_xml", "excerpt": "<spring-boot.version>2.7.18</spring-boot.version>"},
+                {"kind": "test_report", "excerpt": test_report},
+                {"kind": "dependency_graph", "excerpt": dependency_graph},
+            ],
+            "missing_artifacts": [],
+        })
+
+        assert classification["classification_status"] == "known_family_candidate"
+        assert classification["failure_type"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+        assert classification["repair_family_candidate"] == "JACKSON_VERSION_ALIGNMENT_DRIFT"
+        assert classification["governance_gate_type"] == "backend_deterministic_candidate"
+        assert classification["assistant_next_action"] == "prepare_jackson_alignment_apply_candidate"
+        assert classification["failure_type"] != "AZURE_SDK_API_MIGRATION_REVIEW"
+        assert "advisory:azure_sdk_api_migration_review_not_primary" in classification["advisory_signals"]
+        assert "advisory:jjwt_version_alignment_review_not_primary" in classification["advisory_signals"]
+        assert "advisory:juneau_version_alignment_review_not_primary" in classification["advisory_signals"]
+        assert "advisory:spring_security_behavior_review_not_primary" in classification["advisory_signals"]
+
     def test_payload_artifact_alias_does_not_accept_unowned_patch_path(
         self,
         diagnosis_service: V2FailureDiagnosisService,
